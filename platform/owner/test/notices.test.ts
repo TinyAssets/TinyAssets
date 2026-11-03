@@ -22,7 +22,7 @@ describe("the owner's notices", () => {
       }
       return notices.list();
     });
-    expect(NOTICES_KEPT).toBe(100);
+    expect(NOTICES_KEPT).toBe(1000);
     expect(kept).toHaveLength(NOTICES_KEPT);
     expect(kept[0]!.detail.startsWith(`${NOTICES_KEPT + 4} `)).toBe(true);
     expect(kept.at(-1)!.detail.startsWith("5 ")).toBe(true);

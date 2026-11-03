@@ -480,10 +480,15 @@ describe("the models table of owner policy", () => {
                  spend: { daily: null, monthly: null, transaction: null, ask_above: null,
                           source_ceilings: {} } };
 
-  it("is optional, its defaults the Python's per-turn limits", () => {
+  it("is optional, every cap off until the owner sets it (ADR-034 decision 7)", () => {
     expect(modelSettings(validate(base))).toEqual({ ...MODEL_DEFAULTS, sources: {} });
-    expect(MODEL_DEFAULTS).toMatchObject({ turn_cost: 25_000_000, turn_requests: 100,
-                                           daily_cost: null, monthly_cost: null });
+    expect(MODEL_DEFAULTS).toEqual({ turn_requests: null, turn_tokens: null, turn_cost: null,
+                                     daily_cost: null, monthly_cost: null });
+    // A cap the owner turns off again, and the highest each takes.
+    expect(modelSettings(validate({ ...base, models: { turn_tokens: null } })).turn_tokens)
+      .toBeNull();
+    expect(modelSettings(validate({ ...base, models: { turn_requests: 1_000_000 } }))
+      .turn_requests).toBe(1_000_000);
     const document = validate({ ...base, models: {
       turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
       sources: { anthropic: { daily_cost: 1, monthly_cost: null } } } });
@@ -493,8 +498,8 @@ describe("the models table of owner policy", () => {
   });
 
   it.each([
-    { turn_requests: 0 }, { turn_requests: 10_001 }, { turn_requests: 1.5 },
-    { turn_tokens: null }, { turn_cost: -1 }, { daily_cost: "1" }, { retries: 0 },
+    { turn_requests: 0 }, { turn_requests: 1_000_001 }, { turn_requests: 1.5 },
+    { turn_tokens: "1" }, { turn_cost: -1 }, { daily_cost: "1" }, { retries: 0 },
     { unknown: 1 }, { sources: { Anthropic: { daily_cost: 1 } } },
     { sources: { "-x": { daily_cost: 1 } } }, { sources: { [`a${"b".repeat(64)}`]: {} } },
     { sources: { anthropic: { weekly_cost: 1 } } },

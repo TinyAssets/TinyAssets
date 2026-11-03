@@ -51,7 +51,8 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd", include: ["test/**/*.test.ts"] },
+        // Slow under a loaded CI runner, not hanging: two different tests passed 5 s there.
+        test: { name: "workerd", include: ["test/**/*.test.ts"], testTimeout: 30_000 },
       },
       {
         // Static guards over the source and config, in Node.

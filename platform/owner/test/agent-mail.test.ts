@@ -12,6 +12,7 @@
 import { describe, expect, it } from "vitest";
 
 import { toolsNamed } from "../../doors/src/tools";
+import { PLACE_BYTES } from "../src/bodies";
 import { AGENT_RETIRED, type Ledger, MAIL_HEADER_BYTES, mailInput, NO_AGENT, nativeId,
          RUN_NO_MAILBOX } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
@@ -276,6 +277,50 @@ describe("mail to an agent", () => {
     expect((await receipt(r, (await newest(r)).run)).conversation_id)
       .not.toBe(run.conversation_id);
   });
+
+  it("past PLACE_BYTES is placed in R2 both ways: the run is told it whole, and its long " +
+     "reply is placed and read back whole", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const main = await identity(r, "main");
+    const long = "q".repeat(PLACE_BYTES) + "?";
+    const ping = await ownerMail(r, `dm:${main.agent_id}`, long);
+    expect(await r.sql("SELECT body, content_id IS NOT NULL AS placed FROM message_bodies " +
+                       "WHERE message_id = ?", ping.message_id)).toEqual([{ body: "", placed: 1 }]);
+    await drainDue(r.stub);
+    const first = await newest(r);
+    expect(told(first).body).toBe(long);
+    // Its result past the threshold: placed after the settle's unit, then posted.
+    const answer = "a".repeat(2 * PLACE_BYTES);
+    expect(await end(r, first, answer)).toEqual({ accepted: 2, settled: "succeeded" });
+    const page = await r.stub.mailboxRead(r.bind(), { limit: 10 });
+    expect(page.messages.map((m) => [m.parent_id, m.body, m.integrity]))
+      .toEqual([[ping.message_id, answer, "ok"]]);
+    const chain = await r.stub.mailChain(r.bind(), { message_id: ping.message_id, limit: 10 });
+    expect(chain.messages.map((m) => m.body)).toEqual([long, answer]);
+    expect(Object.keys(chain)).toEqual(["root", "messages", "more"]);
+    // Placed before the settle's unit, posted by reference in it: no upload is left open.
+    expect(await r.sql("SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
+  });
+
+  it("waits by reference: a long mail's waiting run keeps only its mail, and is told it " +
+     "whole as it starts", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const main = await identity(r, "main");
+    for (let i = 0; i < 5; i++) {
+      await ownerMail(r, `dm:${main.agent_id}`, `job ${i}`);
+    }
+    // Past a chunk: bounded by the body bound alone, as any mail.
+    const long = "w".repeat(5 * 1024 * 1024) + "!";
+    await ownerMail(r, `dm:${main.agent_id}`, long);
+    await drainDue(r.stub);
+    expect(await r.sql("SELECT prompt, bytes FROM run_inputs")).toEqual([{ prompt: "", bytes: 0 }]);
+    await end(r, (await starts(r))[0]!, "done 0");
+    await drainDue(r.stub);
+    expect(told((await starts(r)).at(-1)!).body).toBe(long);
+    expect(await r.sql("SELECT COUNT(*) AS n FROM run_inputs")).toEqual([{ n: 0 }]);
+  }, 120_000);
 
   it("from a client starts a run held to the intersection with that client's grant",
      async () => {

@@ -12,15 +12,20 @@
  * ADR-034's deletion slice rewrote the ones pi's loop had added (its threads, turns and
  * scheduled work) out of the list.
  *
- * The `CHECK` on a row body is the store's fixed ceiling of 65,536 characters. The
- * primitive's own bound is `LIMITS.maxRow`, which may be lower but never higher (a
- * test ties the two); raising the ceiling is a new migration.
+ * Where a body lives is the placement rule (ADR-035): a collection row's, a history entry's
+ * or a message's body of more than `PLACE_BYTES` UTF-8 bytes is never in its row. It is
+ * content of the files plane, in R2, which the row names by its `content_id`; the `CHECK`s
+ * hold every inline body within `PLACE_BYTES`, and the triggers of migration 14 count each
+ * reference on the content, so the files plane's quota, garbage collection and erasure
+ * cover the placed bytes.
  */
+import { CRON_MAX_CHARS } from "./cron";
 import { GC_GRACE_S } from "./files";
 import type { OwnerStorage } from "./gate";
 import {
   CHUNK_BYTES, CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES,
-  HISTORY_BYTES as FILE_HISTORY_BYTES, OWNER_SCOPE, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
+  HISTORY_BYTES as FILE_HISTORY_BYTES, INDEX_KEPT, OWNER_SCOPE, PLACE_BYTES, record,
+  SCOPE_REF_BYTES, SHARE_BYTES, TABLE_KEPT, TEMP_BYTES,
 } from "./manifest";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
 import {
@@ -48,29 +53,90 @@ export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMA
   "tier TEXT NOT NULL DEFAULT 'free' CHECK (tier IN ('free', 'paid')), " +
   "CHECK ((state = 'suspended') = (reasons != '[]')))";
 
-/** Add a row's or history entry's counts, times `sign`, to each scope it falls in. */
-const ADD_USAGE =
-  "INSERT INTO collection_usage (scope, collection, who, rows, row_bytes, history_bytes) " +
-  "VALUES ";
-const ON_USAGE =
-  " ON CONFLICT (scope, collection, who) DO UPDATE SET rows = rows + excluded.rows, " +
-  "row_bytes = row_bytes + excluded.row_bytes, " +
-  "history_bytes = history_bytes + excluded.history_bytes;";
-const ROW_BYTES = (row: string) => `length(CAST(${row}.body AS BLOB))`;
-const ROW_USAGE = (row: string, sign: string) =>
-  ADD_USAGE +
-  `('owner', '', '', ${sign}1, ${sign}${ROW_BYTES(row)}, 0), ` +
-  `('collection', ${row}.collection, '', ${sign}1, ${sign}${ROW_BYTES(row)}, 0), ` +
-  `('writer', ${row}.collection, ${row}.writer, ${sign}1, ${sign}${ROW_BYTES(row)}, 0), ` +
-  `('creator', ${row}.collection, ${row}.creator, ${sign}1, ${sign}${ROW_BYTES(row)}, 0)` +
-  ON_USAGE;
-const HISTORY_BYTES = (entry: string) => `length(CAST(${entry}.body_json AS BLOB))`;
-const HISTORY_USAGE = (entry: string, sign: string) =>
-  ADD_USAGE +
-  `('owner', '', '', 0, 0, ${sign}${HISTORY_BYTES(entry)}), ` +
-  `('collection', ${entry}.collection, '', 0, 0, ${sign}${HISTORY_BYTES(entry)}), ` +
-  `('writer', ${entry}.collection, ${entry}.writer, 0, 0, ${sign}${HISTORY_BYTES(entry)})` +
-  ON_USAGE;
+/** A text column's bytes. */
+const TEXT_BYTES = (column: string) => `length(CAST(${column} AS BLOB))`;
+/** A column's bytes, nothing when null. */
+const OR_NONE = (column: string) => `coalesce(${TEXT_BYTES(column)}, 0)`;
+/** An integer's or a real's most bytes in a record. */
+const NUMBER = 9;
+/**
+ * What one collection row takes in the object, laid out as SQLite lays it (`manifest.ts`'s
+ * `record`): its own record, its names, inline body and content id in it, and its entry in
+ * each of its five indexes (its key, its seq, its writer's, its creator's and its change's,
+ * slice M's `collection_changes`). The rows are bounded by these bytes
+ * (`LIMITS.maxRowsCharge`), whatever their names' lengths.
+ */
+export const ROW_CHARGE = (row: string) =>
+  `(${record(`${TEXT_BYTES(`${row}.collection`)} + ${TEXT_BYTES(`${row}.row_id`)} + ` +
+             `${TEXT_BYTES(`${row}.etag`)} + ${TEXT_BYTES(`${row}.writer`)} + ` +
+             `${TEXT_BYTES(`${row}.body`)} + ${TEXT_BYTES(`${row}.creator`)} + ` +
+             `${OR_NONE(`${row}.content_id`)} + ${TEXT_BYTES(`${row}.filer`)} + ` +
+             `${7 * NUMBER} + 1`, TABLE_KEPT)} + ` +
+  `${record(`${TEXT_BYTES(`${row}.collection`)} + ${TEXT_BYTES(`${row}.row_id`)} + ${NUMBER}`,
+            INDEX_KEPT)} + ` +
+  `${record(`${TEXT_BYTES(`${row}.collection`)} + ${2 * NUMBER}`, INDEX_KEPT)} + ` +
+  `${record(`${TEXT_BYTES(`${row}.collection`)} + ${TEXT_BYTES(`${row}.writer`)} + ${NUMBER}`,
+            INDEX_KEPT)} + ` +
+  `${record(`${TEXT_BYTES(`${row}.collection`)} + ${TEXT_BYTES(`${row}.creator`)} + ${NUMBER}`,
+            INDEX_KEPT)} + ${record(`${2 * NUMBER}`, INDEX_KEPT)})`;
+/** A collection's high-water seq row: its record and its key's index entry. */
+export const SEQ_CHARGE = (seq: string) =>
+  `(${record(`${TEXT_BYTES(`${seq}.collection`)} + ${NUMBER}`, TABLE_KEPT)} + ` +
+  `${record(`${TEXT_BYTES(`${seq}.collection`)} + ${NUMBER}`, INDEX_KEPT)})`;
+/** A writer's share counter (`collection_usage`, kept as an index's record). */
+export const USAGE_CHARGE = (usage: string) =>
+  record(`${TEXT_BYTES(`${usage}.who`)} + ${NUMBER}`, INDEX_KEPT);
+/**
+ * What one collection history entry takes in the object, laid out as SQLite lays it: its
+ * own record (names, op, inline body, content id, a delete's change and private writer,
+ * numbers), its primary key's index entry, its entry in the age index the prune reads, and
+ * a delete's or clear's entry in slice M's `collection_erasures`. The history is bounded by
+ * these bytes (`LIMITS.maxHistoryCharge`), not by rows times revisions.
+ */
+export const HISTORY_CHARGE = (entry: string) =>
+  `(${record(`${TEXT_BYTES(`${entry}.collection`)} + ${TEXT_BYTES(`${entry}.key`)} + ` +
+             `${TEXT_BYTES(`${entry}.op`)} + ${TEXT_BYTES(`${entry}.writer`)} + ` +
+             `${TEXT_BYTES(`${entry}.body_json`)} + ${OR_NONE(`${entry}.content_id`)} + ` +
+             `${TEXT_BYTES(`${entry}.filer`)} + ${OR_NONE(`${entry}.private_writer`)} + ` +
+             `${5 * NUMBER}`, TABLE_KEPT)} + ` +
+  `${record(`${TEXT_BYTES(`${entry}.collection`)} + ${TEXT_BYTES(`${entry}.key`)} + ` +
+            `${2 * NUMBER}`, INDEX_KEPT)} + ${record(`${2 * NUMBER}`, INDEX_KEPT)} + ` +
+  `CASE WHEN ${entry}.change IS NULL THEN 0 ELSE ${record(`${2 * NUMBER}`, INDEX_KEPT)} END)`;
+/** Move the collections' own counters (`collection_space`) by `charge`, times `sign`. */
+const SPACE = (column: "charge" | "rows_charge", sign: string, charge: string) =>
+  `UPDATE collection_space SET ${column} = ${column} ${sign} ${charge};`;
+/**
+ * Charge a row to its outside writer's share (`collection_usage`: its own, `client:<id>`,
+ * and all outside writers', `*`), or credit it; the owner's own rows count in the owner's
+ * total alone.
+ */
+const ROW_SHARE = (row: string, sign: "+" | "-") => sign === "+"
+  ? "INSERT INTO collection_usage (who, charge) SELECT who, " + ROW_CHARGE(row) +
+    ` FROM (SELECT '${CLIENTS}' AS who UNION ALL SELECT ${row}.filer) WHERE ${row}.filer ` +
+    `GLOB '${CLIENT_WRITER}' ON CONFLICT (who) DO UPDATE SET charge = charge + excluded.charge;`
+  : `UPDATE collection_usage SET charge = charge - ${ROW_CHARGE(row)} WHERE ${row}.filer ` +
+    `GLOB '${CLIENT_WRITER}' AND who IN ('${CLIENTS}', ${row}.filer);`;
+/**
+ * A body's columns (ADR-035): inline, its bytes counted, or placed past `PLACE_BYTES`, the
+ * row's text empty and its content named.
+ */
+const PLACEMENT = (body: string) =>
+  `CHECK (CASE WHEN content_id IS NULL THEN body_bytes = length(CAST(${body} AS BLOB)) ` +
+  `ELSE ${body} = '' AND body_bytes > ${PLACE_BYTES} AND length(content_id) = 64 END)`;
+/** A row's files scope (`filer`): the owner's, or an outside writer's `client:<id>`. */
+const FILER = `filer TEXT NOT NULL CHECK (filer = '${OWNER_SCOPE}' OR (length(filer) = 71 ` +
+  `AND filer GLOB '${CLIENT_WRITER}'))`;
+/**
+ * Count a row's reference to placed content (`+`), or take it out (`-`): in its writer's
+ * files scope first, as a file entry's (`file_scope_contents`, so `client_share` and
+ * `owner_reserve` hold), then on the content itself; taken out in the other order, so a
+ * credit reads the content it was charged for.
+ */
+const PLACED = (row: string, sign: "+" | "-") => sign === "+"
+  ? `UPDATE file_contents SET refs = refs + 1 WHERE content_id = ${row}.content_id; ${
+    CONTENT_REF(row, "+", "filer")}`
+  : `${CONTENT_REF(row, "-", "filer")} UPDATE file_contents SET refs = refs - 1 ` +
+    `WHERE content_id = ${row}.content_id;`;
 
 /**
  * Move a grant row's class, times `sign`: set by the owner (counted against the owner's
@@ -158,18 +224,18 @@ const SHARE_USAGE = (scopes: Scopes, sign: "+" | "-",
       `FROM ${scopes.rows} WHERE 1 ON CONFLICT (who) DO UPDATE SET ${moved.map((counter) =>
         `${counter} = ${counter} + excluded.${counter}`).join(", ")};`;
 };
-/** A row's writer's scopes. */
-const WRITER = (row: string): Scopes => SCOPES(`${row}.writer`);
+/** A row's writer's scopes, by the column naming its files scope writer. */
+const WRITER = (row: string, column = "writer"): Scopes => SCOPES(`${row}.${column}`);
 /**
  * Count a content reference of a row (an entry's or a history row's) in each scope its
  * writer's rows count in (`+`), or take it out (`-`).
  */
-const CONTENT_REF = (row: string, sign: "+" | "-") => sign === "+"
+const CONTENT_REF = (row: string, sign: "+" | "-", column = "writer") => sign === "+"
   ? "INSERT INTO file_scope_contents (scope, content_id, refs) SELECT who, " +
-    `${row}.content_id, 1 FROM ${WRITER(row).rows} WHERE ${row}.content_id IS NOT NULL ` +
+    `${row}.content_id, 1 FROM ${WRITER(row, column).rows} WHERE ${row}.content_id IS NOT NULL ` +
     "ON CONFLICT (scope, content_id) DO UPDATE SET refs = refs + 1;"
   : `UPDATE file_scope_contents SET refs = refs - 1 WHERE content_id = ${row}.content_id ` +
-    `AND scope IN ${WRITER(row).list};`;
+    `AND scope IN ${WRITER(row, column).list};`;
 /** A content's bytes and its inline bytes, read from its row. */
 const CONTENT_OF = (id: string, what: string) =>
   `(SELECT ${what} FROM file_contents c WHERE c.content_id = ${id})`;
@@ -196,54 +262,78 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "collection TEXT NOT NULL, row_id TEXT NOT NULL, revision INTEGER NOT NULL, " +
       "seq INTEGER NOT NULL, etag TEXT NOT NULL, writer TEXT NOT NULL, " +
       "private INTEGER NOT NULL CHECK (private IN (0, 1)), " +
-      "body TEXT NOT NULL CHECK (length(body) <= 65536), updated_at REAL NOT NULL, " +
-      // Who created the row; a takeover never changes it (the row share counts it).
+      // The body inline, or '' with its content placed (ADR-035); its UTF-8 bytes either way.
+      `body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= ${PLACE_BYTES}), ` +
+      "updated_at REAL NOT NULL, " +
+      // Who created the row; a takeover never changes it (a clear by writer matches it).
       "creator TEXT NOT NULL, " +
       // The owner-wide change of its latest write (`collection_clock`, slice M).
       "change INTEGER NOT NULL, " +
+      `body_bytes INTEGER NOT NULL, content_id TEXT, ${FILER}, ${PLACEMENT("body")}, ` +
       "PRIMARY KEY (collection, row_id), UNIQUE (collection, seq))",
     // A clear by writer matches either.
     "CREATE INDEX collection_writers ON collection_rows (collection, writer)",
     "CREATE INDEX collection_creators ON collection_rows (collection, creator)",
-    // The high-water seq survives a clear, so a reader's cursor never goes back.
+    // The high-water seq survives a clear, so a reader's cursor never goes back; a
+    // collection left with no row gives its seq to `seq_floor` and goes, so the table holds
+    // a row for each collection with rows, and no more.
     "CREATE TABLE collection_seqs (collection TEXT PRIMARY KEY, seq INTEGER NOT NULL)",
     "CREATE TABLE collection_history (" +
       "collection TEXT NOT NULL, key TEXT NOT NULL, revision INTEGER NOT NULL, " +
-      "op TEXT NOT NULL, body_json TEXT NOT NULL, at REAL NOT NULL, writer TEXT NOT NULL, " +
+      `op TEXT NOT NULL, body_json TEXT NOT NULL CHECK (length(CAST(body_json AS BLOB)) <= ${
+        PLACE_BYTES}), at REAL NOT NULL, writer TEXT NOT NULL, ` +
       // A delete's or clear's entry (slice M's digests): its owner-wide change, and the
       // erased row's writer when the row was private, so only that writer is told.
       "change INTEGER, private_writer TEXT, " +
+      `body_bytes INTEGER NOT NULL, content_id TEXT, ${FILER}, ${PLACEMENT("body_json")}, ` +
       "CHECK ((change IS NULL) = (op NOT IN ('delete', 'clear'))), " +
       "CHECK (private_writer IS NULL OR change IS NOT NULL), " +
       "PRIMARY KEY (collection, key, revision))",
-    // The bounds' counters: rows and payload bytes in the whole object (the owner's),
-    // per collection, and per writer and per creator in a collection. Only the
-    // triggers below write them, inside the statement that changes a row or a history
-    // entry, so every write, delete, clear and history prune moves them in its own
-    // transaction, and a bound check reads one row by key. A history entry counts
-    // against its writer; `creator` counts rows alone. A row that falls to zero goes.
-    "CREATE TABLE collection_usage (" +
-      "scope TEXT NOT NULL CHECK (scope IN ('owner', 'collection', 'writer', 'creator')), " +
-      "collection TEXT NOT NULL, who TEXT NOT NULL, rows INTEGER NOT NULL, " +
-      "row_bytes INTEGER NOT NULL, history_bytes INTEGER NOT NULL, " +
-      "PRIMARY KEY (scope, collection, who))",
-    `CREATE TRIGGER collection_rows_added AFTER INSERT ON collection_rows BEGIN ${
-      ROW_USAGE("NEW", "")} END`,
-    `CREATE TRIGGER collection_rows_changed AFTER UPDATE ON collection_rows BEGIN ${
-      ROW_USAGE("OLD", "-")} ${ROW_USAGE("NEW", "")} END`,
-    `CREATE TRIGGER collection_rows_removed AFTER DELETE ON collection_rows BEGIN ${
-      ROW_USAGE("OLD", "-")} END`,
-    // An erase entry has no body and counts nothing.
-    `CREATE TRIGGER collection_history_added AFTER INSERT ON collection_history ` +
-      `WHEN ${HISTORY_BYTES("NEW")} > 0 BEGIN ${HISTORY_USAGE("NEW", "")} END`,
-    `CREATE TRIGGER collection_history_removed AFTER DELETE ON collection_history ` +
-      `WHEN ${HISTORY_BYTES("OLD")} > 0 BEGIN ${HISTORY_USAGE("OLD", "-")} END`,
+    // The collections are bounded in what they take, laid out as SQLite lays them, whatever
+    // their names: `rows_charge` is every row with its four index entries (`ROW_CHARGE`), each
+    // collection's seq row and each writer's share counter, held to `maxRowsCharge` (and an
+    // outside writer to its share of it); `charge` is the history's entries
+    // (`HISTORY_CHARGE`), pruned oldest first past `maxHistoryCharge`. `revision_floor` is the
+    // newest revision a prune let go, so a key whose entries are all gone goes on past it and
+    // never repeats a revision; `seq_floor` the newest seq of a collection that was emptied,
+    // so a collection made again goes on past it and no reader's cursor goes back.
+    "CREATE TABLE collection_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "charge INTEGER NOT NULL CHECK (charge >= 0), " +
+      "rows_charge INTEGER NOT NULL CHECK (rows_charge >= 0), " +
+      "revision_floor INTEGER NOT NULL, seq_floor INTEGER NOT NULL, " +
+      // The newest change of a delete's or clear's entry a prune let go (slice M's feed): a
+      // reader behind it is told to read again (`changed`'s `reset`), never left unaware.
+      "erasure_floor INTEGER NOT NULL)",
+    "INSERT INTO collection_space VALUES (1, 0, 0, 0, 0, 0)",
+    "CREATE INDEX collection_history_by_age ON collection_history (at)",
+    `CREATE TRIGGER collection_history_added AFTER INSERT ON collection_history BEGIN ${
+      SPACE("charge", "+", HISTORY_CHARGE("NEW"))} END`,
+    `CREATE TRIGGER collection_history_removed AFTER DELETE ON collection_history BEGIN ${
+      SPACE("charge", "-", HISTORY_CHARGE("OLD"))} END`,
     "CREATE TRIGGER collection_history_kept BEFORE UPDATE ON collection_history " +
       "BEGIN SELECT RAISE(ABORT, 'a history entry is never changed'); END",
-    "CREATE TRIGGER collection_usage_emptied AFTER UPDATE ON collection_usage " +
-      "WHEN NEW.rows = 0 AND NEW.row_bytes = 0 AND NEW.history_bytes = 0 BEGIN " +
-      "DELETE FROM collection_usage WHERE scope = NEW.scope AND collection = NEW.collection " +
-      "AND who = NEW.who; END",
+    // Each outside writer's share of the rows' charge, and all outside writers' (`*`); only
+    // the triggers write it, in the statement that changes a row, and a row at zero goes.
+    "CREATE TABLE collection_usage (who TEXT PRIMARY KEY CHECK (who = '*' OR " +
+      `(length(who) = 71 AND who GLOB '${CLIENT_WRITER}')), ` +
+      "charge INTEGER NOT NULL CHECK (charge >= 0)) WITHOUT ROWID",
+    `CREATE TRIGGER collection_rows_added AFTER INSERT ON collection_rows BEGIN ${
+      SPACE("rows_charge", "+", ROW_CHARGE("NEW"))} ${ROW_SHARE("NEW", "+")} END`,
+    `CREATE TRIGGER collection_rows_changed AFTER UPDATE ON collection_rows BEGIN ${
+      SPACE("rows_charge", "-", ROW_CHARGE("OLD"))} ${ROW_SHARE("OLD", "-")} ${
+      SPACE("rows_charge", "+", ROW_CHARGE("NEW"))} ${ROW_SHARE("NEW", "+")} END`,
+    `CREATE TRIGGER collection_rows_removed AFTER DELETE ON collection_rows BEGIN ${
+      SPACE("rows_charge", "-", ROW_CHARGE("OLD"))} ${ROW_SHARE("OLD", "-")} END`,
+    `CREATE TRIGGER collection_seqs_added AFTER INSERT ON collection_seqs BEGIN ${
+      SPACE("rows_charge", "+", SEQ_CHARGE("NEW"))} END`,
+    `CREATE TRIGGER collection_seqs_removed AFTER DELETE ON collection_seqs BEGIN ${
+      SPACE("rows_charge", "-", SEQ_CHARGE("OLD"))} END`,
+    `CREATE TRIGGER collection_usage_added AFTER INSERT ON collection_usage BEGIN ${
+      SPACE("rows_charge", "+", USAGE_CHARGE("NEW"))} END`,
+    `CREATE TRIGGER collection_usage_removed AFTER DELETE ON collection_usage BEGIN ${
+      SPACE("rows_charge", "-", USAGE_CHARGE("OLD"))} END`,
+    "CREATE TRIGGER collection_usage_emptied AFTER UPDATE OF charge ON collection_usage " +
+      "WHEN NEW.charge = 0 BEGIN DELETE FROM collection_usage WHERE who = NEW.who; END",
     // The owner-wide change order (slice M's digests): every write, delete and clear takes
     // the clock's next change for its row or its erase entry, so one cursor covers many
     // collections. It only ever rises.
@@ -281,10 +371,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // The hourly cap's one counter (slice W, ruling M5): GCRA's theoretical arrival time,
       // in seconds; null until a capped agent is first woken.
       "wake_tat REAL, " +
-      // Messages this agent sent that the owner has not acked yet, and their bytes: its
-      // share of the owner's mailbox.
+      // Messages this agent sent that the owner has not acked yet: its share of the owner's
+      // mailbox.
       "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0), " +
-      "unacked_to_owner_bytes INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner_bytes >= 0), " +
       "UNIQUE (command_center_id, outside_client, outside_family))",
     "CREATE INDEX outside_identities ON outside_agents (outside_client, outside_family)",
     // The enabled agents by delivery method: who a board or room change rings (slice W).
@@ -322,12 +411,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX messages_done ON ledger_messages (seq) WHERE unacked = 0",
     // A recipient row carries its message's seq, so a reader's mail is an index range.
     // `unacked` is 1 until the reader acks past it, or its agent is disabled (released).
+    // A message has one recipient (a room is one agent's dm), and the key holds it to
+    // one: the recipients are bounded by their own count, the messages'.
     "CREATE TABLE ledger_recipients (" +
-      "message_id TEXT NOT NULL, agent_id TEXT NOT NULL, seq INTEGER NOT NULL, " +
+      "message_id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, seq INTEGER NOT NULL, " +
       "state TEXT NOT NULL CHECK (state IN ('queued', 'held_cap', 'woken', 'read', " +
       "'replied', 'failed', 'unknown')), changed_at REAL NOT NULL, " +
-      "unacked INTEGER NOT NULL DEFAULT 1 CHECK (unacked IN (0, 1)), " +
-      "PRIMARY KEY (message_id, agent_id))",
+      "unacked INTEGER NOT NULL DEFAULT 1 CHECK (unacked IN (0, 1)))",
     "CREATE INDEX recipients_by_seq ON ledger_recipients (agent_id, seq)",
     "CREATE INDEX recipients_unacked ON ledger_recipients (agent_id, seq) WHERE unacked = 1",
     "CREATE INDEX recipients_by_state ON ledger_recipients (agent_id, state)",
@@ -341,10 +431,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // Each reader's ack cursor, and the mail it holds unacked: its mailbox's counters.
     "CREATE TABLE ledger_readers (" +
       "reader TEXT PRIMARY KEY, through_seq INTEGER NOT NULL DEFAULT 0, acked_at REAL, " +
-      "unacked INTEGER NOT NULL DEFAULT 0 CHECK (unacked >= 0), " +
-      "unacked_bytes INTEGER NOT NULL DEFAULT 0 CHECK (unacked_bytes >= 0))",
-    // The object's one schedule: each outside agent's wake, which the doorbell sends on the
-    // `wakes` lane.
+      "unacked INTEGER NOT NULL DEFAULT 0 CHECK (unacked >= 0))",
+    // The object's one schedule: each outside agent's wake, and each revoke of a
+    // suppressed agent's callbacks, which the doorbell consumes on the `wakes` lane.
     "CREATE TABLE ledger_wakes (" +
       "wake_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, " +
       "state TEXT NOT NULL " +
@@ -389,10 +478,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "kind TEXT NOT NULL CHECK (length(kind) BETWEEN 1 AND 64 AND kind NOT GLOB '*[^a-z0-9_]*'), " +
       "board INTEGER NOT NULL CHECK (board IN (0, 1)), " +
       `rooms TEXT NOT NULL CHECK (json_valid(rooms) AND length(rooms) <= ${ARGUMENTS_CHARS}), ` +
-      `blob TEXT NOT NULL CHECK (length(blob) BETWEEN 1 AND ${DOORBELL_BLOB_CHARS}), ` +
+      // Sealed and encoded by the gateway (base64url): visible ASCII, a byte a character.
+      `blob TEXT NOT NULL CHECK (length(blob) BETWEEN 1 AND ${DOORBELL_BLOB_CHARS} ` +
+      "AND blob NOT GLOB '*[^!-~]*'), " +
       "kid TEXT NOT NULL CHECK (length(kid) BETWEEN 1 AND 32), " +
       "version INTEGER NOT NULL CHECK (version >= 1), " +
-      `previous_blob TEXT CHECK (length(previous_blob) <= ${DOORBELL_BLOB_CHARS}), ` +
+      `previous_blob TEXT CHECK (length(previous_blob) <= ${DOORBELL_BLOB_CHARS} ` +
+      "AND previous_blob NOT GLOB '*[^!-~]*'), " +
       "previous_version INTEGER, previous_until REAL, " +
       "rung TEXT CHECK (length(rung) BETWEEN 1 AND 64), " +
       "status INTEGER CHECK (status BETWEEN 100 AND 599), " +
@@ -411,14 +503,18 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHEN NOT EXISTS (SELECT 1 FROM outside_agents WHERE agent_id = NEW.agent_id " +
       "AND disabled_reason IS NULL) BEGIN SELECT RAISE(ABORT, " +
       "'a doorbell subscription is an enabled agent''s'); END",
+    // A message's body, inline or placed past `PLACE_BYTES` (ADR-035); its bytes are its
+    // message's `body_bytes`.
     "CREATE TABLE message_bodies (" +
       "message_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, " +
-      "body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 16384), created_at REAL NOT NULL)",
+      `body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= ${PLACE_BYTES}), ` +
+      "created_at REAL NOT NULL, body_bytes INTEGER NOT NULL CHECK (body_bytes >= 1), " +
+      `content_id TEXT, ${FILER}, ${PLACEMENT("body")})`,
     // The owner-wide counters the ledger's bounds read.
     "CREATE TABLE ledger_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "agents INTEGER NOT NULL, enabled_agents INTEGER NOT NULL, messages INTEGER NOT NULL, " +
-      "body_bytes INTEGER NOT NULL, settled_wakes INTEGER NOT NULL)",
-    "INSERT INTO ledger_usage VALUES (1, 0, 0, 0, 0, 0)",
+      "settled_wakes INTEGER NOT NULL)",
+    "INSERT INTO ledger_usage VALUES (1, 0, 0, 0, 0)",
     "CREATE TRIGGER outside_agents_added AFTER INSERT ON outside_agents BEGIN " +
       "UPDATE ledger_usage SET agents = agents + 1, " +
       "enabled_agents = enabled_agents + (NEW.disabled_reason IS NULL); END",
@@ -430,35 +526,27 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE ledger_usage SET agents = agents - 1, " +
       "enabled_agents = enabled_agents - (OLD.disabled_reason IS NULL); END",
     "CREATE TRIGGER ledger_messages_added AFTER INSERT ON ledger_messages BEGIN " +
-      "UPDATE ledger_usage SET messages = messages + 1, " +
-      "body_bytes = body_bytes + NEW.body_bytes; END",
+      "UPDATE ledger_usage SET messages = messages + 1; END",
     "CREATE TRIGGER ledger_messages_removed AFTER DELETE ON ledger_messages BEGIN " +
-      "UPDATE ledger_usage SET messages = messages - 1, " +
-      "body_bytes = body_bytes - OLD.body_bytes; END",
+      "UPDATE ledger_usage SET messages = messages - 1; END",
     // A recipient row holds its message until it is acked or released: the message's
     // `unacked` and the reader's mailbox counters move with it. Its bytes are read from
     // its message, so a recipient row goes before its message (a NULL fails loudly).
     "CREATE TRIGGER ledger_recipient_added AFTER INSERT ON ledger_recipients " +
       "WHEN NEW.unacked = 1 BEGIN " +
       "UPDATE ledger_messages SET unacked = unacked + 1 WHERE message_id = NEW.message_id; " +
-      "INSERT INTO ledger_readers (reader, unacked, unacked_bytes) VALUES (NEW.agent_id, 1, " +
-      "(SELECT body_bytes FROM ledger_messages WHERE message_id = NEW.message_id)) " +
-      "ON CONFLICT (reader) DO UPDATE SET unacked = unacked + 1, " +
-      "unacked_bytes = unacked_bytes + excluded.unacked_bytes; END",
+      "INSERT INTO ledger_readers (reader, unacked) VALUES (NEW.agent_id, 1) " +
+      "ON CONFLICT (reader) DO UPDATE SET unacked = unacked + 1; END",
     "CREATE TRIGGER ledger_recipient_held BEFORE UPDATE OF unacked ON ledger_recipients " +
       "WHEN OLD.unacked = 0 AND NEW.unacked = 1 BEGIN " +
       "SELECT RAISE(ABORT, 'an acked recipient never holds its message again'); END",
     "CREATE TRIGGER ledger_recipient_released AFTER UPDATE OF unacked ON ledger_recipients " +
       "WHEN OLD.unacked = 1 AND NEW.unacked = 0 BEGIN " +
       "UPDATE ledger_messages SET unacked = unacked - 1 WHERE message_id = NEW.message_id; " +
-      "UPDATE ledger_readers SET unacked = unacked - 1, unacked_bytes = unacked_bytes - " +
-      "(SELECT body_bytes FROM ledger_messages WHERE message_id = NEW.message_id) " +
-      "WHERE reader = NEW.agent_id; END",
+      "UPDATE ledger_readers SET unacked = unacked - 1 WHERE reader = NEW.agent_id; END",
     "CREATE TRIGGER ledger_recipient_removed AFTER DELETE ON ledger_recipients " +
       "WHEN OLD.unacked = 1 BEGIN " +
-      "UPDATE ledger_readers SET unacked = unacked - 1, unacked_bytes = unacked_bytes - " +
-      "(SELECT body_bytes FROM ledger_messages WHERE message_id = OLD.message_id) " +
-      "WHERE reader = OLD.agent_id; " +
+      "UPDATE ledger_readers SET unacked = unacked - 1 WHERE reader = OLD.agent_id; " +
       "UPDATE ledger_messages SET unacked = unacked - 1 WHERE message_id = OLD.message_id; END",
     // An outside agent's message in its own dm room goes to the owner; while any recipient
     // holds it, it counts against its sender's share of the owner's mailbox. Its mail in a
@@ -467,15 +555,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHEN NEW.sender_kind = 'outside' AND NEW.room_id = 'dm:' || NEW.sender_id " +
       "AND (OLD.unacked = 0) != (NEW.unacked = 0) BEGIN " +
       "UPDATE outside_agents SET " +
-      "unacked_to_owner = unacked_to_owner + CASE WHEN NEW.unacked = 0 THEN -1 ELSE 1 END, " +
-      "unacked_to_owner_bytes = unacked_to_owner_bytes + " +
-      "CASE WHEN NEW.unacked = 0 THEN -NEW.body_bytes ELSE NEW.body_bytes END " +
+      "unacked_to_owner = unacked_to_owner + CASE WHEN NEW.unacked = 0 THEN -1 ELSE 1 END " +
       "WHERE agent_id = NEW.sender_id; END",
     "CREATE TRIGGER ledger_outside_removed AFTER DELETE ON ledger_messages " +
       "WHEN OLD.sender_kind = 'outside' AND OLD.room_id = 'dm:' || OLD.sender_id " +
       "AND OLD.unacked > 0 BEGIN " +
-      "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner - 1, " +
-      "unacked_to_owner_bytes = unacked_to_owner_bytes - OLD.body_bytes " +
+      "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner - 1 " +
       "WHERE agent_id = OLD.sender_id; END",
     "CREATE TRIGGER ledger_wakes_added AFTER INSERT ON ledger_wakes " +
       "WHEN NEW.settled_at IS NOT NULL BEGIN " +
@@ -539,7 +624,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "client TEXT PRIMARY KEY CHECK (length(client) = 64), " +
       "source TEXT NOT NULL CHECK (source IN ('mcp', 'api_key')), " +
       "mode TEXT NOT NULL CHECK (mode IN ('full', 'scoped', 'revoked')), " +
-      "scopes TEXT NOT NULL, generation INTEGER NOT NULL CHECK (generation >= 1), " +
+      // A grant's scopes are counted in bytes (`GRANT_LIMITS.maxScopesBytes`, which the
+      // owner-bound guard holds equal), not as so many scopes of so many characters each.
+      "scopes TEXT NOT NULL CHECK (length(CAST(scopes AS BLOB)) <= 65536), " +
+      "generation INTEGER NOT NULL CHECK (generation >= 1), " +
       "revoked_at REAL, name TEXT NOT NULL, first_seen REAL NOT NULL, " +
       "last_seen REAL NOT NULL, " +
       "owner_set INTEGER NOT NULL DEFAULT 0 CHECK (owner_set IN (0, 1)), " +
@@ -704,7 +792,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "PRIMARY KEY (parent, name)) WITHOUT ROWID",
     "CREATE TABLE file_contents (content_id TEXT PRIMARY KEY, size INTEGER NOT NULL, " +
       "inline BLOB, refs INTEGER NOT NULL DEFAULT 0 CHECK (refs >= 0), " +
-      "CHECK ((inline IS NOT NULL) = (size <= 4096)), " +
+      // Inline content is 4,096 bytes at most (a file's `INLINE_BYTES`); chunked content
+      // is any size (a placed body's past `PLACE_BYTES`, ADR-035).
+      "CHECK (inline IS NULL OR size <= 4096), " +
       "CHECK (inline IS NULL OR length(inline) = size)) WITHOUT ROWID",
     "CREATE TABLE file_content_chunks (content_id TEXT NOT NULL, idx INTEGER NOT NULL, " +
       "sha256 TEXT NOT NULL, PRIMARY KEY (content_id, idx)) WITHOUT ROWID",
@@ -1140,6 +1230,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "path NOT GLOB '*[^ -~]*'), " +
       "generation INTEGER NOT NULL, bytes_hint INTEGER CHECK (bytes_hint IS NULL OR " +
       "bytes_hint >= 0), opened_at REAL NOT NULL, " +
+      // Its door's last beat while it streams (`EGRESS_BEAT_S`): past three missed, lost.
+      "beat_at REAL, " +
       "state TEXT NOT NULL CHECK (state IN ('open', 'settled', 'refused')), " +
       "code TEXT CHECK (code IS NULL OR length(code) <= 64), " +
       "ended TEXT CHECK (ended IS NULL OR ended IN ('policy', 'lease', 'connection', " +
@@ -1187,7 +1279,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // cancel (its authority ends at once; the runner's end still settles it). The sandbox
   // leases (`sandbox_leases`): one sandbox an authority, the owner's own work's or one
   // outside client's, so runs of different authority never share a VM; each lease its
-  // fencing epoch, its expiry and its tokens' deadline, the SHA-256 of its egress, sync and
+  // fencing epoch, its expiry (its tokens' too), the SHA-256 of its egress, sync and
   // runner tokens, and the egress generation its network was last applied under; at most
   // `RUNS_CEILING`, since a lease is opened only for a live run and a lapsed one goes. A
   // conversation (`conversations`) keeps its engine and that engine's session id, at most
@@ -1261,7 +1353,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "it was admitted as'); END",
     "CREATE TABLE run_inputs (" +
       `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
-      "prompt TEXT NOT NULL, bytes INTEGER NOT NULL CHECK (bytes >= 1), " +
+      // The input, or '' for a mail's run, whose `mail` is its input's reference (ADR-035).
+      "prompt TEXT NOT NULL, bytes INTEGER NOT NULL CHECK (bytes >= 0), " +
       // The client's origin, as its run grant will carry it once the run starts.
       "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
       "AND origin NOT GLOB '*[^ -~]*')), " +
@@ -1283,7 +1376,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32 AND lease_id NOT GLOB " +
       "'*[^0-9a-f]*'), epoch INTEGER NOT NULL CHECK (epoch >= 1), " +
       "holder TEXT NOT NULL CHECK (length(holder) BETWEEN 1 AND 128), " +
-      "lease_expires REAL NOT NULL, deadline REAL NOT NULL, " +
+      "lease_expires REAL NOT NULL, " +
       "egress_token TEXT NOT NULL CHECK (length(egress_token) = 64 AND egress_token " +
       "NOT GLOB '*[^0-9a-f]*'), " +
       "sync_token TEXT NOT NULL CHECK (length(sync_token) = 64 AND sync_token " +
@@ -1307,7 +1400,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `COUNT(*) FROM sandbox_leases) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
       `'sandbox_leases_full: ${RUNS_CEILING} sandboxes are leased'); END`,
     "CREATE TRIGGER sandbox_leases_fenced BEFORE UPDATE OF authority, lease_id, epoch, " +
-      "egress_token, sync_token, runner_token, deadline ON sandbox_leases BEGIN " +
+      "egress_token, sync_token, runner_token ON sandbox_leases BEGIN " +
       "SELECT RAISE(ABORT, 'a lease never changes what it was taken as'); END",
     "CREATE TABLE run_grants (" +
       `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
@@ -1337,7 +1430,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128), " +
       `input TEXT NOT NULL CHECK (length(CAST(input AS BLOB)) BETWEEN 1 AND ${INPUT_BYTES}), ` +
       "trigger TEXT NOT NULL CHECK (trigger IN ('at', 'cron')), " +
-      "cron TEXT CHECK (cron IS NULL OR length(cron) BETWEEN 1 AND 64), next_at REAL, " +
+      `cron TEXT CHECK (cron IS NULL OR length(cron) BETWEEN 1 AND ${CRON_MAX_CHARS}), ` +
+      "next_at REAL, " +
       "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
       "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
       "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
@@ -1389,10 +1483,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128 " +
       "AND agent NOT GLOB '*[^A-Za-z0-9._-]*'), " +
       "created_at REAL NOT NULL, retired_at REAL, " +
-      // Messages this agent sent the owner that the owner has not acked yet, and their
-      // bytes: its share of the owner's mailbox, as an outside agent's.
-      "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0), " +
-      "unacked_to_owner_bytes INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner_bytes >= 0)) " +
+      // Messages this agent sent the owner that the owner has not acked yet: its share of
+      // the owner's mailbox, as an outside agent's.
+      "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0)) " +
       "WITHOUT ROWID",
     // An identity's name and ledger id never change: its mail names the id.
     "CREATE TRIGGER native_agents_kept BEFORE UPDATE OF agent, agent_id ON native_agents " +
@@ -1412,16 +1505,39 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHEN NEW.sender_kind = 'native' AND NEW.room_id = 'dm:' || NEW.sender_id " +
       "AND (OLD.unacked = 0) != (NEW.unacked = 0) BEGIN " +
       "UPDATE native_agents SET " +
-      "unacked_to_owner = unacked_to_owner + CASE WHEN NEW.unacked = 0 THEN -1 ELSE 1 END, " +
-      "unacked_to_owner_bytes = unacked_to_owner_bytes + " +
-      "CASE WHEN NEW.unacked = 0 THEN -NEW.body_bytes ELSE NEW.body_bytes END " +
+      "unacked_to_owner = unacked_to_owner + CASE WHEN NEW.unacked = 0 THEN -1 ELSE 1 END " +
       "WHERE agent_id = NEW.sender_id; END",
     "CREATE TRIGGER ledger_native_removed AFTER DELETE ON ledger_messages " +
       "WHEN OLD.sender_kind = 'native' AND OLD.room_id = 'dm:' || OLD.sender_id " +
       "AND OLD.unacked > 0 BEGIN " +
-      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1, " +
-      "unacked_to_owner_bytes = unacked_to_owner_bytes - OLD.body_bytes " +
+      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1 " +
       "WHERE agent_id = OLD.sender_id; END",
+  ]),
+  // 14: the placement rule (ADR-035). A body past `PLACE_BYTES` is content of the files
+  // plane: a collection row, a history entry or a message body that names it holds a
+  // reference on it (`file_contents.refs`) and one in its writer's files scope
+  // (`file_scope_contents`, by its `filer`), counted here as each row comes and goes, so
+  // content nothing names goes, its chunk becomes garbage and housekeeping deletes it from
+  // R2, as a file's. Its bytes count in the files byte quota (`chunk_bytes`), the tier's
+  // storage, and in its outside writer's share of it (`client_share`, `owner_reserve`).
+  Object.freeze([
+    "CREATE TRIGGER collection_rows_placed AFTER INSERT ON collection_rows " +
+      `WHEN NEW.content_id IS NOT NULL BEGIN ${PLACED("NEW", "+")} END`,
+    "CREATE TRIGGER collection_rows_unplaced AFTER DELETE ON collection_rows " +
+      `WHEN OLD.content_id IS NOT NULL BEGIN ${PLACED("OLD", "-")} END`,
+    "CREATE TRIGGER collection_history_placed AFTER INSERT ON collection_history " +
+      `WHEN NEW.content_id IS NOT NULL BEGIN ${PLACED("NEW", "+")} END`,
+    "CREATE TRIGGER collection_history_unplaced AFTER DELETE ON collection_history " +
+      `WHEN OLD.content_id IS NOT NULL BEGIN ${PLACED("OLD", "-")} END`,
+    "CREATE TRIGGER message_bodies_placed AFTER INSERT ON message_bodies " +
+      `WHEN NEW.content_id IS NOT NULL BEGIN ${PLACED("NEW", "+")} END`,
+    "CREATE TRIGGER message_bodies_unplaced AFTER DELETE ON message_bodies " +
+      `WHEN OLD.content_id IS NOT NULL BEGIN ${PLACED("OLD", "-")} END`,
+    "CREATE TRIGGER collection_rows_replaced AFTER UPDATE OF content_id, filer ON " +
+      "collection_rows WHEN NEW.content_id IS NOT OLD.content_id OR NEW.filer IS NOT " +
+      `OLD.filer BEGIN ${PLACED("NEW", "+")} ${PLACED("OLD", "-")} END`,
+    "CREATE TRIGGER message_bodies_kept BEFORE UPDATE ON message_bodies " +
+      "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
   ]),
 ]);
 

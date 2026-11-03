@@ -40,7 +40,7 @@ export interface StandingReader {
 }
 
 /** How long a filed card waits for the owner. */
-export const CARD_TTL_S = 86_400;
+export const CARD_TTL_S = 7 * 86_400;
 
 export interface CardLimits {
   readonly maxPending: number;

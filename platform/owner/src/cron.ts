@@ -22,11 +22,11 @@
 import { Invalid } from "./errors";
 
 /** The longest expression accepted, in characters. */
-export const CRON_MAX_CHARS = 64;
+export const CRON_MAX_CHARS = 256;
 /** The most list items one field takes. */
-export const CRON_MAX_ITEMS = 16;
+export const CRON_MAX_ITEMS = 60;
 /** The least time between two occurrences, in minutes. */
-export const CRON_MIN_GAP_MIN = 15;
+export const CRON_MIN_GAP_MIN = 1;
 /** How far ahead an occurrence is looked for, in days: eight years, past any Feb 29 gap. */
 export const CRON_HORIZON_DAYS = 8 * 366;
 
