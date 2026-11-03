@@ -264,7 +264,7 @@ describe("a generation", () => {
       .toMatchObject({ written: 5000, notices: [] });
     expect(made.atE).toBeDefined();
     expect(digest(replay(made.lines))).toBe(made.atE);
-  }, 300_000);
+  }, 900_000);  // some 80 s alone; minutes on a shared, loaded host
 
   it("repeats only what was not acknowledged, wherever a pass is cut: before or after " +
      "each outside call (review R4-1; crash points)", async () => {
