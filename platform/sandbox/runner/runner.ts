@@ -38,12 +38,17 @@
  * - `login-launch <id>`: the vendor's own sign-in (slice SIGNIN; `login.ts`), its document
  *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
  *   login as a user of its own, its home made from the engine's store, the URL or code the
- *   record's patterns find relayed (`ta.signin` frames on the sign-in's event door), a pasted
- *   code (`login-input <id>`, the Worker's upload) written to its stdin, then its secrets kept
- *   in the engine's store and the engine's presence reported (`urls.signin`). A sign-out
- *   (`mode: out`) deletes the engine's `secret_paths` from the store and reports the same.
- *   `login-cancel <id>` stops it. `login-probe <engine> [region]`: the template build's
- *   standing check, the login run up to its prompt and stopped, its shape checked.
+ *   record's patterns find and its pinned page admits relayed (`ta.signin` frames on the
+ *   sign-in's event door: fixed states, the URL and code, a refusal's fixed reason), a pasted
+ *   code (`login-input <id>`, the Worker's upload, read and deleted at once; `login-drop
+ *   <id>` deletes one never handed over) written to its stdin, then its secrets kept in the
+ *   engine's store by compare-and-swap and the engine's presence reported (`urls.signin`). A
+ *   sign-in and a sign-out each move the engine's store generation on, so no run live across
+ *   one writes an older login back; a sign-out (`mode: out`) also stops that engine's live
+ *   runs, runs the vendor's logout, deletes the engine's `secret_paths` from the store and
+ *   reports the same. `login-cancel <id>` stops it. `login-probe <engine> [region]`: the
+ *   template build's standing check, the login run up to its prompt and stopped, its shape
+ *   checked.
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -53,8 +58,10 @@ import { dirname, join } from "node:path";
 import { createConnection, createServer } from "node:net";
 import { createInterface } from "node:readline";
 
-import { bundledSources, RUN_BASICS, signinShape, type SourceRecord } from "../../doors/src/sources";
+import { bundledSources, type LoginSpec, RUN_BASICS, SIGNIN_REFUSALS, type SigninRefusal,
+         signinShape, type SourceRecord } from "../../doors/src/sources";
 import { FRAME_UNITS_MAX, readEvent } from "../../owner/src/run-events";
+import { SIGNIN_PASTE_MAX } from "../../owner/src/run-rows";
 
 import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
          WORKSPACE } from "./engine";
@@ -210,8 +217,80 @@ function binOf(rec: SourceRecord): string {
 // -- homes and the engines' stores ----------------------------------------------------
 
 /**
+ * The engine's store held by this process alone while `act` runs (a home copied from it, a
+ * run's secrets written back, a sign-in's or sign-out's generation): a lock directory naming
+ * its holder, taken over only once that holder is gone.
+ */
+function withStore<T>(rec: SourceRecord, act: () => T): T {
+  const locks = `${STATE}/locks`;
+  safeDirs(TOP, locks, 0o700);
+  const lock = `${locks}/${rec.id}`;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try {
+      mkdirSync(lock, { mode: 0o700 });
+      writeFileSync(`${lock}/pid`, String(process.pid), { mode: 0o600 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      let holder: number | null = null;
+      try {
+        holder = Number(readFileSync(`${lock}/pid`, "utf8"));
+      } catch {
+        // its holder has not named itself yet, or it died before it could
+        holder = lstatSync(lock).mtimeMs + COMMAND_MS < Date.now() ? 0 : null;
+      }
+      if (holder !== null && !alive(holder)) {
+        remove(lock);
+        continue;
+      }
+      Atomics.wait(pause, 0, 0, 20);
+    }
+  }
+  try {
+    return act();
+  } finally {
+    remove(lock);
+  }
+}
+
+/**
+ * The engine's store generation: a sign-in and a sign-out each move it on, and a run's home
+ * made under an older one never writes a secret back (review M3: a run live across a
+ * sign-out never undoes it, nor clobbers a new sign-in).
+ */
+function generation(rec: SourceRecord): number {
+  const path = `${STATE}/generations/${rec.id}`;
+  return existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
+}
+
+function nextGeneration(rec: SourceRecord): void {
+  safeDirs(TOP, `${STATE}/generations`, 0o700);
+  writeFileSync(`${STATE}/generations/${rec.id}`, String(generation(rec) + 1), { mode: 0o600 });
+}
+
+/** What a home was made from: its store's generation, and each secret's digest as copied. */
+interface Snapshot {
+  readonly generation: number;
+  readonly secrets: Readonly<Record<string, string>>;
+}
+
+function snapshotOf(home: string): string {
+  return `${STATE}/kept/${home.split("/").at(-1)!}.json`;
+}
+
+/** A home gone, and the snapshot it was made under (review L2: none is left behind). */
+function dropHome(home: string): void {
+  remove(home);
+  remove(snapshotOf(home));
+}
+
+/**
  * A run's home, made fresh by root in its root-only parent from the engine's store (its
- * kept paths alone); `giveTree` then gives it to the run's user entry by entry: no other
+ * kept paths alone), under the store's lock, its snapshot kept (the generation and each
+ * secret's digest); `giveTree` then gives it to the run's user entry by entry: no other
  * user can reach it while it is made.
  */
 function makeHome(name: string, rec: SourceRecord): string {
@@ -223,20 +302,24 @@ function makeHome(name: string, rec: SourceRecord): string {
   const store = `${STORE}/${rec.id}`;
   const { secrets, sessions } = keptPaths(rec);
   const copied: Record<string, string> = {};
-  for (const rel of safeWalk(store)) {
-    if (isKept([...secrets, ...sessions], rel)) {
-      const bytes = safeRead(store, join(store, rel));
-      if (bytes !== null) {
-        safeWrite(home, join(home, rel), bytes, 0o600);
-        if (isKept(secrets, rel)) {
-          copied[rel] = digest(bytes);
+  const made = withStore(rec, () => {
+    for (const rel of safeWalk(store)) {
+      if (isKept([...secrets, ...sessions], rel)) {
+        const bytes = safeRead(store, join(store, rel));
+        if (bytes !== null) {
+          safeWrite(home, join(home, rel), bytes, 0o600);
+          if (isKept(secrets, rel)) {
+            copied[rel] = digest(bytes);
+          }
         }
       }
     }
-  }
+    return generation(rec);
+  });
   safeDirs(TOP, `${STATE}/kept`, 0o700);
-  safeWrite(`${STATE}/kept`, `${STATE}/kept/${name}.json`,
-            new TextEncoder().encode(JSON.stringify(copied)), 0o600);
+  const snapshot: Snapshot = { generation: made, secrets: copied };
+  safeWrite(`${STATE}/kept`, snapshotOf(home),
+            new TextEncoder().encode(JSON.stringify(snapshot)), 0o600);
   // Each directory the record's home variables name, made: a CLI may refuse a configured
   // home that is not there yet (a first sign-in has nothing in its store).
   for (const value of Object.values(rec.cli!.home_env)) {
@@ -262,26 +345,40 @@ function giveTree(path: string, as: Identity): void {
 
 /**
  * The run's kept paths back into its engine's store, once no process of its user is left
- * (so nothing changes the home while it is read), no link followed.
+ * (so nothing changes the home while it is read), no link followed, under the store's lock.
+ * A secret is written back by compare-and-swap (review M3): only one this run changed, only
+ * while the store still holds the copy the run started from, and only under the generation
+ * its home was made in. So a stale copy never replaces a newer one (a vendor's refresh token
+ * is single-use), and a run live across a sign-in or sign-out never undoes it.
  */
 function keepHome(home: string, rec: SourceRecord): void {
   const store = `${STORE}/${rec.id}`;
   safeDirs(TOP, store, 0o700);
   const { secrets, sessions } = keptPaths(rec);
-  const name = home.split("/").at(-1)!;
-  const snapshot = `${STATE}/kept/${name}.json`;
-  const copied = existsSync(snapshot) ? readJson<Record<string, string>>(snapshot) : {};
-  for (const rel of safeWalk(home)) {
-    if (isKept([...secrets, ...sessions], rel)) {
-      const bytes = safeRead(home, join(home, rel));
-      // A secret this run did not change is never written back: the store may hold a newer
-      // one another run refreshed meanwhile, and a vendor's refresh token is single-use.
-      if (bytes !== null && !(isKept(secrets, rel) && copied[rel] === digest(bytes))) {
-        safeWrite(store, join(store, rel), bytes, 0o600);
+  const path = snapshotOf(home);
+  const snapshot = existsSync(path) ? readJson<Snapshot>(path) : null;
+  withStore(rec, () => {
+    const current = generation(rec);
+    for (const rel of safeWalk(home)) {
+      if (!isKept([...secrets, ...sessions], rel)) {
+        continue;
       }
+      const bytes = safeRead(home, join(home, rel));
+      if (bytes === null) {
+        continue;
+      }
+      if (isKept(secrets, rel)) {
+        const base = snapshot?.secrets[rel] ?? null;
+        const stored = safeRead(store, join(store, rel));
+        if (snapshot === null || snapshot.generation !== current || digest(bytes) === base
+            || (stored === null ? null : digest(stored)) !== base) {
+          continue;
+        }
+      }
+      safeWrite(store, join(store, rel), bytes, 0o600);
     }
-  }
-  remove(snapshot);
+  });
+  remove(path);
 }
 
 /** The engines' sessions the sync agent took from the feed, into each store it lacks. */
@@ -364,7 +461,7 @@ export function signedIn(rec: SourceRecord): boolean {
     }
   } finally {
     killAll(as.uid);
-    remove(home);
+    dropHome(home);
     give(STATE, as);
   }
 }
@@ -385,6 +482,14 @@ function prepare(servers: readonly string[]): number {
   }
   lockDown();
   lockSudo();
+  // A pasted code is never left at rest (review L1): one a pause or a failed hand-over left
+  // in the inbox goes at every boot and resume, before anything else reads it.
+  const inbox = `${STATE}/inbox`;
+  for (const name of existsSync(inbox) ? readdirSync(inbox) : []) {
+    if (name.endsWith(".code")) {
+      remove(`${inbox}/${name}`);
+    }
+  }
   return OK;
 }
 
@@ -1133,7 +1238,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       exitCode = exitCode === 0 ? 1 : exitCode;
     } finally {
       if (home !== null) {
-        remove(home);
+        dropHome(home);
       }
       remove(system);
       if (as !== null) {
@@ -1240,14 +1345,25 @@ async function loginInput(id: string): Promise<number> {
     remove(inbox);
     return NO;
   }
-  const code = readFileSync(inbox, "utf8");
-  remove(inbox);
+  let code: string;
+  try {
+    code = readFileSync(inbox, "utf8");
+  } finally {
+    remove(inbox);
+  }
   return new Promise<number>((resolve) => {
     const socket = createConnection(`${dir}/input.sock`, () => {
       socket.end(code, () => resolve(OK));
     });
     socket.on("error", () => resolve(NO));
   });
+}
+
+/** A pasted code the Worker left that was never handed over, gone (review L1). */
+function loginDrop(id: string): number {
+  signinDir(id);  // its id checked
+  remove(`${STATE}/inbox/${id}.code`);
+  return OK;
 }
 
 function loginCancel(id: string): number {
@@ -1264,14 +1380,15 @@ function loginCancel(id: string): number {
  * The sign-in's own runner: the record's login run as a pool user, its prompt relayed, a
  * pasted code to its stdin; then its kept paths into the engine's store, its presence
  * reported, and the sign-in's end posted (`signed_in`, `failed`, `cancelled`, `refused`,
- * `signed_out`).
+ * `expired`, `signed_out`). Its frames carry only a sign-in's fixed states, the record's own
+ * URL and code, and a refusal's fixed reason (`SIGNIN_REFUSALS`): no text the VM chose.
  */
 async function loginRun(id: string): Promise<number> {
   const dir = signinDir(id);
   const doc = readJson<SigninDoc>(`${dir}/start.json`);
   const lease = readJson<LeaseFile>(`${STATE}/lease.json`);
   const rec = record(doc.engine);
-  const login = rec.cli!.login as Readonly<Record<string, unknown>> | undefined;
+  const login = rec.cli!.login as (LoginSpec & Readonly<Record<string, unknown>>) | undefined;
   const outbox = new Outbox(0);
   const proc: { child: ChildProcess | null; kill: ReturnType<typeof setTimeout> | null;
                 stopped: boolean } = { child: null, kill: null, stopped: false };
@@ -1301,7 +1418,7 @@ async function loginRun(id: string): Promise<number> {
     void poster.tick();
   }, FLUSH_MS);
   let end = "failed";
-  let reason: string | null = null;
+  let reason: SigninRefusal | null = null;
   let as: Identity | null = null;
   let home: string | null = null;
   let watch: ReturnType<typeof setInterval> | null = null;
@@ -1313,6 +1430,14 @@ async function loginRun(id: string): Promise<number> {
       throw new Error(`engine ${rec.id} has no vendor sign-in`);
     }
     if (doc.mode === "out") {
+      // The store's generation moved on first, so no run live now writes its secret back
+      // afterwards; and each such run stopped, so none keeps using the login signed out.
+      withStore(rec, () => nextGeneration(rec));
+      for (const { run } of liveRuns()) {
+        if (readJson<StartDoc>(`${runDir(run)}/start.json`).engine === rec.id) {
+          cancel(run);
+        }
+      }
       // The vendor's own sign-out first, which may revoke the login on the vendor's side.
       const logout = login["logout_argv"] as string[] | undefined;
       if (logout !== undefined) {
@@ -1327,13 +1452,17 @@ async function loginRun(id: string): Promise<number> {
       }
       // Its secrets gone from the store: no later run's home carries the sign-in.
       const store = `${STORE}/${rec.id}`;
-      for (const rel of existsSync(store) ? safeWalk(store) : []) {
-        if (isKept(keptPaths(rec).secrets, rel)) {
-          remove(join(store, rel));
+      withStore(rec, () => {
+        for (const rel of existsSync(store) ? safeWalk(store) : []) {
+          if (isKept(keptPaths(rec).secrets, rel)) {
+            remove(join(store, rel));
+          }
         }
-      }
+      });
       end = "signed_out";
     } else {
+      // A new generation: a run live now never writes an older login back over this one.
+      withStore(rec, () => nextGeneration(rec));
       as = take(ROOT, STATE, id);
       home = makeHome(id, rec);
       const madeHome = home;
@@ -1366,8 +1495,8 @@ async function loginRun(id: string): Promise<number> {
           // Only the record's own shapes leave the VM (its login hosts, a device code); a
           // credential-shaped value is refused as a second line.
           const why = signinShape(rec, doc.region, next.url, next.code)
-            ?? [next.url, next.code].flatMap((value) => value === null ? []
-              : [credentialShaped(value, secrets)]).find((found) => found !== null) ?? null;
+            ?? ([next.url, next.code].some((value) => value !== null
+              && credentialShaped(value, secrets)) ? "credential" : null);
           if (why !== null) {
             reason = why;
             stop();
@@ -1393,22 +1522,28 @@ async function loginRun(id: string): Promise<number> {
         // the CLI's stdin: never on disk, never logged.
         inbound = createServer((socket) => {
           let pasted = "";
-          socket.on("data", (data: Buffer) => { pasted += data.toString("utf8"); });
+          socket.on("data", (data: Buffer) => {
+            pasted = (pasted + data.toString("utf8")).slice(0, SIGNIN_PASTE_MAX + 2);
+          });
           socket.on("end", () => {
-            child.stdin!.write(`${pasted.trim()}\n`);
+            const code = pasted.trim();
             pasted = "";
+            // Only a sign-in that takes a pasted code, shown its prompt, gets one: one line,
+            // at most a terminal line's length.
+            if (login.accepts_code !== true || (shown.url === null && shown.code === null)
+                || code === "" || code.length > SIGNIN_PASTE_MAX || /[\r\n]/.test(code)) {
+              return;
+            }
+            child.stdin!.write(`${code}\n`);
             outbox.push({ type: "ta.signin", state: "code_sent" });
           });
         });
         inbound.listen(`${dir}/input.sock`);
-        // The vendor's code's lifetime (`expires_s`), past which its prompt is dead.
-        const expires = typeof login["expires_s"] === "number" ? login["expires_s"] : null;
-        if (expires !== null) {
-          expiry = setTimeout(() => {
-            expired = true;
-            stop();
-          }, expires * 1000);
-        }
+        // The vendor's code's lifetime (`expires`, cited), past which its prompt is dead.
+        expiry = setTimeout(() => {
+          expired = true;
+          stop();
+        }, login.expires.s * 1000);
         watch = setInterval(() => {
           if (existsSync(`${dir}/cancel`)) {
             stop();
@@ -1434,25 +1569,30 @@ async function loginRun(id: string): Promise<number> {
             : (exit === 0 || complete) && safeSignedIn(rec) ? "signed_in" : "failed";
     }
   } catch (error) {
+    // Its why stays in the VM (this sign-in's own root-only log), never in a frame.
+    console.error(`the sign-in failed: ${String(error)}`);
     end = "failed";
-    reason = String(error);
+    reason = null;
   } finally {
     if (watch !== null) {
       clearInterval(watch);
     }
+    // A pasted code that came after the login ended is never left at rest.
+    remove(`${STATE}/inbox/${id}.code`);
     if (as !== null) {
       try {
         killAll(as.uid);
       } finally {
         if (home !== null) {
-          remove(home);
+          dropHome(home);
         }
         give(STATE, as);
       }
     }
   }
   await postSignins(doc.urls.signin, lease, [{ engine: rec.id, signed_in: safeSignedIn(rec) }]);
-  outbox.push({ type: "ta.signin", state: end, ...(reason === null ? {} : { reason }) });
+  outbox.push({ type: "ta.signin", state: end,
+                ...(end === "refused" && reason !== null ? { reason } : {}) });
   clearInterval(pump);
   await poster.finish(end === "signed_in" || end === "signed_out" ? 0 : 1);
   writeJson(`${dir}/state.json`, { pid: process.pid, ended: true });
@@ -1518,15 +1658,15 @@ async function loginProbe(engine: string, region: string | null): Promise<number
     });
   } finally {
     killAll(as.uid);
-    remove(home);
-    remove(`${STATE}/kept/${name}.json`);
+    dropHome(home);
     give(STATE, as);
   }
   const redirect = shown.url === null ? null : new URL(shown.url).searchParams.get("redirect_uri");
   const local = redirect !== null && /^https?:\/\/(?:localhost|127\.|\[::1\])/.test(redirect);
+  const refused = shown.url === null ? null : signinShape(rec, region, shown.url, shown.code);
   const why = shown.url === null ? "no sign-in URL shown"
     : local ? "the URL sends the browser back to localhost"
-      : signinShape(rec, region, shown.url, shown.code);
+      : refused === null ? null : SIGNIN_REFUSALS[refused];
   process.stdout.write(JSON.stringify({
     engine, region, ok: why === null, reason: why,
     host: shown.url === null ? null : new URL(shown.url).hostname, code_shown: shown.code !== null }));
@@ -1546,6 +1686,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       return loginRun(args[0] ?? "");
     case "login-input":
       return loginInput(args[0] ?? "");
+    case "login-drop":
+      return loginDrop(args[0] ?? "");
     case "login-cancel":
       return loginCancel(args[0] ?? "");
     case "login-probe":

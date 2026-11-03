@@ -71,6 +71,11 @@ export const SIGNIN_URL_MAX = 8000;
  * and Kimi's, are within 16), so a longer "code" is not the vendor's prompt.
  */
 export const SIGNIN_CODE_MAX = 16;
+/**
+ * A pasted code, one line typed to the CLI's terminal: at most what a Linux terminal line
+ * holds (`N_TTY_BUF_SIZE`, 4096 bytes, its newline among them), so a longer one is no code.
+ */
+export const SIGNIN_PASTE_MAX = 4095;
 
 /** `msg_` and 32 hex: a ledger message's id. */
 export const MESSAGE_ID_CHARS = 36;

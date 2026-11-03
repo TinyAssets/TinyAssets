@@ -16,6 +16,14 @@ import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } f
 
 let restore: () => void = () => undefined;
 
+/** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
+const CLAUDE_PAGE = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +
+  "9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2F" +
+  "platform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+" +
+  "user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+" +
+  "user%3Aplugins&code_challenge=yfhUky71rorbPUGR_0kuaJoQPT0k39HLxYDNc-gUtt8&" +
+  "code_challenge_method=S256&state=Lq7TdjukIEmxyMX2EKf2hY4xChr1sfIJOV3krpnv6iE";
+
 beforeEach(async () => {
   await setControl(OPEN);
   restore();
@@ -41,7 +49,7 @@ describe("the sign-in routes and door", () => {
     const inside = { [SANDBOX_HEADER]: asked!.tokens!.egress_token,
                      [GENERATION_HEADER]: String(asked!.network!.generation),
                      "x-ta-runner": asked!.tokens!.runner_token };
-    const url = "https://claude.ai/oauth/authorize?code=true&client_id=c1&state=s1";
+    const url = CLAUDE_PAGE;
     const posted = await call(new Request(`${EGRESS_ORIGIN}/signin/${view.id}/events`, {
       method: "POST", headers: { "Content-Type": "application/json", ...inside },
       body: JSON.stringify({ frames: [{ seq: 1, at: 1, event: {
@@ -96,8 +104,24 @@ describe("the sign-in routes and door", () => {
     await setControl({ ...OPEN, signins: { codex: true, "claude-code": false } });
     expect((await appPost("signin/start", app.access_token, null,
                           { engine: "codex" })).status).toBe(200);
-    expect((await appPost("signin/start", app.access_token, null,
-                          { engine: "claude-code" })).status).toBe(403);
+    const claude = await appPost("signin/start", app.access_token, null,
+                                 { engine: "claude-code" });
+    expect(claude.status).toBe(403);
+    expect(await claude.text()).toMatch(/signin_off/);
+  });
+
+  it("always let a source switched off be signed out, so its login can be removed (review H1)",
+     async () => {
+    const { app } = await signedIn();
+    // The founder turns Codex off (its vendor's terms turn out to forbid hosting it).
+    await setControl({ ...OPEN, signins: { codex: false } });
+    const signin = await appPost("signin/start", app.access_token, null, { engine: "codex" });
+    expect(signin.status).toBe(403);
+    expect(await signin.text()).toMatch(/signin_off/);
+    const out = await appPost("signin/start", app.access_token, null,
+                              { engine: "codex", mode: "out" });
+    expect(out.status).toBe(200);
+    expect(await out.json()).toMatchObject({ engine: "codex", mode: "out" });
   });
 
   it("list the owner's past runs", async () => {

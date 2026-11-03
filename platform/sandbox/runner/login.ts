@@ -2,14 +2,17 @@
  * The vendor's own sign-in, as data (slice SIGNIN; ADR-031 decision 2, ADR-034): each record's
  * `cli.login` names the command (`argv`, `{bin}` and `{region}` filled), what of its output
  * the owner sees (`url_pattern`, `code_pattern`: each pattern's first group, and nothing else
- * of the output), whether it takes a pasted code on its stdin (`accepts_code`), whether it
- * needs a terminal (`terminal`), and how it is known done (its exit, or `state_checks` met
- * when `complete_on_state`). No vendor's name is in this module.
+ * of the output, then held to the record's pinned page, `signinShape`), whether it takes a
+ * pasted code on its stdin (`accepts_code`), and how it is known done (its exit, or
+ * `state_checks` met when `complete_on_state`). Every login runs on a terminal of its own. No
+ * vendor's name is in this module.
  *
  * What is relayed is the vendor's own prompt, a URL to open in the owner's browser or a code
- * to type there, never a token: a value holding a secret file's atom, a JSON Web Token, or a
- * URL parameter named like a credential is refused, and the sign-in ends.
+ * to type there, never a token: a value holding a secret file's atom, or credential-shaped
+ * (`credentialLike`, checked again on the trusted side), is refused, and the sign-in ends.
  */
+import { credentialLike } from "../../doors/src/sources";
+
 import { heldSecret } from "./guards";
 
 /** What a login's output showed the owner so far. */
@@ -40,36 +43,12 @@ export function prompted(login: Readonly<Record<string, unknown>>, text: string,
   return { url: before.url ?? first("url_pattern"), code: before.code ?? first("code_pattern") };
 }
 
-/** A URL parameter or fragment key named like a credential. */
-const CREDENTIAL_PARAM = /(?:^|[_-])(?:access_token|refresh_token|id_token|token|secret|password|passwd|api_?key)$/i;
-/** A JSON Web Token: three base64url segments, the first a JSON object's (`eyJ`). */
-const JWT = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
-
 /**
- * Why `value` may not be relayed, or null: it holds a secret file's atom (`atoms`, from the
- * engines' stores), a JSON Web Token, or, as a URL, a parameter named like a credential.
+ * Whether `value` may not be relayed: it holds a secret file's atom (`atoms`, from the
+ * engines' stores, which only the VM holds) or is credential-shaped (`credentialLike`).
  */
-export function credentialShaped(value: string, atoms: readonly string[]): string | null {
-  if (heldSecret(value, atoms) !== null) {
-    return "a secret file's value";
-  }
-  if (JWT.test(value)) {
-    return "a token";
-  }
-  let url: URL | null = null;
-  try {
-    url = /^https?:\/\//.test(value) ? new URL(value) : null;
-  } catch {
-    url = null;
-  }
-  if (url !== null) {
-    const keys = [...url.searchParams.keys(),
-                  ...new URLSearchParams(url.hash.replace(/^#/, "")).keys()];
-    if (keys.some((key) => CREDENTIAL_PARAM.test(key))) {
-      return "a credential in the URL";
-    }
-  }
-  return null;
+export function credentialShaped(value: string, atoms: readonly string[]): boolean {
+  return heldSecret(value, atoms) !== null || credentialLike(value);
 }
 
 /** The login's argv: `{bin}` the engine's binary, `{region}` the owner's choice. */
@@ -88,9 +67,8 @@ function quoted(arg: string): string {
 }
 
 /**
- * A command run on a terminal of its own (`terminal` sign-ins: the CLI prints its prompt
- * only to a terminal): util-linux's `script`, its typescript discarded, its exit the
- * command's.
+ * A command run on a terminal of its own (every sign-in: some CLIs prompt only on one):
+ * util-linux's `script`, its typescript discarded, its exit the command's.
  */
 export function onTerminal(argv: readonly string[]): string[] {
   return ["script", "-qfec", argv.map(quoted).join(" "), "/dev/null"];

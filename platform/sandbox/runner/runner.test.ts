@@ -10,7 +10,8 @@
  * a home's settings outliving its run). Cancel, `events_busy`, the renewal's held posts and
  * resume, the projection and big files are here too.
  */
-import { chmodSync, chownSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync,
+import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync,
+         readFileSync, statSync, symlinkSync,
          writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -342,6 +343,22 @@ async function frameWhere(id: string, test: (frame: Record<string, unknown>) => 
  * were written from, `subscription-engines.md`), and how it completes: a pasted code, the
  * device page, or the credentials file appearing.
  */
+/** Each record's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
+const CLAUDE_PAGE = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +
+  "9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2F" +
+  "platform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+" +
+  "user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+" +
+  "user%3Aplugins&code_challenge=yfhUky71rorbPUGR_0kuaJoQPT0k39HLxYDNc-gUtt8&" +
+  "code_challenge_method=S256&state=Lq7TdjukIEmxyMX2EKf2hY4xChr1sfIJOV3krpnv6iE";
+const GEMINI_PAGE = "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2F" +
+  "codeassist.google.com%2Fauthcode&access_type=offline&scope=https%3A%2F%2Fwww." +
+  "googleapis.com%2Fauth%2Fcloud-platform%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2F" +
+  "userinfo.email%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile&" +
+  "code_challenge_method=S256&code_challenge=abc_DEF-123&state=" + "a1".repeat(32) +
+  "&response_type=code&client_id=681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps." +
+  "googleusercontent.com";
+const KIMI_PAGE = "https://www.kimi.ai/code/authorize_device?user_code=K1-ABC";
+
 const LOGINS: Record<string, { lines: string[]; url: string; code: string | null;
                                 region?: string; paste?: string; exits?: boolean;
                                 writes: Record<string, string>;
@@ -349,9 +366,9 @@ const LOGINS: Record<string, { lines: string[]; url: string; code: string | null
   "claude-code": {
     lines: ["Opening browser to sign in…",
             "\u001b[1mBrowser didn't open? Use the url below to sign in:\u001b[0m",
-            "https://claude.ai/oauth/authorize?code=true&client_id=c1&response_type=code&state=s1",
+            CLAUDE_PAGE,
             "Paste code here if prompted >"],
-    url: "https://claude.ai/oauth/authorize?code=true&client_id=c1&response_type=code&state=s1",
+    url: CLAUDE_PAGE,
     code: null, paste: "code-from-the-vendor-page#state",
     writes: { "~/.claude/.credentials.json": "{\"claudeAiOauth\":{\"accessToken\":\"stored\"}}" },
     status: { out: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }), exit: 0 },
@@ -369,17 +386,17 @@ const LOGINS: Record<string, { lines: string[]; url: string; code: string | null
   },
   gemini: {
     lines: ["Please visit the following URL to authorize the application:",
-            "https://accounts.google.com/o/oauth2/v2/auth?client_id=g1&scope=openid&state=s2",
+            GEMINI_PAGE,
             "Enter the authorization code:"],
-    url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=g1&scope=openid&state=s2",
+    url: GEMINI_PAGE,
     code: null,
     writes: { "~/.gemini/oauth_creds.json": JSON.stringify({ access_token: "stored-a",
                                                               refresh_token: "stored-r" }) },
   },
   kimi: {
-    lines: ["Visit https://www.kimi.ai/code/device?user_code=K1-ABC to sign in,",
+    lines: [`Visit ${KIMI_PAGE} to sign in,`,
             "or enter code: K1-ABC"],
-    url: "https://www.kimi.ai/code/device?user_code=K1-ABC", code: "K1-ABC", region: "global",
+    url: KIMI_PAGE, code: "K1-ABC", region: "global",
     exits: true,
     writes: { "~/.kimi-code/credentials/kimi-code.json": JSON.stringify({
       access_token: "stored-a", refresh_token: "stored-r" }) },
@@ -472,16 +489,23 @@ describe("the vendor's own sign-in", () => {
     const probe = box.runner("login-probe", "claude-code");
     expect(probe.code).toBe(0);
     expect(JSON.parse(probe.out)).toEqual({ engine: "claude-code", region: null, ok: true,
-                                            reason: null, host: "claude.ai",
+                                            reason: null, host: "claude.com",
                                             code_shown: false });
     // A sign-in that would send the browser back to localhost strands the owner: it fails.
-    box.cli("claude-code", { lines: [], login: { lines: [
-      "https://claude.ai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A5454"],
-      code: true } });
+    box.cli("claude-code", { lines: [], login: { lines: [CLAUDE_PAGE.replace(
+      "https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback",
+      "http%3A%2F%2Flocalhost%3A5454")], code: true } });
     const local = box.runner("login-probe", "claude-code");
     expect(local.code).toBe(3);
     expect(JSON.parse(local.out)).toMatchObject({ ok: false,
                                                   reason: expect.stringMatching(/localhost/) });
+    // A CLI version whose page moved (another host) fails the build, in plain words.
+    box.cli("claude-code", { lines: [], login: { lines: [CLAUDE_PAGE.replace(
+      "https://claude.com/cai/", "https://claude.ai/")], code: true } });
+    const moved = box.runner("login-probe", "claude-code");
+    expect(moved.code).toBe(3);
+    expect(JSON.parse(moved.out)).toMatchObject({
+      ok: false, reason: "it showed a link that is not the vendor's own sign-in page" });
   });
 
   it("relays nothing credential-shaped, and ends the sign-in refused", async () => {
@@ -492,22 +516,53 @@ describe("the vendor's own sign-in", () => {
     expect(box.runner("login-launch", id).code).toBe(0);
     await doors.ended_(25_000, id);
     expect(signinFrames(id).some((frame) => frame["state"] === "open")).toBe(false);
-    expect(signinFrames(id).at(-1)).toMatchObject({ state: "refused" });
+    expect(signinFrames(id).at(-1)).toEqual({ type: "ta.signin", state: "refused",
+                                              reason: "url" });
     expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toContain("leaked-value");
   });
 
-  it("refuses a value holding a stored secret's own bytes", async () => {
+  it("refuses a value holding a stored secret's own bytes, its reason the fixed one",
+     async () => {
     const secret = "s".repeat(48);
     box.write("/var/lib/ta/store/codex/.codex/auth.json",
               JSON.stringify({ tokens: { access_token: secret, refresh_token: "r".repeat(48) } }));
-    box.cli("codex", { lines: [], login: { lines: [
-      `Open https://auth.openai.com/codex/device?for=${secret} now`], code: true } });
+    box.cli("claude-code", { lines: [], login: { lines: [CLAUDE_PAGE.replace(
+      "state=Lq7TdjukIEmxyMX2EKf2hY4xChr1sfIJOV3krpnv6iE", `state=${secret}`)], code: true } });
+    const id = signinId();
+    box.login({ id, engine: "claude-code" }, doors);
+    box.runner("login-launch", id);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toEqual({ type: "ta.signin", state: "refused",
+                                              reason: "credential" });
+    expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toContain(secret);
+  });
+
+  it("puts no text of its own in a frame: a failure's why stays in the VM (review M1)",
+     async () => {
+    const id = signinId();
+    box.login({ id, engine: "pi" }, doors);  // a record with no vendor sign-in: it fails
+    box.runner("login-launch", id);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toEqual({ type: "ta.signin", state: "failed" });
+  });
+
+  it("writes a pasted code only to a sign-in that takes one, and leaves none at rest " +
+     "(review L1)", async () => {
+    box.cli("codex", { lines: [], login: { lines: LOGINS["codex"]!.lines, code: true } });
     const id = signinId();
     box.login({ id, engine: "codex" }, doors);
     box.runner("login-launch", id);
+    await frameWhere(id, (frame) => frame["state"] === "open");
+    box.write(`/var/lib/ta/inbox/${id}.code`, "not-wanted");
+    expect(box.runner("login-input", id).code).toBe(0);
+    expect(() => lstatSync(box.path(`/var/lib/ta/inbox/${id}.code`))).toThrow();
+    // A code the Worker left that was never handed over goes with the sign-in's end.
+    box.write(`/var/lib/ta/inbox/${id}.code`, "left-behind");
+    box.runner("login-cancel", id);
     await doors.ended_(25_000, id);
-    expect(signinFrames(id).at(-1)).toMatchObject({ state: "refused" });
-    expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toContain(secret);
+    expect(() => lstatSync(box.path(`/var/lib/ta/inbox/${id}.code`))).toThrow();
+    expect(box.ran("codex").some((each) => each.stdin.includes("not-wanted"))).toBe(false);
+    expect(signinFrames(id).some((frame) => frame["state"] === "code_sent")).toBe(false);
   });
 
   it("is cancelled, its CLI stopped and its user's processes gone", async () => {
@@ -559,6 +614,20 @@ describe("the vendor's own sign-in", () => {
     expect(report.body).toEqual({ signins: [{ engine: "kimi", signed_in: false }] });
   });
 
+  it("leaves no home's snapshot behind: a run's, a status check's, a sign-in's, a sign-out's " +
+     "(review L2)", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, status: {
+      out: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }), exit: 0 } });
+    await run("claude-code");
+    expect(box.runner("signin-check", "claude-code").code).toBe(0);
+    const id = signinId();
+    box.login({ id, engine: "claude-code", mode: "out" }, doors);
+    box.runner("login-launch", id);
+    await doors.ended_(25_000, id);
+    const kept = box.path("/var/lib/ta/kept");
+    expect(existsSync(kept) ? readdirSync(kept) : []).toEqual([]);
+  });
+
   it("keeps a sandbox with a sign-in in progress from the idle reap", async () => {
     box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
                                                  code: true } });
@@ -570,6 +639,56 @@ describe("the vendor's own sign-in", () => {
     box.runner("login-cancel", id);
     await doors.ended_(25_000, id);
   });
+});
+
+describe("a secret written back (review M3: compare-and-swap)", () => {
+  const STORE = "/var/lib/ta/store/codex/.codex/auth.json";
+
+  it("never rolls the store back: a run's changed copy of an older secret keeps the newer",
+     async () => {
+    box.write(STORE, "v1");
+    // The run's CLI changes its copy (a refresh from the stale v1, or any rewrite).
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, sleepMs: 2500,
+                       writes: { "~/.codex/auth.json": "v1-rewritten-by-a-stale-run" } });
+    const start = startDoc(doors, "codex", { config: config("codex") });
+    box.start(start);
+    box.runner("launch", start.run);
+    await waitFor(() => box.ran("codex").length > 0);
+    box.write(STORE, "v2-newer-from-another-run-or-a-new-sign-in");
+    await doors.ended_(25_000, start.run);
+    expect(readFileSync(box.path(STORE), "utf8"))
+      .toBe("v2-newer-from-another-run-or-a-new-sign-in");
+  });
+
+  it("writes back a secret the run changed while the store still holds what it started from",
+     async () => {
+    box.write(STORE, "v1");
+    box.cli("codex", { lines: SHAPES["codex"]!.lines,
+                       writes: { "~/.codex/auth.json": "v2-refreshed-by-this-run" } });
+    await run("codex");
+    expect(readFileSync(box.path(STORE), "utf8")).toBe("v2-refreshed-by-this-run");
+  });
+
+  it("is never a sign-out undone: a run live across it is stopped, and writes nothing back",
+     async () => {
+    // Kimi: no vendor logout, so the sign-out is the store's secrets deleted, at once.
+    const store = "/var/lib/ta/store/kimi/.kimi-code/credentials/kimi-code.json";
+    box.write(store, "signed-in");
+    box.cli("kimi", { lines: [{ role: "assistant", content: "ok" }], sleepMs: 20_000,
+                      writes: { "~/.kimi-code/credentials/kimi-code.json":
+                                "refreshed-during-the-run" } });
+    const start = startDoc(doors, "kimi", { config: config("kimi") });
+    box.start(start);
+    box.runner("launch", start.run);
+    await waitFor(() => box.ran("kimi").length > 0);
+    const id = signinId();
+    box.login({ id, engine: "kimi", mode: "out" }, doors);
+    expect(box.runner("login-launch", id).code).toBe(0);
+    await doors.ended_(25_000, id);
+    // The run was stopped by the sign-out, well before its CLI's own end.
+    await doors.ended_(25_000, start.run);
+    expect(() => readFileSync(box.path(store), "utf8")).toThrow();
+  }, 40_000);
 });
 
 describe("each run's own user", () => {

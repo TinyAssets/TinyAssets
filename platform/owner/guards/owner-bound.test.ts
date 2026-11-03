@@ -551,6 +551,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                      by: "SCHEDULES_KEPT, each its input, stamp, origin and last error",
                      indexes: { run_schedules_due: key(NUMBER, SCHEDULE_ID_CHARS) } },
     platform_tiers: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
+    platform_signins: { rows: 1, bytes: ROW + SIGNIN_LIST_CHARS + NUMBER,
+                        by: "one row: the switched-on records' ids, joined" },
     socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
                       by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
     owner_erasure: { rows: 1, bytes: ROW, by: "one row" },

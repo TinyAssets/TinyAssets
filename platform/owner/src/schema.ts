@@ -1417,7 +1417,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "mode TEXT NOT NULL CHECK (mode IN ('in', 'out')), " +
       "region TEXT CHECK (region IS NULL OR length(region) BETWEEN 1 AND 64), " +
       "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
-      "state TEXT NOT NULL CHECK (length(state) BETWEEN 1 AND 32), " +
+      "state TEXT NOT NULL CHECK (state IN ('starting', 'open', 'code_sent', 'signed_in', " +
+      "'signed_out', 'failed', 'cancelled', 'refused', 'expired')), " +
       `url TEXT CHECK (url IS NULL OR length(url) <= ${SIGNIN_URL_MAX}), ` +
       `code TEXT CHECK (code IS NULL OR length(code) <= ${SIGNIN_CODE_MAX}), ` +
       "accepts_code INTEGER NOT NULL DEFAULT 0 CHECK (accepts_code IN (0, 1)), " +
@@ -1470,6 +1471,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `'run_schedules_full: ${SCHEDULES_KEPT} schedules are kept; cancel one first'); END`,
     "CREATE TABLE platform_tiers (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "tiers TEXT NOT NULL CHECK (length(tiers) <= 1024), read_at REAL NOT NULL)",
+    // The served records whose vendor sign-in the control record switches on, as the binder
+    // last handed them (slice SIGNIN, `signins.ts`): comma-joined ids, one row.
+    "CREATE TABLE platform_signins (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      `engines TEXT NOT NULL CHECK (length(engines) <= ${SIGNIN_LIST_CHARS} ` +
+      "AND engines NOT GLOB '*[^a-z0-9_,-]*'), read_at REAL NOT NULL)",
     "CREATE TABLE socket_tickets (hash TEXT PRIMARY KEY CHECK (length(hash) = 64 " +
       "AND hash NOT GLOB '*[^0-9a-f]*'), " +
       `conversation TEXT NOT NULL CHECK (length(conversation) = ${CONVERSATION_ID_CHARS}), ` +

@@ -25,7 +25,7 @@ import { SUPPORTED_APIS } from "../../gateway/src/credential";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   bundledRecords, catalogOf, forbids, type Install, RUN_BASICS, runEnv, sealedSource,
-  type SourceRecord,
+  type LoginSpec, type SourceRecord,
   SourceRecordError, sourceRecord,
 } from "../src/sources";
 
@@ -360,6 +360,18 @@ describe("the engine records", () => {
     expect(spec.no_update).toEqual({ env: { PI_SKIP_VERSION_CHECK: "1" } });
   });
 
+  it("pin each sign-in's page on its own login hosts, and cite its code's lifetime", () => {
+    for (const id of ["claude-code", "codex", "gemini", "kimi"]) {
+      const spec = sourceRecord(records.get(id)).cli!;
+      const login = spec.login as unknown as LoginSpec;
+      const hosts = new Set([...spec.hosts.login, ...Object.values(spec.regions ?? {})
+        .flatMap((region) => region.hosts.login)]);
+      expect(login.url.hosts.every((host) => hosts.has(host)), id).toBe(true);
+      expect(login.expires.s, id).toBeGreaterThan(0);
+      expect(login.expires.citation.length, id).toBeGreaterThan(0);
+    }
+  });
+
   it("let a Kimi member sign in from either region, its hosts by the choice (M2)", () => {
     const spec = sourceRecord(records.get("kimi")).cli!;
     expect(spec.login!["argv"]).toEqual(["{bin}", "login", "--region", "{region}"]);
@@ -516,6 +528,18 @@ describe("an engine record that does not fit", () => {
       at(s, "login")["state_checks"] = [{ path: "{home}/state.json", present: ["token"] }]; })],
     ["a login pattern that is not a regular expression", cli((s) => {
       at(s, "login")["url_pattern"] = "(unclosed"; })],
+    // Review M2 and M4: every sign-in's page pinned, and its code's lifetime cited.
+    ["a login with no pinned page", cli((s) => { delete at(s, "login")["url"]; })],
+    ["a pinned page whose path holds a query", cli((s) => {
+      at(s, "login.url")["path"] = "/cai/oauth/authorize?x=1"; })],
+    ["a pinned page that both fixes and frees a parameter", cli((s) => {
+      at(s, "login.url")["free"] = ["code"]; })],
+    ["a pinned page on no host", cli((s) => { at(s, "login.url")["hosts"] = []; })],
+    ["a login with no code lifetime", cli((s) => { delete at(s, "login")["expires"]; })],
+    ["a code lifetime with no citation", cli((s) => {
+      at(s, "login")["expires"] = { s: 600 }; })],
+    ["a code lifetime that is no whole seconds", cli((s) => {
+      at(s, "login")["expires"] = { s: 0.5, citation: "x" }; })],
     ["an npm install unpinned", cli((s) => { at(s, "install")["integrity"] = "sha1-x"; })],
     ["an npm install with no lock", cli((s) => { delete at(s, "install")["lock_sha256"]; })],
     ["an unknown install manager", cli((s) => { at(s, "install")["manager"] = "brew"; })],

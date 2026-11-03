@@ -44,6 +44,28 @@
         "auth",
         "logout"
       ],
+      "url": {
+        "hosts": [
+          "claude.com"
+        ],
+        "path": "/cai/oauth/authorize",
+        "params": {
+          "code": "true",
+          "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+          "response_type": "code",
+          "redirect_uri": "https://platform.claude.com/oauth/code/callback",
+          "scope": "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins",
+          "code_challenge_method": "S256"
+        },
+        "free": [
+          "code_challenge",
+          "state"
+        ]
+      },
+      "expires": {
+        "s": 600,
+        "citation": "RFC 6749 section 4.1.2: an authorization code's recommended maximum lifetime is 10 minutes (the code the owner pastes is one); Anthropic documents none, and claude 2.1.309's auth login waits for the code with no timer of its own (waitForAuthorizationCode); measured with an account, owed to the founder's live test"
+      },
       "hosted_use": {
         "verdict": "allowed",
         "citation": "code.claude.com/docs/en/legal-and-compliance.md (read 2026-11-03): an end user may sign in to the unmodified Claude Code binary with their own subscription, including where a platform hosts it, under the Commercial Terms; the platform may not collect, store or intermediate the credentials"

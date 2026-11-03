@@ -41,6 +41,7 @@ NODE_SHA256 = "c33c39ed9c80deddde77c960d00119918b9e352426fd604ba41638d6526a4744"
 CPU = 2
 MEMORY_MB = 1024
 TIER = PLATFORM / "owner" / "src" / "tier.ts"
+NETWORK = PLATFORM / "owner" / "src" / "network.ts"
 
 
 def runs_ceiling() -> int:
@@ -50,6 +51,27 @@ def runs_ceiling() -> int:
     if found is None:
         raise SystemExit("owner/src/tier.ts names no RUNS_CEILING")
     return int(found.group(1).replace("_", ""))
+
+
+def network_constants():
+    """The egress door's host and the pinned resolvers, as the owner's network plan names them
+    (`EGRESS_HOST`, `DNS_SERVERS`): the production network's fixed parts."""
+    import re
+    text = NETWORK.read_text()
+    host = re.search(r'export const EGRESS_HOST = "([^"]+)";', text)
+    servers = re.search(r"export const DNS_SERVERS: readonly string\[\] = Object\.freeze\("
+                        r"\[([^\]]*)\]\);", text)
+    if host is None or servers is None:
+        raise SystemExit("owner/src/network.ts names no EGRESS_HOST or DNS_SERVERS")
+    return host.group(1), re.findall(r'"([^"]+)"', servers.group(1))
+
+
+def engine_hosts(cli, region):
+    """An engine's vendor hosts, its sign-in's and its model calls', and the chosen region's:
+    what the sandbox Worker widens a sign-in's network by (`engineHosts`)."""
+    chosen = (cli.get("regions") or {}).get(region, {}).get("hosts", {}) if region else {}
+    return sorted({*cli["hosts"]["login"], *cli["hosts"]["provider"],
+                   *chosen.get("login", []), *chosen.get("provider", [])})
 
 
 def engines():
@@ -147,23 +169,32 @@ def template(stage: Path):
 def check_logins(name):
     """The standing check of every record's sign-in on the template just built (slice SIGNIN):
     on a throwaway sandbox, each record's login run up to its prompt (`ta-runner login-probe`,
-    each region of a record with regions) and stopped, its URL on the record's login hosts and
-    never sending the browser to localhost. A pinned CLI's version bump that changes its
-    sign-in fails the build here, not in a user's sign-in. No account is needed; the sandbox is
-    killed whatever happens."""
-    from e2b import Sandbox
+    each region of a record with regions) and stopped, its URL the record's pinned page and
+    never sending the browser to localhost. Each runs under the production egress allowlist
+    (review L3): the strictest plan, the egress door alone, widened by that engine's own hosts
+    as the sandbox Worker widens a sign-in's, all else denied, the resolver pinned; so a
+    vendor that adds a sign-in host fails here too. A pinned CLI's version bump that changes
+    its sign-in fails the build here, not in a user's sign-in. No account is needed; the
+    sandbox is killed whatever happens."""
+    from e2b import ALL_TRAFFIC, Sandbox
+
+    egress, servers = network_constants()
+
+    def plan(hosts):
+        return {"allow_out": [*hosts, egress], "deny_out": [ALL_TRAFFIC], "dns_servers": servers}
 
     results = []
-    sandbox = Sandbox.create(template=name, timeout=900)
+    sandbox = Sandbox.create(template=name, timeout=900, network=plan([]))
     try:
-        sandbox.commands.run("/usr/local/bin/ta-runner prepare 1.1.1.1", user="root",
-                             timeout=300)
+        sandbox.commands.run("/usr/local/bin/ta-runner prepare " + " ".join(servers),
+                             user="root", timeout=300)
         for path in sorted(SOURCES.glob("*.json")):
             record = json.loads(path.read_text())
             cli = record.get("cli") or {}
             if cli.get("login") is None or record.get("unwired"):
                 continue
             for region in sorted(cli.get("regions") or {}) or [None]:
+                sandbox.update_network(plan(engine_hosts(cli, region)))
                 command = f"/usr/local/bin/ta-runner login-probe {record['id']}"
                 if region is not None:
                     command += f" {region}"

@@ -55,7 +55,18 @@
         "cli_auth_credentials_store=\"file\"",
         "logout"
       ],
-      "expires_s": 900,
+      "url": {
+        "hosts": [
+          "auth.openai.com"
+        ],
+        "path": "/codex/device",
+        "params": {},
+        "free": []
+      },
+      "expires": {
+        "s": 900,
+        "citation": "openai/codex codex-rs/login/src/device_code_auth.rs: Enter this one-time code (expires in 15 minutes) (inflight_research.md section 1, read 2026-11-03)"
+      },
       "hosted_use": {
         "verdict": "unclear",
         "citation": "subscription-engines.md section 2 and 11: no text permits or forbids a platform hosting the unmodified Codex CLI for a user's own ChatGPT sign-in; OpenAI names API keys for automation and ChatGPT sign-in only on trusted private infrastructure"

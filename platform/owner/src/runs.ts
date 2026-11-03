@@ -82,6 +82,7 @@ import {
 import { type Frame, FRAME_VERSION, readEvent } from "./run-events";
 import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
+import { SIGNIN_OFF } from "./signins";
 import { TIER_RUNS, type TierName, type Tiers } from "./tier";
 import { utf8Bytes } from "./text";
 
@@ -157,6 +158,11 @@ export interface RunDeps {
   readonly unadmitted: () => string | null;
   readonly sandboxBound: () => boolean;
   readonly sources: () => Sources;
+  /**
+   * Whether `engine`'s vendor sign-in is switched on (the control record, as the binder last
+   * handed it): a run never uses a switched-off source's vendor login.
+   */
+  readonly signinOn: (engine: string) => boolean;
   /** The owner's active connections and their models. */
   readonly usable: () => readonly UsableSource[];
   /** The connections the sandbox may reach (a stored egress scope). */
@@ -916,8 +922,12 @@ export class Runs {
           continue;
         }
         if (credential === "vendor_login_in_sandbox") {
-          // Never a silent fall back to a key. A sign-in not known signed out is admitted:
-          // the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
+          // Never a silent fall back to a key. A switched-off source's login is never used,
+          // even where it is signed in (review H1). A sign-in not known signed out is
+          // admitted: the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
+          if (!this.#deps.signinOn(file.engine)) {
+            throw new Refused(`${SIGNIN_OFF} (${file.engine})`);
+          }
           if (!client && signins.get(file.engine)?.signed_in === false) {
             throw lapsed(file.engine);
           }
@@ -938,8 +948,10 @@ export class Runs {
       const planned: UsableSource[] = [];
       for (const signin of signins.values()) {
         const record = sources.get(signin.engine);
+        // A switched-off source's plan is no candidate (review H1).
         if (record?.cli === undefined || record.unwired !== undefined
-            || !record.cli.credential.includes("vendor_login_in_sandbox")) {
+            || !record.cli.credential.includes("vendor_login_in_sandbox")
+            || !this.#deps.signinOn(signin.engine)) {
           continue;
         }
         const provider = providerOf(record.cli.api_key_env, signin.engine);

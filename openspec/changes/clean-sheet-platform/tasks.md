@@ -445,27 +445,50 @@ account and no deploy.
     opens the sandbox's lease with no run (or joins the live one) and the sandbox Worker
     starts the record's login there (`ta-runner login-launch`) as a pool user, on a terminal
     of its own (util-linux `script` in the VM, so the raw terminal never leaves it), its home
-    from the engine's store. Only the record's shapes leave the VM: a URL matching
-    `url_pattern` on its login hosts (and the chosen region's), a device code of at most 16
-    letters, digits and hyphens; a credential-shaped value is refused as a second line. The
-    owner's object checks each prompt again outside the VM against the record
-    (`signinShape`) before it keeps or relays it, and stops a sign-in whose prompt is not the
-    vendor's (a hijacked engine shows no look-alike page). Frames go to the app's socket by
-    the sign-in's id (`ta.signin`), the app showing the vendor's page's host in words; a
-    pasted code goes on a door held to the owner's session, through the Worker's upload, read
-    once and deleted, over a socket to that login's stdin alone, never logged or stored, and
-    refused once the login ended. The end: the secrets kept in the engine's store, presence
-    reported (`status_argv`, or `state_checks` for a record with none). A sign-out runs the
-    record's `logout_argv` first, then deletes its `secret_paths`. A login is stopped at the
-    vendor's code's lifetime (`expires_s`, Codex 15 min, Gemini 5). A secret a run did not
-    change is never written back over the store's (a refresh token is single-use).
+    from the engine's store. Only the record's shapes leave the VM: the record's pinned page
+    (`cli.login.url`: its hosts among the login hosts and the chosen region's, its path, its
+    fixed parameters exactly, its free ones unreserved values, no other parameter, so no other
+    OAuth client's page and no redirect chain), a device code of at most 16 letters, digits
+    and hyphens; a credential-shaped value is refused as a second line, in the VM (with the
+    stores' secrets) and on the trusted side. The owner's object checks each prompt again
+    outside the VM (`signinShape`) before it keeps or relays it, and stops a sign-in whose
+    prompt is not the vendor's (a hijacked engine shows no look-alike page). Frames carry a
+    sign-in's fixed states only (`SIGNIN_STATES`, a schema CHECK too), the URL and code, and a
+    refusal's fixed reason (`SIGNIN_REFUSALS`), which the app says in plain words: no text
+    the VM chose leaves it. Frames go to the app's socket by the sign-in's id (`ta.signin`),
+    the app showing the vendor's page's host in words; a pasted code (one line, at most a
+    Linux terminal line, 4095) goes on a door held to the owner's session, only to a sign-in
+    whose record takes one and that is showing its prompt, through the Worker's upload, read
+    and deleted at once (dropped if the hand-over fails, and any left by a pause deleted by
+    `prepare` at the resume), over a socket to that login's stdin alone, never logged or
+    stored, and refused once the login ended. The end: the secrets kept in the engine's
+    store, presence reported (`status_argv`, or `state_checks` for a record with none). A
+    sign-out runs the record's `logout_argv` first, then deletes its `secret_paths`.
+  - The vendor's code's lifetime is each record's `cli.login.expires`, cited: Codex 900 s
+    (its CLI's own text), Gemini 300 s and Kimi 900 s (their pinned CLIs' own timers), Claude
+    600 s (RFC 6749 section 4.1.2's recommended maximum for the code the owner pastes;
+    Anthropic documents none and the CLI sets no timer). The runner stops the login there,
+    and the owner's object ends the sign-in `expired` one lease TTL past it however its
+    runner beats, stopping its CLI and freeing its lease; the app then offers to start again.
+  - A secret goes back to the store by compare-and-swap under a per-engine store generation:
+    only one the run changed, only while the store still holds the copy the run started
+    from, and only in the generation its home was made in. A sign-in and a sign-out each move
+    the generation on, so a run live across one never undoes it; a sign-out also stops that
+    engine's live runs in the sandbox. Every home's snapshot goes with the home.
   - Each source's sign-in sits behind its own switch in the control record (`signins`),
     defaulting to its record's verdict on the vendor's terms for hosted use
     (`cli.login.hosted_use`, cited): Claude Code `allowed` (on); Codex, Gemini and Kimi
-    `unclear` (off). Turning one on is the founder's call.
+    `unclear` (off). Turning one on is the founder's call. The doors hand the switched-on
+    records with every binding, as they hand the tier numbers, and the owner's object holds
+    to them on every path: a sign-in (never a sign-out: a login is always removable), a
+    pasted code, and a run's choice of source (a named engine refused `signin_off`, never a
+    silent key; `auto` passes over a switched-off plan), the lane's runs by the list last
+    handed.
   - A standing check: every template build ends by running each record's login up to its
-    prompt on a throwaway sandbox (`ta-runner login-probe`, `build.py --check-logins`),
-    checking its shape and that it never sends the browser to localhost.
+    prompt on a throwaway sandbox under the production egress allowlist (the egress door
+    alone, widened by that engine's own hosts), `ta-runner login-probe`, `build.py
+    --check-logins`, checking its pinned page and that it never sends the browser to
+    localhost.
   - The past runs: `runs` (owner app) and `runList` (the object's door, held to the
     caller's grant: an outside client sees its own), newest first, a page at a time.
   - Owed: a completed sign-in on each vendor (the founder's account, his live test); the

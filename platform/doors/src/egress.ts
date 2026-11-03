@@ -260,19 +260,15 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
   }
 }
 
-/**
- * The runner's report of the engines' sign-ins (`signinReport`): each engine that signs in
- * with the vendor's own login, whether its record's `status_argv` succeeded, and the models
- * it offers. Presence only; the runner alone calls it, so an `Origin` is refused.
- */
+/** A sign-in's event door's path: the sign-in's id. */
+const SIGNIN_EVENTS_DOOR = /^\/signin\/(si_[0-9a-f]{32})\/events$/;
+
 /**
  * A sign-in's event door (slice SIGNIN): the runner's `ta.signin` frames of the vendor's own
  * sign-in it drives, by the egress token and the runner's secret of the lease that holds it,
  * each frame and the post bounded as a run's (`EVENTS_BODY_MAX`). The object keeps the
  * latest prompt, renews the lease and relays each frame to the owner's app sockets.
  */
-const SIGNIN_EVENTS_DOOR = /^\/signin\/(si_[0-9a-f]{32})\/events$/;
-
 async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
     Promise<Response> {
   if (request.headers.get("Origin") !== null) {
@@ -312,6 +308,11 @@ async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
   }
 }
 
+/**
+ * The runner's report of the engines' sign-ins (`signinReport`): each engine that signs in
+ * with the vendor's own login, whether its record's `status_argv` succeeded, and the models
+ * it offers. Presence only; the runner alone calls it, so an `Origin` is refused.
+ */
 async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
   if (request.headers.get("Origin") !== null) {
     return refused("not_found", 404);

@@ -80,6 +80,20 @@ account used.
 Every sandbox killed; the account listed **0 running** after. A completed sign-in on each
 vendor needs the founder's accounts (owed below).
 
+**The review round (template `s7a0747eb6136d488`; 2 throwaway sandboxes, under 6
+sandbox-minutes).** Each record's whole sign-in URL was read off its pinned CLI as a pool user
+under `script` (Claude, Codex, both Kimi regions), and Gemini's from its pinned CLI's own code
+(`authWithUserCode`, its URL shown only with its settings file in the home), to pin each page
+as data (`cli.login.url`: hosts, path, fixed and free parameters). Claude's:
+`claude.com/cai/oauth/authorize`, `client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e`,
+`redirect_uri=https://platform.claude.com/oauth/code/callback`, its scope fixed, the PKCE
+challenge and state free. Codex's: `auth.openai.com/codex/device`, no parameter. Kimi's:
+`www.kimi.ai` or `www.kimi.com` by region, `/code/authorize_device?user_code=...`. Then the
+build's standing check ran each login under the production egress allowlist (the egress door
+alone, widened by that engine's own hosts, all else denied, the resolver pinned): all five ok
+against the pinned pages (claude.com, auth.openai.com with a code, accounts.google.com,
+www.kimi.ai and www.kimi.com with a code). Every sandbox killed; 0 running after.
+
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)
 
 The runner posted its sign-ins (`claude-code`, `codex`: `signed_in: false`), synced in, ran the
