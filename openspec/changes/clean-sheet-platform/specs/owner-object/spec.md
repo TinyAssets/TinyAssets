@@ -1040,7 +1040,7 @@ Each frame (`{v, run, seq, at, kind, event}`) SHALL be relayed to the owner app'
 - **THEN** it receives the run's tail first, then each frame as it comes
 
 ### Requirement: The key store and the inbound bindings are the object's own rows
-The object SHALL keep each API key's id, name, mint time, last use and revoke (`owner_keys`), written with the key's grant in one unit that counts the live keys strictly, marked revoked with its grant and removed when its grant is forgotten. It SHALL keep each inbound binding (`inbound_bindings`): its agent, its revision, the directory route the doors keep for it, an owner-held proof and its secret, and its breaker. `inboundAccept` SHALL take only an inbound route's binding, which every other door SHALL refuse, and post the event as the owner's mail to the binding's agent, keyed by binding, revision and event id.
+The object SHALL keep each API key's id, name, mint time, last use and revoke, written with its grant in one unit that counts live keys strictly. It SHALL keep each inbound binding's agent, revision, route, owner-held proof and breaker. `inboundAccept` SHALL take only an inbound route's binding, and post the event as the owner's mail to its agent, keyed by binding, revision and event id.
 
 #### Scenario: A stale route, a replay, a full mailbox
 - **WHEN** an event arrives on a route at a revision the binding has moved past, or the same event id arrives twice, or a shared app's events meet a full mailbox three times in a minute
