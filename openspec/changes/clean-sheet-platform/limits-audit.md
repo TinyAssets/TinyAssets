@@ -44,19 +44,28 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,545,833,342.5 bytes, 45.46% of the 10 GB: 454.2 MB under
-half, short of the guard's 500 MB margin (`MARGIN`), which fails; owed: the coordinator's
-decision** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`;
-main alone is 4,496,562,760.5, 503.4 MB under half), slice ID's agent identities and mail
+**The worst case that ships is 4,652,001,662.5 bytes, 46.52% of the 10 GB: 348.0 MB under
+half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`),
+slice ID's agent identities and mail
 authority, slice M's change orders, slice W's doorbell subscriptions (`wake_callbacks`,
 423.6 MB at 1,000 agents and their widest), slice S's sandbox wait, slice L's keys and
 inbound bindings (`inbound_bindings` 23.0 MB, `owner_keys` 2.9 MB), slice SIGNIN's sign-ins,
 and slice P's tables (`sandbox_billed` 29.7 MB with its index by age,
-`change_log` 9.4 MB, `sandbox_live` 3.8 MB, `sandbox_spans` 3.1 MB, `owner_backups` 1.8 MB
+`change_log` 115.6 MB, `sandbox_live` 3.8 MB, `sandbox_spans` 3.1 MB, `owner_backups` 1.8 MB
 and its kept rows 0.02 MB, `schema_digests` 1.0 MB, `sandbox_days` 0.4 MB) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
 424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
 46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.
+
+**The ceiling is the half, and only the half** (coordinator's ruling, 2026-11-03). The guard
+holds the worst case at or under half the 10 GB. Slice LIM's 500 MB `MARGIN` past it was a
+cushion ("no thin margin") that no platform fact derives, so it is gone: an underived
+headroom is an invented limit. What is under the half is room, given out by stated shares:
+the change log's `LOG_BYTES` takes a quarter of the room as it stood at its derivation
+(463.6 MB with every other term at its worst, main at `8161540c1` with slice P), an equal
+share with each of the three slices still to land (STORE, STARTER, BRAIN). Their terms take
+the rest, 348.0 MB; the day a slice's terms would pass the half, the guard fails loudly and
+the shares are decided again.
 
 The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
 604.0 MB, `wake_callbacks` 423.6 MB, `ledger_messages` 399.2 MB, `ledger_receipts` 309.6 MB, `collection_history`
@@ -282,7 +291,7 @@ a user does:
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
 | `files/src/keys.ts` `MANIFEST_PARTS` | 16,384 objects of 4 MiB (64 GiB) | one generation's base parts and log segments together | nothing: the base's worst case is 22.2 GB; past the ceiling the generation is given up once and the owner told (`manifest_ceiling`), never retried in a loop | technical ceiling | Measured, JSON's escaping included: the owner-bound guard's "the nightly manifest's stream" puts every exported table at its bound, each line its frame and its values at 6 bytes a byte (a control character's `\u00XX`), a charged term as rows of 48 bytes each, and holds the sum under the parts. Its lists, 106 bytes a segment at most, fit one SQLite row's 2 MB with its cursor (1.8 MB). |
-| `owner/src/changelog.ts` `LOG_BYTES` | 3 MiB | the change log's unshipped images the object holds while a generation runs | nothing the owner writes: the write always lands; past it capture stops, the generation fails with one notice (`manifest_log_overflow`), and the next change begins a new one | technical ceiling | Derived from the owner database's margin: the largest whole MiB that keeps the worst case `MARGIN` (500 MB) under half, at `WORST_FILL` with one image past it (`limits-audit.test.ts` "the change log's bound" holds it equal). The log ships after every base part, so it binds only when R2 refuses puts, or when one outside call's worth of writes (about a megabyte) is outrun; the owner's sustained write rate against the ship rate is owed to slice L's live probe. |
+| `owner/src/changelog.ts` `LOG_BYTES` | 48 MiB | the change log's unshipped images the object holds while a generation runs | nothing the owner writes: the write always lands; past it capture stops, the generation fails with one notice (`manifest_log_overflow`), and the next change begins a new one | technical ceiling | Derived from the room under the half: a quarter of the 463.6 MB left with every other term at its worst, an equal share with each of the three slices still to land, as the largest whole MiB at `WORST_FILL` with one image past it (`limits-audit.test.ts` "the change log's bound" holds it equal). The room is there so a generation's held changes survive an R2 outage: the log ships after every base part, so it binds only when R2 refuses puts for a while, or when one outside call's worth of writes outruns it; the owner's sustained write rate against the ship rate is owed to slice L's live probe. |
 | `owner/src/changelog.ts` `IMAGE_MAX` | 1 MiB | one row image in the change log | nothing the owner writes: a wider image is logged as a mark, and the generation fails with the same notice | technical ceiling | A SQLite row's 2 MB, with room: every exported table's widest image fits (the guard measures 389 KB), but a connection's models list near its 655,360-character ceiling. |
 | `owner/src/backup.ts` `GATHER_BYTES` | 8 MiB | the stream one burst reads, with no outside call, before it puts its parts | nothing: the manifest goes on in the next burst | technical ceiling | The isolate's 128 MB: the burst's text as UTF-16, then its bytes, about 24 MiB at its peak. No other unit runs in the object during a burst. |
 | `owner/src/backup.ts` | the newest finished generation, the one being written, and each an open export pins | the generations kept | nothing: an older one is deleted once a new one finishes and no export pins it | technical ceiling | A recovery copy of the object, and the owner's exports; Durable Objects' own point-in-time recovery covers 30 days. Each is the platform's, not counted in the owner's storage; at most `EXPORTS_OPEN` pinned. |

@@ -1815,7 +1815,7 @@ R, S, M and W.
   exports read at once; `owner_exports` pins its generation for the export's 7 days. Every
   table is exported (each column decided) or kept out with its reason; credentials, hashes (a
   policy receipt's session hash too, review M2), secrets and the wrapped key never. The one
-  bound is `LOG_BYTES` (3 MiB, derived from the database margin): past it, or an image past
+  bound is `LOG_BYTES` (48 MiB, a quarter of the room under the database's half): past it, or an image past
   `IMAGE_MAX`, capture stops and the generation fails with one notice; the write lands. A
   generation a pass did not finish goes on `MANIFEST_CONTINUE_S` (5 s) later. Deleted bytes
   leave the owner's number at once, and garbage past the owner's storage figure is collected

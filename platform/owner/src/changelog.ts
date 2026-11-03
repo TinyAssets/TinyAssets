@@ -23,12 +23,13 @@ import { CHUNK_BYTES } from "./files";
 import type { OwnerStorage } from "./gate";
 
 /**
- * The unshipped change log the object holds at most, in bytes: what the owner database's
- * margin under half holds once every other table is at its worst (the owner-bound guard
- * derives it: the largest whole MiB that keeps the margin). It binds only while R2 refuses
- * puts, or when one unit changes more than it.
+ * The unshipped change log the object holds at most, in bytes: a quarter of the room under
+ * the owner database's half once every other table is at its worst, an equal share with
+ * each slice still to land (`limits-audit.test.ts` derives it: the largest whole MiB within
+ * that share). The room is there so a generation's held changes survive an R2 outage; it
+ * binds only while R2 refuses puts, or when one unit changes more than it.
  */
-export const LOG_BYTES = 3 * 1024 * 1024;
+export const LOG_BYTES = 48 * 1024 * 1024;
 /** A log row's own bytes past its line, as the log counts it: its seq and record. */
 export const LOG_ROW_BYTES = 64;
 /**

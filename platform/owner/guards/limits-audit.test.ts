@@ -1,7 +1,7 @@
 /**
  * The limits that ship (`openspec/changes/clean-sheet-platform/limits-audit.md`), costed by
  * the owner-bound guard's own terms (`termsFor`): the owner object's worst case at the
- * validators' widest names, its margin under half the 10 GB, and each term's share, printed
+ * validators' widest names, at or under half the 10 GB (the one ceiling), and each term's share, printed
  * for the audit. The structural changes the raises needed first (ADR-035) are what let them
  * fit: large bodies placed in R2, the collections' rows and history counted in the bytes
  * they take, one recipient a message, the mailboxes' caps within the ceilings, grant scopes
@@ -20,8 +20,17 @@ import {
 } from "./owner-bound.test";
 
 const HALF = SHARE * DATABASE_BYTES;
-/** The margin the shipped limits leave under the guard's half, at least: no thin margin. */
-const MARGIN = 500_000_000;
+/**
+ * The room under half when `LOG_BYTES` was derived (2026-11-03: main at `8161540c1`, slices
+ * L, APP and SIGNIN, with slice P's tables), every term but the change log's at its worst.
+ */
+const DERIVED_ROOM = 463_603_985.5;
+/**
+ * The change log's share of that room: a quarter, an equal share with each of the three
+ * slices still to land (STORE, STARTER, BRAIN), whose terms take the rest. The room exists
+ * so a generation's held changes survive an R2 outage, so the log takes a full share.
+ */
+const LOG_SHARE = 1 / 4;
 const ROW = 256;
 /** History revisions a row kept, as rows times revisions were counted before. */
 const REVISIONS = 100;
@@ -49,19 +58,24 @@ const WITHOUT: Readonly<Record<string, () => Readonly<Record<string, Term>>>> = 
 });
 
 describe("the change log's bound", () => {
-  it("is derived from the margin: the largest whole MiB that keeps it past MARGIN", () => {
-    const { change_log: _log, ...others } = TERMS;
-    const room = HALF - MARGIN - total(others);
-    const largest = Math.floor((room / WORST_FILL - IMAGE_MAX - LOG_ROW_BYTES) / 2 ** 20) * 2 ** 20;
+  it("is derived from the room under half: the largest whole MiB within its share", () => {
+    const share = DERIVED_ROOM * LOG_SHARE;
+    const largest = Math.floor((share / WORST_FILL - IMAGE_MAX - LOG_ROW_BYTES) / 2 ** 20)
+      * 2 ** 20;
     expect(LOG_BYTES).toBe(largest);
     expect(LOG_BYTES).toBeGreaterThanOrEqual(2 ** 20);
+    // The share fits the room as it stands: a later slice whose terms take more fails the
+    // half below, loudly, and the log's share is decided again then.
+    const { change_log: _log, ...others } = TERMS;
+    expect(termBytes("change_log", TERMS["change_log"]!))
+      .toBeLessThanOrEqual(HALF - total(others));
   });
 });
 
 describe("the limits that ship", () => {
-  it("hold the owner's worst case under half the 10 GB, with a margin past MARGIN", () => {
+  it("hold the owner's worst case at or under half the 10 GB, the real ceiling", () => {
     expect(total(TERMS)).toBe(worstCase());
-    expect(HALF - worstCase()).toBeGreaterThan(MARGIN);
+    expect(worstCase()).toBeLessThanOrEqual(HALF);
   });
 
   it("pass the ledger's own load-time check", () => {
