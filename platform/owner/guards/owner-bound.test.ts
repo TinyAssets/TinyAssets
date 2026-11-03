@@ -24,12 +24,15 @@
  * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
  * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
- * 40.98% of the limit (4,097,994,417.75 bytes), 902.0 MB under half. Slice ID added
- * `native_agents` (the owner's own agents in the registry's rows), a mail's authority and
- * attendance, and a run's mail; it adds no index (an identity and a mail thread's
- * conversation are found by their keys, digests). Slice M added each collection row's
- * owner-wide change and its `collection_changes` entry, an erase entry's change, private
- * writer and `collection_erasures` entry (all in the collections' charges), and the one-row
+ * 44.50% of the limit (4,449,862,167.75 bytes), 550.1 MB under half. Slice W added
+ * `wake_callbacks` (`SUBSCRIPTIONS_PER_AGENT` doorbells for each of `maxAgents` enabled
+ * agents, each its sealed blobs and arguments at their widest, and its index) and took out
+ * `ledger_rings` and the revoke tombstones' rows. Slice ID added `native_agents` (the
+ * owner's own agents in the registry's rows), a mail's authority and attendance, and a
+ * run's mail; it adds no index (an identity and a mail thread's conversation are found by
+ * their keys, digests). Slice M added each collection row's owner-wide change and its
+ * `collection_changes` entry, an erase entry's change, private writer and
+ * `collection_erasures` entry (all in the collections' charges), and the one-row
  * `collection_clock`. A new table, or a raised bound, must stay under half the limit, or the
  * guard fails.
  */
@@ -48,6 +51,7 @@ import { AUTOINDEXES } from "./autoindexes";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
+import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "../src/wake-kinds";
 import { PLATFORM } from "./sources";
 
 const SRC = join(PLATFORM, "owner", "src");
@@ -207,8 +211,6 @@ const CONTENT_ID = 64;
 /** A row's files scope: `owner`, or `client:` and 64 hex. */
 const FILER = 71;
 const CLIENT_NAME = inline("grants", /codePoints\(name\) > ([0-9]+)/);
-/** The most wakes an hour policy lets an agent take, the rings one hour keeps (`ledger.ts`). */
-const WAKES_AN_HOUR = inline("ledger", /maxWakesPerHour: Object\.freeze\(\{ low: [0-9]+, high: ([0-9]+) \}\)/);
 
 /** The platform's limit on one object's database. */
 export const DATABASE_BYTES = 10_000_000_000;
@@ -372,14 +374,16 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                  sessions_by_expiry: key(NUMBER) } },
     outside_agents: { rows: L.maxAgentRows,
                       bytes: ROW + AGENT_ID + 4 * UNIVERSE_CHARS + 2 * 64 + 64
-                        + 4 * AGENT_NAME_CHARS + 4 * RECIPE_CHARS + 64,
-                      by: "maxAgentRows, every row: a tombstone a revoke holds too; each its " +
-                        "id, universe, client, family, source, name, recipe and reason at " +
-                        "the validators' widest",
+                        + 4 * AGENT_NAME_CHARS + 4 * RECIPE_CHARS + 64 + NUMBER,
+                      by: "maxAgentRows, every row: a disabled agent's too; each its id, " +
+                        "universe, client, family, source, name, recipe, reason and wake " +
+                        "counter (slice W's `wake_tat`) at the validators' widest",
                       indexes: { sqlite_autoindex_outside_agents_1: key(AGENT_ID),
                                  sqlite_autoindex_outside_agents_2: key(4 * UNIVERSE_CHARS,
                                                                         64, 64),
-                                 outside_identities: key(64, 64) } },
+                                 outside_identities: key(64, 64),
+                                 // Slice W: the enabled agents by delivery method.
+                                 outside_ringing: key(12) } },
     // The owner's own agents (slice ID): counted with the outside agents in the registry's
     // rows, so the two terms together count it twice over. `WITHOUT ROWID`, keyed by its id.
     native_agents: { rows: L.maxAgentRows, bytes: ROW + 128 + NATIVE_ID_CHARS + 4 * 8,
@@ -416,16 +420,24 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        by: "maxReceipts",
                        indexes: { receipts_by_ref: key(13, 4 * PROPOSAL_ID_CHARS, AGENT_ID),
                                   receipts_by_agent: key(AGENT_ID) } },
-    ledger_rings: { rows: L.maxAgentRows * WAKES_AN_HOUR, bytes: ROW + AGENT_ID,
-                    by: "an hour's wakes per agent, at the policy's most an hour",
-                    indexes: { rings_by_agent: key(AGENT_ID, NUMBER) } },
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled",
                     indexes: { sqlite_autoindex_ledger_wakes_1: key(40),
-                               one_open_wake: key(AGENT_ID, 6), wakes_by_agent: key(AGENT_ID),
+                               one_open_wake: key(AGENT_ID), wakes_by_agent: key(AGENT_ID),
                                wakes_open: key(NUMBER), wakes_sending: key(NUMBER),
                                wakes_settled: key(NUMBER) } },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
+    // Slice W's doorbell subscriptions: `WITHOUT ROWID`, keyed by the server's id, each its
+    // fields at the schema's widest (its sealed blobs visible ASCII, a byte a character; its
+    // arguments any text, four bytes a character), and its by-agent index entry.
+    wake_callbacks: { rows: L.maxAgents * SUBSCRIPTIONS_PER_AGENT,
+                      bytes: ROW + 36 + AGENT_ID + 64 + 64 + 4 * ARGUMENTS_CHARS
+                        + 2 * DOORBELL_BLOB_CHARS + 32 + 64 + 8 * NUMBER,
+                      by: "SUBSCRIPTIONS_PER_AGENT doorbell subscriptions an enabled agent " +
+                        "(only an enabled agent's, a schema trigger), each its id, agent, " +
+                        "principal, kind, arguments, sealed blob and the one a refresh " +
+                        "replaced, kid, last wake and numbers",
+                      indexes: { wake_callbacks_by_agent: key(AGENT_ID, 36) } },
     // The rows in bytes, as SQLite lays them out with their five index entries, whatever
     // their names (`ROW_CHARGE`), each collection's seq row and each writer's counter with
     // them: refused past `maxRowsCharge`. A body past PLACE_BYTES is in R2 (ADR-035).
@@ -720,7 +732,7 @@ describe("the owner's database bound", () => {
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
     expect([CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
       .toEqual([1000, 4300, 655_360, 65_536]);
-    expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR]).toEqual([512, 80, 60]);
+    expect([SCOPE_FIELD, CLIENT_NAME]).toEqual([512, 80]);
     // A grant's scopes are counted in bytes: the module's bound is the schema's ceiling.
     expect([GRANT_LIMITS.maxScopesBytes, SCOPES_BYTES]).toEqual([65_536, 65_536]);
     expect([PLACE_BYTES, ROOM_CHARS, UNIVERSE_CHARS, CMID_CHARS, PROPOSAL_ID_CHARS])
@@ -729,7 +741,7 @@ describe("the owner's database bound", () => {
       rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
     expect(TERMS["model_spend"]!.rows).toBe(4300);
-    expect(TERMS["ledger_rings"]!.rows).toBe(LEDGER_LIMITS.maxAgentRows * 60);
+    expect(TERMS["wake_callbacks"]!.rows).toBe(LEDGER_LIMITS.maxAgents * 16);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["connections"]!.bytes).toBe(256 + 4 * 655_360 + 4 * 16_384);
     expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 16 * 1_000);
@@ -779,9 +791,9 @@ describe("the owner's database bound", () => {
     expect(worstCase()).toBe(worstCase(TERMS) + worstCase(RUNTIME));
   });
 
-  it("counts every registration row, a tombstone a revoke holds among them, which the " +
+  it("counts every registration row, a disabled agent's among them, which the " +
      "registry refuses past", () => {
-    // Every row is counted as it is made and refused past maxAgentRows; a tombstone is one.
+    // Every row is counted as it is made and refused past maxAgentRows; a disabled one too.
     expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
                                        "outside_agents BEGIN \" +\n      \"UPDATE ledger_usage " +
                                        "SET agents = agents + 1, \" +");

@@ -93,6 +93,14 @@ export interface ConnectService {
            grant: { code: string; verifier: string; redirect_uri: string }, record: Source):
     Promise<Exchanged>;
   verify(owner: string, connection: string, version: number, blob: string): Promise<Verified>;
+  /** A wake token the owner pasted, sealed for its subscription (slice W). */
+  sealDoorbell(owner: string, subscription: string, version: number,
+               input: { record: string; url: string; secret: string }): Promise<Sealed>;
+  /** An MCP Events callback, verified by a signed challenge, then sealed (slice W). */
+  verifyDoorbell(owner: string, subscription: string, version: number,
+                 input: { record: string; url: string; secret: string }):
+    Promise<{ readonly verified: true; readonly sealed: Sealed }
+            | { readonly verified: false; readonly reason: string }>;
 }
 
 /** What `wrangler.jsonc` binds, exactly (the config guard). */

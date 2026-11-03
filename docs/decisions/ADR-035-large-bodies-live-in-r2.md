@@ -84,7 +84,7 @@ R2's read latency is not documented [I: a network round trip from the object, te
 ## Consequences
 
 - The ledger, the collections and their history no longer cost the object their bytes: only their rows. Their bodies are storage, counted against the tier and the writer's share.
-- With the audit's other structural changes, the worst case at the validators' widest names is 4,097,994,417.75 bytes, 40.98% of the 10 GB: 902.0 MB under half, where the raises had 2.1 MB (slice ID's agent identities and mail authority, and slice M's change orders and clock, included). The other changes:
+- With the audit's other structural changes, the worst case at the validators' widest names is 4,449,862,167.75 bytes, 44.50% of the 10 GB: 550.1 MB under half, where the raises had 2.1 MB (slice ID's agent identities and mail authority, slice M's change orders and clock, and slice W's doorbell subscriptions, included). The other changes:
   - collection rows and history counted in laid-out bytes;
   - one recipient a message;
   - the mailboxes' caps within the ceilings;

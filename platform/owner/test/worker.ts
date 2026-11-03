@@ -125,6 +125,7 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
       await faults()?.revokeGate;
       return gateway.revokeAtProvider(...args);
     },
+    ringDoorbell: (...args) => gateway.ringDoorbell(...args),
   };
 }
 
@@ -151,5 +152,41 @@ export class GatedOwnerDO extends OwnerDO {
     this.sandbox = made.sandbox!;
     this.recorder = recorder;
     this.calls.push(...pending);
+  }
+}
+
+/** One ring the object asked of the gateway (slice W): the subscription and the request. */
+export interface Rang {
+  readonly subscription: string;
+  readonly version: number;
+  readonly blob: string;
+  readonly previous: { readonly version: number; readonly blob: string } | null;
+  readonly request: { readonly headers: Readonly<Record<string, string>>; readonly body: string;
+                      readonly event_id: string };
+}
+
+/**
+ * The owner object as production builds it, each ring it asks of its GATEWAY recorded as it
+ * is asked, then made by the real gateway (whose sends reach the fake receiver,
+ * `gateway/test/fake-upstream.ts`). `during` runs as a ring is asked, so a test lands a change
+ * mid-pass.
+ */
+export class RungOwnerDO extends OwnerDO {
+  readonly rang: Rang[] = [];
+  during: (() => Promise<void>) | null = null;
+
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const made: { self?: RungOwnerDO } = {};
+    const gateway: GatewayService = {
+      refresh: (...args) => env.GATEWAY.refresh(...args),
+      revokeAtProvider: (...args) => env.GATEWAY.revokeAtProvider(...args),
+      ringDoorbell: async (owner, subscription, version, blob, previous, request) => {
+        made.self?.rang.push({ subscription, version, blob, previous, request });
+        await made.self?.during?.();
+        return env.GATEWAY.ringDoorbell(owner, subscription, version, blob, previous, request);
+      },
+    };
+    super(ctx, { ...env, GATEWAY: gateway });
+    made.self = this;
   }
 }

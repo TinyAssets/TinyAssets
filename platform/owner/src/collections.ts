@@ -525,6 +525,28 @@ export class Collections {
     };
   }
 
+  /**
+   * Whether a row anyone may see in one of `collections` was written or deleted past the
+   * owner-wide change `after` (slice W: which rooms a wake's subscription follows changed).
+   * Each part read by its change index from the cursor on, so it reads only what changed.
+   */
+  touched(collections: readonly string[], after: number): boolean {
+    const list = JSON.stringify(collections);
+    return this.#sql.exec(
+      "SELECT 1 FROM collection_rows INDEXED BY collection_changes WHERE change > ? " +
+        "AND private = 0 AND collection IN (SELECT value FROM json_each(?)) " +
+        "UNION ALL SELECT 1 FROM collection_history INDEXED BY collection_erasures " +
+        "WHERE change > ? AND private_writer IS NULL " +
+        "AND collection IN (SELECT value FROM json_each(?)) LIMIT 1",
+      after, list, after, list,
+    ).toArray().length > 0;
+  }
+
+  /** The owner-wide change cursor: the latest change any write took. A read of one row. */
+  clock(): number {
+    return this.#sql.exec<{ change: number }>("SELECT change FROM collection_clock").one().change;
+  }
+
   #visible(caller: string, collection: string, rowId: string): StoredRow | undefined {
     name(collection, "collection");
     name(rowId, "row_id");

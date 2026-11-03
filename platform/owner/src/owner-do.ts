@@ -46,7 +46,9 @@
  * (ADR-034), in the owner's sandbox or on their vendor's platform, and no package's code
  * runs in this object.
  * Claiming and settling wakes is the `wakes` lane's own, in process, with the doorbell's
- * {@link WakeSender}; file housekeeping (expired uploads and temporary directories,
+ * {@link WakeSender} (`Doorbell`, slice W: each vendor's wake from its `wake-kinds.json`
+ * record, after the kill switch in `CONTROL`), to the callback an agent's client stores
+ * at `wakeSubscribe` or the owner at `agentDoorbell`; file housekeeping (expired uploads and temporary directories,
  * history prunes, garbage chunk deletes) is the `files` lane's. No door reaches either.
  *
  * The owner's model connections (`connections.ts`) hold only blobs the gateway sealed;
@@ -173,7 +175,11 @@ import {
 import {
   type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
 } from "./network";
-import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
+import {
+  CLOSED, Doorbell, type RingAnswer, runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender,
+  WAKES_PER_ALARM,
+} from "./wakes";
+import { eventKind, type Events, follows, kindFor, wakeKinds } from "./wake-kinds";
 
 /**
  * Whose object this is, who is asking and through what: set by the binder from a
@@ -297,7 +303,8 @@ export interface AgentRequest {
 
 export interface WakeLimitsRequest {
   readonly agent_id: string;
-  readonly max_wakes_per_hour: number;
+  /** The owner's hourly cap on the agent's wakes, or null for none (the default). */
+  readonly max_wakes_per_hour: number | null;
   readonly batch_window_s: number;
   readonly expected_generation: number;
 }
@@ -435,9 +442,41 @@ export interface CodeCalls {
   readonly cancelled: number;
 }
 
-export interface SubscriberRequest {
-  readonly command_center_id: string;
+/**
+ * An agent's client's MCP Events subscription, as the MCP door hands it once it verified
+ * the callback and the gateway sealed it: the id the door derived (from the caller, URL,
+ * event and arguments; never the client's), the event, the arguments (its command center,
+ * and the board or rooms it follows), the sealed blob, and when it lapses (seconds, or null).
+ */
+export interface SubscribeRequest {
+  readonly subscription_id: string;
+  readonly name: string;
+  readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
+                        readonly rooms?: readonly string[] };
+  readonly blob: string;
+  readonly kid: string;
+  readonly version: number;
+  readonly expires_at: number | null;
+}
+
+/** The caller that holds a subscription ending it: the id the door derived. */
+export interface UnsubscribeRequest {
+  readonly subscription_id: string;
+}
+
+/**
+ * The owner setting an agent's doorbell: the kind it pasted a token for, the id the door
+ * derived, what it follows, and the blob the gateway sealed the token and URL into.
+ */
+export interface AgentDoorbellRequest {
   readonly agent_id: string;
+  readonly kind: string;
+  readonly subscription_id: string;
+  readonly board: boolean;
+  readonly rooms: readonly string[];
+  readonly blob: string;
+  readonly kid: string;
+  readonly version: number;
 }
 
 /** The platform's change of the owner's admission (`admission.ts`). */
@@ -1094,7 +1133,7 @@ export interface LaneDeps {
     next(now: number): number | null;
     run(now: number, until: number): Promise<void>;
   };
-  /** The doorbell, or null until tasks 7 constructs one: read at each use, never kept. */
+  /** The doorbell (`wakes.ts`), or null for none: read at each use, never kept. */
   readonly sender: () => WakeSender | null;
   /** Whether the owner is admitted (`require_work`): read at each use. */
   readonly admitted: () => boolean;
@@ -1118,9 +1157,12 @@ export function ownerLanes(deps: LaneDeps):
     // only while the owner is admitted (`require_work`): a suspended owner's wait.
     wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null
                                                        && deps.admitted()),
-             run: (_now, until) => deps.runWakes(deps.ledger, deps.sender(), deps.clock,
-                                                 deps.write, WAKES_PER_ALARM, WAKE_SEND_MS,
-                                                 until) },
+             // The kill switch closed: nothing claimed, and the job held a retry out.
+             run: async (_now, until) => {
+               const done = await deps.runWakes(deps.ledger, deps.sender(), deps.clock,
+                                                deps.write, WAKES_PER_ALARM, WAKE_SEND_MS, until);
+               return done === CLOSED ? { hold: deps.clock() + WAKE_RETRY_S } : done;
+             } },
     files: { next: (now) => deps.files.nextAlarm(now),
              run: (now, until) => deps.files.collect(now, until) },
     // Connection housekeeping: expired flows, unclaimed pending rows, provider revokes.
@@ -1238,11 +1280,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /**
-   * What rings outside agents' doorbells, called in process by the `wakes` lane. None
-   * until the doorbell slice (tasks 7) constructs one here; until then the lane only
-   * recovers lapsed claims, and open wakes and revokes stay pending without a job.
+   * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
+   * lane: every wake kind's request from its record, after the kill switch (`CONTROL`).
    */
-  readonly #sender: WakeSender | null = null;
+  readonly #sender: WakeSender;
   /**
    * Whether this object's database is an erased owner's tombstone, as the object found it
    * starting (`admission.ts`): it then migrates nothing, starts no Lifecycle, and every door
@@ -1291,7 +1332,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                         () => fileLimits(this.#policy.read().document, null));
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted, this.#bodies.adopt);
+    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted,
+                              () => this.#collections.clock(), this.#bodies.adopt);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
     const owner = () => {
@@ -1302,6 +1344,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return named;
     };
     this.#ownerName = owner;
+    this.#sender = new Doorbell({
+      ledger: this.#ledger, live: (client) => this.#grants.live(client), write, clock,
+      reads: (client, center) => this.#grants.reads(client, { universe: center,
+                                                               agent: MAIN_AGENT,
+                                                               capability: "read_graph" }),
+      touched: (rooms, after) => this.#collections.touched(rooms, after),
+      notice: (type, detail) => write(() => this.#notices.add(type, detail, clock())),
+      // The kill switch: the control record, read once a pass, as the doors read it.
+      gate: async () => await this.#control().refusal("outside", owner()) === null,
+      // The secret is the gateway's alone: it opens the blob and makes the send.
+      ring: (subscription, version, blob, previous, request): Promise<RingAnswer> =>
+        env.GATEWAY.ringDoorbell(owner(), subscription, version, blob, previous, request),
+    });
     this.#connections = new Connections(storage, write, () => env.GATEWAY, owner,
                                         this.#notices, clock);
     this.#egress = new Egress(storage, {
@@ -1999,6 +2054,40 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }));
   }
 
+  /**
+   * Only the owner itself, in its session, sets an agent's doorbell where its wake kind's
+   * record has the owner hand it over (`callback: owner`: Claude's `/fire`, Grok's webhook
+   * routine), for the agent's own kind: the blob the gateway sealed the pasted token and
+   * URL into (`sealDoorbell`, from the owner surface), under the id the door derived, and
+   * what it follows. A repeat refreshes it. The object never sees the token; a refusal's
+   * receipt holds only its request's digest.
+   */
+  agentDoorbell(binding: Binding, request: AgentDoorbellRequest):
+      Promise<{ agent_id: string; subscription_id: string }> {
+    return this.#door(() => this.#widening(binding, "work", "OUTSIDE_AGENTS.doorbell", request,
+                                           "set its agents' doorbells", () => {
+      const r = ledgerFields(request, ["agent_id", "kind", "subscription_id", "board", "rooms",
+                                       "blob", "kid", "version"]);
+      const stored = this.#ledger.subscribe(null, {
+        subscription_id: r["subscription_id"] as string, agent_id: r["agent_id"] as string,
+        kind: r["kind"] as string, board: r["board"] as boolean,
+        rooms: r["rooms"] as readonly string[], blob: r["blob"] as string,
+        kid: r["kid"] as string, version: r["version"] as number, expires_at: null,
+      });
+      return { agent_id: stored.agent_id, subscription_id: r["subscription_id"] as string };
+    }));
+  }
+
+  /** Only the owner itself, in its session, ends a doorbell it pasted, by its id. */
+  agentDoorbellEnd(binding: Binding, request: UnsubscribeRequest):
+      Promise<{ unsubscribed: boolean }> {
+    return this.#door(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.doorbell_end",
+                                           request, "end its agents' doorbells", () => {
+      const r = ledgerFields(request, ["subscription_id"]);
+      return { unsubscribed: this.#ledger.unsubscribe(null, r["subscription_id"]) };
+    }));
+  }
+
   /** Only the owner itself, in its session, deletes an agent. */
   deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
@@ -2353,7 +2442,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { owner: account.owner, script: r["script"],
                tools: toolsNamed(names.filter((name) => name !== CODE)), gate };
     });
-    const control = new ControlGate(this.env.CONTROL, this.#controlFreshMs);
+    const control = this.#control();
     const closed = await control.refusal(gate, owner);
     if (closed !== null) {
       throw new Refused(closed);
@@ -2475,22 +2564,94 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * W4: a `mailbox.message` subscribe must name the caller's own ringing agent, and a
-   * scoped client needs `read_graph` in that command center. The answer's `generation`
-   * tags the callback the subscribe door stores, so a revoke made before it never
-   * erases it.
+   * The events this caller's client may subscribe (MCP Events `events/list`): each
+   * subscribing wake kind's, to an outside client (never a run) whose grant reads somewhere.
+   * Asked for a command center (`events/subscribe`, before the door sends its callback a
+   * byte), only its one enabled subscribing agent's there, where it holds `read_graph`; a
+   * caller with none is refused.
    */
-  mailboxSubscriber(binding: Binding, request: SubscriberRequest):
-      Promise<{ agent_id: string; generation: number }> {
+  wakeEvents(binding: Binding, commandCenter?: string): Promise<{ events: Events[] }> {
     return this.#door(() => {
-      const account = this.#account(binding, "work");
-      const r = ledgerFields(request, ["command_center_id", "agent_id"]);
-      this.#scope(account, "read_graph", r["command_center_id"]);
-      // A run acts as its own agent, which is reached by mail, never by a doorbell.
-      const generation = this.#ledger.subscriber(account.run === null ? account.origin : null,
-                                                 r["command_center_id"], r["agent_id"]);
-      return { agent_id: r["agent_id"] as string, generation };
+      const account = this.#account(binding, "read");
+      const grant = account.grant;
+      if (account.origin === null || account.run !== null || grant === null) {
+        if (commandCenter !== undefined) {
+          throw new Refused("only an agent's own client subscribes its doorbell");
+        }
+        return { events: [] };
+      }
+      if (commandCenter === undefined) {
+        const reads = grant.mode === "full"
+          || grant.scopes.some((scope) => scope.capability === "read_graph");
+        return { events: reads ? wakeKinds().flatMap((kind) => kind.push?.events ?? []) : [] };
+      }
+      if (typeof commandCenter !== "string") {
+        throw new Invalid("invalid subscription arguments");
+      }
+      this.#scope(account, "read_graph", commandCenter);
+      const agent = this.#ledger.subscriber(account.origin, commandCenter);
+      if (agent === undefined) {
+        throw new Refused("not this caller's subscribing agent");
+      }
+      return { events: [kindFor(agent.delivery_method)!.push!.events!] };
     });
+  }
+
+  /**
+   * An agent's own client subscribes (MCP Events `events/subscribe`), once the MCP door
+   * verified its callback and the gateway sealed it: for its one enabled agent in the command
+   * center its arguments name, where a scoped client needs `read_graph`. A run is refused.
+   * The subscription is stored under the id the door derived, its lifetime as granted. The
+   * answer never holds the callback.
+   */
+  wakeSubscribe(binding: Binding, request: SubscribeRequest):
+      Promise<{ subscription_id: string; agent_id: string; expires_at: number | null }> {
+    return this.#synced(() => {
+      const account = this.#account(binding, "work");
+      const r = ledgerFields(request, ["subscription_id", "name", "arguments", "blob", "kid",
+                                       "version", "expires_at"]);
+      if (account.origin === null || account.run !== null) {
+        throw new Refused("only an agent's own client subscribes its doorbell");
+      }
+      if (typeof r["name"] !== "string" || eventKind(r["name"]) === null) {
+        throw new Invalid("unknown event");
+      }
+      const args = r["arguments"] as Record<string, unknown> | null;
+      const follow = follows(args, ["command_center_id"]);
+      const center = args?.["command_center_id"];
+      if (typeof center !== "string") {
+        throw new Invalid("invalid subscription arguments");
+      }
+      this.#scope(account, "read_graph", center);
+      const stored = this.#ledger.subscribe(account.origin, {
+        subscription_id: r["subscription_id"] as string, command_center_id: center,
+        board: follow.board, rooms: follow.rooms, blob: r["blob"] as string,
+        kid: r["kid"] as string, version: r["version"] as number,
+        expires_at: r["expires_at"] as number | null,
+      });
+      return { subscription_id: r["subscription_id"] as string, ...stored };
+    });
+  }
+
+  /**
+   * The caller that holds a subscription ends it (MCP Events `events/unsubscribe`), by the
+   * id the door derived; repeating it is harmless. A run is refused.
+   */
+  wakeUnsubscribe(binding: Binding, request: UnsubscribeRequest):
+      Promise<{ unsubscribed: boolean }> {
+    return this.#door(() => {
+      const account = this.#account(binding, "reduce");
+      const r = ledgerFields(request, ["subscription_id"]);
+      if (account.origin === null || account.run !== null) {
+        throw new Refused("only the client that holds a subscription ends it");
+      }
+      return { unsubscribed: this.#ledger.unsubscribe(account.origin, r["subscription_id"]) };
+    });
+  }
+
+  /** The platform's gates as this object reads them (`control-gate.ts`), from `CONTROL`. */
+  #control(): ControlGate {
+    return new ControlGate(this.env.CONTROL, this.#controlFreshMs);
   }
 
   /**
@@ -2718,14 +2879,42 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   async #reading<T>(unit: () => { value: T; contents: readonly string[] },
-                    fill: (value: T, bodies: ReadonlyMap<string, string>) => T): Promise<T> {
+                    fill: (value: T, bodies: ReadonlyMap<string, string>) => T,
+                    synced = false): Promise<T> {
     const { value, located } = await this.#door(() => {
       const read = unit();
       return { value: read.value, located: this.#bodies.locate(read.contents) };
     });
+    if (synced) {
+      await this.#schedule.sync();  // a delete that rang an agent's doorbell (`#ring`)
+    }
     return fill(value, located.size === 0 ? new Map() : await this.#bodies.fetch(located));
   }
 
+  /**
+   * Ring the agents that follow `collection` for a change past `after` (slice W): only for
+   * the owner's own act (an outside client's write, or a run's, rings no agent, so no two
+   * agents wake each other without end, as slice ID's mail rings only the agent it
+   * addresses), only for the board or a room, only for a change anyone may see, and only
+   * agents with a live subscription following it whose grant reads their command center.
+   * Each wake says what changed and the cursor before it, so its digest is just the change.
+   */
+  #ring(account: Account, collection: string, after: number): void {
+    const change = collection === BOARD ? "board"
+      : collection.startsWith(ROOM_PREFIX) ? "rooms" : null;
+    if (account.origin !== null || account.run !== null || change === null
+        || !this.#collections.touched([collection], after)) {
+      return;
+    }
+    const agents = this.#ledger.followers(collection, change === "board", clock())
+      .filter((agent) => this.#grants.reads(agent.client, {
+        universe: agent.command_center_id, agent: MAIN_AGENT, capability: "read_graph" }));
+    if (agents.length) {
+      this.#ledger.changed(change, after, agents.map((agent) => agent.agent_id));
+    }
+  }
+
+  /** A row written by compare-and-swap; the owner's own board or room write rings (`#ring`). */
   collectionWrite(binding: Binding, request: WriteRequest): Promise<{ row: Row } | Conflicted> {
     return this.#placing(() => {
       const account = this.#collector(binding, "work", "write_graph");
@@ -2736,13 +2925,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const account = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
                        ["history_op"]);
-      return conflicted(() => ({
-        row: this.#collections.write(account.owner, account.caller, r["collection"] as string,
+      const collection = r["collection"] as string;
+      const before = this.#collections.clock();
+      const written = conflicted(() => ({
+        row: this.#collections.write(account.owner, account.caller, collection,
                                      r["row_id"] as string, r["body"], r["expected_etag"],
                                      r["private"], "history_op" in r ? r["history_op"] : "write",
                                      placed, filerOf(account)),
       }));
-    }, { shown: conflictShown() });
+      this.#ring(account, collection, before);
+      return written;
+    }, { shown: conflictShown(), synced: true });
   }
 
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
@@ -2777,22 +2970,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   collectionDelete(binding: Binding, request: DeleteRequest):
       Promise<{ deleted: number } | Conflicted> {
     return this.#reading(() => {
-      const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
-      this.#ownerOnly(owner, caller, "delete");
+      const account = this.#collector(binding, "reduce", "write_graph");
+      this.#ownerOnly(account.owner, account.caller, "delete");
       const r = fields(request, ["collection", "row_id", "expected_etag"]);
+      const before = this.#collections.clock();
       const value = conflicted(() => this.#collections.delete(
-        caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
+        account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
       ));
+      this.#ring(account, r["collection"] as string, before);
       return { value, contents: conflictShown<typeof value>().contents(value) };
-    }, conflictShown<{ deleted: number } | Conflicted>().fill);
+    }, conflictShown<{ deleted: number } | Conflicted>().fill, true);
   }
 
   collectionClear(binding: Binding, request: ClearRequest): Promise<{ deleted: number }> {
-    return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
-      this.#ownerOnly(owner, caller, "clear");
+    return this.#synced(() => {
+      const account = this.#collector(binding, "reduce", "write_graph");
+      this.#ownerOnly(account.owner, account.caller, "clear");
       const r = fields(request, ["collection", "writer"]);
-      return this.#collections.clear(caller, r["collection"] as string, r["writer"]);
+      const before = this.#collections.clock();
+      const cleared = this.#collections.clear(account.caller, r["collection"] as string,
+                                              r["writer"]);
+      this.#ring(account, r["collection"] as string, before);
+      return cleared;
     });
   }
 

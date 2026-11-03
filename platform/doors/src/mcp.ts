@@ -20,6 +20,8 @@ import {
 } from "@modelcontextprotocol/server";
 
 import type { Bound } from "./binder";
+import type { DoorsEnv } from "./config";
+import { serveEvents } from "./events";
 import { callDoor, refusal, type Tool, toolsNamed } from "./tools";
 
 export const SERVER_INFO = Object.freeze({ name: "tinyassets", version: "1.0.0" });
@@ -42,8 +44,11 @@ async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallTool
            structuredContent: result as Record<string, unknown> };
 }
 
-/** The server one request is served by: the tools of its caller's profile, bound to it. */
-export function server(bound: Bound, tools: readonly Tool[]): McpServer {
+/**
+ * The server one request is served by: the tools of its caller's profile, bound to it, and
+ * MCP Events (`events.ts`, slice W2), whose callbacks reach the gateway through `env`.
+ */
+export function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv): McpServer {
   const mcp = new McpServer({ ...SERVER_INFO }, { capabilities: { tools: {} } });
   for (const tool of tools) {
     mcp.registerTool(tool.name, {
@@ -59,6 +64,7 @@ export function server(bound: Bound, tools: readonly Tool[]): McpServer {
       },
     }, (args: Record<string, unknown>) => called(bound, tool, args));
   }
+  serveEvents(mcp, bound, env);
   return mcp;
 }
 
@@ -79,12 +85,13 @@ export async function profiled(bound: Bound): Promise<readonly Tool[] | Response
   }
 }
 
-export async function serveMcp(request: Request, bound: Bound): Promise<Response> {
+export async function serveMcp(request: Request, bound: Bound, env: DoorsEnv):
+    Promise<Response> {
   const tools = await profiled(bound);
   if (tools instanceof Response) {
     return tools;
   }
-  return createMcpHandler(() => server(bound, tools), { legacy: "stateless",
+  return createMcpHandler(() => server(bound, tools, env), { legacy: "stateless",
                                                       responseMode: "auto" })
     .fetch(request);
 }

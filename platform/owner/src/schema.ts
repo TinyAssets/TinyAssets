@@ -34,6 +34,7 @@ import {
   RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
 } from "./run-rows";
 import { SOCKET_TICKETS } from "./socket-shape";
+import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "./wake-kinds";
 import { RUNS_CEILING } from "./tier";
 
 export type Migration = readonly string[];
@@ -362,25 +363,22 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK (delivery_method IN ('mcp_event', 'routine_fire', 'webhook', 'a2a', 'pull')), " +
       "recipe_id TEXT, revision INTEGER NOT NULL, disabled_reason TEXT, " +
       "created_at REAL NOT NULL, " +
-      // Owner policy (W3): set only by the owner's wake-limits setter, never by a
-      // registration; the codespec's defaults.
-      "max_wakes_per_hour INTEGER NOT NULL DEFAULT 60 " +
-      "CHECK (max_wakes_per_hour BETWEEN 1 AND 60), " +
-      "batch_window_s INTEGER NOT NULL DEFAULT 60 CHECK (batch_window_s BETWEEN 0 AND 3600), " +
-      // Messages this agent sent that the owner has not acked yet, and their bytes: its
-      // share of the owner's mailbox.
+      // The owner's own settings (W3): set only by the owner's wake-limits setter, never by
+      // a registration, and off by default (`WAKE_DEFAULTS`): no hourly cap, no batch window.
+      "max_wakes_per_hour INTEGER " +
+      "CHECK (max_wakes_per_hour IS NULL OR max_wakes_per_hour >= 1), " +
+      "batch_window_s INTEGER NOT NULL DEFAULT 0 CHECK (batch_window_s >= 0), " +
+      // The hourly cap's one counter (slice W, ruling M5): GCRA's theoretical arrival time,
+      // in seconds; null until a capped agent is first woken.
+      "wake_tat REAL, " +
+      // Messages this agent sent that the owner has not acked yet: its share of the owner's
+      // mailbox.
       "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0), " +
-      // The doorbell callbacks' fence: each subscribe opens the next generation, and a
-      // revoke erases the callbacks at or before the generation it carries.
-      // `revoked_through` is the newest generation a revoke has been scheduled for.
-      "subscription INTEGER NOT NULL DEFAULT 0 CHECK (subscription >= 0), " +
-      "revoked_through INTEGER NOT NULL DEFAULT 0 " +
-      "CHECK (revoked_through BETWEEN 0 AND subscription), " +
-      // A deleted agent whose revoke is still to run: a tombstone, disabled, counted by
-      // the registry bound, and gone when its revoke settles.
-      "deleted_at REAL CHECK (deleted_at IS NULL OR disabled_reason IS NOT NULL), " +
       "UNIQUE (command_center_id, outside_client, outside_family))",
     "CREATE INDEX outside_identities ON outside_agents (outside_client, outside_family)",
+    // The enabled agents by delivery method: who a board or room change rings (slice W).
+    "CREATE INDEX outside_ringing ON outside_agents (delivery_method) " +
+      "WHERE disabled_reason IS NULL",
     // A registration's id, universe and client never change: its client's grant row counts
     // it (`outside_clients.agents`, moved only on insert and delete), and its universe is
     // where a scoped stamp acts.
@@ -426,7 +424,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE ledger_receipts (" +
       "seq INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, kind TEXT NOT NULL " +
       "CHECK (kind IN ('wake_sent', 'wake_accepted', 'read', 'ack', 'reply', " +
-      "'rate_limited', 'failed', 'claim', 'complete', 'revoked')), " +
+      "'rate_limited', 'failed', 'claim', 'complete')), " +
       "ref TEXT NOT NULL, at REAL NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}')",
     "CREATE INDEX receipts_by_ref ON ledger_receipts (kind, ref, agent_id)",
     "CREATE INDEX receipts_by_agent ON ledger_receipts (agent_id)",
@@ -438,17 +436,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // suppressed agent's callbacks, which the doorbell consumes on the `wakes` lane.
     "CREATE TABLE ledger_wakes (" +
       "wake_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, " +
-      "kind TEXT NOT NULL DEFAULT 'wake' CHECK (kind IN ('wake', 'revoke')), " +
       "state TEXT NOT NULL " +
       "CHECK (state IN ('pending', 'sending', 'sent', 'unknown', 'rate_limited', 'failed', " +
       "'suppressed')), due REAL NOT NULL, claim_id TEXT, " +
       "attempts INTEGER NOT NULL DEFAULT 0, " +
       // The durable may-have-sent mark (the Python op journal's): set before a byte leaves.
       "marked INTEGER NOT NULL DEFAULT 0 CHECK (marked IN (0, 1)), through_seq INTEGER, " +
-      // A revoke's fence: it erases only callbacks at or before this subscription.
-      "generation INTEGER CHECK ((kind = 'revoke') = (generation IS NOT NULL)), " +
+      // What a wake says changed (slice W, `wake-kinds.ts`): bits for mail 1, rooms 2 and
+      // board 4, and the owner-wide change cursor its rooms and board changes are after.
+      // `created_at` is the first change's own time, the event's timestamp.
+      "changes INTEGER NOT NULL CHECK (changes BETWEEN 1 AND 7), " +
+      "after INTEGER NOT NULL CHECK (after >= 0), " +
+      // Moves each time a change folds in, so each subscription is owed the wake again.
+      "fold INTEGER NOT NULL DEFAULT 0 CHECK (fold >= 0), " +
       "receipt_json TEXT, created_at REAL NOT NULL, settled_at REAL)",
-    "CREATE UNIQUE INDEX one_open_wake ON ledger_wakes (agent_id, kind) " +
+    "CREATE UNIQUE INDEX one_open_wake ON ledger_wakes (agent_id) " +
       "WHERE state IN ('pending', 'rate_limited')",
     "CREATE INDEX wakes_by_agent ON ledger_wakes (agent_id)",
     // The open rows by due time (what the claim pass reads), and the claims being sent by
@@ -456,9 +458,51 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX wakes_open ON ledger_wakes (due) WHERE state IN ('pending', 'rate_limited')",
     "CREATE INDEX wakes_sending ON ledger_wakes (due) WHERE state = 'sending'",
     "CREATE INDEX wakes_settled ON ledger_wakes (settled_at) WHERE settled_at IS NOT NULL",
-    // Each claim's time, kept one hour: what the per-agent hourly cap counts.
-    "CREATE TABLE ledger_rings (agent_id TEXT NOT NULL, at REAL NOT NULL)",
-    "CREATE INDEX rings_by_agent ON ledger_rings (agent_id, at)",
+    // The doorbell's subscriptions (slice W, MCP Events): each an enabled ringing agent's,
+    // stored by its client's verified `events/subscribe` or by the owner's pasted token,
+    // keyed by the id the server derives (principal, callback URL, event, arguments). The
+    // secret and the URL are only inside `blob`, which the gateway sealed and alone opens;
+    // `previous_*` is the secret a refresh replaced, signing beside the new one until
+    // `previous_until`. `rung` is the wake (`<wake_id>.<fold>`) it was last sent, marked
+    // before the byte and cleared by a 429, and `status` its last answer, both its own, so a
+    // retry rings only the subscriptions still owed. Every row goes in the transaction that
+    // disables, moves, deletes or revokes its agent, and is only an enabled agent's. At most
+    // `SUBSCRIPTIONS_PER_AGENT` an agent (a technical ceiling, each enabled agent's share in
+    // the owner-bound guard), the next refused `subscription_limit`.
+    "CREATE TABLE wake_callbacks (" +
+      "subscription_id TEXT PRIMARY KEY CHECK (length(subscription_id) = 36 " +
+      "AND subscription_id GLOB 'sub_*' AND substr(subscription_id, 5) NOT GLOB '*[^0-9a-f]*'), " +
+      "agent_id TEXT NOT NULL, " +
+      "principal TEXT NOT NULL CHECK (principal = 'owner' OR (length(principal) = 64 " +
+      "AND principal NOT GLOB '*[^0-9a-f]*')), " +
+      "kind TEXT NOT NULL CHECK (length(kind) BETWEEN 1 AND 64 AND kind NOT GLOB '*[^a-z0-9_]*'), " +
+      "board INTEGER NOT NULL CHECK (board IN (0, 1)), " +
+      `rooms TEXT NOT NULL CHECK (json_valid(rooms) AND length(rooms) <= ${ARGUMENTS_CHARS}), ` +
+      // Sealed and encoded by the gateway (base64url): visible ASCII, a byte a character.
+      `blob TEXT NOT NULL CHECK (length(blob) BETWEEN 1 AND ${DOORBELL_BLOB_CHARS} ` +
+      "AND blob NOT GLOB '*[^!-~]*'), " +
+      "kid TEXT NOT NULL CHECK (length(kid) BETWEEN 1 AND 32), " +
+      "version INTEGER NOT NULL CHECK (version >= 1), " +
+      `previous_blob TEXT CHECK (length(previous_blob) <= ${DOORBELL_BLOB_CHARS} ` +
+      "AND previous_blob NOT GLOB '*[^!-~]*'), " +
+      "previous_version INTEGER, previous_until REAL, " +
+      "rung TEXT CHECK (length(rung) BETWEEN 1 AND 64), " +
+      "status INTEGER CHECK (status BETWEEN 100 AND 599), " +
+      "expires_at REAL, created_at REAL NOT NULL, refreshed_at REAL NOT NULL, " +
+      "CHECK ((previous_blob IS NULL) = (previous_version IS NULL) " +
+      "AND (previous_blob IS NULL) = (previous_until IS NULL))) WITHOUT ROWID",
+    "CREATE INDEX wake_callbacks_by_agent ON wake_callbacks (agent_id)",
+    // A refresh (the same id) is an update, never counted again.
+    "CREATE TRIGGER wake_callbacks_full BEFORE INSERT ON wake_callbacks " +
+      "WHEN NOT EXISTS (SELECT 1 FROM wake_callbacks WHERE subscription_id = " +
+      "NEW.subscription_id) AND (SELECT COUNT(*) FROM wake_callbacks INDEXED BY " +
+      `wake_callbacks_by_agent WHERE agent_id = NEW.agent_id) >= ${SUBSCRIPTIONS_PER_AGENT} ` +
+      `BEGIN SELECT RAISE(ABORT, 'subscription_limit: ${SUBSCRIPTIONS_PER_AGENT} doorbell ` +
+      "subscriptions an agent; end one first'); END",
+    "CREATE TRIGGER wake_callbacks_enabled BEFORE INSERT ON wake_callbacks " +
+      "WHEN NOT EXISTS (SELECT 1 FROM outside_agents WHERE agent_id = NEW.agent_id " +
+      "AND disabled_reason IS NULL) BEGIN SELECT RAISE(ABORT, " +
+      "'a doorbell subscription is an enabled agent''s'); END",
     // A message's body, inline or placed past `PLACE_BYTES` (ADR-035); its bytes are its
     // message's `body_bytes`.
     "CREATE TABLE message_bodies (" +
@@ -469,26 +513,18 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The owner-wide counters the ledger's bounds read.
     "CREATE TABLE ledger_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "agents INTEGER NOT NULL, enabled_agents INTEGER NOT NULL, messages INTEGER NOT NULL, " +
-      "settled_wakes INTEGER NOT NULL, " +
-      // Deleted agents kept as tombstones while a revoke of their callbacks is pending.
-      "tombstones INTEGER NOT NULL)",
-    "INSERT INTO ledger_usage VALUES (1, 0, 0, 0, 0, 0)",
+      "settled_wakes INTEGER NOT NULL)",
+    "INSERT INTO ledger_usage VALUES (1, 0, 0, 0, 0)",
     "CREATE TRIGGER outside_agents_added AFTER INSERT ON outside_agents BEGIN " +
       "UPDATE ledger_usage SET agents = agents + 1, " +
-      "enabled_agents = enabled_agents + (NEW.disabled_reason IS NULL), " +
-      "tombstones = tombstones + (NEW.deleted_at IS NOT NULL); END",
-    "CREATE TRIGGER outside_agents_tombstoned AFTER UPDATE OF deleted_at ON outside_agents " +
-      "WHEN (OLD.deleted_at IS NULL) != (NEW.deleted_at IS NULL) BEGIN " +
-      "UPDATE ledger_usage SET tombstones = tombstones + " +
-      "CASE WHEN NEW.deleted_at IS NULL THEN -1 ELSE 1 END; END",
+      "enabled_agents = enabled_agents + (NEW.disabled_reason IS NULL); END",
     "CREATE TRIGGER outside_agents_enabled AFTER UPDATE OF disabled_reason ON outside_agents " +
       "WHEN (OLD.disabled_reason IS NULL) != (NEW.disabled_reason IS NULL) BEGIN " +
       "UPDATE ledger_usage SET enabled_agents = enabled_agents + " +
       "CASE WHEN NEW.disabled_reason IS NULL THEN 1 ELSE -1 END; END",
     "CREATE TRIGGER outside_agents_removed AFTER DELETE ON outside_agents BEGIN " +
       "UPDATE ledger_usage SET agents = agents - 1, " +
-      "enabled_agents = enabled_agents - (OLD.disabled_reason IS NULL), " +
-      "tombstones = tombstones - (OLD.deleted_at IS NOT NULL); END",
+      "enabled_agents = enabled_agents - (OLD.disabled_reason IS NULL); END",
     "CREATE TRIGGER ledger_messages_added AFTER INSERT ON ledger_messages BEGIN " +
       "UPDATE ledger_usage SET messages = messages + 1; END",
     "CREATE TRIGGER ledger_messages_removed AFTER DELETE ON ledger_messages BEGIN " +

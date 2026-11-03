@@ -1,5 +1,5 @@
-// The test-only OWNER, AGENT, GATED, BOUNDED, SWITCHED and CACHED bindings
-// (vitest.config.ts; the last five are the test Worker's classes, test/worker.ts), the test
+// The test-only OWNER, AGENT, GATED, BOUNDED, SWITCHED, CACHED and RUNG bindings
+// (vitest.config.ts; the last six are the test Worker's classes, test/worker.ts), the test
 // keyring (the one the gateway Worker run
 // beside the tests holds), and the Worker's three bindings: FILES, to the files Worker,
 // GATEWAY, to the gateway Worker, and HOOKS, to the hooks Worker, each run beside it; and
@@ -12,6 +12,9 @@ declare namespace Cloudflare {
     BOUNDED: DurableObjectNamespace<import("./worker").BoundedOwnerDO>;
     SWITCHED: DurableObjectNamespace<import("./worker").SwitchedOwnerDO>;
     CACHED: DurableObjectNamespace<import("./worker").CachedOwnerDO>;
+    RUNG: DurableObjectNamespace<import("./worker").RungOwnerDO>;
+    /** The gateway's connect entrypoint, test-only: a test seals a doorbell's token as the doors do. */
+    CONNECT: import("../../doors/src/config").ConnectService;
     FILES: import("../src/files").ChunkStore;
     GATEWAY: Service<import("../../gateway/src/index").default>;
     HOOKS: import("../src/codemode").HooksService;

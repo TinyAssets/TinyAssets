@@ -105,9 +105,22 @@ export interface Lane {
    * One short, bounded pass over what is due at `now`, taking no new row once the wall
    * clock (`Date.now()`, ms) reaches `until`. Each outside call's failure is kept in its
    * own row, backed off there; a throw is a bug, and fails the whole pass. Each of its
-   * writes is a unit of the object's write gate.
+   * writes is a unit of the object's write gate. A pass that could take none of its due
+   * rows for a reason outside them (the `wakes` lane's kill switch, closed) answers
+   * {@link Held}, and its job waits until then.
    */
   run(now: number, until: number): Promise<unknown>;
+}
+
+/** A pass's answer that holds its lane's job until `hold` (seconds), its rows untouched. */
+export interface Held {
+  readonly hold: number;
+}
+
+function heldUntil(answer: unknown): number | null {
+  const hold = typeof answer === "object" && answer !== null
+    ? (answer as { hold?: unknown }).hold : undefined;
+  return typeof hold === "number" && Number.isFinite(hold) ? hold : null;
 }
 
 /** The lane's work time, in ms, that a job was set for: its payload's, else its own time. */
@@ -152,8 +165,9 @@ export class Schedule extends LifecycleCapability {
    * run's own word: `undefined` for a door, which keeps a job in place or held later
    * (unless the rows now have earlier work); null for a pass that ended, which always
    * writes (its drive result would otherwise complete and delete the job) and clears any
-   * hold; a time for a pass that failed, held until then. The rows are read and the job
-   * row written in one unit of the write gate; Lifecycle re-arms the alarm after it.
+   * hold; a time for a pass that failed or was held ({@link Held}), held until then. The
+   * rows are read and the job row written in one unit of the write gate; Lifecycle
+   * re-arms the alarm after it.
    */
   async #set(name: string, hold: number | null | undefined): Promise<void> {
     const jobs = this.lifecycle.jobs;
@@ -189,8 +203,8 @@ export class Schedule extends LifecycleCapability {
     if (lane === undefined || job.id !== laneJob(job.fn) || this.#halted()) {
       return undefined;  // no lane of this code's, or none runs: done
     }
-    await lane.run(this.#clock(), Date.now() + this.#passMs);
-    await this.#set(job.fn, null);
+    const answer = await lane.run(this.#clock(), Date.now() + this.#passMs);
+    await this.#set(job.fn, heldUntil(answer));
     return undefined;  // superseded by the set above
   }
 

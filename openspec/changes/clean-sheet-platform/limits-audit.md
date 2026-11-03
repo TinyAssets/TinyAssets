@@ -37,23 +37,24 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,097,994,417.75 bytes, 40.98% of the 10 GB: 902.0 MB under
-half**, slice ID's agent identities and mail authority and slice M's change orders included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+**The worst case that ships is 4,449,862,167.75 bytes, 44.50% of the 10 GB: 550.1 MB under
+half**, slice ID's agent identities and mail authority, slice M's change orders and slice W's
+doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
-423.8 GB; history as rows times revisions 111.2 GB; recipients as messages times agents
-45.8 GB; scopes at 512 code points of JSON each 6.4 GB, each past the half.
+424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
+46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.
 
 The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
-604.0 MB, `ledger_messages` 399.2 MB, `ledger_receipts` 309.6 MB, `collection_history`
+604.0 MB, `wake_callbacks` 423.6 MB, `ledger_messages` 399.2 MB, `ledger_receipts` 309.6 MB, `collection_history`
 302.0 MB, `connections` 269.3 MB, `message_bodies` 219.7 MB, `ledger_recipients` 107.9 MB.
 
 ## Summary
 
 - **tier**: 3
 - **owner setting**: 12
-- **vendor limit**: 4
-- **technical ceiling**: 103
-- **total**: 122
+- **vendor limit**: 6
+- **technical ceiling**: 108
+- **total**: 129
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -118,7 +119,7 @@ reason; none refuses a write.
 | `owner/src/policy.ts` `MODEL_DEFAULTS.turn_tokens` | none (owner may set 1 to 1e9) | tokens in one sandbox run | only the owner's own cap | owner setting | As above. |
 | `owner/src/policy.ts` `MODEL_DEFAULTS.turn_cost` | none (owner may set to $1,000,000) | cost of one sandbox run | only the owner's own cap | owner setting | As above. |
 | `owner/src/policy.ts` `MODEL_DEFAULTS.daily_cost`, `monthly_cost` | none | the owner's and each source's day and month | only the owner's own ceiling | owner setting | As above. |
-| `owner/src/ledger.ts` `WAKE_DEFAULTS` | 60 wakes an hour, 60 s batch | an agent's doorbells | wakes past it wait for the hour | owner setting | Off by default: the most (`WAKE_SETTINGS`); per agent (`policyWakeLimits`), 1 to 60 an hour. |
+| `owner/src/ledger.ts` `WAKE_DEFAULTS` | none: no hourly cap, no batch window (slice W) | an agent's doorbells | nothing by default; with a cap the owner set, wakes past it wait their turn | owner setting | Off by default (`policyWakeLimits`, the owner app's `agent/wake-limits`). A cap is spaced evenly by one `wake_tat` column, no burst. With none, each change rings, one open wake an agent at a time, and the vendor's own limit answers 429, whose `Retry-After` the wake waits out (`wake-kinds.json` records each vendor's). |
 | `owner/src/network.ts` `EGRESS_DEADLINE_S` | 86,400 s | one streamed sandbox model call | a stream past a day is cut `deadline`, settled `unknown` | vendor limit | An E2B Pro sandbox lives at most 24 hours (`engines-replan.md` §3); a subrequest has no time limit while its client stays connected (Workers limits). `LOST_AFTER_S` follows. |
 | `gateway/src/forward.ts` `FORWARD_DEADLINE_MS` | 24 hours | one forwarded request | as `EGRESS_DEADLINE_S` | vendor limit | Held equal to it by a test. |
 | `owner/src/owner-do.ts` `CODE_ANSWER_MAX` | 31 MiB as V8 serializes it | a `code` script's answer (value and output) | answered `answer_too_large`, its calls and what landed kept | technical ceiling | Workers RPC's 32 MiB of serialized arguments or return value (its own error, observed in workerd: "Serialized RPC arguments or return values are limited to 32MiB"), the owner-to-doors hop, less 1 MiB for the envelope. Measured as V8 serializes (`serializedBytes`): a string one byte a unit when every unit is Latin-1, else two bytes a unit for the whole string, so mostly ASCII text with one wide character counts double. pi-codemode's own output bound (16 Mi characters, 100,000 items) is the vendor's, not ours, and is not this path's ceiling: 16 Mi two-byte characters are 32 MiB serialized. |
@@ -146,14 +147,21 @@ reason; none refuses a write.
 | `owner/src/collections.ts` `LIMITS.maxRowsCharge` | 256 MiB laid out | every collection row, its index entries and its collection's seq row, as SQLite lays them out | a write refused: the owner's collections are full | technical ceiling | The 10 GB: guard term `collection_rows`, 604.0 MB at `WORST_FILL`. About 262,000 rows at the narrowest names; an outside writer's share by `client_share`. |
 | `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries, erased keys' last entries among them | the oldest entries pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows`. A message has one recipient, so no term moves with it. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, tombstones included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_rings`, `ledger_usage`. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, disabled agents included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_usage`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held | the oldest acked message evicted; refused `ledger_full` if every one is unread | technical ceiling | The 10 GB: guard terms `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxOwnerUnacked` | 10,000 | messages unread by the owner | a post to the owner refused past it | technical ceiling | Within `maxMessages` (`checkLimits`), so no mailbox holds the whole ledger. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentUnacked` | 1,000 | messages unread in one agent's mailbox | a post to that agent refused | technical ceiling | As above. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxSenderUnacked` | 5,000 | one sender's messages unread by the owner | a sender's post refused past it | technical ceiling | Within `maxOwnerUnacked`, so no agent fills the owner's mailbox. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxReceipts` | 50,000 | read and reply receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_receipts`, 309.6 MB. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxSettledWakes` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_wakes`. |
-| `owner/src/ledger.ts` `WAKE_SETTINGS.maxWakesPerHour` | 60 an hour at most | the wake setting's high | a higher setting refused | technical ceiling | The 10 GB: guard term `ledger_rings`, 72.0 MB, an hour's wakes for each agent row. |
+| `owner/src/ledger.ts` `WAKE_SETTINGS` | 9,007,199,254,740,991 | the owner's cap and batch window | a larger number refused | technical ceiling | JavaScript's largest exact whole number (`Number.MAX_SAFE_INTEGER`): the cap's state is one column whatever its value. |
+| `owner/src/wake-records.ts` `SUBSCRIPTIONS_PER_AGENT` | 16 an agent | doorbell subscriptions one enabled agent holds | the 17th refused `subscription_limit`; a refresh of one held is no new place | technical ceiling | The 10 GB: guard term `wake_callbacks`, 423.6 MB (8.47% of the budget), its rows at the schema's widest: `maxAgents` (1,000) times 16. Per agent, so no client fills another agent's room, nor the owner's. |
+| `owner/src/wake-records.ts` `DOORBELL_BLOB_CHARS` | 8,192 characters | a sealed doorbell (URL, auth scheme, secret, record), base64url | a larger blob refused | technical ceiling | Inside `wake_callbacks`; the schema holds it visible ASCII, a byte a character. |
+| `owner/src/wake-records.ts` `CALLBACK_URL_CHARS`, `CALLBACK_SECRET_CHARS` | 2,048 and 512 printable ASCII characters | a doorbell callback's URL and secret | a longer callback refused | technical ceiling | Inside `wake_callbacks`, through the blob they seal into. |
+| `owner/src/wake-records.ts` `ARGUMENTS_CHARS` | 1,024 characters of JSON | a subscription's arguments (command center, board, rooms) | a subscription following more rooms refused | technical ceiling | Inside `wake_callbacks`, at four bytes a character. Several subscriptions follow more rooms between them. |
+| `owner/wake-kinds.json` `max_body_bytes` | 256 KiB (ChatGPT); none recorded elsewhere | one doorbell body | a larger wake refused before it is sent | vendor limit | OpenAI's MCP Events page: at most 256 KiB a webhook (read 2026-11-03). A wake carries IDs and cursors only, far under it. |
+| `owner/wake-kinds.json` `events` | 10 s verification, a day's default lifetime, 300 s dual-signing | an MCP Events subscription | a callback silent past 10 s refused (`timeout`); a subscription unrefreshed past its grant lets go | vendor limit | OpenAI's MCP Events page (its verification example's 10 s) and the MCP Events design sketch (grants up to about a day; receivers reject a timestamp over 5 minutes old). |
+| `gateway/src/doorbell.ts` `ECHO_MAX_BYTES` | 1 KiB | a callback's answer to its verification challenge | a longer answer fails verification (`challenge_failed`) | technical ceiling | The answer is read only for the echoed 43-character challenge; at most 1 KiB keeps a hostile endpoint from making the gateway's isolate (128 MB) buffer its body. |
 | `owner/src/registrations.ts` `CARD_LIMITS` | 200 pending, 10 a client, 4,096-byte card | registration cards waiting | a client's 11th card refused | technical ceiling | The 10 GB: guard term `agent_cards`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.maxDocument` | 65,536 characters | the owner policy document | a larger policy refused | technical ceiling | The 10 GB, one row read on every door. |
 | `owner/src/policy.ts` `POLICY_LIMITS.maxChange` | 16,000 characters | one agent's proposal | a larger proposal refused | technical ceiling | The 10 GB: guard term `policy_proposals`. |

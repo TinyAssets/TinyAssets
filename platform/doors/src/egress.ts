@@ -235,7 +235,7 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
   const bound = bindRun(env, verified.owner, verified.hash, verified.generation, run,
                         presented);
   if (door !== "events") {
-    return serveMcp(request, bound);
+    return serveMcp(request, bound, env);
   }
   if (request.method !== "POST") {
     return refused("method_not_allowed", 405);

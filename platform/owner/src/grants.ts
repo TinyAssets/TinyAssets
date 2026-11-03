@@ -318,6 +318,17 @@ export class Grants {
     return row !== undefined && row.mode !== "revoked";
   }
 
+  /**
+   * Whether a client's grant, as it stands, holds `scope` (a full grant holds every one):
+   * what a wake is held to before it rings (slice W). A read: it never records a client.
+   */
+  reads(client: string, scope: Scope): boolean {
+    const row = this.#row(client);
+    return row !== undefined && row.mode !== "revoked"
+      && holds({ mode: row.mode as Grant["mode"], scopes: JSON.parse(row.scopes) as Scope[],
+                 generation: row.generation, profile: row.profile as ProfileName }, scope);
+  }
+
   /** The name the owner gave a client's grant ("" when none, or no row). A read. */
   name(client: string): string {
     return this.#sql.exec<{ name: string }>("SELECT name FROM outside_clients WHERE client = ?",
