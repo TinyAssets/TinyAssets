@@ -36,7 +36,7 @@ const write = (r: Rig, path: string, body: string) => r.stub.fileWrite(
 const readText = async (r: Rig, path: string) => new TextDecoder().decode(
   (await r.stub.fileRead(r.bind(null), { path })).inline);
 const held = ({ lease_id, epoch }: Lease) => ({ lease_id, epoch });
-const FENCED = "the sync lease was lost; this sync is fenced";
+const FENCED = "sync_fenced: the sync lease was lost; this sync is fenced";
 
 describe("the sync lease", () => {
   it("is held by one holder at a time, renewed, and taken again only once it lapses",

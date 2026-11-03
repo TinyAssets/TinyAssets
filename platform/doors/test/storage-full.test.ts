@@ -16,7 +16,7 @@ function named(name: string, message: string): Error {
 
 describe("a refusal's status", () => {
   it("answers storage_full 507 with its whole message", () => {
-    const message = storageFullMessage(storageFull(12, 10, null, null));
+    const message = storageFullMessage(storageFull(10, 2, 0, 10, null, null));
     expect(refusal(named("Refused", message))).toEqual({ status: 507, message });
   });
 
@@ -25,5 +25,12 @@ describe("a refusal's status", () => {
       .toMatchObject({ status: 403 });
     expect(refusal(named("Invalid", "storage_full: not a refusal"))).toMatchObject({ status: 400 });
     expect(refusal(new Error("a bug"))).toBeNull();
+  });
+});
+
+describe("open uploads alone", () => {
+  it("answer 409, never the full storage's 507", () => {
+    const message = storageFullMessage(storageFull(0, 6, 8, 10, null, null));
+    expect(refusal(named("Refused", message))).toEqual({ status: 409, message });
   });
 });

@@ -59,17 +59,17 @@ import { FRAME_UNITS_MAX, readEvent } from "../../owner/src/run-events";
 import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
          WORKSPACE } from "./engine";
 import { lineEvent, Outbox } from "./frames";
-import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
+import { remove, safeDirs, safeRead, safeWalk, safeWrite, walkFiles } from "./fsafe";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
 import { project } from "./project";
 import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
          scratchNotice,
-         writeIndex,
+         markUsed,
          writeOrRelease } from "./scratch";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
-import { readMirror, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
+import { openMirror, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport } from "./sync";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
 /** Every path the runner touches is under this root: `/` in the sandbox, a temp dir in tests. */
@@ -83,8 +83,8 @@ const CONVERSATIONS = `${ROOT}/var/lib/ta-conv`;
 const LOCAL_WORKSPACE = `${ROOT}${WORKSPACE}`;
 /** The agents' scratch (`scratch.ts`): kept between runs, never synced, never counted. */
 const LOCAL_SCRATCH = `${ROOT}${SCRATCH}`;
-/** When each agent's scratch was last used, and the runner's reserve on the disk. */
-const SCRATCH_INDEX = `${STATE}/scratch.json`;
+/** Each agent's stamp of its scratch's last use (`scratch.ts`), and the runner's reserve. */
+const SCRATCH_INDEX = `${STATE}/scratch-used`;
 const RESERVE = `${STATE}/reserve`;
 /** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
 const RESERVE_SIZE = ROOT === "" ? RESERVE_BYTES : 1024 * 1024;
@@ -239,9 +239,7 @@ function makeHome(name: string, rec: SourceRecord): string {
       const bytes = safeRead(store, join(store, rel));
       if (bytes !== null) {
         safeWrite(home, join(home, rel), bytes, 0o600);
-        if (isKept(secrets, rel)) {
-          copied[rel] = digest(bytes);
-        }
+        copied[rel] = digest(bytes);
       }
     }
   }
@@ -279,20 +277,24 @@ function keepHome(home: string, rec: SourceRecord): void {
   const store = `${STORE}/${rec.id}`;
   safeDirs(TOP, store, 0o700);
   const { secrets, sessions } = keptPaths(rec);
-  const name = home.split("/").at(-1)!;
-  const snapshot = `${STATE}/kept/${name}.json`;
-  const copied = existsSync(snapshot) ? readJson<Record<string, string>>(snapshot) : {};
-  for (const rel of safeWalk(home)) {
+  const copied = handed(home);
+  for (const rel of walkFiles(home)) {
     if (isKept([...secrets, ...sessions], rel)) {
       const bytes = safeRead(home, join(home, rel));
       // A secret this run did not change is never written back: the store may hold a newer
-      // one another run refreshed meanwhile, and a vendor's refresh token is single-use.
-      if (bytes !== null && !(isKept(secrets, rel) && copied[rel] === digest(bytes))) {
+      // one another run refreshed meanwhile, and a vendor's refresh token is single-use; a
+      // session it did not change is the store's already, so nothing is copied for it.
+      if (bytes !== null && copied[rel] !== digest(bytes)) {
         safeWrite(store, join(store, rel), bytes, 0o600);
       }
     }
   }
-  remove(snapshot);
+}
+
+/** What `makeHome` handed a run's home, by path: each kept file's digest. */
+function handed(home: string): Record<string, string> {
+  const snapshot = `${STATE}/kept/${home.split("/").at(-1)!}.json`;
+  return existsSync(snapshot) ? readJson<Record<string, string>>(snapshot) : {};
 }
 
 /** The engines' sessions the sync agent took from the feed, into each store it lacks. */
@@ -685,25 +687,26 @@ async function syncCommand(): Promise<number> {
                     sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
                     records: RECORDS };
     safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
-    const mirrorPath = `${SYNC_HOME}/mirror.json`;
-    const mirror = readMirror(mirrorPath);
-    const save = () => safeWrite(SYNC_HOME, mirrorPath,
-                                 new TextEncoder().encode(JSON.stringify(mirror)), 0o600);
-    if (job.direction === "in") {
-      await syncIn(client, place, mirror);
-      save();
-      const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
-      const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
-      const made = project(LOCAL_WORKSPACE, job.agent, record(job.engine).cli!.skills_paths,
-                           previous);
-      safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
-      process.stdout.write(JSON.stringify({ ok: true }));
+    // The mirror is a database on disk, written as each change lands (`openMirror`): a sync
+    // cut short keeps what it sent. The one JSON file of before is taken in once.
+    const mirror = openMirror(`${SYNC_HOME}/mirror.db`, `${SYNC_HOME}/mirror.json`);
+    try {
+      if (job.direction === "in") {
+        await syncIn(client, place, mirror);
+        const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
+        const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
+        const made = project(LOCAL_WORKSPACE, job.agent, record(job.engine).cli!.skills_paths,
+                             previous);
+        safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
+        process.stdout.write(JSON.stringify({ ok: true }));
+        return OK;
+      }
+      const report = await syncOut(client, place, mirror, job.lease, job.atoms);
+      process.stdout.write(JSON.stringify(report));
       return OK;
+    } finally {
+      mirror.close();
     }
-    const report = await syncOut(client, place, mirror, job.lease, job.atoms);
-    save();
-    process.stdout.write(JSON.stringify(report));
-    return OK;
   } catch (error) {
     if (error instanceof SyncFenced) {
       process.stdout.write(JSON.stringify({ fenced: true }));
@@ -712,6 +715,40 @@ async function syncCommand(): Promise<number> {
     throw error;
   } finally {
     remove(lock);
+  }
+}
+
+/** The paths an event names at most: past them, its count says how many more. */
+const EVENT_PATHS = 100;
+
+/**
+ * What a sync-out reported, to the run's events: each refused file, a full storage's (and
+ * open uploads') by its code alone; the one `ta.storage_full` with the object's whole
+ * message, once a sync, the only place an upgrade is offered, what did not fit kept in the
+ * sandbox and sent again by the next run; `ta.uploads_open` likewise, never an upgrade; what
+ * was skipped (changed or gone while the sync ran) once; the conflicts.
+ */
+function reportSync(outbox: Outbox, report: SyncReport | null): void {
+  const refused = report?.refused ?? [];
+  const codeOf = (reason: string) => /^(storage_full|uploads_open):/.exec(reason)?.[1] ?? null;
+  for (const each of refused) {
+    outbox.push({ type: "ta.sync_refused", path: each.path,
+                  reason: codeOf(each.reason) ?? each.reason });
+  }
+  for (const code of ["storage_full", "uploads_open"] as const) {
+    const these = refused.filter((each) => codeOf(each.reason) === code);
+    if (these.length > 0) {
+      outbox.push({ type: `ta.${code}`, message: these[0]!.reason, files: these.length,
+                    kept_in_sandbox: these.slice(0, EVENT_PATHS).map((each) => each.path) });
+    }
+  }
+  const skipped = report?.skipped ?? [];
+  if (skipped.length > 0) {
+    outbox.push({ type: "ta.sync_skipped", files: skipped.length,
+                  skipped: skipped.slice(0, EVENT_PATHS) });
+  }
+  if ((report?.conflicts ?? []).length > 0) {
+    outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts });
   }
 }
 
@@ -918,8 +955,7 @@ function scratchFor(start: StartDoc, run: string): { dir: string; notice: string
   const pruned = pruneScratch(LOCAL_SCRATCH, index, Date.now(),
                               start.scratch_retention_days ?? null, live);
   safeDirs(LOCAL_SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
-  index.used[start.agent] = Date.now();
-  writeOrRelease(() => writeIndex(SCRATCH_INDEX, index), RESERVE);
+  writeOrRelease(() => markUsed(index, start.agent, Date.now()), RESERVE);
   keepReserve(RESERVE, RESERVE_SIZE);
   return { dir, notice: scratchNotice(pruned) };
 }
@@ -1144,6 +1180,13 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   } finally {
     clearInterval(pump);
     try {
+      // A full disk: ext4 keeps root's own blocks (probed: root still wrote at 0 free), but
+      // what follows copies the run's changed sessions back and stages them, and the sync
+      // agent is its own user, so the runner's reserve goes first when the disk is short of
+      // it, and both have their room (`scratch.ts`).
+      if (diskOf(STATE).free_bytes < RESERVE_SIZE) {
+        rmSync(RESERVE, { force: true });
+      }
       if (as !== null) {
         // Every process the run's user left is gone before its home is read.
         killAll(as.uid);
@@ -1156,12 +1199,16 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         const secrets = atoms();
         const out = `${SYNC_HOME}/out/${run}`;
         remove(out);
-        for (const rel of home === null || as === null ? [] : safeWalk(home)) {
+        // Only the sessions this run made or changed are staged (`unchanged`): the history it
+        // was handed is synced already, so what is copied is this run's own, never the
+        // engine's whole store.
+        const copied = home === null ? {} : handed(home);
+        for (const rel of home === null || as === null ? [] : walkFiles(home)) {
           if (!isKept(keptPaths(rec).sessions, rel)) {
             continue;
           }
           const bytes = safeRead(home!, join(home!, rel));
-          if (bytes === null) {
+          if (bytes === null || copied[rel] === digest(bytes)) {
             continue;
           }
           if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
@@ -1171,33 +1218,12 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           }
           safeWrite(SYNC_HOME, join(out, rec.id, rel), bytes, 0o644, undefined, 0o755);
         }
-        // A full disk: ext4 keeps root's own blocks (probed: root still wrote at 0 free), but
-        // the sync agent is its own user, so the runner's reserve goes now, and its mirror
-        // and its staged sessions have room (`scratch.ts`).
-        if (diskOf(STATE).free_bytes < RESERVE_SIZE) {
-          rmSync(RESERVE, { force: true });
-        }
         const done = syncAgent(job("out", secrets));
         remove(out);
         if (done.code === FENCED) {
           outbox.push({ type: "ta.sync_fenced" });
         } else {
-          const report = done.report as { refused?: { path: string; reason: string }[];
-                                          conflicts?: string[] } | null;
-          for (const refused of report?.refused ?? []) {
-            outbox.push({ type: "ta.sync_refused", ...refused });
-          }
-          // The owner's storage is full: the one place an upgrade is offered. What did not
-          // fit stays in the sandbox and is offered again by the next run.
-          const full = (report?.refused ?? []).filter((refused) =>
-            refused.reason.startsWith("storage_full:"));
-          if (full.length > 0) {
-            outbox.push({ type: "ta.storage_full", message: full[0]!.reason,
-                          kept_in_sandbox: full.map((refused) => refused.path) });
-          }
-          if ((report?.conflicts ?? []).length > 0) {
-            outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts! });
-          }
+          reportSync(outbox, done.report as SyncReport | null);
         }
       }
     } catch (error) {
@@ -1205,6 +1231,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       exitCode = exitCode === 0 ? 1 : exitCode;
     } finally {
       if (home !== null) {
+        remove(`${STATE}/kept/${home.split("/").at(-1)!}.json`);
         remove(home);
       }
       remove(system);

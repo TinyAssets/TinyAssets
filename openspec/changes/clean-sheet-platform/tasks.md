@@ -1468,14 +1468,16 @@ R, S, M and W.
   - sync-out that streams, the sessions first, with the owner's `/workspace/.ta/sync-ignore`;
   - a full disk that never loses the run.
 
-  Research: `/home/user/ta-work/store_research.md`. Probes:
+  Review round 1 (REQUEST_CHANGES), fixed: a refused upload is refused alone with the doors' whole message, the mirror saved after each committed batch, `ta.storage_full` reported once; `uploads_open` (409) apart from `storage_full`, an `upload_abort` door, a lease's open uploads aborted when it ends; "used" is what is stored; sync-in streams to a temporary file (a file past the VM's memory synced in a test); sync-out's memory independent of the path count (an on-disk mirror, a walk a directory at a time); a file's identity checked at commit; sync-ignore edits receipted and noticed once, the rule file never ignored, default patterns stopping new paths only; a linear-time matcher; the reserve let go before the sessions are staged, and only changed sessions staged; scratch stamps per agent; the superseded template tags deleted.
+
+  Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".
 - [ ] Owed by slice STORE:
-  - **Option B of the latency probe** (R2 get, put, list from an owner-shaped object) needs a token with Workers R2 Storage: Edit. The index decision (shards or R2 trees) waits on it, and the count caps stay until then.
+  - **Option B of the latency probe** (R2 get, put, list from an owner-shaped object) needs a token with Workers R2 Storage: Edit. The index decision (shards or R2 trees) waits on it, and the count caps stay until then. Its `probe-latency-run` branch is made again only for that run; afterwards the probe's workflow and scripts are removed.
   - **Old versions, collection history and read mail moved to R2 segments** (mail never evicted silently), encrypted under slice P's per-owner key: after P lands. Its schema baseline and its key are the base.
   - **Sync-in of the working set alone** (today it materializes the whole workspace), held for the scratch design.
-  - **The starter package's agent instructions** naming `$TA_SCRATCH` (the run door's MCP instructions carry it today).
+  - **The starter package's agent instructions** naming `$TA_SCRATCH`: slice STARTER carries the scratch guidance, in its `AGENTS.md` and its scratch skill (the run door's MCP instructions carry it today).
   - **`linux_oracle.py`** for the scratch modes and the reserve: no Docker daemon in the build session. The runner's root tests cover the modes.
   - **The resume after hours** with 5–10 GB of scratch.
 

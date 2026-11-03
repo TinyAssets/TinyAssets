@@ -88,7 +88,8 @@ describe("a file quota", () => {
     await refusedWithNothingLeft(r, { max_bytes: INLINE_BYTES + 1 }, (files) =>
       files.write(`${W}/b`, new Uint8Array(INLINE_BYTES + 1).fill(2),
                   { expected: null, writer: "owner" }),
-    storageFullMessage(storageFull(2 * (INLINE_BYTES + 1), INLINE_BYTES + 1, null, null)));
+    storageFullMessage(storageFull(INLINE_BYTES + 1, INLINE_BYTES + 1, 0, INLINE_BYTES + 1,
+                                   null, null)));
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 1 }]);
   });
 

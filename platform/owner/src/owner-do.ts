@@ -743,6 +743,11 @@ export interface SyncUploadChunksRequest extends LeaseRequest {
   readonly chunks: { readonly sha256: string; readonly bytes: Uint8Array }[];
 }
 
+/** The sync agent's own upload given up (`fileSyncUploadAbort`). */
+export interface SyncUploadAbortRequest extends LeaseRequest {
+  readonly intent_id: string;
+}
+
 /** A lost file compare-and-swap: answered with the entry as it stands. */
 export interface FileConflicted {
   readonly conflict: Entry | null;
@@ -831,7 +836,7 @@ interface Readable {
 }
 
 /** A sync token that is not the live lease's, or names another lease or epoch. */
-export const SYNC_FENCED = "the sync lease was lost; this sync is fenced";
+export const SYNC_FENCED = "sync_fenced: the sync lease was lost; this sync is fenced";
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -1061,6 +1066,11 @@ const PLACE_TRIES = 5;
 const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
+/**
+ * The sandbox sync's ignore list (`sandbox/runner/sync.ts` `SYNC_IGNORE`, which the runner's
+ * bundle keeps apart from the object's modules): its every change a receipt and a notice.
+ */
+const SYNC_IGNORE_PATH = "/workspace/.ta/sync-ignore";
 
 /** A run's own MCP door reaches no run door: work between agents is mail (ADR-034 d11). */
 export const RUN_STARTS_NONE = "run_starts_none: a run starts, reads and cancels no run";
@@ -1371,6 +1381,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#files = new Files(storage, env.FILES, () => fileLimits(
       this.#policy.read().document,
       keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
+      // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
+      (stored, needed, held, limit) => storageFullMessage(storageFull(
+        stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
       (filer) => this.#collections.reclaim(filer) || this.#ledger.reclaim(filer),
       // Each agent's ledger identity follows its `agent.json`, in the file change's own unit.
       (path, present, now) => {
@@ -1382,10 +1395,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             this.#ledger.retire(agent, now);
           }
         }
-      },
-      // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
-      (used, limit) => storageFullMessage(storageFull(used, limit, ownerTier(storage),
-                                                      keptTiers(storage))));
+        // Every agent may edit the sync's ignore list (the founder's every-agent-full-power
+        // rule), but never unseen: each change is a receipt and one notice for the owner.
+        if (path === SYNC_IGNORE_PATH) {
+          const outcome = present ? "changed" : "removed";
+          this.#policy.receipt("write", { rule: "sync_ignore", outcome }, now);
+          this.#notices.add("sync_ignore_changed", `${SYNC_IGNORE_PATH} was ${outcome}: what ` +
+                              "the sandbox keeps out of your files follows it", now);
+        }
+      });
     this.#bodies = new Bodies(this.#files, storage, write);
     // An outside writer's share of the collections is the owner's own `client_share`.
     this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
@@ -4661,5 +4679,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return fields;
     });
     return this.#files.upload(r["intent_id"], r["chunks"]);
+  }
+
+  /**
+   * The sync agent's own upload given up (its file changed mid-sync, or was refused), let go
+   * now rather than holding the owner's storage until it expires; fenced by the live lease,
+   * and only the lease's own upload. One already gone is no error.
+   */
+  fileSyncUploadAbort(binding: Binding, request: SyncUploadAbortRequest):
+      Promise<{ aborted: boolean }> {
+    return this.#filing(() => {
+      this.#syncer(binding, "work", request);
+      const r = fileFields(request, ["lease_id", "epoch", "intent_id"]);
+      const writer = this.#files.syncWriter(r["lease_id"], r["epoch"]);
+      let owner: string | null;
+      try {
+        owner = this.#files.intentWriter(r["intent_id"]);
+      } catch (error) {
+        if (!(error instanceof Refused)) {
+          throw error;  // a malformed id: Invalid
+        }
+        owner = null;  // gone already: expired, committed or let go
+      }
+      if (owner !== null && owner !== writer) {
+        throw new Refused(SYNC_FENCED);
+      }
+      return owner === null ? { aborted: false } : this.#files.abort(r["intent_id"]);
+    });
   }
 }

@@ -21,18 +21,25 @@
  *   and the write is tried again (`writeOrRelease`), so a full disk never leaves a run's state
  *   unwritten, nor the run `unknown`; the ballast is made again once there is room.
  */
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, rmSync,
-         statfsSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync,
+         statfsSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const SCRATCH = "/scratch";
 /**
- * The runner's own room on the disk: its run state, the outbox and the staged sessions it
- * syncs out at a run's end. A technical ceiling: the largest engine transcript the scratch
- * research measured (86 MB) staged once, with its state and room to spare.
+ * The runner's own room on the disk: its run state and the sessions a run changed, staged for
+ * sync-out at its end. A technical ceiling: what one run stages is the sessions that run
+ * changed (never the engine's whole history, `runner.ts`), at most the largest engine
+ * transcript measured (86 MB); the reserve goes before that staging whenever the disk is
+ * short of it, so the runs of a sandbox, which end one sync at a time (the sync agent's
+ * lock), share one reserve.
  */
 export const RESERVE_BYTES = 256 * 1024 * 1024;
-/** The free share of the disk below which old scratch is let go before a run: a tenth. */
+/**
+ * The free share of the disk below which old scratch is let go before a run: a tenth. A
+ * chosen threshold (`limits-audit.md`), refusing nothing: room for a run's working files
+ * (a tenth of 14.4 GB, about 1.4 GB, holds a large clone and its build) before it starts.
+ */
 export const LOW_WATER_SHARE = 0.1;
 const DAY_MS = 86_400_000;
 
@@ -64,24 +71,46 @@ export function diskOf(path: string): Disk {
            free_inodes: fs.ffree, total_inodes: fs.files };
 }
 
-/** When each agent's scratch was last used, kept in the runner's own state directory. */
+/**
+ * When each agent's scratch was last used: one stamp file an agent in the runner's own state
+ * directory (`dir`), its modification time the last use. Each runner writes its own agent's
+ * stamp alone, so runners at once never lose each other's (no file read, changed and written
+ * back). Without a `dir` (a test's) it lives in memory.
+ */
 export interface ScratchIndex {
+  readonly dir?: string;
   used: Record<string, number>;
 }
 
-export function readIndex(path: string): ScratchIndex {
-  try {
-    const read = JSON.parse(readFileSync(path, "utf8")) as ScratchIndex;
-    return { used: { ...read.used } };
-  } catch {
-    return { used: {} };
+/** The stamps under `dir`, made when missing. */
+export function readIndex(dir: string): ScratchIndex {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const used: Record<string, number> = {};
+  for (const agent of readdirSync(dir)) {
+    try {
+      used[agent] = statSync(join(dir, agent)).mtimeMs;
+    } catch {
+      // gone meanwhile: another runner let that scratch go
+    }
+  }
+  return { dir, used };
+}
+
+/** `agent`'s scratch used at `now`: its stamp alone written. */
+export function markUsed(index: ScratchIndex, agent: string, now: number): void {
+  index.used[agent] = now;
+  if (index.dir !== undefined) {
+    const stamp = join(index.dir, agent);
+    writeFileSync(stamp, "", { mode: 0o600 });
+    utimesSync(stamp, now / 1000, now / 1000);
   }
 }
 
-export function writeIndex(path: string, index: ScratchIndex): void {
-  const temp = `${path}.${process.pid}.tmp`;  // its own: two runners may write at once
-  writeFileSync(temp, JSON.stringify(index), { mode: 0o600 });
-  renameSync(temp, path);
+function forget(index: ScratchIndex, agent: string): void {
+  delete index.used[agent];
+  if (index.dir !== undefined) {
+    rmSync(join(index.dir, agent), { force: true });
+  }
 }
 
 export interface Pruned {
@@ -104,11 +133,13 @@ export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
                              disk: (path: string) => Disk = diskOf): Pruned {
   const agents = existsSync(scratch) ? readdirSync(scratch) : [];
   for (const agent of agents) {
-    index.used[agent] ??= now;
+    if (index.used[agent] === undefined) {
+      markUsed(index, agent, now);
+    }
   }
   for (const known of Object.keys(index.used)) {
     if (!agents.includes(known)) {
-      delete index.used[known];
+      forget(index, known);
     }
   }
   const before = disk(scratch);
@@ -116,7 +147,7 @@ export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
   const evicted: string[] = [];
   const drop = (agent: string) => {
     rmSync(join(scratch, agent), { recursive: true, force: true });
-    delete index.used[agent];
+    forget(index, agent);
   };
   if (retentionDays !== null) {
     for (const [agent, used] of Object.entries(index.used)) {

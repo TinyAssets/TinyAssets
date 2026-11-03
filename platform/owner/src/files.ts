@@ -86,7 +86,7 @@ import {
   parentOf, storedPath, TEMP, within, WORKSPACE,
 } from "./paths";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
-import { storageFull, storageFullMessage } from "./storage-full";
+
 
 export { CHUNK_BYTES } from "./manifest";
 /**
@@ -216,6 +216,12 @@ export interface ChunkStore {
  * is left. Run in the change's own unit, before its quota is checked.
  */
 export type Reclaim = (filer: string) => boolean;
+
+/**
+ * The refusal at the owner's storage figure: its message from what is stored (open uploads
+ * apart), what the change needs, what open uploads hold, and the figure (`storage-full.ts`).
+ */
+export type Full = (stored: number, needed: number, held: number, limit: number) => string;
 
 export type FileKind = "file" | "dir";
 
@@ -557,17 +563,16 @@ export class Files {
    */
   readonly #changed: (path: string, present: boolean, now: number) => void;
   /**
-   * The refusal at the tier's storage figure (`storage-full.ts`): the one wall, its message
-   * naming what is used, the whole, how to free space and the upgrade path. The object names
-   * the owner's tier; without one, the facts it has.
+   * The refusal at the storage figure (`storage-full.ts`): the one wall, its message naming
+   * what is stored, what the change needs, what open uploads hold apart, the whole, how to
+   * free space and the upgrade path. The object names the owner's tier: its caller's to give,
+   * never a default.
    */
-  readonly #full: (used: number, limit: number) => string;
+  readonly #full: Full;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write, reclaim: Reclaim = () => false,
-              changed: (path: string, present: boolean, now: number) => void = () => {},
-              full: (used: number, limit: number) => string = (used, limit) =>
-                storageFullMessage(storageFull(used, limit, null, null))) {
+              write: Write, full: Full, reclaim: Reclaim = () => false,
+              changed: (path: string, present: boolean, now: number) => void = () => {}) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
@@ -687,10 +692,20 @@ export class Files {
           throw new Refused(TIER_UNREAD);  // the tier's storage is not known: no guess
         }
         if (after[counter] > shareOf(bound, scope.percent)) {
-          // The owner's whole storage is the one wall a user meets: `storage_full`. A
-          // client's share of it, and the index's own ceilings, keep their codes.
-          throw new Refused(setting === "max_bytes" && scope.percent === 100
-            && scope.filer === "*" ? this.#full(after[counter], bound) : scope.refusal(what));
+          // The owner's whole storage is the one wall a user meets: `storage_full`, or
+          // `uploads_open` when open uploads alone leave no room. A client's share of it, and
+          // the index's own ceilings, keep their codes.
+          if (setting === "max_bytes" && scope.filer === "*") {
+            const needed = after[counter] - scope.before[counter];
+            // Increases come only from an upload's begin, whose new chunks are uploading:
+            // what open uploads held before it is what is uploading now, less them.
+            const held = Math.max(0, this.#sql.exec<{ bytes: number }>(
+              "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = " +
+                "'uploading'").one().bytes - needed);
+            throw new Refused(this.#full(Math.max(0, scope.before[counter] - held), needed,
+                                         held, bound));
+          }
+          throw new Refused(scope.refusal(what));
         }
       }
     }
@@ -1814,7 +1829,7 @@ export class Files {
       `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now)
       .toArray()[0];
     if (row === undefined || row.epoch !== epoch) {
-      throw new Refused("the sync lease was lost; this sync is fenced");
+      throw new Refused("sync_fenced: the sync lease was lost; this sync is fenced");
     }
     return row;
   }
@@ -1837,7 +1852,10 @@ export class Files {
       } catch {
         return { released: false };
       }
-      this.#sql.exec("DELETE FROM sandbox_leases WHERE lease_id = ?", leaseId);
+      const gone = this.#sql.exec<{ authority: string; epoch: number }>(
+        "DELETE FROM sandbox_leases WHERE lease_id = ? RETURNING authority, epoch", leaseId)
+        .one();
+      this.#endUploads(gone.authority, gone.epoch);
       return { released: true };
     });
   }
@@ -1873,9 +1891,27 @@ export class Files {
   /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
   /** Each lapsed lease's row gone: the ids of those that went. */
   leasesLapsed(now: number): string[] {
-    return this.#sql.exec<{ lease_id: string }>(
-      `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id`, now)
-      .toArray().map((row) => row.lease_id);
+    const gone = this.#sql.exec<{ lease_id: string; authority: string; epoch: number }>(
+      `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id, authority, ` +
+        "epoch", now).toArray();
+    for (const lease of gone) {
+      this.#endUploads(lease.authority, lease.epoch);
+    }
+    return gone.map((row) => row.lease_id);
+  }
+
+  /**
+   * In a unit: every upload a lease's sync agent left open, let go as its lease ends, so no
+   * sync strands bytes against the owner's storage for a day. Its uploads are its sync
+   * writer's: the owner's lease's own epoch, or its client's, whose own uploads open at
+   * that moment go with them (the client begins them again).
+   */
+  #endUploads(authority: string, epoch: number): void {
+    const writer = authority !== OWNER_AUTHORITY ? `client:${authority}` : `lease:${epoch}`;
+    for (const { intent_id: intentId } of this.#sql.exec<{ intent_id: string }>(
+      "SELECT intent_id FROM file_intents WHERE writer = ?", writer).toArray()) {
+      this.#release(intentId);
+    }
   }
 
   /**

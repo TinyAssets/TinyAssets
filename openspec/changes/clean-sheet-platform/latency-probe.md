@@ -4,10 +4,10 @@ This is the live probe that decides where the owner's item index lives. It measu
 - **Option A:** index shards, a call to a second named object;
 - **Option B:** R2 trees, R2 get, put and list.
 
-Both cross-reviews in the STORE research named this measurement as the one that decides it (`/home/user/ta-work/store_research.md`, "Cross-review"; the independent review's "what would change the recommendation").
+Both cross-reviews in the STORE research named this measurement as the one that decides it (the STORE research's cross-review, and the independent review's "what would change the recommendation").
 
 - **Code:** `scripts/probes/latencyprobe/`.
-- **Workflow:** `.github/workflows/latency-probe.yml`. It is manual, or a push to `probe-latency-run`, which exists only to start a run the founder approved.
+- **Workflow:** `.github/workflows/latency-probe.yml`. It is manual, or a push to `probe-latency-run`, which exists only to start a run the founder approved. Once option B has run, the workflow, the probe's scripts and that branch are removed.
 
 It follows the store probe (`store-probe.md`) and the facet probe (`facet-probe.md`) in its safety rules, its door and key, and its cleanup and proof.
 

@@ -6,31 +6,43 @@
  * beside the egress token E2B's transform sets, so the token is good from inside the VM
  * alone), the object fencing each commit by the lease's id and epoch.
  *
+ * What it holds at once is bounded whatever the tree holds, in bytes and in paths: the walk
+ * reads one directory entry at a time (`walkFiles`), the mirror of what was synced is a
+ * SQLite database on disk read a row or a page at a time (`openMirror`), a file's bytes move
+ * a chunk at a time in both directions, and a commit holds one batch of ops (at most
+ * `COMMIT_OPS`, small files at most `INLINE_BYTES` each).
+ *
  * - **In:** the change feed from the mirror's cursor, each path's last change applied with
- *   no link followed (`fsafe.ts`); a reset reads the whole tree again by listing. A file's
- *   bytes come inline or chunk by chunk. The engines' sessions
- *   (`/workspace/.sessions/<authority>/<engine>/...`) are never written into the shared
- *   workspace, where every engine's user could reach them (review H-3): only a path under
- *   that engine's own `session_paths` is taken, into the sync agent's own directory, for
- *   the root runner to put in that engine's store.
+ *   no link followed (`fsafe.ts`), a file's chunks streamed into a temporary file and renamed
+ *   into place (`safeStream`); a reset reads the whole tree again by listing, page by page.
+ *   The engines' sessions (`/workspace/.sessions/<authority>/<engine>/...`) are never written
+ *   into the shared workspace, where every engine's user could reach them (review H-3): only
+ *   a path under that engine's own `session_paths` is taken, into the sync agent's own
+ *   directory, for the root runner to put in that engine's store.
  * - **Out:** each engine's sessions the runner staged first, in commits of their own; then
  *   every regular file under `/workspace` whose bytes differ from what was last synced
- *   (links never; the `.sessions` tree never, from the workspace; nothing the owner's
- *   sync-ignore names, `SYNC_IGNORE`); a file of up to 4 KiB inline, a larger one through
- *   the files plane's upload doors a chunk at a time, read as it is sent, so memory holds one
- *   batch's small files and one chunk whatever the run changed. A client's sandbox never
- *   offers a path in the owner's own trees. A file holding a secret's bytes (`guards.ts`) is
- *   refused here and reported, never sent. The agents' scratch (`/scratch`, `scratch.ts`)
- *   is outside `/workspace`, so never synced.
+ *   (links never; the `.sessions` tree never, from the workspace; nothing the sync-ignore
+ *   names, `SYNC_IGNORE`); a file of up to 4 KiB inline, a larger one through the files
+ *   plane's upload doors a chunk at a time, read as it is sent. Each file's identity (its size
+ *   and modification time) is taken when it is offered, so a change made while the sync runs
+ *   is offered again next time, and a file gone meanwhile is skipped and noted. The mirror
+ *   is written as each batch commits, so nothing a refusal or a crash cuts short loses what
+ *   was already sent. A refusal of one file (the owner's storage full among them,
+ *   `storage_full`, or an upload the object will not begin) is that file's alone, kept in the
+ *   sandbox and offered again by the next sync; an upload given up is aborted at once. A
+ *   client's sandbox never offers a path in the owner's own trees. A file holding a secret's
+ *   bytes (`guards.ts`) is refused here and reported, never sent. The agents' scratch
+ *   (`/scratch`, `scratch.ts`) is outside `/workspace`, so never synced.
  */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, rmSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import type { SourceRecord } from "../../doors/src/sources";
 
 import { isKept, keptPaths } from "./engine";
-import { remove, safeDirs, safePieces, safeRead, safeWalk, safeWrite } from "./fsafe";
+import { remove, safeDirs, safePieces, safeRead, safeStream, safeWrite, walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
 
 /**
@@ -55,21 +67,28 @@ export const FEED_LIMIT = 1000;
 export const OWNER_TREES = Object.freeze(["/workspace/agents", "/workspace/.agents",
                                           "/workspace/skills", "/workspace/prompts"]);
 export const SESSIONS = "/workspace/.sessions";
+/** The mirror's rows a page of a removal scan or a reset reads at once. */
+const PAGE = 1000;
 
 export class SyncFenced extends Error {
   override readonly name = "SyncFenced";
 }
 
-/**
- * The sync doors. A transient failure (the network, `429`, `503`) is tried again, its wait
- * doubling to at most `ceilingMs` (the runner's heartbeat, the cadence the lease is renewed
- * at), with no count: the run's own cancel ends it. Any other answer fails at once.
- */
+/** A sync door's refusal of this call (not a fence): its fixed code and the object's words. */
+export class SyncRefused extends Error {
+  override readonly name = "SyncRefused";
+  constructor(readonly code: string, message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 /**
  * The sync doors' client: a call refused for the moment (the network, `429`, `503`) is
  * asked again with no count, its wait doubling from `firstMs` (the runner's flush cadence:
  * no sooner than its next batch of frames would go) to `ceilingMs` (a heartbeat: the run's
- * report is never held longer than one).
+ * report is never held longer than one). A lost lease (`401`, or the code `sync_fenced`) is
+ * `SyncFenced`; any other refusal is `SyncRefused`, with the object's whole message, for the
+ * caller to report as that call's own (a full storage's used and total among it).
  */
 export class SyncClient {
   constructor(readonly origin: string, readonly token: string, readonly firstMs: number,
@@ -90,9 +109,6 @@ export class SyncClient {
       if (response.status === 200) {
         return JSON.parse(text) as Record<string, unknown>;
       }
-      if (response.status === 401 || response.status === 403) {
-        throw new SyncFenced(`the sync door refused (${response.status}): ${text}`);
-      }
       if (response.status === 404 && door === "read") {
         return { missing: true };
       }
@@ -100,20 +116,157 @@ export class SyncClient {
         await new Promise((resolve) => setTimeout(resolve, wait));
         continue;
       }
-      throw new Error(`the sync door ${door} answered ${response.status}: ${text}`);
+      let error: { code?: unknown; message?: unknown } = {};
+      try {
+        error = ((JSON.parse(text) as { error?: typeof error }).error) ?? {};
+      } catch {
+        error = {};
+      }
+      const code = typeof error.code === "string" ? error.code : `http_${response.status}`;
+      const message = typeof error.message === "string" ? error.message : text;
+      if (response.status === 401 || code === "sync_fenced") {
+        throw new SyncFenced(`the sync door refused (${response.status}): ${message}`);
+      }
+      throw new SyncRefused(code, message, response.status);
     }
   }
 }
 
-/** What the sandbox last synced: the feed's cursor, and each file's version and bytes. */
-export interface Mirror {
-  cursor: number;
-  files: Record<string, { version: number; size: number; mtime_ms: number; sha256: string }>;
+/** What the sandbox last synced of one path: its version, and its bytes' identity. */
+export interface Known {
+  readonly version: number;
+  readonly size: number;
+  readonly mtime_ms: number;
+  readonly sha256: string;
 }
 
-export function readMirror(path: string): Mirror {
-  return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Mirror
-    : { cursor: 0, files: {} };
+/**
+ * What the sandbox last synced: the feed's cursor, and each path's version and identity,
+ * read and written a row at a time.
+ */
+export interface Mirror {
+  cursor(): number;
+  setCursor(cursor: number): void;
+  get(path: string): Known | undefined;
+  put(path: string, known: Known): void;
+  drop(path: string): void;
+  /** `path` and everything under it dropped. */
+  dropUnder(path: string): void;
+  /** Whether anything at or under `path` is known. */
+  knowsUnder(path: string): boolean;
+  /** Up to `limit` known paths after `after`, in order. */
+  page(after: string, limit: number): string[];
+  /** `work` in one transaction (a batch's outcomes written together). */
+  batch(work: () => void): void;
+  /** A reset's seen set: begun, marked, then what was not seen, page by page. */
+  resetBegin(): void;
+  seen(path: string): void;
+  unseen(after: string, limit: number): string[];
+  resetEnd(): void;
+  close(): void;
+}
+
+/** A mirror in memory, for tests and tools: its rows on `files`. */
+export function memoryMirror(init: { cursor?: number; files?: Record<string, Known> } = {}):
+    Mirror & { readonly files: Record<string, Known> } {
+  let cursor = init.cursor ?? 0;
+  const files: Record<string, Known> = init.files ?? {};
+  let seenSet: Set<string> | null = null;
+  const sorted = () => Object.keys(files).sort();
+  return {
+    files,
+    cursor: () => cursor,
+    setCursor: (next) => { cursor = next; },
+    get: (path) => files[path],
+    put: (path, known) => { files[path] = known; },
+    drop: (path) => { delete files[path]; },
+    dropUnder: (path) => {
+      for (const known of Object.keys(files)) {
+        if (known === path || known.startsWith(`${path}/`)) {
+          delete files[known];
+        }
+      }
+    },
+    knowsUnder: (path) => Object.keys(files).some((known) =>
+      known === path || known.startsWith(`${path}/`)),
+    page: (after, limit) => sorted().filter((path) => path > after).slice(0, limit),
+    batch: (work) => work(),
+    resetBegin: () => { seenSet = new Set(); },
+    seen: (path) => { seenSet!.add(path); },
+    unseen: (after, limit) => sorted().filter((path) => path > after && !seenSet!.has(path))
+      .slice(0, limit),
+    resetEnd: () => { seenSet = null; },
+    close: () => undefined,
+  };
+}
+
+/**
+ * The sync agent's mirror on disk (`path`, a SQLite database), so its size never sits in
+ * memory: a legacy `mirror.json` (`legacy`) is taken in once, then removed.
+ */
+export function openMirror(path: string, legacy?: string): Mirror {
+  const db = new DatabaseSync(path);
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; " +
+          "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, version INTEGER NOT NULL, " +
+          "size INTEGER NOT NULL, mtime_ms REAL NOT NULL, sha256 TEXT NOT NULL) WITHOUT ROWID; " +
+          "CREATE TABLE IF NOT EXISTS meta (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+          "cursor INTEGER NOT NULL); INSERT OR IGNORE INTO meta VALUES (1, 0);");
+  const get = db.prepare("SELECT version, size, mtime_ms, sha256 FROM files WHERE path = ?");
+  const put = db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?)");
+  const drop = db.prepare("DELETE FROM files WHERE path = ?");
+  const under = db.prepare("DELETE FROM files WHERE path = ? OR (path > ? AND path < ?)");
+  const knows = db.prepare("SELECT 1 FROM files WHERE path = ? OR (path > ? AND path < ?) " +
+                           "LIMIT 1");
+  const page = db.prepare("SELECT path FROM files WHERE path > ? ORDER BY path LIMIT ?");
+  const mirror: Mirror = {
+    cursor: () => (db.prepare("SELECT cursor FROM meta").get() as { cursor: number }).cursor,
+    setCursor: (cursor) => { db.prepare("UPDATE meta SET cursor = ?").run(cursor); },
+    get: (at) => {
+      const row = get.get(at) as Known | undefined;
+      return row === undefined ? undefined : { ...row };
+    },
+    put: (at, known) => {
+      put.run(at, known.version, known.size, known.mtime_ms, known.sha256);
+    },
+    drop: (at) => { drop.run(at); },
+    // Below `p/` is every path from `p/` up to `p0` (`/` is the code point before `0`).
+    dropUnder: (at) => { under.run(at, `${at}/`, `${at}0`); },
+    knowsUnder: (at) => knows.get(at, `${at}/`, `${at}0`) !== undefined,
+    page: (after, limit) => (page.all(after, limit) as { path: string }[])
+      .map((row) => row.path),
+    batch: (work) => {
+      db.exec("BEGIN");
+      try {
+        work();
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+    resetBegin: () => {
+      db.exec("DROP TABLE IF EXISTS seen; CREATE TEMP TABLE seen (path TEXT PRIMARY KEY) " +
+              "WITHOUT ROWID");
+    },
+    seen: (at) => { db.prepare("INSERT OR IGNORE INTO seen VALUES (?)").run(at); },
+    unseen: (after, limit) => (db.prepare(
+      "SELECT path FROM files WHERE path > ? AND path NOT IN (SELECT path FROM seen) " +
+        "ORDER BY path LIMIT ?").all(after, limit) as { path: string }[]).map((row) => row.path),
+    resetEnd: () => { db.exec("DROP TABLE IF EXISTS seen"); },
+    close: () => { db.close(); },
+  };
+  if (legacy !== undefined && existsSync(legacy)) {
+    const old = JSON.parse(readFileSync(legacy, "utf8")) as
+      { cursor: number; files: Record<string, Known> };
+    mirror.batch(() => {
+      mirror.setCursor(old.cursor);
+      for (const [at, known] of Object.entries(old.files)) {
+        mirror.put(at, known);
+      }
+    });
+    rmSync(legacy, { force: true });
+  }
+  return mirror;
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -133,7 +286,7 @@ export interface Place {
   readonly records: ReadonlyMap<string, SourceRecord>;
 }
 
-function localOf(place: Place, path: string): string {
+function localOf(place: Pick<Place, "local">, path: string): string {
   return join(place.local, relative("/workspace", path));
 }
 
@@ -161,8 +314,14 @@ export function sessionOf(place: Place, path: string):
   return isKept(keptPaths(record).sessions, rel) ? { engine: engine!, rel } : null;
 }
 
-async function fetchBytes(client: SyncClient, path: string):
-    Promise<{ bytes: Uint8Array; version: number; mode: number } | null> {
+/**
+ * A file's bytes from the owner's files into `local` (under `base`), streamed: inline, or two
+ * chunks a call each appended to a temporary file as it comes and renamed into place once
+ * whole, its hash taken as it streams. Null when the path is gone or is no file.
+ */
+async function fetchInto(client: SyncClient, path: string, base: string, local: string,
+                         modeOf: (mode: number) => number, dirMode: number):
+    Promise<{ version: number; size: number; sha256: string } | null> {
   const read = await client.post("read", { path });
   if (read["missing"] === true) {
     return null;
@@ -171,21 +330,33 @@ async function fetchBytes(client: SyncClient, path: string):
   if (entry.kind !== "file") {
     return null;
   }
-  if (typeof read["inline"] === "string") {
-    return { bytes: new Uint8Array(Buffer.from(read["inline"], "base64")),
-             version: entry.version, mode: entry.mode };
-  }
-  const chunks = (read["chunks"] ?? []) as { sha256: string; size: number }[];
-  const parts: Uint8Array[] = [];
-  for (let first = 0; first < chunks.length; first += 2) {
-    const got = await client.post("chunks", { path, version: entry.version, first,
-                                               count: Math.min(2, chunks.length - first) });
-    for (const part of got["chunks"] as string[]) {
-      parts.push(new Uint8Array(Buffer.from(part, "base64")));
+  const out = safeStream(base, local, modeOf(entry.mode), undefined, dirMode);
+  const hash = createHash("sha256");
+  let size = 0;
+  const take = (piece: Uint8Array) => {
+    out.append(piece);
+    hash.update(piece);
+    size += piece.byteLength;
+  };
+  try {
+    if (typeof read["inline"] === "string") {
+      take(new Uint8Array(Buffer.from(read["inline"], "base64")));
+    } else {
+      const chunks = (read["chunks"] ?? []) as { sha256: string; size: number }[];
+      for (let first = 0; first < chunks.length; first += 2) {
+        const got = await client.post("chunks", { path, version: entry.version, first,
+                                                   count: Math.min(2, chunks.length - first) });
+        for (const part of got["chunks"] as string[]) {
+          take(new Uint8Array(Buffer.from(part, "base64")));
+        }
+      }
     }
+    out.commit();
+  } catch (error) {
+    out.abort();
+    throw error;
   }
-  return { bytes: new Uint8Array(Buffer.concat(parts)), version: entry.version,
-           mode: entry.mode };
+  return { version: entry.version, size, sha256: hash.digest("hex") };
 }
 
 /** One path's state after the feed: gone, a directory, or a file at a version. */
@@ -196,12 +367,12 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
     if (session === null || kind !== "file") {
       return;
     }
-    const got = await fetchBytes(client, path);
+    const got = await fetchInto(client, path, place.sessionsIn,
+                                join(place.sessionsIn, session.engine, session.rel),
+                                () => 0o600, 0o700);
     if (got !== null) {
-      safeWrite(place.sessionsIn, join(place.sessionsIn, session.engine, session.rel),
-                got.bytes, 0o600);
-      mirror.files[path] = { version: got.version, size: got.bytes.byteLength, mtime_ms: 0,
-                             sha256: sha256(got.bytes) };
+      mirror.put(path, { version: got.version, size: got.size, mtime_ms: 0,
+                         sha256: got.sha256 });
     }
     return;
   }
@@ -209,40 +380,35 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
   const readOnly = place.authority !== "owner" && inOwnerTrees(path);
   if (kind === null) {
     remove(local);
-    for (const known of Object.keys(mirror.files)) {
-      if (known === path || known.startsWith(`${path}/`)) {
-        delete mirror.files[known];
-      }
-    }
+    mirror.dropUnder(path);
     return;
   }
   if (kind === "dir") {
     safeDirs(place.local, local, readOnly ? 0o2755 : 0o2775);
     return;
   }
-  const got = await fetchBytes(client, path);
+  const dirMode = readOnly ? 0o2755 : 0o2775;
+  const got = await fetchInto(client, path, place.local, local, (mode) => readOnly
+    ? (mode === 1 ? 0o555 : 0o444) : (mode === 1 ? 0o775 : 0o664), dirMode);
   if (got === null) {
     return;  // gone since the feed was read: a later change says so
   }
-  const dirMode = readOnly ? 0o2755 : 0o2775;
-  const mode = readOnly ? (got.mode === 1 ? 0o555 : 0o444) : (got.mode === 1 ? 0o775 : 0o664);
-  safeWrite(place.local, local, got.bytes, mode, undefined, dirMode);
-  mirror.files[path] = { version: got.version, size: got.bytes.byteLength,
-                         mtime_ms: lstatSync(local).mtimeMs, sha256: sha256(got.bytes) };
+  mirror.put(path, { version: got.version, size: got.size, mtime_ms: lstatSync(local).mtimeMs,
+                     sha256: got.sha256 });
 }
 
-/** The whole readable tree, by listing, for a reset. */
-async function listAll(client: SyncClient, dir: string,
-                       out: Map<string, string>): Promise<void> {
+/** Every path of the readable tree, by listing, applied as each page comes (a reset). */
+async function listApply(client: SyncClient, place: Place, mirror: Mirror,
+                         dir: string): Promise<void> {
   let after: string | null = null;
   for (;;) {
     const page = await client.post("list", { dir, limit: FEED_LIMIT,
                                              ...(after === null ? {} : { after }) });
-    const entries = page["entries"] as { path: string; kind: string }[];
-    for (const entry of entries) {
-      out.set(entry.path, entry.kind);
+    for (const entry of page["entries"] as { path: string; kind: string }[]) {
+      await apply(client, place, mirror, entry.path, entry.kind);
+      mirror.seen(entry.path);
       if (entry.kind === "dir") {
-        await listAll(client, entry.path, out);
+        await listApply(client, place, mirror, entry.path);
       }
     }
     after = page["next"] as string | null;
@@ -255,20 +421,26 @@ async function listAll(client: SyncClient, dir: string,
 /** The owner's files into the sandbox, from the mirror's cursor; the mirror updated. */
 export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): Promise<void> {
   for (;;) {
-    const page = await client.post("changes", { after: mirror.cursor, limit: FEED_LIMIT });
+    const cursor = mirror.cursor();
+    const page = await client.post("changes", { after: cursor, limit: FEED_LIMIT });
     const changes = page["changes"] as { path: string; kind: string | null; version: number }[];
     if (page["reset"] === true) {
-      const tree = new Map<string, string>();
-      await listAll(client, "/workspace", tree);
-      for (const known of Object.keys(mirror.files)) {
-        if (tree.get(known) !== "file") {
-          await apply(client, place, mirror, known, null);
+      mirror.resetBegin();
+      try {
+        await listApply(client, place, mirror, "/workspace");
+        for (let after = "", gone = mirror.unseen(after, PAGE); gone.length > 0;
+             gone = mirror.unseen(after, PAGE)) {
+          for (const path of gone) {
+            if (!path.startsWith(`${SESSIONS}/`)) {
+              await apply(client, place, mirror, path, null);
+            }
+          }
+          after = gone.at(-1)!;
         }
+      } finally {
+        mirror.resetEnd();
       }
-      for (const [path, kind] of tree) {
-        await apply(client, place, mirror, path, kind);
-      }
-      mirror.cursor = page["cursor"] as number;
+      mirror.setCursor(page["cursor"] as number);
       continue;
     }
     const last = new Map<string, string | null>();
@@ -281,7 +453,7 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
         await apply(client, place, mirror, path, kind);
       }
     }
-    mirror.cursor = page["cursor"] as number;
+    mirror.setCursor(page["cursor"] as number);
     if (changes.length < FEED_LIMIT) {
       return;
     }
@@ -292,23 +464,68 @@ export interface SyncReport {
   readonly committed: number;
   readonly conflicts: readonly string[];
   readonly refused: readonly { readonly path: string; readonly reason: string }[];
+  /** Files skipped for this sync: gone, or changed, while it ran; sent by the next one. */
+  readonly skipped: readonly { readonly path: string; readonly reason: string }[];
 }
 
 /**
- * The owner's sync-ignore file: what the sync never offers. Regenerable trees (dependencies,
- * build outputs, caches, derived indexes) are rebuilt in the sandbox, not kept as the owner's
- * files, so they never fill the owner's storage nor its history. It is the owner's own file,
- * an editable setting the app shows (`DEFAULT_SYNC_IGNORE` written there when it is missing),
- * never a wall: what it names stays in the sandbox, untouched.
+ * The sync-ignore file: what the sync never offers. Regenerable trees (dependencies, build
+ * outputs, caches, derived indexes) are rebuilt in the sandbox, not kept as the owner's
+ * files, so they never fill the owner's storage nor its history. Every agent may edit it
+ * (the founder's every-agent-full-power rule), and nothing is hidden from the owner by it:
+ * the file itself is never ignored, so every edit reaches the owner's files, where each
+ * change is a receipt and a notice; and a default pattern never stops syncing a path the
+ * owner already keeps, only new ones. It is never a wall: what it names stays in the
+ * sandbox, untouched.
  */
 export const SYNC_IGNORE = "/workspace/.ta/sync-ignore";
-export const DEFAULT_SYNC_IGNORE: readonly string[] = Object.freeze([
-  "# What the sync never keeps in your files: things your agents rebuild. Edit freely;",
-  "# a line is a file or folder name (* and ? match), or a path from /workspace with a /.",
+const SYNC_IGNORE_REL = SYNC_IGNORE.slice("/workspace/".length);
+export const DEFAULT_IGNORES: readonly string[] = Object.freeze([
   "node_modules", ".venv", "venv", "__pycache__", "*.pyc", ".pytest_cache", ".mypy_cache",
   ".ruff_cache", ".tox", ".next", ".nuxt", ".turbo", ".parcel-cache", ".cache", "dist",
   "build", "target", ".gradle", "coverage", "graphify-out",
 ]);
+export const DEFAULT_SYNC_IGNORE: readonly string[] = Object.freeze([
+  "# What the sync never keeps in your files: things your agents rebuild. Edit freely;",
+  "# a line is a file or folder name (* and ? match), or a path from /workspace with a /.",
+  "# A path already kept goes on syncing whatever a default line here says.",
+  ...DEFAULT_IGNORES,
+]);
+
+/**
+ * Whether `text` matches `pattern` (`*` any run of characters, `?` any one), in time linear
+ * in the text for a pattern: the pattern's positions are walked together (a set of states,
+ * no backtracking), so no pattern can make a match slow.
+ */
+export function wildcard(pattern: string, text: string): boolean {
+  const p = [...pattern];
+  let states = new Uint8Array(p.length + 1);
+  const close = (from: Uint8Array) => {
+    for (let i = 0; i < p.length; i++) {
+      if (from[i] === 1 && p[i] === "*") {
+        from[i + 1] = 1;
+      }
+    }
+  };
+  states[0] = 1;
+  close(states);
+  for (const ch of text) {
+    const next = new Uint8Array(p.length + 1);
+    for (let i = 0; i < p.length; i++) {
+      if (states[i] !== 1) {
+        continue;
+      }
+      if (p[i] === "*") {
+        next[i] = 1;
+      } else if (p[i] === "?" || p[i] === ch) {
+        next[i + 1] = 1;
+      }
+    }
+    close(next);
+    states = next;
+  }
+  return states[p.length] === 1;
+}
 
 /** One sync-ignore line as a matcher: a name anywhere, or a path from the workspace. */
 function rule(line: string): ((rel: string) => boolean) | null {
@@ -316,24 +533,42 @@ function rule(line: string): ((rel: string) => boolean) | null {
   if (text === "" || text.startsWith("#")) {
     return null;
   }
-  const glob = (pattern: string) => new RegExp(`^${pattern.split("").map((ch) =>
-    ch === "*" ? "[^/]*" : ch === "?" ? "[^/]" : ch.replace(/[.+^${}()|[\]\\]/g, "\\$&"))
-    .join("")}$`);
   if (text.includes("/")) {
-    const anchored = glob(text.replace(/^\/+/, ""));
+    const anchored = text.replace(/^\/+/, "");
     return (rel) => {
       const parts = rel.split("/");
-      return parts.some((_, i) => anchored.test(parts.slice(0, i + 1).join("/")));
+      return parts.some((_, i) => wildcard(anchored, parts.slice(0, i + 1).join("/")));
     };
   }
-  const name = glob(text);
-  return (rel) => rel.split("/").some((part) => name.test(part));
+  return (rel) => rel.split("/").some((part) => wildcard(text, part));
 }
 
-/** Whether a workspace path (relative to `/workspace`) is one the rules ignore. */
-export function ignoredBy(lines: readonly string[]): (rel: string) => boolean {
-  const rules = lines.map(rule).filter((r): r is (rel: string) => boolean => r !== null);
-  return (rel) => rules.some((matches) => matches(rel));
+/**
+ * The matcher of a sync-ignore's lines: for a workspace path (relative to `/workspace`),
+ * `custom` when a line of the owner's own (or a run's) names it, `default` when only a
+ * default line does, or null. The sync-ignore file itself is never matched.
+ */
+export function ignoredBy(lines: readonly string[]):
+    (rel: string) => "custom" | "default" | null {
+  const defaults = new Set(DEFAULT_IGNORES);
+  const rules = lines.map((line) => ({ matches: rule(line), default: defaults.has(line.trim()) }))
+    .filter((r): r is { matches: (rel: string) => boolean; default: boolean } =>
+      r.matches !== null);
+  return (rel) => {
+    if (rel === SYNC_IGNORE_REL || SYNC_IGNORE_REL.startsWith(`${rel}/`)) {
+      return null;  // the file itself, and the folders on its way, are never kept out
+    }
+    let found: "default" | null = null;
+    for (const r of rules) {
+      if (r.matches(rel)) {
+        if (!r.default) {
+          return "custom";
+        }
+        found = "default";
+      }
+    }
+    return found;
+  };
 }
 
 /**
@@ -341,7 +576,7 @@ export function ignoredBy(lines: readonly string[]): (rel: string) => boolean {
  * file written with them (so the owner sees and edits them) when it is missing.
  */
 export function syncIgnore(local: string): readonly string[] {
-  const path = localOf({ local } as Place, SYNC_IGNORE);
+  const path = localOf({ local }, SYNC_IGNORE);
   const read = safeRead(local, path);
   if (read !== null) {
     return read.toString("utf8").split("\n");
@@ -363,7 +598,9 @@ interface Op {
   readonly from?: { readonly base: string; readonly local: string };
   /** A small file's bytes (at most `INLINE_BYTES`), carried whole. */
   readonly inline?: Uint8Array;
+  /** Its identity when it was offered: what the mirror records once it lands. */
   readonly size?: number;
+  readonly mtime_ms?: number;
   readonly sha256?: string;
   /** A large file's chunks' hashes, as read when it was offered. */
   readonly chunks?: readonly string[];
@@ -407,50 +644,74 @@ class ChangedWhileSyncing extends Error {
 
 /**
  * A large file through the files plane's upload doors, a chunk at a time as it is read: its
- * intent's id. A chunk that no longer matches what was offered (the file changed since) ends
- * it (`ChangedWhileSyncing`): the file is offered again by the next sync.
+ * intent's id. A chunk that no longer matches what was offered (the file changed since), or
+ * a file gone, ends it (`ChangedWhileSyncing`); a refusal of a chunk ends it too. Either way
+ * the upload is aborted at once, so nothing holds the owner's storage for it.
  */
 async function upload(client: SyncClient, op: Op,
                       lease: { lease_id: string; epoch: number }): Promise<string> {
   const begun = await client.post("upload_begin", { lease_id: lease.lease_id,
                                                     epoch: lease.epoch, size: op.size,
                                                     chunks: op.chunks });
-  const missing = new Set(begun["missing"] as string[]);
-  const ok = await safePieces(op.from!.base, op.from!.local, CHUNK_BYTES, async (piece, i) => {
-    const hash = sha256(piece);
-    if (hash !== op.chunks![i]) {
+  const intentId = begun["intent_id"] as string;
+  try {
+    const missing = new Set(begun["missing"] as string[]);
+    const ok = await safePieces(op.from!.base, op.from!.local, CHUNK_BYTES,
+                                async (piece, i) => {
+      const hash = sha256(piece);
+      if (hash !== op.chunks![i]) {
+        throw new ChangedWhileSyncing(op.path);
+      }
+      if (missing.delete(hash)) {
+        await client.post("upload_chunks", { lease_id: lease.lease_id, epoch: lease.epoch,
+                                             intent_id: intentId, chunks: [
+          { sha256: hash, bytes: piece.toString("base64") }] });
+      }
+    });
+    if (!ok || missing.size > 0) {
       throw new ChangedWhileSyncing(op.path);
     }
-    if (missing.delete(hash)) {
-      await client.post("upload_chunks", { lease_id: lease.lease_id, epoch: lease.epoch,
-                                           intent_id: begun["intent_id"], chunks: [
-        { sha256: hash, bytes: piece.toString("base64") }] });
+  } catch (error) {
+    try {
+      await client.post("upload_abort", { lease_id: lease.lease_id, epoch: lease.epoch,
+                                          intent_id: intentId });
+    } catch (aborting) {
+      // A lost lease lets its uploads go itself (`Files.#endUploads`); any other refusal of
+      // the abort leaves the upload to its own expiry, and the first error stands.
+      if (aborting instanceof SyncFenced) {
+        throw aborting;
+      }
     }
-  });
-  if (!ok || missing.size > 0) {
-    throw new ChangedWhileSyncing(op.path);
+    throw error;
   }
-  return begun["intent_id"] as string;
+  return intentId;
+}
+
+/** A path's local identity now: a regular file's stat, or null when it is gone or not one. */
+function fileStat(local: string): Stats | null {
+  try {
+    const stat = lstatSync(local);
+    return stat.isFile() ? stat : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT"
+        || (error as NodeJS.ErrnoException).code === "ENOTDIR") {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
  * The sandbox's changes back to the owner's files, as fenced commits on the lease; `atoms`
- * the secrets' atoms (`guards.ts`) no synced file may hold.
- *
- * It streams: a file is read when it is offered (its hash and its secrets' scan a chunk at a
- * time) and again when its batch is sent, so what is held at once is one batch's small files
- * (each at most `INLINE_BYTES`) and one chunk, whatever the run changed. A batch is sent as
- * soon as it fills. The engines' sessions go first, in commits of their own, so a large
- * workspace sync never takes the conversation's durable copy down with it. Paths the owner's
- * sync-ignore names are never offered (nor removed). An op the object refuses (the owner's
- * storage full among them, `storage_full`) is not written to the mirror, so it stays in the
- * sandbox and is offered again by the next run.
+ * the secrets' atoms (`guards.ts`) no synced file may hold. What it holds is bounded whatever
+ * the tree holds (the module's note); the mirror is written as each batch commits.
  */
 export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
                               lease: { lease_id: string; epoch: number },
                               atoms: readonly string[]): Promise<SyncReport> {
   const refused: { path: string; reason: string }[] = [];
   const conflicts: string[] = [];
+  const skipped: { path: string; reason: string }[] = [];
   let committed = 0;
   let batch: Op[] = [];
   let bytes = 0;
@@ -474,11 +735,16 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
         try {
           sent.push({ ...fields, intent_id: await upload(client, op, lease) });
         } catch (error) {
-          if (!(error instanceof ChangedWhileSyncing)) {
-            throw error;
+          if (error instanceof ChangedWhileSyncing) {
+            skipped.push({ path: op.path,
+                           reason: "changed while syncing; the next sync sends it" });
+            continue;
           }
-          refused.push({ path: op.path, reason: "changed while syncing; the next sync sends it" });
-          continue;
+          if (error instanceof SyncRefused) {
+            refused.push({ path: op.path, reason: error.message });
+            continue;
+          }
+          throw error;
         }
       }
       ops.push(op);
@@ -491,24 +757,24 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     const outcomes = answer["outcomes"] as { path: string; outcome: string;
                                              entry?: { version: number } | null;
                                              reason?: string }[];
-    for (const outcome of outcomes) {
-      const op = ops.find((each) => each.path === outcome.path);
-      if (outcome.outcome === "committed") {
-        committed += 1;
-        if (op?.op === "remove" || outcome.entry === null || outcome.entry === undefined) {
-          delete mirror.files[outcome.path];
+    mirror.batch(() => {
+      for (const outcome of outcomes) {
+        const op = ops.find((each) => each.path === outcome.path);
+        if (outcome.outcome === "committed") {
+          committed += 1;
+          if (op?.op === "remove" || outcome.entry === null || outcome.entry === undefined) {
+            mirror.drop(outcome.path);
+          } else {
+            mirror.put(outcome.path, { version: outcome.entry.version, size: op!.size!,
+                                       mtime_ms: op!.mtime_ms!, sha256: op!.sha256! });
+          }
+        } else if (outcome.outcome === "conflict") {
+          conflicts.push(outcome.path);
         } else {
-          const local = op!.from?.local ?? where.get(outcome.path)!;
-          const stat = lstatSync(local);
-          mirror.files[outcome.path] = { version: outcome.entry.version, size: op!.size!,
-                                         mtime_ms: stat.mtimeMs, sha256: op!.sha256! };
+          refused.push({ path: outcome.path, reason: outcome.reason ?? "refused" });
         }
-      } else if (outcome.outcome === "conflict") {
-        conflicts.push(outcome.path);
-      } else {
-        refused.push({ path: outcome.path, reason: outcome.reason ?? "refused" });
       }
-    }
+    });
   };
   const add = async (op: Op) => {
     const size = op.inline === undefined ? op.path.length + 128
@@ -519,19 +785,23 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     batch.push(op);
     bytes += size;
   };
-  const where = new Map<string, string>();
-  const offer = async (path: string, base: string, local: string) => {
-    where.set(path, local);
-    const known = mirror.files[path];
-    const stat = lstatSync(local);
-    if (known !== undefined && known.size === stat.size && known.mtime_ms === stat.mtimeMs) {
+  const offer = async (path: string, base: string, local: string): Promise<void> => {
+    const stat = fileStat(local);
+    if (stat === null) {
+      skipped.push({ path, reason: "gone before it was sent" });
       return;
     }
-    const mode = (stat.mode & 0o111) !== 0 ? 1 : 0;
-    if (stat.size <= INLINE_BYTES) {
+    const size = Number(stat.size);
+    const mtime = Number(stat.mtimeMs);
+    const known = mirror.get(path);
+    if (known !== undefined && known.size === size && known.mtime_ms === mtime) {
+      return;
+    }
+    const mode = (Number(stat.mode) & 0o111) !== 0 ? 1 : 0;
+    if (size <= INLINE_BYTES) {
       const small = safeRead(base, local);
       if (small === null) {
-        refused.push({ path, reason: "not a regular file the sync may read" });
+        skipped.push({ path, reason: "gone before it was sent" });
         return;
       }
       if (small.byteLength > INLINE_BYTES) {
@@ -539,7 +809,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       }
       const digest = sha256(small);
       if (known !== undefined && known.sha256 === digest) {
-        known.mtime_ms = stat.mtimeMs;
+        mirror.put(path, { ...known, size: small.byteLength, mtime_ms: mtime });
         return;
       }
       if (heldSecret(small.toString("latin1"), atoms) !== null
@@ -548,16 +818,17 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
         return;
       }
       await add({ op: "write", path, base: known?.version ?? null, mode,
-                  inline: new Uint8Array(small), size: small.byteLength, sha256: digest });
+                  inline: new Uint8Array(small), size: small.byteLength, mtime_ms: mtime,
+                  sha256: digest });
       return;
     }
     const read = await scanned(base, local, atoms);
     if (read === null) {
-      refused.push({ path, reason: "not a regular file the sync may read" });
+      skipped.push({ path, reason: "gone before it was sent" });
       return;
     }
     if (known !== undefined && known.sha256 === read.sha256) {
-      known.mtime_ms = stat.mtimeMs;
+      mirror.put(path, { ...known, size: read.size, mtime_ms: mtime });
       return;
     }
     if (read.secret) {
@@ -565,11 +836,11 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       return;
     }
     await add({ op: "write", path, base: known?.version ?? null, mode,
-                from: { base, local }, size: read.size, sha256: read.sha256,
+                from: { base, local }, size: read.size, mtime_ms: mtime, sha256: read.sha256,
                 chunks: read.chunks });
   };
   // The sessions first, sent before any workspace file is read.
-  for (const rel of safeWalk(place.sessionsOut)) {
+  for (const rel of walkFiles(place.sessionsOut)) {
     const [engine, ...rest] = rel.split("/");
     const path = `${SESSIONS}/${place.authority}/${engine}/${rest.join("/")}`;
     if (sessionOf(place, path) !== null) {
@@ -578,25 +849,38 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   }
   await send();
   const ignored = ignoredBy(syncIgnore(place.local));
-  const present = new Set<string>();
-  for (const rel of safeWalk(place.local, (each) => {
+  /** Kept out: a custom line's path, or a default line's path the owner does not keep yet. */
+  const out = (rel: string): boolean => {
+    const why = ignored(rel);
+    return why === "custom" || (why === "default"
+                                && !mirror.knowsUnder(`/workspace/${rel}`));
+  };
+  for (const rel of walkFiles(place.local, (each) => {
     const name = each.split("/").at(-1)!;
-    return each === ".sessions" || name.startsWith(".ta-") || ignored(each.split("\\").join("/"));
+    return each === ".sessions" || name.startsWith(".ta-") || out(each.split("\\").join("/"));
   })) {
     const path = `/workspace/${rel.split("\\").join("/")}`;
-    present.add(path);
     if (place.authority !== "owner" && inOwnerTrees(path)) {
       continue;
     }
     await offer(path, place.local, localOf(place, path));
   }
-  for (const [path, known] of Object.entries(mirror.files)) {
-    if (!path.startsWith(`${SESSIONS}/`) && !present.has(path)
-        && !ignored(path.slice("/workspace/".length))
-        && !(place.authority !== "owner" && inOwnerTrees(path))) {
-      await add({ op: "remove", path, base: known.version });
+  // What the mirror knows and the workspace no longer holds goes, page by page; a path a
+  // custom line keeps out is never removed (the owner keeps it as it was).
+  for (let after = "", known = mirror.page(after, PAGE); known.length > 0;
+       known = mirror.page(after, PAGE)) {
+    for (const path of known) {
+      if (path.startsWith(`${SESSIONS}/`) || !path.startsWith("/workspace/")
+          || (place.authority !== "owner" && inOwnerTrees(path))
+          || ignored(path.slice("/workspace/".length)) === "custom") {
+        continue;
+      }
+      if (fileStat(localOf(place, path)) === null) {
+        await add({ op: "remove", path, base: mirror.get(path)!.version });
+      }
     }
+    after = known.at(-1)!;
   }
   await send();
-  return { committed, conflicts, refused };
+  return { committed, conflicts, refused, skipped };
 }

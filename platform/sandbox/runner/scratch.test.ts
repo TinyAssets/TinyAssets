@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { type Disk, keepReserve, pruneScratch, scratchEnv, scratchNotice,
+import { type Disk, keepReserve, markUsed, pruneScratch, readIndex, scratchEnv, scratchNotice,
          writeOrRelease } from "./scratch";
 
 const DAY = 86_400_000;
@@ -116,5 +116,16 @@ describe("the runner's room on the disk", () => {
     expect(keepReserve(reserve, 4096, () => ({ free_bytes: 8000, total_bytes: 1e10,
                                                free_inodes: 1, total_inodes: 1 }))).toBe(false);
     expect(existsSync(reserve)).toBe(false);
+  });
+});
+
+describe("the scratch's last uses", () => {
+  it("are one stamp an agent, so runners at once never lose each other's", () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "stamps-")), "used");
+    const one = readIndex(dir);
+    const other = readIndex(dir);
+    markUsed(one, "a", NOW);
+    markUsed(other, "b", NOW + 1_000);
+    expect(readIndex(dir).used).toEqual({ a: NOW, b: NOW + 1_000 });
   });
 });

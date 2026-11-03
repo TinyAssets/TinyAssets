@@ -12,8 +12,9 @@
  * outside the workspace a planted link could name.
  */
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fchmodSync, fchownSync, fstatSync, lstatSync, mkdirSync,
-         openSync, readdirSync, readSync, renameSync, rmSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, type Dir, fchmodSync, fchownSync, fstatSync, lstatSync, mkdirSync,
+         opendirSync, openSync, readdirSync, readSync, renameSync, rmSync, unlinkSync,
+         writeSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 export class LinkRefused extends Error {
@@ -190,6 +191,97 @@ export async function safePieces(base: string, path: string, pieceBytes: number,
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * Every regular file under `dir`, by path from it, by `lstat` alone (links never entered),
+ * one at a time: each directory is read entry by entry (`opendir`), so what the walk holds is
+ * one open directory a level of depth, never the tree's paths, however many there are.
+ */
+export function* walkFiles(dir: string, skip: (rel: string) => boolean = () => false,
+                           base = dir): Generator<string> {
+  if (kind(dir) !== "dir") {
+    return;
+  }
+  let handle: Dir;
+  try {
+    handle = opendirSync(dir);
+  } catch {
+    return;  // one this user may not list: its contents are not ours to sync
+  }
+  try {
+    for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+      const path = join(dir, entry.name);
+      const rel = relative(base, path);
+      if (skip(rel)) {
+        continue;
+      }
+      const found = kind(path);
+      if (found === "dir") {
+        yield* walkFiles(path, skip, base);
+      } else if (found === "file") {
+        yield rel;
+      }
+    }
+  } finally {
+    handle.closeSync();
+  }
+}
+
+/**
+ * A regular file written a piece at a time, with no link followed on its path: made under a
+ * random name beside it (`O_EXCL | O_NOFOLLOW`), each piece appended as it comes, then its
+ * mode and owner set on the descriptor and renamed into place. What it holds at once is the
+ * piece in hand, whatever the file's size; `abort` removes what was written.
+ */
+export function safeStream(base: string, path: string, mode: number,
+                           owner?: { uid: number; gid: number }, dirMode = 0o700):
+    { append(piece: Uint8Array): void; commit(): void; abort(): void } {
+  const segments = below(base, path);
+  const parent = segments.length === 1 ? base : join(base, ...segments.slice(0, -1));
+  safeDirs(base, parent, dirMode, owner);
+  const temp = join(parent, `.ta-${randomBytes(12).toString("hex")}`);
+  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+                      | constants.O_NOFOLLOW, mode);
+  let open = true;
+  const close = () => {
+    if (open) {
+      open = false;
+      closeSync(fd);
+    }
+  };
+  return {
+    append(piece) {
+      try {
+        for (let at = 0; at < piece.byteLength;) {
+          at += writeSync(fd, piece, at, piece.byteLength - at);
+        }
+      } catch (error) {
+        close();
+        unlinkSync(temp);
+        throw error;
+      }
+    },
+    commit() {
+      try {
+        fchmodSync(fd, mode);
+        if (owner !== undefined) {
+          fchownSync(fd, owner.uid, owner.gid);
+        }
+      } finally {
+        close();
+      }
+      if (kind(path) === "dir") {
+        unlinkSync(temp);
+        throw new LinkRefused(`${path} is a directory`);
+      }
+      renameSync(temp, path);
+    },
+    abort() {
+      close();
+      rmSync(temp, { force: true });
+    },
+  };
 }
 
 /** Every regular file under `dir`, by path from it, by `lstat` alone: links never entered. */

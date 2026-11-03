@@ -362,14 +362,18 @@ Each agent SHALL have a scratch area on its sandbox's own disk (`/scratch/<agent
 - **THEN** none of it is synced or counted, and the next run of that agent finds it there unless the disk needed the room or it went unused past the retention
 
 ### Requirement: Sync-out streams, the sessions first, the owner's ignore list kept
-Sync-out SHALL read a file a chunk at a time, hashing and scanning it as it reads, and send each batch as it fills, so what it holds is one batch's small files and one chunk whatever the run changed. The engines' sessions SHALL be committed first, in commits of their own. Paths the owner's `/workspace/.ta/sync-ignore` names (regenerable trees by default, the file written where the owner sees and edits it) SHALL never be offered nor removed. An op refused `storage_full` SHALL stay in the sandbox, unmirrored, and be offered again by the next run, the run reporting it once (`ta.storage_full`): the only place an upgrade is offered.
+Sync-out SHALL read a file a chunk at a time, hashing and scanning it as it reads, and send each batch as it fills, so what it holds is one batch's small files and one chunk whatever the run changed. The engines' sessions SHALL be committed first, in commits of their own. Sync-in SHALL stream each file's chunks to a temporary file beside it, renamed into place when whole, so a file larger than the sandbox's memory syncs in; and sync-out's memory SHALL not grow with the number of paths (the mirror an on-disk database, the tree walked a directory at a time, removals paged). Paths the owner's `/workspace/.ta/sync-ignore` names (regenerable trees by default, the file written where the owner sees and edits it) SHALL never be offered nor removed; the file itself is never ignored, a run may edit it, and each change to it SHALL record a receipt and one owner notice. A default pattern SHALL only stop new paths: a file already synced under it keeps syncing. A file's identity (size and change time) SHALL be read when it is offered and checked at its commit: one changed or deleted in between is skipped and reported (`ta.sync_skipped`), never committed from a mix. An op refused SHALL be refused alone, with the doors' whole message, the rest of the batch going on; one refused `storage_full` SHALL stay in the sandbox, unmirrored, and be offered again by the next run, the run reporting it once (`ta.storage_full`, `uploads_open` its own report): the only place an upgrade is offered, once a sync. The mirror SHALL be saved after each committed batch, and an upload given up SHALL be aborted at the doors.
 
 #### Scenario: A large build in the workspace
 - **WHEN** a run leaves hundreds of MB of changed files under `/workspace`
 - **THEN** the sync agent's memory stays bounded, the transcript is committed before them, and an ignored tree is never sent
 
+#### Scenario: The storage fills partway through a sync
+- **WHEN** a large file's upload is refused `storage_full` after smaller files committed
+- **THEN** the committed files are mirrored, the large file stays in the sandbox and is reported once with the refusal's own words, and the next run offers it again
+
 ### Requirement: A full disk never loses the run
-The runner SHALL keep a reserve on the disk (`RESERVE_BYTES`) that it lets go when its own state write meets `ENOSPC`, and before sync-out when the disk is full; a state write that fails even so SHALL leave the state in memory and the run going, so a full disk never leaves a run `unknown`.
+The runner SHALL keep a reserve on the disk (`RESERVE_BYTES`) that it lets go when its own state write meets `ENOSPC`, and before it stages a run's sessions for sync-out whenever the disk has less free than the reserve; it SHALL stage only the sessions the run changed; a state write that fails even so SHALL leave the state in memory and the run going, so a full disk never leaves a run `unknown`.
 
 #### Scenario: The disk fills mid-run
 - **WHEN** a run's clone fills the sandbox's disk

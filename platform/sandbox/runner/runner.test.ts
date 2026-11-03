@@ -747,6 +747,39 @@ describe("the sync", () => {
     expect(doors.ops().slice(before).map((op) => op.path))
       .toContain("/workspace/agents/main/notes.md");
   });
+
+  it("refused at a large file's upload: that file kept, the upgrade said once, the rest sent",
+     async () => {
+    const full = "storage_full: your storage is full: 24.5 GB of 25.0 GB used, and this needs " +
+      "2.0 GB more (500 MB free). Free some space (delete files you no longer need), or " +
+      "upgrade to paid for 250 GB. {}";
+    doors.refuseBegin = () => ({ status: 507, message: full });
+    box.cli("codex", { lines: SHAPES["codex"]!.lines,
+                       writes: { "a.bin": "a".repeat(9000), "b.bin": "b".repeat(9000),
+                                 "small.md": "small" } });
+    await run("codex");
+    const frames = doors.frames();
+    const once = frames.filter((each) => each["type"] === "ta.storage_full");
+    expect(once).toHaveLength(1);
+    expect(once[0]).toMatchObject({ message: full, files: 2 });
+    // Each file's own event says the code alone: the upgrade is offered once a sync.
+    expect(frames.filter((each) => each["type"] === "ta.sync_refused")
+      .map((each) => each["reason"])).toEqual(["storage_full", "storage_full"]);
+    expect(frames.some((each) => each["type"] === "ta.runner_error")).toBe(false);
+    expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/small.md");
+    doors.refuseBegin = () => null;
+  });
+
+  it("stages only the sessions a run changed, never the history it was handed", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
+                             writes: { "~/.claude/projects/main/cs-1.jsonl": "{\"turn\":1}\n" } });
+    await run("claude-code");
+    const before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    await run("claude-code");
+    expect(doors.ops().slice(before).filter((op) => op.path.startsWith("/workspace/.sessions/")))
+      .toEqual([]);
+  });
 });
 
 describe("the scratch area", () => {

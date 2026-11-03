@@ -193,6 +193,13 @@ export class Doors {
   readonly uploads = new Map<string, { size: number; chunks: string[]; got: string[] }>();
   /** A commit op the object refuses, by its path: its reason, or null to commit it. */
   refuse: (path: string) => string | null = () => null;
+  /**
+   * An upload's begin the object refuses, by its size: its status and the object's whole
+   * message (a full storage's 507 among them), or null to begin it.
+   */
+  refuseBegin: (size: number) => { status: number; message: string } | null = () => null;
+  /** Uploads the sync agent aborted, by intent id. */
+  readonly aborted: string[] = [];
   #server: Server | null = null;
   #version = 100;
   origin = "";
@@ -246,6 +253,15 @@ export class Doors {
         if ((path === "/sync/upload_begin" || path === "/sync/upload_chunks")
             && (typeof body["lease_id"] !== "string" || typeof body["epoch"] !== "number")) {
           return json(403, { error: { code: "sync_fenced" } });  // a sync upload is the lease's
+        }
+        if (path === "/sync/upload_begin" && this.refuseBegin(body["size"] as number) !== null) {
+          const { status, message } = this.refuseBegin(body["size"] as number)!;
+          return json(status, { error: { code: /^[a-z_]+/.exec(message)?.[0] ?? "refused",
+                                         message } });
+        }
+        if (path === "/sync/upload_abort") {
+          this.aborted.push(body["intent_id"] as string);
+          return json(200, { aborted: true });
         }
         if (path === "/sync/upload_begin") {
           const id = `${"0".repeat(31)}${this.uploads.size + 1}`;
