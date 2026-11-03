@@ -1532,12 +1532,12 @@ R, S, M and W.
     request they built, with no `CLAUDE.md` fallback needed; Kimi Code 2.4.1 (no key
     credential) read `AGENTS.md` before stopping at its sign-in.
 - [ ] Owed by the starter slice:
-  - **Widenings through `policy_propose`** (the research, §3.4; review M2, L10): a held
-    policy proposal applies only as a whole owner policy document (`Policy.write`), and an
-    `agent.json` scope or a script is a file, not policy, so `policy_propose` cannot carry
-    it to an apply. Until a design for a file-applying proposal is chosen (research first,
-    Fact 14), a widening stays a `.ta-new` beside its file with a `starter_proposal` notice,
-    applied only by the owner moving it.
+  - **Deviation, ruled 2026-11-03 (review M2, L10):** the research named `policy_propose`,
+    but it can't apply files (a held policy proposal applies only as a whole owner policy
+    document, `Policy.write`); `.ta-new` plus a notice is the proposal. Nothing widens until
+    the owner, or their agent at the owner's ask, adopts it; the `starter_proposal` notice
+    and the starter's `AGENTS.md` and `onboarding` say how (ask the agent, or replace the
+    file). No file-applying proposal kind is built.
   - **ChatGPT reads the first page of a search only** (review L8): deep research and
     company knowledge do not follow `next_cursor`, so past `SEARCH_SCAN` entries they see
     the first page in path order. A known gap: scanning `/workspace/knowledge` first is one

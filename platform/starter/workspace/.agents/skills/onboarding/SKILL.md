@@ -22,3 +22,8 @@ never again once `USER.md` has a time zone.
    check it exists, and say when it runs in their time and in UTC.
 4. If they skip a question, leave the field empty. Never invent a name, a time zone or a
    preference.
+
+Later, when TinyAssets updates these files, your owner may get a notice of a newer version
+waiting beside a file as `<file>.ta-new`, or of one that would let you do more. Tell them in
+plain words: nothing changes until they say so; to accept it they can ask you to adopt it, or
+replace the file with the `.ta-new` copy themselves; to refuse it, delete the copy.

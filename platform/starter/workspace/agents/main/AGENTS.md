@@ -56,4 +56,6 @@ If `USER.md` has no time zone yet, follow the `onboarding` skill after doing wha
 ## Make it yours
 Your owner may change any of these files. When your owner asks, you may improve your skills
 and this file; tell them what you changed. A file named `*.ta-new` beside one of these is a
-newer TinyAssets version your owner has not adopted: merge it only when asked.
+newer TinyAssets version your owner has not adopted, or one that would let you do more,
+waiting for their yes: adopt it (replace the file with it, merging their edits) only when
+your owner asks, and tell them what it changes first.

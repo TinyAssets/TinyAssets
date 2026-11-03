@@ -395,8 +395,10 @@ export class Starter {
       }
       if (proposed.length > 0) {
         this.#deps.notice("starter_proposal", `A TinyAssets update (version ${pkg.version}) ` +
-          `widens what your agent may do, so it waits for you beside the file as ${NEWER}; ` +
-          `move it over the file to accept it: ${proposed.join("; ")}.`);
+          `widens what your agent may do, so nothing changes until you accept it. Each waits ` +
+          `beside its file as ${NEWER}: ${proposed.join("; ")}. To accept one, ask your agent ` +
+          `to adopt it, or replace the file with the ${NEWER} copy yourself; to refuse it, ` +
+          `delete the ${NEWER} copy.`);
       }
     });
   }
