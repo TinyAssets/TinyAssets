@@ -1,9 +1,9 @@
 /**
  * The runner's test harness, in Node, tests only: a temporary root standing for the
  * sandbox's `/` (`TA_RUNNER_ROOT`) with the template's users as an unprivileged pool
- * (`ta-run-<n>`, uids from 4300, each its own group), the sync agent (`ta-sync`, 4250) and
- * the shared group `ta` (4243), so a root operation that followed a link an engine's user
- * planted shows as a changed owner, mode or content; a fake CLI per record at the record's
+ * (`ta-run-<n>`, each its own group), the sync agent (`ta-sync`) and the shared group `ta`,
+ * in a block of ids the test process takes for itself (`ID_BASE`), so a root operation that
+ * followed a link an engine's user planted shows as a changed owner, mode or content; a fake CLI per record at the record's
  * own binary path; and a fake doors server for the run's event door, the sign-in report and
  * the sync doors. The runner under test is the bundle the template carries
  * (`template/bundle.mjs`), run as its own processes, as root.
@@ -23,9 +23,15 @@ import { binPath, type StartDoc } from "./engine";
 const HERE = dirname(fileURLToPath(import.meta.url));
 let bundled: string | null = null;
 
-export const TA_GID = 4243;
-export const SYNC_UID = 4250;
-export const POOL_UIDS = Object.freeze([4300, 4301, 4302, 4303]);
+/**
+ * The test sandbox's ids: real uids, and the runner kills a pool user's every process by uid,
+ * so each test process takes a block of its own (from its pid), and two suites running on one
+ * host (two worktrees) never kill each other's users' processes.
+ */
+const ID_BASE = 100_000 + (process.pid % 100_000) * 8;
+export const TA_GID = ID_BASE;
+export const SYNC_UID = ID_BASE + 1;
+export const POOL_UIDS = Object.freeze([ID_BASE + 2, ID_BASE + 3, ID_BASE + 4, ID_BASE + 5]);
 
 /** The runner's bundle, built once per test file, readable by the sync agent's user. */
 export function runnerBundle(): string {
@@ -132,7 +138,10 @@ if (plan.login && !process.argv.includes("status")) {
       JSON.stringify({ at, argv: process.argv.slice(2), env: process.env, cwd: process.cwd(),
                        stdin, uid: process.getuid(), gid: process.getgid(),
                        groups: process.getgroups(), dumps: {}, owners: {},
-                       tty: process.stdout.isTTY === true, ...extra }));
+                       tty: process.stdout.isTTY === true,
+                       homes: Object.fromEntries(Object.entries(process.env)
+                         .filter(([, value]) => value.startsWith(process.env.HOME + "/"))
+                         .map(([name, value]) => [name, fs.existsSync(value)])), ...extra }));
   };
   const finish = () => {
     for (const [file, text] of Object.entries(plan.login.writes || {})) {

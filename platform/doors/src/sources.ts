@@ -41,6 +41,7 @@
 import {
   type Endpoint, keyExchangeSource, type Source, source as gatewaySource, type Upstream,
 } from "../../gateway/src/credential";
+import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../owner/src/run-rows";
 import { forbids, SOURCE_ID } from "../../owner/src/text";
 
 export { forbids };
@@ -280,6 +281,8 @@ const GATEWAY_KEYS: readonly string[] = Object.freeze([
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const PARAM = /^[A-Za-z0-9_.-]{1,64}$/;
 const TEXT = /^[^\p{Cc}]{1,128}$/u;
+/** A verdict's citation: where it was read, and what it says. */
+const CITATION = /^[^\p{Cc}]{1,1024}$/u;
 const SCOPE = /^[\x21-\x7e]+(?: [\x21-\x7e]+)*$/;
 const CLIENT_ID = /^[\x21-\x7e]{1,512}$/;
 
@@ -1227,16 +1230,89 @@ function noUpdateSpec(check: ReturnType<typeof checker>, value: unknown, argv: A
   });
 }
 
-/** The vendor's own sign-in in the sandbox, as the runner drives it. */
+/** The hosts a record's sign-in may send the owner to: its login hosts, and its region's. */
+export function signinHosts(rec: SourceRecord, region: string | null): string[] {
+  const cli = rec.cli;
+  if (cli === undefined) {
+    return [];
+  }
+  return [...cli.hosts.login, ...(region === null ? [] : cli.regions?.[region]?.hosts.login ?? [])];
+}
+
+/**
+ * Why a sign-in's prompt is not the record's own shape, or null: the URL matches the record's
+ * `url_pattern` whole, is `https` and on its login hosts (and the chosen region's); the code
+ * is a device code's characters, at most `SIGNIN_CODE_MAX`; the URL visible ASCII, at most
+ * `SIGNIN_URL_MAX`. Checked in the VM
+ * before a prompt leaves it, and again by the owner's object before the owner sees it.
+ */
+export function signinShape(rec: SourceRecord, region: string | null, url: string | null,
+                            code: string | null): string | null {
+  const login = rec.cli?.login as { url_pattern?: string; code_pattern?: string } | undefined;
+  if (login === undefined) {
+    return "no sign-in";
+  }
+  if (url !== null) {
+    if (url.length > SIGNIN_URL_MAX || !/^[\x21-\x7e]+$/.test(url)) {
+      return "a URL longer than a URL's bound, or not visible ASCII";
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return "a URL that is not one";
+    }
+    const whole = login.url_pattern === undefined ? null : new RegExp(login.url_pattern).exec(url);
+    if (whole === null || whole[1] !== url || parsed.protocol !== "https:"
+        || parsed.username !== "" || parsed.password !== "" || parsed.port !== ""
+        || !signinHosts(rec, region).includes(parsed.hostname)) {
+      return `a URL off the vendor's own sign-in hosts (${parsed.hostname})`;
+    }
+  }
+  // A device code: letters, digits and hyphens (RFC 8628 section 6.1), from a record that
+  // shows one at all; the runner took it from the record's `code_pattern` group.
+  if (code !== null && (login.code_pattern === undefined || code.length > SIGNIN_CODE_MAX
+                        || !/^[A-Za-z0-9-]+$/.test(code))) {
+    return "a code not of the vendor's shape";
+  }
+  return null;
+}
+
+/** The verdicts on the vendor's terms for a platform hosting its CLI's sign-in. */
+const HOSTED_USE: readonly string[] = Object.freeze(["allowed", "unclear", "forbidden"]);
+
+/**
+ * The vendor's own sign-in in the sandbox, as the runner drives it (always on a terminal of
+ * its own): its command, what of its output is shown (`url_pattern` on the record's login
+ * hosts, `code_pattern`), whether it takes a pasted code, its status, its sign-out
+ * (`logout_argv`, the vendor's own, before its secrets are deleted), the vendor's code's
+ * lifetime (`expires_s`), and the verdict on the vendor's terms for hosting it
+ * (`hosted_use`, cited), which sets whether the platform offers it unless the control
+ * record says otherwise.
+ */
 function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv):
     Record<string, unknown> {
-  const fields = check.keys(value, "cli.login", ["argv", "url_pattern"], [
+  const fields = check.keys(value, "cli.login", ["argv", "url_pattern", "hosted_use"], [
     "status_argv", "status_equals", "accepts_code", "code_pattern", "state_checks",
-    "terminal", "complete_on_state"]);
+    "complete_on_state", "logout_argv", "expires_s"]);
   argv(fields["argv"], "cli.login.argv", 16);
   if (fields["status_argv"] !== undefined) {
     argv(fields["status_argv"], "cli.login.status_argv", 16);
   }
+  if (fields["logout_argv"] !== undefined) {
+    argv(fields["logout_argv"], "cli.login.logout_argv", 16);
+  }
+  const expires = fields["expires_s"];
+  if (expires !== undefined && (typeof expires !== "number" || !Number.isSafeInteger(expires)
+                                || expires < 1)) {
+    check.fail("cli.login.expires_s is the vendor's code's lifetime, whole seconds");
+  }
+  const hosted = check.keys(fields["hosted_use"], "cli.login.hosted_use",
+                            ["verdict", "citation"]);
+  if (!HOSTED_USE.includes(String(hosted["verdict"]))) {
+    check.fail("cli.login.hosted_use.verdict is allowed, unclear or forbidden");
+  }
+  check.text(hosted["citation"], CITATION, "cli.login.hosted_use.citation");
   for (const key of ["url_pattern", "code_pattern"] as const) {
     const pattern = fields[key];
     if (pattern === undefined) {
@@ -1252,7 +1328,7 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
       check.fail(`cli.login.${key} is a regular expression`);
     }
   }
-  for (const key of ["accepts_code", "terminal", "complete_on_state"] as const) {
+  for (const key of ["accepts_code", "complete_on_state"] as const) {
     if (fields[key] !== undefined && fields[key] !== true) {
       check.fail(`cli.login.${key} is true or absent`);
     }

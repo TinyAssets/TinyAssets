@@ -20,6 +20,8 @@
  */
 import { randomBytes } from "node:crypto";
 
+import { bundledSources, signinShape } from "../../doors/src/sources";
+
 import { Invalid, Refused } from "./errors";
 import { LEASE_TTL_S, OWNER_AUTHORITY } from "./files";
 import type { OwnerStorage } from "./gate";
@@ -39,6 +41,7 @@ export interface SigninRow {
   readonly authority: string;
   readonly engine: string;
   readonly mode: SigninMode;
+  readonly region: string | null;
   readonly lease_id: string;
   readonly epoch: number;
   readonly state: string;
@@ -57,6 +60,8 @@ export interface SigninView {
   readonly mode: SigninMode;
   readonly state: string;
   readonly url: string | null;
+  /** The host the URL sends the owner to, in plain words beside it. */
+  readonly host: string | null;
   readonly code: string | null;
   readonly accepts_code: boolean;
   readonly started_at: number;
@@ -64,13 +69,14 @@ export interface SigninView {
 
 export function signinView(row: SigninRow): SigninView {
   return { id: row.id, authority: row.authority, engine: row.engine, mode: row.mode,
-           state: row.state, url: row.url, code: row.code,
+           state: row.state, url: row.url, host: row.url === null ? null : new URL(row.url).hostname,
+           code: row.code,
            accepts_code: row.accepts_code === 1, started_at: row.started_at };
 }
 
 /** The states a sign-in's end frame names. */
-const ENDS: ReadonlySet<string> = new Set(["signed_in", "signed_out", "failed", "cancelled",
-                                          "refused"]);
+const ENDS: readonly string[] = Object.freeze(["signed_in", "signed_out", "failed",
+                                               "cancelled", "refused"]);
 
 /** A frame's event, as the runner posts a sign-in's (`ta.signin`). */
 function signinEvent(event: unknown): Record<string, unknown> | null {
@@ -134,16 +140,17 @@ export class Signins {
   }
 
   /** In a unit: a sign-in begun in `authority`'s sandbox under its lease. Refused while one is. */
-  begin(authority: string, engine: string, mode: SigninMode,
+  begin(authority: string, engine: string, mode: SigninMode, region: string | null,
         lease: { lease_id: string; epoch: number }, now: number): SigninRow {
     if (this.#sql.exec("SELECT 1 FROM sandbox_signins WHERE authority = ?", authority)
       .toArray().length > 0) {
       throw new Refused(SIGNIN_LIVE);
     }
     const id = Signins.id();
-    this.#sql.exec("INSERT INTO sandbox_signins (id, authority, engine, mode, lease_id, epoch, " +
-                     "state, started_at, beat_at) VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?)",
-                   id, authority, engine, mode, lease.lease_id, lease.epoch, now, now);
+    this.#sql.exec("INSERT INTO sandbox_signins (id, authority, engine, mode, region, lease_id, " +
+                     "epoch, state, started_at, beat_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'starting', " +
+                     "?, ?)", id, authority, engine, mode, region, lease.lease_id, lease.epoch, now,
+                   now);
     return this.get(id);
   }
 
@@ -156,12 +163,15 @@ export class Signins {
 
   /**
    * In a unit: the runner's frames of sign-in `id`, under the lease that holds it: the latest
-   * prompt kept, its beat renewed; an end frame (or the post's end) ends it. Its row as it
-   * stands, and whether it ended.
+   * prompt kept, its beat renewed; an end frame (or the post's end) ends it. A prompt that is
+   * not the record's own shape (a URL off its login hosts, a code not a device code's) is
+   * checked here, outside the VM, and refused: the sign-in ends `refused`, the prompt never
+   * kept nor relayed (a hijacked engine shows no look-alike page). Its row as it stands,
+   * whether it ended, whether the trusted side refused it, and the events to relay.
    */
   frames(id: unknown, lease: { lease_id: string; epoch: number },
          events: readonly unknown[], ended: boolean, now: number):
-      { row: SigninRow; ended: boolean } {
+      { row: SigninRow; ended: boolean; refused: boolean; events: unknown[] } {
     const row = this.#row(id);
     if (row === undefined || row.lease_id !== lease.lease_id || row.epoch !== lease.epoch) {
       throw new Refused(NO_SIGNIN);
@@ -170,25 +180,45 @@ export class Signins {
     let url = row.url;
     let code = row.code;
     let accepts = row.accepts_code;
+    let refused = false;
+    const relayed: unknown[] = [];
+    const rec = bundledSources().get(row.engine)!;
     for (const event of events.map(signinEvent)) {
-      if (event === null || typeof event["state"] !== "string") {
+      if (event === null || typeof event["state"] !== "string" || refused) {
+        continue;
+      }
+      if (event["state"] === "open") {
+        const nextUrl = typeof event["url"] === "string" ? event["url"] : null;
+        const nextCode = typeof event["code"] === "string" ? event["code"] : null;
+        const why = signinShape(rec, row.region, nextUrl, nextCode);
+        if (why !== null) {
+          refused = true;
+          state = "refused";
+          url = null;
+          code = null;
+          relayed.push({ type: "ta.signin", state: "refused", reason: why });
+          continue;
+        }
+        url = nextUrl;
+        code = nextCode;
+        accepts = event["accepts_code"] === true ? 1 : 0;
+        relayed.push({ type: "ta.signin", state: "open", url, code,
+                       accepts_code: accepts === 1 });
+        state = "open";
         continue;
       }
       state = event["state"];
-      if (state === "open") {
-        url = typeof event["url"] === "string" ? event["url"] : null;
-        code = typeof event["code"] === "string" ? event["code"] : null;
-        accepts = event["accepts_code"] === true ? 1 : 0;
-      }
+      relayed.push({ type: "ta.signin", state,
+                     ...(typeof event["reason"] === "string" ? { reason: event["reason"] } : {}) });
     }
     this.#sql.exec("UPDATE sandbox_signins SET state = ?, url = ?, code = ?, accepts_code = ?, " +
                      "beat_at = ? WHERE id = ?", state, url, code, accepts, now, row.id);
     const after = this.get(row.id);
-    if (ended || ENDS.has(state)) {
+    if (ended || refused || ENDS.includes(state)) {
       this.end(row.id);
-      return { row: after, ended: true };
+      return { row: after, ended: true, refused, events: relayed };
     }
-    return { row: after, ended: false };
+    return { row: after, ended: false, refused, events: relayed };
   }
 }
 

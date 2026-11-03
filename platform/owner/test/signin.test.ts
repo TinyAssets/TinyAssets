@@ -112,6 +112,35 @@ describe("a sign-in", () => {
       .toBe(RUN_ENDED);
   });
 
+  it("refuses, outside the VM, a prompt that is not the vendor's own: the CLI stopped",
+     async () => {
+    const r = await gated();
+    for (const [engine, url, code] of [
+      ["claude-code", "https://claude.ai.phish.test/oauth/authorize?code=true", null],
+      ["claude-code", "http://claude.ai/oauth/authorize?code=true", null],
+      ["codex", "https://auth.openai.com/codex/device", "ABCDEFGHIJKLMNOPQRS"],
+      ["codex", "https://auth.openai.com/codex/device", "AB CD"]] as const) {
+      const { id } = await r.stub.signinStart(r.bind(), { engine }) as { id: string };
+      const signin = await lastSignin(r);
+      expect(await r.stub.signinEvents(runnerOfSignin(r, signin), { id, frames: [
+        frame(1, { state: "open", url, code, accepts_code: false })] }))
+        .toEqual({ accepted: 1, ended: true });
+      expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
+      expect((await recorder(r.stub)).signinCancels.at(-1)).toEqual({ authority: "owner", id });
+    }
+  });
+
+  it("shows the host the vendor's URL sends the owner to", async () => {
+    const r = await gated();
+    const { id } = await r.stub.signinStart(r.bind(), { engine: "kimi", region: "global" }) as
+      { id: string };
+    await r.stub.signinEvents(runnerOfSignin(r, await lastSignin(r)), { id, frames: [
+      frame(1, { state: "open", url: "https://www.kimi.ai/code/device?user_code=K1-ABC",
+                 code: "K1-ABC", accepts_code: false })] });
+    expect((await r.stub.signinList(r.bind())).signins[0]).toMatchObject({
+      host: "www.kimi.ai", code: "K1-ABC" });
+  });
+
   it("holds the lease a run joins, and leaves it to the run at its end", async () => {
     const r = await gated();
     const { id } = await r.stub.signinStart(r.bind(), { engine: "claude-code" }) as { id: string };

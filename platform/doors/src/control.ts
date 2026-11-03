@@ -17,6 +17,7 @@
  * The owner object's `wakes` lane reads it too, once a pass, before it claims a wake (slice W).
  */
 import type { DoorsEnv } from "./config";
+import type { SourceRecord } from "./sources";
 import { type Control, type ControlRead, readControl } from "./directory";
 
 export const OUTSIDE_OFF = "outside access is switched off";
@@ -66,9 +67,23 @@ export async function outsideRead(env: DoorsEnv, owner: string):
 
 /** The maintenance gate, read once: its refusal, or the record's tier numbers. */
 export async function ownerRead(env: DoorsEnv, owner: string):
-    Promise<Response | { readonly tiers: unknown }> {
+    Promise<Response | { readonly tiers: unknown;
+                         readonly signins: Readonly<Record<string, boolean>> | null }> {
   const read = await readControl(env.CONTROL);
-  return ownerOpen(read, owner) ? { tiers: tiersOf(read) } : refusal(MAINTENANCE);
+  return ownerOpen(read, owner)
+    ? { tiers: tiersOf(read), signins: read.kind === "read" ? read.control.signins : null }
+    : refusal(MAINTENANCE);
+}
+
+/**
+ * Whether a source's vendor sign-in is offered: the control record's switch for it, or else
+ * its record's verdict on the vendor's terms for hosted use (on only when `allowed`).
+ */
+export function signinOn(rec: SourceRecord, switches: Readonly<Record<string, boolean>> | null):
+    boolean {
+  const verdict = (rec.cli?.login as { hosted_use?: { verdict?: string } } | undefined)
+    ?.hosted_use?.verdict;
+  return switches?.[rec.id] ?? verdict === "allowed";
 }
 
 function refusal(message: string): Response {

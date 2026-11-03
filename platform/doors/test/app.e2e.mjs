@@ -347,9 +347,60 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await shot("agent");
 });
 
+test("the owner signs in to a subscription inside its sandbox: the vendor's page, a code " +
+     "pasted back, the end", { timeout: 120_000 }, async () => {
+  await page.goto(`${ORIGIN}/app#sources`);
+  const card = page.locator(".card", { hasText: "Claude" }).filter({ has: page.locator(".signin") })
+    .first();
+  await card.getByRole("button", { name: "Sign in to Claude" }).click();
+  await card.getByText("Starting the sign-in in your sandbox").waitFor();
+  let signin;
+  for (let i = 0; i < 100 && signin === undefined; i++) {
+    [signin] = (await (await mf.dispatchFetch(`https://e2e.internal/signins/${WHO}`)).json())
+      .signins;
+    if (signin === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(signin, "the app asked the sandbox to start the sign-in");
+  assert.equal(signin.engine, "claude-code");
+  const post = async (body) => {
+    const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
+      method: "POST", body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json",
+                 "x-ta-sandbox": signin.tokens.egress_token,
+                 "x-ta-network-generation": String(signin.network.generation),
+                 "x-ta-runner": signin.tokens.runner_token } });
+    assert.equal(answer.status, 200, await answer.clone().text());
+  };
+  const vendor = "https://claude.ai/oauth/authorize?code=true&client_id=c1&state=s1";
+  await post({ frames: [{ seq: 1, at: 1, event: { type: "ta.signin", state: "open",
+                                                   url: vendor, code: null,
+                                                   accepts_code: true } }] });
+  const link = card.getByRole("link", { name: "Open Claude's sign-in page" });
+  await link.waitFor();
+  assert.equal(await link.getAttribute("href"), vendor);
+  assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+  await card.getByPlaceholder("Code").fill("pasted-code#state");
+  await card.getByRole("button", { name: "Send code" }).click();
+  for (let i = 0; i < 100; i++) {
+    const { codes } = await (await mf.dispatchFetch(`https://e2e.internal/signins/${WHO}`)).json();
+    if (codes.length > 0) {
+      assert.deepEqual(codes.map((each) => each.code), ["pasted-code#state"]);
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await post({ frames: [{ seq: 2, at: 2, event: { type: "ta.signin", state: "signed_in" } }],
+               end: { exit_code: 0 } });
+  await page.locator(".message.good", { hasText: "Signed in to Claude." }).waitFor();
+  await shot("signin");
+});
+
 test("every screen opens on the doors' answers, and says plainly what is not here yet",
      { timeout: 60_000 }, async () => {
   for (const [hash, heading] of [["home", "Home"], ["agents", "Agents"],
+                                 ["history", "Past runs"],
                                  ["rooms", "Rooms and board"], ["sources", "Model sources"],
                                  ["apps", "Connected apps"], ["keys", "API keys"],
                                  ["data", "Your data"]]) {

@@ -48,7 +48,18 @@
             "tokens.refresh_token"
           ]
         }
-      ]
+      ],
+      "logout_argv": [
+        "{bin}",
+        "-c",
+        "cli_auth_credentials_store=\"file\"",
+        "logout"
+      ],
+      "expires_s": 900,
+      "hosted_use": {
+        "verdict": "unclear",
+        "citation": "subscription-engines.md section 2 and 11: no text permits or forbids a platform hosting the unmodified Codex CLI for a user's own ChatGPT sign-in; OpenAI names API keys for automation and ChatGPT sign-in only on trusted private infrastructure"
+      }
     },
     "api_key_env": {
       "openai": {
@@ -60,7 +71,7 @@
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
-        "reason": "OpenAI documents ChatGPT-login automation only on trusted private infrastructure, and hosted Sign in with ChatGPT goes through its interest form; no page permits a hosted, unattended Codex on a ChatGPT plan (subscription-engines §2, §11)."
+        "reason": "OpenAI documents ChatGPT-login automation only on trusted private infrastructure, and hosted Sign in with ChatGPT goes through its interest form; no page permits a hosted, unattended Codex on a ChatGPT plan (subscription-engines \u00a72, \u00a711)."
       },
       "api_key": {
         "allowed": true,

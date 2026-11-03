@@ -63,7 +63,7 @@ describe("the sign-in routes and door", () => {
      async () => {
     const { who, app } = await signedIn();
     const view = await (await appPost("signin/start", app.access_token, null,
-                                      { engine: "codex" })).json() as { id: string };
+                                      { engine: "claude-code" })).json() as { id: string };
     const [asked] = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
       (instance as OwnerDO).recorder.signins) as SandboxSignin[];
     const body = JSON.stringify({ frames: [] });
@@ -76,6 +76,28 @@ describe("the sign-in routes and door", () => {
         headers: { "Content-Type": "application/json", ...headers } }));
       expect(refused.status).toBe(401);
     }
+  });
+
+  it("keep each source's sign-in behind its own switch: off by its verdict, on by the record",
+     async () => {
+    const { app } = await signedIn();
+    const off = await appPost("signin/start", app.access_token, null, { engine: "codex" });
+    expect(off.status).toBe(403);
+    expect(await off.text()).toMatch(/signin_off/);
+    const listed = await (await appPost("sources", app.access_token, null, {})).json() as {
+      sources: { id: string; signin: { enabled: boolean; hosted_use: { verdict: string } }
+                 | null }[] };
+    const by = new Map(listed.sources.map((source) => [source.id, source.signin]));
+    expect(by.get("claude-code")).toMatchObject({ enabled: true,
+                                                  hosted_use: { verdict: "allowed" } });
+    for (const id of ["codex", "gemini", "kimi"]) {
+      expect(by.get(id)).toMatchObject({ enabled: false });
+    }
+    await setControl({ ...OPEN, signins: { codex: true, "claude-code": false } });
+    expect((await appPost("signin/start", app.access_token, null,
+                          { engine: "codex" })).status).toBe(200);
+    expect((await appPost("signin/start", app.access_token, null,
+                          { engine: "claude-code" })).status).toBe(403);
   });
 
   it("list the owner's past runs", async () => {

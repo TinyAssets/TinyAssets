@@ -332,6 +332,17 @@ The doors SHALL serve the in-VM sync agent's doors on the egress host (`/sync/ch
 - **WHEN** a request presents a live sync token without its lease's egress token
 - **THEN** it is refused and no lease's files are read or written
 
+### Requirement: A subscription is signed in inside the sandbox by the vendor's own flow
+The owner SHALL sign in to a source with the vendor's own login only inside the owner's own sandbox, or one client's for that client, by the record's `cli.login` run there on a terminal by the runner as a user of its own; only a URL matching the record's pattern on its login hosts, or a device code of the record's shape, SHALL leave the VM, checked again by the owner's object outside it before the owner sees it; a pasted code SHALL reach only that login's stdin, never logged or stored; each source's sign-in SHALL sit behind its own control-record switch, defaulting to the record's cited verdict on the vendor's terms for hosted use.
+
+#### Scenario: A look-alike sign-in page
+- **WHEN** the runner relays a URL off the record's login hosts
+- **THEN** the object refuses it, the sign-in ends `refused`, and the owner never sees the link
+
+#### Scenario: A source whose terms are unverified
+- **WHEN** the owner asks to sign in to a source whose switch is off
+- **THEN** the doors refuse it `signin_off` and the object is never asked
+
 ### Requirement: The runner runs each CLI from its record, as its own user
 The in-VM runner SHALL post an empty batch as soon as it runs, before the sync; set the run's environment to the allow-list alone (`config.env` filled and `config.inherit` from its own), `HOME` the run's own home, made from its engine's store (the record's `secret_paths` and `session_paths` alone); run the CLI as a user of the run's own from the template's pool (no `sudo`, checked at each boot), killing every process of that user at the run's end, with `/proc` mounted `hidepid=2` and the runner's secrets in its root-only state directory; never follow, as root, a path another user could have placed (each write and ownership change by a no-follow descriptor, a link refused or replaced); keep no path writable by another user but those the design needs, each named with its reason, verified at every boot and resume; invoke the record's `argv`, or `resume_argv` with the session id, each option joined to its value (`--model=<id>`); and post its events within the object's bounds, one post in flight, at least every 20 s, an event past a frame's bound cut and marked, a post answered `events_busy` posted again after `Retry-After`, the end after the sync-out. It SHALL refuse a run whose env files the CLI would load (its home's settings, the agent's project files, and each ancestor's `.env` and `.gemini/.env` from its cwd up) set a variable its credential forbids, a credential- or endpoint-shaped one, or a credential helper; project into each engine's skills path the agent's own skills and the owner's shared ones (`/workspace/.agents/skills`, `/workspace/skills`), the agent's winning a clash, a client's sandbox only what it may read; and SHALL stop the CLI with SIGTERM, then a kill after its grace, on a cancel or when the object ended the run.
 

@@ -204,8 +204,8 @@ describe("the owner app's sources and tools routes", () => {
     expect(sources.map((s) => s["id"])).toEqual(expect.arrayContaining([...bundled.ids()]));
     for (const shown of sources) {
       expect(Object.keys(shown).sort()).toEqual(["connect", "credentials", "display_name",
-                                                 "engines", "help_url", "id", "suggested",
-                                                 "unwired"]);
+                                                 "engines", "help_url", "id", "signin",
+                                                 "suggested", "unwired"]);
     }
     const claude = sources.find((s) => s["id"] === "claude-code")!;
     expect(claude["credentials"]).toEqual(["vendor_login_in_sandbox", "api_key"]);

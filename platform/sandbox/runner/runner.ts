@@ -42,15 +42,18 @@
  *   code (`login-input <id>`, the Worker's upload) written to its stdin, then its secrets kept
  *   in the engine's store and the engine's presence reported (`urls.signin`). A sign-out
  *   (`mode: out`) deletes the engine's `secret_paths` from the store and reports the same.
- *   `login-cancel <id>` stops it.
+ *   `login-cancel <id>` stops it. `login-probe <engine> [region]`: the template build's
+ *   standing check, the login run up to its prompt and stopped, its shape checked.
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync,
          readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createConnection, createServer } from "node:net";
 import { createInterface } from "node:readline";
 
-import { bundledSources, RUN_BASICS, type SourceRecord } from "../../doors/src/sources";
+import { bundledSources, RUN_BASICS, signinShape, type SourceRecord } from "../../doors/src/sources";
 import { FRAME_UNITS_MAX, readEvent } from "../../owner/src/run-events";
 
 import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
@@ -219,16 +222,32 @@ function makeHome(name: string, rec: SourceRecord): string {
   mkdirSync(home, { mode: 0o700 });
   const store = `${STORE}/${rec.id}`;
   const { secrets, sessions } = keptPaths(rec);
+  const copied: Record<string, string> = {};
   for (const rel of safeWalk(store)) {
     if (isKept([...secrets, ...sessions], rel)) {
       const bytes = safeRead(store, join(store, rel));
       if (bytes !== null) {
         safeWrite(home, join(home, rel), bytes, 0o600);
+        if (isKept(secrets, rel)) {
+          copied[rel] = digest(bytes);
+        }
       }
     }
   }
+  safeDirs(TOP, `${STATE}/kept`, 0o700);
+  safeWrite(`${STATE}/kept`, `${STATE}/kept/${name}.json`,
+            new TextEncoder().encode(JSON.stringify(copied)), 0o600);
+  // Each directory the record's home variables name, made: a CLI may refuse a configured
+  // home that is not there yet (a first sign-in has nothing in its store).
+  for (const value of Object.values(rec.cli!.home_env)) {
+    safeDirs(home, value.replaceAll("{home}", home), 0o700);
+  }
   mkdirSync(join(home, "tmp"), { mode: 0o700 });
   return home;
+}
+
+function digest(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 /** Every entry of a tree root just made given to `as`, links as links. */
@@ -249,14 +268,20 @@ function keepHome(home: string, rec: SourceRecord): void {
   const store = `${STORE}/${rec.id}`;
   safeDirs(TOP, store, 0o700);
   const { secrets, sessions } = keptPaths(rec);
+  const name = home.split("/").at(-1)!;
+  const snapshot = `${STATE}/kept/${name}.json`;
+  const copied = existsSync(snapshot) ? readJson<Record<string, string>>(snapshot) : {};
   for (const rel of safeWalk(home)) {
     if (isKept([...secrets, ...sessions], rel)) {
       const bytes = safeRead(home, join(home, rel));
-      if (bytes !== null) {
+      // A secret this run did not change is never written back: the store may hold a newer
+      // one another run refreshed meanwhile, and a vendor's refresh token is single-use.
+      if (bytes !== null && !(isKept(secrets, rel) && copied[rel] === digest(bytes))) {
         safeWrite(store, join(store, rel), bytes, 0o600);
       }
     }
   }
+  remove(snapshot);
 }
 
 /** The engines' sessions the sync agent took from the feed, into each store it lacks. */
@@ -1203,8 +1228,11 @@ function loginLaunch(id: string): number {
   return OK;
 }
 
-/** A pasted code the Worker left in the inbox, handed to the live sign-in's runner. */
-function loginInput(id: string): number {
+/**
+ * A pasted code the Worker left in the inbox: read once and deleted at once, then handed to
+ * the live sign-in's runner over its socket, which writes it to the CLI's stdin alone.
+ */
+async function loginInput(id: string): Promise<number> {
   const dir = signinDir(id);
   const state = loginState(id);
   const inbox = `${STATE}/inbox/${id}.code`;
@@ -1212,8 +1240,14 @@ function loginInput(id: string): number {
     remove(inbox);
     return NO;
   }
-  renameSync(inbox, `${dir}/input`);
-  return OK;
+  const code = readFileSync(inbox, "utf8");
+  remove(inbox);
+  return new Promise<number>((resolve) => {
+    const socket = createConnection(`${dir}/input.sock`, () => {
+      socket.end(code, () => resolve(OK));
+    });
+    socket.on("error", () => resolve(NO));
+  });
 }
 
 function loginCancel(id: string): number {
@@ -1271,11 +1305,26 @@ async function loginRun(id: string): Promise<number> {
   let as: Identity | null = null;
   let home: string | null = null;
   let watch: ReturnType<typeof setInterval> | null = null;
+  let inbound: ReturnType<typeof createServer> | null = null;
+  let expiry: ReturnType<typeof setTimeout> | null = null;
+  let expired = false;
   try {
     if (login === undefined || !rec.cli!.credential.includes("vendor_login_in_sandbox")) {
       throw new Error(`engine ${rec.id} has no vendor sign-in`);
     }
     if (doc.mode === "out") {
+      // The vendor's own sign-out first, which may revoke the login on the vendor's side.
+      const logout = login["logout_argv"] as string[] | undefined;
+      if (logout !== undefined) {
+        as = take(ROOT, STATE, id);
+        home = makeHome(id, rec);
+        giveTree(home, as);
+        const madeHome = home;
+        const argv = asUser(as, [shared()], logout.map((arg) => arg.replaceAll("{bin}", binOf(rec))
+          .replaceAll("{home}", madeHome)));
+        spawnSync(argv[0]!, argv.slice(1), { env: engineEnv(rec, madeHome), cwd: madeHome,
+                                             timeout: COMMAND_MS, stdio: "ignore" });
+      }
       // Its secrets gone from the store: no later run's home carries the sign-in.
       const store = `${STORE}/${rec.id}`;
       for (const rel of existsSync(store) ? safeWalk(store) : []) {
@@ -1295,8 +1344,8 @@ async function loginRun(id: string): Promise<number> {
       }
       giveTree(madeHome, as);
       const command = loginArgv(login, binOf(rec), doc.region);
-      const argv = asUser(as, [shared()], login["terminal"] === true ? onTerminal(command)
-        : command);
+      // Always on a terminal of its own: some CLIs prompt only on one.
+      const argv = asUser(as, [shared()], onTerminal(command));
       const secrets = atoms();
       let shown: Prompt = { url: null, code: null };
       let text = "";
@@ -1314,8 +1363,11 @@ async function loginRun(id: string): Promise<number> {
           if (next.url === shown.url && next.code === shown.code) {
             return;
           }
-          const why = [next.url, next.code].flatMap((value) => value === null ? []
-            : [credentialShaped(value, secrets)]).find((found) => found !== null) ?? null;
+          // Only the record's own shapes leave the VM (its login hosts, a device code); a
+          // credential-shaped value is refused as a second line.
+          const why = signinShape(rec, doc.region, next.url, next.code)
+            ?? [next.url, next.code].flatMap((value) => value === null ? []
+              : [credentialShaped(value, secrets)]).find((found) => found !== null) ?? null;
           if (why !== null) {
             reason = why;
             stop();
@@ -1328,15 +1380,36 @@ async function loginRun(id: string): Promise<number> {
         child.stdout!.on("data", read);
         child.stderr!.on("data", read);
         child.stdin!.on("error", () => undefined);
-        child.on("close", (code) => resolve(code ?? 128 + 15));
-        child.on("error", () => resolve(127));
-        watch = setInterval(() => {
-          if (existsSync(`${dir}/input`)) {
-            const code = readFileSync(`${dir}/input`, "utf8").trim();
-            remove(`${dir}/input`);
-            child.stdin!.write(`${code}\n`);
-            outbox.push({ type: "ta.signin", state: "code_sent" });
+        child.on("close", (code) => {
+          // Its group gone: no late kill may reach a group that reused its id.
+          if (proc.kill !== null) {
+            clearTimeout(proc.kill);
+            proc.kill = null;
           }
+          resolve(code ?? 128 + 15);
+        });
+        child.on("error", () => resolve(127));
+        // A pasted code comes over a socket in the sign-in's root-only directory, straight to
+        // the CLI's stdin: never on disk, never logged.
+        inbound = createServer((socket) => {
+          let pasted = "";
+          socket.on("data", (data: Buffer) => { pasted += data.toString("utf8"); });
+          socket.on("end", () => {
+            child.stdin!.write(`${pasted.trim()}\n`);
+            pasted = "";
+            outbox.push({ type: "ta.signin", state: "code_sent" });
+          });
+        });
+        inbound.listen(`${dir}/input.sock`);
+        // The vendor's code's lifetime (`expires_s`), past which its prompt is dead.
+        const expires = typeof login["expires_s"] === "number" ? login["expires_s"] : null;
+        if (expires !== null) {
+          expiry = setTimeout(() => {
+            expired = true;
+            stop();
+          }, expires * 1000);
+        }
+        watch = setInterval(() => {
           if (existsSync(`${dir}/cancel`)) {
             stop();
           }
@@ -1349,11 +1422,16 @@ async function loginRun(id: string): Promise<number> {
       });
       clearInterval(watch!);
       watch = null;
+      (inbound as ReturnType<typeof createServer> | null)?.close();
+      if (expiry !== null) {
+        clearTimeout(expiry);
+      }
       killAll(as.uid);
       keepHome(madeHome, rec);
       end = reason !== null ? "refused"
         : existsSync(`${dir}/cancel`) && !complete ? "cancelled"
-          : (exit === 0 || complete) && safeSignedIn(rec) ? "signed_in" : "failed";
+          : expired && !complete ? "expired"
+            : (exit === 0 || complete) && safeSignedIn(rec) ? "signed_in" : "failed";
     }
   } catch (error) {
     end = "failed";
@@ -1381,6 +1459,80 @@ async function loginRun(id: string): Promise<number> {
   return OK;
 }
 
+
+/**
+ * The standing check of a record's sign-in (`template/build.py`, at every template build, so
+ * at every pinned CLI's version bump): the record's login run, as a sign-in runs it, up to
+ * the prompt its patterns find, then stopped. Its answer: whether the prompt is the record's
+ * own shape (`signinShape`), the URL's host, whether a code was shown, and whether the URL
+ * would send the owner's browser back to `localhost` (which strands it). No account needed.
+ */
+async function loginProbe(engine: string, region: string | null): Promise<number> {
+  const rec = record(engine);
+  const login = rec.cli!.login as Readonly<Record<string, unknown>> | undefined;
+  if (login === undefined) {
+    throw new Error(`engine ${engine} has no vendor sign-in`);
+  }
+  const name = `probe-${rec.id}-${process.pid}`;
+  const as = take(ROOT, STATE, name);
+  const home = makeHome(name, rec);
+  let shown: Prompt = { url: null, code: null };
+  try {
+    const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
+    for (const [path, text] of Object.entries(files)) {
+      safeWrite(home, path.replaceAll("{home}", home), new TextEncoder().encode(text), 0o600);
+    }
+    giveTree(home, as);
+    const argv = asUser(as, [shared()], onTerminal(loginArgv(login, binOf(rec), region)));
+    await new Promise<void>((resolve) => {
+      const child = spawn(argv[0]!, argv.slice(1), { env: engineEnv(rec, home), cwd: home,
+                                                     detached: true,
+                                                     stdio: ["pipe", "pipe", "pipe"] });
+      let text = "";
+      // Its group killed; the answer waits for its close, so no exited child is left unreaped
+      // for the user's processes' kill to wait on.
+      const done = () => {
+        try {
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {
+          // gone already
+        }
+      };
+      // As long as a command may take: a CLI that shows no prompt by then shows none.
+      const timer = setTimeout(done, COMMAND_MS);
+      const read = (data: Buffer) => {
+        text = (text + plain(data.toString("utf8"))).slice(-FRAME_UNITS_MAX);
+        shown = prompted(login, text, shown);
+        const wantsCode = typeof login["code_pattern"] === "string";
+        if (shown.url !== null && (!wantsCode || shown.code !== null)) {
+          clearTimeout(timer);
+          done();
+        }
+      };
+      child.stdout!.on("data", read);
+      child.stderr!.on("data", read);
+      child.on("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  } finally {
+    killAll(as.uid);
+    remove(home);
+    remove(`${STATE}/kept/${name}.json`);
+    give(STATE, as);
+  }
+  const redirect = shown.url === null ? null : new URL(shown.url).searchParams.get("redirect_uri");
+  const local = redirect !== null && /^https?:\/\/(?:localhost|127\.|\[::1\])/.test(redirect);
+  const why = shown.url === null ? "no sign-in URL shown"
+    : local ? "the URL sends the browser back to localhost"
+      : signinShape(rec, region, shown.url, shown.code);
+  process.stdout.write(JSON.stringify({
+    engine, region, ok: why === null, reason: why,
+    host: shown.url === null ? null : new URL(shown.url).hostname, code_shown: shown.code !== null }));
+  return why === null ? OK : NO;
+}
+
 // -- main -----------------------------------------------------------------------------
 
 export async function main(argv: readonly string[]): Promise<number> {
@@ -1396,6 +1548,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       return loginInput(args[0] ?? "");
     case "login-cancel":
       return loginCancel(args[0] ?? "");
+    case "login-probe":
+      return loginProbe(args[0] ?? "", args[1] ?? null);
     case "signin-check":
       return signedIn(record(args[0] ?? "")) ? OK : NO;
     case "launch":

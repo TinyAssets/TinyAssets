@@ -439,6 +439,38 @@ account and no deploy.
   (`doors/src/pages.ts`). `/app/signed-in` clears its code the same way. Proved in Chromium
   (`doors/test/app.e2e.mjs`): the instrumented `replaceState` saw the fragment while the
   page held only that script, the finish carried no referrer, the connect committed.
+- [x] Slice SIGNIN: subscription sign-in inside the sandbox, and the past runs.
+  - The flow, as data from each record's `cli.login`, no vendor's name in code: the owner's
+    `signin/start` (its own door; the owner's own sandbox or one client's, for that client)
+    opens the sandbox's lease with no run (or joins the live one) and the sandbox Worker
+    starts the record's login there (`ta-runner login-launch`) as a pool user, on a terminal
+    of its own (util-linux `script` in the VM, so the raw terminal never leaves it), its home
+    from the engine's store. Only the record's shapes leave the VM: a URL matching
+    `url_pattern` on its login hosts (and the chosen region's), a device code of at most 16
+    letters, digits and hyphens; a credential-shaped value is refused as a second line. The
+    owner's object checks each prompt again outside the VM against the record
+    (`signinShape`) before it keeps or relays it, and stops a sign-in whose prompt is not the
+    vendor's (a hijacked engine shows no look-alike page). Frames go to the app's socket by
+    the sign-in's id (`ta.signin`), the app showing the vendor's page's host in words; a
+    pasted code goes on a door held to the owner's session, through the Worker's upload, read
+    once and deleted, over a socket to that login's stdin alone, never logged or stored, and
+    refused once the login ended. The end: the secrets kept in the engine's store, presence
+    reported (`status_argv`, or `state_checks` for a record with none). A sign-out runs the
+    record's `logout_argv` first, then deletes its `secret_paths`. A login is stopped at the
+    vendor's code's lifetime (`expires_s`, Codex 15 min, Gemini 5). A secret a run did not
+    change is never written back over the store's (a refresh token is single-use).
+  - Each source's sign-in sits behind its own switch in the control record (`signins`),
+    defaulting to its record's verdict on the vendor's terms for hosted use
+    (`cli.login.hosted_use`, cited): Claude Code `allowed` (on); Codex, Gemini and Kimi
+    `unclear` (off). Turning one on is the founder's call.
+  - A standing check: every template build ends by running each record's login up to its
+    prompt on a throwaway sandbox (`ta-runner login-probe`, `build.py --check-logins`),
+    checking its shape and that it never sends the browser to localhost.
+  - The past runs: `runs` (owner app) and `runList` (the object's door, held to the
+    caller's grant: an outside client sees its own), newest first, a page at a time.
+  - Owed: a completed sign-in on each vendor (the founder's account, his live test); the
+    region a Kimi run's provider hosts need, kept from the sign-in for its runs; "last used"
+    on the source card; an MCP tool for the past runs; resume after 14 and 30 days paused.
 - [x] The owner app, first version (slice APP), in workerd, nothing deployed. **Where it
   lives (decided):** the doors Worker serves `/app` from its own files (`doors/app/`, Workers
   Static Assets bound as `ASSETS`, the Worker first on every request, `doors/src/pages.ts`),
@@ -1088,9 +1120,7 @@ R, S, M and W.
     the egress door's HTTPS). `sandbox_wait` is in migration 12 itself, as slice ID's columns
     are in theirs: no workflow deploys platform/, so no object holds an older schema.
 - [ ] Owed by slice S:
-  - The vendor sign-in flow (`cli.login`): a door in the object that opens the sandbox's
-    lease with no run, the app's terminal to the CLI's prompt, and the end-of-sign-in report.
-    Needs a vendor account to verify; `signin-check` and the report at each start are built.
+  - [x] The vendor sign-in flow (`cli.login`): built by slice SIGNIN, below.
   - E2B's lifecycle webhooks as a second doorbell, so a free outside the platform rings at
     once rather than at the line's back-off: their payload and signature were not readable
     from this session (`e2b.dev` is outside its network), and registering one is a deploy act.

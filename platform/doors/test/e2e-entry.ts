@@ -3,16 +3,22 @@
  * upstream sign-in, the bundled records and the test OAuth source, the real `OwnerDO` with
  * a recording sandbox), plus one door for the harness alone, on an origin the doors never
  * serve: `https://e2e.internal/starts/<owner>`, the starts that owner's object asked of its
- * recording sandbox, so the harness can play the runner and post a run's events.
+ * recording sandbox, so the harness can play the runner and post a run's events; and
+ * `/signins/<owner>`, the sign-ins it asked and the codes the owner pasted back.
  */
 import type { DoorsEnv } from "../src/config";
-import type { SandboxStart } from "../../owner/src/sandbox";
+import type { SandboxSignin, SandboxStart } from "../../owner/src/sandbox";
 import worker, { OwnerDO as TestOwnerDO } from "./entry";
 
 export class OwnerDO extends TestOwnerDO {
   /** What the recording sandbox was asked to start, in order. */
   e2eStarts(): SandboxStart[] {
     return this.recorder.starts;
+  }
+
+  /** The sign-ins the recording sandbox was asked to start, and the codes pasted back. */
+  e2eSignins(): { signins: SandboxSignin[]; codes: { id: string; code: string }[] } {
+    return { signins: this.recorder.signins, codes: this.recorder.codes };
   }
 }
 
@@ -25,6 +31,11 @@ export default {
       const owner = (env.OWNER as unknown as DurableObjectNamespace<OwnerDO>)
         .getByName(url.pathname.slice("/starts/".length));
       return Response.json(await owner.e2eStarts());
+    }
+    if (url.origin === HARNESS && url.pathname.startsWith("/signins/")) {
+      const owner = (env.OWNER as unknown as DurableObjectNamespace<OwnerDO>)
+        .getByName(url.pathname.slice("/signins/".length));
+      return Response.json(await owner.e2eSignins());
     }
     return worker.fetch(request, env, ctx);
   },

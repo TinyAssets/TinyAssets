@@ -416,8 +416,14 @@ describe("the vendor's own sign-in", () => {
     expect(seen.uid).not.toBe(0);
     expect(seen.argv).toEqual((login["argv"] as string[]).slice(1).map((arg) =>
       arg.replaceAll("{region}", plan.region ?? "")));
-    if (login["terminal"] === true) {
-      expect((seen as unknown as { tty: boolean }).tty).toBe(true);
+    // Always on a terminal of its own, each directory its record's home variables name made
+    // (a CLI may refuse a configured home that is not there, as on a first sign-in).
+    expect((seen as unknown as { tty: boolean }).tty).toBe(true);
+    const homes = (seen as unknown as { homes: Record<string, boolean> }).homes;
+    for (const [name, value] of Object.entries(sources.get(engine)!.cli!.home_env)) {
+      if (value !== "{home}") {
+        expect(homes[name]).toBe(true);
+      }
     }
     if (plan.paste !== undefined) {
       expect(box.ran(engine).some((each) => each.stdin === `${plan.paste}\n`)).toBe(true);
@@ -427,6 +433,55 @@ describe("the vendor's own sign-in", () => {
     const report = doors.posts.filter((post) => post.path === "/signin").at(-1)!;
     expect(report.body).toEqual({ signins: [{ engine, signed_in: true }] });
     expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toMatch(/stored/);
+  });
+
+  it.each([
+    ["a code past a device code's length", "kimi",
+     "Visit https://www.kimi.ai/code/device and enter code: ABCDEFGHIJKLMNOPQRSTU"],
+  ])("relays nothing but the record's own shapes: not %s", async (_what, engine, line) => {
+    box.cli(engine, { lines: [], login: { lines: [line], code: true } });
+    const id = signinId();
+    box.login({ id, engine, region: engine === "kimi" ? "global" : null }, doors);
+    expect(box.runner("login-launch", id).code).toBe(0);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).some((frame) => frame["state"] === "open")).toBe(false);
+    expect(signinFrames(id).at(-1)).toMatchObject({ state: "refused" });
+    expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toMatch(/ABCDEFGHIJKLMNOPQRSTU/);
+  });
+
+  it("never writes a secret it did not change back over a newer one", async () => {
+    // A run's home was made from the store; meanwhile another run refreshed the store.
+    box.write("/var/lib/ta/store/codex/.codex/auth.json", "old-token-file");
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, sleepMs: 1500 });
+    const { start } = await (async () => {
+      const made = startDoc(doors, "codex", { config: config("codex") });
+      box.start(made);
+      box.runner("launch", made.run);
+      return { start: made };
+    })();
+    await waitFor(() => box.ran("codex").length > 0);
+    box.write("/var/lib/ta/store/codex/.codex/auth.json", "newer-token-file");
+    await doors.ended_(25_000, start.run);
+    expect(readFileSync(box.path("/var/lib/ta/store/codex/.codex/auth.json"), "utf8"))
+      .toBe("newer-token-file");
+  });
+
+  it("is checked at every template build up to its prompt, its shape the record's", () => {
+    box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
+                                                 code: true } });
+    const probe = box.runner("login-probe", "claude-code");
+    expect(probe.code).toBe(0);
+    expect(JSON.parse(probe.out)).toEqual({ engine: "claude-code", region: null, ok: true,
+                                            reason: null, host: "claude.ai",
+                                            code_shown: false });
+    // A sign-in that would send the browser back to localhost strands the owner: it fails.
+    box.cli("claude-code", { lines: [], login: { lines: [
+      "https://claude.ai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A5454"],
+      code: true } });
+    const local = box.runner("login-probe", "claude-code");
+    expect(local.code).toBe(3);
+    expect(JSON.parse(local.out)).toMatchObject({ ok: false,
+                                                  reason: expect.stringMatching(/localhost/) });
   });
 
   it("relays nothing credential-shaped, and ends the sign-in refused", async () => {
@@ -470,6 +525,20 @@ describe("the vendor's own sign-in", () => {
       expect(processesOf(seen.uid)).toEqual([]);
     }
     expect(box.runner("login-cancel", id).code).toBe(3);  // nothing live to cancel
+  });
+
+  it("signs out by the vendor's own logout first, then deletes the secrets", async () => {
+    box.write("/var/lib/ta/store/claude-code/.claude/.credentials.json", "{}");
+    box.cli("claude-code", { lines: [] });
+    const id = signinId();
+    box.login({ id, engine: "claude-code", mode: "out" }, doors);
+    box.runner("login-launch", id);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toMatchObject({ state: "signed_out" });
+    expect(box.ran("claude-code").some((each) => each.argv.join(" ") === "auth logout"))
+      .toBe(true);
+    expect(() => lstatSync(box.path("/var/lib/ta/store/claude-code/.claude/.credentials.json")))
+      .toThrow();
   });
 
   it("signs out: the engine's secrets gone from its store, its presence reported", async () => {

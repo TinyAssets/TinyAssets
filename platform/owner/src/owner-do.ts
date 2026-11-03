@@ -1522,7 +1522,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       admit: (binding, conversation, ticket) =>
         this.#door(() => this.#socketAdmit(binding, conversation, ticket)),
       check: (state) => this.#door(() => this.#socketCheck(state)),
-      live: (conversation) => this.#door(() => this.#runs.liveIn(conversation)),
+      // A sign-in's socket gets its own tail on attach, as a conversation's gets its runs'.
+      live: (conversation) => this.#door(() => this.#signinOwned(conversation) ? [conversation]
+        : this.#runs.liveIn(conversation)),
       now: clock,
     });
     // The lanes of the one schedule. There is no global tick; each owner's object
@@ -3666,10 +3668,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async signinStart(binding: Binding, request: SigninStartRequest):
       Promise<SigninView | { started: false; code: string }> {
-    const sandbox = this.env.SANDBOX;
     const begun = await this.#door(() => {
       this.#owner(binding, "work", "sign in inside a sandbox");
-      if (sandbox === undefined) {
+      if (this.env.SANDBOX === undefined) {
         throw new Refused(SANDBOX_ABSENT);
       }
       const r = runFields(request, ["engine"], ["authority", "region", "mode"]);
@@ -3701,14 +3702,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const live = this.#files.sandboxLease(now, authority);
       const opened = live === null ? this.#openLease(this.#ownerName, now, authority) : null;
       const lease = live ?? opened!.lease;
-      const row = this.#signins.begin(authority, rec.id, mode,
+      const row = this.#signins.begin(authority, rec.id, mode, region as string | null,
                                       { lease_id: lease.lease_id, epoch: lease.epoch }, now);
       return { row, opened, region: region as string | null,
                lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
     });
     let answer: Started | null = null;
     try {
-      answer = started(await sandbox!.signin(this.#ownerName(), {
+      answer = started(await this.env.SANDBOX!.signin(this.#ownerName(), {
         id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
         authority: begun.row.authority, lease: begun.lease,
         tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
@@ -3737,7 +3738,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async signinEvents(binding: Binding, request: SigninEventsRequest):
       Promise<{ accepted: number; ended: boolean }> {
-    const { row, ended, frames } = await this.#door(() => {
+    const { row, ended, refused, events, frames } = await this.#door(() => {
       this.#bind(binding, "reduce", "egress");
       const lease = this.#runner(binding);
       if (lease === null) {
@@ -3754,9 +3755,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return { ...done, frames: r.frames };
     });
-    this.#relay.relay(row.id, frames.map((frame) => ({
-      v: FRAME_VERSION, run: row.id, seq: frame.seq, at: frame.at, kind: "event" as const,
-      event: frame.event })));
+    // Only what the trusted side kept: each frame's own, checked event.
+    const last = frames.at(-1);
+    this.#relay.relay(row.id, events.map((event, i) => ({
+      v: FRAME_VERSION, run: row.id, seq: (last?.seq ?? 0) - events.length + i + 1,
+      at: last?.at ?? clock(), kind: "event" as const, event })));
+    if (ended) {
+      this.#relay.settled(row.id);  // its tail goes with it
+    }
+    if (refused) {
+      // Its CLI stopped: what it showed is not the vendor's page.
+      await this.env.SANDBOX?.signinCancel(this.#ownerName(), { authority: row.authority,
+                                                                id: row.id })
+        .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
+    }
     return { accepted: frames.length, ended };
   }
 
@@ -3766,12 +3778,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async signinCode(binding: Binding, request: SigninCodeRequest):
       Promise<{ delivered: boolean }> {
-    const sandbox = this.env.SANDBOX;
     const { row, code } = await this.#door(() => {
       this.#owner(binding, "work", "sign in inside a sandbox");
       const r = runFields(request, ["id", "code"]);
       return { row: this.#signins.get(r["id"]), code: pastedCode(r["code"]) };
     });
+    const sandbox = this.env.SANDBOX;
     if (sandbox === undefined) {
       throw new Refused(SANDBOX_ABSENT);
     }
@@ -3782,11 +3794,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
   async signinCancel(binding: Binding, request: SigninRequestById):
       Promise<{ cancelled: boolean }> {
-    const sandbox = this.env.SANDBOX;
     const row = await this.#door(() => {
       this.#owner(binding, "reduce", "stop a sign-in");
       return this.#signins.get(runFields(request, ["id"])["id"]);
     });
+    const sandbox = this.env.SANDBOX;
     if (sandbox === undefined) {
       throw new Refused(SANDBOX_ABSENT);
     }

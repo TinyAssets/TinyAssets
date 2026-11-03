@@ -37,8 +37,12 @@
           ]
         }
       ],
-      "terminal": true,
-      "complete_on_state": true
+      "complete_on_state": true,
+      "expires_s": 300,
+      "hosted_use": {
+        "verdict": "unclear",
+        "citation": "gemini-cli docs/resources/tos-privacy.md: third-party software using Gemini CLI OAuth to reach its services is a violation; a platform hosting the unmodified CLI for the user's own sign-in is not addressed (subscription-engines.md section 11)"
+      }
     },
     "api_key_env": {
       "google": {
@@ -50,7 +54,7 @@
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
-        "reason": "Unclear: Google's Gemini CLI terms do not say whether a platform may run the unmodified CLI unattended on a member's own Google sign-in, and no Google page read permits it (subscription-engines §3, §11).",
+        "reason": "Unclear: Google's Gemini CLI terms do not say whether a platform may run the unmodified CLI unattended on a member's own Google sign-in, and no Google page read permits it (subscription-engines \u00a73, \u00a711).",
         "cite": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
         "read": "2026-11-01"
       },
