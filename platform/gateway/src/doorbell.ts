@@ -28,9 +28,6 @@
  * Every fetch is the runtime's (`global_fetch_strictly_public`): never the egress
  * interposer's, since no model call's scope is open here.
  */
-import { Buffer } from "node:buffer";
-import { createHmac, randomBytes } from "node:crypto";
-
 import {
   callbackSecret, callbackUrl, kindNamed, type Push,
 } from "../../owner/src/wake-kinds";
@@ -140,15 +137,33 @@ export async function sealDoorbell(env: KeyringEnv, owner: string, subscription:
   return sealValue(env, bound(owner, subscription, version), plaintext(input), doorbellSecret);
 }
 
+function base64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
 function base64url(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64url");
+  return base64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function random(size: number): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(size));
 }
 
 /** The Standard Webhooks signature of `id.stamp.body` under each `whsec_` key. */
-function signature(keys: readonly string[], id: string, stamp: number, body: string): string {
-  return [...new Set(keys)].map((key) => "v1," + createHmac(
-    "sha256", Buffer.from(key.slice("whsec_".length), "base64"))
-    .update(`${id}.${stamp}.${body}`, "utf8").digest("base64")).join(" ");
+async function signature(keys: readonly string[], id: string, stamp: number,
+                         body: string): Promise<string> {
+  const signed = new TextEncoder().encode(`${id}.${stamp}.${body}`);
+  const each = await Promise.all([...new Set(keys)].map(async (key) => {
+    const raw = Uint8Array.from(atob(key.slice("whsec_".length)), (char) => char.charCodeAt(0));
+    const hmac = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" },
+                                               false, ["sign"]);
+    return "v1," + base64(new Uint8Array(await crypto.subtle.sign("HMAC", hmac, signed)));
+  }));
+  return each.join(" ");
 }
 
 /** At most `max` bytes of a body, then its stream released. */
@@ -204,8 +219,9 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
     throw new Failure("invalid_request");
   }
   const target = bound(owner, subscription, version);
-  const challenge = base64url(randomBytes(32));
-  const id = `msg_verification_${randomBytes(16).toString("hex")}`;
+  const challenge = base64url(random(32));
+  const id = `msg_verification_${[...random(16)].map((byte) => byte.toString(16)
+    .padStart(2, "0")).join("")}`;
   const stamp = Math.floor(Date.now() / 1000);
   const body = JSON.stringify({ type: "verification", challenge });
   let response: Response;
@@ -214,7 +230,7 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
       method: "POST", redirect: "manual", signal: AbortSignal.timeout(events.verify_timeout_ms),
       headers: { "Content-Type": "application/json", "webhook-id": id,
                  "webhook-timestamp": String(stamp),
-                 "webhook-signature": signature([plain.secret], id, stamp, body),
+                 "webhook-signature": await signature([plain.secret], id, stamp, body),
                  "X-MCP-Subscription-Id": subscription },
       body,
     }));
@@ -244,14 +260,14 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
 }
 
 /** The headers a ring adds for its sealed auth. */
-function auth(secret: DoorbellSecret, previous: DoorbellSecret | null, request: RingRequest,
-              stamp: number): Record<string, string> {
+async function auth(secret: DoorbellSecret, previous: DoorbellSecret | null,
+                    request: RingRequest, stamp: number): Promise<Record<string, string>> {
   if (secret.auth === "bearer") {
     return { Authorization: `Bearer ${secret.secret}` };
   }
   const keys = previous === null ? [secret.secret] : [secret.secret, previous.secret];
   return { "webhook-id": request.event_id, "webhook-timestamp": String(stamp),
-           "webhook-signature": signature(keys, request.event_id, stamp, request.body) };
+           "webhook-signature": await signature(keys, request.event_id, stamp, request.body) };
 }
 
 function ringRequest(value: unknown): RingRequest {
@@ -303,7 +319,7 @@ export async function ringDoorbell(env: KeyringEnv, owner: string, subscription:
   try {
     response = await send(new Request(secret.url, {
       method: "POST", redirect: "manual",
-      headers: { ...checked.headers, ...auth(secret, old, checked, stamp) },
+      headers: { ...checked.headers, ...await auth(secret, old, checked, stamp) },
       body: checked.body,
     }));
   } catch {

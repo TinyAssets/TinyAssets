@@ -175,7 +175,7 @@ import {
   CLOSED, Doorbell, type RingAnswer, runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender,
   WAKES_PER_ALARM,
 } from "./wakes";
-import { eventKind, type Events, follows, wakeKinds } from "./wake-kinds";
+import { eventKind, type Events, follows, kindFor, wakeKinds } from "./wake-kinds";
 
 /**
  * Whose object this is, who is asking and through what: set by the binder from a
@@ -2393,17 +2393,36 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * The events this caller may subscribe to (MCP Events `events/list`): each subscribing
-   * wake kind's event, for an outside client whose grant reads anywhere (`read_graph`); a run
-   * none, since a run is reached by mail, never by a doorbell.
+   * The events this caller's client may subscribe (MCP Events `events/list`): each
+   * subscribing wake kind's, to an outside client (never a run) whose grant reads somewhere.
+   * Asked for a command center (`events/subscribe`, before the door sends its callback a
+   * byte), only its one enabled subscribing agent's there, where it holds `read_graph`; a
+   * caller with none is refused.
    */
-  wakeEvents(binding: Binding): Promise<{ events: Events[] }> {
+  wakeEvents(binding: Binding, commandCenter?: string): Promise<{ events: Events[] }> {
     return this.#door(() => {
       const account = this.#account(binding, "read");
       const grant = account.grant;
-      const reads = account.origin !== null && account.run === null && grant !== null
-        && (grant.mode === "full" || grant.scopes.some((scope) => scope.capability === "read_graph"));
-      return { events: reads ? wakeKinds().flatMap((kind) => kind.push?.events ?? []) : [] };
+      if (account.origin === null || account.run !== null || grant === null) {
+        if (commandCenter !== undefined) {
+          throw new Refused("only an agent's own client subscribes its doorbell");
+        }
+        return { events: [] };
+      }
+      if (commandCenter === undefined) {
+        const reads = grant.mode === "full"
+          || grant.scopes.some((scope) => scope.capability === "read_graph");
+        return { events: reads ? wakeKinds().flatMap((kind) => kind.push?.events ?? []) : [] };
+      }
+      if (typeof commandCenter !== "string") {
+        throw new Invalid("invalid subscription arguments");
+      }
+      this.#scope(account, "read_graph", commandCenter);
+      const agent = this.#ledger.subscriber(account.origin, commandCenter);
+      if (agent === undefined) {
+        throw new Refused("not this caller's subscribing agent");
+      }
+      return { events: [kindFor(agent.delivery_method)!.push!.events!] };
     });
   }
 

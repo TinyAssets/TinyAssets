@@ -327,3 +327,15 @@ A sandbox token SHALL be refused at `/api`, `/mcp` and `/app`, and the owner's o
 #### Scenario: A token presented as a bearer
 - **WHEN** a sandbox's egress or sync token is sent to `/api/tools/*`, `/mcp` or `/app/api/*`
 - **THEN** each answers `401`
+
+### Requirement: The MCP door serves MCP Events for doorbells
+The MCP door SHALL advertise `events` in its `initialize` and `server/discover` capabilities and serve `events/list` (the one event, `tinyassets.changed`, its arguments and its payload, to an outside client whose grant reads), `events/subscribe` and `events/unsubscribe`, webhook delivery only. A subscribe SHALL be checked before any byte (the event, its arguments, an `https` callback the record admits, a `whsec_` secret) and authorized for the caller's own subscribing agent in that command center; then the gateway SHALL verify the callback with a signed single-use challenge, reading at most a bounded answer and comparing it in constant time, and seal it. A failed verification SHALL answer the record's code (`-32015`, OpenAI's) with a `data.reason` category, never the endpoint's body. The id SHALL be derived from the caller, URL, event and arguments and never accepted; `ttlMs` SHALL be granted as `refreshBefore` (omitted, the record's default; `null`, none). A run's MCP door SHALL serve none of it.
+
+#### Scenario: A ChatGPT dot subscribes
+- **WHEN** a client whose agent is registered for MCP Events subscribes a callback that echoes the challenge
+- **THEN** the answer carries the derived id, a `refreshBefore` a day out, `cursor: null` and `truncated: false`, and the object holds the sealed blob alone
+
+#### Scenario: A callback that does not echo the challenge
+- **WHEN** the callback answers another challenge, or `404`
+- **THEN** the subscribe answers `-32015` with `challenge_failed` or `http_4xx`, and nothing is stored
+

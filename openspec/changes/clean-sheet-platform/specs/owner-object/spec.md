@@ -171,29 +171,51 @@ Lifecycle SHALL own the object's single physical alarm, which the lanes' jobs an
 - **THEN** it fails, since the object defines no `fetch`
 
 ### Requirement: Only the wakes lane claims and settles wakes
-Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell the object constructs (`Doorbell`, `wakes.ts`). Each pass SHALL first recover lapsed claims by their own index, then, when rows are due, ask the kill switch once (the control record in `CONTROL`, by the doors' `outsideOpen`, bounded at `WAKE_SEND_MS`) and claim nothing on closed, a failure or no answer, holding its job `WAKE_RETRY_S` without touching a row; then claim due open rows. The lane SHALL have a job for open rows only while the owner is admitted.
+Wakes SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell the object constructs (`Doorbell`, `wakes.ts`). Each pass SHALL first recover lapsed claims by their own index, then, when rows are due, ask the kill switch once (the control record in `CONTROL`, by the doors' `outsideOpen`, bounded at `WAKE_SEND_MS`) and claim nothing on closed, a failure or no answer, holding its job `WAKE_RETRY_S` without touching a row; then claim due open rows. The lane SHALL have a job for open rows only while the owner is admitted.
 
 #### Scenario: A lapsed claim behind due wakes
 - **WHEN** a claim's lease has lapsed behind more due open wakes than one pass takes, and the kill switch is closed
 - **THEN** one pass recovers it, as `unknown` if it was marked, claims none of the rest, and holds the lane's job a retry out
 
 #### Scenario: The kill switch is closed
-- **WHEN** the `c:control` record is missing, malformed, unreadable, `outside` off, or its maintenance gate leaves the owner out
+- **WHEN** the control record in `CONTROL` is missing, malformed, unreadable, `outside` off, or its maintenance gate leaves the owner out
 - **THEN** the switch reads closed, no wake is claimed, and the lane's job waits `WAKE_RETRY_S`, never a busy loop
 
 ### Requirement: Each vendor's wake is a record, sent by one doorbell
-Each vendor's wake mechanism SHALL be one record of `owner/wake-kinds.json`, checked whole: its delivery method, whether it pushes, who hands TinyAssets the callback (the agent's client over MCP Events, or the owner in session), the callback's URL and secret rules, the auth scheme (`bearer` or `standard_webhooks`), header and body templates, the statuses that say the callback is gone, the vendor's own limits and its citations. A record with no push (Muse) SHALL never ring: its agent catches up through `inbox_digest` and `board_digest` on its own schedule, and TinyAssets polls nothing. No code SHALL name a vendor. A wake SHALL carry identifiers, the agent's mailbox cursor, what kind of change it is (`mail`, `rooms`, `board`), the owner-wide change cursor it is after and the digests that answer it, never content. The request SHALL never follow a redirect, and its answer's body SHALL never be read.
+Each vendor's wake mechanism SHALL be one record of `owner/wake-kinds.json`, checked whole: its delivery method, whether it pushes, who hands TinyAssets the callback (the agent's client over MCP Events, or the owner in session), the callback's URL and secret rules (a vendor's hosts pinned as data where it has them), the auth scheme (`bearer` or `standard_webhooks`), header and body templates, its body ceiling, the statuses that say its token is dead, the vendor's own limits and its citations. A record with no push (Muse) SHALL never ring: its agent catches up through `inbox_digest` and `board_digest` on its own schedule, and TinyAssets polls nothing. No code SHALL name a vendor. A wake SHALL carry identifiers, the agent's mailbox cursor, what kind of change it is (`mail`, `rooms`, `board`), the owner-wide change cursor it is after and the digests that answer it, and the change's own time, never content. A callback SHALL be refused when its host is a loopback, private, link-local or metadata address, a single label, a reserved suffix, or one of our own hosts; the request SHALL never follow a redirect, and its answer's body SHALL never be read.
 
 #### Scenario: A board row changes
-- **WHEN** the owner writes a board row that is not private, and an MCP Events agent and a `/fire` agent are subscribed
+- **WHEN** the owner writes a board row that is not private, and an MCP Events agent and a `/fire` agent are subscribed to the board
 - **THEN** each is sent its own record's shape, naming `board_digest` and the cursor before the change, and that digest after it returns just the row
 
-#### Scenario: An agent writes the board itself
-- **WHEN** a ringing agent writes a board row
-- **THEN** every other ringing agent is woken and it is not
+#### Scenario: A write no one follows, or no grant reads
+- **WHEN** the owner writes a room that one subscribed agent does not follow, and another follows it but its client's grant no longer reads that command center
+- **THEN** neither is rung
+
+#### Scenario: An outside client or a run writes the board
+- **WHEN** a woken agent's client, or a run, writes a board row
+- **THEN** no agent is rung, so no two agents wake each other without end; the change is read at their next digest
+
+### Requirement: A doorbell's secret is sealed by the gateway
+A doorbell's callback URL, auth and secret (a `/fire` token, a Grok key, a `whsec_` signing secret) SHALL be sealed by the gateway, bound to the owner and the subscription, and the object SHALL hold only the blob. Only the gateway SHALL open it, and the gateway SHALL make each send: the object hands it the blob, the previous blob while both sign, and the request without auth. A blob sealed under a retired key SHALL be resealed at the next version, and the object SHALL store it. No answer, receipt or log SHALL hold the secret.
+
+#### Scenario: The owner pastes a `/fire` token
+- **WHEN** the owner sets a Claude scheduled task's doorbell in its session
+- **THEN** the gateway seals the token, the subscription row holds the blob alone, and the answer is its id
+
+#### Scenario: A token the vendor no longer takes
+- **WHEN** a ring with an owner-set token is answered with a status its record lists as a dead token (Claude's `401`)
+- **THEN** the wake settles failed and the owner is sent a notice to paste a new one
+
+### Requirement: An agent holds several subscriptions, each by its derived id
+An agent MAY hold several doorbell subscriptions (a ChatGPT dot and a Work chat), each following the board, rooms by name, or both, at most `SUBSCRIPTIONS_KEPT` across the owner, counted in the schema. Each SHALL be keyed by the id derived from its principal, callback URL, event name and arguments, never one a caller names; a repeat refreshes it, keeping the replaced blob signing beside it for the record's rotation window. A grant change SHALL never erase an owner-set subscription silently: it is kept, and the grant check before each ring decides whether it rings.
+
+#### Scenario: A callback that is gone for now
+- **WHEN** a ring is answered `410` or `413`
+- **THEN** the wake settles failed, it is not retried, and the subscription is kept
 
 ### Requirement: A send that may have left is never replayed
-The doorbell SHALL mark a wake before its first byte and recheck the agent's callback and its client's grant immediately before it; a revoke, disable or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`; a send past `WAKE_SEND_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again.
+The doorbell SHALL mark a wake before its first byte and recheck the agent's subscriptions and its client's grant immediately before it; a disable, unsubscribe or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`; a send past `WAKE_SEND_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again. A `429` SHALL wait the Retry-After as sent; an unreadable one, an exponential backoff from `WAKE_LEASE_S`.
 
 #### Scenario: A slow send
 - **WHEN** a callback never answers
@@ -204,7 +226,7 @@ The doorbell SHALL mark a wake before its first byte and recheck the agent's cal
 - **THEN** the call fails because the object has no such method
 
 ### Requirement: Wake limits are owner policy
-An agent's wake settings SHALL be the owner's own, stored per agent and off by default (no hourly cap, no batch window), and changed only by the owner in its own session, as a policy write: against the policy generation, which the change bumps, and receipted. A registration SHALL never carry or reset them. An uncapped agent SHALL keep no ring rows; a cap's high (60 an hour) is the ring table's technical ceiling.
+An agent's wake settings SHALL be the owner's own, stored per agent and off by default (no hourly cap, no batch window), and changed only by the owner in its own session (the owner app's `agent/wake-limits`), as a policy write: against the policy generation, which the change bumps, and receipted. A registration SHALL never carry or reset them. A cap SHALL be spaced evenly by one per-agent column, with no burst and no invented high; a changed cap SHALL count afresh.
 
 #### Scenario: An agent registers again
 - **WHEN** the owner has set an agent's limits and the agent registers again

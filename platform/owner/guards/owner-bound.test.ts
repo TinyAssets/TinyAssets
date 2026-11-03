@@ -21,9 +21,12 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice M on ID: 4,234,269,003.75 bytes), about 766 MB
- * under half; with every raise the limits audit proposes, 49.99% (4,999,455,865.75 bytes,
- * `limits-proposed.test.ts`), 0.5 MB under half. Slice ID added `native_agents` (1.5 MB,
+ * The worst case is 41.9% of the limit (slice W on M and ID: 4,186,866,859.75 bytes), about
+ * 813 MB under half; with every raise the limits audit proposes, 49.52% (4,952,053,721.75
+ * bytes, `limits-proposed.test.ts`), 47.9 MB under half. Slice W added `wake_callbacks`
+ * (2.8 MB: `SUBSCRIPTIONS_KEPT` doorbells, each its sealed blob, the one it replaced while
+ * both sign, and its arguments) and took out `ledger_rings` and the revoke tombstones' rows
+ * (a wake is now limited by the owner's own setting, off by default). Slice ID added `native_agents` (1.5 MB,
  * the owner's own agents in the registry's rows); a mail's authority and attendance and a
  * run's mail fit within the pages their rows were already counted at, and it adds no index
  * (an identity and a mail thread's conversation are found by their keys, digests). Slice M
@@ -331,7 +334,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     grant_fences: { rows: 1, bytes: ROW, by: "one row" },
     owner_sessions: { rows: S.maxSessions, bytes: ROW, by: "maxSessions" },
     outside_agents: { rows: L.maxAgentRows, bytes: ROW + 1 * KIB,
-                      by: "maxAgentRows, every row: a tombstone a revoke holds too" },
+                      by: "maxAgentRows, every row: a disabled agent's too" },
     // The owner's own agents (slice ID): counted with the outside agents in the registry's
     // rows, so the two terms together count it twice over.
     native_agents: { rows: L.maxAgentRows, bytes: ROW + 128 + NATIVE_ID_CHARS + 4 * 8,
@@ -638,9 +641,9 @@ describe("the owner's database bound", () => {
     expect(worstCase()).toBe(worstCase(TERMS) + worstCase(RUNTIME));
   });
 
-  it("counts every registration row, a tombstone a revoke holds among them, which the " +
+  it("counts every registration row, a disabled agent's among them, which the " +
      "registry refuses past", () => {
-    // Every row is counted as it is made and refused past maxAgentRows; a tombstone is one.
+    // Every row is counted as it is made and refused past maxAgentRows; a disabled one too.
     expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
                                        "outside_agents BEGIN \" +\n      \"UPDATE ledger_usage " +
                                        "SET agents = agents + 1, \" +");

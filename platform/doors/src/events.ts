@@ -197,7 +197,8 @@ export function serveEvents(mcp: McpServer, bound: Bound, env: DoorsEnv): void {
     const ttl = grantedTtl(kind, params["ttlMs"]);
     let listed;
     try {
-      listed = await bound.stub.wakeEvents(bound.binding);  // authorized before any byte
+      // Authorized before the callback is sent a byte: this caller's subscribing agent there.
+      listed = await bound.stub.wakeEvents(bound.binding, args["command_center_id"] as string);
     } catch (error) {
       refused(error);
     }

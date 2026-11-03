@@ -231,8 +231,8 @@ export const WAKE_SETTINGS = Object.freeze({
  * mailboxes split the ceilings: a quarter of the bytes for the owner's, the rest across
  * 100 enabled agents, 80 messages and 480 KiB each, room for several dozen 16 kB bodies
  * an agent has not acked yet. A settled wake's receipt is its record, so the row is kept
- * a week (enough to debug a doorbell) and at most 1,000 of them; the hourly cap reads
- * its own one-hour `ledger_rings` instead.
+ * a week (enough to debug a doorbell) and at most 1,000 of them; an owner's hourly cap
+ * reads only its agent's one `wake_tat` column.
  */
 export interface LedgerLimits {
   /** Enabled agents: what the mailboxes are reserved for. */
@@ -1570,6 +1570,20 @@ export class Ledger {
   }
 
   /**
+   * A client's one enabled agent in a command center whose wake kind its client subscribes
+   * (MCP Events), or none.
+   */
+  subscriber(origin: Origin, commandCenter: string): Agent | undefined {
+    const agent = this.#sql.exec<Agent>(
+      "SELECT * FROM outside_agents WHERE command_center_id = ? AND outside_client = ? " +
+        "AND outside_family = ? AND disabled_reason IS NULL", commandCenter,
+      origin.client, origin.family,
+    ).toArray()[0];
+    return agent !== undefined && kindFor(agent.delivery_method)?.push?.callback === "subscribe"
+      ? agent : undefined;
+  }
+
+  /**
    * Store one doorbell subscription (slice W): from an agent's own client (`origin`, MCP
    * Events, after the binder verified its callback), for its one enabled agent in the
    * command center it names, whose wake kind its client subscribes; or from the owner
@@ -1600,11 +1614,7 @@ export class Ledger {
     return this.#storage.transactionSync(() => {
       const agent = origin === null
         ? (typeof request.agent_id === "string" ? this.#agent(request.agent_id) : undefined)
-        : sql.exec<Agent>(
-          "SELECT * FROM outside_agents WHERE command_center_id = ? AND outside_client = ? " +
-            "AND outside_family = ? AND disabled_reason IS NULL", request.command_center_id ?? "",
-          origin.client, origin.family,
-        ).toArray()[0];
+        : this.subscriber(origin, request.command_center_id ?? "");
       const kind = agent === undefined ? null : kindFor(agent.delivery_method);
       const push = kind?.push ?? null;
       const mine = origin === null ? push?.callback === "owner" && request.kind === kind!.id

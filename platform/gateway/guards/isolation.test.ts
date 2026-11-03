@@ -9,7 +9,9 @@
  * - No gateway source names `OWNER` or `getByName`: the gateway is handed the owner and
  *   never looks one up, and its config binds no namespace to look one up in.
  * - Imports, read from the AST and resolved as paths: a relative one must land in
- *   `gateway/src/` or be the owner grammar (`owner/src/text`), however it is spelled
+ *   `gateway/src/` or be the owner grammar (`owner/src/text`) or the wake kinds'
+ *   records and callback checks (`owner/src/wake-kinds`, which the doorbell applies again
+ *   where it sends), however it is spelled
  *   (`./../../owner/...` included); a bare one must be pi-ai, `cloudflare:workers`, or
  *   `node:async_hooks` in `egress.ts` alone; absolute specifiers, dynamic `import()` and
  *   `require` are refused.
@@ -30,8 +32,8 @@ import { parse, PLATFORM, reporter, workerSources } from "../../owner/guards/sou
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 const KEYRING_HOME = "gateway/src/keyring.ts";
-/** The one module outside the gateway its source may import, as a resolved path. */
-const OWNER_GRAMMAR = "owner/src/text";
+/** The modules outside the gateway its source may import, as resolved paths. */
+const OWNER_MODULES: readonly string[] = Object.freeze(["owner/src/text", "owner/src/wake-kinds"]);
 const PI_AI = "@earendil-works/pi-ai";
 /** The runtime modules a source may import, and where. */
 const RUNTIME: Readonly<Record<string, string | null>> = Object.freeze({
@@ -48,7 +50,7 @@ function importProblem(path: string, specifier: string): string | null {
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
     const resolved = posix.normalize(posix.join(posix.dirname(path), specifier))
       .replace(/\.(?:[cm]?[jt]s|tsx|jsx)$/, "");
-    return resolved.startsWith("gateway/src/") || resolved === OWNER_GRAMMAR
+    return resolved.startsWith("gateway/src/") || OWNER_MODULES.includes(resolved)
       ? null : `imports ${specifier} (${resolved}), outside the gateway`;
   }
   if (specifier === PI_AI || specifier.startsWith(`${PI_AI}/`)) {

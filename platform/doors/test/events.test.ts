@@ -13,8 +13,8 @@ import type { OwnerDO } from "../../owner/src/owner-do";
 import { subscriptionId } from "../../owner/src/wake-kinds";
 import { mcpOrigin } from "../src/binder";
 import {
-  appPost, call, connect, legacyPost, OPEN, rpcBody, registerClient, setControl, signInApp,
-  sqlIn, type Tokens, url,
+  appPost, call, connect, legacyPost, OPEN, rpcBody, registerClient, serveFirstPartyDocument, setControl,
+  signInApp, sqlIn, type Tokens, url,
 } from "./support";
 
 const KEY = new Uint8Array(32).map((_, n) => n + 1);
@@ -54,8 +54,12 @@ function subscribe(tokens: Tokens, path: string, extra: Record<string, unknown> 
   });
 }
 
+let restore: () => void = () => undefined;
+
 beforeEach(async () => {
   await setControl(OPEN);
+  restore();
+  restore = serveFirstPartyDocument();
 });
 
 describe("MCP Events at the MCP door", () => {
@@ -65,13 +69,28 @@ describe("MCP Events at the MCP door", () => {
       protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "1" } });
     expect((init["result"] as { capabilities: Record<string, unknown> }).capabilities)
       .toMatchObject({ tools: {}, events: {} });
+    // The client's own schema drops a capability it does not know, so the wire is read.
+    const discovered: unknown[] = [];
     const client = new Client({ name: "t", version: "1" },
                               { versionNegotiation: { mode: { pin: "2026-07-28" } } });
     await client.connect(new StreamableHTTPClientTransport(new URL(url("/mcp")), {
-      fetch: (input, init) => call(new Request(input, init)),
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const asked = request.method === "POST" ? await request.clone().text() : "";
+        const answer = await call(request);
+        if (asked.includes('"server/discover"')) {
+          const text = await answer.clone().text();
+          const data = text.trimStart().startsWith("{") ? text
+            : text.split("\n").find((line) => line.startsWith("data: "))!.slice(6);
+          discovered.push(JSON.parse(data));
+        }
+        return answer;
+      },
       requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } } }));
-    expect(client.getServerCapabilities()).toMatchObject({ events: {} });
     await client.close();
+    expect(discovered).toHaveLength(1);
+    expect((discovered[0] as { result: { capabilities: unknown } }).result.capabilities)
+      .toMatchObject({ tools: {}, events: {} });
   });
 
   it("lists the one event, with its arguments and its payload", async () => {
