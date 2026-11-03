@@ -24,9 +24,9 @@ import {
 } from "./manifest";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
 import {
-  CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, ENGINE_SIGNINS, ERROR_BYTES, INPUT_BYTES,
-  QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT,
-  SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
+  AUTHORITY_CHARS, CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, ENGINE_SIGNINS, ERROR_BYTES,
+  INPUT_BYTES, MESSAGE_ID_CHARS, NATIVE_ID_CHARS, QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES,
+  RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
 } from "./run-rows";
 import { SOCKET_TICKETS } from "./socket-shape";
 import { RUNS_CEILING } from "./tier";
@@ -290,6 +290,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "created_at REAL NOT NULL, " +
       // The body's size as counted, and how many of its recipient rows still hold it.
       "body_bytes INTEGER NOT NULL, unacked INTEGER NOT NULL DEFAULT 0 CHECK (unacked >= 0), " +
+      // The outside client's authority the mail was sent under (its client, family, grant
+      // generation and sign-in, as JSON), or none for the owner's own: what bounds the run
+      // a mail to one of the owner's own agents starts (`ledger.ts`, migration 13).
+      `authority TEXT CHECK (authority IS NULL OR (length(authority) <= ${AUTHORITY_CHARS} ` +
+      "AND authority NOT GLOB '*[^ -~]*')), " +
       "UNIQUE (sender_id, client_message_id))",
     // The messages no recipient holds, oldest first: what eviction takes.
     "CREATE INDEX messages_done ON ledger_messages (seq) WHERE unacked = 0",
@@ -398,17 +403,20 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "(SELECT body_bytes FROM ledger_messages WHERE message_id = OLD.message_id) " +
       "WHERE reader = OLD.agent_id; " +
       "UPDATE ledger_messages SET unacked = unacked - 1 WHERE message_id = OLD.message_id; END",
-    // An outside agent's message goes to the owner alone; while any recipient holds it,
-    // it counts against its sender's share of the owner's mailbox.
+    // An outside agent's message in its own dm room goes to the owner; while any recipient
+    // holds it, it counts against its sender's share of the owner's mailbox. Its mail in a
+    // room with one of the owner's own agents goes to that agent, and counts in its mailbox.
     "CREATE TRIGGER ledger_outside_held AFTER UPDATE OF unacked ON ledger_messages " +
-      "WHEN NEW.sender_kind = 'outside' AND (OLD.unacked = 0) != (NEW.unacked = 0) BEGIN " +
+      "WHEN NEW.sender_kind = 'outside' AND NEW.room_id = 'dm:' || NEW.sender_id " +
+      "AND (OLD.unacked = 0) != (NEW.unacked = 0) BEGIN " +
       "UPDATE outside_agents SET " +
       "unacked_to_owner = unacked_to_owner + CASE WHEN NEW.unacked = 0 THEN -1 ELSE 1 END, " +
       "unacked_to_owner_bytes = unacked_to_owner_bytes + " +
       "CASE WHEN NEW.unacked = 0 THEN -NEW.body_bytes ELSE NEW.body_bytes END " +
       "WHERE agent_id = NEW.sender_id; END",
     "CREATE TRIGGER ledger_outside_removed AFTER DELETE ON ledger_messages " +
-      "WHEN OLD.sender_kind = 'outside' AND OLD.unacked > 0 BEGIN " +
+      "WHEN OLD.sender_kind = 'outside' AND OLD.room_id = 'dm:' || OLD.sender_id " +
+      "AND OLD.unacked > 0 BEGIN " +
       "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner - 1, " +
       "unacked_to_owner_bytes = unacked_to_owner_bytes - OLD.body_bytes " +
       "WHERE agent_id = OLD.sender_id; END",
@@ -1125,8 +1133,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // `RUNS_CEILING`, since a lease is opened only for a live run and a lapsed one goes. A
   // conversation (`conversations`) keeps its engine and that engine's session id, at most
   // `CONVERSATIONS_KEPT` (the least recently run one with no live run goes first). The
-  // `runs` lane's rows (`run_schedules`, at most `SCHEDULES_KEPT`): a launch at a time, a
-  // cron recurrence, or a run on the owner's mail, each with its input. The platform's tier
+  // `runs` lane's rows (`run_schedules`, at most `SCHEDULES_KEPT`): a launch at a time or a
+  // cron recurrence, each with its input. The platform's tier
   // numbers as the binder last handed them (`platform_tiers`, one row), and the owner app's
   // socket tickets (`socket_tickets`, at most `SOCKET_TICKETS`, single-use, each kept as
   // its SHA-256 only). A run that waits for its conversation's live run to settle is a
@@ -1195,6 +1203,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // The client's origin, as its run grant will carry it once the run starts.
       "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
       "AND origin NOT GLOB '*[^ -~]*')), " +
+      // The mail it answers, when mail to one of the owner's agents started it (slice ID).
+      `mail TEXT CHECK (mail IS NULL OR length(mail) = ${MESSAGE_ID_CHARS}), ` +
       "CHECK (bytes = length(CAST(prompt AS BLOB)))) WITHOUT ROWID",
     "CREATE TRIGGER run_inputs_full BEFORE INSERT ON run_inputs WHEN (SELECT COUNT(*) " +
       `FROM run_inputs) >= ${QUEUE_ROWS} OR (SELECT coalesce(SUM(bytes), 0) FROM run_inputs) ` +
@@ -1248,6 +1258,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "AND origin NOT GLOB '*[^ -~]*')), " +
       "scopes TEXT NOT NULL CHECK (length(scopes) <= 512), " +
       "connection TEXT CHECK (connection IS NULL OR length(connection) = 25), " +
+      // The mail the run answers: its result is its agent's reply in that mail's thread.
+      `mail TEXT CHECK (mail IS NULL OR length(mail) = ${MESSAGE_ID_CHARS}), ` +
       "created_at REAL NOT NULL, CHECK ((stamp IS NULL) = (origin IS NULL))) WITHOUT ROWID",
     "CREATE TABLE conversations (" +
       `id TEXT PRIMARY KEY CHECK (length(id) = ${CONVERSATION_ID_CHARS}), ` +
@@ -1257,8 +1269,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "session_id TEXT CHECK (session_id IS NULL OR (length(session_id) BETWEEN 1 AND 256 " +
       "AND session_id NOT GLOB '*[^!-~]*')), " +
       `last_run TEXT CHECK (last_run IS NULL OR length(last_run) = ${RUN_ID_CHARS}), ` +
+      // A mail thread's conversation (slice ID): the thread's first message, whose
+      // conversation each later mail in it to this agent, under this authority, continues.
+      `thread TEXT CHECK (thread IS NULL OR length(thread) = ${MESSAGE_ID_CHARS}), ` +
       "created_at REAL NOT NULL, last_at REAL NOT NULL) WITHOUT ROWID",
     "CREATE INDEX conversations_by_age ON conversations (last_at)",
+    "CREATE UNIQUE INDEX conversations_by_thread ON conversations (agent, thread, " +
+      "coalesce(client, '')) WHERE thread IS NOT NULL",
     "CREATE TRIGGER conversations_full BEFORE INSERT ON conversations WHEN (SELECT COUNT(*) " +
       `FROM conversations) >= ${CONVERSATIONS_KEPT} BEGIN SELECT RAISE(ABORT, ` +
       `'conversations_full: ${CONVERSATIONS_KEPT} conversations are kept'); END`,
@@ -1266,9 +1283,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `id TEXT PRIMARY KEY CHECK (length(id) = ${SCHEDULE_ID_CHARS}), ` +
       "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128), " +
       `input TEXT NOT NULL CHECK (length(CAST(input AS BLOB)) BETWEEN 1 AND ${INPUT_BYTES}), ` +
-      "trigger TEXT NOT NULL CHECK (trigger IN ('at', 'cron', 'mail')), " +
-      "cron TEXT CHECK (cron IS NULL OR length(cron) BETWEEN 1 AND 64), " +
-      "if_mail INTEGER NOT NULL CHECK (if_mail IN (0, 1)), next_at REAL, " +
+      "trigger TEXT NOT NULL CHECK (trigger IN ('at', 'cron')), " +
+      "cron TEXT CHECK (cron IS NULL OR length(cron) BETWEEN 1 AND 64), next_at REAL, " +
       "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
       "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
       "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
@@ -1303,6 +1319,59 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
         CHARGED_TOKENS("OLD")}) BEGIN ${
         RUN("NEW", "0", `${CHARGED_TOKENS("NEW")} - ${CHARGED_TOKENS("OLD")}`,
             `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} END`,
+  ]),
+  // 13: the owner's own agents as ledger identities (slice ID; ledger.ts). Each
+  // `/workspace/agents/<agent>/agent.json` is one, made as the file appears and retired as
+  // it goes, in the file change's own unit: a mail recipient and sender beside the outside
+  // agents, counted with them in the registry's rows and, while live, its reserved
+  // mailboxes (`ledger_usage`). A retired one keeps its row, and its mail stays readable.
+  // Mail to one waits `queued` in its recipient row until the `runs` lane starts the run
+  // that takes it.
+  Object.freeze([
+    "CREATE TABLE native_agents (" +
+      "agent TEXT PRIMARY KEY CHECK (length(agent) BETWEEN 1 AND 128 " +
+      "AND agent NOT GLOB '*[^A-Za-z0-9._-]*'), " +
+      `agent_id TEXT NOT NULL UNIQUE CHECK (length(agent_id) = ${NATIVE_ID_CHARS} ` +
+      "AND agent_id GLOB 'ta_*' AND substr(agent_id, 4) NOT GLOB '*[^0-9a-f]*'), " +
+      "created_at REAL NOT NULL, retired_at REAL, " +
+      // Messages this agent sent the owner that the owner has not acked yet, and their
+      // bytes: its share of the owner's mailbox, as an outside agent's.
+      "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0), " +
+      "unacked_to_owner_bytes INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner_bytes >= 0)) " +
+      "WITHOUT ROWID",
+    "CREATE INDEX native_agents_retired ON native_agents (retired_at) " +
+      "WHERE retired_at IS NOT NULL",
+    // An identity's name and ledger id never change: its mail names the id.
+    "CREATE TRIGGER native_agents_kept BEFORE UPDATE OF agent, agent_id ON native_agents " +
+      "BEGIN SELECT RAISE(ABORT, 'an agent identity never changes its name or id'); END",
+    "CREATE TRIGGER native_agents_added AFTER INSERT ON native_agents BEGIN " +
+      "UPDATE ledger_usage SET agents = agents + 1, " +
+      "enabled_agents = enabled_agents + (NEW.retired_at IS NULL); END",
+    "CREATE TRIGGER native_agents_retired AFTER UPDATE OF retired_at ON native_agents " +
+      "WHEN (OLD.retired_at IS NULL) != (NEW.retired_at IS NULL) BEGIN " +
+      "UPDATE ledger_usage SET enabled_agents = enabled_agents + " +
+      "CASE WHEN NEW.retired_at IS NULL THEN 1 ELSE -1 END; END",
+    "CREATE TRIGGER native_agents_removed AFTER DELETE ON native_agents BEGIN " +
+      "UPDATE ledger_usage SET agents = agents - 1, " +
+      "enabled_agents = enabled_agents - (OLD.retired_at IS NULL); END",
+    // A native agent's message in its own dm room goes to the owner: its share, as above.
+    "CREATE TRIGGER ledger_native_held AFTER UPDATE OF unacked ON ledger_messages " +
+      "WHEN NEW.sender_kind = 'native' AND NEW.room_id = 'dm:' || NEW.sender_id " +
+      "AND (OLD.unacked = 0) != (NEW.unacked = 0) BEGIN " +
+      "UPDATE native_agents SET " +
+      "unacked_to_owner = unacked_to_owner + CASE WHEN NEW.unacked = 0 THEN -1 ELSE 1 END, " +
+      "unacked_to_owner_bytes = unacked_to_owner_bytes + " +
+      "CASE WHEN NEW.unacked = 0 THEN -NEW.body_bytes ELSE NEW.body_bytes END " +
+      "WHERE agent_id = NEW.sender_id; END",
+    "CREATE TRIGGER ledger_native_removed AFTER DELETE ON ledger_messages " +
+      "WHEN OLD.sender_kind = 'native' AND OLD.room_id = 'dm:' || OLD.sender_id " +
+      "AND OLD.unacked > 0 BEGIN " +
+      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1, " +
+      "unacked_to_owner_bytes = unacked_to_owner_bytes - OLD.body_bytes " +
+      "WHERE agent_id = OLD.sender_id; END",
+    // The mail no run has taken yet, oldest first: what the `runs` lane delivers.
+    "CREATE INDEX recipients_native_due ON ledger_recipients (seq) " +
+      "WHERE state IN ('queued', 'held_cap') AND agent_id GLOB 'ta_*'",
   ]),
 ]);
 

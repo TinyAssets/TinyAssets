@@ -23,7 +23,7 @@
  *    engines (`engine_signins`, each as the runner reports its record's `status_argv`)
  *    ranked together, a subscription preferred to a key of the provider it covers, and a
  *    lapsed sign-in refused (`SIGNIN_LAPSED`), never a silent fall back to another source;
- *    for an unattended run (a schedule's, the mail's) only a credential its record allows
+ *    for an unattended run (a schedule's, a mail's) only a credential its record allows
  *    unattended (ADR-033 decision 3, `UNATTENDED_REFUSED`);
  * 8. the owner's own limits hold (`OWNER_LIMIT`): an API-key run's source and the owner's
  *    day and month spend under their caps (the policy's, off by default). A signed-in run
@@ -50,9 +50,15 @@
  * There is no platform deadline: a run's only time bound is the sandbox's own continuous
  * runtime ceiling, as its lease's tokens carry it (`RUN_DEADLINE_S`).
  *
- * **The `runs` lane** (`lane`): a schedule's due time, or a live run's lease expiry while
- * runs are live, never a poll: with no row due the lane has no job, and a due row whose
- * work is absent (a run on the owner's mail with none unacked) starts nothing.
+ * **Mail** (slice ID): mail to one of the owner's own agents starts that agent's run, through
+ * the same admission, its input the mail, its conversation the mail thread's (one a thread,
+ * agent and authority: `conversations.thread`), its authority the mail's, and its result the
+ * agent's reply in that thread (`events`' answer). Such a run never refuses for the tier:
+ * past the tier's simultaneous runs it waits, as an input to a busy conversation does.
+ *
+ * **The `runs` lane** (`lane`): a schedule's due time, a waiting run's turn, mail no run has
+ * taken, or a live run's lease expiry while runs are live, never a poll: with none the lane
+ * has no job.
  */
 import { createHash, randomBytes } from "node:crypto";
 
@@ -211,6 +217,8 @@ export interface Ask {
   readonly unattended: boolean;
   /** The input: kept only while the run waits for its conversation's live run. */
   readonly prompt: string;
+  /** The mail it answers, and that mail's thread, when mail started it; else null. */
+  readonly mail: { readonly message: string; readonly thread: string } | null;
 }
 
 /** An admitted run, as the object starts it. */
@@ -283,6 +291,8 @@ export interface RunReceipt {
 /** A run grant, as the run-scoped door and egress read it. */
 export interface RunGrant {
   readonly run: string;
+  /** Its agent: who the run acts as in the ledger. */
+  readonly agent: string;
   /** The lease its run runs under (the run's row's). */
   readonly lease_id: string;
   readonly epoch: number;
@@ -290,6 +300,16 @@ export interface RunGrant {
   readonly origin: { readonly client: string; readonly family: string } | null;
   readonly scopes: readonly RunCapability[];
   readonly connection: string | null;
+}
+
+/** A mail's run's result: its agent's reply to that mail, under the run's authority. */
+export interface MailAnswer {
+  readonly run: string;
+  readonly agent: string;
+  readonly mail: string;
+  readonly result: string;
+  readonly stamp: Stamped | null;
+  readonly origin: { readonly client: string; readonly family: string } | null;
 }
 
 /** A frame as the runner posts it: its number, its time and the CLI's raw event. */
@@ -302,9 +322,8 @@ export interface PostedFrame {
 export interface RunSchedule {
   readonly schedule_id: string;
   readonly agent: string;
-  readonly trigger: "at" | "cron" | "mail";
+  readonly trigger: "at" | "cron";
   readonly cron: string | null;
-  readonly if_mail: boolean;
   readonly next_at: number | null;
   readonly last_run: string | null;
   readonly last_error: string | null;
@@ -321,19 +340,21 @@ type RunRow = {
 };
 
 type GrantRow = {
-  run: string; lease_id: string; epoch: number; stamp: string | null; origin: string | null;
-  scopes: string; connection: string | null; secret: string;
+  run: string; agent: string; lease_id: string; epoch: number; stamp: string | null;
+  origin: string | null; scopes: string; connection: string | null; secret: string;
+  mail: string | null;
 };
 
 type ScheduleRow = {
   id: string; agent: string; input: string; trigger: RunSchedule["trigger"]; cron: string | null;
-  if_mail: number; next_at: number | null; client: string | null; stamp: string | null;
+  next_at: number | null; client: string | null; stamp: string | null;
   origin: string | null; last_run: string | null; last_error: string | null;
 };
 
 const LIVE = "state IN ('queued', 'running')";
-/** A live run's grant row, with the lease its run runs under. */
-const GRANTS = "SELECT g.*, r.lease_id, r.epoch FROM run_grants g JOIN runs r ON r.id = g.run";
+/** A live run's grant row, with its agent and the lease its run runs under. */
+const GRANTS = "SELECT g.*, r.agent, r.lease_id, r.epoch FROM run_grants g " +
+  "JOIN runs r ON r.id = g.run";
 /** A run not settled: live, or waiting for its conversation. */
 const UNSETTLED = "settled_at IS NULL";
 /** The id a subscription takes among the connections it is ranked with. */
@@ -394,7 +415,7 @@ function receipt(row: RunRow): RunReceipt {
 
 function grantOf(row: GrantRow): RunGrant {
   return {
-    run: row.run, lease_id: row.lease_id, epoch: row.epoch,
+    run: row.run, agent: row.agent, lease_id: row.lease_id, epoch: row.epoch,
     stamp: row.stamp === null ? null : JSON.parse(row.stamp) as Stamped,
     origin: row.origin === null ? null : JSON.parse(row.origin) as RunGrant["origin"],
     scopes: JSON.parse(row.scopes) as RunCapability[], connection: row.connection,
@@ -403,8 +424,7 @@ function grantOf(row: GrantRow): RunGrant {
 
 function scheduleOf(row: ScheduleRow): RunSchedule {
   return { schedule_id: row.id, agent: row.agent, trigger: row.trigger, cron: row.cron,
-           if_mail: row.if_mail === 1, next_at: row.next_at, last_run: row.last_run,
-           last_error: row.last_error };
+           next_at: row.next_at, last_run: row.last_run, last_error: row.last_error };
 }
 
 export class Runs {
@@ -472,6 +492,14 @@ export class Runs {
     }
     const tier = this.#deps.tier();
     if (this.live() >= ask.tiers[tier].runs) {
+      if (ask.mail !== null && waiting === null) {
+        // Mail never refuses for the tier: its run waits its turn, in its thread's
+        // conversation (made now when the thread has none), as a busy conversation's input.
+        const chosen = conversation === null
+          ? this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now) : null;
+        return this.#wait(ask, conversation?.id
+          ?? this.#newConversation(ask, chosen!.engine, now), now);
+      }
       throw new Refused(`${TIER_RUNS} (${tier}: ${ask.tiers[tier].runs})`);
     }
     const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
@@ -502,14 +530,15 @@ export class Runs {
     }
     this.#sql.exec("UPDATE conversations SET last_run = ? WHERE id = ?", runId, conversationId);
     let prompt = ask.prompt;
+    let mail = ask.mail?.message ?? null;
     if (waiting !== null) {
       // Its turn: its source as chosen now, its kept input taken.
       this.#sql.exec("UPDATE runs SET state = 'queued', source = ?, credential = ?, model = ?, " +
                        "lease_id = ?, epoch = ?, beat_at = ? WHERE id = ? AND state = 'waiting'",
                      chosen.engine, chosen.credential, chosen.model, lease.lease_id, lease.epoch,
                      now, waiting);
-      prompt = this.#sql.exec<{ prompt: string }>(
-        "DELETE FROM run_inputs WHERE run = ? RETURNING prompt", waiting).one().prompt;
+      ({ prompt, mail } = this.#sql.exec<{ prompt: string; mail: string | null }>(
+        "DELETE FROM run_inputs WHERE run = ? RETURNING prompt, mail", waiting).one());
     } else {
       this.#sql.exec(
         "INSERT INTO runs (id, agent, conversation, source, credential, model, state, " +
@@ -522,11 +551,11 @@ export class Runs {
     }
     const scopes = ask.file.scopes.filter((scope) => held(scope));
     this.#sql.exec(
-      "INSERT INTO run_grants (run, secret, stamp, origin, scopes, connection, created_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO run_grants (run, secret, stamp, origin, scopes, connection, mail, " +
+        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       runId, secretHash(secret), ask.stamp === null ? null : JSON.stringify(ask.stamp),
       ask.origin === null ? null : JSON.stringify(ask.origin), JSON.stringify(scopes),
-      chosen.connection, now);
+      chosen.connection, mail, now);
     this.#prune();
     return { run: runId, conversation: conversationId, existing: false, engine: chosen.engine,
              credential: chosen.credential, connection: chosen.connection, model: chosen.model,
@@ -557,9 +586,10 @@ export class Runs {
       ask.initiator, ask.origin?.client ?? null,
       ask.stamp === null ? null : JSON.stringify(ask.stamp), ask.request,
       ask.unattended ? 1 : 0, now);
-    this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
-                   runId, ask.prompt, utf8Bytes(ask.prompt),
-                   ask.origin === null ? null : JSON.stringify(ask.origin));
+    this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin, mail) " +
+                     "VALUES (?, ?, ?, ?, ?)", runId, ask.prompt, utf8Bytes(ask.prompt),
+                   ask.origin === null ? null : JSON.stringify(ask.origin),
+                   ask.mail?.message ?? null);
     this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, conversation);
     this.#prune();
     return { existing: true, run: runId, conversation };
@@ -586,8 +616,10 @@ export class Runs {
    * whole (`admit` with its id) when its turn comes. Null when it no longer waits. A read.
    */
   waitingAsk(runId: string): Omit<Ask, "file" | "tiers"> | null {
-    const row = this.#sql.exec<RunRow & { prompt: string; origin: string | null }>(
-      "SELECT r.*, i.prompt, i.origin FROM runs r JOIN run_inputs i ON i.run = r.id " +
+    const row = this.#sql.exec<RunRow & { prompt: string; origin: string | null;
+                                          mail: string | null; thread: string | null }>(
+      "SELECT r.*, i.prompt, i.origin, i.mail, c.thread FROM runs r " +
+        "JOIN run_inputs i ON i.run = r.id JOIN conversations c ON c.id = r.conversation " +
         "WHERE r.id = ? AND r.state = 'waiting'", runId).toArray()[0];
     if (row === undefined) {
       return null;
@@ -595,7 +627,26 @@ export class Runs {
     return { initiator: row.initiator, agent: row.agent, conversation: row.conversation,
              request: row.request, unattended: row.unattended === 1, prompt: row.prompt,
              stamp: row.stamp === null ? null : JSON.parse(row.stamp) as Stamped,
-             origin: row.origin === null ? null : JSON.parse(row.origin) as Ask["origin"] };
+             origin: row.origin === null ? null : JSON.parse(row.origin) as Ask["origin"],
+             mail: row.mail === null || row.thread === null ? null
+               : { message: row.mail, thread: row.thread } };
+  }
+
+  /**
+   * The conversation of a mail thread to `agent` under `client`'s authority (none: the
+   * owner's own), or null when the thread has none yet (or it was forgotten). A read.
+   */
+  threadConversation(agent: string, thread: string, client: string | null): string | null {
+    return this.#sql.exec<{ id: string }>(
+      "SELECT id FROM conversations WHERE agent = ? AND thread = ? AND " +
+        "coalesce(client, '') = ?", agent, thread, client ?? "").toArray()[0]?.id ?? null;
+  }
+
+  /** Whether the inputs' queue has room for one more of `bytes`. A read. */
+  queueRoom(bytes: number): boolean {
+    const queued = this.#sql.exec<{ n: number; bytes: number }>(
+      "SELECT COUNT(*) AS n, coalesce(SUM(bytes), 0) AS bytes FROM run_inputs").one();
+    return queued.n < QUEUE_ROWS && queued.bytes + bytes <= QUEUE_BYTES;
   }
 
   /**
@@ -681,9 +732,9 @@ export class Runs {
                      count - CONVERSATIONS_KEPT + 1);
     }
     const conversation = id("cv_");
-    this.#sql.exec("INSERT INTO conversations (id, agent, source, client, created_at, last_at) " +
-                     "VALUES (?, ?, ?, ?, ?, ?)", conversation, ask.agent, engine,
-                   ask.origin?.client ?? null, now, now);
+    this.#sql.exec("INSERT INTO conversations (id, agent, source, client, thread, created_at, " +
+                     "last_at) VALUES (?, ?, ?, ?, ?, ?, ?)", conversation, ask.agent, engine,
+                   ask.origin?.client ?? null, ask.mail?.thread ?? null, now, now);
     return conversation;
   }
 
@@ -950,11 +1001,13 @@ export class Runs {
    * In a unit: the runner's frames for a live run under the live lease, renewing it (each
    * batch is the runner's heartbeat); each new frame (`seq` past the last) read by the run's
    * record, its session id, result and error kept; the frames to relay, and the settle the
-   * runner's `end` brings.
+   * runner's `end` brings. A mail's run that succeeded with a result answers it: its agent's
+   * reply, under the run's authority, to post in the mail's thread in the same unit.
    */
   events(runId: string, lease: LiveLease, frames: readonly PostedFrame[],
          end: { readonly exit_code: number | null } | null, now: number):
-      { conversation: string; frames: Frame[]; settled: RunState | null } {
+      { conversation: string; frames: Frame[]; settled: RunState | null;
+        answer: MailAnswer | null } {
     const row = this.liveUnder(runId, lease) ? this.#run(runId) : undefined;
     if (row === undefined) {
       throw new Refused(RUN_ENDED);
@@ -1002,14 +1055,21 @@ export class Runs {
                      row.conversation);
     }
     let settled: RunState | null = null;
+    let answer: MailAnswer | null = null;
     if (end !== null) {
       const failed = end.exit_code !== 0 || error !== null || row.cancel_requested === 1;
       settled = failed ? "failed" : "succeeded";
+      const grant = this.#sql.exec<GrantRow>(`${GRANTS} WHERE g.run = ?`, runId).toArray()[0];
+      if (!failed && result !== null && result !== "" && grant?.mail != null) {
+        const granted = grantOf(grant);
+        answer = { run: runId, agent: row.agent, mail: grant.mail, result,
+                   stamp: granted.stamp, origin: granted.origin };
+      }
       this.settle(runId, settled, row.cancel_requested === 1 ? "cancelled"
         : end.exit_code !== 0 ? "exit" : error !== null ? "engine_error" : null,
                   end.exit_code, now);
     }
-    return { conversation: row.conversation, frames: relayed, settled };
+    return { conversation: row.conversation, frames: relayed, settled, answer };
   }
 
   /**
@@ -1130,40 +1190,35 @@ export class Runs {
 
   // -- THE RUNS LANE: schedules ---------------------------------------------------------
 
-  /** In a unit: a schedule of `agent`'s input: at a time, on a cron, or on the owner's mail. */
+  /** In a unit: a schedule of `agent`'s input: at a time, or on a cron. */
   schedule(request: { agent: string; input: string; at: number | null; cron: string | null;
-                      mail: boolean; if_mail: boolean; stamp: Stamped | null;
+                      stamp: Stamped | null;
                       origin: { client: string; family: string } | null }, now: number):
       RunSchedule {
     if (utf8Bytes(request.input) > INPUT_BYTES) {
       throw new Invalid(`a scheduled input is at most ${INPUT_BYTES} bytes`);
     }
-    const kinds = [request.at !== null, request.cron !== null, request.mail]
-      .filter(Boolean).length;
-    if (kinds !== 1) {
-      throw new Invalid("a schedule is one of at, cron or mail");
+    if ((request.at === null) === (request.cron === null)) {
+      throw new Invalid("a schedule is one of at or cron");
     }
     let next: number | null;
     let trigger: RunSchedule["trigger"];
     if (request.cron !== null) {
       next = nextOccurrence(parseCron(request.cron), now);
       trigger = "cron";
-    } else if (request.at !== null) {
-      if (!Number.isFinite(request.at) || request.at <= now) {
+    } else {
+      if (!Number.isFinite(request.at) || request.at! <= now) {
         throw new Invalid("at is a time still ahead, in seconds since the epoch");
       }
-      next = request.at;
+      next = request.at!;
       trigger = "at";
-    } else {
-      next = null;
-      trigger = "mail";
     }
     const scheduleId = id("sch_");
     this.#sql.exec(
-      "INSERT INTO run_schedules (id, agent, input, trigger, cron, if_mail, next_at, client, " +
-        "stamp, origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO run_schedules (id, agent, input, trigger, cron, next_at, client, " +
+        "stamp, origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       scheduleId, request.agent, request.input, trigger, request.cron,
-      request.if_mail ? 1 : 0, next, request.origin?.client ?? null,
+      next, request.origin?.client ?? null,
       request.stamp === null ? null : JSON.stringify(request.stamp),
       request.origin === null ? null : JSON.stringify(request.origin), now);
     return this.scheduleView(scheduleId, request.origin?.client ?? null);
@@ -1185,15 +1240,6 @@ export class Runs {
     const found = this.scheduleView(scheduleId, client);
     this.#sql.exec("DELETE FROM run_schedules WHERE id = ?", found.schedule_id);
     return { schedule_id: found.schedule_id };
-  }
-
-  /**
-   * In a unit, the doorbell on change: mail reached the owner, so each run-on-mail schedule
-   * is due now (one already due stays as it is).
-   */
-  mailArrived(now: number): void {
-    this.#sql.exec("UPDATE run_schedules SET next_at = ? WHERE trigger = 'mail' " +
-                     "AND next_at IS NULL", now);
   }
 
   /**
@@ -1222,12 +1268,9 @@ export class Runs {
 
   /**
    * In a unit: the next due schedule claimed: its next time moved on (a cron's next
-   * occurrence; an `at` and a mail run's cleared), so it fires once; and whether it has work
-   * (a run on mail, or one that asks for mail, only with the owner's mail unacked). Null
-   * when none is due.
+   * occurrence; an `at` removed), so it fires once. Null when none is due.
    */
-  claim(now: number, unacked: () => number):
-      { schedule: ScheduleRow; work: boolean } | null {
+  claim(now: number): ScheduleRow | null {
     const row = this.#sql.exec<ScheduleRow>(
       "SELECT * FROM run_schedules WHERE next_at IS NOT NULL AND next_at <= ? " +
         "ORDER BY next_at, id LIMIT 1", now).toArray()[0];
@@ -1237,11 +1280,10 @@ export class Runs {
     if (row.trigger === "at") {
       this.#sql.exec("DELETE FROM run_schedules WHERE id = ?", row.id);
     } else {
-      const next = row.trigger === "cron" ? nextOccurrence(parseCron(row.cron), now) : null;
-      this.#sql.exec("UPDATE run_schedules SET next_at = ? WHERE id = ?", next, row.id);
+      this.#sql.exec("UPDATE run_schedules SET next_at = ? WHERE id = ?",
+                     nextOccurrence(parseCron(row.cron), now), row.id);
     }
-    const work = !(row.trigger === "mail" || row.if_mail === 1) || unacked() > 0;
-    return { schedule: row, work };
+    return row;
   }
 
   /** In a unit: what came of a schedule's run: the run, or why it was refused. */

@@ -21,9 +21,11 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice R: 4,232,733,666.75 bytes), about 767 MB under
- * half; with every raise the limits audit proposes, 49.98% (4,997,920,528.75 bytes,
- * `limits-proposed.test.ts`), 2.1 MB under half.
+ * The worst case is 42.3% of the limit (slice ID: 4,234,268,166.75 bytes), about 766 MB under
+ * half; with every raise the limits audit proposes, 49.99% (4,999,455,028.75 bytes,
+ * `limits-proposed.test.ts`), 0.5 MB under half. Slice ID added `native_agents` (1.5 MB,
+ * the owner's own agents in the registry's rows); a mail's authority, a run's mail and a
+ * conversation's thread fit within the pages their rows were already counted at.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
@@ -165,6 +167,10 @@ const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
 const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
 const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+/** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
+const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
+const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
+const AUTHORITY_CHARS = constant("run-rows", "AUTHORITY_CHARS");
 /** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
 const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
 /** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
@@ -316,8 +322,13 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     owner_sessions: { rows: S.maxSessions, bytes: ROW, by: "maxSessions" },
     outside_agents: { rows: L.maxAgentRows, bytes: ROW + 1 * KIB,
                       by: "maxAgentRows, every row: a tombstone a revoke holds too" },
-    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB,
-                       by: "maxMessages" },
+    // The owner's own agents (slice ID): counted with the outside agents in the registry's
+    // rows, so the two terms together count it twice over.
+    native_agents: { rows: L.maxAgentRows, bytes: ROW + 128 + NATIVE_ID_CHARS + 4 * 8,
+                     by: "maxAgentRows, live or retired, each its name (ASCII), id and " +
+                       "counters" },
+    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB + AUTHORITY_CHARS,
+                       by: "maxMessages, each with its authority (visible ASCII)" },
     message_bodies: { rows: L.maxMessages,
                       bytes: ROW + L.maxBodyBytes / L.maxMessages,
                       by: "maxBodyBytes over maxMessages" },
@@ -385,17 +396,21 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // page (a `WITHOUT ROWID` record keeps 1,002 bytes in place), and its overflow at most a
     // page past its bytes', which the two pages cover whatever the spread.
     run_inputs: { rows: QUEUE_ROWS,
-                  bytes: ROW + 36 + ORIGIN_CHARS + QUEUE_BYTES / QUEUE_ROWS + 2 * 4092,
-                  by: "QUEUE_ROWS, QUEUE_BYTES of input in all, each its run and origin" },
+                  bytes: ROW + 36 + ORIGIN_CHARS + MESSAGE_ID_CHARS + QUEUE_BYTES / QUEUE_ROWS
+                    + 2 * 4092,
+                  by: "QUEUE_ROWS, QUEUE_BYTES of input in all, each its run, origin and mail" },
     // Each engine's sign-in as the runner reports it: presence, times and models, no secret.
     engine_signins: { rows: ENGINE_SIGNINS, bytes: ROW + 64 + SIGNIN_MODELS_CHARS + 16,
                       by: "ENGINE_SIGNINS, each its engine and models (visible ASCII)" },
     run_grants: { rows: RUNS_CEILING,
-                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64,
-                  by: "one a live run, its stamp, origin, scopes, connection and secret's " +
-                    "hash" },
-    conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
-                     by: "CONVERSATIONS_KEPT, each its agent, source, client and session id" },
+                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64
+                    + MESSAGE_ID_CHARS,
+                  by: "one a live run, its stamp, origin, scopes, connection, secret's " +
+                    "hash and mail" },
+    conversations: { rows: CONVERSATIONS_KEPT,
+                     bytes: ROW + 128 + 64 + 64 + 256 + 128 + MESSAGE_ID_CHARS,
+                     by: "CONVERSATIONS_KEPT, each its agent, source, client, session id and " +
+                       "mail thread" },
     run_schedules: { rows: SCHEDULES_KEPT,
                      bytes: ROW + INPUT_BYTES + 4 * STAMP_CHARS + ORIGIN_CHARS + 4 * 256 + 256,
                      by: "SCHEDULES_KEPT, each its input, stamp, origin and last error" },

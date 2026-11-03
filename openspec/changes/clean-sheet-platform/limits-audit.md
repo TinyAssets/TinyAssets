@@ -25,13 +25,15 @@ then its own change. `[I]` marks an inference not checked against a primary sour
 
 **The real ceiling** behind most bounds below is the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Half is 5 GB, the guard's budget,
 and every row that bounds a guard term gives its share of it, so one can be traded
-against another. Today's worst case is 4,232,733,666.75 bytes (42.33%; slice D's was
-4,064,822,714, 40.65%, before slice R's tables).
+against another. Today's worst case is 4,234,268,166.75 bytes (42.34%; slice D's was
+4,064,822,714, 40.65%, before slice R's tables; slice R's 4,232,733,666.75 before slice
+ID's `native_agents`, 1.5 MB).
 
 **Every proposed raise together** (`owner/guards/limits-proposed.test.ts`, `PROPOSED`, which
 the guard's own `termsFor` costs, all applied at once, and which also passes the ledger's
-`checkLimits` and the collections' nesting) gives a worst case of 4,997,920,528.75 bytes
-(49.98%), 2.1 MB under half (2,079,471.25 bytes). Slice D left 169.9 MB of margin for
+`checkLimits` and the collections' nesting) gives a worst case of 4,999,455,028.75 bytes
+(49.99%), 0.5 MB under half (544,971.25 bytes; slice ID's agent identities took 1.5 MB of
+slice R's 2.1 MB). Slice D left 169.9 MB of margin for
 slice R's tables; slice R took 168.0 MB of it (`runs` 85.0 MB with its waiting runs,
 `conversations` 30.7 MB, `run_schedules` 26.1 MB, `run_inputs` 9.8 MB, `run_grants`
 9.7 MB, `socket_tickets` 3.1 MB, `sandbox_leases` 3.1 MB, `engine_signins` 0.4 MB,
@@ -41,8 +43,9 @@ its 16.5 MB (its inputs and its waiting runs' rows) was 75% of the 22.0 MB that 
 The round's sandbox leases (one an authority, review H-1) took 2.3 MB more of the margin,
 and each run's lease, heartbeat and secret's hash fit within the rows' pages already
 counted; nothing was shrunk to fit. Round 2's per-sandbox sign-ins (a client's sandbox's
-own, on its lease's row: a login is never copied between sandboxes) took 0.8 MB more. The
-margin is now 2.1 MB, under the accounting's own error bars: the next term that needs room
+own, on its lease's row: a login is never copied between sandboxes) took 0.8 MB more, and
+slice ID's agent identities 1.5 MB (its other columns fit the pages already counted). The
+margin is now 0.5 MB, under the accounting's own error bars: the next term that needs room
 takes it from another, by the founder's choice. A table of sign-in rows keyed by sandbox and
 engine instead (presence only, the engines that sign in today at each of `RUNS_CEILING`
 sandboxes) would cost 5.3 MB, 2.4 MB past the margin it had; on the lease's row they fit. The first draft's raises that do not fit are in

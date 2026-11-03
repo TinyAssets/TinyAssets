@@ -871,15 +871,16 @@ R, S, M and W.
     the provider it covers. A lapse (signed in, then not) leaves a `signin_lapsed` notice
     ("sign in again"), and `auto`, or an agent naming that engine on its sign-in, is
     refused `signin_lapsed`, never a silent fall back to another source.
-  - Run doors: `agentSubmit`, `agentRun` (now, `at`, `cron`, `on_mail`, `if_mail`),
+  - Run doors: `agentSubmit`, `agentRun` (now, `at`, `cron`; its `on_mail` and `if_mail`
+    stand-ins removed by slice ID),
     `agentStatus` (from the receipt), `agentCancel` (through the sandbox); MCP `converse`,
     `run_graph`, `run_status`, `run_cancel`; `/app/api/agent/{submit,run,status,cancel}`.
   - A run's own doors on the egress host: `/r/<run>/mcp` (the table but the run tools,
     every door held to the run grant's scopes; a client's run to its intersection with
     that client's grant, its stamp rechecked, a grant change or revoke ending the run),
     `/r/<run>/events` (the runner's frames, read by the record's matchers in the object).
-  - The `runs` lane: due schedules and lost runners only, never a poll; a post to the owner
-    rings the run-on-mail schedules; a due run on mail with none unacked starts nothing.
+  - The `runs` lane: due schedules and lost runners only, never a poll (and, from slice
+    ID, mail no run has taken).
   - Live output (`relay.ts`), A6 salvaged (its socket ticket, now a routing-MAC token of
     the `socket` kind; the binder's upgrade path; the ticket's grant and expiry binding;
     sign-out ending sockets): frames `{v, run, seq, at, kind, event}` relayed to the app's
@@ -953,13 +954,42 @@ R, S, M and W.
     E2B), and `wrangler.jsonc` binds it;
   - owed probes: E2B's transform on `/r/<run>/<secret>/mcp` and `/r/<run>/events`; whether a
     WebSocket would carry the frames (the POST batches are the path today).
-- [ ] Next slice: TinyAssets agents get an identity in the ledger. Each of the owner's
-  agents (`/workspace/agents/<id>/agent.json`) is a ledger identity beside the main agents
-  (outside clients), so it takes part in mail, rooms and the board as they do, and mail to
-  an agent starts its run (its conversation the thread's, the run's input the mail). This
-  is core to the product: group chats that mix people, main agents and TinyAssets agents.
-  Until it lands, slice R's owner-mail schedules (`on_mail`, `if_mail`) stand in for it;
-  the slice replaces them.
+- [x] Slice ID: TinyAssets agents get an identity in the ledger (`ledger.ts`, migration 13,
+  `test/agent-mail.test.ts`). Core to the product: group chats that mix people, main
+  agents and TinyAssets agents.
+  - Each `/workspace/agents/<id>/agent.json` is a ledger identity (`native_agents`, `ta_` and
+    16 hex) beside the outside agents, made as the file appears and retired as it goes, in
+    the file change's own unit (`Files`' path observer). A live one takes one of the
+    ledger's reserved mailboxes (`ledger_agents_full` past them); its row counts in the
+    registry, the oldest retired one forgotten first. A retired agent's mail is kept and
+    readable by the other side; new mail to or from it is refused `agent_retired`, and its
+    untaken mail fails.
+  - Rooms are pairs: `dm:<a>` (the owner and `a`), `dm:<a>+<b>` (two agents, one at least
+    the owner's own). A run acts in the ledger as its own agent (its mailbox, its posts),
+    never as the owner or client that started it; the posting caller's authority (none, a
+    client's grant at its generation, a run's stamp) is kept with the mail
+    (`ledger_messages.authority`).
+  - Mail to an agent waits `queued` for the `runs` lane, which starts the agent's run
+    through slice R's admission, unattended: its input the mail, its conversation the
+    thread's (`conversations.thread`, one a thread, agent and authority), its authority the
+    mail's (a client's mail held to the intersection with its grant, refused once the grant
+    moved), its retry key the mail. Past the tier it waits as R's inputs do; when the
+    inputs' queue is full the mail is held in the ledger until it has room. Its result is
+    the agent's reply in the thread, posted in the settle's unit. Posting mail that starts
+    an agent's run needs `converse` there (a client's scoped grant, a run's scopes).
+  - Slice R's owner-mail schedules (`on_mail`, `if_mail`), their tests and spec text are
+    gone; `agents_list` also lists the owner's agents (`owner_agents`).
+  - Loops: no cap of the platform's. The tier's simultaneous runs, the inputs' queue, each
+    mailbox and the owner's own spending caps bound agents mailing each other, each refused
+    loudly (tested). Owed, raised for the founder: a loop on a subscription, with the
+    owner's caps off (the default), runs one turn at a time until the vendor's own limit.
+    An owner setting, off by default (a turn or chain-depth limit on agent-to-agent mail),
+    would be the founder's call; none is built.
+  - Owed to later slices: group rooms of three or more (S4, rooms and status: the owner,
+    main agents and TinyAssets agents together, one post to each member); a room's history
+    read for the owner over agent-to-agent mail; the app's view of mail-started runs (the
+    owner app, S6); the agent's own mail tools in its run's MCP profile are today's
+    `room_post`, `mailbox_read` and `mailbox_ack` (slice M's `inbox_digest` reads them too).
 - [ ] Owed by slice E's review, outside slice S's checks:
   - Price server tools as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a call that enables one can be metered rather than refused

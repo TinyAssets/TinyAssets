@@ -606,7 +606,7 @@ describe("the admission unit", () => {
       return gate.write(() => runs.admit({
         initiator: "schedule", stamp: null, origin: null, agent: "main",
         file: agentFile(JSON.stringify(SIGNED_IN)), conversation: null, request: null,
-        tiers: TIERS, unattended: true, prompt: "x" }, Date.now() / 1000, never))
+        tiers: TIERS, unattended: true, prompt: "x", mail: null }, Date.now() / 1000, never))
         .then(() => "admitted", (error: Error) => error.message);
     });
     expect(refused).toBe("owner_suspended: the owner's account is suspended (billing)");
@@ -743,7 +743,7 @@ describe("a run's own calls", () => {
 });
 
 describe("the runs lane", () => {
-  it("starts a due schedule's run only when it has work, and nothing on an empty poll",
+  it("starts a due schedule's run, and nothing on an empty poll",
      async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
@@ -752,47 +752,14 @@ describe("the runs lane", () => {
     expect(await r.sql("SELECT id FROM cf_agents_jobs WHERE id = 'owner-schedule/runs'"))
       .toEqual([]);
     expect((await recorder(r.stub)).starts).toEqual([]);
-    // A cron that runs only on the owner's mail: due, with none, it starts nothing.
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "triage",
-                                                      cron: "0 * * * *", if_mail: true });
-    await fireSchedules(r);
-    expect((await recorder(r.stub)).starts).toEqual([]);
-    expect((await r.sql("SELECT next_at FROM run_schedules"))[0]!["next_at"])
-      .toBeGreaterThan(Date.now() / 1000);
-    // A plain cron is its own work: due, it starts one run, unattended.
+    // A cron is its own work: due, it starts one run, unattended.
     await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
                                                       cron: "30 * * * *" });
-    await r.sql("UPDATE run_schedules SET next_at = NULL WHERE if_mail = 1");
     await fireSchedules(r);
     const starts = (await recorder(r.stub)).starts;
     expect(starts.map((start) => [start.prompt, start.unattended])).toEqual([["report", true]]);
     expect(await r.stub.agentStatus(r.bind(), { run_id: starts[0]!.run }))
       .toMatchObject({ initiator: "schedule" });
-  });
-
-  it("runs an agent on the owner's mail when mail comes, the doorbell rung by the post",
-     async () => {
-    const r = await gated();
-    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    const schedule = await r.stub.agentRun(r.bind({ tiers: TIERS }), {
-      agent: "main", input: "read your mail", on_mail: true });
-    expect(schedule).toMatchObject({ trigger: "mail", next_at: null });
-    // An outside agent posts to the owner: the post rings the lane.
-    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
-    const { card_id, digest } = await r.stub.registerPropose(client, {
-      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
-      recipe_id: null });
-    const agent = await r.stub.registerAgent(r.session(), { card_id, digest });
-    await r.stub.roomPost(client, { room_id: `dm:${agent.agent_id}`, client_message_id: "m-1",
-                                    body: "hello", parent_id: null });
-    expect((await r.sql("SELECT next_at FROM run_schedules"))[0]!["next_at"]).not.toBeNull();
-    await drainDue(r.stub);
-    const starts = (await recorder(r.stub)).starts;
-    expect(starts.map((start) => [start.prompt, start.unattended]))
-      .toEqual([["read your mail", true]]);
-    expect(await r.stub.agentStatus(r.bind(), { run_id: starts[0]!.run }))
-      .toMatchObject({ initiator: "mail" });
-    expect(await r.sql("SELECT next_at FROM run_schedules")).toEqual([{ next_at: null }]);
   });
 
   it("cancels a schedule of the caller's", async () => {
