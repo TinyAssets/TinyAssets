@@ -191,6 +191,63 @@ describe("starter updates, review round 2 (R2-M1, R2-L1)", () => {
   });
 });
 
+/** A starter of `pkg` over `r`'s object, as its lane builds one, for `act` to drive. */
+function starterOn(r: Rig, pkg: StarterPackage, now: number) {
+  return <T>(act: (starter: Starter) => Promise<T>) =>
+    inGate(r.stub, async (_instance, _state, gate) => {
+      const notices = new Notices(gate.storage);
+      return act(new Starter({
+        storage: gate.storage, files: filesOn(gate.storage, gate.write), write: gate.write,
+        admitted: () => true, clock: () => now,
+        notice: (type, detail) => notices.add(type, detail, now),
+      }, pkg));
+    });
+}
+
+describe("review round 3 (F3)", () => {
+  it("withdraws a new file's proposal when a later version retires its path", async () => {
+    const r = await rig();
+    const json = file(`${AGENTS}/agent.json`, agentJson(["read_files"]));
+    await pass(r, starterPackage({ version: 1, files: [json] }));
+    await pass(r, starterPackage({ version: 2, files: [file(`${SKILLS}/e/run.sh`, "echo 2"),
+                                                       json] }));
+    expect(await readText(r, `${SKILLS}/e/run.sh${NEWER}`)).toBe("echo 2");
+    await pass(r, starterPackage({ version: 3, files: [json],
+                                   retired: [`${SKILLS}/e/run.sh`] }));
+    expect(await readText(r, `${SKILLS}/e/run.sh${NEWER}`)).toBeNull();
+    const withdrawn = await notices(r, "starter_withdrawn");
+    expect(withdrawn).toHaveLength(1);
+    expect(withdrawn[0]).toContain(`${SKILLS}/e/run.sh`);
+    expect((await receipts(r))[`${SKILLS}/e/run.sh`]).toMatchObject({ state: "deleted" });
+    // A version that ships the path again does not bring it back.
+    await pass(r, starterPackage({ version: 4, files: [file(`${SKILLS}/e/run.sh`, "echo 4"),
+                                                       json] }));
+    expect(await readText(r, `${SKILLS}/e/run.sh${NEWER}`)).toBeNull();
+  });
+
+  it("F3-seed-wait: a door's wait on a seed that cannot land runs one pass, then returns " +
+     "at once until the retry", async () => {
+    const r = await rig();
+    await r.stub.fileMkdir(r.session(null), { path: "/workspace/agents", expected_etag: null });
+    await r.stub.fileWrite(r.session(null), { path: AGENTS, expected_etag: null,
+                                              content: text("in the way") });
+    const now = Date.now() / 1000;
+    const pkg = starterPackage({ version: 1, files: [
+      file(`${SKILLS}/a/SKILL.md`, "a1"), file(`${AGENTS}/agent.json`, agentJson(["read_files"]))] });
+    const times = await starterOn(r, pkg, now)(async (starter) => {
+      // Two doors at once share one pass (single-flight), then a third waits for nothing.
+      await Promise.all([starter.seeded(now), starter.seeded(now)]);
+      const again = performance.now();
+      await starter.seeded(now);
+      return { again: performance.now() - again, version: starter.version() };
+    });
+    expect(times.version).toBe(0);
+    expect(await notices(r, "starter_failed")).toHaveLength(1);
+    expect(await readText(r, `${SKILLS}/a/SKILL.md`)).toBe("a1");
+    expect(times.again).toBeLessThan(50);
+  });
+});
+
 describe("seeding (review L3)", () => {
   it("lets a new owner's first converse find main, before the lane's alarm has run",
      async () => {

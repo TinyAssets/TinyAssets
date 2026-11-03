@@ -76,10 +76,20 @@ describe("the starter package", () => {
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }
-    // And against main's bundle, where the history holds one: nothing dropped unretired.
+    // And against main's bundle: nothing dropped unretired. Said loudly when it cannot run.
+    const history = spawnSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"],
+                              { cwd: PLATFORM, encoding: "utf8" });
     const main = spawnSync("git", ["show", "origin/main:platform/starter/starter.json"],
                            { cwd: PLATFORM, encoding: "utf8" });
-    if (main.status === 0) {
+    if (history.status !== 0) {
+      console.warn("STARTER GUARD: this checkout holds no origin/main, so the dropped-path " +
+                   "check against main's starter.json DID NOT RUN; bundle.mjs's write-time " +
+                   "check is the only one here");
+    } else if (main.status !== 0) {
+      console.warn("STARTER GUARD: origin/main holds no platform/starter/starter.json yet, so " +
+                   "there is no earlier bundle to compare: the dropped-path check against main " +
+                   "had nothing to check");
+    } else {
       const previous = JSON.parse(main.stdout) as Bundled & { retired?: string[] };
       const named = new Set([...bundled.files.map((file) => file.path),
                              ...((bundled as Bundled & { retired?: string[] }).retired ?? [])]);

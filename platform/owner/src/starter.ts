@@ -395,6 +395,23 @@ export class Starter {
         }
       }
     }
+    // A retired path's proposal not adopted: the version that retires it withdraws it too
+    // (review F3-retired-proposal), and its receipt keeps the path from coming back.
+    for (const path of pkg.retired) {
+      const receipt = await this.#deps.write(() => this.#sql.exec<ReceiptRow>(
+        "SELECT path, version, class, state, installed, offered FROM starter_receipts " +
+          "WHERE path = ?", path).toArray()[0]);
+      if (receipt?.state !== "proposed") {
+        continue;
+      }
+      const gone = { path, class: receipt.class, text: "" } satisfies StarterFile;
+      const before = withdrawn.length;
+      await this.#withdraw(gone, receipt, "", withdrawn);
+      if (withdrawn.length > before || await this.#deps.write(
+        () => this.#deps.files.stat(path) === null)) {
+        await this.#record(gone, receipt.version, "deleted", receipt.installed, null);
+      }
+    }
     await this.#deps.write(() => {
       const kept = [...pkg.files.map((file) => file.path), ...pkg.retired];
       this.#sql.exec(`DELETE FROM starter_receipts WHERE path NOT IN (${
