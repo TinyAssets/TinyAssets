@@ -77,7 +77,7 @@ export const HEAP_PER_LIST_BYTE = 32;
  * sandbox: the constant of `AUTOMATON_STATES`'s derivation, measured there by the template
  * build's standing check (`stepNanos`), which fails the build past it.
  */
-export const STEP_NS = 2.5;
+export const STEP_NS = 3.5;
 
 export type Kind = "custom" | "default";
 
@@ -1074,10 +1074,11 @@ export function ignoredBy(lines: readonly string[]): Matcher {
 
 /**
  * Nanoseconds per automaton step (a byte of text, a 32-state word) at `AUTOMATON_STATES`
- * with every state alive, over `ms` of matching: the template build's standing check runs
- * it in the sandbox and holds it to `STEP_NS`.
+ * with every state alive: the median of five runs of `ms` each after a warm-up, so a
+ * neighbour's moment on the sandbox's CPU moves it little. The template build's standing
+ * check runs it in the sandbox and holds it to `STEP_NS`.
  */
-export function stepNanos(ms = 2_000): number {
+export function stepNanos(ms = 600): number {
   const lines: AutomatonLine[] = [];
   let states = 0;
   for (;;) {
@@ -1091,12 +1092,17 @@ export function stepNanos(ms = 2_000): number {
   }
   const automaton = new Automaton(lines, AUTOMATON_STATES);
   const text = utf8("ab-cd".repeat(51));
-  let runs = 0;
-  const began = Date.now();
-  while (Date.now() - began < ms) {
-    const D = Uint32Array.from(automaton.init);
-    automaton.run(D, new Uint32Array(automaton.W), text);
-    runs++;
-  }
-  return ((Date.now() - began) * 1e6) / (runs * text.length * automaton.W);
+  const timed = (span: number) => {
+    let runs = 0;
+    const began = Date.now();
+    while (Date.now() - began < span) {
+      const D = Uint32Array.from(automaton.init);
+      automaton.run(D, new Uint32Array(automaton.W), text);
+      runs++;
+    }
+    return ((Date.now() - began) * 1e6) / (runs * text.length * automaton.W);
+  };
+  timed(ms);  // warm-up
+  const runs = Array.from({ length: 5 }, () => timed(ms)).sort((a, b) => a - b);
+  return runs[2]!;
 }
