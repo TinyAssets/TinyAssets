@@ -516,13 +516,19 @@ account and no deploy.
   `files/write`, `sources`, `capabilities` (the grant capabilities in plain words, which the
   agent and key forms show, none chosen for the owner), `tools`, `tools/<name>` (the table,
   the owner as itself) and `agent/doorbell/kinds`; every owner-surface answer carries
-  `nosniff` and a CSP of none. **The session (review M1):** the owner's own change to its
-  agent definitions (`OWNER_TREES`: write, upload, mkdir, rename, remove, restore) is a
-  widening in the object, on every route alike, so a leaked first-party token without the
-  `__Host-` session cookie widens no scope, plants no instruction and removes no agent file;
-  the other `tools/<name>` (collections, other files, digests, runs, `code`, whose calls are
-  held the same way) change no agent's authority, so the token suffices for them, as for a
-  full-mode API key. A new agent is its `AGENTS.md` first and its `agent.json` last, the one
+  `nosniff` and a CSP of none. **Who changes the agent trees** (`OWNER_TREES`: agents'
+  `agent.json`, instructions and skills; write, upload, mkdir, rename, remove, restore). The
+  founder's rule (2026-11-03): every agent of the owner has full power by default to do what
+  any other can, so an outside client under its default full grant, a run, and a sandbox
+  sync change them; a grant the owner narrowed (`scoped`), its runs and its sync never do
+  (`AGENTS_OWNER_ONLY`; the object and `Files.syncCommit`, by the client's grant as it stands).
+  The owner's own app is a human's path, so its bearer token alone changes nothing there: a
+  widening in the object, on every route, taken only in the `__Host-` session (review M1),
+  against a leaked app token. The other `tools/<name>` need no session. This replaces the
+  earlier rule that only the owner changed those trees. Owed to slice S's follow-up: the
+  runner still projects a client's run's agent definitions read-only on its sandbox's disk,
+  so a full grant's client run edits them through its MCP door's file tools or the owner's
+  doors, not its CLI's own file tools, until the runner reads the client's grant too. A new agent is its `AGENTS.md` first and its `agent.json` last, the one
   write that makes the agent. Tests: `doors/test/app-pages.test.ts`, `app-routes.test.ts`,
   `guards/app-files.test.ts`, the config guard's `ASSETS`, `owner/test/agent-doors.test.ts`
   (the session on every agent-file door, receipted), and the browser test
@@ -560,6 +566,24 @@ account and no deploy.
   - **the sandbox sign-in**, again for the forms: no credential `vendor_login_in_sandbox` is
     offered for a new agent until the sign-in slice lands, and an engine that has only that
     credential is named as unable to run yet.
+  - **the runner tests' failures (review N3, slice S's suite, fixed here):** one to seven
+    different runner tests failed a run whenever two runner suites overlapped on one host
+    (two worktrees, or a rerun beside a run). The harness gave every suite the same fixed
+    uids (4243, 4250, 4300 to 4303), and real uids are the host's: the runner's `killAll`
+    and `take` in one suite killed the other suite's CLIs and status checks mid-test. Each
+    suite now claims a block of ids of its own under a host-wide lock
+    (`sandbox/runner/harness.ts`, `claimIds`); the runner reads its ids from the sandbox's
+    `/etc/passwd`, so the runner and its template are unchanged. With that gone, two pairs
+    of overlapping suites on a loaded host still showed three timing assumptions: two runs
+    "at once" held live by a 1.5 s sleep, and two renewal tests whose CLI was to fail or
+    stay up across the renewal by a 3 s and an 8 s sleep. Each is now held by an event (the
+    fake CLI's `holdUntil`, a file the test writes when the step it waits for is done), and the
+    fake's record of each call is written whole and renamed into place, so a test polling it
+    never reads half of one. Proved:
+    the old harness, two suites overlapping, 3 and 7 failures; the fixed one, ten rounds of
+    two overlapping suites, 32 of 32 in each. CI never showed it: of the last 40 Tests runs,
+    `platform-tests` failed twice, both PR branches' own bugs at the time (platform-s, all 32
+    runner tests in 0.3 s; platform-id, one agent-mail test), since a GitHub job runs alone.
   - **run events (found by the review, outside the slice, fixed here):** a session id outside
     the conversations' shape (`[!-~]{1,256}`) failed the runner's whole post with a SQLite
     error; the object refuses it as the run's fixed error `session_id_refused` (`runs.ts`), its
@@ -630,6 +654,23 @@ account and no deploy.
        callback.
 
     No binding value ever sits in a URL or leaves the app's memory.
+  - **Where a connect returns** (review N2). The callback's return target is the flow's
+    client's, recorded on the flow at begin (`connectionPrepare`), never read from the
+    request: the web client's is `CONNECTED_PAGE`, a mobile client's is the return its auth
+    session was opened with, one of its CIMD document's redirects:
+    - iOS 17.4+ and Android Auth Tab: `https://tinyassets.io/app/connected`, the fragment
+      handed to the app by the auth session's https callback;
+    - below iOS 17.4: the shell's `tinyassets://app/connected` scheme (its
+      `ASWebAuthenticationSession` plugin's `callbackURLScheme`), the fragment intact, since the
+      system hands the app the whole URL;
+    - Android without Auth Tab: the shell's loopback catcher,
+      `http://127.0.0.1:<port>/app/connected` in Custom Tabs. A fragment never reaches a
+      loopback server, so for this target alone the callback puts the code and state in the
+      query. That is safe there: the code needs the flow's PKCE verifier and the owner's
+      session that began it, and the port is the app's own, open for this flow only.
+
+    In each case the shell's plugin hands the URL to the app's `/app/connected` script,
+    which finishes in the WebView's session as on the web.
   - **Owed by the store app beyond these** (App Store review guidelines):
     - Sign in with Apple, enabled in AuthKit, whenever Google or GitHub sign-in is offered
       (4.8);

@@ -1118,6 +1118,43 @@ def test_every_event_requires_structural_success(tmp_path):
         assert run.returncode == (0 if result == "success" else 1)
 
 
+def test_every_event_requires_both_platform_jobs_to_succeed(tmp_path):
+    """`required-tests` passes only when platform-tests AND platform-app succeeded.
+
+    Pinned by running the gate step's real script, so a `&&` for `||` (one job
+    may fail) fails here, not only a changed string. And neither job, nor any
+    step of either, may carry `continue-on-error`: a job with it reports
+    `result == success` to `needs` even when it failed, which merges a red
+    platform job green.
+    """
+    import itertools
+    import subprocess
+
+    wf = _load()
+    jobs = wf["jobs"]
+    for name in ("platform-tests", "platform-app"):
+        job = jobs[name]
+        assert "continue-on-error" not in job, f"{name} must not continue on error"
+        assert "if" not in job, f"{name} must run on every event"
+        for step in job["steps"]:
+            assert "continue-on-error" not in step, (
+                f"a step of {name} continues on error: {step}")
+            assert "if" not in step, f"a step of {name} is conditional: {step}"
+    agg = jobs["required-tests"]
+    assert "continue-on-error" not in agg
+    step = next(s for s in agg["steps"] if "PLATFORM_RESULT" in s.get("env", {}))
+    assert "if" not in step and "continue-on-error" not in step
+    assert step["env"] == {"PLATFORM_RESULT": "${{ needs.platform-tests.result }}",
+                           "APP_RESULT": "${{ needs.platform-app.result }}"}
+    results = ("success", "failure", "skipped", "cancelled", "")
+    for platform, app in itertools.product(results, results):
+        script = f"PLATFORM_RESULT={platform}\nAPP_RESULT={app}\n" + step["run"]
+        run = subprocess.run(["bash", "-s"], input=script.encode(),
+                             cwd=tmp_path, capture_output=True)
+        expected = 0 if (platform, app) == ("success", "success") else 1
+        assert run.returncode == expected, (platform, app, run.returncode)
+
+
 # Events that do not change the head. A workflow that listens to them must be
 # the receipt/label gate or auto-enroll, never the build or the test jobs.
 _NON_CODE_TYPES = frozenset({"edited", "labeled", "unlabeled"})

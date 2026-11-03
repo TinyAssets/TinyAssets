@@ -703,7 +703,10 @@ describe("each run's own user", () => {
 
   it("runs two runs of one engine at once as two users, neither reading the other's config",
      async () => {
-    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, sleepMs: 1500,
+    // Each CLI waits for the release, so both runs are live together however slowly the
+    // host starts them (a 1.5 s sleep once let the first end before the second took a user).
+    const release = box.path("/release");
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, holdUntil: release,
                              dumps: ["~/run/mcp.json"] });
     const a = startDoc(doors, "claude-code", { config: config("claude-code") });
     const b = startDoc(doors, "claude-code", { config: config("claude-code") });
@@ -711,6 +714,8 @@ describe("each run's own user", () => {
     box.runner("launch", a.run);
     box.start(b);
     box.runner("launch", b.run);
+    await waitFor(() => box.ran("claude-code").length === 2);
+    writeFileSync(release, "");
     await doors.ended_(25_000, a.run);
     await doors.ended_(25_000, b.run);
     const seen = box.ran("claude-code");
@@ -880,9 +885,13 @@ describe("cancel and the runner's state", () => {
 describe("renewal", () => {
   it("posts renewing when quiet, holds its posts, then renewed; a CLI that failed across it " +
      "is resumed", async () => {
+    // The CLI is still running at `renewed` and fails just after, as a model call the pause
+    // cut does: by an event (its release, once `renewed` returned), never by a 3 s guess a
+    // loaded host could outrun before the renewal began.
+    const release = box.path("/release-renewal");
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "cs-r" },
                                      { type: "assistant", message: { content: [] } }],
-                             sleepMs: 3_000, exit: 1 });
+                             holdUntil: release, exit: 1 });
     const start = startDoc(doors, "claude-code", { config: config("claude-code") });
     box.start(start);
     box.runner("launch", start.run);
@@ -895,6 +904,7 @@ describe("renewal", () => {
     expect(doors.events().length).toBe(held);  // nothing posted while paused
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
     expect(box.runner("renewed").code).toBe(0);
+    writeFileSync(release, "");
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 0 });
     const types = doors.frames().map((event) => event["type"]);
@@ -904,8 +914,10 @@ describe("renewal", () => {
   }, 40_000);
 
   it("waits for a quiet moment, and renews at its deadline regardless", async () => {
+    // A CLI that never goes quiet: it is held running until the renewal is over, by an event.
+    const release = box.path("/release-deadline");
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
-                             sleepMs: 8_000 });
+                             holdUntil: release });
     const start = startDoc(doors, "claude-code", { config: config("claude-code") });
     box.start(start);
     box.runner("launch", start.run);
@@ -914,6 +926,7 @@ describe("renewal", () => {
     expect(await box.runnerAsync("renew-wait", String(Date.now() + 1500))).toBe(0);
     expect(Date.now() - began).toBeGreaterThanOrEqual(1400);
     box.runner("renewed");
+    writeFileSync(release, "");
     await doors.ended_(25_000, start.run);
   }, 40_000);
 });

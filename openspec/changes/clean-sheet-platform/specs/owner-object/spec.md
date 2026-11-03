@@ -298,8 +298,16 @@ An agent's register, disable, delete or file change, a policy write, a wake-limi
 - **WHEN** a call presents the hash of the owner's live cookie as its session
 - **THEN** it is refused as having no session
 
-### Requirement: The owner changes its agents' files only in its session
-The owner's own write, upload, mkdir, rename, remove or restore under `OWNER_TREES` (an agent's instructions, skills and `agent.json`, its authority) SHALL be a widening on every route alike: served only in the owner's live session and receipted when refused. An outside client SHALL be refused there whatever its grant.
+### Requirement: Every agent may change the agent trees unless the owner narrowed it
+A change under `OWNER_TREES` (agents' `agent.json`, instructions and skills) SHALL be taken from every agent of the owner by default (founder, 2026-11-03): an outside client under a full grant, a run, and a sandbox sync. A grant the owner narrowed (`scoped`), its runs and its sandbox's sync SHALL be refused there (`AGENTS_OWNER_ONLY`). The owner's own app token SHALL change them only in the live session, receipted when refused.
+
+#### Scenario: A default-grant agent edits another agent's agent.json
+- **WHEN** an outside client under its default full grant widens `/workspace/agents/other/agent.json`
+- **THEN** the write lands as that client
+
+#### Scenario: A narrowed agent edits an agent.json
+- **WHEN** the owner narrowed a client's grant to `scoped` and it, its run or its sandbox writes an agent's `agent.json`
+- **THEN** it is refused `AGENTS_OWNER_ONLY` and the file is unchanged
 
 #### Scenario: The owner's token alone renames an agent's folder
 - **WHEN** the owner's first-party token, with no session, renames `/workspace/agents/main`
@@ -572,7 +580,7 @@ A change that only removes or frees (a remove, a redaction, a purge, an aborted 
 - **THEN** the remove lands
 
 ### Requirement: The sync lease fences the sandbox's commits
-Each sandbox lease SHALL be one authority's (the owner's own work's, or one outside client's): a random lease id and a rising epoch, held by one holder until it lapses or is released, bound to the SHA-256 of its egress, sync and runner tokens' secrets (never the tokens), their deadline, and the egress generation its sandbox's network was last applied under, none until the sandbox slice applies one. The owner's shared abilities (`/workspace/.agents`, `/workspace/skills` and `/workspace/prompts`) are every one of the owner's agents', and SHALL be visible read-only to every run of them, a client's included. A client's sandbox SHALL always read its live runs' agents' own definitions (`/workspace/agents/<agent>` and the abilities' trees), read-only, and the rest of the owner's files only while that client's grant, at its live run's stamp, holds `read_files`; it SHALL commit only while it holds `write_files`, written as that client and never into the owner's own trees (`OWNER_TREES`). When a client's sandbox's readable set changes (a new agent's run, a widened file scope), its next feed read SHALL answer `reset: true`; any content door the sync agent reaches SHALL apply the same filter as the feed. No door SHALL reach the lease: the object's own sandbox lifecycle (`SandboxLeases`) opens, renews and closes it. A sync commit SHALL be refused whole only when the lease id or epoch is not the live lease's or its op list is empty or too long; each op SHALL otherwise land or be refused on its own, its quota checked alone, and be answered per op. API writes SHALL never take the lease.
+Each sandbox lease SHALL be one authority's (the owner's own work's, or one outside client's): a random lease id and a rising epoch, held by one holder until it lapses or is released, bound to the SHA-256 of its egress, sync and runner tokens' secrets (never the tokens), their deadline, and the egress generation its sandbox's network was last applied under, none until the sandbox slice applies one. The owner's shared abilities (`/workspace/.agents`, `/workspace/skills` and `/workspace/prompts`) are every one of the owner's agents', and SHALL be visible read-only to every run of them, a client's included. A client's sandbox SHALL always read its live runs' agents' own definitions (`/workspace/agents/<agent>` and the abilities' trees), read-only, and the rest of the owner's files only while that client's grant, at its live run's stamp, holds `read_files`; it SHALL commit only while it holds `write_files`, written as that client, and into the owner's agent trees (`OWNER_TREES`) only while its grant is full, the default, never a narrowed one. When a client's sandbox's readable set changes (a new agent's run, a widened file scope), its next feed read SHALL answer `reset: true`; any content door the sync agent reaches SHALL apply the same filter as the feed. No door SHALL reach the lease: the object's own sandbox lifecycle (`SandboxLeases`) opens, renews and closes it. A sync commit SHALL be refused whole only when the lease id or epoch is not the live lease's or its op list is empty or too long; each op SHALL otherwise land or be refused on its own, its quota checked alone, and be answered per op. API writes SHALL never take the lease.
 
 #### Scenario: A sandbox that lost its lease
 - **WHEN** a sync commit carries an earlier epoch or another lease id
@@ -793,16 +801,12 @@ What the owner's work reports that no call fails with (a connection's setup chec
 - **WHEN** more than 100 notices are added
 - **THEN** only the newest 100 are kept, newest first
 
-### Requirement: The owner's agent definitions are the owner's alone
-Only the owner's own authority SHALL create, change, move into or out of, or remove anything under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills` or `/workspace/prompts` (its agents' files and skills, which every engine reads); an outside client SHALL be refused at every file door.
+### Requirement: The agent trees are held by the grant, not by who wrote them
+A change under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills` or `/workspace/prompts` (its agents' files and skills, which every engine reads) SHALL be held at every file door by the rule "Every agent may change the agent trees unless the owner narrowed it": refused only to a narrowed grant, and to the owner's app token outside its session.
 
-#### Scenario: A client plants an agent's instructions
-- **WHEN** a client writes, renames or uploads into `/workspace/agents/main/AGENTS.md` by a door
-- **THEN** each is refused "only the owner changes its agents' files under /workspace/agents, /workspace/.agents, /workspace/skills and /workspace/prompts"
-
-#### Scenario: A client plants a skill
-- **WHEN** a client writes a `SKILL.md` under `/workspace/.agents/skills`, `/workspace/skills` or `/workspace/prompts`
-- **THEN** each is refused with the same code, and the owner's skills stand as the owner left them
+#### Scenario: A narrowed client renames a skill
+- **WHEN** a client whose grant the owner narrowed renames a file under `/workspace/skills`
+- **THEN** it is refused `AGENTS_OWNER_ONLY`
 
 ### Requirement: Erasing the owner ends every run before the owner is wiped
 Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; delete every chunk its rows name from R2, its files' and its placed bodies' (ADR-035), repeatable; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.

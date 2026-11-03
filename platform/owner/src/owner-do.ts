@@ -3103,20 +3103,30 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files and skills,
-   * which are their instructions and authority): an outside client's is refused, and the
-   * owner's own is a widening, taken only in its live session and receipted when refused, as
-   * an agent's registration, disable or delete is. A run's account is held by its own rules.
+   * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files, skills and
+   * `agent.json`). The founder's rule (2026-11-03): every agent of the owner has full power by
+   * default to do what any other of its agents can, so an agent (an outside client's call, or
+   * a run) under a full grant, the default, changes them; one under a grant the owner narrowed
+   * (`scoped`) is refused. The owner's own app is a human's path, so its bearer token alone
+   * changes nothing there: it is a widening, taken only in the owner's live session and
+   * receipted when refused, against a leaked app token.
    */
   #ownersTree(binding: Binding, account: Account, action: string, request: unknown,
               ...paths: unknown[]): void {
     if (!paths.some((path) => ownersOnly(storedPath(path)))) {
       return;
     }
-    if (account.origin !== null) {
-      throw new Refused(AGENTS_OWNER_ONLY);
-    }
     if (account.run !== null) {
+      const stamp = account.run.stamp;
+      if (stamp !== null && !this.#grants.full(stamp.client)) {
+        throw new Refused(AGENTS_OWNER_ONLY);
+      }
+      return;
+    }
+    if (account.origin !== null) {
+      if (account.grant?.mode !== "full") {
+        throw new Refused(AGENTS_OWNER_ONLY);
+      }
       return;
     }
     try {
@@ -4664,7 +4674,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const r = fileFields(request, ["lease_id", "epoch", "ops"]);
       return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
-                                      ops: r["ops"] });
+                                      ops: r["ops"] },
+                                    (authority) => this.#grants.full(authority));
     });
   }
 
