@@ -192,7 +192,7 @@ describe("admission", () => {
     expect(await r.stub.tierRead(r.bind())).toEqual({ tier: "paid" });
     expect((await failure(() => r.stub.tierRead(
       r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() })))).message)
-      .toMatch(/^only the owner may read its tier|^outside client/);
+      .toBe("only the owner may read its tier");
     for (let i = 0; i < 5; i++) {
       await ownerRun(r.stub, r.bind());
     }

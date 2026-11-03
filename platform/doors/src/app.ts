@@ -132,9 +132,9 @@ function shaped(request: Record<string, unknown>, required: readonly string[],
 const NO_FIELDS = "this route takes an empty object";
 
 /** A door that takes no request, behind a closed empty body. */
-function read(door: (bound: Bound) => Promise<unknown>): Route {
-  return async (_env, owner, request) =>
-    shaped(request, []) ? json(200, await door(owner)) : failure(400, NO_FIELDS);
+async function read(request: Record<string, unknown>, door: () => Promise<unknown>):
+    Promise<Response> {
+  return shaped(request, []) ? json(200, await door()) : failure(400, NO_FIELDS);
 }
 
 /**
@@ -142,7 +142,7 @@ function read(door: (bound: Bound) => Promise<unknown>): Route {
  * admission row), every tier's numbers as the control record holds them (simultaneous runs
  * and storage, nothing else), and the files it holds now.
  */
-const account = read(async ({ binding, stub }) => {
+const account: Route = (_env, { binding, stub }, request) => read(request, async () => {
   const { tier } = await stub.tierRead(binding);
   return { tier, tiers: binding.tiers ?? null, usage: await stub.fileUsage(binding) };
 });
@@ -173,12 +173,16 @@ const fileRead: Route = async (_env, { binding, stub }, request) => {
 
 /** `files/write` `{path, expected_etag, text}`: one file's whole text, against its etag. */
 const fileWrite: Route = async (_env, { binding, stub }, request) => {
-  if (!shaped(request, ["path", "expected_etag", "text"]) || typeof request["text"] !== "string") {
+  const text = request["text"];
+  const fields = ["path", "expected_etag", "text"];
+  if (!shaped(request, fields) || typeof text !== "string") {
     return failure(400, "a write names the path, the expected etag and the text");
   }
+  // The etag goes to the object as it came: the object's compare-and-swap decides.
+  const { path, expected_etag: expected } = request;
   return json(200, await stub.fileWrite(binding, {
-    path: request["path"] as string, expected_etag: request["expected_etag"] as string | null,
-    content: new TextEncoder().encode(request["text"]) }));
+    path: path as string, expected_etag: expected as string | null,
+    content: new TextEncoder().encode(text) }));
 };
 
 /** `sources`: what the app shows of each record; nothing sealed, no endpoint, no argv. */
@@ -209,13 +213,13 @@ async function ownerTool(name: string, { binding, stub }: Bound,
 
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "account": account,
-  "notices": read(({ binding, stub }) => stub.noticeList(binding)),
-  "policy": read(({ binding, stub }) => stub.policyRead(binding)),
+  "notices": (_env, { binding, stub }, request) => read(request, () => stub.noticeList(binding)),
+  "policy": (_env, { binding, stub }, request) => read(request, () => stub.policyRead(binding)),
   "policy/write": async (_env, { binding, stub }, request) =>
     json(200, await stub.policyWrite(binding, request as never)),
-  "grants": read(({ binding, stub }) => stub.grantList(binding)),
+  "grants": (_env, { binding, stub }, request) => read(request, () => stub.grantList(binding)),
   "grants/set": grantSet,
-  "tools": read(async () => ({
+  "tools": (_env, _owner, request) => read(request, async () => ({
     tools: toolTable().map(({ name, title }) => ({ name, title })) })),
   "files/read": fileRead,
   "files/write": fileWrite,

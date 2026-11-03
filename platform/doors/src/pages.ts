@@ -43,11 +43,9 @@ const STATIC_PREFIX = "/app/static/";
  * The strict CSP: this origin's own scripts, style and socket, nothing inline, nothing
  * framed, no form posts, and the DOM's script sinks closed (Trusted Types with no policy).
  */
-export const CSP = [
-  "default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self'",
-  "connect-src 'self' wss://tinyassets.io", "base-uri 'none'", "form-action 'none'",
-  "frame-ancestors 'none'", "require-trusted-types-for 'script'", "trusted-types 'none'",
-].join("; ");
+export const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
+  "connect-src 'self' wss://tinyassets.io; base-uri 'none'; form-action 'none'; " +
+  "frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
 
 export const HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "Content-Security-Policy": CSP,
