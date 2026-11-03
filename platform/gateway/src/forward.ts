@@ -31,7 +31,7 @@ import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 
 /** The longest one forwarded request may run (§6: a policy write's bound on a stream). */
-export const FORWARD_DEADLINE_MS = 5 * 60 * 1000;
+export const FORWARD_DEADLINE_MS = 24 * 60 * 60 * 1000;
 
 /** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;

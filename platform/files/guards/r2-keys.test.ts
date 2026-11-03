@@ -11,8 +11,9 @@
  *   `this.env.BLOBS.<put|get|head|delete>(key, ...)`, `this.env` is never read for
  *   anything else, and every key is a call of `chunkKey` (or a list of them mapped from
  *   a list), where `chunkKey` is the one imported from `./keys` and nothing shadows it.
- *   No alias (`const b = this.env.BLOBS`, `const { BLOBS } = env`, `env["BLOBS"]`) and no
- *   list call passes.
+ *   No alias (`const b = this.env.BLOBS`, `const { BLOBS } = env`, `env["BLOBS"]`) passes,
+ *   and the one list is of one namespace's prefix (`list({ prefix: chunkPrefix(ns), ... })`,
+ *   the erasure's).
  */
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -28,6 +29,15 @@ const R2_TYPE = /^R2[A-Z]/;
 function thisEnv(node: ts.Node): boolean {
   return ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword
     && node.name.text === "env";
+}
+
+/** `{ prefix: chunkPrefix(...), ... }`: a list of one namespace's prefix. */
+function prefixList(node: ts.Node | undefined): boolean {
+  return node !== undefined && ts.isObjectLiteralExpression(node) && node.properties.some(
+    (property) => ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)
+      && property.name.text === "prefix" && ts.isCallExpression(property.initializer)
+      && ts.isIdentifier(property.initializer.expression)
+      && property.initializer.expression.text === "chunkPrefix");
 }
 
 function chunkKeyCall(node: ts.Node | undefined): boolean {
@@ -93,8 +103,9 @@ export function keyProblems(fileName: string, source: string): string[] {
       const call = method?.parent;
       if (!ts.isPropertyAccessExpression(access) || access.name !== node || !thisEnv(access.expression)
           || !ts.isPropertyAccessExpression(method) || method.expression !== access
-          || !CALLS.has(method.name.text) || call === undefined || !ts.isCallExpression(call)
-          || call.expression !== method || !chunkKeyCall(call.arguments[0])) {
+          || call === undefined || !ts.isCallExpression(call) || call.expression !== method
+          || !(CALLS.has(method.name.text) ? chunkKeyCall(call.arguments[0])
+            : method.name.text === "list" && prefixList(call.arguments[0]))) {
         report(node, "reaches BLOBS other than this.env.BLOBS.<put|get|head|delete>(chunkKey(...))");
       }
     }
@@ -122,6 +133,7 @@ describe("r2-keys guard", () => {
     ["owner/src/probe.ts", "function f(env) { return env.BLOBS; }"],
     ["files/src/index.ts", "class S { async f(path) { await this.env.BLOBS.put(path, b); } }"],
     ["files/src/index.ts", "class S { async f() { await this.env.BLOBS.list({}); } }"],
+    ["files/src/index.ts", "class S { async f() { await this.env.BLOBS.list({ prefix: 'o/' }); } }"],
     ["files/src/index.ts", "class S { f() { const b = this.env.BLOBS.get; return b('k'); } }"],
     ["files/src/index.ts", "class S { async f(xs) { await this.env.BLOBS.delete(xs.map((x) => x)); } }"],
     ["files/src/index.ts", "class S { async f(k) { const key = chunkKey(a, b); " +
@@ -150,6 +162,7 @@ describe("r2-keys guard", () => {
     "class S { async f(ns, sha) { await this.env.BLOBS.head(chunkKey(ns, sha)); } }",
     "class S { async f(ns, xs) { await this.env.BLOBS.delete(xs.map((x) => chunkKey(ns, x))); } }",
     "interface FilesEnv { readonly BLOBS: R2Bucket; }",
+    "class S { async f(ns) { await this.env.BLOBS.list({ prefix: chunkPrefix(ns) }); } }",
   ])("allows %s", (source) => {
     expect(keyProblems("files/src/index.ts", header + source)).toEqual([]);
   });

@@ -339,7 +339,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const done = await this.#e2b().exec(handle, [RUNNER, ...argv], { timeoutMs });
     if (done.exitCode !== OK && done.exitCode !== NO) {
       throw new Error(`ta-runner ${argv[0]} failed (${done.exitCode}): ${
-        done.stderr.slice(-300)}`);
+        done.stderr}`);
     }
     return { code: done.exitCode, out: done.stdout };
   }

@@ -216,6 +216,24 @@ describe("the owner's erasure", () => {
       collection: "board", row_id: "t" }))).message).toBe(OWNER_ERASED);
   }, 30_000);
 
+  it("holds its mark until the put grace is up, its job waking it then, never an in-memory " +
+     "wait (review rvlim N5)", async () => {
+    const r = await rig();
+    // Marked just now, both earlier steps done: the grace (here none, so the mark's own
+    // time) is ahead, an hour on.
+    const due = Date.now() + 3_600_000;
+    await r.in((_instance, state) => state.storage.sql.exec(
+      "INSERT INTO owner_erasure (only, started_at, step) VALUES (1, ?, 2)", due / 1000));
+    await r.in(async (instance) => {
+      await instance.erasure.erase();
+      expect(instance.erasure.erased).toBe(false);
+    });
+    expect(await tables(r)).toContainEqual({ name: "collection_rows" });
+    const [job] = await sqlIn(r.stub(), "SELECT time FROM cf_agents_jobs WHERE id = " +
+                                          "'owner-erasure/erase'");
+    expect(job!["time"]).toBe(due);
+  }, 30_000);
+
   it("resumes after a crash at each step, at the object's next start", async () => {
     for (const step of [1, 2]) {
       const r = await rig();

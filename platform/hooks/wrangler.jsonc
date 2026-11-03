@@ -7,8 +7,9 @@
 // (guards/config.test.ts).
 // - compatibility_date: the owner Worker's.
 // - disable_ctx_exports: no way to the Worker's own namespaces but its bindings.
-// - limits.cpu_ms: room above code mode's interrupt budget (about 10 s of a tight loop),
-//   since a script that reaches it resets the object instead of failing alone.
+// - limits.cpu_ms: Workers Paid's most, 5 minutes, room above code mode's interrupt budget
+//   (about 100 s of a tight loop), since a script that reaches it resets the object
+//   instead of failing alone.
 // The class is SQLite-backed and never uses its storage.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
@@ -18,7 +19,7 @@
   "compatibility_flags": ["disable_ctx_exports"],
   "workers_dev": false,
   "preview_urls": false,
-  "limits": { "cpu_ms": 30000 },
+  "limits": { "cpu_ms": 300000 },
   "durable_objects": {
     "bindings": [
       { "name": "CODEMODE", "class_name": "CodemodeSandbox" }

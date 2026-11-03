@@ -6,11 +6,13 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { BODY_BYTES_MAX } from "../../owner/src/bodies";
+import { EGRESS_BODY_MAX } from "../../owner/src/network";
 import { parseKey } from "../src/api-keys";
 import { mcpClient } from "../src/binder";
 import {
-  ACCESS_TOKEN_TTL_S, APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now, REFRESH_TOKEN_TTL_S,
-  WEB_CLIENT, WEB_REDIRECT,
+  ACCESS_TOKEN_TTL_S, API_BODY_MAX, APP_BODY_MAX, APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now,
+  REFRESH_TOKEN_TTL_S, WEB_CLIENT, WEB_REDIRECT,
 } from "../src/config";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
@@ -343,20 +345,22 @@ describe("L5: bounded bodies", () => {
     expect(response.status).toBe(413);
   });
 
-  it("refuses an /api body over 1 MiB 413, and a non-object 400", async () => {
+  it("refuses an /api body over 16 MiB 413, and a non-object 400", async () => {
     const { key } = await mintKeyFor(owner());
     const post = (body: string) => call(new Request(url("/api/tools/agents_list"), {
       method: "POST", headers: { Authorization: `Bearer ${key}`,
                                  "Content-Type": "application/json" }, body }));
-    expect((await post(`{"p":"${"x".repeat(1024 * 1024)}"}`)).status).toBe(413);
+    expect([API_BODY_MAX, 2 * BODY_BYTES_MAX]).toEqual([EGRESS_BODY_MAX, EGRESS_BODY_MAX]);
+    expect((await post(`{"p":"${"x".repeat(API_BODY_MAX)}"}`)).status).toBe(413);
     expect((await post("[1]")).status).toBe(400);
     expect((await post("{")).status).toBe(400);
   });
 
-  it("refuses an /app/api body over 64 KiB 413, and a non-object 400", async () => {
+  it("refuses an /app/api body over 16 MiB 413, and a non-object 400", async () => {
     const app = await signInApp({ owner: owner() });
+    expect(APP_BODY_MAX).toBe(API_BODY_MAX);
     const big = await appPost("keys", app.access_token, app.session,
-                              { name: "k", pad: "x".repeat(64 * 1024) });
+                              { name: "k", pad: "x".repeat(APP_BODY_MAX) });
     expect(big.status).toBe(413);
     const list = await appPost("keys", app.access_token, app.session, ["k"]);
     expect(list.status).toBe(400);

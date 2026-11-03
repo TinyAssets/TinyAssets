@@ -43,7 +43,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
 import { bundledSources, RUN_BASICS, type SourceRecord } from "../../doors/src/sources";
-import { readEvent } from "../../owner/src/run-events";
+import { FRAME_UNITS_MAX, readEvent } from "../../owner/src/run-events";
 
 import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
          WORKSPACE } from "./engine";
@@ -377,7 +377,7 @@ function lockSudo(): void {
   for (const name of ["user", "ta-sync", `${POOL_PREFIX}0`]) {
     const listed = spawnSync("sudo", ["-l", "-U", name], { encoding: "utf8" });
     if (!/is not allowed to run sudo/.test(listed.stdout)) {
-      throw new Error(`${name} may still sudo: ${listed.stdout.slice(-300)}`);
+      throw new Error(`${name} may still sudo: ${listed.stdout}`);
     }
   }
 }
@@ -413,7 +413,7 @@ function lockDown(): void {
   find(["-exec", "chmod", "go-w", "{}", "+"]);
   const left = find(["-print"]);
   if (left.status !== 0 || left.stdout.trim() !== "") {
-    throw new Error(`writable paths remain: ${left.stdout.slice(0, 300)}`);
+    throw new Error(`writable paths remain: ${left.stdout}`);
   }
 }
 
@@ -583,7 +583,7 @@ function syncAgent(job: SyncJob): { report: Record<string, unknown> | null; code
     report = null;
   }
   if (done.status !== OK && done.status !== FENCED) {
-    throw new Error(`the sync agent failed (${done.status}): ${done.stderr.slice(-300)}`);
+    throw new Error(`the sync agent failed (${done.status}): ${done.stderr}`);
   }
   return { report, code: done.status };
 }
@@ -699,7 +699,7 @@ class Poster {
       return "retry";
     }
     if (response.status === 401 || response.status === 403 || response.status === 404) {
-      this.#refused = text.slice(0, 200);
+      this.#refused = text;
       this.onRefused(this.#refused);
       return "refused";
     }
@@ -985,7 +985,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         }
         let stderr = "";
         child.stderr!.on("data", (data: Buffer) => {
-          stderr = (stderr + data.toString("utf8")).slice(-4096);
+          // Its tail, as much as one frame shows (`FRAME_UNITS_MAX`; the frame cuts the rest).
+          stderr = (stderr + data.toString("utf8")).slice(-FRAME_UNITS_MAX);
         });
         createInterface({ input: child.stdout! }).on("line", (line) => {
           if (line.trim() === "") {
@@ -1007,7 +1008,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
             cli_.kill = null;
           }
           if (code !== 0 && stderr !== "") {
-            outbox.push({ type: "ta.stderr", text: stderr.slice(-2048) });
+            outbox.push({ type: "ta.stderr", text: stderr });
           }
           resolve(code ?? (signal === null ? 1 : 128 + 15));
         });
@@ -1033,7 +1034,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     if (error instanceof SyncFenced) {
       outbox.push({ type: "ta.sync_fenced" });
     } else if (!(error instanceof RunRefused)) {
-      outbox.push({ type: "ta.runner_error", message: String(error).slice(0, 1024) });
+      outbox.push({ type: "ta.runner_error", message: String(error) });
     }
     exitCode = exitCode === 0 ? 1 : exitCode;
   } finally {
@@ -1076,12 +1077,12 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
             outbox.push({ type: "ta.sync_refused", ...(refused as object) });
           }
           if ((report?.conflicts ?? []).length > 0) {
-            outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts!.slice(0, 64) });
+            outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts! });
           }
         }
       }
     } catch (error) {
-      outbox.push({ type: "ta.runner_error", message: String(error).slice(0, 1024) });
+      outbox.push({ type: "ta.runner_error", message: String(error) });
       exitCode = exitCode === 0 ? 1 : exitCode;
     } finally {
       if (home !== null) {

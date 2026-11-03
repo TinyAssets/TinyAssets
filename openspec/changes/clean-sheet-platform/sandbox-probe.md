@@ -51,7 +51,7 @@ was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or t
 | **World-writable system files** | E2B's base image boots with `/usr/local/bin` (the runner's Node), `/usr/bin/envd`, `/etc/inittab` and systemd units writable by every user, and a template build's `chmod` does not survive into the sandbox. The runner's `prepare` takes every user's write away (once a boot, about 7 s) and fails loudly if any remains; verified after it and across a pause. |
 | Config files | The run's MCP config is root's, read-only to the CLI (an append failed). |
 
-## The review round (2026-11-03, templates `s2470aee6d75344fc` and `s04af25e74977d042`; 4 throwaway sandboxes, under 2 sandbox-minutes)
+## The review round (2026-11-03, templates `s2470aee6d75344fc`, `s04af25e74977d042` and `sfbd5920361a47279`; 5 throwaway sandboxes, under 2 sandbox-minutes)
 
 | Probe | Result |
 |---|---|

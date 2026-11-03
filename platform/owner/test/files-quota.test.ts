@@ -12,7 +12,8 @@ import {
 import { canonical, DEFAULT_POLICY_JSON, FILE_DEFAULTS, FILE_SETTINGS } from "../src/policy";
 import type { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
+import { TIER_UNREAD } from "../src/tier";
+import { failure, fileCounters, inFiles, sqlIn, text, TIERS } from "./support";
 
 const W = "/workspace";
 
@@ -267,7 +268,7 @@ describe("a full history", () => {
     expect((await r.stub.fileUsage(r.bind(null))).history).toBe(12);
     // A sync op at the quota makes its room the same way.
     const synced = await inFiles(r.stub, { max_history: 4 }, (files) => {
-      const lease = files.leaseAcquire("owner", "sandbox", { egress: "a".repeat(64), sync: "b".repeat(64), runner: "c".repeat(64), deadline: 2e9 });
+      const lease = files.leaseAcquire("owner", "sandbox", { egress: "a".repeat(64), sync: "b".repeat(64), runner: "c".repeat(64) });
       return files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
         { op: "write", path: `${W}/synced`, base: null, inline: text("s") },
       ] });
@@ -453,16 +454,53 @@ describe("a full history", () => {
 describe("the files policy", () => {
   it("is the defaults until the owner's policy sets its own, in session", async () => {
     const r = await rig();
-    expect((await r.stub.fileUsage(r.bind(null))).limits).toEqual(FILE_DEFAULTS);
+    const tier = TIERS.free.storage_bytes;
+    expect((await r.stub.fileUsage(r.bind(null))).limits)
+      .toEqual({ ...FILE_DEFAULTS, max_bytes: tier });
     expect(JSON.parse(DEFAULT_POLICY_JSON)).not.toHaveProperty("files");
     await setPolicy(r, { max_entries: 1 });
     expect((await r.stub.fileUsage(r.bind(null))).limits)
-      .toEqual({ ...FILE_DEFAULTS, max_entries: 1 });
+      .toEqual({ ...FILE_DEFAULTS, max_bytes: tier, max_entries: 1 });
     await write(r, `${W}/a`, "a");
     expect((await failure(() => write(r, `${W}/b`, "b"))).message)
       .toBe("file_quota: the owner's file entries are at their quota");
     expect(canonical((await r.stub.policyRead(r.bind(null))).policy.files))
       .toBe('{"max_entries":1}');
+  });
+
+  it("holds file bytes to the tier's storage, or the owner's own lower figure", async () => {
+    const r = await rig();
+    const big = (n: number) => new Uint8Array(INLINE_BYTES + 1).fill(n);
+    const put = (path: string, n: number, tiers: unknown = TIERS) =>
+      r.stub.fileWrite(r.bind(null, { tiers }), { path, expected_etag: null, content: big(n) });
+    // The tier's figure, as the binder hands it from the control record.
+    const small = { free: { runs: 5, storage_bytes: INLINE_BYTES + 1 },
+                    paid: { runs: 10, storage_bytes: 250_000_000_000 } };
+    await put(`${W}/a`, 1, small);
+    expect((await r.stub.fileUsage(r.bind(null, { tiers: small }))).limits.max_bytes)
+      .toBe(INLINE_BYTES + 1);
+    expect((await failure(() => put(`${W}/b`, 2, small))).message)
+      .toBe("file_quota: the owner's file bytes are at their quota");
+    // The owner's own figure binds only below the tier's.
+    await setPolicy(r, { max_bytes: 10 * INLINE_BYTES });
+    expect((await r.stub.fileUsage(r.bind(null))).limits.max_bytes).toBe(10 * INLINE_BYTES);
+    await setPolicy(r, { max_bytes: FILE_SETTINGS.max_bytes[1] });
+    expect((await r.stub.fileUsage(r.bind(null))).limits.max_bytes)
+      .toBe(TIERS.free.storage_bytes);
+    await put(`${W}/b`, 2);
+  });
+
+  it("adds no file byte while the tier's storage is not known, and still frees", async () => {
+    const r = await rig();
+    await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null,
+                                           content: new Uint8Array(INLINE_BYTES + 1) });
+    // A control record with no tiers: the kept numbers go, and no figure takes their place.
+    const none = r.bind(null, { tiers: null });
+    expect((await r.stub.fileUsage(none)).limits.max_bytes).toBeNull();
+    expect((await failure(() => r.stub.fileWrite(none, {
+      path: `${W}/b`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1).fill(7) })))
+      .message).toBe(TIER_UNREAD);
+    await r.stub.fileRemove(none, { path: `${W}/a`, expected_etag: null, recursive: false });
   });
 
   it("refuses a history that cannot hold every live path's kept versions", async () => {

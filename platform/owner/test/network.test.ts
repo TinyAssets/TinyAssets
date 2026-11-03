@@ -4,7 +4,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { KEY_MIN_BYTES, mintToken, tokenHash, verifyToken } from "../../doors/src/routing-mac";
+import {
+  KEY_MIN_BYTES, LEASE_LIVED, mintToken, tokenHash, verifyToken,
+} from "../../doors/src/routing-mac";
 import { Invalid, Refused } from "../src/errors";
 import {
   bundledRecords, bundledSources, runEnv, sourceRecord,
@@ -151,9 +153,13 @@ describe("a sandbox token", () => {
       .toEqual({ owner, expires: EXPIRES, hash: minted.hash });
     expect(minted.hash).toBe(tokenHash(secret!));
     expect(mintToken(KEY, "egress", owner, EXPIRES).hash).not.toBe(minted.hash);
-    for (const bad of [0, 1.5, -1, 99_999_999_999_999]) {
+    for (const bad of [1.5, -1, 99_999_999_999_999]) {
       expect(() => mintToken(KEY, "egress", owner, bad)).toThrow(/expiry/);
     }
+    // A lease's token has no expiry of its own (its lease's); a socket ticket always has.
+    expect(verifyToken(KEY, "egress", mintToken(KEY, "egress", owner, LEASE_LIVED).token))
+      .toMatchObject({ owner, expires: 0 });
+    expect(() => mintToken(KEY, "socket", owner, LEASE_LIVED)).toThrow(/expiry/);
   });
 
   it("is refused forged, altered (its expiry too), of the other kind or under another key",

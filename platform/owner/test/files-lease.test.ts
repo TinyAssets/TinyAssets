@@ -22,7 +22,7 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 
 /** Three token hashes, as a lease's (the secrets never reach the object). */
 const TOKENS = (n = 0) => ({ egress: "a".repeat(63) + n, sync: "b".repeat(63) + n,
-                            runner: "c".repeat(63) + n, deadline: 2e9 });
+                            runner: "c".repeat(63) + n });
 const acquire = (r: Rig, holder = "sandbox-1", authority = "owner", n = 0) =>
   inFiles(r.stub, {}, (files) => files.leaseAcquire(authority, holder, TOKENS(n)));
 const renew = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
@@ -290,5 +290,11 @@ describe("a sync commit", () => {
     expect(await readText(r, copies[0]!)).toBe("vm one");
     expect(await readText(r, copies[2]!)).toBe("vm two");
     expect(await readText(r, taken)).toBe("a file the API made under the copy's name");
+    // The next free name is found past every one taken, in one range read (review rvlim N6).
+    const third = await sync(r, lease, [
+      { op: "write", path: `${W}/notes.md`, base: notes.version, inline: text("vm again") },
+    ]);
+    expect(third.outcomes.map((o) => o.outcome === "conflict" ? o.copy!.path : o.outcome))
+      .toEqual([`${taken}-3`]);
   });
 });

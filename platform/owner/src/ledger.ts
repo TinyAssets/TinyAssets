@@ -89,7 +89,8 @@
  * them around the ledger.
  */
 import { AGENT_DIR } from "./authority";
-import { digest } from "./collections";
+import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
+import { digest, FILERS } from "./collections";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
@@ -165,9 +166,11 @@ const CHANGE_BIT: Readonly<Record<Change, number>> = Object.freeze({ mail: 1, ro
 /** A claimed send's lease: past it, the may-have-sent mark decides whether a byte left. */
 export const WAKE_LEASE_S = 60;
 export const HOUR_S = 3600;
-export const MAX_BODY = 16384;
-const KIB = 1024;
-const MIB = 1024 * KIB;
+/**
+ * A message body's most UTF-8 bytes: what one call moves through the object whole
+ * (`BODY_BYTES_MAX`); past `PLACE_BYTES` it is placed in R2 (ADR-035).
+ */
+export const MAX_BODY_BYTES = BODY_BYTES_MAX;
 /** The open schedule rows: the `wakes_open` index's own predicate, so the planner uses it. */
 const OPEN = "state IN ('pending', 'rate_limited')";
 /** The states a wake never leaves: its outcome is known, or unknown and never replayed. */
@@ -207,32 +210,22 @@ export const WAKE_SETTINGS = Object.freeze({
  * the schema's triggers keep (`ledger_usage`, `ledger_readers`, `outside_agents`) or an
  * index range, never a scan.
  *
- * Unacked mail is reserved, not shared. The owner's mailbox holds at most
- * `maxOwnerUnacked` messages and `maxOwnerUnackedBytes` unacked; each enabled agent's
- * at most `maxAgentUnacked` and `maxAgentUnackedBytes`; and `maxAgents` enabled agents'
- * mailboxes plus the owner's fit inside the ceilings (`checkLimits`). Disabling an agent
- * releases its unacked mail, and deleting one purges it, so only enabled agents hold
- * any. Hence a post that passes its own mailbox's bound always finds an acked message to
- * evict when the ledger is at a ceiling: a full mailbox refuses only posts to it, never
- * the owner's mail to another agent. One agent's share of the owner's mailbox is
- * `maxSenderUnacked` and `maxSenderUnackedBytes`, a quarter of it: a few busy agents can
- * fill it, which holds agent mail until the owner acks, back-pressure only the owner can
- * clear and always can. Per agent the same holds the other way: an agent that rarely
- * reads refuses the owner's posts to it after about 7 maximum-size bodies (480 KiB of
- * 64 KiB) or 80 short ones, until it acks.
+ * The mailboxes' caps are within the ceilings, not reserved out of them (`checkLimits`):
+ * the owner's mailbox holds at most `maxOwnerUnacked` messages unacked, each enabled
+ * agent's at most `maxAgentUnacked`, one agent's share of the owner's mailbox
+ * `maxSenderUnacked` (an outside agent's, or one of the owner's own agents'), and each is
+ * at most the ceiling it is a part of. A post past its own mailbox's cap is refused;
+ * past a ceiling the oldest acked message is evicted, and when the ledger holds nothing
+ * acked (every message held unread), the post is refused `ledger_full` until a reader
+ * acks. Disabling an agent releases its unacked mail, and deleting one purges it.
  *
- * How they were chosen. The plan of record costs an owner at about 10 MB of trusted
- * state; that is the typical case, short text that is acked and evicted. These are
- * ceilings, what one owner can be made to hold: 10,000 messages and 64 MiB of bodies
- * (the collections' owner-wide bounds), and 50,000 receipts (five per message's worth,
- * about 10 MB). All of it held is about seven times the plan's typical state, and far
- * under the Durable Object storage limit of 10 GB per object, which bounds every object
- * whatever is chosen here (the plan's decision changes if an owner needs more). The
- * mailboxes split the ceilings: a quarter of the bytes for the owner's, the rest across
- * 100 enabled agents, 80 messages and 480 KiB each, room for several dozen 16 kB bodies
- * an agent has not acked yet. A settled wake's receipt is its record, so the row is kept
- * a week (enough to debug a doorbell) and at most 1,000 of them; an owner's hourly cap
- * reads only its agent's one `wake_tat` column.
+ * How they were chosen (ADR-035; `limits-audit.md`). Bodies past `PLACE_BYTES` live in R2,
+ * so the object holds at most that much of each body, and its bytes in R2 count in the
+ * tier's storage; the counts are what the owner-bound guard costs within its half of the
+ * 10 GB. The ledger's rows are one message, its body's row and its one recipient (the key
+ * holds a message to one), so the messages bound them all. A settled wake's receipt is its
+ * record, so the row is kept a week (enough to debug a doorbell) and at most 1,000 of
+ * them; an owner's hourly cap reads only its agent's one `wake_tat` column.
  */
 export interface LedgerLimits {
   /** Enabled agents: what the mailboxes are reserved for. */
@@ -241,17 +234,12 @@ export interface LedgerLimits {
   readonly maxAgentRows: number;
   /** Messages held; past it the oldest message no recipient holds is evicted. */
   readonly maxMessages: number;
-  /** Body bytes held, under the same eviction. */
-  readonly maxBodyBytes: number;
-  /** Messages, and their bytes, the owner has not acked. */
+  /** Messages the owner has not acked. */
   readonly maxOwnerUnacked: number;
-  readonly maxOwnerUnackedBytes: number;
-  /** Messages, and their bytes, one enabled agent has not acked. */
+  /** Messages one enabled agent has not acked. */
   readonly maxAgentUnacked: number;
-  readonly maxAgentUnackedBytes: number;
-  /** One outside agent's share of the owner's mailbox. */
+  /** One agent's share of the owner's mailbox: an outside agent's, or an own agent's. */
   readonly maxSenderUnacked: number;
-  readonly maxSenderUnackedBytes: number;
   /** Receipt rows kept, newest first. */
   readonly maxReceipts: number;
   /** How long a settled wake row is kept; its receipt is the record. */
@@ -262,16 +250,12 @@ export interface LedgerLimits {
 }
 
 export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
-  maxAgents: 100,
+  maxAgents: 1_000,
   maxAgentRows: 1_000,
-  maxMessages: 10_000,
-  maxBodyBytes: 64 * MIB,
-  maxOwnerUnacked: 2_000,
-  maxOwnerUnackedBytes: 16 * MIB,
-  maxAgentUnacked: 80,
-  maxAgentUnackedBytes: 480 * KIB,
-  maxSenderUnacked: 500,
-  maxSenderUnackedBytes: 4 * MIB,
+  maxMessages: 50_000,
+  maxOwnerUnacked: 10_000,
+  maxAgentUnacked: 1_000,
+  maxSenderUnacked: 5_000,
   maxReceipts: 50_000,
   settledWakeRetentionS: 7 * 24 * HOUR_S,
   maxSettledWakes: 1_000,
@@ -279,17 +263,14 @@ export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
 });
 
 /**
- * Refuse limits whose mailboxes do not fit the ceilings: with them, unacked mail alone
- * could fill the ledger and eviction would stall.
+ * Refuse limits whose caps are not within their ceilings: a mailbox, or a sender's share
+ * of the owner's, larger than the ledger, or a share larger than its mailbox.
  */
 export function checkLimits(limits: LedgerLimits): LedgerLimits {
   const problems: string[] = [];
-  if (limits.maxAgents * limits.maxAgentUnacked + limits.maxOwnerUnacked > limits.maxMessages) {
-    problems.push("the mailboxes' messages exceed maxMessages");
-  }
-  if (limits.maxAgents * limits.maxAgentUnackedBytes + limits.maxOwnerUnackedBytes
-      > limits.maxBodyBytes) {
-    problems.push("the mailboxes' bytes exceed maxBodyBytes");
+  if (Math.max(limits.maxAgentUnacked, limits.maxOwnerUnacked) > limits.maxMessages
+      || limits.maxSenderUnacked > limits.maxOwnerUnacked) {
+    problems.push("a mailbox's messages exceed its ceiling");
   }
   if (limits.maxAgents > limits.maxAgentRows) {
     problems.push("maxAgents exceeds maxAgentRows");
@@ -298,6 +279,22 @@ export function checkLimits(limits: LedgerLimits): LedgerLimits {
     throw new Error(`invalid ledger limits: ${problems.join("; ")}`);
   }
   return limits;
+}
+
+/** The refusal of a post when the ledger holds only unread mail at a ceiling. */
+export const LEDGER_FULL = "ledger_full";
+
+/** A message body as a post takes it, or refused; the door checks it before placing it. */
+export function checkMessage(body: unknown): asserts body is string {
+  if (typeof body !== "string") {
+    throw new Invalid("body is text");
+  }
+  if (!body || utf8Bytes(body) > MAX_BODY_BYTES) {
+    throw new Invalid(`a message body is 1 to ${MAX_BODY_BYTES} bytes`);
+  }
+  if (LONE_SURROGATE.test(body)) {
+    throw new Invalid("a message body is well-formed text");
+  }
 }
 
 /** A verified outside client: what the binder resolved the caller's credential to. */
@@ -359,6 +356,8 @@ export interface Delivery {
   readonly sender_name: string;
   readonly body: string | null;
   readonly integrity: Integrity;
+  /** A placed body (ADR-035) this read was not handed: the door reads it and asks again. */
+  readonly content_id: string | null;
   readonly authority: MailAuthority | null;
   /** Whether a person sent it (the owner's own call): the run it starts is attended. */
   readonly attended: boolean;
@@ -385,9 +384,8 @@ export type Agent = {
   /** The owner's hourly cap on this agent's wakes; null, the default, for none. */
   readonly max_wakes_per_hour: number | null;
   readonly batch_window_s: number;
-  /** Messages this agent sent that the owner has not acked yet, and their bytes. */
+  /** Messages this agent sent that the owner has not acked yet. */
   readonly unacked_to_owner: number;
-  readonly unacked_to_owner_bytes: number;
   /** The hourly cap's counter (GCRA's theoretical arrival time), or null. */
   readonly wake_tat: number | null;
 };
@@ -541,7 +539,6 @@ type Usage = {
   agents: number;
   enabled_agents: number;
   messages: number;
-  body_bytes: number;
   settled_wakes: number;
 };
 
@@ -564,7 +561,7 @@ type StoredMessage = {
   attended: number;
 };
 
-type StoredNative = NativeAgent & { unacked_to_owner: number; unacked_to_owner_bytes: number };
+type StoredNative = NativeAgent & { unacked_to_owner: number };
 
 /** A room's member, resolved: the owner, an enabled outside agent, or a live own agent. */
 type Member =
@@ -743,14 +740,18 @@ export class Ledger {
   /** The owner-wide change cursor (`Collections.clock`): what a mail wake is after. */
   readonly #changes: () => number;
 
+  /** How a posting unit adopts a placed body's content (`Bodies.adopt`); none, none placed. */
+  readonly #adopt: Adopt | undefined;
+
   constructor(storage: OwnerStorage, grants: GrantReader,
               limits: LedgerLimits = LEDGER_LIMITS, admitted: () => boolean = () => true,
-              changes: () => number = () => 0) {
+              changes: () => number = () => 0, adopt?: Adopt) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = checkLimits(limits);
     this.#admitted = admitted;
     this.#changes = changes;
+    this.#adopt = adopt;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -760,7 +761,7 @@ export class Ledger {
   /** The owner-wide counters; only migration 2's triggers write them. */
   #usage(): Usage {
     return this.#sql.exec<Usage>(
-      "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes " +
+      "SELECT agents, enabled_agents, messages, settled_wakes " +
         "FROM ledger_usage",
     ).one();
   }
@@ -1171,62 +1172,98 @@ export class Ledger {
 
   // -- ROOM_POST: a pair's room -----------------------------------------------
 
-  post(origin: Actor, roomId: unknown, clientMessageId: unknown, body: unknown,
-       parentId: unknown, now: number = clock(), authority: MailAuthority | null = null):
-      Posted {
+  /**
+   * Whether a post would be answered as a resend, its original returned, or refused, read
+   * before its body is placed (ADR-035): the room, the sender, the parent and the mailboxes'
+   * caps checked, nothing written, so no body goes to R2 for a post its write refuses or
+   * answers from what is held. Null for a new post.
+   */
+  prepare(origin: Actor, roomId: unknown, clientMessageId: unknown, body: unknown,
+          parentId: unknown): Posted | null {
+    checkMessage(body);
+    const addressed = this.#addressed(origin, roomId, clientMessageId, body, parentId);
+    if ("resend" in addressed) {
+      return addressed.resend;
+    }
+    this.#capped(addressed.recipient, addressed.share);
+    return null;
+  }
+
+  /** A post's room, members, parent and caps' share, or its original when it is a resend. */
+  #addressed(origin: Actor, roomId: unknown, clientMessageId: unknown, body: string,
+             parentId: unknown):
+      { resend: Posted } | { room: string; cmid: string; parentKey: string | null; sha: string;
+                             members: [Member, Member]; from: Member; to: Member;
+                             kind: string; sender: string; recipient: string;
+                             share: { readonly unacked_to_owner: number } | null;
+                             parent: StoredMessage | undefined } {
     const room = text(roomId, 128, "room_id");
     const cmid = text(clientMessageId, 128, "client_message_id");
     const parentKey = parentId === null ? null : text(parentId, 128, "parent_id");
-    if (typeof body !== "string") {
-      throw new Invalid("body is text");
-    }
-    if (!body || codePoints(body) > MAX_BODY) {
-      throw new Invalid(`a message body is 1 to ${MAX_BODY} characters`);
-    }
-    if (LONE_SURROGATE.test(body)) {
-      throw new Invalid("a message body is well-formed text");
-    }
     const sha = digest(body);
     const sql = this.#sql;
-    return this.#storage.transactionSync(() => {
-      const members = this.#room(room);
-      const from = this.#sender(origin, members);
-      const to = members.find((m) => m !== from)!;
-      const [kind, sender, recipient] = [from.kind, from.id, to.id];
-      const same = sql.exec<StoredMessage>(
-        "SELECT * FROM ledger_messages WHERE sender_id = ? AND client_message_id = ?",
-        sender, cmid,
+    const members = this.#room(room);
+    const from = this.#sender(origin, members);
+    const to = members.find((m) => m !== from)!;
+    const [kind, sender, recipient] = [from.kind, from.id, to.id];
+    const same = sql.exec<StoredMessage>(
+      "SELECT * FROM ledger_messages WHERE sender_id = ? AND client_message_id = ?",
+      sender, cmid,
+    ).toArray()[0];
+    if (same !== undefined) {
+      if (same.body_sha256 !== sha || same.room_id !== room || same.parent_id !== parentKey) {
+        throw new Refused("conflict");
+      }
+      return { resend: {
+        message_id: same.message_id,
+        recipients: sql.exec<{ agent_id: string }>(
+          "SELECT agent_id FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
+          same.message_id,
+        ).toArray().map((r) => r.agent_id),
+        held: false,
+        paused_reason: "",
+      } };
+    }
+    let parent: StoredMessage | undefined;
+    if (parentKey !== null) {
+      parent = sql.exec<StoredMessage>(
+        "SELECT m.* FROM ledger_messages m JOIN ledger_recipients r " +
+          "ON r.message_id = m.message_id AND r.agent_id = ? " +
+          "WHERE m.message_id = ? AND m.room_id = ?", sender, parentKey, room,
       ).toArray()[0];
-      if (same !== undefined) {
-        if (same.body_sha256 !== sha || same.room_id !== room || same.parent_id !== parentKey) {
-          throw new Refused("conflict");
-        }
-        return {
-          message_id: same.message_id,
-          recipients: sql.exec<{ agent_id: string }>(
-            "SELECT agent_id FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
-            same.message_id,
-          ).toArray().map((r) => r.agent_id),
-          held: false,
-          paused_reason: "",
-        };
+      if (parent === undefined) {
+        throw new Refused("parent is not a message to this sender in this room");
       }
-      let parent: StoredMessage | undefined;
-      if (parentKey !== null) {
-        parent = sql.exec<StoredMessage>(
-          "SELECT m.* FROM ledger_messages m JOIN ledger_recipients r " +
-            "ON r.message_id = m.message_id AND r.agent_id = ? " +
-            "WHERE m.message_id = ? AND m.room_id = ?", sender, parentKey, room,
-        ).toArray()[0];
-        if (parent === undefined) {
-          throw new Refused("parent is not a message to this sender in this room");
-        }
+    }
+    // A sender's share of the owner's mailbox: its own dm room's mail to the owner.
+    const share = recipient !== OWNER ? null : from.kind === "outside"
+      ? from.agent : from.kind === "native" ? from.native : null;
+    return { room, cmid, parentKey, sha, members, from, to, kind, sender, recipient, share,
+             parent };
+  }
+
+  /**
+   * Post `body` in a pair's room. A body past `PLACE_BYTES` comes `placed` (ADR-035, the
+   * door's `Bodies.begin`): its content is adopted in this unit, in its writer's files scope
+   * (`filer`: the owner's, an outside client's, or a visiting owner's), and the body's row
+   * names it. A resend's original is answered without it.
+   */
+  post(origin: Actor, roomId: unknown, clientMessageId: unknown, body: unknown,
+       parentId: unknown, now: number = clock(), authority: MailAuthority | null = null,
+       placed: Placed | null = null, filer = "owner"): Posted {
+    checkMessage(body);
+    const sql = this.#sql;
+    return this.#storage.transactionSync(() => {
+      const addressed = this.#addressed(origin, roomId, clientMessageId, body, parentId);
+      if ("resend" in addressed) {
+        return addressed.resend;
       }
+      const { room, cmid, parentKey, sha, members, to, kind, sender, recipient, share,
+              parent } = addressed;
       const size = utf8Bytes(body);
-      // A sender's share of the owner's mailbox: its own dm room's mail to the owner.
-      const share = recipient !== OWNER ? null : from.kind === "outside"
-        ? from.agent : from.kind === "native" ? from.native : null;
-      this.#makeRoom(recipient, share, size);
+      this.#capped(recipient, share);
+      this.#makeRoom();
+      return adopted(body, placed, filer, this.#adopt, (contentId) => {
       const messageId = "msg_" + token(16);
       const depth = kind === OWNER ? 0 : (parent?.chain_depth ?? 0) + 1;
       // The owner's dm with an outside agent is in that agent's command center; any other
@@ -1245,7 +1282,9 @@ export class Ledger {
         messageId, center, room, kind, sender, cmid, sha, parentKey,
         parent?.chain_root ?? messageId, depth, now, size, kept, origin === null ? 1 : 0,
       ).one().seq;
-      sql.exec("INSERT INTO message_bodies VALUES (?, ?, ?, ?)", messageId, room, body, now);
+      sql.exec("INSERT INTO message_bodies (message_id, room_id, body, created_at, " +
+                 "body_bytes, content_id, filer) VALUES (?, ?, ?, ?, ?, ?, ?)", messageId, room,
+               contentId === null ? body : "", now, size, contentId, filer);
       sql.exec("INSERT INTO ledger_recipients (message_id, agent_id, seq, state, changed_at) " +
                  "VALUES (?, ?, ?, 'queued', ?)", messageId, recipient, seq, now);
       // One open wake per ringing recipient; never one for the message's own sender. A
@@ -1269,6 +1308,7 @@ export class Ledger {
         });
       }
       return { message_id: messageId, recipients: [recipient], held: false, paused_reason: "" };
+      });
     });
   }
 
@@ -1282,7 +1322,7 @@ export class Ledger {
    * between agents is a deliberate post, which needs `converse` (`roomPost`).
    */
   answer(actor: Native, mailId: string, postId: string, body: string, now: number,
-         authority: MailAuthority | null): Posted | null {
+         authority: MailAuthority | null, placed: Placed | null = null): Posted | null {
     const mail = this.#sql.exec<{ room_id: string; sender_kind: string }>(
       "SELECT room_id, sender_kind FROM ledger_messages WHERE message_id = ?", mailId)
       .toArray()[0];
@@ -1293,7 +1333,8 @@ export class Ledger {
     if (mail.sender_kind === "native") {
       return null;
     }
-    return this.post(actor, mail.room_id, postId, body, mailId, now, authority);
+    return this.post(actor, mail.room_id, postId, body, mailId, now, authority, placed,
+                     authority === null ? "owner" : `client:${authority.client}`);
   }
 
   /**
@@ -1301,9 +1342,11 @@ export class Ledger {
    * `after`, each message with its recipients and how far each took it. A read of the held
    * messages by their sequence (at most the ledger's `maxMessages`).
    */
-  chain(messageId: unknown, after: unknown, limit: unknown): { root: string;
-                                                               messages: ChainMail[];
-                                                               more: boolean } {
+  chain(messageId: unknown, after: unknown, limit: unknown,
+        placed: ReadonlyMap<string, string> = new Map()): { root: string;
+                                                             messages: ChainMail[];
+                                                             more: boolean;
+                                                             placed: string[] } {
     const maxRead = this.#limits.maxRead;
     if (typeof messageId !== "string" || !count(after, 0, Number.MAX_SAFE_INTEGER)
         || !count(limit, 1, maxRead)) {
@@ -1318,12 +1361,19 @@ export class Ledger {
     const rows = sql.exec<StoredMessage>(
       "SELECT * FROM ledger_messages WHERE seq > ? AND chain_root = ? ORDER BY seq LIMIT ?",
       after, root.chain_root, (limit as number) + 1).toArray();
+    const unread: string[] = [];
     const messages = rows.slice(0, limit as number).map((row): ChainMail => {
-      const stored = sql.exec<{ body: string }>(
-        "SELECT body FROM message_bodies WHERE message_id = ?", row.message_id).toArray()[0];
-      const [body, integrity]: [string | null, Integrity] = stored === undefined
+      const stored = sql.exec<{ body: string; content_id: string | null }>(
+        "SELECT body, content_id FROM message_bodies WHERE message_id = ?", row.message_id)
+        .toArray()[0];
+      const kept = stored === undefined ? undefined
+        : stored.content_id === null ? stored.body : placed.get(stored.content_id);
+      if (stored?.content_id != null && kept === undefined) {
+        unread.push(stored.content_id);
+      }
+      const [body, integrity]: [string | null, Integrity] = kept === undefined
         ? [null, "missing"]
-        : digest(stored.body) !== row.body_sha256 ? [null, "tampered"] : [stored.body, "ok"];
+        : digest(kept) !== row.body_sha256 ? [null, "tampered"] : [kept, "ok"];
       return {
         seq: row.seq, message_id: row.message_id, room_id: row.room_id,
         sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
@@ -1334,7 +1384,9 @@ export class Ledger {
           row.message_id).toArray(),
       };
     });
-    return { root: root.chain_root, messages, more: rows.length > messages.length };
+    // A placed body (ADR-035) the door did not hand in is named, for it to read and ask again.
+    return { root: root.chain_root, messages, more: rows.length > messages.length,
+             placed: unread };
   }
 
   // -- MAIL TO THE OWNER'S OWN AGENTS: what the `runs` lane delivers -------------
@@ -1349,8 +1401,12 @@ export class Ledger {
       room ? 1 : 0).toArray().length > 0;
   }
 
-  /** The oldest mail no run has taken, its body checked against its hash. A read. */
-  nextMail(): Delivery | null {
+  /**
+   * The oldest mail no run has taken, its body checked against its hash. A read. A body
+   * placed in R2 (ADR-035) is the door's to read: handed in `placed` by content id, or
+   * named (`content_id`) with no body, for the door to read and ask again.
+   */
+  nextMail(placed: ReadonlyMap<string, string> = new Map()): Delivery | null {
     // Driven from the agents (a `CROSS JOIN` keeps that order): each agent's queued rows
     // by `recipients_by_state`, an index seek an agent; only those rows are sorted.
     const row = this.#sql.exec<StoredMessage & { recipient: string; agent: string;
@@ -1365,14 +1421,46 @@ export class Ledger {
     if (row === undefined) {
       return null;
     }
-    const stored = this.#sql.exec<{ body: string }>(
-      "SELECT body FROM message_bodies WHERE message_id = ?", row.message_id).toArray()[0];
-    const [body, integrity]: [string | null, Integrity] = stored === undefined
+    return this.#delivery(row, placed);
+  }
+
+  /**
+   * A held mail to the owner's agent `agentId`, as `nextMail` reads it: a waiting run's
+   * input, whose row keeps only the mail's reference (the run's `mail`) and reads the body
+   * again as the run starts, a placed one (ADR-035) from R2 as `nextMail`'s. Null once the
+   * mail is no longer held for it. A read.
+   */
+  mailFor(messageId: string, agentId: string,
+          placed: ReadonlyMap<string, string> = new Map()): Delivery | null {
+    const row = this.#sql.exec<StoredMessage & { recipient: string; agent: string;
+                                                 sender_name: string | null }>(
+      "SELECT m.*, r.agent_id AS recipient, n.agent, coalesce(s.agent, o.display_name) " +
+        "AS sender_name FROM ledger_recipients r " +
+        "JOIN native_agents n ON n.agent_id = r.agent_id " +
+        "JOIN ledger_messages m ON m.message_id = r.message_id " +
+        "LEFT JOIN native_agents s ON s.agent_id = m.sender_id " +
+        "LEFT JOIN outside_agents o ON o.agent_id = m.sender_id " +
+        "WHERE r.message_id = ? AND r.agent_id = ? AND r.unacked = 1",
+      messageId, agentId).toArray()[0];
+    return row === undefined ? null : this.#delivery(row, placed);
+  }
+
+  /** A mail row as its run reads it, its body checked against its hash. */
+  #delivery(row: StoredMessage & { recipient: string; agent: string;
+                                   sender_name: string | null },
+            placed: ReadonlyMap<string, string>): Delivery {
+    const stored = this.#sql.exec<{ body: string; content_id: string | null }>(
+      "SELECT body, content_id FROM message_bodies WHERE message_id = ?", row.message_id)
+      .toArray()[0];
+    const kept = stored === undefined ? undefined
+      : stored.content_id === null ? stored.body : placed.get(stored.content_id);
+    const unread = stored?.content_id != null && kept === undefined ? stored.content_id : null;
+    const [body, integrity]: [string | null, Integrity] = kept === undefined
       ? [null, "missing"]
-      : digest(stored.body) !== row.body_sha256 ? [null, "tampered"] : [stored.body, "ok"];
-    return { message_id: row.message_id, agent: row.agent, agent_id: row.recipient,
-             room_id: row.room_id, thread: row.chain_root, sender_id: row.sender_id,
-             sender_kind: row.sender_kind,
+      : digest(kept) !== row.body_sha256 ? [null, "tampered"] : [kept, "ok"];
+    return { content_id: unread, message_id: row.message_id, agent: row.agent,
+             agent_id: row.recipient, room_id: row.room_id, thread: row.chain_root,
+             sender_id: row.sender_id, sender_kind: row.sender_kind,
              sender_name: row.sender_kind === OWNER ? OWNER : row.sender_name ?? "", body,
              integrity, authority: authorityOf(row.authority, row.command_center_id),
              attended: row.attended === 1 };
@@ -1422,56 +1510,74 @@ export class Ledger {
                      `WHERE ${DUE} AND state = 'held_cap'`, now);
   }
 
-  /** A reader's mailbox counters: its unacked messages and their bytes. */
-  #mailbox(reader: string): { unacked: number; unacked_bytes: number } {
-    return this.#sql.exec<{ unacked: number; unacked_bytes: number }>(
-      "SELECT unacked, unacked_bytes FROM ledger_readers WHERE reader = ?", reader,
-    ).toArray()[0] ?? { unacked: 0, unacked_bytes: 0 };
+  /** A reader's mailbox counter: its unacked messages. */
+  #mailbox(reader: string): { unacked: number } {
+    return this.#sql.exec<{ unacked: number }>(
+      "SELECT unacked FROM ledger_readers WHERE reader = ?", reader,
+    ).toArray()[0] ?? { unacked: 0 };
   }
 
   /**
-   * Refuse, or make room for, one more message of `size` body bytes to `recipient`.
-   *
-   * An agent's mail to the owner is held to its share of the owner's mailbox, and every
-   * recipient to its own mailbox (see {@link LedgerLimits}). Past the owner-wide ceilings the
-   * oldest message no recipient holds is evicted with its body and recipients. The
-   * mailboxes fit inside the ceilings, so one is always there; none is a broken
-   * invariant, which fails loudly.
+   * Refuse one more message to `recipient` past its mailbox's cap, or an agent's mail to the
+   * owner past its `share` of the owner's mailbox (see {@link LedgerLimits}). Bytes are the
+   * tier's storage's to bound: a body past `PLACE_BYTES` is in R2.
    */
-  #makeRoom(recipient: string, share: { readonly unacked_to_owner: number;
-                                        readonly unacked_to_owner_bytes: number } | null,
-            size: number): void {
-    const sql = this.#sql;
+  #capped(recipient: string, share: { readonly unacked_to_owner: number } | null): void {
     const limits = this.#limits;
-    if (share !== null
-        && (share.unacked_to_owner + 1 > limits.maxSenderUnacked
-            || share.unacked_to_owner_bytes + size > limits.maxSenderUnackedBytes)) {
+    if (share !== null && share.unacked_to_owner + 1 > limits.maxSenderUnacked) {
       throw new Refused("this agent's unacked mail to the owner is full");
     }
-    const box = this.#mailbox(recipient);
-    const [most, mostBytes, full] = recipient === OWNER
-      ? [limits.maxOwnerUnacked, limits.maxOwnerUnackedBytes, "the owner's mailbox is full"]
-      : [limits.maxAgentUnacked, limits.maxAgentUnackedBytes, "this agent's mailbox is full"];
-    if (box.unacked + 1 > most || box.unacked_bytes + size > mostBytes) {
+    const [most, full] = recipient === OWNER
+      ? [limits.maxOwnerUnacked, "the owner's mailbox is full"]
+      : [limits.maxAgentUnacked, "this agent's mailbox is full"];
+    if (this.#mailbox(recipient).unacked + 1 > most) {
       throw new Refused(full);
     }
-    for (;;) {
-      const held = this.#usage();
-      if (held.messages + 1 <= limits.maxMessages
-          && held.body_bytes + size <= limits.maxBodyBytes) {
-        return;
-      }
+  }
+
+  /**
+   * Room for one more message under `maxMessages`: the oldest message no recipient holds is
+   * evicted with its body and recipients; when every held message is unread, the post is
+   * refused `ledger_full`.
+   */
+  #makeRoom(): void {
+    const sql = this.#sql;
+    while (this.#usage().messages + 1 > this.#limits.maxMessages) {
       const done = sql.exec<{ message_id: string }>(
         "SELECT message_id FROM ledger_messages WHERE unacked = 0 ORDER BY seq LIMIT 1",
       ).toArray()[0];
       if (done === undefined) {
-        throw new Error("the ledger's mailboxes no longer fit its ceilings: nothing to evict");
+        throw new Refused(`${LEDGER_FULL}: every message the ledger holds is unread; a ` +
+                          "reader acks to make room");
       }
-      for (const table of ["ledger_recipients", "message_bodies", "ledger_messages"]) {
-        sql.exec(`DELETE FROM ${table} WHERE message_id = ?`, done.message_id);
-      }
+      this.#evict(done.message_id);
     }
   }
+
+  /** One message gone, with its body (its placed content let go) and its recipient. */
+  #evict(messageId: string): void {
+    for (const table of ["ledger_recipients", "message_bodies", "ledger_messages"]) {
+      this.#sql.exec(`DELETE FROM ${table} WHERE message_id = ?`, messageId);
+    }
+  }
+
+  /**
+   * In a change at the files byte quota (`Files.#fit`, ADR-035): the oldest acked message
+   * whose placed body the writers `filer` names (`FILERS`) sent, evicted,
+   * so its bytes can go; false when none is left.
+   */
+  readonly reclaim = (filer: string): boolean => {
+    const done = this.#sql.exec<{ message_id: string }>(
+      "SELECT m.message_id FROM ledger_messages m JOIN message_bodies b ON b.message_id = " +
+        `m.message_id WHERE m.unacked = 0 AND b.content_id IS NOT NULL AND ${
+          FILERS.replaceAll("filer", "b.filer")} ORDER BY m.seq LIMIT 1`, filer, filer, filer)
+      .toArray()[0];
+    if (done === undefined) {
+      return false;
+    }
+    this.#evict(done.message_id);
+    return true;
+  };
 
   // -- MAILBOX_RECEIPT ------------------------------------------------------
 
@@ -1480,11 +1586,16 @@ export class Ledger {
    *
    * `maxBytes` bounds the page: whole messages (each measured as returned, plus
    * `padBytes` for the caller's own wrapping) while they fit, and at least one; a body is
-   * never cut. Only a returned message is marked read and receipted, so a held-back one
-   * stays unread until a read returns it.
+   * never cut. Past its first message a page holds at most `READ_PAGE_BYTES` of bodies. A
+   * body
+   * placed in R2 (ADR-035) is the door's to read first (`placedNext`), handed in `placed`
+   * by content id; the page ends before a placed body it was not handed, even its first
+   * (an empty page, `more`, which the door reads again). Only a returned
+   * message is marked read and receipted, so a held-back one stays unread until a read
+   * returns it.
    */
   read(origin: Actor, limit: unknown, maxBytes: unknown = null, padBytes: unknown = 0,
-       now: number = clock()): MailPage {
+       now: number = clock(), placed: ReadonlyMap<string, string> = new Map()): MailPage {
     const maxRead = this.#limits.maxRead;
     if (!count(limit, 1, maxRead)) {
       throw new Invalid(`limit is 1 to ${maxRead}`);
@@ -1505,10 +1616,11 @@ export class Ledger {
           "ORDER BY r.seq LIMIT ?", reader, cursor, limit,
       ).toArray();
       const ids = JSON.stringify(rows.map((r) => r.message_id));
-      const bodies = new Map(sql.exec<{ message_id: string; body: string }>(
-        "SELECT message_id, body FROM message_bodies WHERE message_id IN " +
+      const stored = new Map(sql.exec<{ message_id: string; body: string;
+                                        content_id: string | null }>(
+        "SELECT message_id, body, content_id FROM message_bodies WHERE message_id IN " +
           "(SELECT value FROM json_each(?))", ids,
-      ).toArray().map((b) => [b.message_id, b.body]));
+      ).toArray().map((b) => [b.message_id, b]));
       // A reply's own receipt already holds its time to reply; show it, never recompute.
       const replied = new Map(sql.exec<{ ref: string; detail_json: string }>(
         "SELECT ref, detail_json FROM ledger_receipts WHERE kind = 'reply' AND ref IN " +
@@ -1516,11 +1628,22 @@ export class Ledger {
       ).toArray().map((r) => [r.ref, JSON.parse(r.detail_json).reply_s as number]));
       const messages: Mail[] = [];
       let used = 0;
+      let bodyBytes = 0;
+      let cut = false;
       for (const row of rows) {
-        const stored = bodies.get(row.message_id);
-        const [body, integrity]: [string | null, Integrity] = stored === undefined
+        const kept = stored.get(row.message_id);
+        const text = kept === undefined ? undefined
+          : kept.content_id === null ? kept.body : placed.get(kept.content_id);
+        bodyBytes += row.body_bytes;
+        // A placed body the door did not read first ends the page there: it reads again.
+        if ((messages.length && bodyBytes > READ_PAGE_BYTES)
+            || (text === undefined && kept !== undefined)) {
+          cut = true;
+          break;
+        }
+        const [body, integrity]: [string | null, Integrity] = text === undefined
           ? [null, "missing"]
-          : digest(stored) !== row.body_sha256 ? [null, "tampered"] : [stored, "ok"];
+          : digest(text) !== row.body_sha256 ? [null, "tampered"] : [text, "ok"];
         const message: Mail = {
           seq: row.seq, message_id: row.message_id, room_id: row.room_id,
           sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
@@ -1538,8 +1661,38 @@ export class Ledger {
           this.#receipt(reader, "read", row.message_id, now);
         }
       }
-      return { reader, cursor, messages, more: messages.length < rows.length };
+      return { reader, cursor, messages, more: cut || messages.length < rows.length };
     });
+  }
+
+  /**
+   * The placed bodies (ADR-035) the next read of `limit` would return, by content id, in
+   * order, while their bytes fit a page: a read, for the door to fetch them from R2 before
+   * its read's unit (`Bodies.locate` in the same turn).
+   */
+  placedNext(origin: Actor, limit: unknown): string[] {
+    const maxRead = this.#limits.maxRead;
+    if (!count(limit, 1, maxRead)) {
+      throw new Invalid(`limit is 1 to ${maxRead}`);
+    }
+    const reader = this.#reader(origin);
+    const rows = this.#sql.exec<{ body_bytes: number; content_id: string | null }>(
+      "SELECT b.body_bytes, b.content_id FROM ledger_recipients r JOIN message_bodies b " +
+        "ON b.message_id = r.message_id WHERE r.agent_id = ? AND r.seq > ? " +
+        "ORDER BY r.seq LIMIT ?", reader, this.#cursor(reader), limit,
+    ).toArray();
+    const wanted: string[] = [];
+    let bytes = 0;
+    for (const row of rows) {
+      bytes += row.body_bytes;
+      if (bytes > READ_PAGE_BYTES && (wanted.length > 0 || bytes > row.body_bytes)) {
+        break;
+      }
+      if (row.content_id !== null) {
+        wanted.push(row.content_id);
+      }
+    }
+    return wanted;
   }
 
   #cursor(reader: string): number {

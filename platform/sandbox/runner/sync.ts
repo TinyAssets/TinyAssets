@@ -88,7 +88,7 @@ export class SyncClient {
         return JSON.parse(text) as Record<string, unknown>;
       }
       if (response.status === 401 || response.status === 403) {
-        throw new SyncFenced(`the sync door refused (${response.status}): ${text.slice(0, 200)}`);
+        throw new SyncFenced(`the sync door refused (${response.status}): ${text}`);
       }
       if (response.status === 404 && door === "read") {
         return { missing: true };
@@ -97,7 +97,7 @@ export class SyncClient {
         await new Promise((resolve) => setTimeout(resolve, wait));
         continue;
       }
-      throw new Error(`the sync door ${door} answered ${response.status}: ${text.slice(0, 200)}`);
+      throw new Error(`the sync door ${door} answered ${response.status}: ${text}`);
     }
   }
 }

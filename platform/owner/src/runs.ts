@@ -47,8 +47,8 @@
  * its own heartbeat lapsed, or a start whose answer never came). Unknown is never
  * replayed. The run grant goes with it (a cancel revokes it at once), and the lease when no
  * live run holds it any more; every settle prunes the receipts to `RUNS_KEPT`.
- * There is no platform deadline: a run's only time bound is the sandbox's own continuous
- * runtime ceiling, as its lease's tokens carry it (`RUN_DEADLINE_S`).
+ * There is no platform deadline: a run's lease's tokens live while its heartbeat renews it
+ * (`LEASE_LIVED`), so its only time bound is the sandbox's own, the vendor's.
  *
  * **Mail** (slice ID): mail to one of the owner's own agents starts that agent's run, through
  * the same admission, its input the mail, its conversation the mail thread's (one a thread,
@@ -64,7 +64,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 
-import type { CredentialKind, Sources } from "../../doors/src/sources";
+import type { CredentialKind, EngineEvents, Sources } from "../../doors/src/sources";
 
 import { AGENT_DISABLED, type AgentFile, AUTO, RUN_CAPABILITIES, type RunCapability }
   from "./agent-file";
@@ -401,6 +401,47 @@ function authorityOf(origin: { readonly client: string } | null): string {
   return origin?.client ?? OWNER_AUTHORITY;
 }
 
+/**
+ * A runner's batch read against its run's record: the frames past the last one kept (a
+ * retried batch's are relayed already), the result and the error they leave, the engine's
+ * session id, and the frames to relay. Pure; `events` writes what it reads, and `answering`
+ * reads it ahead of the batch's unit.
+ */
+function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]): {
+  last: number; result: string | null; resultCut: boolean; error: string | null;
+  session: string | null; relayed: Frame[];
+} {
+  let last = row.last_seq;
+  let result = row.result;
+  let resultCut = row.result_cut === 1;
+  let error = row.error;
+  let session: string | null = null;
+  const relayed: Frame[] = [];
+  for (const frame of frames) {
+    if (frame.seq <= last) {
+      continue;  // a retried batch's frames, relayed already
+    }
+    last = frame.seq;
+    const read = readEvent(events, frame.event);
+    if (read.session_id !== null) {
+      session = read.session_id;
+    }
+    if (read.text !== null) {
+      const joined = read.text.accumulate && result !== null ? result + read.text.value
+        : read.text.value;
+      const kept = cut(joined, RESULT_BYTES);
+      result = kept.text;
+      resultCut = kept.cut || (read.text.accumulate && resultCut);
+    }
+    if (read.error !== null && error === null) {
+      error = cut(read.error, ERROR_BYTES).text;
+    }
+    relayed.push(Object.freeze({ v: FRAME_VERSION, run: row.id, seq: frame.seq, at: frame.at,
+                                 kind: read.kind, event: frame.event }));
+  }
+  return { last, result, resultCut, error, session, relayed };
+}
+
 /** `text` cut to at most `bytes` UTF-8 bytes on a character boundary, and whether it was. */
 export function cut(text: string, bytes: number): { text: string; cut: boolean } {
   const encoded = new TextEncoder().encode(text);
@@ -549,8 +590,10 @@ export class Runs {
                        "WHERE id = ? AND state = 'waiting'",
                      chosen.engine, chosen.credential, chosen.model, lease.lease_id, lease.epoch,
                      now, waiting);
-      prompt = this.#sql.exec<{ prompt: string }>(
+      const kept = this.#sql.exec<{ prompt: string }>(
         "DELETE FROM run_inputs WHERE run = ? RETURNING prompt", waiting).one().prompt;
+      // A mail's run kept its mail's reference: its input is the mail as read again now.
+      prompt = ask.mail === null ? kept : ask.prompt;
     } else {
       this.#sql.exec(
         "INSERT INTO runs (id, agent, conversation, source, credential, model, state, " +
@@ -587,7 +630,8 @@ export class Runs {
     const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
     const queued = this.#sql.exec<{ n: number; bytes: number }>(
       "SELECT COUNT(*) AS n, coalesce(SUM(bytes), 0) AS bytes FROM run_inputs").one();
-    if (queued.n >= QUEUE_ROWS || queued.bytes + utf8Bytes(ask.prompt) > QUEUE_BYTES) {
+    if (queued.n >= QUEUE_ROWS
+        || queued.bytes + (ask.mail === null ? utf8Bytes(ask.prompt) : 0) > QUEUE_BYTES) {
       throw new Refused(QUEUE_FULL);
     }
     const runId = id("run_");
@@ -599,8 +643,11 @@ export class Runs {
       ask.initiator, ask.origin?.client ?? null,
       ask.stamp === null ? null : JSON.stringify(ask.stamp), ask.request,
       ask.unattended ? 1 : 0, ask.mail?.message ?? null, now);
+    // A mail's run keeps only its mail's reference (its `mail`): its input is read again
+    // from the mail, held until the run settles, as it starts (ADR-035).
+    const kept = ask.mail === null ? ask.prompt : "";
     this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
-                   runId, ask.prompt, utf8Bytes(ask.prompt),
+                   runId, kept, utf8Bytes(kept),
                    ask.origin === null ? null : JSON.stringify(ask.origin));
     this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, conversation);
     this.#prune();
@@ -1071,6 +1118,34 @@ export class Runs {
    * runner's `end` brings. A mail's run that succeeded with a result answers it before it
    * settles, while its mail is still held (`RunDeps.answer`).
    */
+  /**
+   * A read, before an events batch's unit: the reply its settle would post
+   * (`RunDeps.answer`), or null, so the door can place a long one in R2 first (ADR-035).
+   */
+  answering(runId: string, lease: LiveLease, frames: readonly PostedFrame[],
+            end: { readonly exit_code: number | null } | null): MailAnswer | null {
+    const row = end !== null && this.liveUnder(runId, lease) ? this.#run(runId) : undefined;
+    const events = row === undefined ? undefined
+      : this.#deps.sources().get(row.source)?.cli?.engine.events;
+    if (row === undefined || end === null || events === undefined) {
+      return null;
+    }
+    const { result, error } = batch(row, events, frames);
+    return this.#answerOf(row, end.exit_code !== 0 || error !== null
+      || row.cancel_requested === 1, result);
+  }
+
+  /** The reply a settled run's result posts to the mail it answers, or null for none. */
+  #answerOf(row: RunRow, failed: boolean, result: string | null): MailAnswer | null {
+    const grant = this.#sql.exec<GrantRow>(`${GRANTS} WHERE g.run = ?`, row.id).toArray()[0];
+    if (failed || result === null || result === "" || row.mail === null || grant === undefined) {
+      return null;
+    }
+    const granted = grantOf(grant);
+    return { run: row.id, agent: row.agent, mail: row.mail, result, stamp: granted.stamp,
+             origin: granted.origin };
+  }
+
   events(runId: string, lease: LiveLease, frames: readonly PostedFrame[],
          end: { readonly exit_code: number | null } | null, now: number):
       { conversation: string; frames: Frame[]; settled: RunState | null } {
@@ -1083,34 +1158,7 @@ export class Runs {
     if (events === undefined) {
       throw new Error(`run ${runId}'s engine ${row.source} has no record`);
     }
-    let last = row.last_seq;
-    let result = row.result;
-    let resultCut = row.result_cut === 1;
-    let error = row.error;
-    let session: string | null = null;
-    const relayed: Frame[] = [];
-    for (const frame of frames) {
-      if (frame.seq <= last) {
-        continue;  // a retried batch's frames, relayed already
-      }
-      last = frame.seq;
-      const read = readEvent(events, frame.event);
-      if (read.session_id !== null) {
-        session = read.session_id;
-      }
-      if (read.text !== null) {
-        const joined = read.text.accumulate && result !== null ? result + read.text.value
-          : read.text.value;
-        const kept = cut(joined, RESULT_BYTES);
-        result = kept.text;
-        resultCut = kept.cut || (read.text.accumulate && resultCut);
-      }
-      if (read.error !== null && error === null) {
-        error = cut(read.error, ERROR_BYTES).text;
-      }
-      relayed.push(Object.freeze({ v: FRAME_VERSION, run: runId, seq: frame.seq, at: frame.at,
-                                   kind: read.kind, event: frame.event }));
-    }
+    const { last, result, resultCut, error, session, relayed } = batch(row, events, frames);
     // The batch is this run's own heartbeat, as it renews the lease.
     this.#sql.exec("UPDATE runs SET last_seq = ?, result = ?, result_cut = ?, error = ?, " +
                      "state = CASE WHEN state = 'queued' THEN 'running' ELSE state END, " +
@@ -1124,12 +1172,9 @@ export class Runs {
     if (end !== null) {
       const failed = end.exit_code !== 0 || error !== null || row.cancel_requested === 1;
       settled = failed ? "failed" : "succeeded";
-      const grant = this.#sql.exec<GrantRow>(`${GRANTS} WHERE g.run = ?`, runId).toArray()[0];
-      if (!failed && result !== null && result !== "" && row.mail !== null
-          && grant !== undefined) {
-        const granted = grantOf(grant);
-        this.#deps.answer({ run: runId, agent: row.agent, mail: row.mail, result,
-                            stamp: granted.stamp, origin: granted.origin });
+      const answer = this.#answerOf(row, failed, result);
+      if (answer !== null) {
+        this.#deps.answer(answer);
       }
       this.settle(runId, settled, row.cancel_requested === 1 ? "cancelled"
         : end.exit_code !== 0 ? "exit" : error !== null ? "engine_error" : null,

@@ -27,7 +27,7 @@ export class FauxOwnerDO extends OwnerDO {
     const made: { erasure?: Erasure; sandbox?: SandboxLeases } = {};
     const recorder = new RecordingSandbox();
     super(ctx, { ...env, SANDBOX: recorder },
-          { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500,
+          { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500, putGraceMs: 0,
             sandbox: (leases) => { made.sandbox = leases; } });
     this.erasure = made.erasure!;
     this.sandbox = made.sandbox!;

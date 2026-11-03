@@ -54,7 +54,7 @@ export interface SessionLimits {
 
 export const SESSION_LIMITS: SessionLimits = Object.freeze({
   ttlS: 28_800,
-  maxSessions: 16,
+  maxSessions: 64,
   signInMaxAgeS: 600,
   clockMarginS: 5,
 });

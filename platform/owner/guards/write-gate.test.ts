@@ -39,9 +39,11 @@ import { parse, reporter, workerSources } from "./sources";
 const OWNER_DO = "owner/src/owner-do.ts";
 const GATE = "owner/src/gate.ts";
 /** The gate's own helpers in the object, and what each must call. */
-const ENTRIES: ReadonlySet<string> = new Set(["this.#door", "this.#synced", "this.#filing"]);
+const ENTRIES: ReadonlySet<string> = new Set(["this.#door", "this.#synced", "this.#filing",
+                                              "this.#placing", "this.#reading",
+                                              "this.#rereading"]);
 /** The calls whose arrow argument is a unit. */
-const UNITS = /(^|\.)(#?write|unit|#door|#synced|#filing)$/;
+const UNITS = /(^|\.)(#?write|unit|#door|#synced|#filing|#placing|#reading|#rereading)$/;
 /** By module, the calls that write: each must be in a unit wherever a function awaits. */
 const WRITES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "owner/src/wakes.ts": new Set(["recover", "defer", "claim", "mark", "settle"]),
@@ -211,7 +213,8 @@ function helpers(source: string): Record<string, string> {
   const found: Record<string, string> = {};
   const visit = (node: ts.Node): void => {
     if (ts.isMethodDeclaration(node) && ts.isPrivateIdentifier(node.name)
-        && ["#door", "#synced", "#filing"].includes(node.name.text)) {
+        && ["#door", "#synced", "#filing", "#placing", "#reading", "#rereading"]
+          .includes(node.name.text)) {
       found[node.name.text] = node.body?.getText(file) ?? "";
     }
     ts.forEachChild(node, visit);
@@ -264,6 +267,13 @@ describe("write-gate guard", () => {
     expect(bodies["#door"]).toBe("{\n    return this.#gate.write(act);\n  }");
     expect(bodies["#synced"]).toContain("await this.#door(act)");
     expect(bodies["#filing"]).toContain("await this.#door(act)");
+    // The doors with a body (ADR-035): each begins in a unit, and every step that writes is
+    // one, the R2 calls between them.
+    expect(bodies["#placing"]).toContain("first = await this.#door(");
+    expect(bodies["#placing"]).toContain("done = await this.#door(() => located(act(placed)));");
+    expect(bodies["#reading"]).toMatch(/^\{\n    const \{ value, located \} = await this\.#door\(/);
+    expect(bodies["#rereading"]).toContain("const located = await this.#door(");
+    expect(bodies["#rereading"]).toContain("const value = await this.#door(() => read(bodies));");
   });
 
   it("names the owner's storage only to make the gate, and no SQLite adapter", () => {

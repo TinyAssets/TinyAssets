@@ -8,9 +8,10 @@ import { createHash } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { GRANT_LIMITS } from "../../owner/src/grants";
 import { apiKeyOrigin } from "../../owner/src/ledger";
 import {
-  newKey, parseKey, secretHash,
+  MAX_KEYS_PER_OWNER, newKey, parseKey, secretHash,
 } from "../src/api-keys";
 import { type DoorsEnv, now } from "../src/config";
 import {
@@ -167,15 +168,16 @@ describe("a mint", () => {
     }
   });
 
-  it("refuses past the Python's 25 live keys", async () => {
+  it("refuses past MAX_KEYS_PER_OWNER live keys, a key a device or agent", async () => {
     const o = await signedIn();
-    for (let i = 0; i < 25; i++) {
+    expect(MAX_KEYS_PER_OWNER).toBe(GRANT_LIMITS.maxOwnerClients);
+    for (let i = 0; i < MAX_KEYS_PER_OWNER; i++) {
       await mint(o);
     }
     const over = await appPost("keys", o.token, o.session, { name: "one more", scopes: SCOPES });
     expect(over.status).toBe(403);
     expect(await over.json()).toEqual({ error: "too many live API keys; revoke one first" });
-  });
+  }, 300_000);
 });
 
 describe("a key's use", () => {

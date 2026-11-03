@@ -33,7 +33,7 @@ const KEYS: readonly string[] = Object.freeze([
 const CLASSES: readonly string[] = Object.freeze(["CodemodeSandbox"]);
 const OBJECTS = Object.freeze({ bindings: Object.freeze([
   Object.freeze({ name: "CODEMODE", class_name: "CodemodeSandbox" })]) });
-const LIMITS = Object.freeze({ cpu_ms: 30_000 });
+const LIMITS = Object.freeze({ cpu_ms: 300_000 });
 
 type Config = Record<string, unknown>;
 

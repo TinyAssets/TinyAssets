@@ -1,313 +1,244 @@
-# Limits audit (slice D)
+# Limits audit
 
-The founder, 2026-11-02: no tiny limits before he has used the platform (`tasks.md`, the
-limits-audit item). This lists every bound left in `platform/*/src`, and in the Workers'
-configs, that refuses or truncates something a user does, with its file and line, value,
-what it bounds, what a user would hit, and one class:
+The founder, 2026-11-02: no tiny limits before he has used the platform. This lists every
+bound in `platform/*/src` and in the Workers' configs that refuses or truncates something a
+user does, with the value that ships (slice LIM), what it bounds, and one of the founder's
+four classes:
 
-- **tier**: simultaneous runs or storage, from the tier record (free 5 runs and 25 GB,
-  paid 10 runs and 250 GB; ADR-034 decision 8);
-- **owner setting**: the owner's own, default off or generous;
-- **technical ceiling**: kept, with the platform fact that forces it;
-- **budget allocation**: a share of a technical ceiling's budget (the owner-bound guard's
-  half of the 10 GB), not a fact of its own: kept at the share given, which the founder may
-  trade for room in another term;
-- **raise**: an invented small default, with a proposed generous value;
-- **security**: a security choice (a session's or token's life, a sign-in's freshness, an
-  OAuth flow's), kept for that reason;
-- **label or page**: a name or id of ours, or a page a read returns, never what is held;
-- **convention**: a sanity or convention bound (a URL's length, a record's numbers, a
-  body's size where no field nears it, a call's deadline), no platform fact behind it.
+- **tier**: simultaneous runs or storage, from the platform control record (free 5 runs and
+  25 GB, paid 10 and 250 GB; ADR-034 decision 8), or scaled from them;
+- **owner setting**: the owner's own, off by default;
+- **vendor limit**: a provider's documented limit, cited;
+- **technical ceiling**: kept, with the platform fact that forces it. A share of the
+  owner-bound guard's half of the 10 GB is one: the fact is the object's 10 GB, and the
+  share is named by the guard's term.
 
-**No limit changed in this slice.** The founder approves the table first; each raise is
-then its own change. `[I]` marks an inference not checked against a primary source here
-(Cloudflare's documentation was not reachable from this session).
+Not listed, since none refuses or truncates what a user does:
+- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), an egress reservation's beat and its lost detection three beats on (`EGRESS_BEAT_S`, `LOST_AFTER_S`), the erasure's day under its mark before its R2 step and wipe (`PUT_GRACE_MS`), its job waking it, the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint), and the sandbox's own (slice S): a renewal's window (`sandbox_renewal_window_s`, the control record's) and its measured edge, the sandbox look's and the line's back-offs, a runner command's deadline (a lease's TTL), and the idle reap a lease's TTL on;
+- pages a read returns, which the caller pages past: a pull, a mailbox or history read, a file list, a receipts list, a chunk read, a run door's wait;
+- the SQLite layout constants (`manifest.ts`), hashes and key sizes, and the ids we mint;
+- the owner app's own protocol frames, and the HTTP status of each fixed code.
 
-**The real ceiling** behind most bounds below is the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Half is 5 GB, the guard's budget,
-and every row that bounds a guard term gives its share of it, so one can be traded
-against another. Today's worst case is 4,219,272,203.75 bytes (42.19%; slice D's was
-4,064,822,714, 40.65%, before slice R's tables; slice R's 4,232,733,666.75 before slice
-ID's `native_agents`, 1.5 MB; slice W's subscriptions added 35.2 MB and the end of
-`ledger_rings` freed 50.2 MB).
+## The ceiling behind most bounds
 
-**Every proposed raise together** (`owner/guards/limits-proposed.test.ts`, `PROPOSED`, which
-the guard's own `termsFor` costs, all applied at once, and which also passes the ledger's
-`checkLimits` and the collections' nesting) gives a worst case of 4,987,981,385.75 bytes
-(49.88%), 12.0 MB under half (slice ID's agent identities took 1.5 MB of slice R's 2.1 MB;
-slice W freed 50.2 MB from `ledger_rings` and its per-agent subscriptions took 38.7 MB at
-the proposed 110 agents). Slice D left 169.9 MB of margin for
-slice R's tables; slice R took 168.0 MB of it (`runs` 85.0 MB with its waiting runs,
-`conversations` 30.7 MB, `run_schedules` 26.1 MB, `run_inputs` 9.8 MB, `run_grants`
-9.7 MB, `socket_tickets` 3.1 MB, `sandbox_leases` 3.1 MB, `engine_signins` 0.4 MB,
-`platform_tiers` under 0.1 MB; `egress_runs` went). The conversations' input queue
-(`QUEUE_ROWS`, `QUEUE_BYTES`) was sized to what the rest left before the review's round 1:
-its 16.5 MB (its inputs and its waiting runs' rows) was 75% of the 22.0 MB that remained.
-The round's sandbox leases (one an authority, review H-1) took 2.3 MB more of the margin,
-and each run's lease, heartbeat and secret's hash fit within the rows' pages already
-counted; nothing was shrunk to fit. Round 2's per-sandbox sign-ins (a client's sandbox's
-own, on its lease's row: a login is never copied between sandboxes) took 0.8 MB more, and
-slice ID's agent identities 1.5 MB (its other columns fit the pages already counted). The
-margin is now 0.5 MB, under the accounting's own error bars: the next term that needs room
-takes it from another, by the founder's choice. A table of sign-in rows keyed by sandbox and
-engine instead (presence only, the engines that sign in today at each of `RUNS_CEILING`
-sandboxes) would cost 5.3 MB, 2.4 MB past the margin it had; on the lease's row they fit. The first draft's raises that do not fit are in
-`AFTER`, each with the structural change it needs first (the review's H3):
+**The 10 GB**: a SQLite-backed Durable Object stores at most 10 GB, and a string, BLOB or
+row at most 2 MB (Cloudflare's Durable Objects limits, read 2026-11-03; the facet probe's
+Q1 measured about 10 GiB, `facet-probe.md`). The owner-bound guard
+(`owner/guards/owner-bound.test.ts`) holds the worst case of every owner table under half
+of it, 5 GB. Each row is laid out as SQLite lays it at a thinned page's worst fill, every
+index entry with it, each name at the widest its validator allows. A test checks that
+SQLite makes no index the guard does not count (`owner/test/indexes.test.ts`).
 
-| Structural change first | The draft's raise | Worst case today | Ledger `checkLimits` |
-|---|---|---|---|
-| collection history counted in bytes, not rows times revisions | collections 100,000 rows, 512 MiB, 100 revisions | 15,247,232,714 (152.47%) | passes |
-| the ledger's recipients bounded by their own count, not messages times agents | `maxAgents` 1,000 | 11,597,822,714 (115.98%) | fails |
-| the mailboxes' caps within maxMessages and maxBodyBytes | mailbox caps 1,000 an agent, 10,000 the owner, 5,000 a sender | 4,064,822,714 (40.65%) | fails |
-| grant scopes counted in bytes, not 512 code points of JSON each | `maxScopes` 256 | 5,850,678,714 (58.51%) | passes |
+**The placement rule** (ADR-035) is what lets the bounds below be generous: a body of more
+than 2,048 bytes (a collection row's, a history entry's, a message's) lives in R2 through the
+files plane, its row keeping only a content id. Its bytes count in the tier's storage,
+charged to its writer's files scope. With it, the collection rows and history are counted
+in the bytes they take, a message has one recipient (the key holds it), the mailboxes' caps
+are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
+counted in bytes.
 
-Not listed, since none refuses or truncates what a user does: internal timings and
-backoffs (leases, retries, garbage-collection grace, lane passes, wake retries), the
-SQLite layout constants (`manifest.ts`), hashes and key sizes, and the HTTP status of
-each fixed code.
+**The worst case that ships is 4,449,862,167.75 bytes, 44.50% of the 10 GB: 550.1 MB under
+half**, slice ID's agent identities and mail authority, slice M's change orders and slice W's
+doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
+424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
+46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.
+
+The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
+604.0 MB, `wake_callbacks` 423.6 MB, `ledger_messages` 399.2 MB, `ledger_receipts` 309.6 MB, `collection_history`
+302.0 MB, `connections` 269.3 MB, `message_bodies` 219.7 MB, `ledger_recipients` 107.9 MB.
 
 ## Summary
 
-- **tier**: 4
-- **owner setting**: 8
-- **technical ceiling**: 76
-- **budget allocation**: 3
-- **raise**: 38
-- **security**: 9
-- **label or page**: 16
-- **convention**: 15
-- **total**: 169 (slice R added 25: `## Slice R's bounds`; slice W seven: the doorbell's subscriptions an agent, blob, callback, arguments, body, MCP Events timings and verification read, and turned the wake cap off by default with no invented high)
+- **tier**: 3
+- **owner setting**: 12
+- **vendor limit**: 9
+- **technical ceiling**: 113
+- **total**: 137
 
-Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tier's storage); the egress tokens' `RUN_DEADLINE_S` (a day: a token lifetime, with the proposal to tie it to the lease); and the model policy's per-run caps (`turn_requests` 100, `turn_tokens` 10M, `turn_cost` $25), on by default where ADR-034 decision 7 makes the owner's own limits off by default: proposed off.
+Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
-### Every raise, with its proposed value
+Removed by this slice, since only the tier's storage bounds what they bounded, or no
+platform fact stood behind them:
+- the collections' byte caps (`maxOwnerBytes`, `maxCollectionBytes`, `maxWriterBytes`,
+  `maxHistoryBytes`) and their writer and row counts (`maxWriterRows`, `maxRows`,
+  `maxOwnerRows`), now one charge of the rows as SQLite lays them out;
+- the ledger's byte caps (`maxBodyBytes`, `maxOwnerUnackedBytes`, `maxAgentUnackedBytes`,
+  `maxSenderUnackedBytes`);
+- a row's history revisions (`maxRevisions`), now bounded only by the history's charge;
+- the egress per-minute rates (`perRunPerMinute`, `refusalsPerMinute`): every refusal is
+  receipted, the newest 500 kept;
+- a grant's scope count (`maxScopes`), now bounded only by its bytes;
+- conflict copies of one path (`MAX_CONFLICT_COPIES`), now within the entries quota;
+- the setup check's models tried (`LEARN_TRIES`): each try is local.
 
-| Where | Today | Proposed | Moves a guard term |
-|---|---|---|---|
-| `owner/src/policy.ts:180` | 30,000 (high 500,000) | Invented. Proposed: 30,000 today, the most the policy's own rule allows (`max_history >= max_entries x max(keep_versions, keep_recent)`, `max_history` at most 600,000, `keep_recent` 20); 480,000, what `max_manifest_bytes` holds at one version each, only after that rule counts history in bytes, as the manifest already does. | no |
-| `owner/src/files.ts:106` | 3,600 s | Invented. Proposed 86,400 s (a day): a 40 GiB file at 10 MB/s takes over an hour. No guard term moves: the open uploads are bounded by count. | no |
-| `owner/src/files.ts:114` | 86,400 s | Invented. Proposed 7 days. Temporary files are charged to the manifest and quotas, so no guard term moves. | no |
-| `owner/src/files.ts:140` | 100 | Invented: it bounds the names a conflict probes, one indexed read each. Proposed 1,000. | no |
-| `owner/src/files.ts:1562` | 64 characters | Invented. Proposed 255 bytes, a path component's own bound. | no |
-| `owner/src/collections.ts:51` | 65,536 characters | Invented. Proposed 1 MiB: inside `maxOwnerBytes`, so no guard term moves, but the schema's CHECK (`length(body) <= 65536`, migration 1) must move with it, as a new migration, and `API_BODY_MAX` with it (8 MiB), or `/api/tools/collection_write` refuses the row `413`. | no |
-| `owner/src/collections.ts:52` | 64 | Invented. Proposed 1,000, inside `maxRows`; no guard term moves. | no |
-| `owner/src/collections.ts:53` | 512 KiB | Invented. Proposed 8 MiB, inside `maxCollectionBytes`. | no |
-| `owner/src/collections.ts:54` | 1,000 | Invented. Proposed 10,000, inside `maxOwnerRows`. | no |
-| `owner/src/collections.ts:55` | 8 MiB | Invented. Proposed 64 MiB, inside `maxOwnerBytes`. | no |
-| `owner/src/collections.ts:56` | 10,000 | **The 10 GB limits it, through the history's layout:** each row may keep `maxRevisions` history rows, each a row's fixed overhead, so rows times revisions is the cost. The draft's 100,000 rows, 512 MiB and 100 revisions reach 152.5% (`AFTER`). Counting history in bytes would lift the row count; moving large row bodies into R2, as files are, would lift `maxOwnerBytes`. Proposed 20,000. Its guard terms: 446.2 MB today; proposed, 1,015.3 MB, 20.31% of the 5 GB budget. | yes |
-| `owner/src/collections.ts:57` | 64 MiB | **The 10 GB limits it:** the bytes are costed in the rows and again in their history. Moving large row bodies into R2, as files are, would lift it. Proposed 128 MiB. Its guard terms: 404.4 MB today; proposed, 931.6 MB, 18.63% of the 5 GB budget. | yes |
-| `owner/src/collections.ts:59` | 10 | As `maxOwnerRows`: counting history in bytes would lift it. Proposed 20. Its guard terms: 307.1 MB today; proposed, 737.1 MB, 14.74% of the 5 GB budget. | yes |
-| `owner/src/ledger.ts:68` | 16,384 characters | Invented. Proposed 65,536: bodies are bounded in all by `maxBodyBytes`, so no guard term moves, but the schema's CHECK (`length(body) BETWEEN 1 AND 16384`, migration 2) must move with it, as a new migration. | no |
-| `owner/src/ledger.ts:163` | 100 | **The 10 GB limits it, through the ledger's layout:** `ledger_recipients` is costed as `maxMessages x maxAgents` rows, and `checkLimits` ties both to the mailbox caps. The draft's 1,000 alone reaches 116.0% and fails `checkLimits` (`AFTER`). Bounding recipients by their own count (a counted bound on recipient rows) would lift it; R2 would not, since the mailboxes are read on every call. Proposed 110, with `maxMessages` 11,000 and `maxBodyBytes` 72 MiB (`checkLimits` holds them together). Its guard terms: 837.0 MB today; proposed, 1,012.8 MB, 20.26% of the 5 GB budget. | yes |
-| `owner/src/ledger.ts:165` | 10,000 | As `maxAgents`. Proposed 11,000, with `maxAgents` 110. Its guard terms: 980.3 MB today; proposed, 1,170.4 MB, 23.41% of the 5 GB budget. | yes |
-| `owner/src/ledger.ts:166` | 64 MiB | Moving message bodies into R2, as files are, would lift it; the bodies term is the smaller part of the ledger's cost. Proposed 72 MiB, with `maxAgents` 110. Its guard terms: 97.3 MB today; proposed, 107.0 MB, 2.14% of the 5 GB budget. | yes |
-| `owner/src/registrations.ts:43` | 86,400 s | Invented. Proposed 7 days: an owner away for a weekend misses no card. | no |
-| `owner/src/sessions.ts:57` | 16 | Invented. Proposed 64: one owner's phones, laptops and browsers. Its guard terms: 0.0 MB today; proposed, 0.1 MB, 0.00% of the 5 GB budget. | yes |
-| `owner/src/policy.ts:125` | 30 days | Invented. Proposed 90 days; pending proposals are bounded by count, so no guard term moves. | no |
-| `owner/src/policy.ts:246` | 100 (1 to 10,000) | **Flagged.** On by default, where ADR-034 decision 7 makes the owner's own limits off by default. Proposed: off by default (no cap), the owner's own setting; its high, 10,000, raised to 1,000,000. | no |
-| `owner/src/policy.ts:247` | 10,000,000 tokens (to 1e9) | **Flagged** as `turn_requests`: proposed off by default, the owner's own setting. | no |
-| `owner/src/policy.ts:248` | $25 | **Flagged** as `turn_requests`: proposed off by default, the owner's own setting. | no |
-| `owner/src/network.ts:157` | 300 s | Invented. Proposed 3,600 s: a long reasoning answer can stream past 5 minutes, and a Worker streaming a response has no wall-clock limit while its client stays connected [I: Cloudflare's Workers limits]. `LOST_AFTER_S` and the gateway's `FORWARD_DEADLINE_MS` follow it (a test holds them equal). | no |
-| `owner/src/network.ts:159` | 16 MiB | Invented. Proposed 32 MiB, the largest request a provider takes [I: Anthropic's Messages API documents 32 MB; to verify]; the gateway's `BODY_MAX` follows. A Worker accepts 100 MB on Paid [I]. | no |
-| `owner/src/codemode.ts:29` | 60 s | Invented. Proposed 300 s: a script that calls slow tools needs more than a minute. | no |
-| `owner/src/cron.ts:29` | 15 minutes | Invented, not a ceiling. Proposed 1 minute: the owner pays the sandbox time, and the tier's simultaneous runs already bound it. | no |
-| `owner/src/cron.ts:27` | 16 | Invented: a five-field parse needs no such bound. Proposed 60, a minute field's every value. | no |
-| `owner/src/cron.ts:25` | 64 characters | Invented. Proposed 256: room for every list a field takes. | no |
-| `owner/src/notices.ts:14` | 100 | Invented. Proposed 1,000. Its guard terms: 0.6 MB today; proposed, 5.6 MB, 0.11% of the 5 GB budget. | yes |
-| `doors/src/api-keys.ts:40` | 25 | Invented. Proposed 200: a key per device or agent. Each key's grant is an owner-set client, inside `maxOwnerClients` 1,000, so no guard term moves. | no |
-| `doors/src/config.ts:72` | 1 MiB | Proposed 8 MiB, with `maxRow`'s 1 MiB: a 1 MiB row sent as JSON to `/api/tools/collection_write` takes up to 6 MiB (a control character escapes to six bytes), so 1 MiB would refuse it `413`. A Worker accepts 100 MB on Paid [I]. File bytes go by their own doors (tasks 2). | no |
-| `gateway/src/forward.ts:34` | 5 minutes | Follows `EGRESS_DEADLINE_S` (proposed an hour). | no |
-| `gateway/src/forward.ts:43` | 16 MiB | Follows `EGRESS_BODY_MAX` (proposed 32 MiB). | no |
-| `gateway/src/meter.ts:48` | 8 | Invented. Proposed 32, within the setup check's 15 s (`VERIFY_DEADLINE_MS`). | no |
-| `hooks/src/codemode.ts:18` | 100,000 polls (about 10 s of compute) | Invented: tied to the hooks Worker's `cpu_ms` of 30,000, a configuration choice, not a ceiling [I: Cloudflare's Workers limits page, not reachable from this session: Workers Paid sets CPU time per invocation by `limits.cpu_ms`, 30 s by default and up to 5 minutes]. Each execution runs in its own sandbox object, so a reset hits that script alone. Proposed: `cpu_ms` 300,000 and the budget about 1,000,000 (about 100 s); H2's live probe confirms the ratio. | no |
-| `hooks/wrangler.jsonc:21` | 30,000 ms | A configuration choice [I: Cloudflare's Workers limits page, not reachable from this session: Workers Paid sets CPU time per invocation by `limits.cpu_ms`, 30 s by default and up to 5 minutes]. Proposed 300,000, with the interrupt budget. | no |
-| `owner/wrangler.jsonc:26` | 1,000,000 | A configuration choice, set by live probe P1; the config's own note gives Paid's ceiling as 10,000,000 [I]. Proposed 10,000,000. | no |
+Flagged for the founder:
+- the files policy's retention defaults are not off: `retention_days` 30, `keep_versions`
+  10 and `keep_recent` 20 let old versions go before the bounds need the room. Off would
+  keep history until `max_history` or the tier's storage prunes the earliest-due first, as
+  the collections' history now is. `keep_recent` is already the most the policy's rule
+  allows at `max_entries` 30,000.
+- `client_share` 25% and `owner_reserve` 25% are on by default. They split the owner's
+  files, now also the placed bodies and the collections' rows, between the owner and
+  outside writers; off, one client could fill the owner's space.
+- `max_entries` stays 30,000: the files policy's rule (`max_history` at least `max_entries`
+  times the larger of `keep_versions` and `keep_recent`) caps it at 600,000 / 20. Counting
+  the files' history in bytes, as the collections' now is, would lift it to about 480,000.
+
+## Chosen retentions
+
+Three expiries are not ceilings: each queue or area is bounded by its count or charge in the
+10 GB, and needs no expiry to fit. Each is a retention chosen for what it serves, with its
+reason; none refuses a write.
+
+- `owner/src/files.ts` `TEMP_TTL_S`, 7 days: a temporary directory under `/.ta/tmp` unused
+  for a week has its files deleted. The area is the sandbox's for spills, charged to the
+  owner's files; a week is long past any run (a sandbox lives a day at most, E2B Pro's 24
+  hours), so a crashed run's spills do not hold the owner's storage.
+- `owner/src/registrations.ts` `CARD_TTL_S`, 7 days: a filed registration card waits a week
+  for the owner, so an owner away for a week misses none; the client files again past it.
+- `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS`, 90 days: a pending policy proposal
+  waits a quarter for the owner's answer, then expires unanswered, so a stale proposal never
+  applies against a policy long since changed.
 
 ## The list
 
-| Where | Value | Bounds | A user hits | Class | Reason or proposal |
+| Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
-| `owner/src/policy.ts:177` | 1 GiB (owner may set to 1 TiB) | the owner's file bytes, live and in history (unique chunks, in R2) | a write, upload or sync refused `file_quota` past 1 GiB | tier | **Flagged.** Becomes the tier's storage: free 25 GB, paid 250 GB, from the tier record (ADR-034 decision 8). The bytes are in R2, not the object, so the 10 GB does not bound them. |
-| `owner/src/policy.ts:178` | 256 MiB (high 384 MiB) | small files kept inside the object's own database | a small file refused `file_quota` once 256 MiB of them are held | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`file_manifest`): 1,208.0 MB, 24.16% of the 5 GB budget. Inline bytes are charged inside the manifest's bytes. Keeping no file inline (every file in R2) would free it, at an R2 read per small file. |
-| `owner/src/policy.ts:179` | 512 MiB (high 512 MiB) | every manifest row (paths, versions, history) as SQLite stores it | file changes refused once the manifest's rows fill it | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`file_manifest`): 1,208.0 MB, 24.16% of the 5 GB budget. The guard's largest term, at `WORST_FILL` 2.25. The manifest is the files' index and must stay in the object for strong consistency; R2 would not lift it. |
-| `owner/src/policy.ts:180` | 30,000 (high 500,000) | live paths (files and directories) | a new file or directory refused `file_quota` at 30,000 (one `node_modules` passes it) | raise | Invented. Proposed: 30,000 today, the most the policy's own rule allows (`max_history >= max_entries x max(keep_versions, keep_recent)`, `max_history` at most 600,000, `keep_recent` 20); 480,000, what `max_manifest_bytes` holds at one version each, only after that rule counts history in bytes, as the manifest already does. |
-| `owner/src/policy.ts:181` | 5 GiB (high 40 GiB) | one file's size | an upload of a larger file refused | owner setting | Owner setting; its high is `MAX_INTENT_CHUNKS` chunks. |
-| `owner/src/policy.ts:182` | 600,000 (high 600,000) | kept history rows | old versions pruned earliest-due first; a change refused only when nothing can be pruned | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`file_manifest`): 1,208.0 MB, 24.16% of the 5 GB budget. About 850 bytes a kept version inside `max_manifest_bytes`. |
-| `owner/src/policy.ts:183` | 30 days (high 3,650) | how long kept versions stay | a version older than this pruned | owner setting |  |
-| `owner/src/policy.ts:184` | 10 (high 1,000) | versions kept for each live path | older versions pruned | owner setting |  |
-| `owner/src/policy.ts:185` | 20 (high 1,000) | recent versions kept in all for a path | older versions pruned | owner setting |  |
-| `owner/src/policy.ts:186` | 25% (0 to 100) | one outside client's share of every file quota | a client's write refused past its share | owner setting |  |
-| `owner/src/policy.ts:187` | 25% (0 to 100) | the room all clients together leave the owner | clients' writes refused within it | owner setting |  |
-| `owner/src/files.ts:131` | 10,000 chunks (40 GiB) | one upload's chunks: one file's largest size | a file over 40 GiB cannot be uploaded | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`file_intents`): 82.1 MB, 1.64% of the 5 GB budget. One open upload's chunk list is one row: 10,000 ids of 64 hex, twice. |
-| `owner/src/files.ts:133` | 64 | uploads open at once | a 65th concurrent upload refused | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`file_intents`): 82.1 MB, 1.64% of the 5 GB budget. Each open upload holds up to 1.25 MB of chunk ids. |
-| `owner/src/files.ts:134` | 20,000 | chunks all open uploads hold | a new upload refused while they hold it | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`file_intents`): 82.1 MB, 1.64% of the 5 GB budget. |
-| `owner/src/files.ts:106` | 3,600 s | how long an upload may stay open | a large upload over a slow link expires mid-way and starts over | raise | Invented. Proposed 86,400 s (a day): a 40 GiB file at 10 MB/s takes over an hour. No guard term moves: the open uploads are bounded by count. |
-| `owner/src/files.ts:114` | 86,400 s | a temporary directory under `/.ta/tmp` | its files deleted after a day | raise | Invented. Proposed 7 days. Temporary files are charged to the manifest and quotas, so no guard term moves. |
-| `owner/src/files.ts:102` | 16 MiB | one whole-file read or write through the object | a larger file is read by range or line, written by upload | technical ceiling | A Worker isolate's 128 MB of memory [I: Cloudflare's Workers limits], which a whole file in one call holds, with its copies. |
-| `owner/src/files.ts:136` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short: a Durable Object's request CPU [I: Cloudflare's Workers limits page, not reachable from this session: Workers Paid sets CPU time per invocation by `limits.cpu_ms`, 30 s by default and up to 5 minutes]. |
-| `owner/src/files.ts:138` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`file_manifest`): 1,208.0 MB, 24.16% of the 5 GB budget. It bounds a path's history rows inside the manifest's bytes. |
-| `owner/src/files.ts:140` | 100 | conflict copies `<path>.ta-conflict-<epoch>-<n>` of one path | the 101st conflicting sync of one path refused | raise | Invented: it bounds the names a conflict probes, one indexed read each. Proposed 1,000. |
-| `owner/src/files.ts:129` | 1,000 | entries one list call returns | the caller pages | label or page | A page, not a limit on what is held. |
-| `owner/src/owner-do.ts:1679` | 4 MiB | one `fileWrite` call's content | a larger file goes by upload | technical ceiling | Workers RPC's message size [I: Cloudflare's Workers RPC limits, 32 MiB] and the isolate's 128 MB; the upload doors move any size. |
-| `owner/src/owner-do.ts:1662` | 2 chunks (8 MiB) | one `fileReadChunks` call | the caller reads in more calls | technical ceiling | As above. |
-| `owner/src/paths.ts:30` | 4,096 bytes | a path | a longer path refused | technical ceiling | Linux's `PATH_MAX`, which the sandbox's disk holds. |
-| `owner/src/paths.ts:46` | 255 bytes | one path component | a longer name refused | technical ceiling | Linux's `NAME_MAX`. |
-| `owner/src/files.ts:1562` | 64 characters | a temporary directory's prefix | a longer prefix refused | raise | Invented. Proposed 255 bytes, a path component's own bound. |
-| `owner/src/files.ts:1601` | 128 characters | the sync lease holder's name | a longer holder name refused | label or page | A name the sandbox slice sets, never a user's. |
-| `owner/src/collections.ts:51` | 65,536 characters | one board or room row's body | a larger row refused | raise | Invented. Proposed 1 MiB: inside `maxOwnerBytes`, so no guard term moves, but the schema's CHECK (`length(body) <= 65536`, migration 1) must move with it, as a new migration, and `API_BODY_MAX` with it (8 MiB), or `/api/tools/collection_write` refuses the row `413`. |
-| `owner/src/collections.ts:52` | 64 | rows one writer holds in a collection | a writer's 65th row refused | raise | Invented. Proposed 1,000, inside `maxRows`; no guard term moves. |
-| `owner/src/collections.ts:53` | 512 KiB | bytes one writer holds in a collection | a writer's row refused past it | raise | Invented. Proposed 8 MiB, inside `maxCollectionBytes`. |
-| `owner/src/collections.ts:54` | 1,000 | rows in one collection | a board's 1,001st card refused | raise | Invented. Proposed 10,000, inside `maxOwnerRows`. |
-| `owner/src/collections.ts:55` | 8 MiB | bytes in one collection | rows refused past it | raise | Invented. Proposed 64 MiB, inside `maxOwnerBytes`. |
-| `owner/src/collections.ts:56` | 10,000 | rows in all of the owner's collections | rows refused past it | raise | **The 10 GB limits it, through the history's layout:** each row may keep `maxRevisions` history rows, each a row's fixed overhead, so rows times revisions is the cost. The draft's 100,000 rows, 512 MiB and 100 revisions reach 152.5% (`AFTER`). Counting history in bytes would lift the row count; moving large row bodies into R2, as files are, would lift `maxOwnerBytes`. Proposed 20,000. Its guard terms: 446.2 MB today; proposed, 1,015.3 MB, 20.31% of the 5 GB budget. |
-| `owner/src/collections.ts:57` | 64 MiB | bytes in all of the owner's collections | rows refused past it | raise | **The 10 GB limits it:** the bytes are costed in the rows and again in their history. Moving large row bodies into R2, as files are, would lift it. Proposed 128 MiB. Its guard terms: 404.4 MB today; proposed, 931.6 MB, 18.63% of the 5 GB budget. |
-| `owner/src/collections.ts:59` | 10 | history revisions kept per row | older revisions dropped | raise | As `maxOwnerRows`: counting history in bytes would lift it. Proposed 20. Its guard terms: 307.1 MB today; proposed, 737.1 MB, 14.74% of the 5 GB budget. |
-| `owner/src/collections.ts:58` | 100 | rows one pull returns | the caller pages | label or page | A page. |
-| `owner/src/collections.ts:218` | 32 characters | a write's history op | a longer op refused | label or page | A label of ours. |
-| `owner/src/text.ts:33` | 256 characters | a collection, row or writer name | a longer name refused | label or page | A name, not content. |
-| `owner/src/ledger.ts:68` | 16,384 characters | one message body | a longer message refused | raise | Invented. Proposed 65,536: bodies are bounded in all by `maxBodyBytes`, so no guard term moves, but the schema's CHECK (`length(body) BETWEEN 1 AND 16384`, migration 2) must move with it, as a new migration. |
-| `owner/src/ledger.ts:163` | 100 | enabled agents: outside agents and the owner's own live agents (slice ID) together, each a reserved mailbox | the 101st outside agent's registration, or the 101st live agent's `agent.json` write, refused (`ledger_agents_full`) | raise | **The 10 GB limits it, through the ledger's layout:** `ledger_recipients` is costed as `maxMessages x maxAgents` rows, and `checkLimits` ties both to the mailbox caps. The draft's 1,000 alone reaches 116.0% and fails `checkLimits` (`AFTER`). Bounding recipients by their own count (a counted bound on recipient rows) would lift it; R2 would not, since the mailboxes are read on every call. Proposed 110, with `maxMessages` 11,000 and `maxBodyBytes` 72 MiB (`checkLimits` holds them together). Its guard terms: 837.0 MB today; proposed, 1,012.8 MB, 20.26% of the 5 GB budget. |
-| `owner/src/ledger.ts:164` | 1,000 | agent rows, disabled agents included | a registration refused past it | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`outside_agents`, `ledger_readers`, `ledger_usage`): 6.3 MB, 0.13% of the 5 GB budget. |
-| `owner/src/ledger.ts:165` | 10,000 | messages held | a post refused past it | raise | As `maxAgents`. Proposed 11,000, with `maxAgents` 110. Its guard terms: 980.3 MB today; proposed, 1,170.4 MB, 23.41% of the 5 GB budget. |
-| `owner/src/ledger.ts:166` | 64 MiB | message bodies held | a post refused past it | raise | Moving message bodies into R2, as files are, would lift it; the bodies term is the smaller part of the ledger's cost. Proposed 72 MiB, with `maxAgents` 110. Its guard terms: 97.3 MB today; proposed, 107.0 MB, 2.14% of the 5 GB budget. |
-| `owner/src/ledger.ts:167` | 2,000 | messages unread by the owner | a post to the owner refused past it | technical ceiling | **The 10 GB limits it, through the ledger's layout.** `checkLimits` holds `maxAgents x maxAgentUnacked + maxOwnerUnacked <= maxMessages`, and `ledger_recipients` is `maxMessages x maxAgents` rows, so each mailbox raise costs agents times messages. The draft's 10,000 fails `checkLimits` (`limits-proposed.test.ts`, `AFTER`). Bounding recipients by their own count would lift it. Its guard terms: 837.0 MB, 16.74% of the 5 GB budget. |
-| `owner/src/ledger.ts:168` | 16 MiB | bytes unread by the owner | a post refused past it | technical ceiling | As `maxOwnerUnacked`: `checkLimits` holds the mailboxes' bytes within `maxBodyBytes`. |
-| `owner/src/ledger.ts:169` | 80 | messages unread in one agent's mailbox | a post to an agent refused once 80 wait | technical ceiling | As `maxOwnerUnacked`; the draft's 1,000 fails `checkLimits`. Its guard terms: 837.0 MB, 16.74% of the 5 GB budget. |
-| `owner/src/ledger.ts:170` | 480 KiB | bytes unread in one agent's mailbox | a post refused past it | technical ceiling | As `maxOwnerUnackedBytes`. |
-| `owner/src/ledger.ts:171` | 500 | one sender's messages still unread | a sender's post refused past it | technical ceiling | As `maxOwnerUnacked`: inside the mailboxes `maxMessages` holds. |
-| `owner/src/ledger.ts:172` | 4 MiB | one sender's unread bytes | a sender's post refused past it | technical ceiling | As `maxOwnerUnackedBytes`. |
-| `owner/src/ledger.ts:173` | 50,000 | read and reply receipts kept | the oldest let go | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`ledger_receipts`): 230.4 MB, 4.61% of the 5 GB budget. A history. Moving receipts out of the object (R2, append-only) would lift it. |
-| `owner/src/ledger.ts:175` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`ledger_wakes`): 9.2 MB, 0.18% of the 5 GB budget. |
-| `owner/src/ledger.ts:176` | 100 | messages one read returns | the caller pages | label or page | A page. |
-| `owner/src/ledger.ts` `WAKE_DEFAULTS` | none (slice W: was 12 wakes an hour and a 60 s batch, a platform default with no outside reason) | an agent's doorbells | nothing by default; with a cap the owner set, wakes past it wait their turn | owner setting | The owner's own setting per agent (`policyWakeLimits`, the owner app's `agent/wake-limits`), off by default: no hourly cap (`max_wakes_per_hour` null) and no batch window (0 s). A cap is spaced evenly (one `wake_tat` column, no burst), so it holds in every hour. With none, each change rings, one open wake an agent at a time, and the vendor's own limit answers 429, whose Retry-After the wake waits out as sent; a zero or past one is read as none and backs off (`wake-kinds.json` records each vendor's: Claude `/fire` 30 an hour per task, Grok routines 200 an hour, ChatGPT event-triggered tasks 30 an hour). What holds without a cap: a board or room broadcast never rings a loop, since it rings only for the owner's own write, never an outside client's or a run's; two outside agents never wake each other, since mail rings only the agent it addresses, never its sender, and ID's rooms always hold one of the owner's own agents. An outside agent and an owner's agent alternate only by the outside agent's own posts, a deliberate addressed exchange, bounded by the vendor's limits, the owner's cap when set, and the owner's agent's model policy. |
-| `owner/src/ledger.ts` `WAKE_SETTINGS` | 9,007,199,254,740,991 | the owner's cap and batch window | a larger number refused | technical ceiling | JavaScript's largest exact whole number (`Number.MAX_SAFE_INTEGER`): no invented high, since the cap's state is one column whatever its value. |
-| `owner/src/wake-kinds.ts` `SUBSCRIPTIONS_PER_AGENT` | 16 an agent | doorbell subscriptions one enabled agent holds (its client's dots and Work chats, or the owner's pasted tokens) | the 17th refused (`subscription_limit`, MCP Events' ResourceExhausted with `max`); a refresh of one held is no new place, and a lapsed one is let go first | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard term (`wake_callbacks`: `maxAgents` x 16 = 1,600 rows, each its sealed blob, the one it replaced while both sign, its arguments and last answer, about 22 KB at the guard's worst fill): 35.2 MB, 0.70% of the 5 GB budget; at the proposed 110 agents, 38.7 MB. Derived: 16 an agent is about 352 KB of the budget each, and its 1,760 rows at the proposed 110 agents fit under half with every proposed raise, 12.0 MB to spare; 32 an agent would not (77.5 MB). Per agent, so one client can never fill another agent's room, nor the owner's own `/fire` paste's. Only an enabled agent holds any (a schema trigger; a disable erases them). |
-| `owner/src/wake-kinds.ts` `DOORBELL_BLOB_CHARS` | 8,192 characters | a sealed doorbell (URL, auth scheme, secret, record) | a larger blob refused | technical ceiling | The `wake_callbacks` term above: the blob seals at most `CALLBACK_URL_CHARS` and `CALLBACK_SECRET_CHARS` with the record's name, under AES-GCM and base64url, well inside it. |
-| `owner/src/wake-kinds.ts` `CALLBACK_URL_CHARS`, `CALLBACK_SECRET_CHARS` | 2,048 and 512 printable ASCII characters | a doorbell callback's URL and secret | a longer callback refused | technical ceiling | The `wake_callbacks` term above, through the blob. A vendor's own URL and token are far shorter (a `/fire` path, a `whsec_` key of 24 to 64 bytes). |
-| `owner/src/wake-kinds.ts` `ARGUMENTS_CHARS` | 1,024 characters of JSON | a subscription's arguments (command center, board, rooms) | a subscription following more rooms refused | technical ceiling | The `wake_callbacks` term above. Several subscriptions follow more rooms between them. |
-| `owner/wake-kinds.json` `max_body_bytes` | 256 KiB (ChatGPT); none recorded elsewhere | one doorbell body | a larger wake refused before it is sent | technical ceiling | OpenAI's MCP Events page: at most 256 KiB a webhook (V, read 2026-11-03). A wake carries IDs and cursors only, far under it. |
-| `owner/wake-kinds.json` `events` | 10 s verification, a day's default lifetime, 300 s dual-signing | an MCP Events subscription | a callback silent past 10 s refused (-32015 `timeout`); a subscription unrefreshed past its grant lets go; a client may ask for none (`ttlMs` null) | technical ceiling | OpenAI's MCP Events page (its verification example's 10 s timeout) and the MCP Events design sketch (grants up to about a day; receivers reject a timestamp over 5 minutes old, so 300 s covers every delivery in flight). Each is the record's data, cited there. |
-| `gateway/src/doorbell.ts` `ECHO_MAX_BYTES` | 1 KiB | a callback's answer to its verification challenge | a longer answer fails verification (`challenge_failed`) | security | The answer is read only to find the echoed 43-character challenge; reading at most 1 KiB keeps a hostile endpoint from making the gateway buffer its body. |
-| `owner/src/ledger.ts:407` | 80 characters | an agent's display name | a longer name refused | label or page | A label. |
-| `owner/src/registrations.ts:52` | 200 pending, 10 per client, 4,096-byte card | registration cards waiting for the owner | a client's 11th card refused | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`agent_cards`): 1.1 MB, 0.02% of the 5 GB budget. Cards wait for the owner's apply. |
-| `owner/src/registrations.ts:43` | 86,400 s | how long a filed card waits | the client files again | raise | Invented. Proposed 7 days: an owner away for a weekend misses no card. |
-| `owner/src/policy.ts:518` | 128 characters | a card's or proposal's id | a longer id refused | label or page | Ours: the ids are minted by the object. |
-| `owner/src/grants.ts:110` | 1,000 | clients recorded without an owner grant | the oldest free one forgotten (never refused) | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`outside_clients`, `proposal_shares`): 602.8 MB, 12.06% of the 5 GB budget. |
-| `owner/src/grants.ts:111` | 1,000 | clients the owner set a grant for | the 1,001st grant refused | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`outside_clients`, `proposal_shares`): 602.8 MB, 12.06% of the 5 GB budget. Each owner-set grant is costed at 64 scopes of 512 code points of JSON. |
-| `owner/src/grants.ts:112` | 64 | scope triples in one grant | a wider grant refused | technical ceiling | **The 10 GB limits it, through how scopes are costed:** each scope's three fields at 512 code points of JSON, about 9.3 MB of the guard a scope across 1,000 grants. The draft's 256 alone reaches 58.5% (`AFTER`). Counting the scopes in bytes (a CHECK on the scopes column) would lift it; R2 would not, since every call reads its grant. |
-| `owner/src/grants.ts:338` | 80 characters | a client's name | a longer name refused | label or page | A label. |
-| `owner/src/grants.ts:175` | 512 characters | a scope's universe, agent or capability | a longer field refused | label or page | A label. |
-| `owner/src/sessions.ts:56` | 8 hours | the owner's protected session | the owner signs in again for a widening | security | Security: the Python's session life, the cookie's `Max-Age`. |
-| `owner/src/sessions.ts:57` | 16 | signed-in devices at once | the oldest session closed | raise | Invented. Proposed 64: one owner's phones, laptops and browsers. Its guard terms: 0.0 MB today; proposed, 0.1 MB, 0.00% of the 5 GB budget. |
-| `owner/src/sessions.ts:58` | 600 s | how fresh a sign-in must be to open a session | the owner signs in again | security | Security (S30). |
-| `owner/src/policy.ts:123` | 65,536 characters | the owner policy document | a larger policy refused | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`owner_policy`): 0.3 MB, 0.01% of the 5 GB budget. One row, read on every door: its size is also the read's cost. |
-| `owner/src/policy.ts:124` | 16,000 characters | one agent's proposal | a larger proposal refused | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`policy_proposals`): 26.8 MB, 0.54% of the 5 GB budget. |
-| `owner/src/policy.ts:125` | 30 days | a pending policy proposal | it expires unanswered | raise | Invented. Proposed 90 days; pending proposals are bounded by count, so no guard term moves. |
-| `owner/src/policy.ts:126` | 200 (50 a client) | proposals waiting for the owner | a proposal refused past it | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`policy_proposals`): 26.8 MB, 0.54% of the 5 GB budget. The owner reviews each. |
-| `owner/src/policy.ts:128` | 200 | applied proposals kept | the oldest let go | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`policy_proposals`): 26.8 MB, 0.54% of the 5 GB budget. A history. |
-| `owner/src/policy.ts:129` | 5,000 a bucket | policy receipts kept | the oldest let go | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`policy_receipts`): 69.1 MB, 1.38% of the 5 GB budget. A history. Moving receipts out of the object (R2, append-only) would lift it. |
-| `owner/src/policy.ts:130` | 50 | policy receipts one read lists | the caller reads the newest 50 | label or page | A page. |
-| `owner/src/policy.ts:261` | 64 | sources a `models.sources` table names | a larger table refused | convention | Inside `maxDocument`. |
-| `owner/src/policy.ts:246` | 100 (1 to 10,000) | model calls in one sandbox run (held at the egress door) | a long engine run's 101st model call refused `run_requests` | raise | **Flagged.** On by default, where ADR-034 decision 7 makes the owner's own limits off by default. Proposed: off by default (no cap), the owner's own setting; its high, 10,000, raised to 1,000,000. |
-| `owner/src/policy.ts:247` | 10,000,000 tokens (to 1e9) | tokens in one sandbox run | a call refused `run_tokens` | raise | **Flagged** as `turn_requests`: proposed off by default, the owner's own setting. |
-| `owner/src/policy.ts:248` | $25 | cost of one sandbox run | a call refused `run_cost` | raise | **Flagged** as `turn_requests`: proposed off by default, the owner's own setting. |
-| `owner/src/policy.ts:249` | none | the owner's daily and monthly spend | nothing until the owner sets one | owner setting | Off by default, as ADR-034 asks. |
-| `owner/src/connections.ts:100` | 50 | live model connections | the 51st connect refused | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`connections`, `connection_secrets`): 296.0 MB, 5.92% of the 5 GB budget. Each connection is costed at 640 KiB of models and 16 KiB of egress scope, at 4 bytes a character. Keeping the models list in R2 (it is read only at connect and egress open) would lift most of it. |
-| `owner/src/connections.ts:104` | 10 | OAuth connect flows open at once | an 11th flow refused | security | Security: each holds a PKCE verifier; flows expire in 10 minutes. |
-| `owner/src/connections.ts:103` | 600 s | an OAuth flow's life | the owner starts the connect again | security | Security (RFC 6749 practice: short-lived authorization state). |
-| `owner/src/connections.ts:106` | 1,024 | models one connection lists | models past it refused at commit | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`connections`): 269.3 MB, 5.39% of the 5 GB budget. Held with `MODELS_JSON_MAX`; the largest built-in catalog has 386. |
-| `owner/src/connections.ts:216` | 640 KiB | a connection's models, as JSON | a larger list refused at commit | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`connections`): 269.3 MB, 5.39% of the 5 GB budget. |
-| `owner/src/connections.ts:222` | 16 KiB | a connection's egress scope (its endpoints) | a custom endpoint with many paths refused at commit | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`connections`): 269.3 MB, 5.39% of the 5 GB budget. |
-| `owner/src/connections.ts:210` | 64 KiB | a connection's sealed blob | a credential past it refused at commit | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`connection_secrets`): 26.8 MB, 0.54% of the 5 GB budget. The gateway's own bound too (`keyring.ts`). |
-| `owner/src/connections.ts:223` | $1,000,000 a million tokens; 100,000,000 tokens; 16 tiers | a model record's prices, windows and price tiers | a record past them refused | convention | Sanity bounds on a record's numbers, orders of magnitude past every catalog's [I]; `TOKENS_MAX` and `TIERS_MAX` beside it. |
-| `owner/src/connections.ts:209` | 200 characters | a model's id | a model with a longer id refused at commit | label or page | A label; provider ids are far shorter [I]. |
-| `owner/src/connections.ts:340` | 200 characters | a model's display name | the model refused at commit | label or page | A label. |
-| `owner/src/connections.ts:397` | 2,048 characters | an OAuth redirect URI | a longer URI refused | convention | Common URL bound; ours are short. |
-| `owner/src/schema.ts:744` | 1 to 128 characters | a connection's display name | a longer name refused | label or page | A label. |
-| `owner/src/usage.ts:74` | 1,024 tokens | the least output a reservation is worth | a call refused when a ceiling leaves less | technical ceiling | Only when an owner's ceiling binds; provider thinking budgets start at 1,024 tokens (pi-ai's floor). |
-| `owner/src/usage.ts:75` | 2,048 tokens | the least output for a reasoning call | as above | technical ceiling | pi-ai keeps 1,024 for the answer beside a 1,024 thinking budget. |
-| `owner/src/usage.ts:72` | 5,000 | model-call receipts kept | the oldest let go | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`model_reservations`): 27.6 MB, 0.55% of the 5 GB budget. Pruning frees no counter. |
-| `owner/src/schema.ts:176` | 1,000 | model reservations open at once | a reservation refused `model_calls_full` | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`model_reservations`): 27.6 MB, 0.55% of the 5 GB budget. Far above any tier's simultaneous runs. |
-| `owner/src/schema.ts:182` | 4,300 | day and month spend counters | a 101st source's first call in a period refused `model_spend_full` | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`model_spend`): 3.6 MB, 0.07% of the 5 GB budget. 40 days and 3 months at 100 sources. |
-| `owner/src/egress.ts:84` | 64 | sandbox model calls streaming at once | a 65th concurrent call refused `egress_rate` | tier | From the tier's simultaneous runs: proposed 16 a run, 160 on paid (80 free). Costed in the guard with the rest. Its guard terms: 23.7 MB, 0.47% of the 5 GB budget. |
-| `owner/src/egress.ts:85` | 600 a minute | sandbox calls opened a minute | a call refused `egress_rate` | tier | From the tier's simultaneous runs: proposed 120 a run a minute (free 600, paid 1,200). No guard term moves. |
-| `owner/src/egress.ts:86` | 60 a minute | refusals receipted a minute | later refusals in the minute are refused but not receipted | convention | Keeps a refused flood from writing rows. |
-| `owner/src/egress.ts:87` | 2,000 admitted, 500 refused | egress receipts kept | the oldest let go | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`egress_reservations`): 23.6 MB, 0.47% of the 5 GB budget. |
-| `owner/src/egress.ts:247` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s `minOutput`. |
-| `owner/src/egress.ts:95` | 2,048 characters | a sandbox request's path and query | a longer path refused | convention | Common URL bound; every provider API path is far shorter. |
-| `owner/src/network.ts:118` | 253 characters | an egress destination's host | a longer host refused | technical ceiling | DNS's own bound on a name (RFC 1035). |
-| `owner/src/network.ts:157` | 300 s | one streamed sandbox model call | a model call streaming past 5 minutes is cut (`deadline`) and settled `unknown` | raise | Invented. Proposed 3,600 s: a long reasoning answer can stream past 5 minutes, and a Worker streaming a response has no wall-clock limit while its client stays connected [I: Cloudflare's Workers limits]. `LOST_AFTER_S` and the gateway's `FORWARD_DEADLINE_MS` follow it (a test holds them equal). |
-| `owner/src/network.ts:159` | 16 MiB | one sandbox model request's body | a larger request refused `egress_too_large` | raise | Invented. Proposed 32 MiB, the largest request a provider takes [I: Anthropic's Messages API documents 32 MB; to verify]; the gateway's `BODY_MAX` follows. A Worker accepts 100 MB on Paid [I]. |
-| `owner/src/network.ts:166` | 86,400 s | the egress and sync tokens' life from the lease's open | a run longer than a day loses its tokens and must open a new lease | technical ceiling | **Flagged.** Only a token lifetime: E2B's longest continuous sandbox session is a day (the network module's note; to confirm in slice S). Proposed: tie the tokens' expiry to the lease, renewed with its heartbeat, so a run never meets a fixed deadline. |
-| `owner/src/codemode.ts:29` | 60 s | one code mode script's wall time | a longer script ends `timeout` | raise | Invented. Proposed 300 s: a script that calls slow tools needs more than a minute. |
-| `owner/src/cron.ts:29` | 15 minutes | the shortest gap between a recurrence's runs | a schedule more often than every 15 minutes refused | raise | Invented, not a ceiling. Proposed 1 minute: the owner pays the sandbox time, and the tier's simultaneous runs already bound it. |
-| `owner/src/cron.ts:27` | 16 | values in one cron field's list | a longer list refused | raise | Invented: a five-field parse needs no such bound. Proposed 60, a minute field's every value. |
-| `owner/src/cron.ts:25` | 64 characters | a cron expression | a longer expression refused | raise | Invented. Proposed 256: room for every list a field takes. |
-| `owner/src/cron.ts:31` | 8 years | how far ahead the next occurrence is searched | an expression with no occurrence in 8 years refused | convention | Bounds the day-at-a-time search; a leap-day schedule recurs inside it. |
-| `owner/src/notices.ts:14` | 100 | owner notices kept | the oldest let go | raise | Invented. Proposed 1,000. Its guard terms: 0.6 MB today; proposed, 5.6 MB, 0.11% of the 5 GB budget. |
-| `owner/src/notices.ts:16` | 1,024 characters | a notice's detail | a longer detail cut | convention | A summary; the full error stays in its source. |
-| `doors/src/api-keys.ts:40` | 25 | API keys an owner holds | a 26th key refused | raise | Invented. Proposed 200: a key per device or agent. Each key's grant is an owner-set client, inside `maxOwnerClients` 1,000, so no guard term moves. |
-| `doors/src/api-keys.ts:41` | 80 characters | an API key's name | a longer name refused | label or page | A label. |
-| `doors/src/config.ts:59` | 3,600 s | an MCP or app access token's life | the client refreshes | security | Security; refresh is silent. |
-| `doors/src/config.ts:60` | 30 days | a refresh token's life | an unused client signs in again after 30 days | security | Security (OAuth practice). |
-| `doors/src/config.ts:66` | 600 s | how fresh a sign-in is for consent | the owner signs in again | security | Security (`prompt=login`). |
-| `doors/src/config.ts:70` | 4 KiB | the consent form's body | a larger body refused `413` | convention | The form holds a few fields. |
-| `doors/src/config.ts:71` | 64 KiB | an owner-surface request body | a larger body refused `413` | convention | No owner-surface door takes a larger field. |
-| `doors/src/config.ts:72` | 1 MiB | an `/api/tools/*` request body | a larger body refused `413` | raise | Proposed 8 MiB, with `maxRow`'s 1 MiB: a 1 MiB row sent as JSON to `/api/tools/collection_write` takes up to 6 MiB (a control character escapes to six bytes), so 1 MiB would refuse it `413`. A Worker accepts 100 MB on Paid [I]. File bytes go by their own doors (tasks 2). |
-| `doors/src/session.ts:59` | 32 to 512 characters | a session token | another token ignored | label or page | Ours: the object mints the tokens. |
-| `gateway/src/forward.ts:34` | 5 minutes | one forwarded request | as `EGRESS_DEADLINE_S` | raise | Follows `EGRESS_DEADLINE_S` (proposed an hour). |
-| `gateway/src/forward.ts:43` | 16 MiB | a metered call's body the gateway reads | as `EGRESS_BODY_MAX` | raise | Follows `EGRESS_BODY_MAX` (proposed 32 MiB). |
-| `gateway/src/credential.ts:134` | 64 | models a declared custom endpoint lists | a larger list refused at seal | technical ceiling | **The sealed blob's 64 KiB limits it** (`BLOB_MAX`, beside the secret and endpoints: a declared record is up to about 600 bytes, and the blob is base64 of ciphertext [I]). The models are not secret: keeping them outside the blob, in the connection's models column (640 KiB), would lift it to `maxModels`. |
-| `gateway/src/credential.ts:132` | 16 (64 paths each) | sealed endpoints of one credential | a larger record refused | technical ceiling | Inside the 64 KiB sealed blob; `PATHS_MAX` beside it. |
-| `gateway/src/credential.ts:135` | 2,048 characters | a custom endpoint's base and verify URLs | a longer URL refused | convention | Common URL bound. |
-| `gateway/src/credential.ts:131` | 16 KiB | a pasted secret | a larger secret refused | technical ceiling | Inside the 64 KiB sealed blob; no provider key nears it. |
-| `gateway/src/keyring.ts:70` | 64 KiB | a sealed blob | a credential past it refused | technical ceiling | The owner's `connection_secrets` bound (above): one figure on both sides. |
-| `gateway/src/model-record.ts:33` | $1,000,000; 100,000,000 tokens; 16 tiers | a declared model record's numbers | a record past them refused | convention | As the owner's (`connections.ts`): sanity bounds [I]. |
-| `gateway/src/oauth.ts:68` | 64 KiB | a provider's token answer | a larger answer refused `oauth_malformed` | technical ceiling | It must fit the 64 KiB sealed blob it becomes. |
-| `gateway/src/meter.ts:48` | 8 | models the verify-time metering tries | a source whose first 8 models cannot be metered is refused `unmetered` at egress | raise | Invented. Proposed 32, within the setup check's 15 s (`VERIFY_DEADLINE_MS`). |
-| `gateway/src/oauth.ts:36` | 15 s | a provider's token endpoint answer | a slow provider's connect fails `oauth_unreachable` | convention | An OAuth token call; the owner retries. |
-| `gateway/src/forward.ts:37` | 15 s | the setup check's provider call | a slow check fails; the owner retries | convention | As above. |
-| `hooks/src/codemode.ts:18` | 100,000 polls (about 10 s of compute) | a script's CPU | a compute-bound script ends `timeout` | raise | Invented: tied to the hooks Worker's `cpu_ms` of 30,000, a configuration choice, not a ceiling [I: Cloudflare's Workers limits page, not reachable from this session: Workers Paid sets CPU time per invocation by `limits.cpu_ms`, 30 s by default and up to 5 minutes]. Each execution runs in its own sandbox object, so a reset hits that script alone. Proposed: `cpu_ms` 300,000 and the budget about 1,000,000 (about 100 s); H2's live probe confirms the ratio. |
-| `hooks/src/codemode.ts:20` | 32 MiB | a script's VM memory | a script past it fails | technical ceiling | A Worker isolate's 128 MB of memory [I], shared by the VMs one isolate runs. |
+| control record `tiers` (`owner/src/tier.ts`) | free 5, paid 10 | simultaneous runs | a run past them refused `tier_runs` | tier | ADR-034 decision 8, edited in the record with no deploy. |
+| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | the owner's file bytes, live and in history, and the placed bodies of collections and mail | placed history and acked mail let go first, then refused `file_quota`; with no tier numbers kept, `tier_unread` | tier | The control record's figure, kept from every door's binding. |
+| `owner/src/egress.ts` `EGRESS_LIMITS.openPerRun` | 16 a run (free 80, paid 160) | sandbox model calls streaming at once | a call refused `egress_rate` | tier | Scaled by the tier's runs. Guard term `egress_reservations`, 89.4 MB, costed at `RUNS_CEILING`. |
+| `owner/src/policy.ts` files `max_bytes` | none (the owner may set 0 to 1 PiB) | the owner's own file quota | only below the tier's storage | owner setting | Off by default: the tier's figure binds. |
+| `owner/src/policy.ts` `FILE_DEFAULTS.max_file_bytes` | 40 GiB, its most | one file's size | only the owner's own lower cap | owner setting | Off by default: the most one upload holds (`MAX_INTENT_CHUNKS`). |
+| `owner/src/policy.ts` `FILE_DEFAULTS.retention_days` | 30 days (high 3,650) | how long kept versions stay | older versions pruned | owner setting | Flagged above: on by default. |
+| `owner/src/policy.ts` `FILE_DEFAULTS.keep_versions` | 10 (high 1,000) | versions kept for each live path | older versions pruned | owner setting | Flagged above. |
+| `owner/src/policy.ts` `FILE_DEFAULTS.keep_recent` | 20 (high 1,000) | recent versions kept for a path | older versions pruned | owner setting | Flagged above; the policy's rule against `max_history`. |
+| `owner/src/policy.ts` `FILE_DEFAULTS.client_share` | 25% | one outside writer's share of every file quota and of the collections' rows | a client's or visitor's write refused past it | owner setting | Flagged above. A visiting owner writes in a scope of its own. |
+| `owner/src/policy.ts` `FILE_DEFAULTS.owner_reserve` | 25% | the room all outside writers leave the owner | their writes refused within it | owner setting | Flagged above. |
+| `owner/src/policy.ts` `MODEL_DEFAULTS.turn_requests` | none (owner may set 1 to 1,000,000) | model calls in one sandbox run | only the owner's own cap refuses `run_requests` | owner setting | ADR-034 decision 7: the owner's own limits are off by default. |
+| `owner/src/policy.ts` `MODEL_DEFAULTS.turn_tokens` | none (owner may set 1 to 1e9) | tokens in one sandbox run | only the owner's own cap | owner setting | As above. |
+| `owner/src/policy.ts` `MODEL_DEFAULTS.turn_cost` | none (owner may set to $1,000,000) | cost of one sandbox run | only the owner's own cap | owner setting | As above. |
+| `owner/src/policy.ts` `MODEL_DEFAULTS.daily_cost`, `monthly_cost` | none | the owner's and each source's day and month | only the owner's own ceiling | owner setting | As above. |
+| `owner/src/ledger.ts` `WAKE_DEFAULTS` | none: no hourly cap, no batch window (slice W) | an agent's doorbells | nothing by default; with a cap the owner set, wakes past it wait their turn | owner setting | Off by default (`policyWakeLimits`, the owner app's `agent/wake-limits`). A cap is spaced evenly by one `wake_tat` column, no burst. With none, each change rings, one open wake an agent at a time, and the vendor's own limit answers 429, whose `Retry-After` the wake waits out (`wake-kinds.json` records each vendor's). |
+| `owner/src/network.ts` `EGRESS_DEADLINE_S` | 86,400 s | one streamed sandbox model call | a stream past a day is cut `deadline`, settled `unknown` | vendor limit | An E2B Pro sandbox lives at most 24 hours (`engines-replan.md` §3); a subrequest has no time limit while its client stays connected (Workers limits). `LOST_AFTER_S` follows. |
+| `gateway/src/forward.ts` `FORWARD_DEADLINE_MS` | 24 hours | one forwarded request | as `EGRESS_DEADLINE_S` | vendor limit | Held equal to it by a test. |
 | `owner/src/owner-do.ts` `CODE_ANSWER_MAX` | 31 MiB as V8 serializes it | a `code` script's answer (value and output) | answered `answer_too_large`, its calls and what landed kept | technical ceiling | Workers RPC's 32 MiB of serialized arguments or return value (its own error, observed in workerd: "Serialized RPC arguments or return values are limited to 32MiB"), the owner-to-doors hop, less 1 MiB for the envelope. Measured as V8 serializes (`serializedBytes`): a string one byte a unit when every unit is Latin-1, else two bytes a unit for the whole string, so mostly ASCII text with one wide character counts double. pi-codemode's own output bound (16 Mi characters, 100,000 items) is the vendor's, not ours, and is not this path's ceiling: 16 Mi two-byte characters are 32 MiB serialized. |
-| `owner/src/control-gate.ts` `CONTROL_FRESH_MS` | 1 s | how long one read of the control record serves a script's calls | a flip reaches a running script within a second, past KV's own up to 60 s | convention | Bounds KV reads to one a second a script, where a script may make thousands of calls a second; far within KV's own propagation, so no gate is weakened. |
-| `hooks/wrangler.jsonc:21` | 30,000 ms | the hooks Worker's CPU an invocation | a script past it resets its sandbox | raise | A configuration choice [I: Cloudflare's Workers limits page, not reachable from this session: Workers Paid sets CPU time per invocation by `limits.cpu_ms`, 30 s by default and up to 5 minutes]. Proposed 300,000, with the interrupt budget. |
-| `owner/wrangler.jsonc:26` | 1,000,000 | the owner object's calls an invocation | the platform's error past it | raise | A configuration choice, set by live probe P1; the config's own note gives Paid's ceiling as 10,000,000 [I]. Proposed 10,000,000. |
-
-## Slice R's bounds
-
-Slice R (runs in the owner object) invented no limit: the only new bound a user meets that
-is not a technical ceiling is the tier's own simultaneous runs, whose numbers are the
-control record's (`tier.ts`). Every other new bound is the owner database's (the
-owner-bound guard's terms above), the isolate's memory (the memory guard,
-`owner/guards/memory-bound.test.ts`: 15.5 MB worst case, 12.1% of the isolate, the
-events posts the object holds at once counted whole, whatever the tier), the
-engine's own, or a call's or a credential's convention.
-
-| Where | Value | Bounds | A user hits | Class | Reason or proposal |
-|---|---|---|---|---|---|
-| control record `tiers` (`owner/src/tier.ts`) | free 5, paid 10 (the record's) | simultaneous runs | a run past them refused `tier_runs` | tier | ADR-034 decision 8, the founder's numbers, edited in the record with no deploy. |
-| `owner/src/tier.ts:37` | 1,000 | the most simultaneous runs a tier record may give | a record past it is malformed | budget allocation | The 10 GB's guard budget: each live run's row, grant and sandbox lease are costed at it by the owner-bound guard. Far past any tier. |
-| `owner/src/run-rows.ts:34` | 2,000 | settled runs kept as receipts | an older run's status is gone (its effects and transcript stay) | technical ceiling | The 10 GB: guard term `runs`, 85.0 MB with the live and waiting runs. A receipts retention, as egress's 2,000. |
-| `owner/src/run-rows.ts:35` | 16 KiB | a run's result text on its receipt | a longer result kept cut, marked `result_cut` | technical ceiling | The 10 GB, inside `runs`' term. The whole result is in the engine's own transcript, in the owner's files. |
-| `owner/src/run-rows.ts:36` | 1 KiB | a run's first error on its receipt | a longer error kept cut | technical ceiling | The 10 GB, inside `runs`' term; the engine's transcript keeps the whole. |
-| `owner/src/run-rows.ts:37` | 10,000 | conversations kept | the least recently run idle conversation forgets its resume id (its transcript stays) | technical ceiling | The 10 GB: guard term `conversations`, 30.7 MB. Nothing is refused. |
-| `owner/src/run-rows.ts:38` | 1,000 | the `runs` lane's schedules | a new schedule refused `run_schedules_full`, its way out named | technical ceiling | The 10 GB: guard term `run_schedules`, 26.1 MB, each with its stored input. |
-| `owner/src/run-rows.ts:39` | 16 KiB | a schedule's stored input | a longer scheduled input refused | technical ceiling | The 10 GB, inside `run_schedules`' term. A door's input is stored only while it waits for its conversation (below); otherwise the door's body bound holds it. |
-| `owner/src/runs.ts:489` | one live run | runs in one conversation at once | a second message waits (`waiting`) and starts, in order, as the run before it settles; never refused for it | technical ceiling | One engine session resumes one invocation at a time (its session files); a new conversation runs beside it. |
-| `owner/src/run-rows.ts:46` | 256 | inputs waiting for their conversations, together | one more refused `run_inputs_full` until a run settles | budget allocation | The 10 GB: each waits as a `runs` row at its widest (6.7 MB of `runs`' term) beside its input. Sized with `QUEUE_BYTES` to the guard's remaining budget. |
-| `owner/src/run-rows.ts:47` | 6 MiB | the waiting inputs' bytes, together | one more refused `run_inputs_full` until a run settles | budget allocation | The 10 GB: guard term `run_inputs`, 9.8 MB (its inputs however spread, each row two overflow pages over its share). With the waiting runs' rows, 16.5 MB, 75% of the budget slice R's other tables left; a raise takes room from another term. |
-| `owner/src/run-rows.ts:49` | 64 | engines whose sign-in is kept | a report past it fails loudly | technical ceiling | The 10 GB: guard term `engine_signins`, 0.4 MB. One row an engine, far past every CLI record. |
-| `owner/src/run-rows.ts:51` | 2,048 characters | an engine's reported models, as JSON | a longer report refused | technical ceiling | The 10 GB, inside `engine_signins`' term; visible ASCII, a byte a character. |
-| `owner/src/socket-shape.ts:43` | 1,024 | socket tickets outstanding | a ticket refused `socket_tickets_full` until one is used or expires | technical ceiling | The 10 GB: guard term `socket_tickets`, 3.1 MB. A ticket lives 30 s. |
-| `owner/src/socket-shape.ts:38` | 30 s | a socket ticket's life | an unused ticket expires; the app asks again | security | A single-use credential in a URL: short-lived by design (A6). |
-| `owner/src/relay.ts:64` | 1,024 | the owner app's sockets open at once | another socket refused `sockets_full` | technical ceiling | The isolate's 128 MB: each socket's attachment and the SDK's copy, counted by the memory guard (4.2 MB). |
-| `owner/src/relay.ts:66` | 4 Mi UTF-16 units | the live runs' tails, together | a late joiner sees fewer of a run's oldest frames | technical ceiling | The isolate's 128 MB (memory guard, 8.4 MB). Frames are never committed (ADR-034 decision 10); the run's result is its receipt's. |
-| `owner/src/relay.ts:68` | 256 Ki units | one frame kept in a tail | a longer frame is relayed live, never kept for a late joiner | technical ceiling | The isolate's memory, as above. |
-| `owner/src/run-events.ts:33` | 64 KiB | a runner's events post, its body | a longer post refused `events_too_large` (413) at the doors; the runner posts more often | technical ceiling | The isolate's 128 MB (memory guard, review M-4 and round 2): the object holds a post whole, as it came and parsed, while it reads and relays it: `EVENTS_IN_FLIGHT` held at once and one being refused, 2.7 MB in all, whatever the tier. |
-| `owner/src/run-events.ts:43` | 8 | the runners' events posts the object holds at once | one more answered `events_busy` (503, `Retry-After`), which its runner posts again; no run is refused, a post only waits | technical ceiling | The isolate's 128 MB (memory guard, review round 3): a gate in `runEvents`, so the memory bound no longer rests on the tier record's numbers, which the founder edits with no deploy. |
-| `owner/src/run-events.ts:34` | 64 | frames in one post | the runner posts more often | technical ceiling | The isolate's memory, as above: each frame's own objects counted. |
-| `owner/src/run-events.ts:35` | 32 Ki units | one frame's JSON in a post | a longer CLI event is cut, marked, by the runner before it posts it (slice S); the engine's transcript keeps the whole, the receipt 16 KiB of the result | technical ceiling | The isolate's memory, as above. |
-| `owner/src/run-rows.ts:57` | 256 characters | a client's sandbox's signed-in engines, joined | a longer report refused | technical ceiling | The 10 GB: the lease's row stays within its page share at it (`sandbox_leases`, 3.1 MB); each a served record that signs in, far past what their ids join to. |
-| `owner/src/relay.ts:70` | 1,024 units | a frame the app sends | a longer one closes the socket `frame_refused` | convention | The app sends only pings. |
-| `owner/src/owner-do.ts:710` | 60 s | how long a run door waits for its run to settle (`wait_ms`) | the door answers the run as it stands; `run_status` reads it later | convention | A call's own bound. The run itself has no deadline. |
-
+| `owner/src/codemode.ts` `CODEMODE_TIMEOUT_MS` | 300 s | one code mode script's wall time | a longer script ends `timeout` | vendor limit | The hooks Worker's `cpu_ms`, Workers Paid's most, 5 minutes (Workers limits). |
+| `hooks/wrangler.jsonc` `limits.cpu_ms` | 300,000 ms | the hooks Worker's CPU an invocation | a script past it resets its sandbox | vendor limit | Workers Paid's most, 5 minutes (Workers limits). |
+| `owner/wrangler.jsonc` `limits.subrequests` | 10,000,000 | the owner object's calls an invocation | the platform's error past it | technical ceiling | Workers Paid's most (Workers limits: "10,000 (up to 10M)"). P1 probed 1,000,000; a live check at the most is owed. |
+| `owner/src/tier.ts` `RUNS_CEILING` | 1,000 | the most simultaneous runs a tier record may give | a record past it is malformed | technical ceiling | The 10 GB: each live run's row, grant, lease and egress calls are costed at it. Far past any tier. |
+| `owner/src/policy.ts` `FILE_DEFAULTS.max_inline_bytes` | 256 MiB (high 384 MiB) | small files kept in the object | a small file refused `file_quota` | technical ceiling | The 10 GB, inside the manifest's term. Every file over 4 KiB is in R2 already. |
+| `owner/src/policy.ts` `FILE_DEFAULTS.max_manifest_bytes` | 512 MiB (high 512 MiB) | every manifest row as SQLite stores it | file changes refused once the manifest fills it | technical ceiling | The 10 GB: guard term `file_manifest`, 1,208.0 MB at `WORST_FILL` 2.25, the largest. Placed bodies' contents and chunks are charged in it too. |
+| `owner/src/policy.ts` `FILE_DEFAULTS.max_entries` | 30,000 (high 500,000) | live paths | a new path refused `file_quota` | technical ceiling | The policy's own rule against `max_history`'s 600,000 at `keep_recent` 20 (flagged above). |
+| `owner/src/policy.ts` `FILE_DEFAULTS.max_history` | 600,000 (high 600,000) | kept history rows | old versions pruned earliest-due first | technical ceiling | The 10 GB, inside `max_manifest_bytes`. |
+| `owner/src/files.ts` `MAX_INTENT_CHUNKS` | 10,000 chunks (40 GiB) | one upload's chunks | a file over 40 GiB cannot be uploaded | technical ceiling | The 10 GB: guard term `file_intents`, 82.2 MB. One open upload's chunk list is one row. |
+| `owner/src/files.ts` `MAX_OPEN_INTENTS` | 64 | uploads open at once (placed bodies' among them) | a 65th refused until one commits | technical ceiling | The 10 GB, inside `file_intents`. |
+| `owner/src/files.ts` `MAX_HELD_CHUNKS` | 20,000 | chunks all open uploads hold | a new upload refused while they hold it | technical ceiling | The 10 GB, inside `file_intents`. |
+| `owner/src/files.ts` `INTENT_TTL_S` | 86,400 s | how long a file upload may stay open | a large upload over a slow link must finish within a day | technical ceiling | An open upload holds its chunks in `file_intents` and the quota until it ends; a 40 GiB file at 1 MB/s takes 11 hours. |
+| `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. |
+| `owner/src/files.ts` `MAX_SYNC_OPS` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short in the object's request CPU. |
+| `owner/src/files.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The 10 GB, inside the manifest's bytes. |
+| `owner/src/files.ts` `tempDir` | 239 bytes | a temporary directory's prefix | a longer prefix refused | technical ceiling | One path component, `MAX_NAME_BYTES` 255, with its 16 hex. |
+| `owner/src/owner-do.ts` `fileWrite` | 4 MiB | one `fileWrite` call's content | a larger file goes by upload | technical ceiling | One chunk; Workers RPC's message and the isolate's 128 MB. |
+| `owner/src/paths.ts` `MAX_PATH_BYTES` | 4,096 bytes | a path | a longer path refused | technical ceiling | Linux's `PATH_MAX`, which the sandbox's disk holds. |
+| `owner/src/paths.ts` `MAX_NAME_BYTES` | 255 bytes | one path component | a longer name refused | technical ceiling | Linux's `NAME_MAX`. |
+| `owner/src/manifest.ts` `PLACE_BYTES` | 2,048 bytes | the most of a body kept in its row | nothing: a larger body is placed in R2 | technical ceiling | ADR-035: a rowid table keeps a record of 4,061 bytes in place; half is the body's, half the row's own names and ids, so a row keeps in its page. |
+| `owner/src/bodies.ts` `BODY_BYTES_MAX` (`LIMITS.maxRowBytes`, `MAX_BODY_BYTES`) | 8 MiB | one row's, history entry's or message's body | a larger body refused | technical ceiling | Half the request body's ceiling (`EGRESS_BODY_MAX`), so the body with its JSON escapes fits the tool call that carries it; placed in two 4 MiB chunks. |
+| `owner/src/collections.ts` `LIMITS.maxRowsCharge` | 256 MiB laid out | every collection row, its index entries and its collection's seq row, as SQLite lays them out | a write refused: the owner's collections are full | technical ceiling | The 10 GB: guard term `collection_rows`, 604.0 MB at `WORST_FILL`. About 262,000 rows at the narrowest names; an outside writer's share by `client_share`. |
+| `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries, erased keys' last entries among them | the oldest entries pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows`. A message has one recipient, so no term moves with it. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, disabled agents included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_usage`. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held | the oldest acked message evicted; refused `ledger_full` if every one is unread | technical ceiling | The 10 GB: guard terms `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxOwnerUnacked` | 10,000 | messages unread by the owner | a post to the owner refused past it | technical ceiling | Within `maxMessages` (`checkLimits`), so no mailbox holds the whole ledger. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentUnacked` | 1,000 | messages unread in one agent's mailbox | a post to that agent refused | technical ceiling | As above. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxSenderUnacked` | 5,000 | one sender's messages unread by the owner | a sender's post refused past it | technical ceiling | Within `maxOwnerUnacked`, so no agent fills the owner's mailbox. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxReceipts` | 50,000 | read and reply receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_receipts`, 309.6 MB. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxSettledWakes` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_wakes`. |
+| `owner/src/ledger.ts` `WAKE_SETTINGS` | 9,007,199,254,740,991 | the owner's cap and batch window | a larger number refused | technical ceiling | JavaScript's largest exact whole number (`Number.MAX_SAFE_INTEGER`): the cap's state is one column whatever its value. |
+| `owner/src/wake-records.ts` `SUBSCRIPTIONS_PER_AGENT` | 16 an agent | doorbell subscriptions one enabled agent holds | the 17th refused `subscription_limit`; a refresh of one held is no new place | technical ceiling | The 10 GB: guard term `wake_callbacks`, 423.6 MB (8.47% of the budget), its rows at the schema's widest: `maxAgents` (1,000) times 16. Per agent, so no client fills another agent's room, nor the owner's. |
+| `owner/src/wake-records.ts` `DOORBELL_BLOB_CHARS` | 8,192 characters | a sealed doorbell (URL, auth scheme, secret, record), base64url | a larger blob refused | technical ceiling | Inside `wake_callbacks`; the schema holds it visible ASCII, a byte a character. |
+| `owner/src/wake-records.ts` `CALLBACK_URL_CHARS`, `CALLBACK_SECRET_CHARS` | 2,048 and 512 printable ASCII characters | a doorbell callback's URL and secret | a longer callback refused | technical ceiling | Inside `wake_callbacks`, through the blob they seal into. |
+| `owner/src/wake-records.ts` `ARGUMENTS_CHARS` | 1,024 characters of JSON | a subscription's arguments (command center, board, rooms) | a subscription following more rooms refused | technical ceiling | Inside `wake_callbacks`, at four bytes a character. Several subscriptions follow more rooms between them. |
+| `owner/wake-kinds.json` `max_body_bytes` | 256 KiB (ChatGPT); none recorded elsewhere | one doorbell body | a larger wake refused before it is sent | vendor limit | OpenAI's MCP Events page: at most 256 KiB a webhook (read 2026-11-03). A wake carries IDs and cursors only, far under it. |
+| `owner/wake-kinds.json` `events` | 10 s verification, a day's default lifetime, 300 s dual-signing | an MCP Events subscription | a callback silent past 10 s refused (`timeout`); a subscription unrefreshed past its grant lets go | vendor limit | OpenAI's MCP Events page (its verification example's 10 s) and the MCP Events design sketch (grants up to about a day; receivers reject a timestamp over 5 minutes old). |
+| `gateway/src/doorbell.ts` `ECHO_MAX_BYTES` | 1 KiB | a callback's answer to its verification challenge | a longer answer fails verification (`challenge_failed`) | technical ceiling | The answer is read only for the echoed 43-character challenge; at most 1 KiB keeps a hostile endpoint from making the gateway's isolate (128 MB) buffer its body. |
+| `owner/src/registrations.ts` `CARD_LIMITS` | 200 pending, 10 a client, 4,096-byte card | registration cards waiting | a client's 11th card refused | technical ceiling | The 10 GB: guard term `agent_cards`. |
+| `owner/src/policy.ts` `POLICY_LIMITS.maxDocument` | 65,536 characters | the owner policy document | a larger policy refused | technical ceiling | The 10 GB, one row read on every door. |
+| `owner/src/policy.ts` `POLICY_LIMITS.maxChange` | 16,000 characters | one agent's proposal | a larger proposal refused | technical ceiling | The 10 GB: guard term `policy_proposals`. |
+| `owner/src/policy.ts` `POLICY_LIMITS.pendingProposals` | 200 (50 a client) | proposals waiting for the owner | a proposal refused past it | technical ceiling | The 10 GB, inside `policy_proposals`. |
+| `owner/src/policy.ts` `POLICY_LIMITS.appliedProposals` | 200 | applied proposals kept | the oldest let go | technical ceiling | As above. |
+| `owner/src/policy.ts` `POLICY_LIMITS.receiptsPerBucket` | 5,000 a bucket | policy receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `policy_receipts`, 65.0 MB. |
+| `owner/src/policy.ts` `MODEL_SOURCES_MAX` | 64 | sources a `models.sources` table names | a larger table refused | technical ceiling | Inside `maxDocument`, the one row every door reads. |
+| `owner/src/grants.ts` `GRANT_LIMITS.maxFreeClients` | 1,000 | clients recorded without an owner grant | the oldest free one forgotten (never refused) | technical ceiling | The 10 GB: guard terms `outside_clients`, `proposal_shares`. |
+| `owner/src/grants.ts` `GRANT_LIMITS.maxOwnerClients` | 1,000 | clients the owner set a grant for | the 1,001st grant refused | technical ceiling | As above. |
+| `owner/src/grants.ts` `GRANT_LIMITS.maxScopesBytes` | 65,536 bytes | a grant's scopes as JSON | a larger grant refused | technical ceiling | The 10 GB, inside `outside_clients`; the schema's own check on the column. |
+| `doors/src/api-keys.ts` `MAX_KEYS_PER_OWNER` | 1,000 | API keys an owner holds | a 1,001st refused | technical ceiling | Each key's grant is an owner-set client: `maxOwnerClients`, held equal by a test. |
+| names and ids a caller gives (`text.ts` `name` 256 characters; a scope field 512; a display name 80; a history op 32; a lease holder 128; a connection's name 128; a model's id 200) | as listed | each name | a longer name refused | technical ceiling | The 10 GB: the guard costs every row at its validator's widest name. |
+| `owner/src/sessions.ts` `SESSION_LIMITS.maxSessions` | 64 | signed-in devices at once | the oldest session closed | technical ceiling | The 10 GB, each session a row the guard costs. |
+| `owner/src/sessions.ts` `SESSION_LIMITS` life | 8 hours | the owner's protected session | the owner signs in again for a widening | technical ceiling | A credential's life: NIST SP 800-63B's reauthentication at AAL2, at most 12 hours. The cookie's `Max-Age`. |
+| `owner/src/sessions.ts` `SESSION_LIMITS` freshness | 600 s | how fresh a sign-in must be to open a session | the owner signs in again | technical ceiling | S30: a widening needs a sign-in the owner just made. |
+| `owner/src/connections.ts` `CONNECTION_LIMITS.maxConnections` | 50 | live model connections | the 51st refused | technical ceiling | The 10 GB: guard terms `connections` 269.3 MB, `connection_secrets`. A connection's models list is read in every egress admission unit, so it stays in its row (ADR-035 decision 9). |
+| `owner/src/connections.ts` `CONNECTION_LIMITS.maxOpenFlows` | 10 | OAuth connect flows open at once | an 11th refused | technical ceiling | The 10 GB: guard term `connection_flows`; each holds a PKCE verifier for `flowTtlS`. |
+| `owner/src/connections.ts` `CONNECTION_LIMITS.flowTtlS` | 600 s | an OAuth flow's life | the owner starts the connect again | technical ceiling | An authorization code's most recommended life, 10 minutes (RFC 6749 §4.1.2). |
+| `owner/src/connections.ts` `CONNECTION_LIMITS.maxModels` | 1,024 | models one connection lists | models past it refused at commit | technical ceiling | Inside `connections`; the largest built-in catalog has 386. |
+| `owner/src/connections.ts` `MODELS_JSON_MAX` | 640 KiB | a connection's models, as JSON | a larger list refused at commit | technical ceiling | As above. |
+| `owner/src/connections.ts` `EGRESS_JSON_MAX` | 16 KiB | a connection's egress scope | many custom paths refused at commit | technical ceiling | As above. |
+| `owner/src/connections.ts` `BLOB_MAX` | 64 KiB | a connection's sealed blob | a credential past it refused | technical ceiling | Guard term `connection_secrets`; the gateway's own bound too. |
+| `owner/src/connections.ts` model numbers | $1,000,000 a million tokens; 100,000,000 tokens; 16 tiers | a model record's prices, windows and tiers | a record past them refused | technical ceiling | A charge, price times tokens, stays an exact integer in a JavaScript number (2^53). Far past every catalog's. |
+| `owner/src/connections.ts` redirect | 2,048 characters | an OAuth redirect URI | a longer URI refused | technical ceiling | The 10 GB: inside `connection_flows`' 4 KiB a flow. |
+| `owner/src/usage.ts` `USAGE_LIMITS.minOutput` | 1,024 tokens (2,048 reasoning) | the least output a reservation is worth | refused when an owner's ceiling leaves less | technical ceiling | Only when an owner's own ceiling binds; provider thinking budgets start at 1,024. |
+| `owner/src/usage.ts` `USAGE_LIMITS.receiptsKept` | 5,000 | model-call receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `model_reservations`. |
+| `owner/src/schema.ts` `CALLS_OPEN` | 1,000 | model reservations open at once | refused `model_calls_full` | technical ceiling | Inside `model_reservations`; far above any tier's runs. |
+| `owner/src/schema.ts` `SPEND_KEPT` | 4,300 | day and month spend counters | a 101st source's first call in a period refused | technical ceiling | The 10 GB: guard term `model_spend`. |
+| `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 admitted, 500 refused | egress receipts kept | the oldest let go | technical ceiling | Inside `egress_reservations`. |
+| `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s. |
+| `owner/src/egress.ts` `EGRESS_PATH_MAX` | 2,048 characters | a sandbox request's path and query | a longer path refused | technical ceiling | The 10 GB: each egress row keeps its path, costed at it in `egress_reservations`. |
+| `owner/src/network.ts` host | 253 characters | an egress destination's host | a longer host refused | technical ceiling | DNS's own bound (RFC 1035). |
+| `owner/src/network.ts` `EGRESS_BODY_MAX` | 16 MiB | one sandbox model request's body | refused `egress_too_large` | technical ceiling | One request body a Worker reads whole: the text (16 MiB, at most twice that as UTF-16), its parsed copy and its serialized copy to the next hop come to 80 MiB at worst, within the isolate's 128 MB (Workers limits) with room for the rest; one ceiling for the egress door, the gateway, the API and the owner surface (`network.ts`). Live memory probe owed to slice L. Providers take more (Anthropic's Messages API, 128 MB), past what an isolate holds. |
+| `gateway/src/forward.ts` `BODY_MAX` | 16 MiB | a metered call's body | as `EGRESS_BODY_MAX` | technical ceiling | As `EGRESS_BODY_MAX`. |
+| `doors/src/routing-mac.ts` `LEASE_LIVED` | none of their own | the egress and sync tokens' life | a token lives while its lease's heartbeat renews it | technical ceiling | The lease's life (`LEASE_TTL_S` without a renewal); no run meets a fixed deadline. |
+| `owner/src/cron.ts` `CRON_MIN_GAP_MIN` | 1 minute | the shortest gap between a schedule's runs | nothing below cron's own minute | technical ceiling | Cron's resolution; the tier's runs bound what a schedule starts. |
+| `owner/src/cron.ts` `CRON_MAX_ITEMS` | 60 | values in one cron field's list | a longer list refused | technical ceiling | A minute field's every value. |
+| `owner/src/cron.ts` `CRON_MAX_CHARS` | 256 characters | a cron expression | a longer expression refused | technical ceiling | The 10 GB: a schedule's row, costed at it in `run_schedules`. |
+| `owner/src/cron.ts` `CRON_HORIZON_DAYS` | 8 years | how far ahead an occurrence is searched | an expression with none in 8 years refused | technical ceiling | The Gregorian calendar: the longest gap between two 29 Februaries is 8 years, so an expression with no occurrence within it has none. |
+| `owner/src/notices.ts` `NOTICES_KEPT` | 1,000 | owner notices kept | the oldest let go | technical ceiling | The 10 GB: guard term `owner_notices`. |
+| `owner/src/notices.ts` `NOTICE_DETAIL` | 1,024 characters | a notice's detail | a longer detail cut | technical ceiling | Inside `owner_notices`; the full error stays in its source. |
+| `owner/src/run-rows.ts` `RUNS_KEPT` | 2,000 | settled runs kept as receipts | an older run's status is gone (its transcript stays) | technical ceiling | The 10 GB: guard term `runs`, 90.4 MB with the live and waiting runs. |
+| `owner/src/run-rows.ts` `RESULT_BYTES` | 16 KiB | a run's result on its receipt | a longer result kept cut, `result_cut` | technical ceiling | Inside `runs`. The whole result is in the engine's transcript, in the owner's files. |
+| `owner/src/run-rows.ts` `ERROR_BYTES` | 1 KiB | a run's first error on its receipt | a longer error kept cut | technical ceiling | As above. |
+| `owner/src/run-rows.ts` `CONVERSATIONS_KEPT` | 10,000 | conversations kept | the least recently run idle one forgets its resume id | technical ceiling | The 10 GB: guard term `conversations`. Nothing is refused. |
+| `owner/src/run-rows.ts` `SCHEDULES_KEPT` | 1,000 | the `runs` lane's schedules | a new schedule refused `run_schedules_full` | technical ceiling | The 10 GB: guard term `run_schedules`. |
+| `owner/src/run-rows.ts` `INPUT_BYTES` | 16 KiB | a schedule's stored input | a longer scheduled input refused | technical ceiling | Inside `run_schedules`. |
+| `owner/src/runs.ts` one live run a conversation | one | runs in one conversation at once | a second message waits its turn, never refused | technical ceiling | One engine session resumes one invocation at a time. |
+| `owner/src/run-rows.ts` `QUEUE_ROWS` | 256 | inputs waiting for their conversations | one more refused `run_inputs_full` until a run settles | technical ceiling | The 10 GB: each waits as a `runs` row beside its input. |
+| `owner/src/run-rows.ts` `QUEUE_BYTES` | 6 MiB | the waiting inputs' bytes | as above | technical ceiling | The 10 GB: guard term `run_inputs`. |
+| `owner/src/run-rows.ts` `ENGINE_SIGNINS` | 64 | engines whose sign-in is kept | a report past it fails loudly | technical ceiling | Guard term `engine_signins`. |
+| `owner/src/run-rows.ts` `SIGNIN_MODELS_CHARS` | 2,048 characters | an engine's reported models | a longer report refused | technical ceiling | Inside `engine_signins`. |
+| `owner/src/run-rows.ts` `SIGNIN_LIST_CHARS` | 256 characters | a client's sandbox's signed-in engines | a longer report refused | technical ceiling | Inside `sandbox_leases`. |
+| `owner/src/socket-shape.ts` `SOCKET_TICKETS` | 1,024 | socket tickets outstanding | refused `socket_tickets_full` until one is used or expires | technical ceiling | Guard term `socket_tickets`. |
+| `owner/src/socket-shape.ts` ticket life | 30 s | a socket ticket's life | the app asks again | technical ceiling | A single-use credential in a URL, which servers and proxies log; it lives only for the connect. |
+| `owner/src/relay.ts` sockets | 1,024 | the owner app's sockets open at once | another refused `sockets_full` | technical ceiling | The isolate's 128 MB (memory guard). |
+| `owner/src/relay.ts` tails | 4 Mi UTF-16 units | the live runs' tails, together | a late joiner sees fewer old frames | technical ceiling | The isolate's 128 MB. Frames are never committed. |
+| `owner/src/relay.ts` one frame kept | 256 Ki units | one frame in a tail | relayed live, not kept | technical ceiling | As above. |
+| `owner/src/run-events.ts` `EVENTS_BODY_MAX` | 64 KiB | a runner's events post | refused `events_too_large`; the runner posts more often | technical ceiling | The isolate's 128 MB (memory guard). |
+| `owner/src/run-events.ts` `EVENTS_IN_FLIGHT` | 8 | events posts held at once | `events_busy` (503), posted again | technical ceiling | As above. |
+| `owner/src/run-events.ts` `EVENT_FRAMES_MAX` | 64 | frames in one post | the runner posts more often | technical ceiling | As above. |
+| `owner/src/run-events.ts` `FRAME_UNITS_MAX` | 32 Ki units | one frame's JSON | the runner cuts a longer CLI event, marked | technical ceiling | As above. |
+| `doors/src/config.ts` `ACCESS_TOKEN_TTL_S` | 3,600 s | an MCP or app access token's life | the client refreshes | technical ceiling | A bearer credential's short life (OAuth 2.0 Security BCP, RFC 9700), renewed by its refresh token. |
+| `doors/src/config.ts` `REFRESH_TOKEN_TTL_S` | 30 days | a refresh token's life | an unused client signs in again | technical ceiling | As above: a refresh token's grant slides while used and ends when unused (RFC 9700). |
+| `doors/src/config.ts` consent freshness | 600 s | how fresh a sign-in is for consent | the owner signs in again | technical ceiling | `prompt=login`: a consent needs a sign-in the owner just made. |
+| `doors/src/config.ts` `AUTHORIZE_BODY_MAX` | 4 KiB | the consent form's body | refused `413` | technical ceiling | The form's own few short fields. |
+| `doors/src/config.ts` `API_BODY_MAX`, `APP_BODY_MAX` | 16 MiB | an `/api/tools/*` or owner-surface request body | refused `413` | technical ceiling | As `EGRESS_BODY_MAX`, held equal to it by a test. Streaming is not taken: a tool call's arguments are parsed whole as JSON at the door. |
+| `gateway/src/oauth.ts` token answer | 64 KiB | a provider's token endpoint answer | the connect fails | technical ceiling | It must fit the sealed blob it becomes (`BLOB_MAX`). |
+| `gateway/src/credential.ts` limits | 16 KiB secret; 16 endpoints of 64 paths; 64 declared models; 2,048-character URLs | a pasted credential and its declared endpoints | a larger record refused at seal | technical ceiling | Inside the 64 KiB sealed blob (`keyring.ts` `BLOB_MAX`). |
+| `gateway/src/model-record.ts` numbers | as the owner's | a declared model record | refused past them | technical ceiling | As the owner's model numbers. |
+| `hooks/src/codemode.ts` `CODEMODE_INTERRUPT_BUDGET` | 1,000,000 polls (about 100 s) | a script's CPU | a compute-bound script ends `timeout` | technical ceiling | Within the hooks Worker's `cpu_ms`. |
+| `hooks/src/codemode.ts` `CODEMODE_MEMORY_BYTES` | 32 MiB | a script's VM memory | a script past it fails | technical ceiling | The isolate's 128 MB, shared by its VMs. |
+| control record `sandbox_runtime_ceiling_s` (`doors/src/directory.ts`) | the E2B plan's: Hobby 3,600 s, Pro 86,400 s | how long one sandbox runs at a stretch | nothing ends: its runs are renewed (paused and resumed with their memory) at a quiet moment before it | vendor limit | E2B's continuous runtime per plan (docs.e2b.dev, sandbox lifetime), which a pause resets (probed, `sandbox-probe.md`); edited in the record with no deploy. |
+| control record `sandbox_concurrency_ceiling` (`doors/src/directory.ts`) | the E2B plan's: Hobby 20, Pro 100 | sandboxes the E2B team runs at once | a run waits `sandbox_waiting` in the platform's line, never refused | vendor limit | E2B's concurrent sandboxes per plan; E2B's own refusal (`429`) holds it regardless. |
+| `sandbox/runner/guards.ts` `ATOM_MIN` | 39 characters | the shortest value or line of a `secret_paths` file the content backstop matches | a synced file or transcript line holding one refused | vendor limit | A Google API key, 39 characters: the shortest credential any record's provider issues. |
+| `sandbox/template/build.py` run pool | `RUNS_CEILING` (1,000) users | runs live in one sandbox at once | a run past it refused, every run user taken | technical ceiling | One uid a live run (review H-4); one authority's sandbox holds at most its owner's live runs, which `RUNS_CEILING` bounds. |
+| `doors/src/egress.ts` `SYNC_BODY_MAX` | 12 MiB | one sync door's body | the sync agent sends more calls | technical ceiling | Two 4 MiB chunks' base64 and the call's fields: the files plane's most a call (`BATCH_BYTES`). |
+| `sandbox/runner/runner.ts` `CANCEL_GRACE_MS` | 20 s | a cancelled CLI's grace after SIGTERM | killed past it | technical ceiling | One heartbeat (`HEARTBEAT_MS`): the run's end and its last post reach the object inside its lease's TTL. |
+| `sandbox/runner/users.ts` `KILL_WITHIN_MS` | 20 s | how long a run user's processes may outlive their SIGKILL | the run's end fails loudly, the user not given back | technical ceiling | One heartbeat; a process still there is stuck in the kernel. |
+| `sandbox/runner/runner.ts` a failed CLI's stderr | `FRAME_UNITS_MAX` | the stderr a failed run shows | its head cut | technical ceiling | As much as one frame shows; the frame's own cut marks the rest. |
