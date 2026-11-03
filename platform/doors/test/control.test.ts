@@ -30,15 +30,15 @@ function api(key: string, environment: DoorsEnv = doorsEnv): Promise<Response> {
     body: "{}" }), environment);
 }
 
-/** The doors with the directory's control record unreadable (an outage). */
+/** The doors with the control record unreadable (an outage). */
 function unreadable(): DoorsEnv {
-  const real = env.DIRECTORY;
+  const real = env.CONTROL;
   const failing = {
     get: (name: string, options: never) => name === "c:control"
       ? Promise.reject(new Error("KV down")) : real.get(name, options),
     put: real.put.bind(real), delete: real.delete.bind(real), list: real.list.bind(real),
   } as unknown as KVNamespace;
-  return { ...doorsEnv, DIRECTORY: failing };
+  return { ...doorsEnv, CONTROL: failing };
 }
 
 /** A record state, set up, and the env the doors then run with. */
@@ -52,7 +52,7 @@ const record = (value: unknown): (() => Promise<DoorsEnv>) => async () => {
 const MALFORMED: State = ["malformed", record({ ...OPEN, outside: true })];
 const UNREADABLE: State = ["unreadable", async () => unreadable()];
 const NOT_JSON: State = ["not JSON", async () => {
-  await env.DIRECTORY.put("c:control", "{outside");
+  await env.CONTROL.put("c:control", "{outside");
   return doorsEnv;
 }];
 const MISSING: State = ["missing", record(null)];

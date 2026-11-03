@@ -10,6 +10,9 @@
  * fields; each such door must have a tool, or be named below with the slice that owes it.
  * Every tool is confined to the owner's own account, so none is open world. The run doors
  * (slice R) hand their capability to `#runDoor`, read as `#scope`'s is.
+ *
+ * And the profiles (`profiles.json`, slice M): each lists exactly its tools, table tools in
+ * the table's order; `code`, a generic executor, never in the directory's.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,7 +21,9 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { parse, PLATFORM } from "../../owner/guards/sources";
-import { MAILBOX_TOOLS, RUN_TOOLS, runProfile, type Tool, toolTable } from "../src/tools";
+import profiles from "../profiles.json" with { type: "json" };
+import { CLIENT_PROFILES, DEFAULT_PROFILE, profileNames, type Tool, toolNames, toolTable }
+  from "../src/tools";
 
 /** Outside-callable doors without a tool yet, and what owes each. */
 const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
@@ -32,6 +37,19 @@ const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
   fileChanges: "tasks 6: the sandbox's sync feed, reached by its sync token",
   mailboxSubscriber: "tasks 7: the MCP Events subscribe door",
 });
+/** Outside-callable doors the doors call themselves, never a tool, and why. */
+const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({
+  toolProfile: "the MCP and API doors' read of which tools the caller is served",
+});
+/**
+ * The mailbox tools, which a run never holds (slice ID): its mail is its input, and its
+ * agent's mailbox holds every authority's mail; `inbox_digest`'s mail part is a mailbox read.
+ */
+const MAILBOX_TOOLS: readonly string[] = Object.freeze(["mailbox_read", "mailbox_ack",
+                                                        "inbox_digest"]);
+/** The run doors' tools: what a run's own MCP door never serves (ADR-034 decision 11). */
+const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph", "run_status",
+                                                    "run_cancel"]);
 /** An engine's own tool names, its vendor's: never served as one of ours. */
 const MODEL_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit", "bash", "ta"]);
 /** Fields that would make a tool an operation-selecting executor. */
@@ -211,7 +229,7 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
     }
   }
   for (const door of doors.keys()) {
-    if (!used.has(door) && !Object.hasOwn(DEFERRED, door)) {
+    if (!used.has(door) && !Object.hasOwn(DEFERRED, door) && !Object.hasOwn(DOORS_ONLY, door)) {
       problems.push(`${door}: an outside-callable door with no tool, and none owed`);
     }
   }
@@ -285,9 +303,39 @@ describe("tool table guard", () => {
   it("serves the run tools, and a run's own profile serves none of them", () => {
     expect(toolTable().filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.door))
       .toEqual(["agentSubmit", "agentRun", "agentStatus", "agentCancel"]);
-    expect(runProfile().filter((tool) => RUN_TOOLS.includes(tool.name))).toEqual([]);
-    expect(runProfile().length).toBe(toolTable().length - 6);
-    expect(runProfile().filter((tool) => MAILBOX_TOOLS.includes(tool.name))).toEqual([]);
+    expect(profileNames("run").filter((name) => RUN_TOOLS.includes(name))).toEqual([]);
+  });
+
+  it("lists exactly each profile's tools: the directory's all but code, a run's all but " +
+     "the run and mailbox tools, custom's by default all", () => {
+    const all = toolNames();
+    expect(Object.keys(profiles).sort()).toEqual(["custom", "directory", "run"]);
+    expect(profileNames("directory")).toEqual(all.filter((name) => name !== "code"));
+    expect(profileNames("run")).toEqual(all.filter((name) => !RUN_TOOLS.includes(name)
+                                                    && !MAILBOX_TOOLS.includes(name)));
+    expect(profileNames("custom")).toEqual(all);
+    expect(profileNames("directory")).not.toContain("code");
+    expect([...CLIENT_PROFILES]).toEqual(["directory", "custom"]);
+    expect(DEFAULT_PROFILE).toBe("custom");
+    // The directory profile cites the directories' rules it is held to.
+    expect(profiles.directory.sources.join(" ")).toMatch(/openai\.com.*claude\.com/);
+  });
+
+  it("serves the digests and code mode, each with its door", () => {
+    const named = (name: string) => toolTable().find((tool) => tool.name === name)!;
+    expect(["inbox_digest", "board_digest", "code"].map((name) => named(name).door))
+      .toEqual(["inboxDigest", "boardDigest", "codeRun"]);
+    expect(named("code")).toMatchObject({ capability: null, readOnlyHint: false,
+                                          destructiveHint: true, idempotentHint: false,
+                                          openWorldHint: false });
+    expect(DOORS.has("toolProfile")).toBe(true);
+    expect(toolTable().map((tool) => tool.door)).not.toContain("toolProfile");
+  });
+
+  it("serves a run no mailbox tool: its mail is its input (slice ID)", () => {
+    expect(profileNames("run").filter((name) => MAILBOX_TOOLS.includes(name))).toEqual([]);
+    expect(profileNames("run").length).toBe(toolTable().length - RUN_TOOLS.length
+                                            - MAILBOX_TOOLS.length);
   });
 
   it("sees an ack marked other than idempotent, and a post marked idempotent", () => {

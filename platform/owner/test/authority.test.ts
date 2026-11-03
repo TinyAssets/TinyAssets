@@ -2,10 +2,9 @@
  * Outside-client authority (tasks 5, A2; kept by ADR-034 as a run's authority): a stamp
  * taken only whole; the owner's authority holding everything and none nothing; a client's
  * stamp holding only while its grant stands at the stamped generation; a scoped grant
- * holding each capability where the work acts; `run_code` only where a scoped grant names
- * it; the owner's own capabilities never a client's; the admission refusing every check;
- * and the grants' own reads, over the owner's real grant rows, a revoke ending what the
- * stamp could do.
+ * holding each capability where the work acts; the owner's own capabilities never a
+ * client's; the admission refusing every check; and the grants' own reads, over the
+ * owner's real grant rows, a revoke ending what the stamp could do.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -75,18 +74,16 @@ describe("the authority's checks", () => {
   it("hold the owner to everything and none to nothing", () => {
     const authority = under("scoped");
     expect(authority.refusal({ by: "owner" }, OWNER_ONLY)).toBeUndefined();
-    expect(authority.refusal({ by: "owner" }, ["run_code"])).toBeUndefined();
     expect(authority.refusal({ by: "none" }, [])).toBe(NO_AUTHORITY);
     expect(authority.refusal(undefined, [])).toBe(NO_AUTHORITY);
   });
 
   it("hold a scoped client to each capability where its work acts, never to the owner's",
      () => {
-    const authority = under("scoped", ["read_files", "run_code"]);
+    const authority = under("scoped", ["read_files"]);
     expect(authority.refusal(CLIENT, [])).toBeUndefined();
     expect(authority.refusal(CLIENT, ["read_files"])).toBeUndefined();
     expect(authority.refusal(CLIENT, ["read_files", "write_files"])).toBe(NOT_GRANTED);
-    expect(authority.refusal(CLIENT, ["run_code"])).toBeUndefined();
     expect(authority.refusal(CLIENT, OWNER_ONLY)).toBe(NOT_OWNER);
     // Where it acts: another universe, or none, holds nothing.
     expect(authority.refusal({ by: "client", stamp: { ...STAMP, universe: "beta" } },
@@ -95,12 +92,11 @@ describe("the authority's checks", () => {
                              ["read_files"])).toBe(NOT_GRANTED);
   });
 
-  it("run everything only under a grant that says full, but run_code, which only a scoped " +
-     "grant that names it holds", () => {
+  it("run everything only under a grant that says full", () => {
     expect(["full", "scoped", "revoked", "unknown"].map((mode) =>
       under(mode).refusal(CLIENT, ["read_files"]) ?? "runs"))
       .toEqual(["runs", NOT_GRANTED, NOT_GRANTED, NOT_GRANTED]);
-    expect(under("full").refusal(CLIENT, ["run_code"])).toBe(NOT_GRANTED);
+    expect(under("full").refusal(CLIENT, ["run_graph", "write_files"])).toBeUndefined();
     expect(under("full").refusal(CLIENT, OWNER_ONLY)).toBe(NOT_OWNER);
   });
 
@@ -126,7 +122,7 @@ describe("the authority's checks", () => {
   it("hold one of several needs, else the first one's refusal", () => {
     const authority = under("scoped", ["write_files"]);
     expect(() => authority.requireOne(CLIENT, [["read_files"], ["write_files"]])).not.toThrow();
-    expect(() => authority.requireOne(CLIENT, [OWNER_ONLY, ["run_code"]])).toThrow(NOT_OWNER);
+    expect(() => authority.requireOne(CLIENT, [OWNER_ONLY, ["run_graph"]])).toThrow(NOT_OWNER);
     expect(() => authority.requireOne(CLIENT, [])).toThrow(NOT_GRANTED);
   });
 });

@@ -21,12 +21,14 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice ID: 4,234,268,166.75 bytes), about 766 MB under
- * half; with every raise the limits audit proposes, 49.99% (4,999,455,028.75 bytes,
+ * The worst case is 42.3% of the limit (slice M on ID: 4,234,269,003.75 bytes), about 766 MB
+ * under half; with every raise the limits audit proposes, 49.99% (4,999,455,865.75 bytes,
  * `limits-proposed.test.ts`), 0.5 MB under half. Slice ID added `native_agents` (1.5 MB,
  * the owner's own agents in the registry's rows); a mail's authority and attendance and a
  * run's mail fit within the pages their rows were already counted at, and it adds no index
- * (an identity and a mail thread's conversation are found by their keys, digests).
+ * (an identity and a mail thread's conversation are found by their keys, digests). Slice M
+ * added each collection row's owner-wide change and its `collection_changes` entry, an
+ * erase entry's in `collection_erasures`, and the one-row `collection_clock`.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
@@ -194,6 +196,14 @@ export const DATABASE_BYTES = 10_000_000_000;
 export const SHARE = 0.5;
 /** A row's fixed overhead past its payload: keys, indexes and SQLite's own record. */
 const ROW = 256;
+/**
+ * A row's owner-wide change (slice M): its integer, in the row and in its
+ * `collection_changes` entry, with that entry's rowid. In the history only an erase entry
+ * holds one (its `collection_erasures` entry too), one a key among its kept revisions, so
+ * each history row is charged a null's byte and its share of one change; an erase entry's
+ * private writer is within `ROW`, as its writer is.
+ */
+const CHANGE_BYTES = 3 * 9;
 const KIB = 1024;
 /** A JSON string's most bytes for each code point: a control character's `\u00XX`. */
 const JSON_POINT = 6;
@@ -344,16 +354,18 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-    collection_rows: { rows: C.maxOwnerRows, bytes: ROW + C.maxOwnerBytes /
+    collection_rows: { rows: C.maxOwnerRows, bytes: ROW + CHANGE_BYTES + C.maxOwnerBytes /
                                                                 C.maxOwnerRows,
-                       by: "maxOwnerRows; rows and history bytes within maxOwnerBytes" },
+                       by: "maxOwnerRows; rows and history bytes within maxOwnerBytes; its " +
+                         "change and that index's entry (slice M)" },
     collection_history: { rows: C.maxOwnerRows * C.maxRevisions,
-                          bytes: ROW + C.maxOwnerBytes /
+                          bytes: ROW + 1 + CHANGE_BYTES / C.maxRevisions + C.maxOwnerBytes /
                                        (C.maxOwnerRows * C.maxRevisions),
                           by: "maxRevisions a row; bytes within maxOwnerBytes" },
     collection_seqs: { rows: C.maxOwnerRows, bytes: ROW, by: "one per collection" },
     collection_usage: { rows: 4 * C.maxOwnerRows, bytes: ROW,
                         by: "owner, collection, writer and creator counters" },
+    collection_clock: { rows: 1, bytes: ROW, by: "one row" },
     agent_cards: { rows: K.maxPending, bytes: ROW + K.maxRequest,
                    by: "maxPending cards of maxRequest" },
     owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },
@@ -607,6 +619,18 @@ describe("the owner's database bound", () => {
       .toEqual(["recipients_by_seq", "recipients_by_state", "recipients_unacked"]);
     expect(indexesOn("ledger_messages")).toEqual(["messages_done"]);
     expect(source("schema")).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
+  });
+
+  it("charges slice M's indexes: the change orders of the rows and the erase entries", () => {
+    // Each charged in its table's term (`CHANGE_BYTES`): `collection_changes` a row's,
+    // `collection_erasures` a delete's or clear's history entry's, partial on them alone.
+    expect(indexesOn("collection_rows"))
+      .toEqual(["collection_changes", "collection_creators", "collection_writers"]);
+    expect(indexesOn("collection_history")).toEqual(["collection_erasures"]);
+    expect(source("schema")).toContain(
+      "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL");
+    expect(TERMS["collection_rows"]!.bytes)
+      .toBeGreaterThanOrEqual(256 + CHANGE_BYTES);
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {

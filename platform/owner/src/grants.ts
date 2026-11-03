@@ -13,9 +13,14 @@
  * its doorbell subscription and the collections), `propose_policy` (an agent's policy
  * proposal), `read_files` and `write_files` (the file doors), `converse` and `run_graph`
  * (the Python's REST scopes for a message to an agent and a run of one, whose doors the
- * runs slice (R) brings back), and `run_code` (code mode, slice M's `code` tool), which a
- * full grant does not hold: a client holds it only where a scoped grant names it
- * (`EXPLICIT`, `authority.ts`).
+ * runs slice (R) brings back).
+ *
+ * A grant also names its **tool profile** (`profile`, slice M; `doors/profiles.json`):
+ * which of the MCP door's tools the client is served. `custom` (the owner's own choice of
+ * tools, its policy's `tools.custom`), since every grant here is a custom connector's; the
+ * owner may name `directory` (no `code`). Code mode is the owner's choice that way, and its
+ * policy's switch, so no capability stands for it. A profile is authority: changing it
+ * moves the generation.
  *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
@@ -31,8 +36,8 @@
  * - A grant has two numbers. Its `revision` is the owner's concurrency token: every set
  *   and every revoke moves it, and a set names the one it was made against
  *   (`expected_revision`), so a set from a stale view is refused, a rename included. Its
- *   `generation` is its authority: it moves only when what the grant holds does, its mode
- *   or its scopes (a revoke is a mode), so a set that changes neither, a rename, moves
+ *   `generation` is its authority: it moves only when what the grant holds does, its mode,
+ *   scopes or profile (a revoke is a mode), so a set that changes none, a rename, moves
  *   only the revision. "A grant change" below is one that moves the generation.
  * - Work saved under a grant is rechecked with `standing` against the generation it
  *   was stamped with: a changed, revoked or fenced grant refuses it. Stamps carry no
@@ -76,6 +81,7 @@
  */
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
+import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../doors/src/tools";
 import { canonical, plain, type Policy, policyDigest } from "./policy";
 import { codePoints } from "./text";
 
@@ -83,7 +89,7 @@ export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped",
 /** The capabilities a scoped grant's triples name at the object's doors. */
 export const CAPABILITIES = Object.freeze(
   ["read_graph", "write_graph", "propose_policy", "read_files", "write_files", "converse",
-   "run_graph", "run_code"] as const);
+   "run_graph"] as const);
 export type Capability = (typeof CAPABILITIES)[number];
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
 /** Clients one owner forget names at most. */
@@ -125,6 +131,8 @@ export interface Grant {
   readonly mode: "full" | "scoped" | "revoked";
   readonly scopes: Scope[];
   readonly generation: number;
+  /** The tool profile the client is served (`directory` or `custom`). */
+  readonly profile: ProfileName;
 }
 
 export type Client = {
@@ -132,7 +140,8 @@ export type Client = {
   readonly source: string;
   readonly mode: string;
   readonly scopes: Scope[];
-  /** Its authority: moves only with its mode or scopes, a revoke among them. */
+  readonly profile: string;
+  /** Its authority: moves only with its mode, scopes or profile, a revoke among them. */
   readonly generation: number;
   /** Its concurrency token: moves on every owner set and every revoke. */
   readonly revision: number;
@@ -157,11 +166,13 @@ export interface GrantChange {
   readonly scopes: unknown;
   readonly expected_revision: unknown;
   readonly name: unknown;
+  /** The tool profile; omitted, the grant keeps its own (a new one, `custom`). */
+  readonly profile?: unknown;
 }
 
-/** What a grant holds, as one value: equal exactly when `holds` answers alike. */
-function authority(mode: string, held: readonly Scope[]): string {
-  return canonical([mode, [...new Set(held.map((scope) => canonical(scope)))].sort()]);
+/** What a grant holds, as one value: equal exactly when `holds` and its profile answer alike. */
+function authority(mode: string, held: readonly Scope[], profile: string): string {
+  return canonical([mode, [...new Set(held.map((scope) => canonical(scope)))].sort(), profile]);
 }
 
 /**
@@ -239,7 +250,7 @@ export class Grants {
       throw new Refused("a fresh sign-in is required after a revoke");
     }
     return { mode: row.mode as Grant["mode"], scopes: JSON.parse(row.scopes) as Scope[],
-             generation: row.generation };
+             generation: row.generation, profile: row.profile as ProfileName };
   }
 
   /**
@@ -320,8 +331,8 @@ export class Grants {
    * authority does (`moved`), which is when the caller ends the client's work.
    */
   set(sessionId: string, change: GrantChange, now: number):
-      { client: string; mode: string; scopes: Scope[]; generation: number; revision: number;
-        moved: boolean } {
+      { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
+        revision: number; moved: boolean } {
     const client = outsideClient(change.client, change.source);
     const { mode, expected_revision: expected, name } = change;
     const source = change.source as string;
@@ -338,6 +349,10 @@ export class Grants {
     if (typeof name !== "string" || codePoints(name) > 80) {
       throw new Invalid("invalid outside client name");
     }
+    if (change.profile !== undefined && !(CLIENT_PROFILES as readonly unknown[])
+      .includes(change.profile)) {
+      throw new Invalid(`a grant's profile is one of ${CLIENT_PROFILES.join(", ")}`);
+    }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = this.#row(client);
@@ -351,8 +366,10 @@ export class Grants {
         throw new Refused("the owner's managed outside clients are at their limit; forget " +
                           "revoked clients to make room");
       }
+      const profile = (change.profile ?? row?.profile ?? DEFAULT_PROFILE) as string;
       const moved = row === undefined
-        || authority(row.mode, JSON.parse(row.scopes) as Scope[]) !== authority(mode, held);
+        || authority(row.mode, JSON.parse(row.scopes) as Scope[], row.profile)
+          !== authority(mode, held, profile);
       const generation = (row?.generation ?? 0) + (moved ? 1 : 0);
       const revision = expected + 1;
       // A revoke is timed when it lands; a revoked grant set again keeps its fence.
@@ -360,22 +377,25 @@ export class Grants {
       const named = name === "" ? row?.name ?? "" : name;
       sql.exec(
         "INSERT INTO outside_clients (client, source, mode, scopes, generation, revision, " +
-          "revoked_at, name, first_seen, last_seen, owner_set) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1) " +
+          "revoked_at, name, first_seen, last_seen, owner_set, profile) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?) " +
           "ON CONFLICT (client) DO UPDATE SET mode = excluded.mode, scopes = excluded.scopes, " +
+          "profile = excluded.profile, " +
           "generation = excluded.generation, revision = excluded.revision, " +
           "revoked_at = excluded.revoked_at, owner_set = 1, " +
           "name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END",
         client, source, mode, canonical(held), generation, revision, revokedAt, name, now, now,
+        profile,
       );
       // The receipt's digest names the set whole, so a rename's differs from a set that
       // changes nothing; its generation is the authority's.
       this.#policy.receipt("outside_grant", {
         session_id: sessionId,
-        request_digest: policyDigest({ client, mode, scopes: held, name: named, revision }),
+        request_digest: policyDigest({ client, mode, scopes: held, name: named, revision,
+                                       profile }),
         generation, rule: client, decision: mode, outcome: "committed",
       }, now);
-      return { client, mode, scopes: held, generation, revision, moved };
+      return { client, mode, scopes: held, profile, generation, revision, moved };
     });
   }
 

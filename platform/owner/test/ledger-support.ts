@@ -89,12 +89,13 @@ export function signedIn(): number {
 
 /**
  * One owner's object, by that owner's own name, and the calls a binder would make on it.
- * Each test gets a fresh owner, so no test sees another's ledger. The owner has signed in
+ * Each test gets a fresh owner, so no test sees another's ledger (on `namespace`, the
+ * production object's unless a test names one of its classes). The owner has signed in
  * once, so `session` carries a live protected-session cookie the object minted.
  */
-export async function rig() {
+export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER) {
   const owner = `owner-${crypto.randomUUID()}`;
-  const stub: DurableObjectStub<OwnerDO> = env.OWNER.getByName(owner);
+  const stub: DurableObjectStub<OwnerDO> = namespace.getByName(owner);
   /** A binder's binding; an outside origin comes through an MCP client unless named. */
   const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
     ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), ...extra });

@@ -1125,10 +1125,95 @@ R, S, M and W.
   out no stub; the owner's executor (`codemode.ts`) names each `<owner>/<uuid>`. Config
   guard: its own one class, no loader, no `OWNER`, no storage binding, no route; isolation
   guard over its source. P11's local part passed. The MCP door's `code` tool is slice M's.
-- [ ] H2 live, narrowed to code mode (slice M): deploy the hooks Worker and probe what
-  workerd cannot show: a script past its interrupt budget against the Worker's `cpu_ms`,
-  the blocking isolation (10 s of a script's compute against another owner's), and
-  whether `exchange` calls count as subrequests of the owner object or the hooks Worker.
+- [x] M The MCP door for engines and main agents (`engines-replan.md` §5 row M), in
+  workerd, nothing deployed. Review round 1 (REQUEST_CHANGES), all taken: every grant on
+  `/mcp` and every API key names `custom`, and code mode is on until the owner turns it off
+  (H1; the free row names `custom`); the object reads the control record's gates again at
+  each script call, through its own `CONTROL` namespace, now the record's home (M1); an
+  answer past `CODE_ANSWER_MAX` is refused `answer_too_large` (M2, `limits-audit.md`); the
+  digests report deletes and clears, from their history entries stamped with the clock's
+  change (M3); H2's probe list gains the starvation probe (M4); citations fixed (L1); the
+  change indexes are on `change` alone (L2); a script's answer lists what landed (L3); the
+  compute-stop test asserts the interrupt budget's message (L4); the gateway's forward test
+  has its own 30 s timeout (L5). Verification (REQUEST_CHANGES), all taken: an answer is
+  measured as V8 serializes it (`serializedBytes`: a string two bytes a unit when any unit
+  is past Latin-1), the review's X1 a test (M2); `changed` names its indexes (`INDEXED
+  BY collection_changes`, `collection_erasures`), its plan held by a test (L2); the
+  `CONTROL` guard reads the source's syntax, so no spelling hides a use; a test of the
+  control record's one-second read (`CachedOwnerDO`); a key's delete entry kept through the
+  trim while the key is made again private under another writer; the doorbell below reads
+  `CONTROL`. An owner's own MCP client is an outside client to the object (every `/mcp`
+  and `/api` binding carries the client's origin), so its scripts take the outside gate in
+  the object as at the door; only the owner's app (origin none) and a run take the
+  maintenance gate, as their doors do. The details below are as built:
+  - **Profiles, data** (`doors/profiles.json`): `custom` (the owner's own choice: policy
+    `tools.custom`, else every tool), which every grant on `/mcp` and every API key names,
+    since each is a custom connector (`outside_clients.profile`, a free row `custom`);
+    `directory` (every tool but `code`, by OpenAI's plugin guidelines, "Tool independence
+    and exposure": no generic executor enabling operations not individually exposed for
+    review; Anthropic's software directory policy has no rule against an executor, its 2A,
+    5B and 5E cited for the tools' wording and annotations; both read 2026-11-03); and
+    `run` (the table but the run tools). A profile change moves the generation.
+  - **Owed when the Direction 7 directory submission is made (the founder's call):** the
+    listing gets its own MCP resource, a new door (Fact 11: the doors list gains it, and the
+    handles canary runs after), whose grants are pinned to `directory`; `/mcp`'s grants stay
+    `custom`. The object answers a caller's tools (`toolProfile`), asked by
+    `/mcp`, the run's MCP door and `/api` before any tool is listed or called; a refused
+    caller (revoked, fenced, ended run) gets `403` and no tool. Removed as redundant:
+    `RUN_TOOLS`/`runProfile()` (the `run` profile, which on merging slice ID also leaves out
+    the mailbox tools, `inbox_digest` among them, its door refusing a run `run_no_mailbox`)
+    and the `run_code` capability with
+    `authority.ts`'s `EXPLICIT` (code mode is the owner's choice of profile, not a
+    capability).
+  - **`code`** (`codeRun`): refused `code_mode_off` once the owner's policy turns
+    `hooks.codemode` off (on by default; hidden from the caller's tools while off),
+    `tool_not_served` unless the caller's profile holds it, and the control record's gate
+    (`control-gate.ts`) at its start and at each call: the kill switch for an outside
+    client, the maintenance gate for a run or the owner. The executor runs in the owner object (it binds
+    `HOOKS`); a script's tools are the caller's profile's others, each call the tool's own
+    door with the caller's binding, admitted again (grant, run, admission) and held to the
+    profile and switch as they stand then. Its wall bound is `CODEMODE_TIMEOUT_MS`
+    (`owner/src/codemode.ts`, slice LIM raises it to 300 s there), also checked at each
+    tool call: pi-codemode's timer never fired in workerd while a script called tools back
+    to back (623,807 calls in 101 s against a 2 s bound), so the object ends the execution
+    itself. The answer counts calls by outcome, lists the calls of tools that change
+    something (`landed`, run-length), and is refused `answer_too_large` past
+    `CODE_ANSWER_MAX` (31 MiB as V8 serializes it, under Workers RPC's 32 MiB).
+  - **Digests:** `inbox_digest` (the caller's unread mail from its own acknowledged cursor,
+    and the rooms' rows past an owner-wide change cursor) and `board_digest` (the board's),
+    each row as its head (`head_chars`, 512 by default) with its etag, and each delete or
+    clear as the row's deletion. Every collection write, delete and clear takes the
+    owner-wide `collection_clock`'s next change (`collection_rows.change`, and the erase
+    entry's `collection_history.change` with the erased private row's writer), each indexed
+    on `change` alone; held to `read_graph` and a private row's writer.
+  - Found by review, outside slice M: a delete's or clear's history entry for a key never
+    made again outlives the row, so history rows are bounded by keys ever erased, not by
+    `maxOwnerRows x maxRevisions` as the owner-bound guard assumes. Owed to slice LIM's
+    history-in-bytes change.
+  - Owner-bound guard: 42.3% (4,232,734,503.75 bytes); with every proposed raise 49.98%
+    (4,997,921,365.75), 2.08 MB under half.
+  - Tests: `owner/test/code-door.test.ts`, `owner/test/digests.test.ts`, grants' profile,
+    `doors/test/profiles.test.ts` (the real MCP client and hooks Worker), the tool guard's
+    profiles; the doors' tests now run the real hooks Worker behind the object's `HOOKS`.
+  - Owed by slice L (dark deploy), below: H2's probes and the live connector tests.
+  - Owed by the owner surface (tasks 2): an `/app/api` route for the owner to name a
+    client's profile and its `tools.custom` (the doors reach `grantSet` and `policyWrite`
+    today, no route names a profile).
+- [ ] H2 live, narrowed to code mode (owed to slice L's dark deploy, which needs the
+  founder's OK to deploy the hooks Worker): probe what workerd cannot show: a script past
+  its interrupt budget against the Worker's `cpu_ms`; the blocking isolation (10 s of a
+  script's compute against another owner's); whether `exchange` calls count as
+  subrequests of the owner object or the hooks Worker; and whether pi-codemode's own
+  deadline timer fires in production while a script calls tools back to back (in workerd
+  it did not, so the object checks the clock at each call, which stays); and, while a
+  script loops tool calls, whether a revoke, an owner app read and the alarm reach the
+  owner object promptly and the script's next call is refused (workerd starved every other
+  call, other owners' objects too, until the script ended).
+- [ ] Live connector tests (owed to slice L, `ui-test`): Claude and ChatGPT each add
+  TinyAssets as a custom connector and see exactly the custom profile, `code` among it, and
+  run one script of two tool calls; the owner names the client `directory`, and it lists
+  no `code`; each calls `inbox_digest` and `board_digest` and acts on what
+  they answer (an ack, a claim); a revoke refuses the client's next listing.
 - [x] Erasure's order: mark the owner erasing, end every run (today the sandbox's egress
   streams, the app's sockets and each live run's cancel through the sandbox, slice R's;
   slice S adds the sandbox's kill and the session files' purge), then
@@ -1145,9 +1230,8 @@ R, S, M and W.
   NOT ship before that outside record, or the explicit platform admit, exists; until
   then no door reaches erasure (`erase.ts`).
 - [ ] 0c (live, slice L): the dark deploy of the owner and gateway Workers.
-- [ ] Code mode's switch (slice M): the MCP door's `code` tool refuses unless the owner's
-  policy turns `hooks.codemode` on. Nothing in production reaches the executor before M,
-  so slice D tests only the policy's parse of the switch.
+- [x] Code mode's switch (slice M): the MCP door's `code` tool refuses (`code_mode_off`)
+  unless the owner's policy turns `hooks.codemode` on (`owner/test/code-door.test.ts`).
 - [ ] `test_hygiene_gate` reads no platform TypeScript test (slice D review L4): it
   reported "tests added 0, removed 0" for a slice that removed 21 test files, so a lost
   test there is caught only by review. Follow-up for the gate: count `it(` cases under
@@ -1248,11 +1332,11 @@ R, S, M and W.
   fails.
   Deferred from 3.4, as the Python's tick had them: no wake is claimed while the outside
   kill switch (`TINYASSETS_OUTSIDE_DENY`) is off or the owner is not admitted
-  (`require_work`: the claim reads the admission row in its own unit, built in F1). The kill switch reaches the alarm through a `DOORBELL` service
-  binding on the owner Worker, to a `tinyassets-doorbell` Worker that binds only
-  `DIRECTORY` and reads its `c:control` record; the `wakes` lane asks `DOORBELL.open()`
-  once a pass before it claims and claims nothing on closed or a failure, and the owner
-  config guard admits it as `{kv_namespaces: 1}`. Admission is the object's own row (2).
+  (`require_work`: the claim reads the admission row in its own unit, built in F1). The kill switch reaches the alarm through the owner Worker's own `CONTROL` binding
+  (slice M), the namespace of the `c:control` record alone: the `wakes` lane reads it
+  through `ControlGate` (`control-gate.ts`, the outside gate) once a pass before it claims,
+  and claims nothing on closed or a failure. No doorbell Worker is needed for it.
+  Admission is the object's own row (2).
 
 ## 8. Founder live test
 

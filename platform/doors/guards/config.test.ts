@@ -6,7 +6,7 @@
  * - `OWNER`: the owner Worker's `OwnerDO` namespace, by `script_name`, which must be the
  *   owner Worker's own SQLite class in the platform. The binder is the trust root and
  *   reaches every owner's object by name; only `src/binder.ts` names it.
- * - `OAUTH_KV` and `DIRECTORY`: two KV namespaces, distinct, with placeholder ids
+ * - `OAUTH_KV`, `DIRECTORY` and `CONTROL`: three KV namespaces, distinct, with placeholder ids
  *   (`not-provisioned-…`), so a deploy fails until cutover creates them.
  * - Three vars: `DCR_ENABLED` `"false"`; `OWNER_ISSUER` unset (`not-configured`) until
  *   the AuthKit slice names AuthKit's issuer, so every sign-in fails loudly; and
@@ -59,7 +59,7 @@ const CONNECT_METHODS: readonly string[] = Object.freeze(["exchange", "seal", "v
 const EGRESS = Object.freeze({ binding: "EGRESS", service: "tinyassets-gateway",
                                entrypoint: "EgressGateway" });
 const EGRESS_METHODS: readonly string[] = Object.freeze(["forward"]);
-const KV: readonly string[] = Object.freeze(["DIRECTORY", "OAUTH_KV"]);
+const KV: readonly string[] = Object.freeze(["CONTROL", "DIRECTORY", "OAUTH_KV"]);
 const VARS = Object.freeze({ DCR_ENABLED: "false", OWNER_ISSUER: "not-configured",
                              FOREIGN_ISSUERS: "[]" });
 
@@ -184,7 +184,8 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
       || kv.some((n: Record<string, unknown>) => Object.keys(n).sort().join() !== "binding,id"
                                                  || !/^not-provisioned-[a-z]+$/.test(String(n["id"])))
       || new Set(kv.map((n: { id?: unknown }) => n.id)).size !== kv.length) {
-    problems.push("kv_namespaces are exactly OAUTH_KV and DIRECTORY, distinct placeholders");
+    problems.push("kv_namespaces are exactly OAUTH_KV, DIRECTORY and CONTROL, distinct " +
+                  "placeholders");
   }
   return problems;
 }
@@ -194,7 +195,8 @@ const platform = platformConfigs();
 const gatewaySource = readFileSync(join(PLATFORM, "gateway", "src", "index.ts"), "utf8");
 
 describe("doors Worker config", () => {
-  it("binds OWNER, the gateway's connect and egress entrypoints, OAUTH_KV and DIRECTORY, " +
+  it("binds OWNER, the gateway's connect and egress entrypoints, OAUTH_KV, DIRECTORY and " +
+     "CONTROL, " +
      "and cannot deploy", () => {
     expect(doorsConfigProblems(config, platform, gatewaySource)).toEqual([]);
     expect(exportedMethods(gatewaySource).get("ConnectGateway"))
@@ -249,12 +251,18 @@ describe("doors Worker config", () => {
       { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" },
       { name: "OTHER", class_name: "X", script_name: "tinyassets-owner" }] } }],
     ["a real KV id", { kv_namespaces: [{ binding: "OAUTH_KV", id: "0f2ac74b498b48028cb68387c421e279" },
-                                       { binding: "DIRECTORY", id: "not-provisioned-directory" }] }],
+                                       { binding: "DIRECTORY", id: "not-provisioned-directory" },
+                                       { binding: "CONTROL", id: "not-provisioned-control" }] }],
     ["one shared KV namespace", { kv_namespaces: [{ binding: "OAUTH_KV", id: "not-provisioned-x" },
-                                                  { binding: "DIRECTORY", id: "not-provisioned-x" }] }],
-    ["a third KV namespace", { kv_namespaces: [
+                                                  { binding: "DIRECTORY", id: "not-provisioned-x" },
+                                                  { binding: "CONTROL", id: "not-provisioned-c" }] }],
+    ["no control namespace", { kv_namespaces: [
+      { binding: "OAUTH_KV", id: "not-provisioned-oauth" },
+      { binding: "DIRECTORY", id: "not-provisioned-directory" }] }],
+    ["a fourth KV namespace", { kv_namespaces: [
       { binding: "OAUTH_KV", id: "not-provisioned-oauth" },
       { binding: "DIRECTORY", id: "not-provisioned-directory" },
+      { binding: "CONTROL", id: "not-provisioned-control" },
       { binding: "CACHE", id: "not-provisioned-cache" }] }],
   ])("sees %s", (_what, change) => {
     expect(doorsConfigProblems({ ...config, ...change }, platform, gatewaySource))

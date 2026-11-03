@@ -7,7 +7,10 @@
  * two revisions can never serve different tools. GET and DELETE from an older client
  * get `405`. No session is kept anywhere.
  *
- * Every tool is a row of `tools.ts` calling its owner door with the binder's binding.
+ * Every tool is a row of `tools.ts` calling its owner door with the binder's binding, and
+ * a request is served only the tools of its caller's profile, which the object answers
+ * from the caller's grant (`toolProfile`) before any tool is listed; a caller the object
+ * refuses (no grant, a revoked one, an ended run) is answered that refusal, and no tool.
  * An owner refusal or invalid request is the tool's error result, with its reason;
  * anything else is a bug, logged in full and failing the call as `internal error`. The `Origin` and token checks run before this
  * (`index.ts`, `oauth.ts`); the handler is deliberately validation-free.
@@ -17,7 +20,7 @@ import {
 } from "@modelcontextprotocol/server";
 
 import type { Bound } from "./binder";
-import { callDoor, refusal, type Tool, toolTable } from "./tools";
+import { callDoor, refusal, type Tool, toolsNamed } from "./tools";
 
 export const SERVER_INFO = Object.freeze({ name: "tinyassets", version: "1.0.0" });
 
@@ -39,11 +42,8 @@ async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallTool
            structuredContent: result as Record<string, unknown> };
 }
 
-/**
- * The server one request is served by: every tool of the table (or of a run's profile),
- * bound to this caller.
- */
-export function server(bound: Bound, tools: readonly Tool[] = toolTable()): McpServer {
+/** The server one request is served by: the tools of its caller's profile, bound to it. */
+export function server(bound: Bound, tools: readonly Tool[]): McpServer {
   const mcp = new McpServer({ ...SERVER_INFO }, { capabilities: { tools: {} } });
   for (const tool of tools) {
     mcp.registerTool(tool.name, {
@@ -62,8 +62,28 @@ export function server(bound: Bound, tools: readonly Tool[] = toolTable()): McpS
   return mcp;
 }
 
-export function serveMcp(request: Request, bound: Bound,
-                         tools: readonly Tool[] = toolTable()): Promise<Response> {
+/**
+ * The tools the object serves this caller (`toolProfile`, from its grant or its run), or
+ * the object's refusal as the answer, with its reason.
+ */
+export async function profiled(bound: Bound): Promise<readonly Tool[] | Response> {
+  try {
+    return toolsNamed((await bound.stub.toolProfile(bound.binding)).tools);
+  } catch (error) {
+    const refused = refusal(error);
+    if (refused === null) {
+      throw error;
+    }
+    return Response.json({ error: refused.message },
+                         { status: refused.status, headers: { "Cache-Control": "no-store" } });
+  }
+}
+
+export async function serveMcp(request: Request, bound: Bound): Promise<Response> {
+  const tools = await profiled(bound);
+  if (tools instanceof Response) {
+    return tools;
+  }
   return createMcpHandler(() => server(bound, tools), { legacy: "stateless",
                                                       responseMode: "auto" })
     .fetch(request);
