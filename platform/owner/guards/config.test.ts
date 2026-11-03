@@ -115,7 +115,8 @@ const SANDBOX_QUEUES = Object.freeze({ producers: Object.freeze([
 const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
   FILES: Object.freeze({ service: "tinyassets-files",
                          bindings: Object.freeze({ r2_buckets: 1 }),
-                         secrets: Object.freeze(["FILES_KEYRING"]) }),
+                         secrets: Object.freeze(["FILES_KEYRING"]),
+                         vars: Object.freeze(["FILES_CIPHER"]) }),
   GATEWAY: Object.freeze({ service: "tinyassets-gateway", bindings: Object.freeze({}),
                            secrets: Object.freeze(["GATEWAY_KEYRING"]) }),
   HOOKS: Object.freeze({ service: "tinyassets-hooks",

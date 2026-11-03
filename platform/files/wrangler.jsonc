@@ -15,5 +15,8 @@
   "r2_buckets": [
     { "binding": "BLOBS", "bucket_name": "tinyassets-files" }
   ],
-  "secrets": { "required": ["FILES_KEYRING"] }
+  "secrets": { "required": ["FILES_KEYRING"] },
+  // How the data key encrypts (src/cipher.ts): R2's SSE-C, or AES-GCM in this Worker should
+  // slice L's live probe find SSE-C does not combine with the create-once put.
+  "vars": { "FILES_CIPHER": "ssec" }
 }

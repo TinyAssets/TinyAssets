@@ -431,3 +431,67 @@ describe("manifests", () => {
         .toMatch(/^a manifest/);
     });
 });
+
+describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
+  const sealed = () => new FilesService(createExecutionContext(),
+                                        { BLOBS: env.BLOBS, FILES_KEYRING: RING,
+                                          FILES_CIPHER: "aes-gcm" });
+
+  it("stores only sealed bytes, reads them whole and by range, under the owner's key alone",
+     async () => {
+    const space = ns();
+    const key = await keyOf(space);
+    const body = bytes("plain words the bucket never sees");
+    const hash = await sha(body);
+    expect(await sealed().putChunks(space, key, [{ sha256: hash, bytes: body }]))
+      .toEqual({ created: 1 });
+    expect(await sealed().putChunks(space, key, [{ sha256: hash, bytes: body }]))
+      .toEqual({ created: 0 });
+    const raw = new Uint8Array(await (await env.BLOBS.get(chunkKey(space, hash)))!.arrayBuffer());
+    expect(new TextDecoder().decode(raw)).not.toContain("plain words");
+    expect(raw.byteLength).toBe(body.byteLength + 12 + 16);
+    expect(await sealed().getChunks(space, key, [{ sha256: hash },
+                                                 { sha256: hash, offset: 6, length: 5 }]))
+      .toEqual([body, bytes("words")]);
+    // Another key minted for the very namespace opens nothing stored under the first.
+    const second = (await sealed().mintKey(space)).key;
+    expect((await failure(() => sealed().getChunks(space, second, [{ sha256: hash }]))).message)
+      .toBe("a stored object does not open under its owner's key");
+    expect((await failure(() => sealed().putChunks(space, key, [{ sha256: hash,
+                                                                  bytes: bytes("other") }])))
+      .message).toBe("the chunk's bytes do not match its sha256");
+  });
+
+  it("fails loudly on a changed byte, and on bytes moved under another chunk's key", async () => {
+    const space = ns();
+    const key = await keyOf(space);
+    const [one, two] = [bytes("first"), bytes("second")];
+    await sealed().putChunks(space, key, [{ sha256: await sha(one), bytes: one },
+                                          { sha256: await sha(two), bytes: two }]);
+    const stored = new Uint8Array(await (await env.BLOBS.get(chunkKey(space, await sha(one))))!
+      .arrayBuffer());
+    await env.BLOBS.put(chunkKey(space, await sha(two)), stored);
+    const twoSha = await sha(two);
+    expect((await failure(() => sealed().getChunks(space, key, [{ sha256: twoSha }])))
+      .message).toBe("a stored object does not open under its owner's key");
+    stored[20] = stored[20]! ^ 1;
+    await env.BLOBS.put(chunkKey(space, await sha(one)), stored);
+    const oneSha = await sha(one);
+    expect((await failure(() => sealed().getChunks(space, key, [{ sha256: oneSha }])))
+      .message).toBe("a stored object does not open under its owner's key");
+  });
+
+  it("seals manifest parts too, and refuses a cipher it does not know", async () => {
+    const space = ns();
+    const key = await keyOf(space);
+    const part = await sealed().putManifestPart(space, key, "20261103", 0, bytes("a manifest"));
+    expect(await sealed().getManifestPart(space, key, "20261103", 0, part.sha256))
+      .toEqual(bytes("a manifest"));
+    const odd = new FilesService(createExecutionContext(), { BLOBS: env.BLOBS,
+                                                             FILES_KEYRING: RING,
+                                                             FILES_CIPHER: "rot13" });
+    expect((await failure(() => odd.getChunks(space, key, [{ sha256: part.sha256 }]))).message)
+      .toBe("FILES_CIPHER is ssec or aes-gcm");
+  });
+});
+

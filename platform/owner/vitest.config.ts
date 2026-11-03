@@ -38,7 +38,7 @@ function transpiled(path: string): string {
  */
 function filesWorker(keyring: string) {
   const files = config(FILES);
-  const modules = ["index", "keys", "datakey"].map((name) => ({
+  const modules = ["index", "keys", "datakey", "cipher"].map((name) => ({
     type: "ESModule" as const,
     path: join(FILES, "src", name),
     contents: transpiled(join(FILES, "src", `${name}.ts`)),
