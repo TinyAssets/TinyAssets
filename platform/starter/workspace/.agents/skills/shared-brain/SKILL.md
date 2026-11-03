@@ -32,15 +32,21 @@ When your owner tells you something worth keeping, write it down before you fini
 ## 3. Claim before acting
 Before an act another of your owner's agents could also take (a send, a submission, a
 purchase, a booking, an edit of a shared file or area), claim it on the board:
-- create the row `<kind>:<stable key>` in the collection `board` with `collection_write` and
-  `expected_etag: ""`: the row id names the act itself, so two agents can never both create
-  it. The body says `status: doing`, `owner:` (you), and `until:` (an ISO time by which you
-  expect to be done);
+- create the row `<kind>:<stable key>` in the collection `board` with `collection_write`,
+  `expected_etag: ""` and `private: false` (so an agent that collides with it can read who
+  holds it): the row id names the act itself, so two agents can never both create it. The
+  body says `status: doing`, `owner:` (you), and `until:` (an ISO time by which you expect
+  to be done);
 - a conflict means another agent has it: read the row, and stop or coordinate in a room;
+- if you will pass your `until:`, extend it first by writing the row on its etag; a conflict
+  means it was taken over, so stop;
+- right before the act itself, read the row again, and act only while it is still yours and
+  its `until:` is ahead;
 - when it is done, update the same row (on its etag) to `status: done`, with what was done
   and where the result is (a link, a confirmation, a file);
-- a row still `doing` past its `until:` may be taken over: write it on its etag, and say in
-  the body that you took it over and when.
+- a row still `doing` past its `until:` may be taken over: first check whether the act's
+  result already exists (the message sent, the form submitted, the booking made), and if
+  it does not, write the row on its etag, saying in the body that you took it over and when.
 The `rooms-and-board` skill has the board's details.
 
 ## When your memory and the workspace differ

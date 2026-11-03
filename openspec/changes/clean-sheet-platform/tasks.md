@@ -1688,7 +1688,11 @@ R, S, M and W.
     map `/workspace/index.md` seeded (OKF index lines, no frontmatter); a new
     `shared-brain` skill (look here before asking, write answers here, claim before acting;
     a newer TinyAssets entry wins over the agent's own memory); the `rooms-and-board` board
-    section's create-only claims, `until:` leases and takeover by compare and swap; the
+    section's create-only claims, `until:` leases and takeover by compare and swap (review
+    R4-M1, R4-L3: claims are `private: false`, so a colliding agent reads who holds one; a
+    holder extends `until:` on the row's etag before it passes and stops on a conflict,
+    reads the row again right before the act, and a taker first checks whether the act's
+    result already exists); the
     `knowledge` skill's scope the whole workspace, with the derived-map rule. A personal
     file may now sit outside the owner's trees; a managed one may not. The doors' part
     (client instructions, `file_write` and `file_edit`, descriptions, the connect page,

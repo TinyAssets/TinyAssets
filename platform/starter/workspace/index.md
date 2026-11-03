@@ -1,7 +1,6 @@
 # The owner
 
 * [Profile](/workspace/USER.md) - who the owner is, their time zone and standing preferences, shared by every agent
-
 * [Goals](/workspace/goals/index.md) - what the owner wants; read before acting for them
 
 # Agents
@@ -12,5 +11,4 @@
 # Work
 
 * [Knowledge](/workspace/knowledge/index.md) - what the owner and their agents know, as linked pages
-* [Projects](/workspace/projects/) - one directory a project: its notes, decisions and outputs
-* [Uploads](/workspace/uploads/) - files the owner uploaded, kept exactly as received
+* [Projects](/workspace/projects/) - where agents keep a piece of work's notes, decisions and results, one directory each, made by the agent that starts it

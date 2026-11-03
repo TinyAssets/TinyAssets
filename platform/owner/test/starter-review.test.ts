@@ -273,7 +273,27 @@ describe("the shared brain's move of the profile (starter version 2)", () => {
     const moved = await notices(r, "starter_moved");
     expect(moved).toHaveLength(1);
     expect(moved[0]).toContain(`${OLD} is now /workspace/USER.md`);
+    expect(moved[0]).toContain("Delete it when you like");
     expect((await receipts(r))[OLD]).toMatchObject({ class: "personal" });  // kept, retired
+  });
+
+  it("tells an owner whose edited instructions may still read the old file to keep it " +
+     "(review R4-L2)", async () => {
+    const r = await rig();
+    const withAgents = (pkg: StarterPackage, said: string) => starterPackage({
+      ...pkg, files: [...pkg.files.slice(0, -1), file(`${AGENTS}/AGENTS.md`, said),
+                      pkg.files.at(-1)!] });
+    await pass(r, withAgents(v1, `Read ${OLD}.`));
+    for (const [path, value] of [[OLD, "- Call them Alex."], [`${AGENTS}/AGENTS.md`, "Mine."]]) {
+      const { entry } = await r.stub.fileStat(r.bind(null), { path: path! });
+      await r.stub.fileWrite(r.session(null), { path: path!, expected_etag: entry!.etag,
+                                                content: text(value!) });
+    }
+    await pass(r, withAgents(v2, "Read /workspace/USER.md."));
+    const [moved] = await notices(r, "starter_moved");
+    expect(moved).toContain(`${OLD} is now /workspace/USER.md`);
+    expect(moved).toContain(`keep it until then: ${AGENTS}/AGENTS.md.`);
+    expect(moved).not.toContain("Delete it when you like");
   });
 
   it("seeds the new template for an owner who never filled the old one", async () => {

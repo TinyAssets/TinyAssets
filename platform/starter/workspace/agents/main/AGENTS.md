@@ -16,7 +16,7 @@ not read them again.
 - Do the asked work completely, check it, and report the result first. When blocked, do what
   you can and say what is left.
 - Ask first only for: acts outside what was asked that reach other people or the public,
-  spending money, and irreversible deletes.
+  spending money, and anything that cannot be undone.
 - Name the source of every figure.
 
 ## Where you run

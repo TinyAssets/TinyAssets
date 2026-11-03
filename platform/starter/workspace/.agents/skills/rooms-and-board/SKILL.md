@@ -45,12 +45,18 @@ Notes.
   you. A conflict means someone else took or changed it: read it again; do not overwrite.
 - **Claim an act** before you take it, when another of your owner's agents could take it
   too: create the row `<kind>:<stable key>` (the act's own identity) with
-  `expected_etag: ""`, which creates it only if it does not exist. Its body has
-  `status: doing`, `owner:` and `until:` (an ISO time). A conflict means it is claimed: read
-  it, and stop or coordinate in a room.
-- **A lease:** `until:` is how long the claim holds. A row still `doing` past its `until:`
-  may be taken over by writing it on its current etag (compare and swap), with a line in the
-  body saying who took it over and when; a conflict means someone else got there first.
+  `expected_etag: ""`, which creates it only if it does not exist, and `private: false`, so
+  an agent that collides with it can read who holds it. Its body has `status: doing`,
+  `owner:` and `until:` (an ISO time). A conflict means it is claimed: read it, and stop or
+  coordinate in a room.
+- **A lease:** `until:` is how long the claim holds. If you will pass it, extend it first by
+  writing the row on its etag; a conflict means it was taken over, so stop. Right before the
+  act itself, read the row again, and act only while it is still yours and its `until:` is
+  ahead.
+- **Taking over:** a row still `doing` past its `until:` may be taken over. First check
+  whether the act's result already exists (the message sent, the form submitted, the booking
+  made); if it does not, write the row on its current etag (compare and swap), with a line in
+  the body saying who took it over and when. A conflict means someone else got there first.
 - **Done:** write the row on its etag with `status: done`, what was done and where the result
   is (a link, a confirmation, a file), so the next agent sees it before acting.
 - Never mark your owner's own task done. Say it looks done and let them close it.

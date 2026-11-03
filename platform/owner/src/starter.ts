@@ -448,9 +448,19 @@ export class Starter {
             edited.join(", ")}. Ask your agent to merge, or delete the ${NEWER} file.`);
       }
       if (moved.length > 0) {
+        // The managed files still holding text from before this version (the owner's edits,
+        // and proposals not adopted): they may still name the old place (review R4-L2).
+        const held = this.#sql.exec<{ path: string }>(
+          "SELECT path FROM starter_receipts WHERE class = 'managed' AND state IN " +
+            "('edited', 'proposed') ORDER BY path").toArray()
+          .map((row) => row.path).filter((path) => this.#deps.files.stat(path) !== null);
         this.#deps.notice("starter_moved", `Your agent's files moved (version ${pkg.version}): ${
-          moved.join("; ")}. Every one of your agents now reads the new place. The old file is ` +
-          "left as it was and nothing reads it any more: delete it when you like.");
+          moved.join("; ")}. The starter's files now read the new place, and the old file is ` +
+          "left as it was. " + (held.length === 0
+            ? "Delete it when you like, once nothing of your own still names it."
+            : `${held.length === 1 ? "This file keeps" : "These files keep"} your own text ` +
+              `until you adopt the ${NEWER} copy beside ${held.length === 1 ? "it" : "each"}, ` +
+              `and may still read the old file, so keep it until then: ${held.join(", ")}.`));
       }
       if (withdrawn.length > 0) {
         this.#deps.notice("starter_withdrawn", `A TinyAssets update (version ${pkg.version}) ` +
