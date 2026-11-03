@@ -72,10 +72,11 @@ test, cutover.
   against its JWKS; `OWNER_ISSUER` set to AuthKit's issuer (the config guard pins it
   unset until then); production Google and GitHub apps (founder dashboard work). Until
   then the deployed entry refuses every sign-in loudly (`UNWIRED`). No person registers
-  WorkOS settings by hand: the doors deploy copies `WORKOS_API_KEY` from the production
-  host's `/etc/tinyassets/env` into the doors Worker's secrets (the code exchange needs
-  it) and registers the redirect URI with the WorkOS API idempotently (`GET
-  /user_management/redirect_uris`, then `POST` only if it is missing, never deleting).
+  WorkOS settings by hand: the deploy kit sets `WORKOS_API_KEY` on the doors Worker from
+  the `platform-production` environment's secret store, never from a host (Direction 8;
+  the founder moves it there once), and registers the redirect URI with the WorkOS API
+  idempotently (`GET /user_management/redirect_uris`, then `POST` only if it is missing,
+  never deleting).
   Owner creation by explicit platform admit at sign-up (the binder can't tell sign-up from
   sign-in today); until then a fresh object is created admitted on first sign-in, and
   erasure ends in `deleteAll` plus the `erased` row.
@@ -83,16 +84,24 @@ test, cutover.
   data: `OWNER_ISSUER` and the `UPSTREAM` record (endpoints, client id, the identity's
   deletion URL), both `not-configured` as checked in (the config guard), filled by the
   deploy kit (`platform/deploy/deploy.ts`) from the issuer's live discovery, which must name
-  `OWNER_ISSUER` exactly and list `auth_time`, or nothing deploys; the secret
+  `OWNER_ISSUER` exactly, declare `client_secret_post` and https endpoints, and show
+  `auth_time` (one real AuthKit token's claims, `OWNER_TOKEN_CLAIMS`, or else the
+  discovery's `claims_supported`; an absent field is unknown, and unknown stops the kit),
+  or nothing deploys (review, research 3b); the secret
   `WORKOS_API_KEY`. `prompt=login`, `scope=openid` and the PKCE challenge again as the ID
-  token's `nonce`. A half-configured Worker throws (`upstreamOf`). The deploy kit copies
-  the key and registers the redirect URI idempotently; it is not run. **Explicit platform
+  token's `nonce`. A half-configured Worker throws (`upstreamOf`), and only at sign-in:
+  `upstreamOf` is read lazily, so a bad `UPSTREAM` breaks sign-in alone and every other
+  door serves (review L1). The deploy kit sets the key and registers the redirect URI
+  idempotently; it is not run. **Explicit platform
   admit**: a fresh object is `pending` (migration 10's row; the admission guard's pin
   updated in place, nothing deployed) and every door and lane refuses it
   (`owner_unadmitted`) until `admissionSet {admit: true}` from the reserved caller, which
   the sign-in callback sends (`binder.ts`'s `bindPlatform`, the admin path's one constant,
   `admin/src/caller.ts`) when the directory holds no `o:` record of the owner, then writes
-  `o:<owner>` admitted. The admit is idempotent and lifts no suspension. Owed live: the
+  `o:<owner>` admitted. An owner marked erasing or erased refuses the admit, and the
+  callback refuses the sign-in. Owners migrated at cutover are admitted by the import
+  (task 9): it admits each imported owner's object through the platform caller and writes
+  its `o:` record, as sign-up does, so no imported owner is ever `pending` (review L8). The admit is idempotent and lifts no suspension. Owed live: the
   exact `iss` against a live token, and AuthKit's production Google and GitHub apps.
 - [x] The AuthKit upstream refuses an ID token without `auth_time`: there is no clock
   fallback (this replaces the research's "use the binder's own clock"), since the fence
@@ -160,15 +169,29 @@ test, cutover.
   a minute; a revoke or a set to `revoked` marks the row, a forget removes it; `keyList`
   and the owner surface's `keys/list`. A held key request is a policy card of type
   `api_key_request` whose scopes must be the grant's, marked applied in the mint's unit.
-- [x] Rate limits, by the founder's rule (no invented limits; slice L): no per-key or
-  per-owner request cap on an authenticated caller, whom the tier's simultaneous runs, the
-  owner's own settings and vendors' limits already bound. Only what an unauthenticated
-  caller can make the platform do is bounded, as security (`doors/src/throttle.ts`, two
-  `ratelimits` bindings keyed by `CF-Connecting-IP`, `limits-audit.md`): the CIMD metadata
-  fetches an unknown `client_id` triggers at `/authorize`, `/oauth/token` and
-  `/oauth/revoke` (20 a minute; a client the provider's cache holds costs nothing and is
-  never counted), and sign-in attempts (60 a minute). Miniflare runs the binding; its
-  price and per-location counting are Cloudflare's.
+- [x] Rate limits, by the founder's rule (no invented limits; slice L, after its review
+  and research 3a): no per-key or per-owner request cap on an authenticated caller, whom
+  the tier's simultaneous runs, the owner's own settings and vendors' limits already
+  bound. Only unauthenticated work that costs the platform something is counted, as
+  security (`doors/src/throttle.ts`, three `ratelimits` bindings keyed by the caller's
+  IPv4 address or IPv6 /64, `limits-audit.md` "security" with each number's derivation):
+  - **sign-in starts** (23 a minute, from KV's included writes): `/authorize`, the
+    consent decision, a callback that recovered its state;
+  - **metadata fetches** (23 a minute; no cost figure prices a fetch, so it equals the
+    sign-in bound): counted at `/authorize`, and at the token and revoke endpoints only
+    on failure, since Claude's and ChatGPT's shared backend addresses refresh there; a
+    client the provider's cache holds is never counted;
+  - **failures** (115 a minute, from KV's included reads at 2 a failure): a bearer or
+    key the doors cannot validate, a token-endpoint failure (per address and client), an
+    inbound hook refused before or at its check.
+
+  A cheap refusal (a non-navigation, a malformed request) is never counted. The client id
+  is found as the OAuth provider finds it: HTTP Basic (its scheme in any case), then a
+  `client_assertion`'s issuer, then the form. An owner object the runtime reports
+  overloaded answers `429`, recorded as a technical ceiling. A carrier NAT waits a minute
+  at most. Miniflare runs the binding; its price and per-location counting are
+  Cloudflare's. Owed with the routes: one zone WAF rule on `/authorize` and
+  `/oauth/token` as an edge backstop (`platform/deploy/checklist.md`).
 - [x] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
   the agent's doors (5, A4): `converse`, `run_graph`, `run_status` and `run_cancel` in
   `tools.ts` (the first two destructive, not idempotent and open world, the agent acting
@@ -219,15 +242,18 @@ test, cutover.
   the object's `fileUploadBegin`/`fileUploadCommit` around it and the whole-file digest
   (`Repr-Digest`) computed and served as it streams; the object's chunk doors stay for
   in-object callers (the environment, the sync agent's small files).
-  Slice L (`doors/src/file-bytes.ts`): the owner surface's `files/upload/begin`,
-  `PUT files/upload/<intent_id>` and `files/upload/commit`. The binder reads the intent's
-  plan and the owner's namespace (`fileUploadTarget`), cuts the body into the plan's
-  chunks one at a time, refuses bytes that are not the declared chunk, puts the ones still
-  needed two a call (R2 checks each hash again), reports them (`fileUploadStored`), and
-  serves the body's SHA-256 as `Repr-Digest`, checking one the client sent. Owed: a
-  streamed download, and an outside client's file-bytes tool; a binder put racing an
-  erasure's mark leaves its chunk in the erased namespace, which the erasure's prefix
-  delete after its wipe takes.
+  Slice L (`doors/src/file-bytes.ts`, after its review, M4): the owner surface's
+  `files/upload/begin`, one `PUT files/upload/<intent_id>/<index>` a chunk, and
+  `files/upload/commit` (`files/upload/abort` ends one). One request carries one chunk, at
+  most 4 MiB, so no request ceiling bounds a file: the policy's `max_file_bytes` does. The
+  chunks go in any order and again after any failure; a chunk the intent holds is
+  answered without a second put, so an upload resumes. The binder reads the intent's plan
+  and the owner's namespace (`fileUploadTarget`), refuses bytes that are not the declared
+  chunk, puts a needed one (R2 checks its hash again), reports it (`fileUploadStored`),
+  and answers the chunk's SHA-256 as `Content-Digest`, checking one the client sent. A
+  refusal mid-upload answers its fixed code, never a 500. Owed: a streamed download, and
+  an outside client's file-bytes tool; a binder put racing an erasure's mark leaves its
+  chunk in the erased namespace, which the erasure's prefix delete after its wipe takes.
 
 ## 3. Owner object
 
@@ -506,10 +532,11 @@ account and no deploy.
   a prefix, and matched exactly by the provider (RFC 9700 §4.1); OpenRouter's key exchange
   takes any callback: `.../callback/openrouter_user_models_v1/<state>`; Sign in with
   ChatGPT's hosted client and registration once OpenAI approves (founder), which then
-  drops its record's `unwired`. Slice L: as data, each OAuth record's
-  `oauth.redirect_registration` (`exact` at its own callback, or a key exchange's
-  `any_callback` with its state's segment), held by the checker to the URI the doors derive
-  (`redirectOf`), listed for the founder in `platform/deploy/checklist.md`. Owed: the
+  drops its record's `unwired`. Slice L: as data, one registration a source in
+  `doors/redirect-registrations.json` (`exact` at its own callback, or a key exchange's
+  `any_callback` with its state's segment), kept apart from the source records the sandbox
+  runner bundles, held by a guard to the URI the doors derive (`redirectOf`), listed for
+  the founder in `platform/deploy/checklist.md`. Owed: the
   registrations at the providers themselves (only `chatgpt`, parked, needs one today).
 - [x] The key exchange's residual mix-up, before any uncurated source: a source on an
   authorization server the platform does not curate (an MCP server, or a source from an
@@ -1349,11 +1376,28 @@ R, S, M and W.
   object's `ownerErase`, then deletes the AuthKit identity (a failure there is retried at
   that identity's next sign-in, which is refused). A wiped object that lost its tombstone
   is `pending`, never admitted, and no sign-in admits the name again
-  (`doors/test/doors-live.test.ts`). Residual: a location whose KV cached the owner's
-  missing `o:` within 60 s of its sign-up could admit a crash-wiped name once.
+  (`doors/test/doors-live.test.ts`). After slice L's review (H3, M3) the door only marks:
+  the object's mark is durable first, and the object's own erasure job puts the owner on
+  the erasure queue at the mark and at each attempt until the doors confirm, and retries
+  every outside step until each is done: the doors' consumer writes the directory, deletes
+  the keys and hooks, revokes the grants and deletes the AuthKit identity; the job itself
+  kills the sandboxes (failing loudly without the sandbox binding) and deletes R2 by
+  prefix. Each step is safe to run again, so a half-done erasure always finishes. The
+  former residual (a location whose KV cached the owner's missing `o:` could admit a
+  crash-wiped name once) is closed: the wipe waits for the doors' confirmation, which
+  follows the durable `o:` erased, and a day under the mark (`PUT_GRACE_MS`), far past
+  KV's 60 s cache, and a marked object refuses the platform's admit (review L2).
 - [ ] 0c (live, slice L): the dark deploy of the owner and gateway Workers. The kit is
-  built (`platform/deploy/deploy.ts`, all six Workers with no route); the founder's run is
-  owed, after slice S lands.
+  built (`platform/deploy/deploy.ts`, all six Workers with no route) and runs from the
+  manual workflow `.github/workflows/platform-deploy.yml`, which the founder approves
+  through the `platform-production` environment; its secrets come from that store, never
+  a host (review H2, research 3c). A failed lookup stops it, never reads as absent; a held
+  `GATEWAY_KEYRING` is never generated or replaced, and is rotated only by adding a key;
+  the control record is written only when the API answers it is absent; a later deploy
+  uploads a version and deploys it, never touching a route; with `--routes` it stops
+  first on any route another Worker holds that overlaps the doors' (wrangler 4.154 refuses
+  an identical one; Cloudflare gives an overlap to the most specific). The founder's run
+  is owed (`platform/deploy/checklist.md`).
 - [x] Code mode's switch (slice M): the MCP door's `code` tool refuses (`code_mode_off`)
   unless the owner's policy turns `hooks.codemode` on (`owner/test/code-door.test.ts`).
 - [ ] `test_hygiene_gate` reads no platform TypeScript test (slice D review L4): it
@@ -1514,7 +1558,8 @@ R, S, M and W.
 ## 9. Cutover window
 
 - [ ] Full backup; each owner's broker stores imported into their object and each
-  volume into object storage; DNS switched; the droplet paths deleted. S36 reads
+  volume into object storage, each imported owner admitted (`admissionSet` from the
+  platform caller, and its `o:` record), as sign-up admits one; DNS switched; the droplet paths deleted. S36 reads
   converged.
 
 ## 10. The plan's later slices

@@ -5,18 +5,26 @@
  * `--routes`) the routes filled; it holds the owner issuer to its live discovery exactly;
  * it registers the WorkOS redirect URI only when missing and never deletes one; and it sets
  * the routing key on the doors and the owner together or not at all.
+ *
+ * Slice L's review (H2, research 3b and 3c): a failed lookup is never "absent"; a held
+ * keyring is never replaced, and is rotated only by adding a key; the control record is
+ * written only when the API answers that it is absent; an absent discovery field is unknown,
+ * and unknown stops the kit; the kit runs from an approved manual workflow whose secrets come
+ * from the environment's store.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../owner/guards/sources";
 import {
-  BUCKET, CALLBACK, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN, NAMESPACES,
-  registerRedirect, ROUTES, SECRETS, secretPlan, upstreamFrom, WORKERS,
+  BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
+  kvPresent, listed, NAMESPACES, namespacesOf, registerRedirect, ROUTES, routesHeldElsewhere,
+  SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
 } from "../../deploy/deploy";
 import { parseControl } from "../src/directory";
+import { upstreamConfig } from "../src/oidc";
 
 type Json = Record<string, unknown>;
 
@@ -27,6 +35,25 @@ const UPSTREAM = { issuer: "https://auth.test",
                              jwks_uri: "https://auth.test/j",
                              user_delete: "https://api.workos.com/user_management/users/{sub}" } };
 const IDS = Object.fromEntries(Object.keys(NAMESPACES).map((binding) => [binding, `id-${binding}`]));
+const NONE = () => undefined;
+const RING = JSON.stringify({ active: "k1", keys: { k1: "a" } });
+const ROTATED = JSON.stringify({ active: "k2", keys: { k1: "a", k2: "b" } });
+
+/** A Cloudflare API that answers each path with the answer `answers` names, or a 500. */
+function api(answers: Record<string, CfAnswer | Error>) {
+  const calls: string[] = [];
+  const call = async (path: string, init?: RequestInit): Promise<CfAnswer> => {
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    const answer = answers[path];
+    if (answer instanceof Error) {
+      throw answer;
+    }
+    return answer ?? { status: 500, body: { success: false, errors: [{ code: 10000 }] } };
+  };
+  return Object.assign(call, { calls });
+}
+
+const ok = (result: unknown): CfAnswer => ({ status: 200, body: { success: true, result } });
 
 describe("the deploy kit", () => {
   it("names every Worker the platform holds, each after the Workers it binds", () => {
@@ -100,22 +127,62 @@ describe("the deploy kit", () => {
     expect(control?.tiers).not.toBeNull();
   });
 
-  it("holds the owner issuer to its live discovery exactly", async () => {
-    const discovery = (body: Json) => async () => Response.json(body);
-    const good = { issuer: "https://auth.test", authorization_endpoint: "https://auth.test/a",
-                   token_endpoint: "https://auth.test/t", jwks_uri: "https://auth.test/j",
-                   claims_supported: ["sub", "auth_time"] };
-    expect((await upstreamFrom("https://auth.test", "c", discovery(good))).record)
-      .toEqual(UPSTREAM.record);
-    await expect(upstreamFrom("https://auth.test", "c",
+  const discovery = (body: Json) => async () => Response.json(body);
+  const good = { issuer: "https://auth.test", authorization_endpoint: "https://auth.test/a",
+                 token_endpoint: "https://auth.test/t", jwks_uri: "https://auth.test/j",
+                 token_endpoint_auth_methods_supported: ["client_secret_post"],
+                 claims_supported: ["sub", "auth_time"] };
+
+  it("holds the owner issuer to its live discovery exactly, in a record the doors accept",
+     async () => {
+    const made = await upstreamFrom("https://auth.test", "c", undefined, discovery(good));
+    expect(made.record).toEqual(UPSTREAM.record);
+    expect(() => upstreamConfig(JSON.stringify(made.record))).not.toThrow();
+    await expect(upstreamFrom("https://auth.test", "c", undefined,
                               discovery({ ...good, issuer: "https://auth.test/" })))
       .rejects.toThrow(/not OWNER_ISSUER/);
-    await expect(upstreamFrom("https://auth.test", "c",
+    await expect(upstreamFrom("https://auth.test", "", undefined, discovery(good)))
+      .rejects.toThrow(/WORKOS_CLIENT_ID/);
+    await expect(upstreamFrom("http://auth.test", "c", undefined, discovery(good)))
+      .rejects.toThrow();
+    await expect(upstreamFrom("https://auth.test", "c", undefined, async () =>
+      new Response("down", { status: 503 }))).rejects.toThrow(/503/);
+  });
+
+  it("stops on an absent discovery field: unknown never passes (research 3b)", async () => {
+    const without = (field: string) => {
+      const body: Json = { ...good };
+      delete body[field];
+      return discovery(body);
+    };
+    for (const field of ["claims_supported", "token_endpoint_auth_methods_supported",
+                         "token_endpoint", "jwks_uri", "authorization_endpoint"]) {
+      await expect(upstreamFrom("https://auth.test", "c", undefined, without(field)))
+        .rejects.toThrow(/unknown/);
+    }
+    await expect(upstreamFrom("https://auth.test", "c", undefined,
                               discovery({ ...good, claims_supported: ["sub"] })))
       .rejects.toThrow(/auth_time/);
-    await expect(upstreamFrom("https://auth.test", "", discovery(good)))
-      .rejects.toThrow(/WORKOS_CLIENT_ID/);
-    await expect(upstreamFrom("http://auth.test", "c", discovery(good))).rejects.toThrow();
+    await expect(upstreamFrom("https://auth.test", "c", undefined,
+      discovery({ ...good, token_endpoint_auth_methods_supported: ["private_key_jwt"] })))
+      .rejects.toThrow(/client_secret_post/);
+  });
+
+  it("settles auth_time by one real token's claims before the discovery's list", async () => {
+    const quiet = { ...good, claims_supported: undefined };
+    const claims = (body: Json) => JSON.stringify(body);
+    expect((await upstreamFrom("https://auth.test", "c",
+                               claims({ iss: "https://auth.test", sub: "user_1",
+                                        auth_time: 1_700_000_000 }), discovery(quiet))).issuer)
+      .toBe("https://auth.test");
+    await expect(upstreamFrom("https://auth.test", "c",
+                              claims({ iss: "https://auth.test", sub: "user_1" }),
+                              discovery(good))).rejects.toThrow(/no auth_time/);
+    await expect(upstreamFrom("https://auth.test", "c",
+                              claims({ iss: "https://other.test", auth_time: 1 }),
+                              discovery(good))).rejects.toThrow(/iss/);
+    await expect(upstreamFrom("https://auth.test", "c", "not json", discovery(good)))
+      .rejects.toThrow(/JSON/);
   });
 
   it("registers the WorkOS redirect URI only when missing, and never deletes one", async () => {
@@ -136,16 +203,152 @@ describe("the deploy kit", () => {
   });
 
   it("sets the routing key on the doors and the owner together, or not at all", () => {
-    const none = secretPlan({ doors: [], owner: [], gateway: [], sandbox: [] }, new Set());
+    const none = secretPlan({ doors: [], owner: [], gateway: [], sandbox: [] }, new Set(), NONE);
     expect(none.filter(({ name }) => name === "ROUTING_MAC_KEY").map(({ worker }) => worker)
       .sort()).toEqual(["doors", "owner"]);
     const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"],
                               owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
-                              sandbox: ["E2B_API_KEY"] }, new Set());
+                              sandbox: ["E2B_API_KEY"] }, new Set(), NONE);
     expect(both).toEqual([{ worker: "doors", name: "INBOUND_SLACK_SIGNING_SECRET" }]);
-    expect(() => secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set()))
+    expect(() => secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(), NONE))
       .toThrow(/--rotate/);
-    expect(secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(["ROUTING_MAC_KEY"]))
-      .filter(({ name }) => name === "ROUTING_MAC_KEY")).toHaveLength(2);
+    expect(secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(["ROUTING_MAC_KEY"]),
+                      NONE).filter(({ name }) => name === "ROUTING_MAC_KEY")).toHaveLength(2);
+  });
+
+  it("never generates or replaces a held keyring, and rotates one only by adding a key",
+     () => {
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "INBOUND_SLACK_SIGNING_SECRET"],
+                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                   sandbox: ["E2B_API_KEY"] };
+    const values = (ring: string) => (name: string) =>
+      name === "GATEWAY_KEYRING" ? ring : undefined;
+    expect(secretPlan(held, new Set(), values(RING))).toEqual([]);
+    expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(RING)))
+      .toThrow(/adding a key/);
+    expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]),
+                            values(JSON.stringify({ active: "k3", keys: { k1: "a", k2: "b" } }))))
+      .toThrow(/active key among its keys/);
+    expect(secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(ROTATED)))
+      .toEqual([{ worker: "gateway", name: "GATEWAY_KEYRING" }]);
+    const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
+    // The kit never makes a secret's value in a deploy: only keyring-new and keyring-add,
+    // which write a local file for the founder to store.
+    expect(kit.match(/randomBytes\(/g)).toHaveLength(2);
+  });
+
+  it("never reads a failed secret listing as no secrets", async () => {
+    const path = "/accounts/a/workers/scripts/tinyassets-doors/secrets";
+    expect(await secretsOf(api({ [path]: ok([{ name: "WORKOS_API_KEY", type: "secret_text" }]) }),
+                           "a", "tinyassets-doors")).toEqual(["WORKOS_API_KEY"]);
+    expect(await secretsOf(api({ [path]: { status: 404, body: { success: false,
+                                                                errors: [{ code: 10007 }] } } }),
+                           "a", "tinyassets-doors")).toBeNull();
+    for (const answer of [
+      { status: 500, body: {} }, { status: 403, body: { success: false, errors: [{ code: 10000 }] } },
+      { status: 404, body: { success: false, errors: [{ code: 7003 }] } },
+      { status: 200, body: { success: false } }, { status: 200, body: { success: true } },
+    ] as CfAnswer[]) {
+      await expect(secretsOf(api({ [path]: answer }), "a", "tinyassets-doors"))
+        .rejects.toThrow(/failed/);
+    }
+    await expect(secretsOf(api({ [path]: new Error("network down") }), "a", "tinyassets-doors"))
+      .rejects.toThrow(/network down/);
+  });
+
+  it("calls the control record absent only when the API answers it is", async () => {
+    const path = "/accounts/a/storage/kv/namespaces/n/values/c%3Acontrol";
+    expect(await kvPresent(api({ [path]: { status: 200, body: {} } }), "a", "n", "c:control"))
+      .toBe(true);
+    expect(await kvPresent(api({ [path]: { status: 404, body: { success: false,
+                                                                errors: [{ code: 10009 }] } } }),
+                           "a", "n", "c:control")).toBe(false);
+    for (const answer of [{ status: 500, body: {} }, { status: 404, body: {} },
+                          { status: 401, body: { errors: [{ code: 10000 }] } }] as CfAnswer[]) {
+      await expect(kvPresent(api({ [path]: answer }), "a", "n", "c:control"))
+        .rejects.toThrow(/failed/);
+    }
+  });
+
+  it("never reads a failed namespace, bucket or queue listing as absent", async () => {
+    const page = (n: number) => `/accounts/a/storage/kv/namespaces?per_page=100&page=${n}`;
+    const full = Array.from({ length: 100 }, (_, i) => ({ id: `i${i}`, title: `t${i}` }));
+    const found = await namespacesOf(api({ [page(1)]: ok(full),
+                                           [page(2)]: ok([{ id: "x", title: "tinyassets-control" }]) }),
+                                     "a");
+    expect(found.get("tinyassets-control")).toBe("x");
+    await expect(namespacesOf(api({ [page(1)]: ok(full) }), "a")).rejects.toThrow(/failed/);
+    expect(listed("tinyassets-files-old\nother", "tinyassets-files")).toBe(false);
+    expect(listed("name:           tinyassets-files\n", "tinyassets-files")).toBe(true);
+    expect(listed("│ q1 │ tinyassets-sandbox-ring │ 0 │", "tinyassets-sandbox-ring")).toBe(true);
+    const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
+    // wrangler's runner throws on any non-zero exit, so a failed listing stops the kit.
+    expect(kit).toMatch(/if \(result\.status !== 0\) \{\s*\/\/[^\n]*\n\s*throw new Error/);
+  });
+
+  it("refuses routes another Worker holds before deploying anything", async () => {
+    const zone = "/zones?name=tinyassets.io";
+    // The live proxy's routes (deploy/cloudflare-worker/wrangler.toml), plus the doors' own
+    // and an unrelated one.
+    const held = await routesHeldElsewhere(api({
+      [zone]: ok([{ id: "z" }]),
+      "/zones/z/workers/routes": ok([
+        { pattern: "tinyassets.io/mcp*", script: "tinyassets-mcp-proxy" },
+        { pattern: "tinyassets.io/app*", script: "tinyassets-mcp-proxy" },
+        { pattern: "tinyassets.io/api*", script: "tinyassets-mcp-proxy" },
+        { pattern: "tinyassets.io/.well-known/oauth-protected-resource*",
+          script: "tinyassets-mcp-proxy" },
+        { pattern: "tinyassets.io/oauth/*", script: "tinyassets-doors" },
+        { pattern: "tinyassets.io/site*", script: "site" },
+        { pattern: "tinyassets.io/hooks/other" },
+      ]),
+    }), "tinyassets-doors", ROUTES);
+    expect(held).toEqual([
+      "tinyassets.io/mcp* (held by tinyassets-mcp-proxy)",
+      "tinyassets.io/app* (held by tinyassets-mcp-proxy)",
+      "tinyassets.io/api* (held by tinyassets-mcp-proxy)",
+      "tinyassets.io/.well-known/oauth-protected-resource* (held by tinyassets-mcp-proxy)"]);
+    await expect(routesHeldElsewhere(api({ [zone]: ok([{ id: "z" }]) }), "tinyassets-doors", ROUTES))
+      .rejects.toThrow(/could not be read/);
+    await expect(routesHeldElsewhere(api({}), "tinyassets-doors", ROUTES))
+      .rejects.toThrow(/could not be read/);
+  });
+
+  it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",
+     async () => {
+    const e2b = (alias: number, exists: unknown, tag = 200) => async (url: string) =>
+      url.includes("/aliases/") ? Response.json({ templateID: "t1" }, { status: alias })
+        : Response.json({ exists }, { status: tag });
+    expect(await templateReady("tinyassets-sandbox:v1", "k", e2b(200, true))).toBe(true);
+    expect(await templateReady("tinyassets-sandbox:v1", "k", e2b(200, false))).toBe(false);
+    expect(await templateReady("tinyassets-sandbox:v1", "k", e2b(404, true))).toBe(false);
+    await expect(templateReady("tinyassets-sandbox:v1", "k", e2b(500, true))).rejects.toThrow();
+    await expect(templateReady("tinyassets-sandbox:v1", "k", e2b(200, true, 503)))
+      .rejects.toThrow();
+    await expect(templateReady("tinyassets-sandbox", "k", e2b(200, true))).rejects.toThrow();
+  });
+
+  it("deploys a later version without touching routes, and names its version", () => {
+    expect(versionOf("Uploaded tinyassets-owner\nWorker Version ID: " +
+                     "0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n"))
+      .toBe("0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b");
+    expect(() => versionOf("Uploaded tinyassets-owner")).toThrow(/Version ID/);
+  });
+
+  it("runs from a manual workflow the founder approves, its secrets from the environment",
+     () => {
+    const workflow = readFileSync(join(PLATFORM, "..", ".github", "workflows",
+                                       "platform-deploy.yml"), "utf8");
+    expect(workflow).toMatch(/^on:\s*\n\s+workflow_dispatch:/m);
+    expect(workflow).not.toMatch(/^\s+(push|pull_request|schedule):/m);
+    expect(workflow).toMatch(/environment: platform-production/);
+    expect(workflow).not.toMatch(/ssh|droplet|\/etc\/tinyassets/i);
+    for (const name of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_API_KEY",
+                        "WORKOS_CLIENT_ID", "OWNER_ISSUER", "E2B_API_KEY", "ROUTING_MAC_KEY",
+                        "GATEWAY_KEYRING"]) {
+      expect(workflow).toContain(`${name}: \${{ secrets.${name} }}`);
+    }
+    const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
+    expect(kit).not.toMatch(/\/etc\/tinyassets/);
   });
 });

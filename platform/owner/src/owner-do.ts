@@ -1594,7 +1594,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#cancelInSandbox(this.#runs.liveRuns());
       },
       // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
-      // state of them deleted (slice S review H-6). None bound, none was ever made.
+      // state of them deleted (slice S review H-6).
       // A config with no sandbox bound fails the erasure loudly, never skips it.
       sandboxes: async () => {
         if (this.env.SANDBOX === undefined) {

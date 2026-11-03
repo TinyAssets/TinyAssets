@@ -381,7 +381,11 @@ The doors SHALL sign the owner in with the code flow and PKCE against `OWNER_ISS
 - **THEN** the sign-in fails and no owner is bound
 
 ### Requirement: Sign-up is the platform's explicit admit, and erasure its outside record
-The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased. The owner's erasure SHALL write that record first, delete the owner's `k:`, `h:` and `i:` entries and revoke its every OAuth grant, then erase the object, then delete the identity at the issuer.
+The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased or whose object is marked erasing. The erasure door SHALL only mark the object erasing, durable before it answers. The object's erasure job SHALL then put the owner on the erasure queue at its mark and at each attempt until the doors confirm, and the doors' consumer SHALL, each step safe to run again, write the owner's `o:` record erased, delete its `k:`, `h:` and `i:` entries, revoke its every OAuth grant and delete the identity at the issuer, then confirm; the object SHALL wipe only after that confirmation, so a half-done erasure always finishes.
+
+#### Scenario: An erasure interrupted after its mark
+- **WHEN** the request that marked an owner erasing is lost, or a consumer step fails
+- **THEN** the object's job sends the owner again until the doors confirm, and the erasure finishes
 
 #### Scenario: An erased owner's name
 - **WHEN** an erased owner's key, capability URL, refresh token or sign-in is presented, or a stale `getByName` reaches its wiped object
@@ -395,14 +399,18 @@ The sign-in callback SHALL admit an owner the directory has no `o:` record of (t
 - **THEN** it is refused `401` and no object is reached
 
 ### Requirement: Only unauthenticated callers are rate-bounded
-The doors SHALL cap no authenticated caller's requests. They SHALL bound, per caller IP, the CIMD metadata fetches an unknown `client_id` triggers and the sign-in attempts, answering `429`; a `client_id` the provider's cache holds SHALL never count.
+The doors SHALL cap no authenticated caller's requests. They SHALL count only unauthenticated work that costs the platform something, per caller (an IPv4 address, an IPv6 /64), answering `429`: sign-in starts; metadata fetches of a `client_id` the provider's cache does not hold, at `/authorize`, and at the token and revoke endpoints only when the request fails; and failures (a credential the doors cannot validate, a token-endpoint failure, an inbound hook refused before or at its check). A cheap refusal SHALL never count, and the client id SHALL be found as the OAuth provider finds it (HTTP Basic in any case, a client assertion, the form). Each number SHALL carry its derivation in `limits-audit.md`. An owner object the runtime reports overloaded SHALL answer `429` with `Retry-After`.
 
 #### Scenario: Fresh client ids from one address
-- **WHEN** one address names 21 unknown metadata URLs as `client_id` within a minute
-- **THEN** the 21st is answered `429` before any fetch
+- **WHEN** one address names 24 unknown metadata URLs as `client_id` at `/authorize` within a minute
+- **THEN** the 24th is answered `429` before any fetch
+
+#### Scenario: A shared backend refreshing
+- **WHEN** many refreshes succeed at `/oauth/token` from one address
+- **THEN** none is counted
 
 ### Requirement: The binder streams an upload's bytes to FILES
-The owner surface's upload SHALL stream the body to `FILES` in the intent's declared chunks, refusing bytes that are not the declared chunk and a body shorter or longer than the file, and answer the body's SHA-256 as `Repr-Digest`.
+The owner surface's upload SHALL take one chunk a `PUT`, in any order and again after any failure, put it to `FILES` when the intent still needs it, refuse bytes that are not that declared chunk or a body shorter or longer than it, and answer the chunk's SHA-256 as `Content-Digest`; a file SHALL be bounded by the owner's policy, never by one request, and a refusal mid-upload SHALL answer its fixed code.
 
 #### Scenario: A tampered chunk
 - **WHEN** an upload's body differs from its declared chunk
