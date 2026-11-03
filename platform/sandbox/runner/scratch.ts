@@ -27,12 +27,13 @@ import { dirname, join } from "node:path";
 
 export const SCRATCH = "/scratch";
 /**
- * The runner's own room on the disk: its run state and the sessions a run changed, staged for
- * sync-out at its end. A technical ceiling: what one run stages is the sessions that run
- * changed (never the engine's whole history, `runner.ts`), at most the largest engine
- * transcript measured (86 MB); the reserve goes before that staging whenever the disk is
- * short of it, so the runs of a sandbox, which end one sync at a time (the sync agent's
- * lock), share one reserve.
+ * The runner's own room on the disk: its run state and the sessions staged for sync-out at a
+ * run's end. A technical ceiling: what a run stages is the sessions the owner's files do not
+ * hold yet (never the engine's whole history, `runner.ts`), in the common case the one it
+ * changed, at most the largest engine transcript measured (86 MB); the reserve goes before
+ * that staging whenever the disk has less free than it. Staging happens before the sync
+ * agent's lock, so runs of one sandbox that end together stage together; beyond this
+ * reserve, ext4 keeps its blocks for root (320 MB on our template), where root stages.
  */
 export const RESERVE_BYTES = 256 * 1024 * 1024;
 /**

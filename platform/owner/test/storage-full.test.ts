@@ -23,6 +23,10 @@ const W = "/workspace";
 /** Past the 4 KiB kept inline, so each file's bytes are chunk bytes the figure counts. */
 const FILE = 6_000;
 const TOKENS = { egress: "a".repeat(64), sync: "b".repeat(64), runner: "c".repeat(64) };
+const OTHER = { egress: "d".repeat(64), sync: "e".repeat(64), runner: "f".repeat(64) };
+const CLIENT = "k".repeat(64);
+const open = async (r: Rig) =>
+  (await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_intents"))[0]!["n"];
 
 const bytes = (n: number, seed: number) => text(String(seed).padEnd(n, "x"));
 
@@ -130,12 +134,50 @@ describe("open uploads, apart from what is stored", () => {
     const r = await rig();
     const lease = await inFiles(r.stub, {}, (files) =>
       files.leaseAcquire("owner", "sandbox-1", TOKENS));
-    await inFiles(r.stub, {}, (files) => files.begin(
-      8_000, ["ef".repeat(32)], files.syncWriter(lease.lease_id, lease.epoch)));
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 1 }]);
+    await inFiles(r.stub, {}, (files) => files.syncBegin(lease.lease_id, lease.epoch, 8_000,
+                                                         ["ef".repeat(32)]));
+    expect(await open(r)).toBe(1);
     await inFiles(r.stub, {}, (files) => files.leaseRelease(lease.lease_id, lease.epoch));
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
+    expect(await open(r)).toBe(0);
     await write(r, `${W}/a.bin`, FILE, 1);
+  });
+
+  it("are let go when a lapsed lease is noticed, and when a new lease replaces it first",
+     async () => {
+    const r = await rig();
+    for (const [n, take] of [[1, "lapsed"], [2, "acquired"]] as const) {
+      const lease = await inFiles(r.stub, {}, (files) =>
+        files.leaseAcquire("owner", `sandbox-${n}`, n === 1 ? TOKENS : OTHER));
+      await inFiles(r.stub, {}, (files) => files.syncBegin(lease.lease_id, lease.epoch, 8_000,
+                                                           [`a${n}`.repeat(32)]));
+      await sqlIn(r.stub, "UPDATE sandbox_leases SET lease_expires = 1");  // the sandbox died
+      if (take === "lapsed") {
+        await inFiles(r.stub, {}, (files) => files.leasesLapsed(Date.now() / 1000));
+      } else {
+        // A sign-in takes the next lease before any runs pass noticed the lapse.
+        await inFiles(r.stub, {}, (files) => files.leaseAcquire("owner", "sandbox-3", TOKENS));
+      }
+      expect(await open(r)).toBe(0);
+      await sqlIn(r.stub, "DELETE FROM sandbox_leases");
+    }
+  });
+
+  it("never cancels a client's own upload when that client's sandbox lease ends", async () => {
+    const r = await rig();
+    // The client's own upload, as its MCP door begins it (its writer the lease's writer too).
+    await inFiles(r.stub, {}, (files) => files.begin(8_000, ["a3".repeat(32)],
+                                                     `client:${CLIENT}`));
+    const lease = await inFiles(r.stub, {}, (files) =>
+      files.leaseAcquire(CLIENT, "sandbox-1", TOKENS));
+    expect(await inFiles(r.stub, {}, (files) => files.syncWriter(lease.lease_id, lease.epoch)))
+      .toBe(`client:${CLIENT}`);
+    await inFiles(r.stub, {}, (files) => files.syncBegin(lease.lease_id, lease.epoch, 8_000,
+                                                         ["a4".repeat(32)]));
+    expect(await open(r)).toBe(2);
+    await inFiles(r.stub, {}, (files) => files.leaseRelease(lease.lease_id, lease.epoch));
+    // The sync's own went with its lease; the client's own write stands.
+    expect(await sqlIn(r.stub, "SELECT writer, lease FROM file_intents"))
+      .toEqual([{ writer: `client:${CLIENT}`, lease: null }]);
   });
 });
 
@@ -151,9 +193,48 @@ describe("the sync's ignore list", () => {
     const notices = (await r.stub.noticeList(r.bind(null))).notices
       .filter((notice) => notice.type === "sync_ignore_changed");
     expect(notices).toHaveLength(2);
+    // Each names who changed it: the owner, here.
+    expect(notices.every((notice) => notice.detail.includes(" by you:"))).toBe(true);
     const receipts = (await r.stub.policyReceipts(r.bind(null))).receipts
       .filter((receipt) => receipt.rule === "sync_ignore");
-    expect(receipts).toHaveLength(2);
+    expect(receipts.map((receipt) => receipt.decision)).toEqual(["you", "you"]);
+  });
+
+  it("says when a new line stops files the owner keeps from syncing, how many and which",
+     async () => {
+    const r = await rig();
+    const at = r.bind(null, { tiers: SMALL });
+    for (const name of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"]) {
+      await r.stub.fileWrite(at, { path: `${W}/src/${name}`, expected_etag: null,
+                                   content: text(name) });
+    }
+    await r.stub.fileWrite(at, { path: `${W}/notes.md`, expected_etag: null,
+                                 content: text("kept") });
+    // A sandbox's sync writes the list (its writer the owner's lease), with a line of its own.
+    const lease = await inFiles(r.stub, {}, (files) =>
+      files.leaseAcquire("owner", "sandbox-1", TOKENS));
+    const sync = (inline: string, base: number | null = null) =>
+      r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch,
+        ops: [{ op: "write", path: `${W}/.ta/sync-ignore`, base, inline: text(inline) }] });
+    expect((await sync("node_modules\nsrc\n")).outcomes.map((each) => each.outcome))
+      .toEqual(["committed"]);
+    const changed = async () => (await r.stub.noticeList(r.bind(null))).notices
+      .filter((each) => each.type === "sync_ignore_changed")[0]!.detail;
+    const detail = await changed();
+    expect(detail).toContain("by a run in your sandbox:");
+    expect(detail).toContain("Its new lines stop 6 files you keep from syncing their changes");
+    expect(detail).toContain(`${W}/src/a.ts`);
+    expect(detail).toContain("and 1 more");
+    expect(detail).not.toContain("notes.md");
+    const [receipt] = (await r.stub.policyReceipts(r.bind(null))).receipts
+      .filter((each) => each.rule === "sync_ignore");
+    expect(receipt!.decision).toBe("a run in your sandbox");
+    // A default line added stops nothing kept, and the notice says nothing of it.
+    const lines = (await r.stub.fileRead(r.bind(null), { path: `${W}/.ta/sync-ignore` })) as
+      { entry: { version: number } };
+    expect(lines.entry.version).toBeGreaterThan(0);
+    await sync("node_modules\nsrc\ndist\n", lines.entry.version);
+    expect(await changed()).not.toContain("stop");
   });
 });
 

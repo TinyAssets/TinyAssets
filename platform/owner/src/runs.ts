@@ -493,6 +493,13 @@ export class Runs {
     return this.#storage.sql;
   }
 
+  /** The agents of the runs under the lease taken at `epoch`, at most `most`, by name. A read. */
+  agentsAt(epoch: number, most: number): string[] {
+    return this.#sql.exec<{ agent: string }>(
+      "SELECT DISTINCT agent FROM runs WHERE epoch = ? ORDER BY agent LIMIT ?", epoch, most)
+      .toArray().map((row) => row.agent);
+  }
+
   #run(runId: string): RunRow | undefined {
     return this.#sql.exec<RunRow>("SELECT * FROM runs WHERE id = ?", runId).toArray()[0];
   }

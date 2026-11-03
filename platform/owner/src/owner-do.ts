@@ -173,6 +173,7 @@ import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal, utf8Bytes } from "./text";
 import { storageFull, storageFullMessage } from "./storage-full";
+import { DEFAULT_IGNORES, ignoredBy, SYNC_IGNORE } from "./sync-ignore";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
@@ -1066,11 +1067,8 @@ const PLACE_TRIES = 5;
 const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
-/**
- * The sandbox sync's ignore list (`sandbox/runner/sync.ts` `SYNC_IGNORE`, which the runner's
- * bundle keeps apart from the object's modules): its every change a receipt and a notice.
- */
-const SYNC_IGNORE_PATH = "/workspace/.ta/sync-ignore";
+/** Kept files a sync-ignore notice names, at most: past them, its count says how many. */
+const HELD_EXAMPLES = 5;
 
 /** A run's own MCP door reaches no run door: work between agents is mail (ADR-034 d11). */
 export const RUN_STARTS_NONE = "run_starts_none: a run starts, reads and cancels no run";
@@ -1386,7 +1384,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
       (filer) => this.#collections.reclaim(filer) || this.#ledger.reclaim(filer),
       // Each agent's ledger identity follows its `agent.json`, in the file change's own unit.
-      (path, present, now) => {
+      (path, present, now, change) => {
         const agent = AGENT_FILE.exec(path)?.[1];
         if (agent !== undefined) {
           if (present) {
@@ -1397,11 +1395,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         // Every agent may edit the sync's ignore list (the founder's every-agent-full-power
         // rule), but never unseen: each change is a receipt and one notice for the owner.
-        if (path === SYNC_IGNORE_PATH) {
-          const outcome = present ? "changed" : "removed";
-          this.#policy.receipt("write", { rule: "sync_ignore", outcome }, now);
-          this.#notices.add("sync_ignore_changed", `${SYNC_IGNORE_PATH} was ${outcome}: what ` +
-                              "the sandbox keeps out of your files follows it", now);
+        if (path === SYNC_IGNORE) {
+          this.#syncIgnoreChanged(present, now, change);
         }
       });
     this.#bodies = new Bodies(this.#files, storage, write);
@@ -3095,6 +3090,77 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  /**
+   * A change to the sync's ignore list, in its own unit: a receipt and one notice naming
+   * who changed it (the owner, an agent's run, or an outside client), and, when a line it
+   * adds stops files the owner already keeps from syncing their changes, how many and which.
+   */
+  #syncIgnoreChanged(present: boolean, now: number,
+                     change: { writer: string; content_id: string | null; size: number }): void {
+    const outcome = present ? "changed" : "removed";
+    const who = this.#writerNamed(change.writer);
+    this.#policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
+    let held = "";
+    if (present && change.content_id !== null) {
+      const lines = (bytes: Uint8Array | null) => bytes === null ? null
+        : new TextDecoder().decode(bytes).split("\n").map((line) => line.trim());
+      const after = lines(this.#files.inlineOf(change.content_id));
+      const before = this.#files.contentBefore(SYNC_IGNORE, this.#files.lastVersion(SYNC_IGNORE));
+      const was = before === null ? [] : lines(this.#files.inlineOf(before.content_id));
+      if (after === null || was === null) {
+        // A list past an inline file is no list a person writes: say so, never guess.
+        held = " It is too large to check here which files you keep its lines hold back.";
+      } else {
+        // A default line never stops a kept file (the sync agent's rule); a new line of
+        // anyone's own does: those files' later changes stay in the sandbox.
+        const defaults = new Set(DEFAULT_IGNORES);
+        const added = after.filter((line) => !was.includes(line) && !defaults.has(line));
+        const matches = ignoredBy(added);
+        let count = 0;
+        const examples: string[] = [];
+        for (const kept of added.length === 0 ? [] : this.#files.workspaceFiles()) {
+          const rel = kept.slice("/workspace/".length);
+          if (rel.startsWith(".sessions/") || matches(rel) !== "custom") {
+            continue;
+          }
+          count += 1;
+          if (examples.length < HELD_EXAMPLES) {
+            examples.push(kept);
+          }
+        }
+        if (count > 0) {
+          held = ` Its new lines stop ${count} file${count === 1 ? "" : "s"} you keep from ` +
+            `syncing their changes (${examples.join(", ")}${count > examples.length
+              ? `, and ${count - examples.length} more` : ""}); your files keep the version ` +
+            "they have, and the sandbox keeps its changes.";
+        }
+      }
+    }
+    this.#notices.add("sync_ignore_changed", `${SYNC_IGNORE} was ${outcome} by ${who}: what ` +
+                        `the sandbox keeps out of your files follows it.${held}`, now);
+  }
+
+  /**
+   * Who a file change's writer is, in words the owner reads: the owner; the agents whose
+   * runs hold the owner's sandbox lease it was synced under; or an outside client by name.
+   */
+  #writerNamed(writer: string): string {
+    const epoch = /^lease:([0-9]+)$/.exec(writer)?.[1];
+    if (epoch !== undefined) {
+      // The agents named at most three, so the receipt stays its size.
+      const agents = this.#runs.agentsAt(Number(epoch), 4);
+      return agents.length === 0 ? "a run in your sandbox"
+        : `a run of your agent${agents.length === 1 ? "" : "s"} ${agents.slice(0, 3).join(", ")}${
+          agents.length > 3 ? " and others" : ""}`;
+    }
+    const client = /^client:([0-9a-f]{64})$/.exec(writer)?.[1];
+    if (client !== undefined) {
+      const name = this.#grants.name(client);
+      return `the outside client ${name !== "" ? `"${name}"` : client.slice(0, 12)}`;
+    }
+    return writer === "owner" ? "you" : writer;
+  }
+
   // -- FILES: the owner's file tree (plan §6) --------------------------------------
   //
   // These doors move at most two chunks a call. The HTTP and MCP doors (tasks 2) stream
@@ -4661,8 +4727,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       this.#syncer(binding, "work", request);
       const r = fileFields(request, ["lease_id", "epoch", "size", "chunks"]);
-      return this.#files.begin(r["size"], r["chunks"],
-                               this.#files.syncWriter(r["lease_id"], r["epoch"]));
+      return this.#files.syncBegin(r["lease_id"], r["epoch"], r["size"], r["chunks"]);
     });
   }
 

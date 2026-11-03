@@ -44,6 +44,10 @@ import type { SourceRecord } from "../../doors/src/sources";
 import { isKept, keptPaths } from "./engine";
 import { remove, safeDirs, safePieces, safeRead, safeStream, safeWrite, walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
+import { defaultSyncIgnore, ignoredBy, SYNC_IGNORE } from "../../owner/src/sync-ignore";
+
+export { DEFAULT_IGNORES, defaultSyncIgnore, ignoredBy, SYNC_IGNORE, wildcard }
+  from "../../owner/src/sync-ignore";
 
 /**
  * The object's sync bounds: ops a commit (`MAX_SYNC_OPS`), a chunk (`CHUNK_BYTES`), and an
@@ -393,7 +397,8 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
   if (got === null) {
     return;  // gone since the feed was read: a later change says so
   }
-  mirror.put(path, { version: got.version, size: got.size, mtime_ms: lstatSync(local).mtimeMs,
+  mirror.put(path, { version: got.version, size: got.size,
+                     mtime_ms: trusted(lstatSync(local).mtimeMs, Date.now()),
                      sha256: got.sha256 });
 }
 
@@ -464,112 +469,33 @@ export interface SyncReport {
   readonly committed: number;
   readonly conflicts: readonly string[];
   readonly refused: readonly { readonly path: string; readonly reason: string }[];
-  /** Files skipped for this sync: gone, or changed, while it ran; sent by the next one. */
+  /**
+   * Files skipped for this sync: gone, or changed, while it ran (sent by the next one); and
+   * files the owner keeps whose changes a custom sync-ignore line holds back.
+   */
   readonly skipped: readonly { readonly path: string; readonly reason: string }[];
+  /** Skipped files past the listed ones (held back files are listed at most `LISTED`). */
+  readonly skipped_unlisted: number;
 }
+
+/** Held-back files a report lists by path, at most: past them it counts them. */
+const LISTED = 100;
+/** Why a kept file's changes stay in the sandbox. */
+const HELD_BACK = "held back by a sync-ignore line: your files keep the version they have";
 
 /**
- * The sync-ignore file: what the sync never offers. Regenerable trees (dependencies, build
- * outputs, caches, derived indexes) are rebuilt in the sandbox, not kept as the owner's
- * files, so they never fill the owner's storage nor its history. Every agent may edit it
- * (the founder's every-agent-full-power rule), and nothing is hidden from the owner by it:
- * the file itself is never ignored, so every edit reaches the owner's files, where each
- * change is a receipt and a notice; and a default pattern never stops syncing a path the
- * owner already keeps, only new ones. It is never a wall: what it names stays in the
- * sandbox, untouched.
+ * A change time the mirror may trust: one older than the filesystem's coarsest tick before
+ * `at` (when it was read). A file changed within that tick of its read could change again,
+ * at the same size, with no new change time (git's "racily clean"), so its time is kept as
+ * `RACY`, matching nothing: the next sync reads and hashes it again, and the mirror's hash
+ * is always of the bytes sent.
  */
-export const SYNC_IGNORE = "/workspace/.ta/sync-ignore";
-const SYNC_IGNORE_REL = SYNC_IGNORE.slice("/workspace/".length);
-export const DEFAULT_IGNORES: readonly string[] = Object.freeze([
-  "node_modules", ".venv", "venv", "__pycache__", "*.pyc", ".pytest_cache", ".mypy_cache",
-  ".ruff_cache", ".tox", ".next", ".nuxt", ".turbo", ".parcel-cache", ".cache", "dist",
-  "build", "target", ".gradle", "coverage", "graphify-out",
-]);
-export const DEFAULT_SYNC_IGNORE: readonly string[] = Object.freeze([
-  "# What the sync never keeps in your files: things your agents rebuild. Edit freely;",
-  "# a line is a file or folder name (* and ? match), or a path from /workspace with a /.",
-  "# A path already kept goes on syncing whatever a default line here says.",
-  ...DEFAULT_IGNORES,
-]);
-
-/**
- * Whether `text` matches `pattern` (`*` any run of characters, `?` any one), in time linear
- * in the text for a pattern: the pattern's positions are walked together (a set of states,
- * no backtracking), so no pattern can make a match slow.
- */
-export function wildcard(pattern: string, text: string): boolean {
-  const p = [...pattern];
-  let states = new Uint8Array(p.length + 1);
-  const close = (from: Uint8Array) => {
-    for (let i = 0; i < p.length; i++) {
-      if (from[i] === 1 && p[i] === "*") {
-        from[i + 1] = 1;
-      }
-    }
-  };
-  states[0] = 1;
-  close(states);
-  for (const ch of text) {
-    const next = new Uint8Array(p.length + 1);
-    for (let i = 0; i < p.length; i++) {
-      if (states[i] !== 1) {
-        continue;
-      }
-      if (p[i] === "*") {
-        next[i] = 1;
-      } else if (p[i] === "?" || p[i] === ch) {
-        next[i + 1] = 1;
-      }
-    }
-    close(next);
-    states = next;
-  }
-  return states[p.length] === 1;
+function trusted(mtime: number, at: number): number {
+  return mtime >= at - RACY_MS ? RACY : mtime;
 }
-
-/** One sync-ignore line as a matcher: a name anywhere, or a path from the workspace. */
-function rule(line: string): ((rel: string) => boolean) | null {
-  const text = line.trim().replace(/\/+$/, "");
-  if (text === "" || text.startsWith("#")) {
-    return null;
-  }
-  if (text.includes("/")) {
-    const anchored = text.replace(/^\/+/, "");
-    return (rel) => {
-      const parts = rel.split("/");
-      return parts.some((_, i) => wildcard(anchored, parts.slice(0, i + 1).join("/")));
-    };
-  }
-  return (rel) => rel.split("/").some((part) => wildcard(text, part));
-}
-
-/**
- * The matcher of a sync-ignore's lines: for a workspace path (relative to `/workspace`),
- * `custom` when a line of the owner's own (or a run's) names it, `default` when only a
- * default line does, or null. The sync-ignore file itself is never matched.
- */
-export function ignoredBy(lines: readonly string[]):
-    (rel: string) => "custom" | "default" | null {
-  const defaults = new Set(DEFAULT_IGNORES);
-  const rules = lines.map((line) => ({ matches: rule(line), default: defaults.has(line.trim()) }))
-    .filter((r): r is { matches: (rel: string) => boolean; default: boolean } =>
-      r.matches !== null);
-  return (rel) => {
-    if (rel === SYNC_IGNORE_REL || SYNC_IGNORE_REL.startsWith(`${rel}/`)) {
-      return null;  // the file itself, and the folders on its way, are never kept out
-    }
-    let found: "default" | null = null;
-    for (const r of rules) {
-      if (r.matches(rel)) {
-        if (!r.default) {
-          return "custom";
-        }
-        found = "default";
-      }
-    }
-    return found;
-  };
-}
+/** The coarsest change-time tick a filesystem keeps (FAT's two seconds), in ms. */
+const RACY_MS = 2_000;
+const RACY = -1;
 
 /**
  * The sync-ignore rules of the workspace at `local`: its file's lines, or the defaults, the
@@ -582,10 +508,10 @@ export function syncIgnore(local: string): readonly string[] {
     return read.toString("utf8").split("\n");
   }
   if (!existsSync(path)) {
-    safeWrite(local, path, new TextEncoder().encode(`${DEFAULT_SYNC_IGNORE.join("\n")}\n`),
+    safeWrite(local, path, new TextEncoder().encode(`${defaultSyncIgnore().join("\n")}\n`),
               0o664, undefined, 0o2775);
   }
-  return DEFAULT_SYNC_IGNORE;
+  return defaultSyncIgnore();
 }
 
 /** A file offered: what it is and what the mirror knew; its bytes only when it is small. */
@@ -712,6 +638,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   const refused: { path: string; reason: string }[] = [];
   const conflicts: string[] = [];
   const skipped: { path: string; reason: string }[] = [];
+  let held = 0;
   let committed = 0;
   let batch: Op[] = [];
   let bytes = 0;
@@ -786,15 +713,17 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     bytes += size;
   };
   const offer = async (path: string, base: string, local: string): Promise<void> => {
+    const at = Date.now();
     const stat = fileStat(local);
     if (stat === null) {
       skipped.push({ path, reason: "gone before it was sent" });
       return;
     }
     const size = Number(stat.size);
-    const mtime = Number(stat.mtimeMs);
+    const mtime = trusted(Number(stat.mtimeMs), at);
     const known = mirror.get(path);
-    if (known !== undefined && known.size === size && known.mtime_ms === mtime) {
+    if (known !== undefined && mtime !== RACY && known.size === size
+        && known.mtime_ms === mtime) {
       return;
     }
     const mode = (Number(stat.mode) & 0o111) !== 0 ? 1 : 0;
@@ -871,8 +800,17 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
        known = mirror.page(after, PAGE)) {
     for (const path of known) {
       if (path.startsWith(`${SESSIONS}/`) || !path.startsWith("/workspace/")
-          || (place.authority !== "owner" && inOwnerTrees(path))
-          || ignored(path.slice("/workspace/".length)) === "custom") {
+          || (place.authority !== "owner" && inOwnerTrees(path))) {
+        continue;
+      }
+      if (ignored(path.slice("/workspace/".length)) === "custom") {
+        // Never removed (the owner keeps it as it was); its changes, never sent, are said.
+        if (await heldBack(place, path, mirror.get(path)!)) {
+          held += 1;
+          if (held <= LISTED) {
+            skipped.push({ path, reason: HELD_BACK });
+          }
+        }
         continue;
       }
       if (fileStat(localOf(place, path)) === null) {
@@ -882,5 +820,22 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     after = known.at(-1)!;
   }
   await send();
-  return { committed, conflicts, refused, skipped };
+  return { committed, conflicts, refused, skipped, skipped_unlisted: Math.max(0, held - LISTED) };
+}
+
+/** Whether a kept file's sandbox copy differs from what the owner's files hold. */
+async function heldBack(place: Place, path: string, known: Known): Promise<boolean> {
+  const local = localOf(place, path);
+  const stat = fileStat(local);
+  if (stat === null) {
+    return false;  // gone here: a held-back path is never removed, and nothing is to send
+  }
+  if (Number(stat.size) !== known.size) {
+    return true;
+  }
+  if (known.mtime_ms !== RACY && Number(stat.mtimeMs) === known.mtime_ms) {
+    return false;
+  }
+  const read = await scanned(place.local, local, []);
+  return read !== null && read.sha256 !== known.sha256;
 }

@@ -1470,6 +1470,8 @@ R, S, M and W.
 
   Review round 1 (REQUEST_CHANGES), fixed: a refused upload is refused alone with the doors' whole message, the mirror saved after each committed batch, `ta.storage_full` reported once; `uploads_open` (409) apart from `storage_full`, an `upload_abort` door, a lease's open uploads aborted when it ends; "used" is what is stored; sync-in streams to a temporary file (a file past the VM's memory synced in a test); sync-out's memory independent of the path count (an on-disk mirror, a walk a directory at a time); a file's identity checked at commit; sync-ignore edits receipted and noticed once, the rule file never ignored, default patterns stopping new paths only; a linear-time matcher; the reserve let go before the sessions are staged, and only changed sessions staged; scratch stamps per agent; the superseded template tags deleted.
 
+  Verification round 2 (REQUEST_CHANGES), fixed: sessions staged by the sync mirror's hash, so one an earlier sync-out did not commit is sent again by the next run; a sync's uploads name their lease, and only those end with it, on every path that ends a lease (a new lease's taking among them), never a client's own write; each sync-ignore change's receipt and notice name who made it, and a new line that holds back kept files says how many and which, each sync-out reporting them too; a failed control read keeps the last scratch retention read, loudly; a change time within the filesystem's coarsest tick is never trusted, so the mirror's hash is of the bytes sent; the reserve's note says staging happens before the sync lock.
+
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".

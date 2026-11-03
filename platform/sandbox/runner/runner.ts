@@ -69,7 +69,8 @@ import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, s
          writeOrRelease } from "./scratch";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
-import { openMirror, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport } from "./sync";
+import { openMirror, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport }
+  from "./sync";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
 /** Every path the runner touches is under this root: `/` in the sandbox, a temp dir in tests. */
@@ -617,7 +618,8 @@ interface LeaseFile {
 }
 
 interface SyncJob {
-  readonly direction: "in" | "out";
+  /** In, out, or `known`: the mirror's hash of each of `paths`, read under the lock. */
+  readonly direction: "in" | "out" | "known";
   readonly origin: string;
   readonly token: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
@@ -626,6 +628,7 @@ interface SyncJob {
   readonly engine: string;
   readonly run: string;
   readonly atoms: readonly string[];
+  readonly paths?: readonly string[];
 }
 
 /** The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. */
@@ -691,6 +694,12 @@ async function syncCommand(): Promise<number> {
     // cut short keeps what it sent. The one JSON file of before is taken in once.
     const mirror = openMirror(`${SYNC_HOME}/mirror.db`, `${SYNC_HOME}/mirror.json`);
     try {
+      if (job.direction === "known") {
+        // What the owner's files hold of each path, as this sandbox last synced it.
+        process.stdout.write(JSON.stringify({ known: Object.fromEntries((job.paths ?? [])
+          .map((path) => [path, mirror.get(path)?.sha256 ?? null])) }));
+        return OK;
+      }
       if (job.direction === "in") {
         await syncIn(client, place, mirror);
         const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
@@ -744,7 +753,8 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
   }
   const skipped = report?.skipped ?? [];
   if (skipped.length > 0) {
-    outbox.push({ type: "ta.sync_skipped", files: skipped.length,
+    outbox.push({ type: "ta.sync_skipped",
+                  files: skipped.length + (report?.skipped_unlisted ?? 0),
                   skipped: skipped.slice(0, EVENT_PATHS) });
   }
   if ((report?.conflicts ?? []).length > 0) {
@@ -1038,7 +1048,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   let as: Identity | null = null;
   let home: string | null = null;
   const system = `${ROOT}${SYSTEM}/${run}`;
-  const job = (direction: "in" | "out", secrets: readonly string[] = []): SyncJob => ({
+  const job = (direction: SyncJob["direction"], secrets: readonly string[] = []): SyncJob => ({
     direction, origin: new URL(start.urls.events).origin, token: lease.tokens.sync_token,
     lease: lease.lease, authority: start.authority, agent: start.agent, engine: start.engine,
     run, atoms: secrets });
@@ -1181,9 +1191,9 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     clearInterval(pump);
     try {
       // A full disk: ext4 keeps root's own blocks (probed: root still wrote at 0 free), but
-      // what follows copies the run's changed sessions back and stages them, and the sync
-      // agent is its own user, so the runner's reserve goes first when the disk is short of
-      // it, and both have their room (`scratch.ts`).
+      // what follows copies the run's changed sessions back and stages the unsent ones, and
+      // the sync agent is its own user, so the runner's reserve goes first when the disk is
+      // short of it, and both have their room (`scratch.ts`).
       if (diskOf(STATE).free_bytes < RESERVE_SIZE) {
         rmSync(RESERVE, { force: true });
       }
@@ -1199,24 +1209,42 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         const secrets = atoms();
         const out = `${SYNC_HOME}/out/${run}`;
         remove(out);
-        // Only the sessions this run made or changed are staged (`unchanged`): the history it
-        // was handed is synced already, so what is copied is this run's own, never the
-        // engine's whole store.
-        const copied = home === null ? {} : handed(home);
-        for (const rel of home === null || as === null ? [] : walkFiles(home)) {
-          if (!isKept(keptPaths(rec).sessions, rel)) {
+        // Every engine's session the owner's files do not hold as it is now (the sync
+        // mirror's hash of its path, read under the sync agent's lock) is staged: this run's,
+        // and any an earlier sync-out left unsent (refused at a full storage, changed while
+        // sent, fenced, cut short), so each is offered again until it lands, whether or not
+        // a later run touches it. A session the files hold already is never copied.
+        const sessions: { rec: SourceRecord; rel: string; path: string; digest: string }[] = [];
+        for (const each of RECORDS.values()) {
+          const store = `${STORE}/${each.id}`;
+          for (const rel of walkFiles(store)) {
+            const bytes = isKept(keptPaths(each).sessions, rel) ? safeRead(store, join(store, rel))
+              : null;
+            if (bytes !== null) {
+              sessions.push({ rec: each, rel, digest: digest(bytes),
+                              path: `${SESSIONS}/${start.authority}/${each.id}/${rel}` });
+            }
+          }
+        }
+        const held = sessions.length === 0 ? {}
+          : (syncAgent({ ...job("known"), paths: sessions.map((each) => each.path) })
+            .report?.["known"] ?? {}) as Record<string, string | null>;
+        for (const session of sessions) {
+          if (held[session.path] === session.digest) {
             continue;
           }
-          const bytes = safeRead(home!, join(home!, rel));
-          if (bytes === null || copied[rel] === digest(bytes)) {
+          const store = `${STORE}/${session.rec.id}`;
+          const bytes = safeRead(store, join(store, session.rel));
+          if (bytes === null) {
             continue;
           }
           if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
-            outbox.push({ type: "ta.sync_refused", path: `{home}/${rel}`,
+            outbox.push({ type: "ta.sync_refused", path: `{home}/${session.rel}`,
                           reason: "holds a secret's bytes" });
             continue;
           }
-          safeWrite(SYNC_HOME, join(out, rec.id, rel), bytes, 0o644, undefined, 0o755);
+          safeWrite(SYNC_HOME, join(out, session.rec.id, session.rel), bytes, 0o644, undefined,
+                    0o755);
         }
         const done = syncAgent(job("out", secrets));
         remove(out);

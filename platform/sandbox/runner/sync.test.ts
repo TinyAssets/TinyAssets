@@ -321,3 +321,58 @@ it("reads its legacy JSON mirror once, into the database", () => {
   mirror.close();
   expect(() => readFileSync(join(root, "mirror.json"))).toThrow();
 });
+
+describe("verification round 2", () => {
+  it("says a kept file whose changes a run's own line holds back (M2)", async () => {
+    const { place: p, local } = place();
+    mkdirSync(join(local, "src"), { recursive: true });
+    writeFileSync(join(local, "src", "app.ts"), "v1");
+    const mirror = memoryMirror();
+    await syncOut(client((door, body) => door === "commit" ? commitAll(body)
+      : { status: 404, body: {} }), p, mirror, LEASE, []);
+    expect(mirror.get("/workspace/src/app.ts")).toBeDefined();
+    // A run adds a line of its own, then changes the kept file and leaves another as it was.
+    writeFileSync(join(local, ".ta", "sync-ignore"), "src\n");
+    writeFileSync(join(local, "src", "app.ts"), "v2, the run's work");
+    const sent: string[] = [];
+    const report = await syncOut(client((door, body) => door === "commit"
+      ? commitAll(body, sent) : { status: 404, body: {} }), p, mirror, LEASE, []);
+    expect(sent).toEqual(["/workspace/.ta/sync-ignore"]);
+    expect(report.skipped).toEqual([{ path: "/workspace/src/app.ts", reason:
+      "held back by a sync-ignore line: your files keep the version they have" }]);
+    // Never removed, and the owner's copy stands.
+    expect(mirror.get("/workspace/src/app.ts")).toBeDefined();
+  });
+
+  it("sends a same-size edit that kept its change time, by the next sync (L-c)", async () => {
+    const { place: p, local } = place();
+    const file = join(local, "state.json");
+    writeFileSync(file, "{\"n\":1}");
+    const mtime = Math.floor(Date.now() / 1000);  // whole seconds: restored exactly
+    utimesSync(file, mtime, mtime);
+    let changed = false;
+    const mirror = memoryMirror();
+    await syncOut(client((door, body) => {
+      if (door === "commit" && !changed) {
+        changed = true;
+        writeFileSync(file, "{\"n\":2}");
+        utimesSync(file, mtime, mtime);
+      }
+      return door === "commit" ? commitAll(body) : { status: 404, body: {} };
+    }), p, mirror, LEASE, []);
+    const sent: string[] = [];
+    await syncOut(client((door, body) => door === "commit" ? commitAll(body, sent)
+      : { status: 404, body: {} }), p, mirror, LEASE, []);
+    expect(sent).toContain("/workspace/state.json");
+    // Once its change time is settled, an unchanged file is never read again.
+    const settled = Math.floor(Date.now() / 1000) - 60;
+    utimesSync(file, settled, settled);
+    await syncOut(client((door, body) => door === "commit" ? commitAll(body) : { status: 404,
+      body: {} }), p, mirror, LEASE, []);
+    expect(mirror.get("/workspace/state.json")!.mtime_ms).toBe(settled * 1000);
+    const again: string[] = [];
+    await syncOut(client((door, body) => door === "commit" ? commitAll(body, again)
+      : { status: 404, body: {} }), p, mirror, LEASE, []);
+    expect(again).toEqual([]);
+  });
+});

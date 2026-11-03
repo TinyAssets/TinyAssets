@@ -273,6 +273,35 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("CREATE TABLE IF NOT EXISTS known (only INTEGER PRIMARY KEY CHECK " +
                      "(only = 1), runtime_s INTEGER NOT NULL, concurrency INTEGER NOT NULL, " +
                      "window_s INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0)");
+    // The control record's scratch retention as last read (`days` null: the record names none).
+    this.#sql.exec("CREATE TABLE IF NOT EXISTS known_retention (only INTEGER PRIMARY KEY " +
+                     "CHECK (only = 1), days REAL)");
+  }
+
+  /**
+   * The control record's scratch retention for a run's start document: as read now, kept;
+   * when the record cannot be read, the last one read, as the sandbox numbers are
+   * (`#ceilings`), and said so loudly; never a silent none. With none ever read, the run
+   * deletes no scratch by age, and the log says that is why.
+   */
+  async #retention(): Promise<number | null> {
+    const read = await readControl(this.env.CONTROL);
+    if (read.kind === "read") {
+      const days = read.control.scratch_retention_days;
+      this.#sql.exec("INSERT INTO known_retention (only, days) VALUES (1, ?) ON CONFLICT " +
+                       "(only) DO UPDATE SET days = excluded.days", days);
+      return days;
+    }
+    const row = this.#sql.exec<{ days: number | null }>("SELECT days FROM known_retention")
+      .toArray()[0];
+    if (row === undefined) {
+      console.error(`the control record is ${read.kind}, and no scratch retention was ever ` +
+                    "read: this run deletes no agent's scratch by age");
+      return null;
+    }
+    console.error(`the control record is ${read.kind}: scratch retention kept at the last ` +
+                  `read, ${row.days === null ? "none" : `${row.days} days`}`);
+    return row.days;
   }
 
   /** `act`, after every change before it: one at a time, whatever awaits inside. */
@@ -519,9 +548,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
           return { started: false, code: CODES.signin };
         }
       }
-      const control = await readControl(this.env.CONTROL);
       await e2b.upload(handle, `${STATE_DIR}/inbox/${start.run}.json`, json(startDocument(start,
-        control.kind === "read" ? control.control.scratch_retention_days : null)));
+        await this.#retention())));
       const launched = await this.#run(handle, ["launch", start.run]);
       if (launched.code !== OK) {
         throw new Error(`the runner did not launch run ${start.run}`);

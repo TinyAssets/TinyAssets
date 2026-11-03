@@ -1562,6 +1562,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER message_bodies_kept BEFORE UPDATE ON message_bodies " +
       "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
   ]),
+  // 15: a sandbox sync's own uploads name their lease (`files.ts` `#endUploads`), so a lease
+  // that ends lets go of its sync's open uploads alone, never its client's own writes. No
+  // index: the open uploads are at most `MAX_OPEN_INTENTS` rows.
+  Object.freeze([
+    "ALTER TABLE file_intents ADD COLUMN lease TEXT CHECK (lease IS NULL OR " +
+      "(length(lease) = 32 AND lease NOT GLOB '*[^0-9a-f]*'))",
+  ]),
 ]);
 
 /** Apply every migration past the stored version; return the version now stored. */

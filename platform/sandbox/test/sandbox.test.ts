@@ -184,6 +184,22 @@ describe("a start", () => {
     expect(JSON.parse(doc).scratch_retention_days).toBe(30);
   });
 
+  it("keeps the last scratch retention read when the record cannot be read, never none",
+     async () => {
+    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
+    const who = owner();
+    expect(await stub(who).start(who, start({ credential: "api_key" })))
+      .toEqual({ started: true });
+    await env.CONTROL.put("c:control", "not json");
+    const second = `run_${hex(32, "2")}`;
+    expect(await stub(who).start(who, start({ run: second, credential: "api_key",
+                                             tokens: null, network: null })))
+      .toEqual({ started: true });
+    const state = await seen();
+    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${second}.json`]!;
+    expect(JSON.parse(doc).scratch_retention_days).toBe(30);
+  });
+
   it("joins the live sandbox with no create and no lease secrets; another engine's hosts added",
      async () => {
     await e2b("/script", { signin: { "claude-code": 0, gemini: 0 } });

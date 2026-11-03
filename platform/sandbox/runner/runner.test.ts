@@ -770,7 +770,7 @@ describe("the sync", () => {
     doors.refuseBegin = () => null;
   });
 
-  it("stages only the sessions a run changed, never the history it was handed", async () => {
+  it("sends a session once the owner's files hold it, and never again unchanged", async () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
                              writes: { "~/.claude/projects/main/cs-1.jsonl": "{\"turn\":1}\n" } });
     await run("claude-code");
@@ -779,6 +779,23 @@ describe("the sync", () => {
     await run("claude-code");
     expect(doors.ops().slice(before).filter((op) => op.path.startsWith("/workspace/.sessions/")))
       .toEqual([]);
+  });
+
+  it("sends a session refused at a full storage again by the next run, though that run " +
+     "never touches it (verification N1)", async () => {
+    const session = "/workspace/.sessions/owner/claude-code/.claude/projects/main/cs-1.jsonl";
+    const full = "storage_full: your storage is full: 25.0 GB of 25.0 GB used. {}";
+    doors.refuse = (path) => path.startsWith("/workspace/.sessions/") ? full : null;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
+                             writes: { "~/.claude/projects/main/cs-1.jsonl": "{\"turn\":1}\n" } });
+    await run("claude-code");
+    const event = doors.frames().find((each) => each["type"] === "ta.storage_full")!;
+    expect(event["kept_in_sandbox"]).toEqual([session]);
+    doors.refuse = () => null;
+    const before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });  // cs-1 untouched
+    await run("claude-code");
+    expect(doors.ops().slice(before).map((op) => op.path)).toContain(session);
   });
 });
 
