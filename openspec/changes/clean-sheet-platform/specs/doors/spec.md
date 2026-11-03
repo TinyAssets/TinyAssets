@@ -41,7 +41,7 @@ An MCP grant's encrypted props SHALL hold the time of the interactive sign-in th
 - **THEN** the owner's object sees `authenticated_at` T
 
 ### Requirement: A revoke reaches the object first, then the provider
-The owner's revoke of an MCP client SHALL be made in the owner's object first, then SHALL revoke every provider grant of that client, so its next refresh is `invalid_grant`. A revoke the object refuses SHALL revoke nothing in the provider.
+The owner's revoke of an MCP client SHALL be made in the owner's object first, then SHALL revoke every provider grant of that client, so its next refresh is `invalid_grant`. A revoke the object refuses SHALL revoke nothing in the provider. The same revoke of an API key's client SHALL also delete the key's directory entry, after the grant's revoke, as the key's own revoke does.
 
 #### Scenario: A revoked client refreshes
 - **WHEN** the owner revokes an MCP client and the client refreshes

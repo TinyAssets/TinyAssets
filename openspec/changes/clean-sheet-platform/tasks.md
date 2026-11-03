@@ -586,10 +586,11 @@ account and no deploy.
   - **export**: slice P's owner export door; until it lands the Export section says so, with
     no button, and the app's `MISSING.export` goes when it does.
   - **the key store** (slice L): the key list is the grant rows (names, no ids), so a listed
-    key is turned off by `grants/revoke` (its directory entry stays until deleted by id);
-    delete and last use come with L's list route. That route (`keys/list`: id, name, mint
-    time, last use, revoke time) landed with slice L's merge; owed: the app's API keys screen
-    reads it, turns a key off by `keys/revoke` and deletes by `keys/delete`.
+    key is turned off by `grants/revoke`, which for an API key's client also deletes its
+    directory entry, as `keys/revoke` does (`revoke.ts`, slice L's merge review). Delete and
+    last use come with L's list route (`keys/list`: id, name, mint time, last use, revoke
+    time), which landed with slice L's merge; owed: the app's API keys screen reads it and
+    deletes a key by `keys/delete`.
   - **a run list**: the sign-in slice (`platform-signin`) adds the door; until then Talk says
     plainly that only this tab's conversation is shown and is not kept across reloads.
   - **the sandbox sign-in**, again for the forms: no credential `vendor_login_in_sandbox` is
@@ -1732,9 +1733,9 @@ R, S, M and W.
     handover its next routine deploy fails (wrangler refuses `mcp*` while the doors hold
     it), or, with `mcp*` removed to make it pass, re-adds the narrower
     `.well-known/oauth-*` routes and takes OAuth discovery back from the doors, breaking
-    every connector's sign-in. So the cutover cuts that `wrangler.toml` to the routes the
-    proxy keeps (`app*`, `api*`), with a guard holding it to the handover's end state (the
-    handover test's `LIVE` table).
+    every connector's sign-in. So the cutover cuts that `wrangler.toml` to the one route the
+    proxy keeps, `api*` (the doors take `app*`, below), with a guard holding it to the
+    handover's end state (the handover test's `LIVE` table).
   - **The apply job runs the plan it was approved on.** `platform-deploy.yml`'s `apply`
     recomputes its plan rather than comparing it with the one the `plan` job showed for
     approval, so a live change between the two jobs makes it do something not shown. The
@@ -1748,6 +1749,35 @@ R, S, M and W.
     still reach the daemon, so the owner app's sign-in and OAuth connects do not finish.
     Settle it in the handover before `routes`: the doors take `app*` in place (a `PUT`, as
     `mcp*`), the proxy keeps `api*` alone, and R1's cut and guard follow that end state.
+    What else `app*` brings to the doors:
+    - **Website paths.** A route's `*` matches any characters, not a path segment, so `app*`
+      also matches the site's own paths that merely start with `app`, such as
+      `/apple-touch-icon.png`, which the site really serves. The old proxy hands those back
+      to the website origin (`worker.js` `belongsToWebsite`); the doors have no handback
+      (`appPath` takes only `/app` and `/app/...`, anything else is the doors' `404`). The
+      cutover needs one of two: the doors hand every other `app...` match back to the
+      website origin, with a test; or the doors' routes narrow to `tinyassets.io/app` plus
+      `tinyassets.io/app/*`, once the doors' return pages are proved to need no query (they
+      carry the code in the fragment, which a route never sees).
+    - **The old platform's query-bearing returns.** A route matches the whole URL, query
+      included, so a narrowed `/app` takes only a bare `/app`. The old app's returns are
+      `/app?code=...&state=...` (AuthKit's sign-in return, `tinyassets/onboarding/app.html`
+      `redirectUri()`) and `/app?subscribed=1` (Stripe's checkout return). Under `app*` they
+      land on the doors' `/app` page, which ignores the query; under the narrowed routes they
+      match nothing and land on the website. A sign-in in flight at the switch starts again
+      on the new app (its issuer moves anyway). A Stripe checkout in progress: the window
+      opens by turning the old platform's billing off, so no new checkout starts (billing is
+      off without its Stripe secrets, `tinyassets/billing/stripe_adapter.py`); it waits until
+      every open Checkout Session has completed or expired and its webhook is applied; then
+      the backup, and the import carries each paid owner's tier to its admission row. A
+      buyer's late `/app?subscribed=1` return then lands on an app whose plan already shows
+      the tier.
+    - **The old Stripe webhook, `/app/billing/webhook`.** Stripe posts every subscription
+      event there (renewal, failed payment, cancellation), and `app*` captures it. The doors
+      have no billing door, so after the switch it is the doors' `404`, and a cancellation
+      would never lower a tier. Before `routes`: a billing door on the new platform, with
+      Stripe's endpoint moved to it; or the founder's word that no live subscription exists,
+      and Stripe's endpoint disabled until that door is built.
 
 ## 10. The plan's later slices
 

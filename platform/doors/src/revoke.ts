@@ -11,15 +11,18 @@
  *
  * The owner surface's `grants/set` refuses a set to `revoked` (`app.ts`), so a client is
  * revoked only here or by its key's revoke: no path that revokes a client in the object
- * leaves its refresh tokens alive (rename review N1).
+ * leaves its refresh tokens alive (rename review N1). An API key's client revoked here (the
+ * owner app's "Turn off", which holds the grant row, not the key id) also loses its key's
+ * directory entry, as `keys/revoke` deletes it, so no entry outlives its key.
  *
  * Also here: a loopback client's grants replaced per installation, not per port
  * (`replaceInstallation`), and every grant of an erased owner (`revokeAll`).
  */
 import type { GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
-import { type Bound, installationOf, loopback, mcpClient } from "./binder";
+import { apiKeyOrigin, type Bound, installationOf, loopback, mcpClient } from "./binder";
 import { type DoorsEnv, MCP_RESOURCE } from "./config";
+import { deleteKey } from "./directory";
 import { authorizationServer } from "./oauth";
 
 export interface Revoked {
@@ -97,11 +100,18 @@ export async function providerRevoke(env: DoorsEnv, owner: string, client: strin
 
 /**
  * Revoke `client` in the owner's object, then every provider grant of it
- * (`providerRevoke`).
+ * (`providerRevoke`). When the client is one of the owner's API keys (the object's key
+ * store names it), the key's directory entry is deleted after the grant's revoke, as
+ * `keys/revoke` deletes it.
  */
 export async function revokeClient(env: DoorsEnv, { binding, stub }: Bound, client: unknown,
                                    pageSize: number = GRANT_PAGE): Promise<Revoked> {
   const done = await stub.grantRevoke(binding, { client: client as string });
+  const { keys } = await stub.keyList(binding);
+  const key = keys.find((row) => apiKeyOrigin(row.key_id).client === done.client);
+  if (key !== undefined) {
+    await deleteKey(env, key.key_id);
+  }
   return { ...done, grants: await providerRevoke(env, binding.owner, done.client, pageSize) };
 }
 

@@ -293,6 +293,28 @@ describe("the key store", () => {
     expect(await list()).toEqual([]);
   });
 
+  it("turns a key off by its grant row, as the app does, its directory entry gone too",
+     async () => {
+    const who = owner();
+    const app = await signInApp({ owner: who });
+    const minted = await json<{ key: string; key_id: string }>(
+      await appPost("keys", app.access_token, app.session, { name: "laptop", scopes: SCOPES }));
+    const [row] = (await env.OWNER.getByName(who).grantList(ownerBinding(who))).clients;
+    expect(row!.source).toBe("api_key");
+    expect(await env.DIRECTORY.get(`k:${minted.key_id}`)).not.toBeNull();
+    const off = await appPost("grants/revoke", app.access_token, null, { client: row!.client });
+    expect(off.status).toBe(200);
+    expect(await off.json()).toMatchObject({ client: row!.client, revoked: true });
+    expect(await env.DIRECTORY.get(`k:${minted.key_id}`)).toBeNull();
+    const [key] = (await json<{ keys: { revoked_at: number | null }[] }>(
+      await appPost("keys/list", app.access_token, null, {}))).keys;
+    expect(key!.revoked_at).toEqual(expect.any(Number));
+    const refused = await call(new Request(url("/api/tools/agents_list"), {
+      method: "POST", headers: { Authorization: `Bearer ${minted.key}`,
+                                 "Content-Type": "application/json" }, body: "{}" }));
+    expect(refused.status).toBe(401);
+  });
+
   it("applies an agent's held key request with its grant, once", async () => {
     const who = owner();
     const app = await signInApp({ owner: who });

@@ -235,9 +235,15 @@ describe("the object's RPC surface", () => {
     expect(methods).toEqual(RPC_METHODS);
     expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
     const { stub, name } = ownerObject();
-    const call = (method: string) => (stub as unknown as
-      Record<string, (...args: unknown[]) => Promise<unknown>>)[method]!(
-      { owner: name, caller: name, origin: null }, {});
+    const call = (method: string) => {
+      // The test pool's stub makes a property's RPC lookup eagerly on access, a promise
+      // that rejects at once for a method the object lacks and is awaited only once the
+      // call's queued turn runs; handled here at access, so it is never reported unhandled.
+      const prop = (stub as unknown as
+        Record<string, (...args: unknown[]) => Promise<unknown>>)[method]!;
+      void Promise.resolve(prop).catch(() => {});
+      return prop({ owner: name, caller: name, origin: null }, {});
+    };
     for (const method of ["claimWake", "markWake", "settleWake", "dueWakes", "wakeSender"]) {
       expect((await failure(() => call(method))).message)
         .toBe(`The RPC receiver does not implement "${method}".`);
