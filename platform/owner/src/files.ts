@@ -1309,8 +1309,13 @@ export class Files {
     } finally {
       this.#puts.delete(put);
     }
-    await this.#write(() => this.#storage.transactionSync(() => {
-      const sent = new Set(chunks.map(({ sha256 }) => sha256));
+    await this.#write(() => this.#recordStored(new Set(chunks.map(({ sha256 }) => sha256)),
+                                               intentId));
+  }
+
+  /** In a unit: chunks `FILES` accepted for an intent, recorded stored and sent. */
+  #recordStored(sent: ReadonlySet<string>, intentId: string): void {
+    this.#storage.transactionSync(() => {
       for (const sha256 of sent) {
         this.#sql.exec("UPDATE file_chunks SET stored = 1 WHERE sha256 = ? AND stored = 0",
                        sha256);
@@ -1322,7 +1327,36 @@ export class Files {
                        hashes(row.pending).filter((sha256) => !sent.has(sha256)).join(""),
                        intentId);
       }
-    }));
+    });
+  }
+
+  /**
+   * An open upload's chunk plan, each chunk's hash and size in order, and the chunks it
+   * still has to send: what the binder streams a file's bytes to `FILES` by (tasks 6.1).
+   */
+  uploadPlan(intentId: unknown): { chunks: { sha256: string; size: number }[];
+                                   pending: string[] } {
+    const intent = this.#intent(intentId, Date.now() / 1000);
+    const plan = chunkPlan(intent.size);
+    return { chunks: intent.chunks.map((sha256, index) => ({ sha256, size: plan[index]! })),
+             pending: intent.pending };
+  }
+
+  /**
+   * In a unit: the binder's word that `FILES` accepted these of an open upload's chunks,
+   * each put verified by its hash (the binder streams them itself), recorded as `upload`
+   * records its own puts. Only the intent's own chunks are taken.
+   */
+  stored(intentId: unknown, chunks: unknown): { stored: number } {
+    const intent = this.#intent(intentId, Date.now() / 1000);
+    const held = new Set(intent.chunks);
+    if (!Array.isArray(chunks) || chunks.length === 0 || chunks.length > MAX_INTENT_CHUNKS
+        || chunks.some((sha256) => typeof sha256 !== "string" || !held.has(sha256))) {
+      throw new Invalid("a stored report names only its intent's chunks");
+    }
+    const sent = new Set(chunks as string[]);
+    this.#recordStored(sent, intentId as string);
+    return { stored: sent.size };
   }
 
   /**
@@ -2029,7 +2063,8 @@ export class Files {
    * conflict name (`conflictName`). A directory is removed only once empty (the scan
    * removes its contents first), so a sync never deletes what the API wrote below it.
    */
-  syncCommit(request: { lease_id: unknown; epoch: unknown; ops: unknown }):
+  syncCommit(request: { lease_id: unknown; epoch: unknown; ops: unknown },
+             fullGrant: (client: string) => boolean = () => false):
       { outcomes: SyncOutcome[] } {
     const ops = request.ops;
     if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_SYNC_OPS) {
@@ -2037,8 +2072,10 @@ export class Files {
     }
     return this.#change(null, (now) => {
       const { epoch, authority } = this.#fenced(request.lease_id, request.epoch, now);
-      // A client's sandbox writes as that client, never into the owner's own trees.
+      // A client's sandbox writes as that client, into the owner's agent trees only while
+      // its grant is full, the default; a narrowed one's never (the founder's rule).
       const client = authority !== OWNER_AUTHORITY;
+      const trees = !client || fullGrant(authority);
       const writer = client ? `client:${authority}` : `lease:${epoch}`;
       const seen = new Set<string>();
       const outcomes = (ops as unknown[]).map((raw) => {
@@ -2052,7 +2089,7 @@ export class Files {
               throw new Invalid("a sync op names one workspace path, once");
             }
             seen.add(path);
-            if (client && ownersOnly(path)) {
+            if (!trees && ownersOnly(path)) {
               throw new Refused(AGENTS_OWNER_ONLY);
             }
             const outcome = this.#syncOp(op, path, epoch, writer, now);

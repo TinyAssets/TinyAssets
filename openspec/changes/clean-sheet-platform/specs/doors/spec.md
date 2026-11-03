@@ -41,7 +41,7 @@ An MCP grant's encrypted props SHALL hold the time of the interactive sign-in th
 - **THEN** the owner's object sees `authenticated_at` T
 
 ### Requirement: A revoke reaches the object first, then the provider
-The owner's revoke of an MCP client SHALL be made in the owner's object first, then SHALL revoke every provider grant of that client, so its next refresh is `invalid_grant`. A revoke the object refuses SHALL revoke nothing in the provider.
+The owner's revoke of an MCP client SHALL be made in the owner's object first, then SHALL revoke every provider grant of that client, so its next refresh is `invalid_grant`. A revoke the object refuses SHALL revoke nothing in the provider. The same revoke of an API key's client SHALL also delete the key's directory entry, after the grant's revoke, as the key's own revoke does.
 
 #### Scenario: A revoked client refreshes
 - **WHEN** the owner revokes an MCP client and the client refreshes
@@ -151,6 +151,28 @@ No published app, user content or third-party page SHALL ever be served on `http
 - **WHEN** a CIMD document or a registered client names a redirect on `tinyassets.io` or a subdomain such as `mcp.tinyassets.io`
 - **THEN** its authorization is refused before the consent page
 
+### Requirement: The doors serve the owner app on the owner surface's origin
+The doors Worker SHALL serve the owner app at `/app`, `/app/signed-in`, `/app/connected` and its named files under `/app/static/`, from its own `ASSETS`, and nothing else under `/app` but the owner surface. Each answer SHALL carry `Referrer-Policy: no-referrer` and a strict CSP (this origin only, nothing inline, no framing). Each return page's first and only script SHALL clear the code from the address bar before anything else.
+
+#### Scenario: The connect callback hands the app its code
+- **WHEN** a provider returns the owner's browser to `/oauth/connect/callback/<source>`, which hands the code to `/app/connected` in the fragment
+- **THEN** the page's own script clears the fragment before any other script runs, and posts the code to `connections/oauth/finish` with no referrer
+
+#### Scenario: A path under /app that the app does not name
+- **WHEN** a browser asks for `/app/index.html` or any unnamed file
+- **THEN** the doors answer `404`, and the assets are reached for nothing
+
+### Requirement: The owner app's routes are each one door
+The owner surface SHALL serve the owner app's reads and settings, each one owner door behind the first-party token: `account` (the owner's tier with the control record's numbers and the file usage), `notices`, `policy`, `policy/write`, `grants`, `grants/set`, `files/read`, `files/write` (text, against etags), `sources`, `capabilities`, `tools`, `agent/doorbell/kinds`, and `tools/<name>` (one table tool, the owner as itself). A revoke SHALL go by `grants/revoke` alone.
+
+#### Scenario: Any owner-surface answer opened as a page
+- **WHEN** a browser opens an owner-surface answer as a document
+- **THEN** it carries `nosniff` and a CSP of none, so it is never sniffed, run or framed
+
+#### Scenario: The owner sets a client's grant to revoked through grants/set
+- **WHEN** the owner's app posts `grants/set` with mode `revoked`
+- **THEN** it is refused `400`, and nothing changes
+
 ### Requirement: Sign-out ends the device's access, and devices sign in apart
 Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed in together. Sign-out SHALL close the session and revoke the presented token's grant, leaving other devices signed in.
 
@@ -159,7 +181,7 @@ Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed
 - **THEN** the phone's token is refused at once and the laptop's still works
 
 ### Requirement: The doors Worker cannot deploy before cutover
-The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV`, `DIRECTORY` and `CONTROL` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
+The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV`, `DIRECTORY` and `CONTROL` (distinct placeholder ids), `ASSETS` (the owner app's files, `./app`, the Worker first on every request) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
 
 #### Scenario: A route is added
 - **WHEN** a route, another service, a real KV id or another binding is added to the doors config
@@ -373,9 +395,47 @@ The MCP door SHALL advertise `events` in its `initialize` and `server/discover` 
 - **THEN** the subscribe answers `-32015` with `challenge_failed` or `http_4xx`, and nothing is stored
 
 ### Requirement: The owner export is an owner-surface stream
-`POST /app/api/export`, with at most a `cursor`, SHALL answer the owner's export as newline-delimited JSON (`application/x-ndjson`): the object's pages in order, each but the last followed by a `{"t":"cursor"}` line, up to `EXPORT_PAGES` pages a response (a technical ceiling on one request's work), so a client resumes from the last cursor it read. The first page SHALL be read before the response begins, so a refusal is the door's status.
+`POST /app/api/export`, with at most a `cursor`, SHALL answer the owner's export as newline-delimited JSON (`application/x-ndjson`): its generation's objects in order, up to `EXPORT_PAGES` a response (a technical ceiling on one request's work), every response but the last ending with a `{"t":"cursor"}` line that carries the cursor and the export's id, so a client resumes from the last cursor it read; an object its generation has not yet written SHALL end the response early with that cursor, never wait or answer a partial object. The first object SHALL be read before the response begins, so a refusal is the door's status.
 
 #### Scenario: The owner takes its data
-- **WHEN** the owner's app posts `{}` with its session
-- **THEN** the stream begins with the header and ends with `{"t":"end"}`
+- **WHEN** the owner's app posts `{}` with its session, and posts again from each cursor it reads
+- **THEN** the lines begin with the header and end with `{"t":"end"}`
 
+### Requirement: The owner's sign-in is the configured issuer's OpenID Connect flow
+The doors SHALL sign the owner in with the code flow and PKCE against `OWNER_ISSUER`, its endpoints and client the `UPSTREAM` record, both unset as checked in and filled at deploy from the issuer's discovery, which must name `OWNER_ISSUER` exactly. The ID token SHALL be RS256 under a key of the issuer's JWKS, its issuer, audience, nonce (the flow's challenge), times, subject and `auth_time` checked; a token without `auth_time` SHALL be refused, with no clock fallback.
+
+#### Scenario: A token without auth_time, or from another issuer
+- **WHEN** the issuer answers an ID token missing `auth_time`, or naming another issuer
+- **THEN** the sign-in fails and no owner is bound
+
+### Requirement: Sign-up is the platform's explicit admit, and erasure its outside record
+The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased or whose object is marked erasing. The erasure door SHALL only mark the object erasing, durable before it answers. The object's erasure job SHALL then put the owner on the erasure queue at its mark and at each attempt until the doors confirm, and the doors' consumer SHALL, each step safe to run again, write the owner's `o:` record erased, delete its `k:`, `h:` and `i:` entries, revoke its every OAuth grant and delete the identity at the issuer, then confirm; the object SHALL wipe only after that confirmation, so a half-done erasure always finishes.
+
+#### Scenario: An erasure interrupted after its mark
+- **WHEN** the request that marked an owner erasing is lost, or a consumer step fails
+- **THEN** the object's job sends the owner again until the doors confirm, and the erasure finishes
+
+#### Scenario: An erased owner's name
+- **WHEN** an erased owner's key, capability URL, refresh token or sign-in is presented, or a stale `getByName` reaches its wiped object
+- **THEN** each is refused, and the object refuses every door, never admitted again
+
+### Requirement: Inbound events are proved and routed by the binder
+`/hooks/inbound/<token>` SHALL exist only while the control record's `inbound` gate is on, take a body within the platform's one request ceiling, prove a shared app's request by the platform's signing secret its data record names (an HMAC over the timestamp and raw bytes within its skew) and route its single installation by the directory's `i:` entry, and route a capability URL by its token's hash (`h:`).
+
+#### Scenario: A bad HMAC, and a replay past the skew
+- **WHEN** a shared app's request carries a signature that does not verify, or a timestamp older than five minutes
+- **THEN** it is refused `401` and no object is reached
+
+### Requirement: No caller is rate-capped by the doors
+The doors SHALL count or cap no caller's requests, authenticated or not, and SHALL never refuse a valid credential because of what others sent from its address. A metadata document a `client_id` names SHALL be fetched only within the OAuth provider's own bounds (public URLs, 5 KiB, 10 s, one fetch a request). An owner object the runtime reports overloaded SHALL answer `429` with `Retry-After`.
+
+#### Scenario: A shared backend after many failures
+- **WHEN** an MCP host's backend address sends many expired bearers or failed refreshes
+- **THEN** a valid key and a live refresh from that address still succeed
+
+### Requirement: The binder streams an upload's bytes to FILES
+The owner surface's upload SHALL take one chunk a `PUT`, in any order and again after any failure, put it to `FILES` when the intent still needs it, refuse bytes that are not that declared chunk or a body shorter or longer than it, and answer the chunk's SHA-256 as `Content-Digest`; a file SHALL be bounded by the owner's policy, never by one request, and a refusal mid-upload SHALL answer its fixed code.
+
+#### Scenario: A tampered chunk
+- **WHEN** an upload's body differs from its declared chunk
+- **THEN** it is refused `400`, and nothing of that chunk is reported stored

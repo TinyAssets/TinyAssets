@@ -13,13 +13,15 @@
  * `resolve` is the one place a relative or dotted path is turned into a stored one, against
  * a `cwd`; the RPC doors take only stored paths and refuse anything else.
  *
- * The owner's agent definitions are the owner's alone (`OWNER_TREES`, Direction 3: the
- * owner edits its agents' files): `/workspace/agents` (each agent's `AGENTS.md`), and the
- * agent's abilities, which reach an engine's instructions (A5; ADR-034 decision 2):
- * `/workspace/.agents` (its skills), `/workspace/skills` and `/workspace/prompts`. Only the
- * owner's own authority creates, changes, moves into or out of, or removes anything there
- * (held by the file doors), so no client's file is ever beside an owner's skill. The roots are
- * never removed or renamed, so no change outside the trees reaches into them.
+ * The owner's agent definitions (`OWNER_TREES`, Direction 3: abilities are editable files):
+ * `/workspace/agents` (each agent's `AGENTS.md` and `agent.json`), and the agent's abilities,
+ * which reach an engine's instructions (A5; ADR-034 decision 2): `/workspace/.agents` (its
+ * skills), `/workspace/skills` and `/workspace/prompts`. The founder's rule (2026-11-03):
+ * every agent of the owner has full power by default to do what any other can, so the owner,
+ * its runs and any agent under a full grant (the default) create, change, move or remove
+ * anything there, and a grant the owner narrowed never does (held by the file doors and the
+ * sync). The owner's own app changes them only in its live session. The roots are never
+ * removed or renamed, so no change outside the trees reaches into them.
  */
 import { Invalid } from "./errors";
 import { utf8Bytes } from "./text";
@@ -35,8 +37,8 @@ export const ABILITIES_DIR = "/workspace/.agents";
 /** Every tree only the owner's own authority changes. */
 export const OWNER_TREES: readonly string[] = Object.freeze([
   AGENTS_DIR, ABILITIES_DIR, "/workspace/skills", "/workspace/prompts"]);
-/** The refusal of a change to an `OWNER_TREES` path under any authority but the owner's. */
-export const AGENTS_OWNER_ONLY = "only the owner changes its agents' files under " +
+/** The refusal of a change to an `OWNER_TREES` path under a grant the owner narrowed. */
+export const AGENTS_OWNER_ONLY = "a grant the owner narrowed changes no agent's files under " +
   "/workspace/agents, /workspace/.agents, /workspace/skills and /workspace/prompts";
 
 /** Whether `path` is in a tree only the owner's own authority changes. */

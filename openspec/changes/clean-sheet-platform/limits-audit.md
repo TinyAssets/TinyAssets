@@ -11,7 +11,14 @@ four classes:
 - **vendor limit**: a provider's documented limit, cited;
 - **technical ceiling**: kept, with the platform fact that forces it. A share of the
   owner-bound guard's half of the 10 GB is one: the fact is the object's 10 GB, and the
-  share is named by the guard's term.
+  share is named by the guard's term;
+- **no rate limit** (slice L, after its review): the platform sets no number on any caller,
+  authenticated or not. The bounds on an unauthenticated caller are Cloudflare's always-on
+  DDoS protection in front of every Worker, the OAuth provider's own per-fetch bounds
+  (below), and the runtime's own ceilings. A per-IP backstop, if the founder ever wants one,
+  is a zone WAF rule with the founder's own number, an owner setting of the founder's,
+  never a number in code. Dividing an account's included quota among IPs derives nothing,
+  so no such number is kept.
 
 Not listed, since none refuses or truncates what a user does:
 - internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), an egress reservation's beat and its lost detection three beats on (`EGRESS_BEAT_S`, `LOST_AFTER_S`), the erasure's day under its mark before its R2 step and wipe (`PUT_GRACE_MS`), its job waking it, the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint), and the sandbox's own (slice S): a renewal's window (`sandbox_renewal_window_s`, the control record's) and its measured edge, the sandbox look's and the line's back-offs, a runner command's deadline (a lease's TTL), and the idle reap a lease's TTL on;
@@ -56,9 +63,9 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 
 - **tier**: 3
 - **owner setting**: 12
-- **vendor limit**: 9
-- **technical ceiling**: 137
-- **total**: 161
+- **vendor limit**: 11
+- **technical ceiling**: 145
+- **total**: 171
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -143,6 +150,7 @@ reason; none refuses a write.
 | `owner/src/files.ts` `MAX_SYNC_OPS` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short in the object's request CPU. |
 | `owner/src/files.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The 10 GB, inside the manifest's bytes. |
 | `owner/src/files.ts` `tempDir` | 239 bytes | a temporary directory's prefix | a longer prefix refused | technical ceiling | One path component, `MAX_NAME_BYTES` 255, with its 16 hex. |
+| `doors/src/file-bytes.ts` one upload request | one chunk, 4 MiB at most | one `PUT files/upload/<intent_id>/<index>` | an upload sends one request a chunk, in any order, again after any failure; the door answers a chunk it holds without a second put | technical ceiling | Cloudflare's request body ceiling, 100 MB on Free and Pro (its Workers limits page, read 2026-11-03), never bounds a file: the policy's `max_file_bytes` and the intent's plan do. |
 | `owner/src/owner-do.ts` `fileWrite` | 4 MiB | one `fileWrite` call's content | a larger file goes by upload | technical ceiling | One chunk; Workers RPC's message and the isolate's 128 MB. |
 | `owner/src/paths.ts` `MAX_PATH_BYTES` | 4,096 bytes | a path | a longer path refused | technical ceiling | Linux's `PATH_MAX`, which the sandbox's disk holds. |
 | `owner/src/paths.ts` `MAX_NAME_BYTES` | 255 bytes | one path component | a longer name refused | technical ceiling | Linux's `NAME_MAX`. |
@@ -176,7 +184,7 @@ reason; none refuses a write.
 | `owner/src/grants.ts` `GRANT_LIMITS.maxFreeClients` | 1,000 | clients recorded without an owner grant | the oldest free one forgotten (never refused) | technical ceiling | The 10 GB: guard terms `outside_clients`, `proposal_shares`. |
 | `owner/src/grants.ts` `GRANT_LIMITS.maxOwnerClients` | 1,000 | clients the owner set a grant for | the 1,001st grant refused | technical ceiling | As above. |
 | `owner/src/grants.ts` `GRANT_LIMITS.maxScopesBytes` | 65,536 bytes | a grant's scopes as JSON | a larger grant refused | technical ceiling | The 10 GB, inside `outside_clients`; the schema's own check on the column. |
-| `doors/src/api-keys.ts` `MAX_KEYS_PER_OWNER` | 1,000 | API keys an owner holds | a 1,001st refused | technical ceiling | Each key's grant is an owner-set client: `maxOwnerClients`, held equal by a test. |
+| `owner/src/keys.ts` `MAX_KEYS` (`doors/src/api-keys.ts` `MAX_KEYS_PER_OWNER`) | 1,000 | live API keys an owner holds, counted in the mint's own unit (slice L's key store) | a 1,001st refused | technical ceiling | Each key's grant is an owner-set client: `maxOwnerClients`, held equal by a test. Guard term `owner_keys`, its rows bounded by the grants'. |
 | names and ids a caller gives (`text.ts` `name` 256 characters; a scope field 512; a display name 80; a history op 32; a lease holder 128; a connection's name 128; a model's id 200) | as listed | each name | a longer name refused | technical ceiling | The 10 GB: the guard costs every row at its validator's widest name. |
 | `owner/src/sessions.ts` `SESSION_LIMITS.maxSessions` | 64 | signed-in devices at once | the oldest session closed | technical ceiling | The 10 GB, each session a row the guard costs. |
 | `owner/src/sessions.ts` `SESSION_LIMITS` life | 8 hours | the owner's protected session | the owner signs in again for a widening | technical ceiling | A credential's life: NIST SP 800-63B's reauthentication at AAL2, at most 12 hours. The cookie's `Max-Age`. |
@@ -246,6 +254,15 @@ reason; none refuses a write.
 | `sandbox/runner/runner.ts` `CANCEL_GRACE_MS` | 20 s | a cancelled CLI's grace after SIGTERM | killed past it | technical ceiling | One heartbeat (`HEARTBEAT_MS`): the run's end and its last post reach the object inside its lease's TTL. |
 | `sandbox/runner/users.ts` `KILL_WITHIN_MS` | 20 s | how long a run user's processes may outlive their SIGKILL | the run's end fails loudly, the user not given back | technical ceiling | One heartbeat; a process still there is stuck in the kernel. |
 | `sandbox/runner/runner.ts` a failed CLI's stderr | `FRAME_UNITS_MAX` | the stderr a failed run shows | its head cut | technical ceiling | As much as one frame shows; the frame's own cut marks the rest. |
+| the OAuth provider's metadata fetch (`@cloudflare/workers-oauth-provider` 1.2.4, pinned) | public https URLs only, 5 KiB, 10 s, at most one fetch a request | the Client ID Metadata Document a `client_id` URL names, fetched at `/authorize` or the token endpoint | the request fails; nothing of ours is counted | technical ceiling | The provider's own bounds (its source, read in slice L), with the doors' `global_fetch_strictly_public` flag: one bounded fetch out for one request in is no amplification, so no number of ours is added (slice L's review). |
+| an owner's Durable Object overloaded | the runtime's soft limit, 1,000 requests a second an object | requests to one owner's object | `429`, `Retry-After: 1`, never retried by the doors | technical ceiling | Cloudflare's Durable Objects limits page: "An individual Object has a soft limit of 1,000 requests per second", past which it answers an overloaded error; its error-handling page says such an error "should not be retried". The doors surface it; they invent no cap of their own. |
+| `owner/src/inbound.ts` `MAX_BINDINGS` | 1,000 | the owner's inbound bindings | a 1,001st refused | technical ceiling | The 10 GB: guard term `inbound_bindings`. |
+| `owner/src/inbound.ts` `SECRET_MAX` | 4,096 characters | an owner-held inbound proof secret | a longer secret refused | technical ceiling | Inside `inbound_bindings`; senders' signing secrets are tens of characters. |
+| `owner/src/inbound.ts` `BREAKER_FAILURES`, `BREAKER_WINDOW_S` | 3 in 60 s | a shared app's events its owner's full mailbox refused | the binding's later events are an authenticated no-op until the owner changes it | vendor limit | A shared app's failure budget is its vendor's: Slack disables an app's event subscriptions when too many deliveries fail, for every owner on it. Ported from the Python's `DeliveryBreakers`. |
+| `owner/src/inbound-proof.ts` `MAX_SKEW_S` | 300 s | how old a signed inbound event's timestamp may be | refused `401` | vendor limit | Slack's own five minutes for its `v0` signature; past it a captured request is a replay. |
+| `doors/src/inbound.ts` headers | 64 headers, 8 KiB each | an inbound event's headers carried to the object | refused `400` | technical ceiling | The RPC to the object; Cloudflare's own request header bound is larger. |
+| `doors/src/config.ts` `INBOUND_BODY_MAX` | 16 MiB | an inbound event's body | refused `413` | technical ceiling | The platform's one request ceiling (`API_BODY_MAX`), held equal by a test; a body past 2 KiB is placed in R2 as mail's is. |
+| `doors/src/oidc.ts` token and JWKS sizes | 16 KiB ID token (64 KiB answer), 64 KiB JWKS | what the doors read from the owner issuer | the sign-in fails loudly | technical ceiling | The issuer's answers are read whole into memory; real ones are a few KiB. |
 
 ## Slice P's bounds
 
@@ -280,4 +297,3 @@ a user does:
 | `files/src/cipher.ts` AES-GCM, one data key | at most 2^32 seals a key (NIST SP 800-38D §8.3, random 96-bit nonces) | objects sealed under one owner's data key in the `aes-gcm` fallback | nothing: an owner's chunks are created once each, far fewer than 4 billion (a 250 GB owner at 4 MiB a chunk is 60,000; tiny files are inline) | technical ceiling | The nonce-collision bound of random IVs; the default (SSE-C) seals nothing here. Range reads under `aes-gcm` are charged a whole chunk each against `BATCH_BYTES`. |
 | `doors/src/e2b-hooks.ts` `HOOK_BODY_MAX` | 64 KiB | one E2B lifecycle event | an oversized one refused `413` | technical ceiling | An event is a few hundred bytes, its metadata ours. |
 | `owner/src/sandbox-time.ts` `DAYS_KEPT` | 400 days | the sandbox seconds a day kept | nothing: an older day's sum leaves the object (the nightly manifest holds it while kept) | technical ceiling | The 10 GB: guard term `sandbox_days`. Past a year of the founder's cost view, which limits nothing. |
-

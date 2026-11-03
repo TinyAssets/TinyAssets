@@ -32,7 +32,7 @@
  * reads the gates again at code mode's calls and reaches no directory entry or other
  * owner's state. Only `control-gate.ts` reads it, by `readControl`, and nothing writes it.
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM, workerSources } from "./sources";
+import { configFiles, PLATFORM, workerSources } from "./sources";
 
 const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
@@ -57,7 +57,14 @@ const ENV_KEYS: ReadonlySet<string> = new Set([
 const LIMITS = Object.freeze({ subrequests: 10_000_000 });
 /** The keys the top level may set: an environment's, the schema, the environments, its secret. */
 const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env", "secrets",
-                                                 "kv_namespaces"]);
+                                                 "kv_namespaces", "queues"]);
+/**
+ * The owner Worker's one queue (slice L): the producer of the erasure queue, whose one
+ * consumer, the doors Worker, makes an erasure's outside record and confirms it to that
+ * owner's object (`doors/src/erase.ts`); a message is `{owner}`, granting nothing.
+ */
+export const OWNER_QUEUES = Object.freeze({ producers: Object.freeze([
+  Object.freeze({ binding: "ERASURES", queue: "tinyassets-erasure" })]) });
 /**
  * The owner Worker's one secret, declared by name (it binds nothing): the routing key the
  * sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), the doors Worker's too.
@@ -257,6 +264,9 @@ export function configProblems(config: Config,
         problems.push(`${where}kv_namespaces is other than the doors' CONTROL namespace`);
       } else if (key === "limits" && JSON.stringify(scope[key]) !== JSON.stringify(LIMITS)) {
         problems.push(`${where}limits are not ${JSON.stringify(LIMITS)}`);
+      } else if (key === "queues"
+                 && JSON.stringify(scope[key]) !== JSON.stringify(OWNER_QUEUES)) {
+        problems.push(`${where}queues are other than the erasure queue's producer`);
       } else if (key === "secrets" && JSON.stringify(scope[key]) !== JSON.stringify(SECRETS)) {
         problems.push(`${where}secrets declares other than ROUTING_MAC_KEY`);
       } else if (key === "migrations") {
@@ -301,22 +311,34 @@ export function configProblems(config: Config,
  * state, which a local run leaves), by path from `root`.
  */
 export function wranglerConfigs(root: string): string[] {
-  return readdirSync(root, { recursive: true, encoding: "utf8" })
-    .map((path) => path.split("\\").join("/"))
-    .filter((path) => !path.split("/").some((part) => part === "node_modules"
-                                                    || part === ".wrangler")
-                      && /^wrangler\./i.test(path.split("/").at(-1) ?? ""))
-    .sort();
+  return configFiles(root);
 }
 
-/** Every Worker config in the platform, by its Worker's name. */
+/** The platform's configs, read and parsed once: they do not change while the guards run. */
+let PLATFORM_CONFIGS: ReadonlyMap<string, Readonly<Config>> | null = null;
+
+/** Every Worker config in the platform, by its Worker's name; a map of the caller's own. */
 export function platformConfigs(): Map<string, Config> {
-  const found = new Map<string, Config>();
-  for (const path of wranglerConfigs(PLATFORM)) {
-    const parsed = parseConfig(readFileSync(join(PLATFORM, path), "utf8"));
-    found.set(String(parsed["name"]), parsed);
+  if (PLATFORM_CONFIGS === null) {
+    const found = new Map<string, Config>();
+    for (const path of wranglerConfigs(PLATFORM)) {
+      const parsed = parseConfig(readFileSync(join(PLATFORM, path), "utf8"));
+      found.set(String(parsed["name"]), deepFreeze(parsed));
+    }
+    PLATFORM_CONFIGS = found;
   }
-  return found;
+  return new Map(PLATFORM_CONFIGS);
+}
+
+/** `value` frozen all the way down, so a cached config is never changed by a probe. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const inner of Object.values(value)) {
+      deepFreeze(inner);
+    }
+  }
+  return value;
 }
 
 /**
@@ -326,11 +348,25 @@ export function platformConfigs(): Map<string, Config> {
  * reads it (`storeWrites`).
  */
 function controlUses(sources: ReadonlyMap<string, string>): string[] {
+  return [...sources].filter(([path]) => path.startsWith("owner/src/"))
+    .flatMap(([path, text]) => fileControlUses(path, text)).sort();
+}
+
+/**
+ * One file's uses of `CONTROL`, parsed once per path and text: each probe changes one file of
+ * the owner's source, so the others are not parsed again (parsing every file at each probe
+ * took most of these tests' time).
+ */
+const CONTROL_USES = new Map<string, readonly string[]>();
+
+function fileControlUses(path: string, text: string): readonly string[] {
+  const key = `${path}\0${text}`;
+  const known = CONTROL_USES.get(key);
+  if (known !== undefined) {
+    return known;
+  }
   const uses: string[] = [];
-  for (const [path, text] of sources) {
-    if (!path.startsWith("owner/src/")) {
-      continue;
-    }
+  {
     const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node): void => {
       const named = (ts.isIdentifier(node) || ts.isStringLiteralLike(node))
@@ -353,7 +389,8 @@ function controlUses(sources: ReadonlyMap<string, string>): string[] {
     };
     visit(file);
   }
-  return uses.sort();
+  CONTROL_USES.set(key, uses);
+  return uses;
 }
 
 /** Each write a source could make through a KV namespace: put, delete or list, by any spelling. */
@@ -372,6 +409,13 @@ function storeWrites(text: string): string[] {
 }
 
 const config = parseConfig(readFileSync(join(OWNER, CONFIG), "utf8"));
+/**
+ * The Workers' sources, read once, and the owner's uses of `CONTROL` in them, parsed once at
+ * load (no test's time bound holds a whole parse of the source): each probe below then
+ * parses only the one file it changes.
+ */
+const SOURCES: ReadonlyMap<string, string> = workerSources();
+const OWNER_CONTROL = controlUses(SOURCES);
 
 describe("owner Worker config", () => {
   it("binds only FILES, to a Worker that binds one bucket, GATEWAY, to one that binds " +
@@ -462,10 +506,10 @@ describe("owner Worker config", () => {
     }
     expect(configProblems({ ...config, env: { prod: { kv_namespaces: [] } } },
                           platformConfigs())).toEqual(["env.prod.kv_namespaces is not an allowed key"]);
-    expect(controlUses(workerSources())).toEqual([
+    expect(OWNER_CONTROL).toEqual([
       "owner/src/owner-do.ts: OwnerEnv's CONTROL field",
       "owner/src/owner-do.ts: this.env.CONTROL, handed to new ControlGate"]);
-    expect(storeWrites(workerSources().get("owner/src/control-gate.ts")!)).toEqual([]);
+    expect(storeWrites(SOURCES.get("owner/src/control-gate.ts")!)).toEqual([]);
   });
 
   it.each([
@@ -473,9 +517,9 @@ describe("owner Worker config", () => {
     ["a second dotted read", "const kv = this.env.CONTROL;"],
     ["a destructured read", "const { CONTROL } = this.env;"],
   ])("sees %s of CONTROL outside the gate's one hand-off", (_what, line) => {
-    const sources = new Map(workerSources());
+    const sources = new Map(SOURCES);
     sources.set("owner/src/extra.ts", `class X { f() { ${line} } }`);
-    expect(controlUses(sources)).not.toEqual(controlUses(workerSources()));
+    expect(controlUses(sources)).not.toEqual(OWNER_CONTROL);
   });
 
   it("sees a write through the gate's store, however it is spelled", () => {
@@ -653,7 +697,7 @@ describe("owner Worker config", () => {
     expect([...ENV_KEYS, "services"].filter((key) => !env.includes(key))).toEqual([]);
     // Every key wrangler offers beyond the allow-list is refused, bindings among them.
     for (const key of ["durable_objects", "r2_buckets",
-                       "d1_databases", "queues", "vars", "ai", "workflows", "browser",
+                       "d1_databases", "vars", "ai", "workflows", "browser",
                        "vectorize", "hyperdrive", "analytics_engine_datasets",
                        "dispatch_namespaces", "mtls_certificates", "send_email",
                        "tail_consumers", "unsafe", "secrets_store_secrets", "worker_loaders",

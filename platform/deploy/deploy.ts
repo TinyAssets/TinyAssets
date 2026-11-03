@@ -1,0 +1,811 @@
+/**
+ * The dark deploy (tasks 5, "0c (live, slice L)"; tasks 2, "DNS, routes and deploy"): one
+ * reviewed step that deploys the six platform Workers to the production Cloudflare account
+ * with no public route, runs the handles canary (AGENTS.md Fact 11) and, once a probe owner
+ * exists, H2's probes (`h2-probes.ts`). Built in slice L, never run by it.
+ *
+ * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, from `main`: a
+ * `plan` job runs `--public` with the Cloudflare token alone and prints the plan to the job
+ * summary; the `apply` job then waits for the main-only `production` environment (and its
+ * required reviewer, when set) and runs `--yes` with that environment's secrets, never a
+ * host's (Direction 8).
+ *
+ *   node --experimental-strip-types platform/deploy/deploy.ts               # the plan
+ *   node --experimental-strip-types platform/deploy/deploy.ts --public      # the plan job's
+ *   node --experimental-strip-types platform/deploy/deploy.ts --yes         # the dark deploy
+ *   node --experimental-strip-types platform/deploy/deploy.ts --yes --routes  # + the routes
+ *   node --experimental-strip-types platform/deploy/deploy.ts --h2          # H2's probes only
+ *   node --experimental-strip-types platform/deploy/deploy.ts --yes --migrate owner
+ *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
+ *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
+ *
+ * A Worker's first deploy is `wrangler deploy`, with no route and no workers.dev; later
+ * ones upload a version and then deploy it (Cloudflare's staged path), so a deploy never
+ * touches a route. A Worker with a pending Durable Object migration is deployed whole only
+ * when `--migrate` names it.
+ *
+ * `--routes` hands the doors' routes over after the doors are deployed, one route at a time
+ * through Cloudflare's routes API (`handover`), so no path is ever served by nothing: a
+ * pattern another Worker holds is moved to the doors in place (`PUT`, one atomic change), a
+ * new one is added (`POST`), and only then is another Worker's narrower pattern, which
+ * Cloudflare would prefer to the doors' (the most specific pattern wins, its routes page),
+ * deleted, so its paths pass from that Worker straight to the doors. Then `wrangler
+ * triggers deploy` adds the egress custom domain.
+ *
+ * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
+ * "absent". So:
+ * - a namespace, bucket or queue is created only when its listing answered and lacks it;
+ * - a secret is set only on a Worker whose secret listing answered and lacks it, or that
+ *   the API says does not exist yet; the kit never makes a secret's value. `GATEWAY_KEYRING`
+ *   and `ROUTING_MAC_KEY` come from the secret store like the rest (`keyring-new` makes the
+ *   first keyring locally, for the founder to store); a held one is never replaced, unless
+ *   `--rotate` names it, and a keyring is rotated only by adding a key (the new keyring
+ *   must hold two or more keys, the active one among them). Cloudflare never shows a held
+ *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
+ * - the control record is written only when the API answered that it is absent;
+ * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
+ *   POST; never a delete).
+ *
+ * Before anything is changed it checks, live: the owner issuer's discovery names
+ * `OWNER_ISSUER` exactly and declares its token endpoint auth methods, and one real
+ * AuthKit token's claims (`OWNER_TOKEN_CLAIMS`) or the discovery's `claims_supported` show
+ * `auth_time`; an absent field is unknown, and unknown stops the kit; and the sandbox's
+ * `E2B_TEMPLATE` exists at E2B with a ready build. `--public` makes every Cloudflare read
+ * and the discovery check, and leaves to the apply job the checks that need the production
+ * secrets (E2B, WorkOS, each secret's value), saying so in its plan.
+ */
+import { execFileSync, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const PLATFORM = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO = resolve(PLATFORM, "..");
+const require = createRequire(join(PLATFORM, "package.json"));
+
+type Json = Record<string, unknown>;
+type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
+
+/** The Workers, bound-first: each one's bindings are deployed before it. */
+export const WORKERS: readonly string[] = Object.freeze([
+  "files", "gateway", "hooks", "sandbox", "owner", "doors"]);
+/** The KV namespaces, by binding, and their titles in the account. */
+export const NAMESPACES: Readonly<Record<string, string>> = Object.freeze({
+  OAUTH_KV: "tinyassets-oauth", DIRECTORY: "tinyassets-directory", CONTROL: "tinyassets-control",
+});
+export const BUCKET = "tinyassets-files";
+/** Each Worker's secrets. */
+export const SECRETS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "INBOUND_SLACK_SIGNING_SECRET"],
+  owner: ["ROUTING_MAC_KEY"],
+  gateway: ["GATEWAY_KEYRING"],
+  sandbox: ["E2B_API_KEY"],
+});
+/** The one secret two Workers hold: set on both or neither. */
+const SHARED = "ROUTING_MAC_KEY";
+/** Set when given; without it that door refuses loudly. */
+const OPTIONAL: readonly string[] = Object.freeze(["INBOUND_SLACK_SIGNING_SECRET"]);
+/** The doors' public routes (`--routes`, the cutover's), on the tinyassets.io zone. */
+export const ROUTES: readonly string[] = Object.freeze([
+  "tinyassets.io/mcp*", "tinyassets.io/api/*", "tinyassets.io/hooks/inbound/*",
+  "tinyassets.io/app/api/*", "tinyassets.io/authorize*", "tinyassets.io/oauth/*",
+  "tinyassets.io/.well-known/oauth-*",
+]);
+export const ZONE = "tinyassets.io";
+/** The sandbox's egress host, a custom domain of the doors Worker (`--routes`). */
+export const EGRESS_DOMAIN = "egress.tinyassets.io";
+export const CALLBACK = "https://tinyassets.io/oauth/upstream/callback";
+/** The doors Worker, which the routes are handed to. */
+export const DOORS = "tinyassets-doors";
+/** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
+export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
+  "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
+/** What only the apply job holds: the production environment's secrets. */
+export const SECRET_INPUTS: readonly string[] = Object.freeze([
+  "WORKOS_API_KEY", "E2B_API_KEY", "ROUTING_MAC_KEY", "GATEWAY_KEYRING"]);
+const WORKOS_API = "https://api.workos.com";
+const CF_API = "https://api.cloudflare.com/client/v4";
+/** E2B's platform API (`sandbox/src/e2b.ts`'s), its OpenAPI spec read 2026-11-03. */
+const E2B_API = "https://api.e2b.app";
+/** The control record a first deploy writes when there is none: every outside door closed. */
+export const DARK_CONTROL = Object.freeze({
+  outside: "off", ordinary: "canary", canary: [], inbound: false,
+  tiers: { free: { runs: 5, storage_bytes: 25_000_000_000 },
+           paid: { runs: 10, storage_bytes: 250_000_000_000 } },
+});
+
+function flag(name: string): boolean {
+  return process.argv.includes(name);
+}
+
+function option(name: string): string | undefined {
+  const at = process.argv.indexOf(name);
+  return at < 0 ? undefined : process.argv[at + 1];
+}
+
+function input(name: string): string | undefined {
+  const value = process.env[name];
+  return value === undefined || value === "" ? undefined : value;
+}
+
+/** A Worker's checked-in config, its comments stripped. */
+export function configOf(worker: string): Json {
+  const ts = require("typescript") as typeof import("typescript");
+  const path = join(PLATFORM, worker, "wrangler.jsonc");
+  const parsed = ts.parseConfigFileTextToJson(path, readFileSync(path, "utf8"));
+  if (parsed.error) {
+    throw new Error(`${path} does not parse`);
+  }
+  return parsed.config as Json;
+}
+
+function wrangler(args: string[], stdin?: string): string {
+  const bin = join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
+  const result = spawnSync(process.execPath, [bin, ...args], {
+    cwd: PLATFORM, input: stdin, encoding: "utf8",
+    env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+  });
+  if (result.status !== 0) {
+    // Its stderr alone: wrangler never echoes a secret's value.
+    throw new Error(`wrangler ${args.slice(0, 3).join(" ")} failed (exit ${result.status}): ` +
+                    `${result.stderr.trim()}`);
+  }
+  return result.stdout;
+}
+
+/** Cloudflare's API answer: its status and its parsed body, or a throw on no answer. */
+export interface CfAnswer {
+  readonly status: number;
+  readonly body: { success?: boolean; result?: unknown; errors?: { code?: number }[] };
+}
+
+export type CfApi = (path: string, init?: RequestInit) => Promise<CfAnswer>;
+
+/** The Cloudflare API with the account's token. */
+export function cfApi(token: string, fetcher: Fetch = fetch): CfApi {
+  return async (path, init = {}) => {
+    const response = await fetcher(`${CF_API}${path}`, {
+      ...init, headers: { Authorization: `Bearer ${token}`, ...(init.headers ?? {}) } });
+    const text = await response.text();
+    let body: CfAnswer["body"];
+    try {
+      body = JSON.parse(text) as CfAnswer["body"];
+    } catch {
+      body = {};
+    }
+    return { status: response.status, body };
+  };
+}
+
+function codes(answer: CfAnswer): number[] {
+  return (answer.body.errors ?? []).map((error) => error.code ?? 0);
+}
+
+/**
+ * A Worker's secrets' names, or null when the API answers that the Worker does not exist
+ * (404 with Cloudflare's 10007, "workers.api.error.script_not_found"); any other failure
+ * throws: a failed lookup is never "no secrets".
+ */
+export async function secretsOf(api: CfApi, account: string, script: string):
+    Promise<string[] | null> {
+  const answer = await api(`/accounts/${account}/workers/scripts/${script}/secrets`);
+  if (answer.status === 404 && codes(answer).includes(10007)) {
+    return null;
+  }
+  if (answer.status !== 200 || answer.body.success !== true || !Array.isArray(answer.body.result)) {
+    throw new Error(`the secret listing of ${script} failed (${answer.status}, ${
+      JSON.stringify(codes(answer))})`);
+  }
+  return (answer.body.result as { name?: unknown }[]).map((secret) => String(secret.name));
+}
+
+/**
+ * Whether a KV key is present: true, false only when the API answers that it is absent (404
+ * with Cloudflare's 10009, "key not found"); any other answer throws.
+ */
+export async function kvPresent(api: CfApi, account: string, namespace: string, key: string):
+    Promise<boolean> {
+  const answer = await api(`/accounts/${account}/storage/kv/namespaces/${namespace}/values/${
+    encodeURIComponent(key)}`);
+  if (answer.status === 200) {
+    return true;
+  }
+  if (answer.status === 404 && codes(answer).includes(10009)) {
+    return false;
+  }
+  throw new Error(`reading ${key} failed (${answer.status}, ${JSON.stringify(codes(answer))})`);
+}
+
+/** The account's KV namespaces by title, every page read; a failure throws. */
+export async function namespacesOf(api: CfApi, account: string): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  for (let page = 1; ; page += 1) {
+    const answer = await api(`/accounts/${account}/storage/kv/namespaces?per_page=100&page=${page}`);
+    if (answer.status !== 200 || answer.body.success !== true
+        || !Array.isArray(answer.body.result)) {
+      throw new Error(`listing the KV namespaces failed (${answer.status})`);
+    }
+    const rows = answer.body.result as { id: string; title: string }[];
+    for (const row of rows) {
+      found.set(row.title, row.id);
+    }
+    if (rows.length < 100) {
+      return found;
+    }
+  }
+}
+
+/** A Worker route on the zone, as Cloudflare's routes API lists it. */
+export interface Route {
+  readonly id: string;
+  readonly pattern: string;
+  readonly script?: string;
+}
+
+/** One change of the handover, in order. */
+export type RouteStep =
+  | { readonly method: "PUT"; readonly id: string; readonly pattern: string;
+      readonly from: string }
+  | { readonly method: "POST"; readonly pattern: string }
+  | { readonly method: "DELETE"; readonly id: string; readonly pattern: string;
+      readonly from: string };
+
+function base(pattern: string): string {
+  return pattern.endsWith("*") ? pattern.slice(0, -1) : pattern;
+}
+
+/**
+ * Whether `narrow` is a more specific pattern than `wide`, matching a part of its URLs:
+ * Cloudflare sends those URLs to `narrow` (the most specific pattern wins).
+ */
+export function narrower(narrow: string, wide: string): boolean {
+  return narrow !== wide && wide.endsWith("*") && narrow.startsWith(base(wide));
+}
+
+/** The zone's id, by its name; a failed read throws. */
+export async function zoneOf(api: CfApi): Promise<string> {
+  const zones = await api(`/zones?name=${ZONE}`);
+  const zone = Array.isArray(zones.body.result)
+    ? (zones.body.result as { id?: string }[])[0]?.id : undefined;
+  if (zones.status !== 200 || zones.body.success !== true || zone === undefined) {
+    throw new Error(`the zone ${ZONE} could not be read (${zones.status})`);
+  }
+  return zone;
+}
+
+/** The zone's Worker routes; a failed read throws. */
+export async function routesOf(api: CfApi, zone: string): Promise<Route[]> {
+  const routes = await api(`/zones/${zone}/workers/routes`);
+  if (routes.status !== 200 || routes.body.success !== true
+      || !Array.isArray(routes.body.result)) {
+    throw new Error(`the zone's routes could not be read (${routes.status})`);
+  }
+  return routes.body.result as Route[];
+}
+
+/**
+ * The handover of `patterns` to `script`, in order: each pattern another route holds moved
+ * in place (`PUT`), each missing one added (`POST`), and after each, every other route's
+ * narrower pattern deleted, so its paths fall to `script` with no gap. A wider pattern of
+ * another Worker is left: `script`'s narrower one already takes its own paths from it.
+ */
+export function handover(routes: readonly Route[], script: string,
+                         patterns: readonly string[]): RouteStep[] {
+  const steps: RouteStep[] = [];
+  const deleted = new Set<string>();
+  for (const pattern of patterns) {
+    const held = routes.find((route) => route.pattern === pattern);
+    if (held === undefined) {
+      steps.push({ method: "POST", pattern });
+    } else if (held.script !== script) {
+      steps.push({ method: "PUT", id: held.id, pattern, from: held.script ?? "no Worker" });
+    }
+    for (const route of routes) {
+      if (route.script !== script && !patterns.includes(route.pattern) && !deleted.has(route.id)
+          && narrower(route.pattern, pattern)) {
+        deleted.add(route.id);
+        steps.push({ method: "DELETE", id: route.id, pattern: route.pattern,
+                     from: route.script ?? "no Worker" });
+      }
+    }
+  }
+  return steps;
+}
+
+/** A step, as the plan says it. */
+export function describeStep(step: RouteStep, script: string): string {
+  return step.method === "PUT" ? `move the route ${step.pattern} from ${step.from} to ${script}`
+    : step.method === "POST" ? `add the route ${step.pattern} for ${script}`
+    : `delete ${step.from}'s narrower route ${step.pattern}, its paths now ${script}'s`;
+}
+
+/** Runs the handover's steps in order, each answer checked; the first failure stops it. */
+export async function runHandover(api: CfApi, zone: string, script: string,
+                                  steps: readonly RouteStep[]): Promise<void> {
+  for (const step of steps) {
+    const path = `/zones/${zone}/workers/routes${step.method === "POST" ? "" : `/${step.id}`}`;
+    const answer = await api(path, step.method === "DELETE" ? { method: "DELETE" } : {
+      method: step.method, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pattern: step.pattern, script }) });
+    if (answer.status !== 200 || answer.body.success !== true) {
+      throw new Error(`${describeStep(step, script)} failed (${answer.status}, ${
+        JSON.stringify(codes(answer))}); the steps before it are done, the rest are not`);
+    }
+  }
+}
+
+/** The doors' upstream: the issuer, and its `UPSTREAM` record. */
+export interface UpstreamValues {
+  readonly issuer: string;
+  readonly record: Json;
+}
+
+/**
+ * The deployed config of `worker`: its checked-in config with the namespace ids it names
+ * filled, the doors' upstream values set and, with `routes`, the doors' routes; nothing
+ * else changes, so what the guards hold is what deploys. It is written outside the Worker's
+ * folder, so its paths (`main`, and the doors' app files' `assets.directory`) are made
+ * absolute: wrangler reads each relative to the config file.
+ */
+export function deployedConfig(worker: string, ids: Readonly<Record<string, string>>,
+                               upstream: UpstreamValues, routes: boolean): Json {
+  const config = structuredClone(configOf(worker));
+  config["main"] = join(PLATFORM, worker, String(config["main"]));
+  const assets = config["assets"] as Json | undefined;
+  if (assets !== undefined) {
+    assets["directory"] = join(PLATFORM, worker, String(assets["directory"]));
+  }
+  delete config["$schema"];
+  for (const kv of (config["kv_namespaces"] ?? []) as { binding: string; id: string }[]) {
+    const id = ids[kv.binding];
+    if (id === undefined) {
+      throw new Error(`${worker}: no namespace for ${kv.binding}`);
+    }
+    kv.id = id;
+  }
+  if (worker === "doors") {
+    config["vars"] = { ...(config["vars"] as Json), OWNER_ISSUER: upstream.issuer,
+                       UPSTREAM: JSON.stringify(upstream.record) };
+    if (routes) {
+      config["routes"] = [...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
+                          { pattern: EGRESS_DOMAIN, custom_domain: true }];
+    }
+  }
+  return config;
+}
+
+/**
+ * The owner issuer's discovery, held to `issuer` exactly, and the doors' `UPSTREAM` from it,
+ * which the doors' own parser accepts. `auth_time`'s presence is settled by one real
+ * token's claims (`claims`, an object as production logs show it) or by the discovery's
+ * `claims_supported`; an absent field is unknown, and unknown stops the kit. The token
+ * endpoint must declare `client_secret_post`, the way the doors exchange a code.
+ */
+export async function upstreamFrom(issuer: string | undefined, clientId: string | undefined,
+                                   claims: string | undefined, fetcher: Fetch = fetch):
+    Promise<UpstreamValues> {
+  if (typeof issuer !== "string" || !/^https:\/\/\S+$/.test(issuer)) {
+    throw new Error("OWNER_ISSUER is the owner issuer's https URL");
+  }
+  if (typeof clientId !== "string" || clientId === "") {
+    throw new Error("WORKOS_CLIENT_ID is not set");
+  }
+  const url = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+  const response = await fetcher(url, { headers: { Accept: "application/json" } });
+  if (response.status !== 200) {
+    throw new Error(`${url} answered ${response.status}`);
+  }
+  const discovery = await response.json() as Json;
+  if (discovery["issuer"] !== issuer) {
+    // Any other spelling refuses every sign-in (tasks 2): stop before deploying it.
+    throw new Error(`the issuer's discovery names ${JSON.stringify(discovery["issuer"])}, ` +
+                    `not OWNER_ISSUER ${JSON.stringify(issuer)}`);
+  }
+  const methods = discovery["token_endpoint_auth_methods_supported"];
+  if (!Array.isArray(methods)) {
+    throw new Error("the issuer's discovery declares no token endpoint auth methods: unknown");
+  }
+  if (!methods.includes("client_secret_post")) {
+    throw new Error("the issuer takes no client_secret_post at its token endpoint");
+  }
+  if (claims !== undefined) {
+    let token: Json;
+    try {
+      token = JSON.parse(claims) as Json;
+    } catch {
+      throw new Error("OWNER_TOKEN_CLAIMS is one token's claims as a JSON object");
+    }
+    if (token["iss"] !== issuer) {
+      throw new Error("the sample token's iss is not OWNER_ISSUER");
+    }
+    if (typeof token["auth_time"] !== "number" || !Number.isSafeInteger(token["auth_time"])) {
+      throw new Error("the sample AuthKit token carries no auth_time: every sign-in would be " +
+                      "refused (the founder's choice, research §7)");
+    }
+  } else {
+    const supported = discovery["claims_supported"];
+    if (!Array.isArray(supported)) {
+      throw new Error("the issuer's discovery lists no claims_supported, and no sample " +
+                      "token's claims were given: auth_time is unknown");
+    }
+    if (!supported.includes("auth_time")) {
+      throw new Error("the issuer lists no auth_time claim: every sign-in would be refused");
+    }
+  }
+  const endpoint = (name: string): string => {
+    const value = discovery[name];
+    if (typeof value !== "string" || !/^https:\/\/\S+$/.test(value)) {
+      throw new Error(`the issuer's discovery names no https ${name}: unknown`);
+    }
+    return value;
+  };
+  // The doors' parser (`upstreamConfig`) accepts this record: the kit's guard holds it so.
+  const record = { client_id: clientId, authorization_endpoint: endpoint("authorization_endpoint"),
+                   token_endpoint: endpoint("token_endpoint"), jwks_uri: endpoint("jwks_uri"),
+                   user_delete: `${WORKOS_API}/user_management/users/{sub}` };
+  return { issuer, record };
+}
+
+/** Whether `name:tag` has a ready build at E2B (its OpenAPI spec's alias and tag checks). */
+export async function templateReady(template: string, key: string, fetcher: Fetch = fetch):
+    Promise<boolean> {
+  const at = template.lastIndexOf(":");
+  if (at < 1) {
+    throw new Error("E2B_TEMPLATE is name:tag");
+  }
+  const headers = { "X-API-Key": key, Accept: "application/json" };
+  const alias = await fetcher(`${E2B_API}/templates/aliases/${
+    encodeURIComponent(template.slice(0, at))}`, { headers });
+  if (alias.status === 404) {
+    return false;
+  }
+  if (alias.status !== 200) {
+    throw new Error(`E2B's alias lookup answered ${alias.status}`);
+  }
+  const { templateID } = await alias.json() as { templateID?: string };
+  const tag = await fetcher(`${E2B_API}/templates/${encodeURIComponent(String(templateID))}/` +
+                            `tags/exists?tag=${encodeURIComponent(template.slice(at + 1))}`,
+                            { headers });
+  if (tag.status !== 200) {
+    throw new Error(`E2B's tag lookup answered ${tag.status}`);
+  }
+  return (await tag.json() as { exists?: unknown }).exists === true;
+}
+
+/** The WorkOS redirect URI, registered when missing: GET, then POST; never a delete. */
+export async function registerRedirect(key: string, apply: boolean, fetcher: Fetch = fetch,
+                                       uri: string = CALLBACK):
+    Promise<"present" | "missing" | "registered"> {
+  const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+  const listed = await fetcher(`${WORKOS_API}/user_management/redirect_uris`, { headers });
+  if (listed.status !== 200) {
+    throw new Error(`WorkOS listed its redirect URIs with ${listed.status}`);
+  }
+  const { data } = await listed.json() as { data?: unknown };
+  if (!Array.isArray(data)) {
+    throw new Error("WorkOS's redirect URI listing holds no list");
+  }
+  if (data.some((row) => (row as Json | null)?.["uri"] === uri)) {
+    return "present";
+  }
+  if (!apply) {
+    return "missing";
+  }
+  const made = await fetcher(`${WORKOS_API}/user_management/redirect_uris`, {
+    method: "POST", headers, body: JSON.stringify({ uri }) });
+  if (made.status !== 200 && made.status !== 201) {
+    throw new Error(`WorkOS refused the redirect URI with ${made.status}`);
+  }
+  return "registered";
+}
+
+/** A keyring as the gateway holds it: `{active, keys}`, the active key among the keys. */
+export function keyring(text: string | undefined): { active: string; keys: Record<string, string> } {
+  let value: unknown;
+  try {
+    value = JSON.parse(text ?? "");
+  } catch {
+    throw new Error("GATEWAY_KEYRING is {active, keys} as JSON");
+  }
+  const ring = value as { active?: unknown; keys?: unknown };
+  if (typeof ring.active !== "string" || typeof ring.keys !== "object" || ring.keys === null
+      || !Object.hasOwn(ring.keys, ring.active)) {
+    throw new Error("GATEWAY_KEYRING is {active, keys}, its active key among its keys");
+  }
+  return ring as { active: string; keys: Record<string, string> };
+}
+
+/**
+ * What to set: each Worker's missing secrets, and those `rotate` names (the shared routing
+ * key on both or neither; the keyring only as an addition). `held` is each Worker's listing,
+ * null for a Worker the API says does not exist.
+ */
+export function secretPlan(held: Readonly<Record<string, readonly string[] | null>>,
+                           rotate: ReadonlySet<string>,
+                           values: ((name: string) => string | undefined) | null):
+    { worker: string; name: string }[] {
+  const has = (worker: string, name: string) => (held[worker] ?? []).includes(name);
+  if (has("doors", SHARED) !== has("owner", SHARED) && !rotate.has(SHARED)) {
+    throw new Error(`only one of the doors and the owner holds ${SHARED}: pass --rotate ` +
+                    `${SHARED} to set both again`);
+  }
+  // `values` null: the plan job, which holds no secret; the apply job checks the ring.
+  if (rotate.has("GATEWAY_KEYRING") && values !== null) {
+    const ring = keyring(values("GATEWAY_KEYRING"));
+    if (Object.keys(ring.keys).length < 2) {
+      throw new Error("a keyring is rotated by adding a key: the new GATEWAY_KEYRING holds " +
+                      "the old keys and a new active one (keyring-add)");
+    }
+  }
+  const plan: { worker: string; name: string }[] = [];
+  for (const [worker, names] of Object.entries(SECRETS)) {
+    for (const name of names) {
+      if (!has(worker, name) || rotate.has(name)) {
+        plan.push({ worker, name });
+      }
+    }
+  }
+  return plan;
+}
+
+/** Whether a wrangler listing names `name` as a whole word (never a longer name holding it). */
+export function listed(output: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[\\s│|:])${escaped}($|[\\s│|])`, "m").test(output);
+}
+
+function ensure(kind: "bucket" | "queue", name: string, apply: boolean, plan: string[]): void {
+  // `wrangler` throws on a failed listing: a failure is never "absent".
+  const list = kind === "bucket" ? ["r2", "bucket", "list"] : ["queues", "list"];
+  if (listed(wrangler(list), name)) {
+    return;
+  }
+  plan.push(`create the ${kind === "bucket" ? "R2 bucket" : "queue"} ${name}`);
+  if (apply) {
+    wrangler(kind === "bucket" ? ["r2", "bucket", "create", name] : ["queues", "create", name]);
+  }
+}
+
+/** The version id `wrangler versions upload` prints, or a throw. */
+export function versionOf(output: string): string {
+  const id = /Worker Version ID:\s*([0-9a-f-]{36})/.exec(output)?.[1];
+  if (id === undefined) {
+    throw new Error("wrangler versions upload printed no Worker Version ID");
+  }
+  return id;
+}
+
+/**
+ * Deploys one Worker. A first deploy (the API says the Worker does not exist) is
+ * `wrangler deploy`, with no route; later ones are Cloudflare's staged path, `wrangler
+ * versions upload` then `versions deploy` at 100%, which leaves the Worker's routes as they
+ * are. Wrangler 4.154 refuses a versions upload with a pending Durable Object migration;
+ * `--migrate <worker>` names the Workers to deploy whole for that (never the doors, which
+ * hold no migration and do hold the routes). The config deployed names no route; the
+ * routes are the handover's.
+ */
+function deployWorker(worker: string, config: string, exists: boolean,
+                      migrate: ReadonlySet<string>): void {
+  if (!exists || migrate.has(worker)) {
+    wrangler(["deploy", "--config", config]);
+  } else {
+    const id = versionOf(wrangler(["versions", "upload", "--config", config]));
+    wrangler(["versions", "deploy", `${id}@100`, "--yes", "--config", config]);
+  }
+}
+
+/** `keyring-new <file>`: a first keyring, written for the founder to store; never printed. */
+function keyringNew(file: string): void {
+  writeFileSync(file, JSON.stringify({ active: "k1", keys: {
+    k1: randomBytes(32).toString("base64") } }), { mode: 0o600, flag: "wx" });
+  console.log(`wrote a new keyring to ${file}; store it as GATEWAY_KEYRING`);
+}
+
+/** `keyring-add <file>`: the keyring in `file` with one more key, made active; the old kept. */
+function keyringAdd(file: string): void {
+  const ring = keyring(readFileSync(file, "utf8"));
+  const next = `k${Object.keys(ring.keys).length + 1}`;
+  writeFileSync(file, JSON.stringify({ active: next, keys: {
+    ...ring.keys, [next]: randomBytes(32).toString("base64") } }), { mode: 0o600 });
+  console.log(`added ${next} to ${file}, active; store it as GATEWAY_KEYRING, then run with ` +
+              "--rotate GATEWAY_KEYRING");
+}
+
+async function main(): Promise<void> {
+  if (process.argv[2] === "keyring-new" || process.argv[2] === "keyring-add") {
+    const file = process.argv[3];
+    if (file === undefined) {
+      throw new Error(`${process.argv[2]} <file>`);
+    }
+    (process.argv[2] === "keyring-new" ? keyringNew : keyringAdd)(file);
+    return;
+  }
+  if (flag("--h2")) {
+    // H2's probes alone: they change nothing, and need a routed door and a probe owner.
+    if (flag("--public")) {
+      report(["run H2's probes against the routed doors; nothing is changed"], false);
+      return;
+    }
+    execFileSync(process.execPath, ["--experimental-strip-types",
+                                    join(PLATFORM, "deploy", "h2-probes.ts")],
+                 { stdio: "inherit", env: process.env });
+    return;
+  }
+  const apply = flag("--yes");
+  const open = flag("--public");
+  if (apply && open) {
+    throw new Error("--public is the plan job's: it never changes anything");
+  }
+  const routes = flag("--routes");
+  const rotate = new Set((option("--rotate") ?? "").split(",").filter(Boolean));
+  const migrate = new Set((option("--migrate") ?? "").split(",").filter(Boolean));
+  if (migrate.has("doors")) {
+    throw new Error("the doors hold no Durable Object migration: --migrate never names them");
+  }
+  const plan: string[] = [];
+  for (const worker of WORKERS) {
+    if (!existsSync(join(PLATFORM, worker, "wrangler.jsonc"))) {
+      throw new Error(`platform/${worker} is missing: its slice has not landed`);
+    }
+  }
+  for (const name of [...PUBLIC_INPUTS, ...(open ? [] : SECRET_INPUTS)]) {
+    if (input(name) === undefined) {
+      throw new Error(`${name} is not set (${SECRET_INPUTS.includes(name)
+        ? "the production environment's secrets" : "the workflow's inputs"})`);
+    }
+  }
+  const later = "checked by the apply job before any change";
+  if (!open) {
+    keyring(input("GATEWAY_KEYRING"));
+  }
+  const account = input("CLOUDFLARE_ACCOUNT_ID")!;
+  const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
+  // The live checks, before anything is changed.
+  const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"),
+                                      input("OWNER_TOKEN_CLAIMS"));
+  plan.push(`set the doors' OWNER_ISSUER to ${upstream.issuer}, held to its discovery`);
+  const template = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
+  if (open) {
+    plan.push(`E2B's ready build of ${template}: ${later}`);
+  } else if (!await templateReady(template, input("E2B_API_KEY")!)) {
+    throw new Error(`E2B has no ready build of ${template}: build it (sandbox/template/build.py)`);
+  }
+  let zone: string | undefined;
+  let steps: RouteStep[] = [];
+  if (routes) {
+    zone = await zoneOf(api);
+    steps = handover(await routesOf(api, zone), DOORS, ROUTES);
+  }
+  const titles = await namespacesOf(api, account);
+  const ids: Record<string, string> = {};
+  for (const [binding, title] of Object.entries(NAMESPACES)) {
+    const id = titles.get(title);
+    if (id !== undefined) {
+      ids[binding] = id;
+      continue;
+    }
+    plan.push(`create the KV namespace ${title} (${binding})`);
+    if (apply) {
+      wrangler(["kv", "namespace", "create", title]);
+      const made = (await namespacesOf(api, account)).get(title);
+      if (made === undefined) {
+        throw new Error(`the KV namespace ${title} was not made`);
+      }
+      ids[binding] = made;
+    } else {
+      ids[binding] = `planned-${title}`;
+    }
+  }
+  ensure("bucket", BUCKET, apply, plan);
+  const queues = new Set<string>();
+  for (const worker of ["sandbox", "owner"]) {
+    const config = configOf(worker)["queues"] as { producers?: { queue: string }[] } | undefined;
+    for (const { queue } of config?.producers ?? []) {
+      queues.add(queue);
+    }
+  }
+  for (const queue of queues) {
+    ensure("queue", queue, apply, plan);
+  }
+  const out = mkdtempSync(join(tmpdir(), "tinyassets-deploy-"));
+  try {
+    const paths: Record<string, string> = {};
+    for (const worker of WORKERS) {
+      mkdirSync(join(out, worker));
+      paths[worker] = join(out, worker, "wrangler.json");
+      writeFileSync(paths[worker]!, JSON.stringify(deployedConfig(worker, ids, upstream, false),
+                                                   null, 2));
+    }
+    // Secrets first: `secrets.required` refuses a deploy without them.
+    const held: Record<string, string[] | null> = {};
+    for (const worker of Object.keys(SECRETS)) {
+      held[worker] = await secretsOf(api, account, `tinyassets-${worker}`);
+    }
+    for (const { worker, name } of secretPlan(held, rotate, open ? null : input)) {
+      const value = input(name);
+      if (value === undefined && !open) {
+        if (OPTIONAL.includes(name)) {
+          continue;
+        }
+        throw new Error(`${name} has no value for tinyassets-${worker}`);
+      }
+      plan.push(`set the secret ${name} on tinyassets-${worker}${open
+        ? ` (its value, or its absence if optional: ${later})` : ""}`);
+      if (apply) {
+        wrangler(["secret", "put", name, "--config", paths[worker]!], value);
+      }
+    }
+    for (const worker of WORKERS) {
+      // Whether it exists: its secret listing's answer (null when the API says it does not).
+      const exists = (worker in held ? held[worker]
+        : await secretsOf(api, account, `tinyassets-${worker}`)) !== null;
+      plan.push(`${exists && !migrate.has(worker) ? "upload and deploy a version of"
+        : "deploy"} tinyassets-${worker}, touching no route`);
+      if (apply) {
+        deployWorker(worker, paths[worker]!, exists, migrate);
+      }
+    }
+    if (ids["CONTROL"]!.startsWith("planned-")
+        || !await kvPresent(api, account, ids["CONTROL"]!, "c:control")) {
+      plan.push("write the control record closed (outside off, canary none, inbound off, the " +
+                "founder's tier numbers): the API answered there is none");
+      if (apply) {
+        const put = await api(`/accounts/${account}/storage/kv/namespaces/${ids["CONTROL"]}/` +
+                              "values/c%3Acontrol", {
+          method: "PUT", body: JSON.stringify(DARK_CONTROL),
+          headers: { "Content-Type": "application/json" } });
+        if (put.status !== 200) {
+          throw new Error(`writing the control record failed (${put.status})`);
+        }
+      }
+    }
+    plan.push(`WorkOS redirect URI ${CALLBACK}: ${open ? later
+      : await registerRedirect(input("WORKOS_API_KEY")!, apply)}`);
+    if (routes) {
+      plan.push(...steps.map((step) => describeStep(step, DOORS)));
+      plan.push(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
+      if (apply) {
+        await runHandover(api, zone!, DOORS, steps);
+        const routed = join(out, "doors", "routed.json");
+        writeFileSync(routed, JSON.stringify(deployedConfig("doors", ids, upstream, true),
+                                             null, 2));
+        wrangler(["triggers", "deploy", "--config", routed]);
+      }
+    }
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+  report(plan, apply);
+  if (!apply) {
+    console.log("\nNothing was changed.");
+    return;
+  }
+  // Fact 11: after a deploy, the handles canary (it reads TINYASSETS_WIKI_CANARY_TOKEN).
+  const canary = spawnSync("python3", [join(REPO, "scripts", "mcp_public_canary.py"),
+                                       "--assert-handles"], { stdio: "inherit", cwd: REPO });
+  if (canary.status !== 0) {
+    throw new Error(`the handles canary failed (exit ${canary.status})`);
+  }
+  console.log("H2's probes wait for a routed door and a probe owner's key: run with --h2 " +
+              "(h2-probes.ts names what it needs).");
+}
+
+/** The plan, printed and written to the job summary. */
+function report(plan: readonly string[], applied: boolean): void {
+  const summary = `${applied ? "Changed" : "Would change"}:\n${plan.map((step) => `- ${step}`)
+    .join("\n")}`;
+  console.log(summary);
+  if (process.env["GITHUB_STEP_SUMMARY"] !== undefined) {
+    writeFileSync(process.env["GITHUB_STEP_SUMMARY"], `${summary}\n`, { flag: "a" });
+  }
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error: Error) => {
+    console.error(`deploy stopped: ${error.message}`);
+    process.exit(1);
+  });
+}

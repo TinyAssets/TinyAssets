@@ -5,6 +5,7 @@ import { createExecutionContext, runInDurableObject, waitOnExecutionContext } fr
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
+import { ADMIN_CALLER } from "../../admin/src/caller";
 import type { OwnerDO } from "../../owner/src/owner-do";
 import { APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now, PUBLIC_ORIGIN, WEB_CLIENT,
          WEB_REDIRECT } from "../src/config";
@@ -30,6 +31,15 @@ export async function call(request: Request, environment: DoorsEnv = doorsEnv):
   const response = await worker.fetch(request, environment, ctx);
   await waitOnExecutionContext(ctx);
   return response;
+}
+
+/**
+ * The platform's explicit admit of `owner`, as the sign-in callback sends it at sign-up
+ * (`authorize.ts`), for a test that reaches an owner's object without signing it in.
+ */
+export async function admitOwner(owner: string): Promise<void> {
+  await env.OWNER.getByName(owner).admissionSet({ owner, caller: ADMIN_CALLER, origin: null },
+                                                { admit: true });
 }
 
 export function url(path: string): string {

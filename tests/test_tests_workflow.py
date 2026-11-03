@@ -519,6 +519,28 @@ def test_required_tests_cannot_decline_to_report() -> None:
         f"{condition!r}: without it a failed shard SKIPS the required check, "
         f"and protection treats skipped as SUCCESS"
     )
+    # The platform's jobs (ADR-032's TypeScript workspace and the owner app's
+    # browser test) gate through the aggregate, on every event: each is in its
+    # `needs`, carries no `if:` of its own (so it runs on every event the
+    # workflow does), and one unconditional step fails unless each result is
+    # exactly success -- skipped or cancelled included. Without this a red
+    # platform job merged, since only `required-tests` is the protected context.
+    agg = wf["jobs"]["required-tests"]
+    agg_needs = agg.get("needs")
+    agg_needs = [agg_needs] if isinstance(agg_needs, str) else list(agg_needs or [])
+    platform = {"platform-tests": "PLATFORM_RESULT", "platform-app": "APP_RESULT"}
+    for job in platform:
+        assert job in agg_needs, f"{job} must be in required-tests' needs: {agg_needs}"
+        assert "if" not in wf["jobs"][job], f"{job} must run on every event, with no `if:`"
+    gate = [s for s in agg["steps"]
+            if all(f"needs.{job}.result" in str(s.get("env", {})) for job in platform)]
+    assert len(gate) == 1, "one step must read both platform jobs' results"
+    step = gate[0]
+    assert "if" not in step, "the platform gate must run on every event, unconditionally"
+    for job, var in platform.items():
+        assert step["env"][var] == f"${{{{ needs.{job}.result }}}}", step["env"]
+        assert f'"${var}" != success' in str(step["run"]), step["run"]
+    assert "exit 1" in str(step["run"])
     # The heavy run happens ONCE, on the merge-group commit (founder
     # 2026-09-30: "cut the double CI run in the merge queue"). Shards may skip
     # on exactly one event -- the pull request -- and on nothing else, so the
@@ -1094,6 +1116,43 @@ def test_every_event_requires_structural_success(tmp_path):
         run = subprocess.run(["bash", "-s"], input=script.encode(),
                              cwd=tmp_path, capture_output=True)
         assert run.returncode == (0 if result == "success" else 1)
+
+
+def test_every_event_requires_both_platform_jobs_to_succeed(tmp_path):
+    """`required-tests` passes only when platform-tests AND platform-app succeeded.
+
+    Pinned by running the gate step's real script, so a `&&` for `||` (one job
+    may fail) fails here, not only a changed string. And neither job, nor any
+    step of either, may carry `continue-on-error`: a job with it reports
+    `result == success` to `needs` even when it failed, which merges a red
+    platform job green.
+    """
+    import itertools
+    import subprocess
+
+    wf = _load()
+    jobs = wf["jobs"]
+    for name in ("platform-tests", "platform-app"):
+        job = jobs[name]
+        assert "continue-on-error" not in job, f"{name} must not continue on error"
+        assert "if" not in job, f"{name} must run on every event"
+        for step in job["steps"]:
+            assert "continue-on-error" not in step, (
+                f"a step of {name} continues on error: {step}")
+            assert "if" not in step, f"a step of {name} is conditional: {step}"
+    agg = jobs["required-tests"]
+    assert "continue-on-error" not in agg
+    step = next(s for s in agg["steps"] if "PLATFORM_RESULT" in s.get("env", {}))
+    assert "if" not in step and "continue-on-error" not in step
+    assert step["env"] == {"PLATFORM_RESULT": "${{ needs.platform-tests.result }}",
+                           "APP_RESULT": "${{ needs.platform-app.result }}"}
+    results = ("success", "failure", "skipped", "cancelled", "")
+    for platform, app in itertools.product(results, results):
+        script = f"PLATFORM_RESULT={platform}\nAPP_RESULT={app}\n" + step["run"]
+        run = subprocess.run(["bash", "-s"], input=script.encode(),
+                             cwd=tmp_path, capture_output=True)
+        expected = 0 if (platform, app) == ("success", "success") else 1
+        assert run.returncode == expected, (platform, app, run.returncode)
 
 
 # Events that do not change the head. A workflow that listens to them must be

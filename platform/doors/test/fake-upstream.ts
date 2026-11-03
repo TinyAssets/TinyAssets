@@ -29,6 +29,9 @@ export function fakeCode(code: FakeCode): string {
   return base64url(new TextEncoder().encode(JSON.stringify(code)));
 }
 
+/** The subjects the fake was asked to forget (an erasure's identity deletion), in order. */
+export const FORGOTTEN: string[] = [];
+
 export const FAKE_UPSTREAM: Upstream = Object.freeze({
   authorizeUrl: ({ state, code_challenge, redirect_uri }: {
     state: string; code_challenge: string; redirect_uri: string;
@@ -50,5 +53,8 @@ export const FAKE_UPSTREAM: Upstream = Object.freeze({
     }
     return { issuer: parsed.issuer ?? FAKE_ISSUER, subject: parsed.subject,
              authenticated_at: parsed.authenticated_at };
+  },
+  forget: async (subject: string): Promise<void> => {
+    FORGOTTEN.push(subject);
   },
 });

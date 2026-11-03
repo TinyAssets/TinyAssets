@@ -154,8 +154,8 @@ describe("one sandbox an authority (review H-1)", () => {
       .toMatchObject({ state: "succeeded" });
   });
 
-  it("syncs a client's sandbox as that client, never into the owner's trees, and keeps its " +
-     "own sign-ins on its own lease", async () => {
+  it("syncs a client's sandbox as that client, into the agent trees under its default full " +
+     "grant, and keeps its own sign-ins on its own lease", async () => {
     const r = await gated();
     const file = await keyed(r);
     await defineAgent(r.stub, r.bind(), "main", file);
@@ -169,8 +169,10 @@ describe("one sandbox an authority (review H-1)", () => {
       .toMatchObject([{ outcome: "committed" }]);
     expect((await r.stub.fileStat(r.bind(), { path: "/workspace/notes.txt" })).entry)
       .toMatchObject({ writer: `client:${MUSE.client}` });
+    // Every agent may do what any other may (the founder's rule): a full grant's sandbox
+    // edits the agents' skills and definitions.
     expect((await commit("/workspace/skills/x.md")).outcomes)
-      .toMatchObject([{ outcome: "refused", reason: AGENTS_OWNER_ONLY }]);
+      .toMatchObject([{ outcome: "committed" }]);
     // Its own runner reports its own sandbox's sign-ins, kept on its lease alone.
     expect(await r.stub.signinReport(runnerSandbox(r, start), {
       signins: [{ engine: "claude-code", signed_in: true }] }))
@@ -186,6 +188,58 @@ describe("one sandbox an authority (review H-1)", () => {
     await r.stub.grantRevoke(r.bind(), { client: MUSE.client });
     expect((await failure(() => commit("/workspace/later.txt"))).message)
       .toMatch(/fenced/);
+  });
+
+  it("syncs a narrowed client's sandbox into no agent tree, and the rest as that client",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", await keyed(r));
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    await r.stub.outsideAgents(client);
+    const { revision } = (await r.stub.grantList(r.bind())).clients
+      .find((entry) => entry.client === MUSE.client)!;
+    // The owner narrowed this agent's grant: it talks to main and writes files, nothing more.
+    await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "scoped",
+      scopes: ["converse", "write_files", "read_files"].map((capability) =>
+        ({ universe: "alpha", agent: "main", capability })),
+      expected_revision: revision, name: "Muse" });
+    const { card_id, digest } = await r.stub.registerPropose(client, {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null });
+    await r.stub.registerAgent(r.session(), { card_id, digest });
+    const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+                                         { message: "hi", client_send_id: "n-1" });
+    const start = await startOf(r.stub, run.run_id);
+    const commit = (path: string) => r.stub.fileSyncCommit(syncOf(r, start), {
+      ...start.lease, ops: [{ op: "write", path, base: null, inline: text("s") }] });
+    for (const path of ["/workspace/skills/x.md", "/workspace/agents/main/agent.json",
+                        "/workspace/.agents/skills/y/SKILL.md"]) {
+      expect((await commit(path)).outcomes)
+        .toMatchObject([{ outcome: "refused", reason: AGENTS_OWNER_ONLY }]);
+    }
+    expect((await commit("/workspace/notes.txt")).outcomes)
+      .toMatchObject([{ outcome: "committed" }]);
+    // Its run's own file tools are held the same: no agent file, the rest as the client.
+    const tools = runBinding(r, start);
+    expect((await failure(() => r.stub.fileWrite(tools, {
+      path: "/workspace/agents/main/AGENTS.md", expected_etag: null,
+      content: text("planted") }))).message).toBe(AGENTS_OWNER_ONLY);
+    expect(await r.stub.fileWrite(tools, { path: "/workspace/run-notes.txt", expected_etag: "",
+                                           content: text("mine") })).toHaveProperty("entry");
+  });
+
+  it("let the owner's own run edit an agent's agent.json and skills by default", async () => {
+    const r = await gated();
+    const { start } = await ownerRun(r.stub, r.bind(), await keyed(r));
+    const tools = runBinding(r, start);
+    const path = "/workspace/agents/main/agent.json";
+    const { entry } = await r.stub.fileStat(r.bind(), { path });
+    const widened = await r.stub.fileWrite(tools, { path, expected_etag: entry!.etag,
+      content: text(JSON.stringify(await keyed(r))) });
+    expect(widened).toHaveProperty("entry");
+    await r.stub.fileMkdir(tools, { path: "/workspace/skills/notes", expected_etag: null });
+    expect(await r.stub.fileWrite(tools, { path: "/workspace/skills/notes/SKILL.md",
+      expected_etag: "", content: text("# notes") })).toHaveProperty("entry");
   });
 
   it("opens a client's sandbox without ending the owner's own streams", async () => {
@@ -333,8 +387,8 @@ describe("a client's sandbox's files (review round 2, M2)", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", await keyed(r));
     await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
-    await r.stub.fileMkdir(r.bind(), { path: "/workspace/skills", expected_etag: null });
-    await r.stub.fileWrite(r.bind(), { path: "/workspace/skills/s.md", expected_etag: null,
+    await r.stub.fileMkdir(r.session(), { path: "/workspace/skills", expected_etag: null });
+    await r.stub.fileWrite(r.session(), { path: "/workspace/skills/s.md", expected_etag: null,
                                        content: text("a skill") });
     await r.stub.fileWrite(r.bind(), { path: "/workspace/notes.txt", expected_etag: null,
                                        content: text("the owner's") });
@@ -374,7 +428,7 @@ describe("a client's sandbox's readable set (review round 3, M1)", () => {
     const file = await keyed(r);
     await defineAgent(r.stub, r.bind(), "main", file);
     await defineAgent(r.stub, r.bind(), "other", file);
-    await r.stub.fileWrite(r.bind(), { path: "/workspace/agents/other/AGENTS.md",
+    await r.stub.fileWrite(r.session(), { path: "/workspace/agents/other/AGENTS.md",
                                        expected_etag: null, content: text("other's rules") });
     // A converse-only client, on both agents.
     const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });

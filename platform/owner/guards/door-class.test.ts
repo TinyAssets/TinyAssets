@@ -23,7 +23,7 @@ const HELPERS: ReadonlySet<string> = new Set(["#bind", "#account", "#owner", "#w
                                               "#collector", "#filer", "#reader", "#syncer"]);
 const CLASSES: ReadonlySet<string> = new Set(["work", "read", "reduce"]);
 const PLATFORM_DOORS: ReadonlySet<string> = new Set(["admissionSet", "tierSet",
-                                                    "dataKeyRewrap"]);
+                                                    "dataKeyRewrap", "erasureOutside", "erasureOutsideDone"]);
 
 /** Each door's classes, as its binding calls name them, and each problem found. */
 export function doorClasses(source: string):

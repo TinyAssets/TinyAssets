@@ -33,23 +33,26 @@ const RPC_METHODS = Object.freeze([
   "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
-  "connectionRevoke", "dataKeyRewrap", "deleteAgent", "disableAgent", "egressBeat", "egressOpen", "egressReceipts",
-  "egressSettle", "exportChunks", "exportEnd", "fileChanges", "fileHistory",
+  "connectionRevoke", "dataKeyRewrap", "deleteAgent", "disableAgent", "egressBeat", "egressOpen",
+  "egressReceipts", "egressSettle", "erasureOutside", "erasureOutsideDone", "exportChunks",
+  "exportEnd", "fileChanges", "fileHistory",
   "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
   "fileRestore", "fileStat", "fileSyncCommit", "fileSyncUploadBegin", "fileSyncUploadChunks",
   "fileUploadAbort", "fileUploadBegin",
-  "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite",
+  "fileUploadChunks", "fileUploadCommit", "fileUploadStored", "fileUploadTarget",
+  "fileUsage", "fileWrite",
   "flowFinish", "grantForget",
-  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboxDigest", "mailChain",
-  "mailboxAck", "mailboxRead",
-  "noticeList", "outsideAgents", "ownerExport", "policyProposal", "policyPropose",
+  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboundAccept", "inboundCreate",
+  "inboundList", "inboundRevoke", "inboundSet", "inboxDigest", "keyList", "keyMint", "mailChain",
+  "mailboxAck", "mailboxRead", "noticeList", "outsideAgents", "ownerErase", "ownerExport",
+  "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "runEvents", "sandboxBilled",
   "sandboxDays", "sandboxRung", "sessionClose",
   "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
-  "socketsEnd", "storageUsage", "tierSet", "toolProfile", "usageReceipts", "wakeEvents", "wakeSubscribe",
-  "wakeUnsubscribe",
+  "socketsEnd", "storageUsage", "tierRead", "tierSet", "toolProfile", "usageReceipts",
+  "wakeEvents", "wakeSubscribe", "wakeUnsubscribe",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */
@@ -265,9 +268,15 @@ describe("the object's RPC surface", () => {
     expect(methods).toEqual(RPC_METHODS);
     expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
     const { stub, name } = ownerObject();
-    const call = (method: string) => (stub as unknown as
-      Record<string, (...args: unknown[]) => Promise<unknown>>)[method]!(
-      { owner: name, caller: name, origin: null }, {});
+    const call = (method: string) => {
+      // The test pool's stub makes a property's RPC lookup eagerly on access, a promise
+      // that rejects at once for a method the object lacks and is awaited only once the
+      // call's queued turn runs; handled here at access, so it is never reported unhandled.
+      const prop = (stub as unknown as
+        Record<string, (...args: unknown[]) => Promise<unknown>>)[method]!;
+      void Promise.resolve(prop).catch(() => {});
+      return prop({ owner: name, caller: name, origin: null }, {});
+    };
     for (const method of ["claimWake", "markWake", "settleWake", "dueWakes", "wakeSender"]) {
       expect((await failure(() => call(method))).message)
         .toBe(`The RPC receiver does not implement "${method}".`);

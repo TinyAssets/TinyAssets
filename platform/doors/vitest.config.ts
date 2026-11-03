@@ -17,8 +17,8 @@ const FILES = join(DOORS, "..", "files");
 
 type WorkerConfig = {
   name: string; compatibility_date: string; compatibility_flags: string[];
-  durable_objects?: { bindings: { name: string; class_name: string }[] };
   r2_buckets?: { binding: string }[];
+  durable_objects?: { bindings: { name: string; class_name: string }[] };
 };
 
 function config(dir: string): WorkerConfig {
@@ -95,8 +95,9 @@ function hooksWorker() {
 }
 
 /**
- * The real files Worker, as the owner object's FILES binding (its export's generations are in
- * R2): its own source, transpiled, its one bucket, a test keyring as its one secret.
+ * The real files Worker, as the FILES service binding's target (the doors' file bytes, and
+ * the owner object's in this script, whose export's generations are in R2): its own source,
+ * transpiled, with its one bucket and a test keyring as its one secret.
  */
 function filesWorker(keyring: string) {
   const files = config(FILES);
@@ -134,6 +135,9 @@ function fakeProviders() {
 /** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
 const ROUTING_KEY = randomBytes(32).toString("base64url");
 
+/** The shared inbound app's signing secret (`shared-apps.json`'s Slack), for the tests. */
+const SLACK_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
+
 /** A keyring made fresh for each run. */
 const KEYRING = JSON.stringify({ active: "k1", keys: { k1: randomBytes(32).toString("base64") } });
 
@@ -156,13 +160,14 @@ export default defineConfig({
             miniflare: {
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
               bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
-                          E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret" },
-              // HOOKS and FILES: the owner object's (in this script for the tests), to the real
-              // hooks and files Workers, as the owner config binds them.
-              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks",
-                                 FILES: "tinyassets-files" },
-              workers: [gatewayWorker(KEYRING), hooksWorker(), filesWorker(KEYRING),
-                        fakeProviders()],
+                          E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
+                          WORKOS_API_KEY: "test-client-secret",
+                          INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
+              // HOOKS: the owner object's (in this script for the tests), to the real
+              // hooks Worker, as the owner config binds it.
+              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks" },
+              workers: [gatewayWorker(KEYRING), hooksWorker(), fakeProviders(),
+                        filesWorker(KEYRING)],
             },
           }),
         ],

@@ -4,6 +4,7 @@
  * `guards/config.test.ts`).
  */
 import type { Source } from "../../gateway/src/credential";
+import type { ChunkPut } from "../../files/src/index";
 import type { EgressService } from "../../owner/src/network";
 import type { Verified } from "../../gateway/src/forward";
 import type { Sealed } from "../../gateway/src/keyring";
@@ -80,6 +81,21 @@ export const APP_BODY_MAX = API_BODY_MAX;
 
 /** `OWNER_ISSUER` until the AuthKit slice sets AuthKit's production issuer. */
 export const ISSUER_NOT_CONFIGURED = "not-configured";
+/** `UPSTREAM` until the deploy fills it from AuthKit's live discovery (`deploy/`). */
+export const UPSTREAM_NOT_CONFIGURED = "not-configured";
+
+/** The inbound door's path: `/hooks/inbound/<token>`, one segment (`inbound.ts`). */
+export const INBOUND_PATH = "/hooks/inbound/";
+/**
+ * An inbound event's body: the platform's one request ceiling, the same as a tool call's
+ * (`API_BODY_MAX`; slice LIM raises it to its 16 MiB), never a ceiling of its own.
+ */
+export const INBOUND_BODY_MAX = API_BODY_MAX;
+
+/** The files Worker's chunk entrypoint, as the file door's bytes reach it (`file-bytes.ts`). */
+export interface FilesService {
+  putChunks(ns: string, chunks: ChunkPut[]): Promise<{ created: number }>;
+}
 
 /**
  * The gateway as the doors bind it: its `ConnectGateway` entrypoint, which serves only
@@ -127,6 +143,8 @@ export interface DoorsEnv {
   readonly DIRECTORY: KVNamespace;
   /** The platform's control record alone (`c:control`), the owner Worker's too. */
   readonly CONTROL: KVNamespace;
+  /** The owner app's own files (`app/`), served only through `pages.ts`. */
+  readonly ASSETS: Fetcher;
   /** Dynamic client registration, the deprecated fallback: exactly "true" or "false". */
   readonly DCR_ENABLED: string;
   /**
@@ -140,6 +158,28 @@ export interface DoorsEnv {
    * today. Any issuer neither here nor `OWNER_ISSUER` is refused.
    */
   readonly FOREIGN_ISSUERS: string;
+  /**
+   * The owner issuer's sign-in endpoints and client, as JSON (`oidc.ts`'s `UpstreamConfig`):
+   * `not-configured` until the deploy fills it from the issuer's live discovery.
+   */
+  readonly UPSTREAM: string;
+  /**
+   * The upstream's client secret (WorkOS's API key: the code exchange and the identity's
+   * deletion need it), set in the Worker's secrets by the deploy kit from the production
+   * environment's secret store; absent until then, and every sign-in fails loudly.
+   */
+  readonly WORKOS_API_KEY?: string;
+  /** The files Worker: only `file-bytes.ts` reaches it, the binder streaming an upload. */
+  readonly FILES: FilesService;
+}
+
+/**
+ * A secret a data record names (a shared app's signing secret, `shared-apps.json`), or
+ * null when the Worker holds none: its door then refuses loudly, never a guess.
+ */
+export function namedSecret(env: DoorsEnv, name: string): string | null {
+  const value = (env as unknown as Record<string, unknown>)[name];
+  return typeof value === "string" && value !== "" ? value : null;
 }
 
 const ISSUER_URL = /^https:\/\/[^\s]+$/;

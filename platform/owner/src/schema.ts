@@ -52,9 +52,9 @@ export type Migration = readonly string[];
  * in the wiped database, so it is spelled once, here.
  */
 export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMARY KEY " +
-  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN ('admitted', 'suspended', " +
-  "'erased')), reasons TEXT NOT NULL CHECK (reasons IN ('[]', '[\"abuse\"]', " +
-  "'[\"billing\"]', '[\"abuse\",\"billing\"]')), " +
+  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN ('pending', 'admitted', " +
+  "'suspended', 'erased')), reasons TEXT NOT NULL CHECK (reasons IN ('[]', " +
+  "'[\"abuse\"]', '[\"billing\"]', '[\"abuse\",\"billing\"]')), " +
   // The owner's tier (ADR-034 decision 8), which only the platform sets (`tierSet`).
   "tier TEXT NOT NULL DEFAULT 'free' CHECK (tier IN ('free', 'paid')), " +
   "CHECK ((state = 'suspended') = (reasons != '[]')))";
@@ -1212,13 +1212,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // Part 8: the owner's erasure (erasure.ts; S4-S5): the owner being erased is one row
     // (`owner_erasure`, with the step it reached), the mark every door and lane refuses on.
     "CREATE TABLE owner_erasure (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-      "started_at REAL NOT NULL, step INTEGER NOT NULL DEFAULT 1 CHECK (step IN (1, 2)))",
+      "started_at REAL NOT NULL, step INTEGER NOT NULL DEFAULT 1 CHECK (step IN (1, 2)), " +
+      // The erasure's outside record, confirmed by the doors (`erasure.ts` step 2, slice L).
+      "outside INTEGER NOT NULL DEFAULT 0 CHECK (outside IN (0, 1)))",
     // Part 10: the owner's admission (tasks 5, F1): `owner_admission` is the owner's one
-    // admission row (`admission.ts`): admitted when the object is first made, suspended for
-    // billing or abuse by the platform, or, as the last step of the owner's erasure, the
-    // erased tombstone, alone in the wiped database.
+    // admission row (`admission.ts`): pending when the object is first made, admitted only by
+    // the platform's explicit admit at sign-up (slice L), suspended for billing or abuse by
+    // the platform, or, as the last step of the owner's erasure, the erased tombstone, alone
+    // in the wiped database.
     ADMISSION_TABLE,
-    "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
+    "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'pending', '[]')",
     // Part 11: the egress door (tasks 4 G4; egress.ts). The owner's policy row keeps the egress
     // generation, moved only by a write that changes the egress table (each sandbox lease,
     // migration 12, keeps the one its network was last applied under).
@@ -1774,9 +1777,34 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
     `CREATE TRIGGER message_bodies_inline_went AFTER UPDATE OF body_bytes, content_id, filer ON message_bodies ` +
       `WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
+    // Part 16: the doors' records in the owner's object (slice L). `owner_keys`, the key store
+    // (`keys.ts`): each API key's id, name, mint time, last use and revoke, its row only while
+    // its owner-set grant row stands (its `client`), so the owner's list and its erasure can
+    // enumerate them. `inbound_bindings` (`inbound.ts`): each inbound event source, its agent,
+    // its revision, the directory route the doors keep for it, an owner-held proof and its
+    // secret, and its breaker. Both are exported, so each is logged as the rest are.
+    "CREATE TABLE owner_keys (key_id TEXT PRIMARY KEY CHECK (length(key_id) = 16 AND " +
+      "key_id NOT GLOB '*[^0-9a-f]*'), client TEXT NOT NULL UNIQUE CHECK " +
+      "(length(client) = 64), name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80), " +
+      "created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER)",
+    "CREATE TABLE inbound_bindings (binding_id TEXT PRIMARY KEY CHECK " +
+      "(length(binding_id) = 32), kind TEXT NOT NULL CHECK (kind IN ('capability', " +
+      "'shared')), agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 64), " +
+      "enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)), revision INTEGER NOT NULL " +
+      "CHECK (revision >= 1), route TEXT NOT NULL UNIQUE CHECK (length(route) <= 160), " +
+      "profile TEXT CHECK (profile IS NULL OR length(profile) <= 1024), " +
+      "secret TEXT CHECK (secret IS NULL OR length(secret) <= 4096), " +
+      "failures TEXT NOT NULL DEFAULT '[]' CHECK (length(failures) <= 64), " +
+      "tripped INTEGER NOT NULL DEFAULT 0 CHECK (tripped IN (0, 1)), " +
+      "created_at INTEGER NOT NULL, changed_at INTEGER NOT NULL)",
+    `${LOGGED("owner_keys", "key_id client name created_at last_used_at revoked_at", "key_id", "INSERT")}`,
+    `${LOGGED("owner_keys", "key_id client name created_at last_used_at revoked_at", "key_id", "UPDATE")}`,
+    `${LOGGED("owner_keys", "key_id client name created_at last_used_at revoked_at", "key_id", "DELETE")}`,
+    `${LOGGED("inbound_bindings", "binding_id kind agent enabled revision profile failures tripped created_at changed_at", "binding_id", "INSERT")}`,
+    `${LOGGED("inbound_bindings", "binding_id kind agent enabled revision profile failures tripped created_at changed_at", "binding_id", "UPDATE")}`,
+    `${LOGGED("inbound_bindings", "binding_id kind agent enabled revision profile failures tripped created_at changed_at", "binding_id", "DELETE")}`,
   ]),
 ]);
-
 
 /** A migration's digest: SHA-256 over its statements as JSON, as the code evaluates them. */
 export function migrationDigest(migration: Migration): string {

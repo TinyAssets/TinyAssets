@@ -223,7 +223,9 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd", include: ["test/**/*.test.ts"] },
+        // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
+        test: { name: "workerd", include: ["test/**/*.test.ts"],
+                setupFiles: ["./test/admitted.ts"] },
       },
       {
         // Static guards over the source and config, in Node. The migrations guard imports

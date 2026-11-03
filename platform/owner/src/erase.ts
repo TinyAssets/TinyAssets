@@ -59,6 +59,11 @@ export interface ErasureParts {
    * began before the mark has landed by then (`PUT_GRACE_MS`).
    */
   readonly putGraceMs: number;
+  /**
+   * The outside record (`erasure.ts` step 2): whether the doors confirmed it, and, until
+   * they do, the erasure queue's message sent again. A missing queue fails loudly.
+   */
+  readonly outside: () => Promise<boolean>;
   /** The object's whole database deleted, and the tombstone left (`WriteGate.wipe`). */
   readonly wipe: () => Promise<void>;
   /** How long a refused door waits after the last attempt before it resumes the erasure. */
@@ -98,6 +103,22 @@ export class Erasure extends LifecycleCapability {
   }
 
   /**
+   * Begin the owner's erasure: the mark and its job, durable before this resolves; the rest
+   * goes on off the caller's line (the job resumes it after any failure or restart), so
+   * nothing of it depends on the request that began it.
+   */
+  async begin(): Promise<void> {
+    const { storage, write, clock } = this.#parts;
+    const jobs = this.lifecycle.jobs;
+    const [rearmed] = await write((): [Promise<unknown>] => {
+      markErasing(storage, clock());
+      return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + ERASE_RETRY_MS })];
+    });
+    await rearmed;
+    this.resume();
+  }
+
+  /**
    * An erasure the mark records, resumed off the caller's line (the object's start; a door
    * the mark refused, inside its unit, `fromDoor`): never twice at once, and from a door at
    * most once a `retryMs` after the last attempt began, so a polling caller drives no
@@ -117,8 +138,8 @@ export class Erasure extends LifecycleCapability {
     if (this.#erased) {
       return;
     }
-    const { storage, write, clock, ended, sandboxes, lifecycle, blobs, blobsAgain, wipe } =
-      this.#parts;
+    const { storage, write, clock, ended, sandboxes, lifecycle, blobs, blobsAgain, wipe,
+            outside } = this.#parts;
     if (erasureStep(storage) < 2) {
       // 1. The mark, and the job that resumes this after a crash (pushed again on a resume,
       // which also sets the alarm again).
@@ -128,7 +149,9 @@ export class Erasure extends LifecycleCapability {
         return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + ERASE_RETRY_MS })];
       });
       await rearmed;
-      // 2. Every run ended: the owner's sandboxes killed first, paused ones included (a
+      // 2. The outside record: the doors told (again, should this be a resume).
+      await outside();
+      // 3. Every run ended: the owner's sandboxes killed first, paused ones included (a
       // failure rejects, and the erasure is tried again), then its streams and sockets.
       await sandboxes();
       await write(() => {
@@ -147,6 +170,15 @@ export class Erasure extends LifecycleCapability {
       const jobs = this.lifecycle.jobs;
       const [rearmed] = await write((): [Promise<unknown>] =>
         [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: due })]);
+      await rearmed;
+      return;
+    }
+    // The wipe waits for the doors' confirmation of the outside record: they read the names
+    // it deletes from this database. Until then the message goes again at each attempt.
+    if (!await outside()) {
+      const jobs = this.lifecycle.jobs;
+      const [rearmed] = await write((): [Promise<unknown>] =>
+        [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + this.#parts.retryMs })]);
       await rearmed;
       return;
     }

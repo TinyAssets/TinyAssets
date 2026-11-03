@@ -410,6 +410,16 @@ function authorityOf(origin: { readonly client: string } | null): string {
 }
 
 /**
+ * A session id the conversations keep: 1 to 256 printable ASCII characters, no space (the
+ * `conversations.session_id` CHECK). The VM is untrusted, so any other the engine names is
+ * refused here, never handed to SQLite to fail the runner's whole post.
+ */
+export const SESSION_ID = /^[!-~]{1,256}$/;
+/** The run's error when its engine named a session id outside that shape: a fixed code. */
+export const SESSION_REFUSED = "session_id_refused: the engine named a session id outside " +
+  "its shape, so this conversation does not resume";
+
+/**
  * A runner's batch read against its run's record: the frames past the last one kept (a
  * retried batch's are relayed already), the result and the error they leave, the engine's
  * session id, and the frames to relay. Pure; `events` writes what it reads, and `answering`
@@ -431,8 +441,10 @@ function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]
     }
     last = frame.seq;
     const read = readEvent(events, frame.event);
-    if (read.session_id !== null) {
+    if (read.session_id !== null && SESSION_ID.test(read.session_id)) {
       session = read.session_id;
+    } else if (read.session_id !== null && error === null) {
+      error = SESSION_REFUSED;  // its frames still relayed; the id is never kept
     }
     if (read.text !== null) {
       const joined = read.text.accumulate && result !== null ? result + read.text.value

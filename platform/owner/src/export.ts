@@ -156,6 +156,13 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     run_schedules: t("id agent input trigger cron next_at client stamp origin last_run " +
                      "last_error created_at", "id"),
     conversations: t("id agent source client session_id last_run created_at last_at", "id"),
+    // The doors' records: the owner's API keys (never a secret: the directory holds its
+    // hash) and its inbound bindings.
+    owner_keys: t("key_id client name created_at last_used_at revoked_at", "key_id"),
+    inbound_bindings: t("binding_id kind agent enabled revision profile failures tripped created_at changed_at", "binding_id",
+                        { route: "the directory's route: a capability URL's token hash, a " +
+                                 "credential's hash, never exported",
+                          secret: "an owner-held inbound proof's secret, a credential" }),
   });
 }
 

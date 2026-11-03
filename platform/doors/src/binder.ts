@@ -24,6 +24,7 @@ import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
 } from "../../owner/src/socket-shape";
 import { principal } from "../../owner/src/text";
+import { ADMIN_CALLER } from "../../admin/src/caller";
 
 import { LEASE_LIVED, verifyToken } from "./routing-mac";
 
@@ -31,7 +32,7 @@ import {
   APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
   ownerIssuer,
 } from "./config";
-import type { KeyEntry } from "./directory";
+import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -385,6 +386,42 @@ export function bindKeyRegistration(env: DoorsEnv, token: ValidatedAccessToken<u
     authenticated_at: seconds(entry.c, "an API key's mint time"),
   };
   return bound(env, session === undefined ? base : { ...base, session });
+}
+
+/**
+ * The platform's own binding for `owner`, for its explicit admit at sign-up alone
+ * (`authorize.ts`): the reserved admin caller (`admin/src/caller.ts`), which the owner's
+ * object takes at `admissionSet` and refuses at every other door. Only a verified sign-in
+ * whose owner the directory has no record of reaches it.
+ */
+export function bindPlatform(env: DoorsEnv, signedIn: Bound): Bound {
+  const owner = principal(signedIn.binding.owner);
+  return bound(env, { owner, caller: ADMIN_CALLER, origin: null });
+}
+
+/**
+ * The platform's own binding for `owner` at its erasure's outside record (`erase.ts`): the
+ * reserved admin caller, which the owner's object takes only at its erasure doors and only
+ * while the owner is marked erasing.
+ */
+export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
+  const named = principal(owner);
+  return bound(env, { owner: named, caller: ADMIN_CALLER, origin: null });
+}
+
+/**
+ * An inbound event's route as the directory holds it (`inbound.ts`): the owner it names, on
+ * its own account, with the binding and revision the entry carries, which the object holds
+ * against its own (`inboundAccept` alone takes it); the control record's tier numbers ride
+ * it for the run the mail starts.
+ */
+export function bindInbound(env: DoorsEnv, entry: RouteEntry): Bound {
+  if (!/^[0-9a-f]{32}$/.test(entry.b) || !Number.isSafeInteger(entry.r) || entry.r < 1) {
+    throw new Error("an inbound binding needs its route's binding and revision");
+  }
+  const owner = principal(entry.o);
+  return bound(env, { owner, caller: owner, origin: null,
+                      inbound: { binding: entry.b, revision: entry.r } });
 }
 
 /**

@@ -13,8 +13,14 @@
  *    rules alone.
  *
  * Routes, each a door or a binder sequence:
- * - `keys`, `keys/revoke`, `keys/delete`: `api-keys.ts`.
+ * - `keys`, `keys/list`, `keys/revoke`, `keys/delete`: `api-keys.ts` (the key store's mint
+ *   and list in the object).
  * - `grants/revoke`: an MCP client's revoke, object then provider (`revoke.ts`).
+ * - `account/erase`: the owner's erasure, in session and confirmed (`erase.ts`).
+ * - `hooks/create`, `hooks/list`, `hooks/set`, `hooks/revoke`: the owner's inbound
+ *   bindings and their directory entries (`inbound.ts`).
+ * - `files/upload/begin`, `PUT files/upload/<intent_id>`, `files/upload/commit`: an upload,
+ *   its bytes streamed to `FILES` by the binder (`file-bytes.ts`).
  * - `outside-agents`: the owner's browser registering an agent for an API key it holds.
  * - `session/extend`: the session's renewal.
  * - `session/close`: sign-out, the session closed and the presented token's grant revoked.
@@ -25,7 +31,34 @@
  *   W): the owner pastes the `/fire` or routine URL and token a vendor showed it, which go
  *   straight to the gateway's seal (`connect.ts`), the object storing only the blob under the
  *   id derived here (the answer never echoes the token); one ended by its id; and the owner's
- *   own wake settings for an agent (`policyWakeLimits`), off by default.
+ *   own wake settings for an agent (`policyWakeLimits`), off by default; and
+ *   `agent/doorbell/kinds`, the wake kinds whose records have the owner paste the URL and
+ *   token (id and the agents each wakes), so the app's wake-up form is the records' data.
+ * - The owner app's reads and settings (the app slice), each one door: `account` (the
+ *   owner's tier, `tierRead`, beside the control record's tier numbers and its file usage:
+ *   tiers differ only by simultaneous runs and storage), `notices`, `policy` and
+ *   `policy/write` (code mode's switch and the owner's `custom` tools are policy),
+ *   `grants` and `grants/set` (a client's mode, scopes and profile; a revoke goes by
+ *   `grants/revoke` alone, so the provider's refresh tokens die with it), `files/read` and
+ *   `files/write` (an agent is files: the owner reads and writes them as UTF-8 text, a file
+ *   of at most one chunk).
+ * - `sources`: the source records' public facts (name, how each connects, which engines a
+ *   key runs, which credentials an engine takes, why one is unwired), so the app's connect
+ *   screen is the records' data, never a list of its own.
+ * - `tools`: the MCP door's table, each tool's name and title (the owner's `custom` choice).
+ * - `capabilities`: the capabilities an agent's runs and a key's scopes hold (one list, the
+ *   grants' own), each in plain words, so the app's agent and key forms are the object's.
+ * - `tools/<name>`: the owner calling one tool of the MCP door's table (`tools.ts`) as
+ *   itself, the same doors and fields an outside client's call takes, held by the object to
+ *   the owner's own authority. **Which need the session** (app review M1): every change to
+ *   the owner's agent definitions (`OWNER_TREES`: `file_mkdir`, `file_remove`, `file_rename`,
+ *   `file_restore` there, as `files/write`), which the object takes only in the owner's live
+ *   session on every route alike, since an agent's files are its instructions and authority.
+ *   The rest (collections, other files, digests, runs, `code`, whose script calls are held
+ *   the same way) change no agent's authority, so the owner's token suffices, as it does for
+ *   a full-mode API key.
+ *
+ * Every answer but a socket's upgrade carries `SURFACE_HEADERS` (nosniff, a CSP of none).
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
@@ -59,25 +92,52 @@ import {
 } from "./config";
 import { ownerGate, ownerRead } from "./control";
 import {
-  deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
+  deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
 import { CONNECT_ROUTES, ConnectRefused, sealDoorbell } from "./connect";
+import { eraseOwner } from "./erase";
+import {
+  streamUpload, UPLOAD_ABORT, UPLOAD_BEGIN, UPLOAD_COMMIT, UPLOAD_PREFIX,
+} from "./file-bytes";
+import { HOOK_ROUTES } from "./inbound";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "./sources";
-import { refusal } from "./tools";
+import { callDoor, refusal, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
+import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../owner/src/agent-file";
 import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
 import {
-  callbackSecret, callbackUrl, follows, kindNamed, subscriptionId,
+  callbackSecret, callbackUrl, follows, kindNamed, subscriptionId, wakeKinds,
 } from "../../owner/src/wake-kinds";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
 
 function json(status: number, body: unknown, headers: HeadersInit = {}): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
+}
+
+/**
+ * Every owner-surface answer but the socket's upgrade carries these: JSON is never sniffed
+ * into anything else, and no answer runs or frames anything if opened as a page.
+ */
+export const SURFACE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+});
+
+function surfaced(answer: Response): Response {
+  if (answer.status === 101) {
+    return answer;
+  }
+  const headers = new Headers(answer.headers);
+  for (const [name, value] of Object.entries(SURFACE_HEADERS)) {
+    headers.set(name, value);
+  }
+  return new Response(answer.body, { status: answer.status, statusText: answer.statusText,
+                                     headers });
 }
 
 function failure(status: number, message: string): Response {
@@ -118,6 +178,96 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
   const closed = binding.session === undefined ? { closed: 0 } : await stub.sessionClose(binding);
   await oauth.revokeGrant(presented.grantId, binding.owner);
   return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
+}
+
+/** Whether a body names exactly `required` and at most `optional` besides. */
+function shaped(request: Record<string, unknown>, required: readonly string[],
+                optional: readonly string[] = []): boolean {
+  const keys = Object.keys(request);
+  return required.every((key) => keys.includes(key))
+    && keys.every((key) => required.includes(key) || optional.includes(key));
+}
+
+const NO_FIELDS = "this route takes an empty object";
+
+/** A door that takes no request, behind a closed empty body. */
+async function read(request: Record<string, unknown>, door: () => Promise<unknown>):
+    Promise<Response> {
+  return shaped(request, []) ? json(200, await door()) : failure(400, NO_FIELDS);
+}
+
+/**
+ * `account`: what the owner's tier gives it, honestly: its tier (the platform's, on its own
+ * admission row), every tier's numbers as the control record holds them (simultaneous runs
+ * and storage, nothing else), and the files it holds now.
+ */
+const account: Route = (_env, { binding, stub }, request) => read(request, async () => {
+  const { tier } = await stub.tierRead(binding);
+  return { tier, tiers: binding.tiers ?? null, usage: await stub.fileUsage(binding) };
+});
+
+/** `grants/set`: a client's mode, scopes or profile; never a revoke, which is `grants/revoke`. */
+const grantSet: Route = async (_env, { binding, stub }, request) => {
+  if (request["mode"] === "revoked") {
+    return failure(400, "a revoke goes by grants/revoke, which also ends the client's tokens");
+  }
+  return json(200, await stub.grantSet(binding, request as never));
+};
+
+/** `files/read` `{path}`: one file as UTF-8 text, or why it is not shown as text. */
+const fileRead: Route = async (_env, { binding, stub }, request) => {
+  if (!shaped(request, ["path"])) {
+    return failure(400, "a read names the file's path");
+  }
+  const { entry, inline } = await stub.fileRead(binding, { path: request["path"] as string });
+  if (inline === undefined) {
+    return json(200, { entry, text: null, why: "larger than one chunk" });
+  }
+  try {
+    return json(200, { entry, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(inline) });
+  } catch {
+    return json(200, { entry, text: null, why: "not UTF-8 text" });
+  }
+};
+
+/** `files/write` `{path, expected_etag, text}`: one file's whole text, against its etag. */
+const fileWrite: Route = async (_env, { binding, stub }, request) => {
+  const text = request["text"];
+  const fields = ["path", "expected_etag", "text"];
+  if (!shaped(request, fields) || typeof text !== "string") {
+    return failure(400, "a write names the path, the expected etag and the text");
+  }
+  // The etag goes to the object as it came: the object's compare-and-swap decides.
+  const { path, expected_etag: expected } = request;
+  return json(200, await stub.fileWrite(binding, {
+    path: path as string, expected_etag: expected as string | null,
+    content: new TextEncoder().encode(text) }));
+};
+
+/** `sources`: what the app shows of each record; nothing sealed, no endpoint, no argv. */
+function sourceList(sources: Sources): unknown {
+  return {
+    sources: sources.ids().map((id) => {
+      const record = sources.get(id)!;
+      return {
+        id, display_name: record.display_name, help_url: record.help_url ?? null,
+        suggested: record.suggested, connect: record.connect, unwired: record.unwired ?? null,
+        engines: record.engines ?? [], credentials: record.cli?.credential ?? [],
+      };
+    }),
+  };
+}
+
+const TOOLS = "tools/";
+
+/** `tools/<name>`: one tool of the table, called by the owner as itself. */
+async function ownerTool(name: string, { binding, stub }: Bound,
+                         request: Record<string, unknown>): Promise<Response> {
+  const tool = toolTable().find((row) => row.name === name);
+  if (tool === undefined) {
+    return failure(404, "no such tool");
+  }
+  return json(200, await callDoor(stub, binding, tool, request));
 }
 
 /**
@@ -203,6 +353,12 @@ async function doorbell(env: DoorsEnv, { binding, stub }: Bound,
     rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: 1 }));
 }
 
+/** `agent/doorbell/kinds`: the wake kinds the owner pastes a URL and token for. */
+function doorbellKinds(): unknown {
+  return { kinds: wakeKinds().filter((kind) => kind.push?.callback === "owner")
+    .map(({ id, vendor, agents }) => ({ id, vendor, agents })) };
+}
+
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "export": exportStream,
   "export/chunks": async (_env, { binding, stub }, request) =>
@@ -215,7 +371,39 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     json(200, await stub.agentDoorbellEnd(binding, request as never)),
   "agent/wake-limits": async (_env, { binding, stub }, request) =>
     json(200, await stub.policyWakeLimits(binding, request as never)),
+  "agent/doorbell/kinds": (_env, _owner, request) =>
+    read(request, () => Promise.resolve(doorbellKinds())),
+  "account": account,
+  "notices": (_env, { binding, stub }, request) => read(request, () => stub.noticeList(binding)),
+  "policy": (_env, { binding, stub }, request) => read(request, () => stub.policyRead(binding)),
+  "policy/write": async (_env, { binding, stub }, request) =>
+    json(200, await stub.policyWrite(binding, request as never)),
+  "grants": (_env, { binding, stub }, request) => read(request, () => stub.grantList(binding)),
+  "grants/set": grantSet,
+  "capabilities": (_env, _owner, request) => read(request, async () => ({
+    capabilities: RUN_CAPABILITIES.map((id) => ({ id, words: CAPABILITY_WORDS[id] })) })),
+  "tools": (_env, _owner, request) => read(request, async () => ({
+    tools: toolTable().map(({ name, title }) => ({ name, title })) })),
+  "files/read": fileRead,
+  "files/write": fileWrite,
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
+  "keys/list": async (_env, owner) => json(200, await listKeys(owner)),
+  "account/erase": async (_env, owner, request) =>
+    json(200, await eraseOwner(owner, request), { "Set-Cookie": clearedCookie() }),
+  "files/upload/begin": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadBegin(binding, request as never)),
+  "files/upload/commit": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadCommit(binding, request as never)),
+  "files/upload/abort": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadAbort(binding, request as never)),
+  "hooks/create": async (env, owner, request) =>
+    json(200, await HOOK_ROUTES["hooks/create"]!(env, owner, request)),
+  "hooks/list": async (env, owner, request) =>
+    json(200, await HOOK_ROUTES["hooks/list"]!(env, owner, request)),
+  "hooks/set": async (env, owner, request) =>
+    json(200, await HOOK_ROUTES["hooks/set"]!(env, owner, request)),
+  "hooks/revoke": async (env, owner, request) =>
+    json(200, await HOOK_ROUTES["hooks/revoke"]!(env, owner, request)),
   "keys/revoke": async (env, owner, request) => json(200, await revokeKey(env, owner, request)),
   "keys/delete": async (env, owner, request) =>
     json(200, await deleteOwnKey(env, owner, request)),
@@ -313,6 +501,11 @@ async function ownerToken(env: DoorsEnv, token: string | null) {
 
 export async function serveApp(request: Request, env: DoorsEnv, sources: Sources):
     Promise<Response> {
+  return surfaced(await surface(request, env, sources));
+}
+
+async function surface(request: Request, env: DoorsEnv, sources: Sources):
+    Promise<Response> {
   if (new URL(request.url).pathname.slice(OWNER_SURFACE.length) === SOCKET_PATH) {
     return socketUpgrade(request, env);  // its credential is its ticket, never a bearer
   }
@@ -323,11 +516,21 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   }
   const session = sessionOf(request);
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
+  if (path.startsWith(UPLOAD_PREFIX) && path !== UPLOAD_BEGIN && path !== UPLOAD_COMMIT
+      && path !== UPLOAD_ABORT) {
+    // An upload's bytes: the owner's token, the maintenance gate, then the stream.
+    const owner = bindOwner(env, token, undefined);
+    const gated = await ownerGate(env, owner.binding.owner);
+    return gated ?? await streamUpload(request, env, owner, path.slice(UPLOAD_PREFIX.length));
+  }
   const registering = path === "outside-agents";
   const ticketing = path === TICKET_PATH;
+  const listing = path === "sources";
+  const tool = path.startsWith(TOOLS) ? path.slice(TOOLS.length) : null;
   const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
   const connect = Object.hasOwn(CONNECT_ROUTES, path) ? CONNECT_ROUTES[path] : undefined;
-  if (route === undefined && connect === undefined && !registering && !ticketing) {
+  if (route === undefined && connect === undefined && !registering && !ticketing
+      && tool === null && !listing) {
     return failure(404, "not found");
   }
   if (request.method !== "POST") {
@@ -358,6 +561,12 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
     }
     if (connect !== undefined) {
       return await connect({ env, bound: owner, body: parsed, request, sources });
+    }
+    if (listing) {
+      return shaped(parsed, []) ? json(200, sourceList(sources)) : failure(400, NO_FIELDS);
+    }
+    if (tool !== null) {
+      return await ownerTool(tool, owner, parsed);
     }
     return await route!(env, owner, parsed, presented!);
   } catch (error) {
