@@ -180,7 +180,10 @@ export type Unattended =
 
 /** The variables a CLI reads its egress base URL and placeholder key from, for a provider. */
 export interface ApiKeyEnv {
-  /** Null when the CLI takes its base URL from a file template's `{base_url}`. */
+  /**
+   * Null when a file template or an API-key argv (`cli.per_credential.api_key.argv`) carries
+   * `{base_url}`: the CLI takes its base URL from there, not from a variable.
+   */
   readonly base_url: string | null;
   readonly api_key: string;
   /** The door, the connection and the sealed base path, or the door and connection alone. */
@@ -446,6 +449,18 @@ const CREDENTIAL_NAME =
 const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
 /** A settings key that moves where a run's calls go: never in a signed-in run's files. */
 const ENDPOINT_KEY = /base_?url|endpoint/i;
+/**
+ * An argument that moves where a run's calls go, or onto another model provider: never in an
+ * argv a signed-in run gets (the argv twin of `ENDPOINT_KEY`), so no `-c openai_base_url=...`
+ * sends a vendor sign-in's tokens elsewhere.
+ */
+const ENDPOINT_ARG = /base_?url|endpoint|provider/i;
+/**
+ * The shapes `{base_url}` may take in an argv: joined to its key, as an option's value
+ * (`--base-url={base_url}`) or a config override's quoted value (`a.b="{base_url}"`), never
+ * a bare argument.
+ */
+const BASE_URL_ARG = /^(?:--[A-Za-z0-9][A-Za-z0-9-]*=\{base_url\}|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*="\{base_url\}")$/;
 /** A bare key, dotted or not, as a line of a settings template that is not JSON writes it. */
 const BARE_KEY = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/;
 /**
@@ -764,10 +779,14 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       }
       apiKeyEnv[provider] = Object.freeze(vars as unknown as ApiKeyEnv);
     }
+    // A declared channel (rule 1): no base-URL variable, so a file template or the API-key
+    // run's own argv carries `{base_url}`.
+    const keyArgv = argvs.find(([what]) => what === "cli.per_credential.api_key.argv")?.[1] ?? [];
     if (Object.values(apiKeyEnv).some((vars) => vars.base_url === null)
-        && !templates.some(([, text]) => text.includes("{base_url}"))) {
-      check.fail("cli.api_key_env names no base-URL variable, so a file template carries " +
-                 "{base_url}");
+        && !templates.some(([, text]) => text.includes("{base_url}"))
+        && !keyArgv.some((arg) => arg.includes("{base_url}"))) {
+      check.fail("cli.api_key_env names no base-URL variable, so a file template or " +
+                 "cli.per_credential.api_key.argv carries {base_url}");
     }
   }
 
@@ -923,6 +942,38 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       }
       if (found === "{mcp_config}" && !("file" in mcp)) {
         check.fail(`${what} uses {mcp_config}, which names cli.mcp.file, and there is none`);
+      }
+    }
+  }
+  // `{base_url}` only where only an API-key run reads it (rule 2): the API-key run's own
+  // argv, env or files, or anywhere in a record that runs on nothing but a key; and in an
+  // argv joined to its key, never bare (rule 3).
+  const keyOnly = credential.length === 1 && credential[0] === "api_key";
+  for (const [what, text] of [...argvs.flatMap(([what, list]) =>
+    list.map((item): [string, string] => [what, item])), ...templates]) {
+    if (!text.includes("{base_url}")) {
+      continue;
+    }
+    if (!keyOnly && !what.startsWith("cli.per_credential.api_key.")) {
+      check.fail(`${what} carries {base_url}, which only an API-key run reads: put it under ` +
+                 "cli.per_credential.api_key");
+    }
+    if (argvs.some(([name]) => name === what) && !BASE_URL_ARG.test(text)) {
+      check.fail(`${what} carries {base_url} other than joined to its key ` +
+                 "(--option={base_url}, key=\"{base_url}\"), never bare");
+    }
+  }
+  // No argument a signed-in run gets moves where its calls go (rule 4): every argv of a
+  // record that signs in but the API-key run's own and the install's check.
+  if (signsIn) {
+    for (const [what, list] of argvs) {
+      if (what.startsWith("cli.per_credential.api_key.") || what.startsWith("cli.install.")) {
+        continue;
+      }
+      const moved = list.find((arg) => ENDPOINT_ARG.test(arg));
+      if (moved !== undefined) {
+        check.fail(`${what} holds ${JSON.stringify(moved)}, which would move a signed-in ` +
+                   "run's calls to another endpoint or provider");
       }
     }
   }

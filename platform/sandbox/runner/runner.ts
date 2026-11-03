@@ -51,15 +51,18 @@
  *   checked.
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync,
          readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createServer as createHttpServer, type IncomingMessage } from "node:http";
 import { createConnection, createServer } from "node:net";
 import { createInterface } from "node:readline";
 
-import { bundledSources, type LoginSpec, RUN_BASICS, SIGNIN_REFUSALS, type SigninRefusal,
-         signinShape, type SourceRecord } from "../../doors/src/sources";
+import type { EgressScope } from "../../gateway/src/credential";
+import { bundledRecords, bundledSources, type LoginSpec, RUN_BASICS, runEnv, SIGNIN_REFUSALS,
+         type SigninRefusal, signinShape, type SourceRecord } from "../../doors/src/sources";
+import { EGRESS_ORIGIN, egressBaseUrl, sandboxEnv } from "../../owner/src/network";
 import { FRAME_UNITS_MAX, readEvent } from "../../owner/src/run-events";
 import { SIGNIN_PASTE_MAX } from "../../owner/src/run-rows";
 
@@ -70,6 +73,7 @@ import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
 import { project } from "./project";
+import { type Captured, outsideConnects, routeVerdict } from "./route";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { readMirror, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
@@ -297,10 +301,14 @@ function nextGeneration(rec: SourceRecord): void {
   writeFileSync(`${STATE}/generations/${rec.id}`, String(generation(rec) + 1), { mode: 0o600 });
 }
 
-/** What a home was made from: its store's generation, and each secret's digest as copied. */
+/**
+ * What a home was made from: its store's generation, each secret's digest as copied, and
+ * whether it carries the store's secrets at all (an API-key run's never does).
+ */
 interface Snapshot {
   readonly generation: number;
   readonly secrets: Readonly<Record<string, string>>;
+  readonly signedIn: boolean;
 }
 
 function snapshotOf(home: string): string {
@@ -317,9 +325,12 @@ function dropHome(home: string): void {
  * A run's home, made fresh by root in its root-only parent from the engine's store (its
  * kept paths alone), under the store's lock, its snapshot kept (the generation and each
  * secret's digest); `giveTree` then gives it to the run's user entry by entry: no other
- * user can reach it while it is made.
+ * user can reach it while it is made. A home made for an API-key run (`signedIn` false)
+ * carries the store's sessions and never its secrets: the vendor sign-in's files (Codex's
+ * `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no key run's
+ * CLI can send them anywhere (codexurl_research.md; the route probe proves it live).
  */
-async function makeHome(name: string, rec: SourceRecord): Promise<string> {
+async function makeHome(name: string, rec: SourceRecord, signedIn = true): Promise<string> {
   const homes = `${ROOT}${HOMES}`;
   safeDirs(TOP, homes, 0o711);
   const home = `${homes}/${name}`;
@@ -330,7 +341,8 @@ async function makeHome(name: string, rec: SourceRecord): Promise<string> {
   const copied: Record<string, string> = {};
   const made = await withStore(rec, () => {
     for (const rel of safeWalk(store)) {
-      if (isKept([...secrets, ...sessions], rel)) {
+      if (isKept(signedIn ? [...secrets, ...sessions] : sessions, rel)
+          && (signedIn || !isKept(secrets, rel))) {
         const bytes = safeRead(store, join(store, rel));
         if (bytes !== null) {
           safeWrite(home, join(home, rel), bytes, 0o600);
@@ -343,7 +355,7 @@ async function makeHome(name: string, rec: SourceRecord): Promise<string> {
     return generation(rec);
   });
   safeDirs(TOP, `${STATE}/kept`, 0o700);
-  const snapshot: Snapshot = { generation: made, secrets: copied };
+  const snapshot: Snapshot = { generation: made, secrets: copied, signedIn };
   safeWrite(`${STATE}/kept`, snapshotOf(home),
             new TextEncoder().encode(JSON.stringify(snapshot)), 0o600);
   // Each directory the record's home variables name, made: a CLI may refuse a configured
@@ -402,7 +414,9 @@ async function keepHome(home: string, rec: SourceRecord, signin = false): Promis
         if (digest(bytes) === base) {
           continue;  // unchanged: never written back
         }
-        if (!signin && (snapshot === null || snapshot.generation !== current
+        // A key run's home carried none, so it writes none back (it never had the login).
+        if (!signin && (snapshot === null || snapshot.signedIn !== true
+                        || snapshot.generation !== current
                         || (stored === null ? null : digest(stored)) !== base)) {
           continue;
         }
@@ -1107,7 +1121,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     synced = true;
     importSessions();
     as = take(ROOT, STATE, run);
-    home = await makeHome(run, rec);
+    home = await makeHome(run, rec, start.credential === "vendor_login_in_sandbox");
     safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
     remove(system);
     mkdirSync(system, { mode: 0o750 });
@@ -1719,6 +1733,232 @@ async function loginProbe(engine: string, region: string | null): Promise<number
   return why === null ? OK : NO;
 }
 
+// -- the route probe (codexurl_research.md Q4) ------------------------------------------
+
+/** How long one probe run may take to send its first model request. */
+const ROUTE_PROBE_MS = COMMAND_MS;
+/** How long the probe keeps watching once the first model request came. */
+const ROUTE_GRACE_MS = 3_000;
+
+const hex = (bytes: number) => randomBytes(bytes).toString("hex");
+
+/** The sealed API a provider's key goes to, as the gateway's record for it says. */
+function sealedScope(provider: string, engine: string): EgressScope {
+  const found = (bundledRecords() as Record<string, unknown>[]).filter((raw) =>
+    raw["provider"] === provider && raw["unwired"] === undefined
+    && typeof raw["base_url"] === "string" && Array.isArray(raw["connect"])
+    && (raw["connect"] as string[]).includes("api_key")
+    && Array.isArray(raw["engines"]) && (raw["engines"] as string[]).includes(engine))
+    .sort((a, b) => String(a["id"]).localeCompare(String(b["id"])))[0];
+  if (found === undefined) {
+    throw new Error(`no gateway record seals ${provider}'s key for ${engine}`);
+  }
+  return { api: String(found["api"]), base_url: String(found["base_url"]), endpoints: [],
+           meter: null };
+}
+
+/**
+ * One keyed engine on one provider, run as a run runs it (the real `invocation`, `runEnv`
+ * and `sandboxEnv`, `makeHome` for an API-key run, its own pool user), its egress door a
+ * loopback capture server at the door's real path, under `strace` for its connects, with a
+ * fake sign-in seeded in every one of its store's `secret_paths`; then judged
+ * (`routeVerdict`).
+ */
+async function probeRoute(rec: SourceRecord, provider: string,
+                          resolvers: readonly string[]): Promise<Record<string, unknown>> {
+  const cli = rec.cli!;
+  const requests: Captured[] = [];
+  let firstAt: number | null = null;
+  const server = createHttpServer((request: IncomingMessage, response) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    request.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 4 * 1024 * 1024) {
+        chunks.push(chunk);
+      }
+    });
+    request.on("end", () => {
+      requests.push({ method: request.method ?? "", url: request.url ?? "",
+                      headers: Object.fromEntries(Object.entries(request.headers).map(
+                        ([name, value]) => [name, Array.isArray(value) ? value.join(", ")
+                          : value ?? ""])),
+                      body: Buffer.concat(chunks).toString("utf8") });
+      const mcp = (request.url ?? "").split("?")[0]!.endsWith("/mcp");
+      if (!mcp) {
+        firstAt ??= Date.now();
+      }
+      // The MCP door answers none (404: no server, so no client starts an OAuth discovery
+      // of it); a model call is refused as the provider would, so the CLI stops.
+      response.writeHead(mcp ? 404 : 401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { type: "authentication_error",
+                                             message: "the route probe answers no call" } }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const origin = `http://127.0.0.1:${port}`;
+  const local = (value: string) => value.replaceAll(EGRESS_ORIGIN, origin);
+  const run = `run_${hex(16)}`;
+  const secret = hex(32);
+  const connection = `c${hex(12)}`;
+  const marker = `ta_fake_signin_${hex(16)}`;
+  const egress = sealedScope(provider, rec.id);
+  const engine = runEnv(sources, rec.id, "api_key");
+  const keyed = sandboxEnv([{ connection, provider, egress }], () => hex(16),
+                           { ...engine, run, secret, connection });
+  const placeholder = Object.values(keyed).find((value) => value.startsWith("ta_ph_"))!;
+  const names = cli.api_key_env![provider]!;
+  const inPath = engine.secret_header === undefined ? secret : undefined;
+  const prefix = new URL(egressBaseUrl(connection, names.base_url !== null
+    && names.base === "connection" ? null : egress, run, inPath)).pathname;
+  const env = Object.fromEntries(Object.entries({ ...engine.env, ...keyed }).map(
+    ([name, value]) => [name, local(value)]));
+  const start: StartDoc = {
+    run, agent: "route-probe", conversation: `cv_${hex(16)}`, engine: rec.id,
+    credential: "api_key", model: null, session_id: null,
+    prompt: "Reply with the word OK.", unattended: false, authority: "owner",
+    lease: { lease_id: hex(16), epoch: 1 },
+    config: { generation: 1, env, inherit: engine.inherit },
+    urls: { mcp: `${origin}/r/${run}/${secret}/mcp`, mcp_bare: `${origin}/r/${run}/mcp`,
+            events: `${origin}/r/${run}/events`, signin: `${origin}/signin` } };
+  // A fake sign-in in each of the store's secret paths: if any of it reaches a request, a
+  // key run's home carried the sign-in.
+  const store = `${STORE}/${rec.id}`;
+  const seeded: string[] = [];
+  for (const rel of keptPaths(rec).secrets) {
+    const concrete = rel.split("/").map((part) => part === "*" ? "probe" : part).join("/");
+    const path = join(store, concrete.endsWith("/") ? `${concrete}probe.json` : concrete);
+    if (!existsSync(path)) {
+      safeDirs(TOP, dirname(path), 0o700);
+      safeWrite(store, path, new TextEncoder().encode(JSON.stringify({
+        access_token: marker, refresh_token: marker, id_token: marker,
+        tokens: { access_token: marker, refresh_token: marker },
+        claudeAiOauth: { accessToken: marker, refreshToken: marker } })), 0o600);
+      seeded.push(path);
+    }
+  }
+  const name = `route-${rec.id}-${process.pid}`;
+  const as = take(ROOT, STATE, name);
+  const system = `${ROOT}${SYSTEM}/${name}`;
+  const agentDir = `${ROOT}${AGENTS_DIR}/${start.agent}`;
+  const trace = `${STATE}/route-${name}.trace`;
+  let home: string | null = null;
+  let reason: string | null = null;
+  let connects: string[] = [];
+  try {
+    home = await makeHome(name, rec, false);
+    const carried = safeWalk(home).filter((rel) => isKept(keptPaths(rec).secrets, rel));
+    if (carried.length > 0) {
+      throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
+    }
+    safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
+    remove(system);
+    mkdirSync(system, { mode: 0o750 });
+    chownSync(system, 0, as.gid);
+    remove(agentDir);
+    safeDirs(TOP, agentDir, 0o755);
+    writeFileSync(`${agentDir}/agent.json`, JSON.stringify({ engine: rec.id, scopes: [] }));
+    writeFileSync(`${agentDir}/AGENTS.md`, "# Route probe\n\nReply with the word OK.\n");
+    giveTree(agentDir, as);
+    let conversationDir: string | undefined;
+    if (cli.engine.resume === "continue_in_cwd") {
+      conversationDir = `${CONVERSATIONS}/${rec.id}/${start.conversation}`;
+      safeDirs(TOP, conversationDir, 0o700);
+      lchownSync(conversationDir, as.uid, as.gid);
+    }
+    const call = invocation(rec, start, process.env, {
+      continued: false, root: ROOT, home, system,
+      ...(conversationDir === undefined ? {} : { conversationDir }) });
+    for (const [path, text] of call.files) {
+      const inSystem = path.startsWith(`${system}/`);
+      safeWrite(inSystem ? system : home, path, new TextEncoder().encode(text),
+                inSystem ? 0o640 : 0o644, undefined, inSystem ? 0o750 : 0o755);
+    }
+    giveTree(home, as);
+    configOwned(rec, home, system, call.files.keys(), as);
+    const strace = spawnSync("strace", ["-V"], { encoding: "utf8" });
+    if (strace.status !== 0) {
+      throw new Error("strace is not installed in the probe's sandbox");
+    }
+    const runHome = home;
+    await new Promise<void>((resolve) => {
+      const child = spawn("strace", ["-f", "-qq", "-e", "trace=connect", "-o", trace, "--",
+                                     ...asUser(as, [shared()], call.argv)], {
+        cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp") }, detached: true,
+        stdio: [call.stdin === null ? "ignore" : "pipe", "ignore", "ignore"] });
+      if (call.stdin !== null) {
+        child.stdin!.on("error", () => undefined);
+        child.stdin!.end(call.stdin);
+      }
+      const began = Date.now();
+      const watch = setInterval(() => {
+        if (Date.now() - began > ROUTE_PROBE_MS
+            || (firstAt !== null && Date.now() - firstAt > ROUTE_GRACE_MS)) {
+          try {
+            process.kill(-child.pid!, "SIGKILL");
+          } catch {
+            // gone already
+          }
+        }
+      }, 100);
+      child.on("close", () => {
+        clearInterval(watch);
+        resolve();
+      });
+      child.on("error", () => {
+        clearInterval(watch);
+        resolve();
+      });
+    });
+    killAll(as.uid);
+    connects = outsideConnects(existsSync(trace) ? readFileSync(trace, "utf8") : "", resolvers);
+    reason = routeVerdict(requests, connects, {
+      prefix, placeholder, secret, marker, resolvers,
+      mcp: [`/r/${run}/${secret}/mcp`, `/r/${run}/mcp`],
+      secretInHeader: engine.secret_header !== undefined });
+  } catch (error) {
+    reason = String(error instanceof Error ? error.message : error);
+  } finally {
+    killAll(as.uid);
+    if (home !== null) {
+      dropHome(home);
+    }
+    remove(system);
+    remove(agentDir);
+    remove(trace);
+    for (const path of seeded) {
+      remove(path);
+    }
+    give(STATE, as);
+    server.close();
+  }
+  return { engine: rec.id, provider, ok: reason === null, reason,
+           requests: requests.map((request) => `${request.method} ${request.url.split("?")[0]}`),
+           connects };
+}
+
+/**
+ * The route probe (`route-probe <resolver>...`, at every template build, on a sandbox whose
+ * network denies all): every record that runs on an API key, on every provider it keys, run
+ * as a run runs it (`probeRoute`), one JSON line each; any failure fails the command.
+ */
+async function routeProbe(resolvers: readonly string[]): Promise<number> {
+  let failed = false;
+  for (const rec of RECORDS.values()) {
+    const cli = rec.cli!;
+    if (rec.unwired !== undefined || !cli.credential.includes("api_key")) {
+      continue;
+    }
+    for (const provider of Object.keys(cli.api_key_env ?? {}).sort()) {
+      const result = await probeRoute(rec, provider, resolvers);
+      failed ||= result["ok"] !== true;
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    }
+  }
+  return failed ? NO : OK;
+}
+
 // -- main -----------------------------------------------------------------------------
 
 export async function main(argv: readonly string[]): Promise<number> {
@@ -1738,6 +1978,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       return loginCancel(args[0] ?? "");
     case "login-probe":
       return loginProbe(args[0] ?? "", args[1] ?? null);
+    case "route-probe":
+      return routeProbe(args);
     case "signin-check":
       return await signedIn(record(args[0] ?? "")) ? OK : NO;
     case "launch":

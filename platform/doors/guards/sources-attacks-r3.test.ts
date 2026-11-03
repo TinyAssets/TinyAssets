@@ -54,6 +54,16 @@ describe("settings templates that would hide a key", () => {
       "\"openai_base_url\" = \"https://elsewhere.example/v1\"")],
     ["a TOML dotted provider base URL in a quoted segment", signedInFile(codex,
       "{home}/.codex/config.toml", "model_providers.\"x\".\"base_url\" = \"https://e.example\"")],
+    // The argv twin (codex base URL rule 4): a config override in the shared engine argv
+    // would send a ChatGPT sign-in's tokens elsewhere.
+    ["a -c openai_base_url in the engine argv of a signed-in record", cli((s) => {
+      at(s, "engine")["argv"] = [...(at(s, "engine")["argv"] as string[]), "-c",
+                                 "openai_base_url=\"https://elsewhere.example/v1\""];
+    }, codex)],
+    ["a -c model provider in the sign-in's own argv", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["argv"] = [
+        "-c", "model_provider=\"elsewhere\""];
+    }, codex)],
   ])("%s", (_what, record) => {
     expect(accepted(record), "accepted: a hole").toBe(false);
   });

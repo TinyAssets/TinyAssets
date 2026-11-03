@@ -253,8 +253,16 @@ describe("the engine records", () => {
     const catalog = catalogOf(bundledRecords());
     expect(runEnv(catalog, "claude-code", "api_key").api_key_env["anthropic"])
       .toEqual({ base_url: "ANTHROPIC_BASE_URL", api_key: "ANTHROPIC_API_KEY", base: "sealed" });
+    // Codex's base URL is its own model provider's, set in its API-key argv (OPENAI_BASE_URL
+    // is ignored since Codex 0.119.0).
     expect(runEnv(catalog, "codex", "api_key").api_key_env["openai"])
-      .toEqual({ base_url: "OPENAI_BASE_URL", api_key: "CODEX_API_KEY", base: "sealed" });
+      .toEqual({ base_url: null, api_key: "CODEX_API_KEY", base: "sealed" });
+    expect(sourceRecord(records.get("codex")).cli!.per_credential!.api_key!.argv)
+      .toEqual(["-c", "forced_login_method=\"api\"", "-c", "model_provider=\"tinyassets\"",
+                "-c", "model_providers.tinyassets.name=\"TinyAssets\"",
+                "-c", "model_providers.tinyassets.base_url=\"{base_url}\"",
+                "-c", "model_providers.tinyassets.env_key=\"CODEX_API_KEY\"",
+                "-c", "model_providers.tinyassets.wire_api=\"responses\""]);
     expect(runEnv(catalog, "gemini", "api_key").api_key_env["google"]).toEqual({
       base_url: "GOOGLE_GEMINI_BASE_URL", api_key: "GEMINI_API_KEY", base: "connection" });
     for (const engine of ["claude-code", "codex", "gemini", "kimi"]) {
@@ -358,6 +366,42 @@ describe("the engine records", () => {
     // JSON mode cannot show the trust prompt: the run approves the agent's own folder.
     expect(spec.unattended_argv).toContain("--approve");
     expect(spec.no_update).toEqual({ env: { PI_SKIP_VERSION_CHECK: "1" } });
+  });
+
+  it("hold {base_url} to an API-key run's own declared channel (codex base URL rules 1-4)",
+     () => {
+    const codex = records.get("codex") as Json;
+    const keyArgv = (s: Json) => at(s, "per_credential.api_key")["argv"] as string[];
+    // Rule 1: no base-URL variable, the channel in the API-key argv: taken.
+    expect(() => sourceRecord(codex)).not.toThrow();
+    // ...and with no channel anywhere: refused.
+    expect(refused(cli((s) => {
+      at(s, "per_credential.api_key")["argv"] = keyArgv(s).filter((arg) =>
+        !arg.includes("{base_url}"));
+    }, codex))).toMatch(/carries \{base_url\}/);
+    // Rule 2: in a sign-in's argv, or a shared argv of a record with two credentials.
+    expect(refused(cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["argv"] = [
+        "-c", "model_providers.x.base_url=\"{base_url}\""];
+    }, codex))).toMatch(/only an API-key run reads/);
+    expect(refused(cli((s) => {
+      at(s, "engine")["argv"] = [...(at(s, "engine")["argv"] as string[]), "-c",
+                                 "model_providers.x.base_url=\"{base_url}\""];
+    }, codex))).toMatch(/only an API-key run reads/);
+    // Rule 3: a bare {base_url}, or one not joined to its key.
+    for (const bare of ["{base_url}", "x {base_url}", "--base-url {base_url}", "{base_url}/v1"]) {
+      expect(refused(cli((s) => {
+        at(s, "per_credential.api_key")["argv"] = [...keyArgv(s), bare];
+      }, codex)), bare).toMatch(/\{base_url\}/);
+    }
+    // Rule 4: an endpoint or provider setting in an argv a signed-in run gets.
+    for (const [path, arg] of [["engine", "openai_base_url=\"https://e.example/v1\""],
+                               ["per_credential.vendor_login_in_sandbox", "model_provider=\"x\""],
+                               ["engine", "chatgpt_base_url=\"https://e.example\""]] as const) {
+      expect(refused(cli((s) => {
+        at(s, path)["argv"] = [...(at(s, path)["argv"] as string[] ?? []), "-c", arg];
+      }, codex)), arg).toMatch(/would move a signed-in run's calls/);
+    }
   });
 
   it("pin each sign-in's page on its own login hosts, and cite its code's lifetime", () => {

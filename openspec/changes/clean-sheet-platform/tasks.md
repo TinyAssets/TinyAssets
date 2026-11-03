@@ -1385,9 +1385,23 @@ R, S, M and W.
     `baseUrl` per provider; the pi-ai key variables; `.pi/skills` loaded under `--approve`;
     `--tools`; the user-level `mcp.json` reaching the run's door over streamable HTTP; the
     prompt on stdin.
-  - **Codex:** whether `OPENAI_BASE_URL` still sets the built-in provider's base URL in
-    0.166.0, or only the `openai_base_url` config key does: the package's own README says
-    nothing, and the review found the variable only in its network-proxy table.
+  - [x] **Codex:** whether `OPENAI_BASE_URL` still sets the built-in provider's base URL in
+    0.166.0: no, removed in 0.119.0 (`codexurl_research.md`). Built (on `platform-signin`):
+    Codex's key run reaches the door through a custom model provider in its API-key argv
+    (`-c model_provider="tinyassets"`, `model_providers.tinyassets.{name,base_url,env_key,
+    wire_api}`, `env_key` `CODEX_API_KEY`, `wire_api` `responses`), its `api_key_env`
+    base-URL variable null. The checker holds four rules: a null base-URL variable needs a
+    declared channel (a file template or the API-key argv); `{base_url}` only where only a
+    key run reads it; joined to its key, never bare; and no argument a signed-in run gets is
+    endpoint- or provider-shaped. An API-key run's home carries the store's sessions and
+    never its secrets (a vendor sign-in's `auth.json` stays out of a key run's reach). The
+    route probe (`ta-runner route-probe`, `build.py` after every build, on a sandbox whose
+    network denies all but the pinned resolver): every keyed engine on every provider it
+    keys, run as a run runs it with its door on a loopback capture server at the real path
+    and a fake sign-in seeded in the store, passes only if the first model request reached
+    the door's path with the run's key and secret, nothing connected outside (`strace`), and
+    no request carried the fake sign-in; the tag is printed only then. Left for later: the
+    run secret into a header (`env_http_headers`).
 - [x] Code mode's VM in the hooks Worker (H0, narrowed by D): `Hooks.codemodeExecute(name,
   request, exchange)` runs one execution in its `CodemodeSandbox` (a
   `CodemodeSandboxDurableObject` subclass with its interrupt budget and memory), handing

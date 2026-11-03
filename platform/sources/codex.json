@@ -74,7 +74,7 @@
     },
     "api_key_env": {
       "openai": {
-        "base_url": "OPENAI_BASE_URL",
+        "base_url": null,
         "api_key": "CODEX_API_KEY",
         "base": "sealed"
       }
@@ -109,7 +109,17 @@
       "api_key": {
         "argv": [
           "-c",
-          "forced_login_method=\"api\""
+          "forced_login_method=\"api\"",
+          "-c",
+          "model_provider=\"tinyassets\"",
+          "-c",
+          "model_providers.tinyassets.name=\"TinyAssets\"",
+          "-c",
+          "model_providers.tinyassets.base_url=\"{base_url}\"",
+          "-c",
+          "model_providers.tinyassets.env_key=\"CODEX_API_KEY\"",
+          "-c",
+          "model_providers.tinyassets.wire_api=\"responses\""
         ]
       }
     },

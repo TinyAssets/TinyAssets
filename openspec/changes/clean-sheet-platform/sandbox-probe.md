@@ -98,6 +98,31 @@ The verification round's fixes (the runner's store lock and generation) changed 
 the template was built again as `s354d7998f07439db`: its standing check passed all five the same
 way (1 throwaway sandbox, under 3 sandbox-minutes, 0 running after).
 
+## The route probe (Codex's base URL build, 2026-11-03, templates `sb3da938719c968b4` and `s97c42c9c1b38e998`)
+
+`build.py`'s `route_probe` after every build: a throwaway sandbox of the template, `strace`
+installed while its network is open, then every outbound address denied but the pinned
+resolver; `ta-runner route-probe` runs every keyed engine on every provider it keys as a run
+runs it (the real `invocation`, `runEnv` and `sandboxEnv`, an API-key run's home, a pool
+user), its door on a loopback capture server at the real path
+(`/r/<run>/<secret>/c/<connection>/...`, `/r/<run>/c/...` with `x-ta-run` for Claude Code),
+a fake sign-in seeded in each of the engine store's `secret_paths`.
+
+- On `sb3da938719c968b4` every engine passed but Claude Code: its first non-MCP requests
+  were its MCP client's OAuth discovery (`/.well-known/oauth-protected-resource`, `/register`)
+  of the MCP door, which the capture server had answered 401. Its model calls
+  (`POST .../c/<connection>/v1/messages`) were on the door. The capture server now answers
+  the MCP door 404 (no server: no discovery), and the template was built again.
+- On `s97c42c9c1b38e998` all eleven pass: Claude Code (anthropic), **Codex (openai, the
+  dotted `-c model_providers.tinyassets.*` form: `POST .../c/<connection>/v1/responses`, no
+  WebSocket GET)**, Gemini CLI (google, `.../c/<connection>/v1beta/models/...`) and pi on
+  anthropic, cerebras, google, groq, mistral, openai, openrouter and xai, each first model
+  request under the door's path with the run's placeholder key and secret, **no connect
+  outside** loopback and the resolver, and no request carrying the fake sign-in. The sign-in
+  check passed all five logins on both templates.
+- 4 throwaway sandboxes in all (2 builds' sign-in checks and route probes), under 20
+  sandbox-minutes; every sandbox killed, the account listing 0 running after.
+
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)
 
 The runner posted its sign-ins (`claude-code`, `codex`: `signed_in: false`), synced in, ran the

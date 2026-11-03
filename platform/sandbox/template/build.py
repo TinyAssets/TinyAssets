@@ -17,9 +17,13 @@ locks and this script), so a change to any of them is a new template version; th
 Worker's `E2B_TEMPLATE` names it (`sandbox/guards/template.test.ts` holds the two equal).
 
     python3 -m venv v && v/bin/pip install e2b==2.62.0
-    E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py [--tag-only | --check-logins]
+    E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py \
+        [--tag-only | --check-logins | --route-probe]
 
-Every build ends with the standing check of every record's sign-in (`check_logins`).
+Every build ends with two standing checks on throwaway sandboxes of the template just built:
+every record's sign-in up to its prompt (`check_logins`), and every keyed engine's first model
+request reaching the egress door's own path with nothing else leaving the VM
+(`route_probe`). Only once both pass is the template's tag printed, to be pinned.
 """
 import hashlib
 import json
@@ -213,6 +217,44 @@ def check_logins(name):
         raise SystemExit("a record's sign-in is not its record's shape on this template")
 
 
+def route_probe(name):
+    """The route probe (codexurl_research.md Q4): on a throwaway sandbox of the template just
+    built, `strace` installed while its network is still open (the template itself unchanged),
+    then the network denied to everything but the pinned resolvers, every record that runs on
+    an API key run on every provider it keys as a run runs it (`ta-runner route-probe`: the
+    real invocation and home, the door at its real path on a loopback capture server, a fake
+    sign-in seeded in the engine's store). It passes only if each first model request reached
+    the door's path with the run's key and secret, nothing connected outside, and no request
+    carried the fake sign-in; otherwise the build fails loudly. The sandbox is killed whatever
+    happens."""
+    from e2b import ALL_TRAFFIC, Sandbox
+
+    _egress, servers = network_constants()
+    sandbox = Sandbox.create(template=name, timeout=1800)
+    try:
+        installed = sandbox.commands.run(
+            "(command -v strace || (apt-get -qq update && apt-get -qq install -y strace)) "
+            ">/dev/null 2>&1; command -v strace", user="root", timeout=600)
+        if not installed.stdout.strip():
+            raise SystemExit("the route probe's sandbox has no strace")
+        sandbox.commands.run("/usr/local/bin/ta-runner prepare " + " ".join(servers),
+                             user="root", timeout=300)
+        sandbox.update_network({"deny_out": [ALL_TRAFFIC], "dns_servers": servers})
+        try:
+            done = sandbox.commands.run("/usr/local/bin/ta-runner route-probe " +
+                                        " ".join(servers), user="root", timeout=1500)
+            out, code = done.stdout, 0
+        except Exception as error:  # a non-zero exit: its lines are still printed
+            out, code = getattr(error, "stdout", "") or "", 1
+    finally:
+        sandbox.kill()
+    results = [json.loads(line) for line in out.splitlines() if line.strip()]
+    print(json.dumps({"routes": results}), flush=True)
+    if code != 0 or not results or not all(result["ok"] for result in results):
+        raise SystemExit("a keyed engine's model requests do not reach the egress door alone "
+                         "on this template")
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         stage = Path(tmp)
@@ -224,12 +266,17 @@ def main():
         if "--check-logins" in sys.argv:
             check_logins(name)
             return
+        if "--route-probe" in sys.argv:
+            route_probe(name)
+            return
         from e2b import Template
         info = Template.build(template(stage), name, cpu_count=CPU, memory_mb=MEMORY_MB,
                               on_build_logs=lambda entry: print(str(entry)[:2000], flush=True))
+        check_logins(name)
+        route_probe(name)
+        # Both standing checks passed: only now the tag, to be pinned.
         print(json.dumps({"template": name, "template_id": getattr(info, "template_id", None),
                           "build_id": getattr(info, "build_id", None)}))
-        check_logins(name)
 
 
 if __name__ == "__main__":

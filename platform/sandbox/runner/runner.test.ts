@@ -19,8 +19,11 @@ import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { bundledSources, runEnv } from "../../doors/src/sources";
+import { sandboxEnv } from "../../owner/src/network";
 import { readEvent } from "../../owner/src/run-events";
 
+import { invocation, type StartDoc } from "./engine";
+import { outsideConnects, routeVerdict, underPrefix } from "./route";
 import { processesOf } from "./users";
 import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./harness";
 
@@ -779,6 +782,171 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
     expect(doors.events().filter((post) => post.path.includes(start.run)).length)
       .toBeGreaterThan(2);
   }, 120_000);
+});
+
+describe("an API-key run's base URL (codexurl_research.md)", () => {
+  const RUN = `run_${"1".repeat(32)}`;
+  const SECRET = "2".repeat(64);
+  const CONNECTION = `c${"3".repeat(24)}`;
+
+  /** A key run's start for `engine` on `provider`, its environment as the owner makes it. */
+  function keyStart(engine: string, provider: string, credential: "api_key"
+                    | "vendor_login_in_sandbox" = "api_key"): StartDoc {
+    const made = runEnv(sources, engine, credential);
+    const keyed = credential === "vendor_login_in_sandbox" ? {} : sandboxEnv(
+      [{ connection: CONNECTION, provider,
+         egress: { api: "x", base_url: "https://api.example/v1", endpoints: [], meter: null } }],
+      () => "4".repeat(32), { ...made, run: RUN, secret: SECRET,
+                              connection: credential === "api_key" ? CONNECTION : null });
+    return { run: RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
+             model: null, session_id: null, prompt: "p", unattended: false, authority: "owner",
+             lease: { lease_id: "b".repeat(32), epoch: 1 },
+             config: { generation: 1, env: { ...made.env, ...keyed }, inherit: ["PATH"] },
+             urls: { mcp: `https://egress.tinyassets.io/r/${RUN}/${SECRET}/mcp`,
+                     mcp_bare: `https://egress.tinyassets.io/r/${RUN}/mcp`,
+                     events: `https://egress.tinyassets.io/r/${RUN}/events`,
+                     signin: "https://egress.tinyassets.io/signin" } };
+  }
+  const call = (start: StartDoc) => invocation(sources.get(start.engine)!, start, {}, {
+    continued: false, home: "/h", system: "/s", conversationDir: "/conv" });
+
+  it("gives Codex's key run the door through its own model provider, and no sign-in run any",
+     () => {
+    const key = call(keyStart("codex", "openai"));
+    const door = `https://egress.tinyassets.io/r/${RUN}/${SECRET}/c/${CONNECTION}/v1`;
+    expect(key.argv).toContain(`model_providers.tinyassets.base_url="${door}"`);
+    expect(key.argv).toContain("model_providers.tinyassets.env_key=\"CODEX_API_KEY\"");
+    expect(key.argv).toContain("model_providers.tinyassets.wire_api=\"responses\"");
+    expect(key.env["CODEX_API_KEY"]).toMatch(/^ta_ph_/);
+    for (const engine of ["claude-code", "codex", "gemini", "kimi"]) {
+      const signedIn = call(keyStart(engine, "openai", "vendor_login_in_sandbox"));
+      expect(signedIn.argv.join(" "), engine).not.toMatch(/base_?url|\/c\/c[0-9a-f]{24}/i);
+    }
+  });
+
+  it("hands every key record's CLI the door in its declared channel", () => {
+    for (const engine of sources.ids()) {
+      const cli = sources.get(engine)!.cli;
+      if (cli === undefined || sources.get(engine)!.unwired !== undefined
+          || !cli.credential.includes("api_key")) {
+        continue;
+      }
+      for (const [provider, names] of Object.entries(cli.api_key_env!)) {
+        const start = keyStart(engine, provider);
+        const made = call(start);
+        const base = start.config.env[`${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}` +
+                                      "_BASE_URL"]!;
+        const door = names.base === "connection"
+          ? `https://egress.tinyassets.io/r/${RUN}/${cli.run_secret_env === undefined
+            ? `${SECRET}/` : ""}c/${CONNECTION}/` : base;
+        const channel = names.base_url !== null ? made.env[names.base_url]
+          : [...made.argv, ...made.files.values()].find((text) => text.includes(door));
+        expect(channel, `${engine} on ${provider}`).toContain(door);
+      }
+    }
+  });
+
+  it("never gives a key run's home the vendor sign-in's files from the store", async () => {
+    const auth = "/var/lib/ta/store/codex/.codex/auth.json";
+    box.write(auth, "{\"tokens\": {\"access_token\": \"a-signed-in-login\"}}");
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, dumps: ["~/.codex/auth.json"],
+                       writes: { "~/.codex/auth.json": "written-by-a-key-run" } });
+    const start = keyStart("codex", "openai");
+    const made = startDoc(doors, "codex", { credential: "api_key", config: start.config });
+    box.start(made);
+    box.runner("launch", made.run);
+    await doors.ended_(25_000, made.run);
+    expect(box.ran("codex").at(-1)!.dumps["~/.codex/auth.json"]).toBeNull();
+    // ...and nothing a key run writes there becomes the store's login.
+    expect(readFileSync(box.path(auth), "utf8")).toContain("a-signed-in-login");
+  });
+});
+
+describe("the route probe (codexurl_research.md Q4)", () => {
+  it("passes a path under the door's prefix only", () => {
+    expect(underPrefix("/r/x/c/y/v1/responses", "/r/x/c/y/v1")).toBe(true);
+    expect(underPrefix("/r/x/c/y/v1?beta=true", "/r/x/c/y/v1/")).toBe(true);
+    expect(underPrefix("/r/x/c/y/v10/responses", "/r/x/c/y/v1")).toBe(false);
+    expect(underPrefix("/v1/responses", "/r/x/c/y/v1")).toBe(false);
+  });
+
+  it("reads strace's connects, loopback, Unix sockets and the resolver aside", () => {
+    const trace = [
+      "12 connect(3, {sa_family=AF_INET, sin_port=htons(443), " +
+        "sin_addr=inet_addr(\"104.18.33.45\")}, 16) = -1 ENETUNREACH",
+      "12 connect(4, {sa_family=AF_INET, sin_port=htons(8787), " +
+        "sin_addr=inet_addr(\"127.0.0.1\")}, 16) = 0",
+      "13 connect(5, {sa_family=AF_INET, sin_port=htons(53), " +
+        "sin_addr=inet_addr(\"1.1.1.1\")}, 16) = 0",
+      "13 connect(6, {sa_family=AF_UNIX, sun_path=\"/run/x.sock\"}, 110) = 0",
+      "14 connect(7, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), " +
+        "inet_pton(AF_INET6, \"2606:4700::6810:212d\", &sin6_addr), sin6_scope_id=0}, 28) = -1",
+      "14 connect(8, {sa_family=AF_INET6, sin6_port=htons(80), sin6_flowinfo=htonl(0), " +
+        "inet_pton(AF_INET6, \"::1\", &sin6_addr), sin6_scope_id=0}, 28) = 0",
+    ].join("\n");
+    expect(outsideConnects(trace, ["1.1.1.1"])).toEqual(["104.18.33.45:443",
+                                                         "2606:4700::6810:212d:443"]);
+  });
+
+  it("judges a run: the door's path, the key, the secret, no leak, nothing outside", () => {
+    const expect_ = { prefix: "/r/run/sec/c/conn/v1", mcp: ["/r/run/sec/mcp"],
+                      placeholder: "ta_ph_conn_1", secret: "sec", secretInHeader: false,
+                      marker: "ta_fake_signin_1", resolvers: ["1.1.1.1"] };
+    const ok = { method: "POST", url: "/r/run/sec/c/conn/v1/responses",
+                 headers: { authorization: "Bearer ta_ph_conn_1" }, body: "{}" };
+    expect(routeVerdict([{ ...ok, url: "/r/run/sec/mcp" }, ok], [], expect_)).toBeNull();
+    expect(routeVerdict([ok, { ...ok, body: "ta_fake_signin_1" }], [], expect_))
+      .toMatch(/fake sign-in/);
+    expect(routeVerdict([ok], ["104.18.33.45:443"], expect_)).toMatch(/outside/);
+    expect(routeVerdict([], [], expect_)).toMatch(/no model request/);
+    expect(routeVerdict([{ ...ok, url: "/v1/responses" }], [], expect_)).toMatch(/not under/);
+    expect(routeVerdict([{ ...ok, headers: {} }], [], expect_)).toMatch(/placeholder/);
+    expect(routeVerdict([{ ...ok, url: "/r/run/c/conn/v1/messages" }], [],
+                        { ...expect_, prefix: "/r/run/c/conn", secretInHeader: true }))
+      .toMatch(/run secret/);
+  });
+
+  /** Each keyed engine's fake CLI calling its door the way its record hands it over. */
+  function honest(): void {
+    box.cli("claude-code", { lines: [], requests: [{
+      url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
+      headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
+                 "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
+    box.cli("codex", { lines: [], requests: [{
+      url: "{argv:model_providers.tinyassets.base_url}/responses",
+      headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }] });
+    box.cli("gemini", { lines: [], requests: [{
+      url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent",
+      headers: { "x-goog-api-key": "{env:GEMINI_API_KEY}" } }] });
+    box.cli("pi", { lines: [], requests: [{
+      url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat",
+      headers: { authorization: "Bearer {placeholder}" } }] });
+  }
+
+  it("passes every keyed engine whose CLI calls the door, as a run runs it", () => {
+    honest();
+    const probed = box.runner("route-probe", "1.1.1.1");
+    const lines = probed.out.trim().split("\n").map((line) => JSON.parse(line) as
+      { engine: string; provider: string; ok: boolean; reason: string | null });
+    expect(lines.filter((line) => !line.ok)).toEqual([]);
+    expect(probed.code).toBe(0);
+    expect(new Set(lines.map((line) => line.engine))).toEqual(
+      new Set(["claude-code", "codex", "gemini", "pi"]));
+    // A fake sign-in was seeded in the stores and is gone again.
+    expect(existsSync(box.path("/var/lib/ta/store/codex/.codex/auth.json"))).toBe(false);
+  }, 240_000);
+
+  it("fails loudly when a CLI ignores its channel and calls out instead", () => {
+    honest();
+    box.cli("codex", { lines: [], requests: [{ url: "http://192.0.2.1:9/v1/responses",
+                                               headers: { authorization: "Bearer x" } }] });
+    const probed = box.runner("route-probe", "1.1.1.1");
+    expect(probed.code).toBe(3);
+    const codex = probed.out.trim().split("\n").map((line) => JSON.parse(line) as
+      { engine: string; ok: boolean; reason: string }).find((line) => line.engine === "codex")!;
+    expect(codex.ok).toBe(false);
+    expect(codex.reason).toMatch(/outside the sandbox: 192\.0\.2\.1:9|no model request/);
+  }, 240_000);
 });
 
 describe("each run's own user", () => {
