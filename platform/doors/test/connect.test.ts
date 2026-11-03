@@ -14,7 +14,7 @@ import { createExecutionContext, env, runInDurableObject } from "cloudflare:test
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OwnerDO } from "../../owner/src/owner-do";
-import { CONNECT_CALLBACK, CONNECTED_PAGE, type DoorsEnv, now } from "../src/config";
+import { APP_BODY_MAX, CONNECT_CALLBACK, CONNECTED_PAGE, type DoorsEnv, now } from "../src/config";
 import { serve } from "../src/doors";
 import { connectCookie } from "../src/session";
 import { bundledRecords, catalogOf } from "../src/sources";
@@ -287,7 +287,7 @@ describe("a pasted key", () => {
   it("is refused 413 past the owner surface's body bound, before any object call", async () => {
     const app = await signedIn();
     const { environment, calls } = spied();
-    const body = JSON.stringify({ source: "groq", key: `gsk-good-${"x".repeat(70 * 1024)}` });
+    const body = JSON.stringify({ source: "groq", key: `gsk-good-${"x".repeat(APP_BODY_MAX)}` });
     const answer = await post(app, "connections/key", body, environment);
     expect(answer.status).toBe(413);
     expect(calls).toEqual([]);
@@ -763,7 +763,7 @@ describe("a flow's finish", () => {
     expect((await post(app, "connections/oauth/finish", body, environment, [started.binding],
                        app.session, { "Content-Type": "text/plain" })).status).toBe(415);
     expect((await post(app, "connections/oauth/finish",
-                       JSON.stringify({ ...body, code: "x".repeat(70 * 1024) }), environment,
+                       JSON.stringify({ ...body, code: "x".repeat(APP_BODY_MAX) }), environment,
                        [started.binding])).status).toBe(413);
     expect(methods(calls)).toEqual(["flowFinish"]);
     expect(await flowRows(app.owner)).toEqual([{ status: "open" }]);

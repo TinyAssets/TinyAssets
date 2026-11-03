@@ -27,7 +27,9 @@
  *   call as pi-ai makes it, which the gateway can meter (`meteredCall`), with a declared
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
  *   set, so a call that cannot be metered is never sent;
- * - at most `open` at once and `perMinute` opened a minute (`egress_rate`);
+ * - at most `openPerRun` open at once for each of the tier's simultaneous runs
+ *   (`egress_rate`; the tier's numbers as kept, `tier.ts`): each open call is a row the
+ *   owner-bound guard costs;
  * - and a model call's charge (`#reserve`), by `usage.ts`'s rules but on counters of its
  *   own: its run's requests, tokens and cost (on its `runs` row; the model policy's per-run
  *   limits are its caps), and the owner's and the source's day and month (shared with the
@@ -35,8 +37,7 @@
  *   at the largest context window, so the charge bounds the call's cost.
  *   Then one open row, the blob at its version, the output cap the charge leaves (the
  *   gateway clamps the request's own to it) and the stream's end signal. A refusal is kept
- *   as a receipt row, at most `refusalsPerMinute` a minute, so refused calls can neither
- *   flood the receipts nor write a row each.
+ *   as a receipt row, the newest `refusalsKept` of them.
  *
  * **Ending** (`end`): a policy write, a suspension, the owner's erasure, the connection's
  * revoke and the lease's close or replacement each end the in-flight streams they cover,
@@ -48,8 +49,10 @@
  * provider's status, the bytes it streamed and the gateway's metered outcome, which settles
  * the charge once: `succeeded` at the cost pi-ai read and the catalog priced, `failed`
  * (nothing sent, or the provider refused before any output), or `unknown`, keeping the
- * whole charge. A reservation never settled (the door's invocation lost) is settled `lost`
- * past `LOST_AFTER_S`, its charge `unknown`.
+ * whole charge. While it streams, its door beats it every `EGRESS_BEAT_S`; a reservation
+ * whose beats stop (its door's invocation lost: a deploy, an isolate's restart) is settled
+ * `lost` past `LOST_AFTER_S` without one, its charge `unknown`, and any open one past its
+ * door's own deadline (`EGRESS_DEADLINE_S`) is too.
  *
  * Every row lives in `egress_reservations` (migration 11): at most `open` open, the newest
  * `receiptsKept` admitted and `refusalsKept` refused rows kept as receipts.
@@ -68,35 +71,37 @@ import { Invalid } from "./errors";
 import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, largestFitting, periods } from "./money";
-import { EGRESS_DEADLINE_S, type EgressCode, type Outcome, OUTCOMES } from "./network";
+import { EGRESS_BEAT_S, EGRESS_DEADLINE_S, type EgressCode, type Outcome, OUTCOMES } from "./network";
 
 export { EGRESS_DEADLINE_S, type EgressCode, type Outcome };
 
 /**
- * How much egress one owner holds: 64 calls open at once (a sandbox's clients stream a
- * few), 600 opened a minute, 60 refusals receipted a minute, and the newest 2,000 admitted
- * and 500 refused rows kept as receipts.
+ * How much egress one owner holds: for each of its tier's simultaneous runs, 16 calls open
+ * at once (an engine's clients stream a few; free 80, paid 160, at the founder's numbers),
+ * each open call a row the owner-bound guard costs at the most runs a tier may give; and
+ * the newest 2,000 admitted and 500 refused rows kept as receipts.
  */
 export interface EgressLimits {
-  readonly open: number;
-  readonly perMinute: number;
-  readonly refusalsPerMinute: number;
+  readonly openPerRun: number;
   readonly receiptsKept: number;
   readonly refusalsKept: number;
   readonly receiptsListed: number;
 }
 
 export const EGRESS_LIMITS: EgressLimits = Object.freeze({
-  open: 64,
-  perMinute: 600,
-  refusalsPerMinute: 60,
+  openPerRun: 16,
   receiptsKept: 2_000,
   refusalsKept: 500,
   receiptsListed: 50,
 });
 
-/** An open reservation older than this was its door's lost invocation's. */
-export const LOST_AFTER_S = EGRESS_DEADLINE_S + 60;
+export { EGRESS_BEAT_S };
+/**
+ * An open reservation with no beat for this long was its door's lost invocation's: three
+ * beats missed, so a slow beat is never taken for a lost door. The one-day total stays the
+ * door's own deadline (`EGRESS_DEADLINE_S`), past which an open row is lost too.
+ */
+export const LOST_AFTER_S = 3 * EGRESS_BEAT_S;
 /** The longest path an egress request names, as its row keeps it: visible ASCII. */
 export const EGRESS_PATH_MAX = 2048;
 /** A path the door sends: URL-serialized, so visible ASCII only. */
@@ -218,9 +223,10 @@ export interface EgressReceipt {
  * more and no less: the spend table is the agent's purchases', not model calls'.
  */
 export interface EgressCaps {
-  readonly run_requests: number;
-  readonly run_tokens: number;
-  readonly run_cost: number;
+  /** The owner's own per-run caps, each null (none) unless the owner's policy sets it. */
+  readonly run_requests: number | null;
+  readonly run_tokens: number | null;
+  readonly run_cost: number | null;
   readonly daily_cost: number | null;
   readonly monthly_cost: number | null;
   readonly source_daily_cost: number | null;
@@ -247,6 +253,8 @@ export interface EgressDeps {
     string | null | undefined;
   /** `run`'s requests, tokens and cost so far (its `runs` row). */
   readonly runUsage: (run: string) => { requests: number; tokens: number; cost: number };
+  /** The owner's tier's simultaneous runs, as last handed (`tier.ts`); null if none are. */
+  readonly tierRuns: () => number | null;
   readonly generation: () => number;
   /**
    * The connection's blob at its version, or null for one that is not the owner's, not
@@ -430,7 +438,7 @@ export class Egress {
 
   /**
    * In the door's unit: the call admitted and reserved, an open row and its end signal; or
-   * refused, with its fixed code, kept as a receipt row within the minute's refusals.
+   * refused, with its fixed code, kept as a receipt row (the newest `refusalsKept`).
    */
   open(sandbox: SandboxBinding, request: EgressRequest, now: number):
       EgressOpened | EgressRefusal {
@@ -438,10 +446,6 @@ export class Egress {
     const lease = this.lease(sandbox, now);
     const generation = this.#deps.generation();
     const refuse = (code: EgressCode, rule?: string): EgressRefusal => {
-      if (this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'refused' " +
-                        "AND opened_at > ?", now - 60) >= this.#limits.refusalsPerMinute) {
-        return { ok: false, code, receipt: null };
-      }
       return { ok: false, code,
                receipt: this.#record(sandbox, request, lease, generation, now,
                                      { code, ...(rule === undefined ? {} : { rule }) }) };
@@ -485,10 +489,11 @@ export class Egress {
     if (!free && (request.bytes_hint === null || request.bytes_hint === 0)) {
       return refuse("egress_length_required");
     }
-    if (this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'")
-          >= this.#limits.open
-        || this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE opened_at > ? " +
-                         "AND state != 'refused'", now - 60) >= this.#limits.perMinute) {
+    // The tier's runs as kept; none kept, and no number of ours stands in for them.
+    const runs = this.#deps.tierRuns();
+    if (runs === null
+        || this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'")
+          >= this.#limits.openPerRun * runs) {
       return refuse("egress_rate");
     }
     let charge: Charged | null = null;
@@ -552,11 +557,15 @@ export class Egress {
     const input = model.contextWindow;
     const caps = this.#deps.caps(source);
     const run = this.#deps.runUsage(runId);
-    if (run.requests >= caps.run_requests) {
+    if (caps.run_requests !== null && run.requests >= caps.run_requests) {
       return { ok: false, rule: "run_requests" };
     }
     const { day, month } = periods(now);
-    const rooms: [string, number][] = [["run_cost", caps.run_cost - run.cost]];
+    // With no cap set, nothing binds the cost: the call holds its whole output.
+    const rooms: [string, number][] = [["none", Number.POSITIVE_INFINITY]];
+    if (caps.run_cost !== null) {
+      rooms.push(["run_cost", caps.run_cost - run.cost]);
+    }
     const ceilings: [string, number | null, string, string | null][] = [
       ["daily_cost", caps.daily_cost, `d:${day}`, null],
       ["monthly_cost", caps.monthly_cost, `m:${month}`, null],
@@ -571,7 +580,8 @@ export class Egress {
     const [costRule, costRoom] = rooms.reduce((a, b) => (b[1] < a[1] ? b : a));
     const most = Math.max(...models.map((model) => model.maxTokens));
     const floor = Math.min(most, MIN_OUTPUT);
-    const byTokens = caps.run_tokens - run.tokens - input;
+    const byTokens = caps.run_tokens === null ? Number.POSITIVE_INFINITY
+      : caps.run_tokens - run.tokens - input;
     const price = (output: number) =>
       Math.ceil(this.#deps.price(models, input, output) * multiplier);
     const fits = (output: number) => price(output) <= costRoom;
@@ -693,11 +703,28 @@ export class Egress {
     live?.end.close().catch(() => undefined);  // a door that stopped reading is gone already
   }
 
-  /** Open rows past `LOST_AFTER_S`: their doors' invocations were lost; their spend unknown. */
+  /**
+   * In a unit: a streaming call's open reservation beaten by its door (`EGRESS_BEAT_S`), by
+   * the egress token that opened it; false for one settled, lost or another token's.
+   */
+  beat(sandbox: SandboxBinding, reservation: unknown, now: number): boolean {
+    if (typeof reservation !== "string" || sandbox.kind !== "egress") {
+      return false;
+    }
+    return this.#sql.exec("UPDATE egress_reservations SET beat_at = ? WHERE id = ? AND " +
+                            "state = 'open' AND token = ? RETURNING id", now, reservation,
+                          sandbox.token).toArray().length === 1;
+  }
+
+  /**
+   * Open rows with no beat for `LOST_AFTER_S`, or past their door's deadline: their doors'
+   * invocations were lost; their spend unknown.
+   */
   #recover(now: number): void {
     const lost = this.#sql.exec<{ id: string }>(
       "UPDATE egress_reservations SET state = 'settled', outcome = 'lost', settled_at = ? " +
-        "WHERE state = 'open' AND opened_at <= ? RETURNING id", now, now - LOST_AFTER_S)
+        "WHERE state = 'open' AND (coalesce(beat_at, opened_at) <= ? OR opened_at <= ?) " +
+        "RETURNING id", now, now - LOST_AFTER_S, now - EGRESS_DEADLINE_S - EGRESS_BEAT_S)
       .toArray();
     for (const { id } of lost) {
       // What it cost is unknown: it keeps its whole charge.

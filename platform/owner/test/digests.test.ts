@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { changedSql } from "../src/collections";
 import type { Binding, OwnerDO, RowHead } from "../src/owner-do";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, inObject } from "./support";
+import { failure, inObject, ownerObject } from "./support";
 
 type Live = Extract<RowHead, { deleted: false }>;
 
@@ -93,6 +93,68 @@ describe("the inbox digest", () => {
     expect((await failure(() => r.stub.inboxDigest(r.bind(MUSE), { limit: 1, after: 0 })))
       .message).toBe("outside client revoked");
   });
+});
+
+describe("a digest past a pruned deletion (review rvlim N1)", () => {
+  it("R1: tells a reader behind a pruned tombstone to read again, never hides the delete",
+     async () => {
+    const { stub, name } = ownerObject();
+    await inObject(stub, { maxHistoryCharge: 64 * 1024 }, (store, state) => {
+      const made = store.write(name, name, "board", "gone", "x", "", false);
+      const cursor = store.changed(name, { collection: "board" }, 0, 100).cursor;
+      store.delete(name, "board", "gone", made.etag);
+      const tombstones = () => state.storage.sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM collection_history WHERE key = 'gone'").one().n;
+      expect(tombstones()).toBe(1);
+      // A reader past the delete is told it while it is kept.
+      expect(store.changed(name, { collection: "board" }, cursor, 100).rows
+        .map((row) => [row.row_id, row.deleted])).toEqual([["gone", true]]);
+      for (let n = 0; tombstones() > 0 && n < 5000; n++) {
+        store.write(name, name, "other", `r${n}`, "y".repeat(1000), "", false);
+      }
+      expect(tombstones()).toBe(0);
+      const seen = store.changed(name, { collection: "board" }, cursor, 100);
+      expect(seen).toMatchObject({ rows: [], reset: true });
+      const top = state.storage.sql.exec<{ change: number }>(
+        "SELECT change FROM collection_clock").one().change;
+      expect(seen.cursor).toBe(top);
+      // From the cursor it was given, the feed goes on as before; a fresh reader is never
+      // reset: it holds no row to forget.
+      expect(store.changed(name, { collection: "board" }, seen.cursor, 100))
+        .toEqual({ cursor: top, rows: [] });
+      expect(store.changed(name, { collection: "board" }, 0, 100)).not.toHaveProperty("reset");
+    });
+  });
+});
+
+describe("a digest's placed bodies (ADR-035)", () => {
+  it("reads placed mail and rows from R2: whole heads and lengths, a delete's entry kept " +
+     "body-less", async () => {
+    const r = await rig();
+    const agent = await r.register(MUSE);
+    const mail = "m".repeat(3000) + "?";
+    const row = "é".repeat(2000);
+    await r.post(null, `dm:${agent}`, { body: mail });
+    await write(r, "room:app:lobby", "big", row);
+    await write(r, "board", "task", row);
+    expect(await r.sql("SELECT COUNT(*) AS n FROM collection_rows WHERE content_id IS NOT NULL"))
+      .toEqual([{ n: 2 }]);
+    const inbox = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: 0 });
+    expect(inbox.mail.messages.map((m) => [m.body, m.integrity])).toEqual([[mail, "ok"]]);
+    expect(live(inbox.rooms.rows).map((m) => [m.row_id, m.head, m.body_chars]))
+      .toEqual([["big", "é".repeat(512), 2000]]);
+    expect(live(inbox.rooms.rows)[0]!).not.toHaveProperty("content_id");
+    const board = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: 0 });
+    expect(live(board.rows).map((m) => [m.row_id, m.body_chars])).toEqual([["task", 2000]]);
+    // A delete's entry carries no body: nothing of it is placed, and the digest reports it.
+    const [stored] = await r.sql("SELECT etag FROM collection_rows WHERE row_id = 'task'");
+    await r.stub.collectionDelete(r.bind(null), { collection: "board", row_id: "task",
+                                                  expected_etag: stored!["etag"] as string });
+    expect(await r.sql("SELECT body_json, content_id FROM collection_history WHERE op = 'delete'"))
+      .toEqual([{ body_json: "", content_id: null }]);
+    const after = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: board.cursor });
+    expect(after.rows.map((m) => [m.row_id, m.deleted])).toEqual([["task", true]]);
+  }, 60_000);
 });
 
 describe("the board digest", () => {
@@ -181,11 +243,11 @@ describe("a digest's reads", () => {
     }
   });
 
-  it("keeps a key's delete through the trim once the key is made again private",
+  it("keeps a key's delete once the key is made again private: no row's history is trimmed",
      async () => {
     const r = await rig();
     const bob = "bob";
-    await inObject(r.stub, { maxRevisions: 3 }, (store) => {
+    await inObject(r.stub, {}, (store) => {
       const made = store.write(r.owner, r.owner, "board", "t", "public", "", false);
       const before = store.changed("muse", { collection: "board" }, 0, 10).cursor;
       store.delete(r.owner, "board", "t", made.etag);
@@ -198,9 +260,9 @@ describe("a digest's reads", () => {
         .map((row) => [row.row_id, row.deleted])).toEqual([["t", true]]);
       expect(store.changed(bob, { collection: "board" }, before, 10).rows
         .map((row) => [row.row_id, row.deleted])).toEqual([["t", true], ["t", false]]);
-      // The kept entry takes a revision's place: the key holds maxRevisions entries.
+      // The history is bounded by its bytes alone (ADR-035), the delete's entry among them.
       expect(store.history(bob, "board", "t").entries.map((entry) => entry.op))
-        .toEqual(["delete", "write", "write"]);
+        .toEqual(["delete", ...Array<string>(6).fill("write")]);
     });
   });
 });

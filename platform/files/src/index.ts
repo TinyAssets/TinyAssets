@@ -22,8 +22,11 @@
  *   loudly instead of counting as a deduplicated hit.
  * - `getChunks` reads chunks whole, rechecking each hash, or byte ranges of them.
  * - `deleteChunks` removes up to 1,000 chunks in one call (R2's batch limit); the owner
- *   object's garbage collection is its only caller, for keys in its own chunk table, so
- *   nothing ever lists the bucket.
+ *   object's garbage collection is its only caller, for keys in its own chunk table.
+ * - `deleteNamespace` deletes every object under one owner's namespace prefix, listing it
+ *   1,000 keys at a time: the owner's erasure alone, so a chunk whose row was lost, or
+ *   whose put landed late, goes with the rest. It is the only list of the bucket, and only
+ *   ever of one namespace's prefix.
  *
  * It serves no HTTP: no fetch handler, no `workers.dev` or preview URL, no route. Owner
  * objects reach it by the `FILES` service binding alone, which adds no request fee. Owed
@@ -35,7 +38,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import {
-  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, DELETE_BATCH, Invalid, namespace,
+  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, chunkPrefix, DELETE_BATCH, Invalid, listedChunk,
+  namespace,
 } from "./keys";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
@@ -163,6 +167,21 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
       }
       return bytes;
     }));
+  }
+
+  /** Delete every chunk under `ns`'s prefix, listed 1,000 at a time; repeatable. */
+  async deleteNamespace(ns: string): Promise<{ deleted: number }> {
+    namespace(ns);
+    let deleted = 0;
+    for (;;) {
+      const listed = await this.env.BLOBS.list({ prefix: chunkPrefix(ns), limit: DELETE_BATCH });
+      const shas = listed.objects.map((object) => listedChunk(ns, object.key));
+      if (shas.length === 0) {
+        return { deleted };
+      }
+      await this.env.BLOBS.delete(shas.map((sha) => chunkKey(ns, sha)));
+      deleted += shas.length;
+    }
   }
 
   /** Delete chunks (at most 1,000); a key already gone is not an error. */

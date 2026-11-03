@@ -91,7 +91,7 @@ const read = async (r: Rig, path: string) => {
 describe("the schema's file ceilings", () => {
   it("are the manifest's own: the inline bound, the chunk size and the grace", () => {
     const schema = MIGRATIONS.flat().join(" ");
-    expect(schema).toContain(`CHECK ((inline IS NOT NULL) = (size <= ${INLINE_BYTES}))`);
+    expect(schema).toContain(`CHECK (inline IS NULL OR size <= ${INLINE_BYTES})`);
     expect(schema).toContain(`CHECK (size BETWEEN 1 AND ${CHUNK_BYTES})`);
     expect(schema).toContain(`unixepoch('subsec') + ${GC_GRACE_S}`);
   });
@@ -148,6 +148,7 @@ describe("an upload", () => {
       putChunks: async () => { throw new Error("FILES refused the put"); },
       getChunks: (space, reads) => env.FILES.getChunks(space, reads),
       deleteChunks: (space, list) => env.FILES.deleteChunks(space, list),
+      deleteNamespace: (space) => env.FILES.deleteNamespace(space),
     };
     expect((await failure(() => inFiles(r.stub, {}, (files) =>
       files.write(`${W}/a`, piece, { expected: null, writer: "owner" }), refusing))).message)
@@ -448,6 +449,7 @@ describe("a chunk", () => {
       putChunks: async () => { throw new Error("FILES is down"); },
       getChunks: (space, reads) => env.FILES.getChunks(space, reads),
       deleteChunks: (space, shas) => env.FILES.deleteChunks(space, shas),
+      deleteNamespace: (space) => env.FILES.deleteNamespace(space),
     };
     expect((await failure(() => inFiles(r.stub, {}, (files) =>
       files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]), refusing))).message)
@@ -484,6 +486,7 @@ describe("a chunk", () => {
       putChunks: (space, chunks) => env.FILES.putChunks(space, chunks),
       getChunks: (space, reads) => env.FILES.getChunks(space, reads),
       deleteChunks: async () => { throw new Error("FILES is down"); },
+      deleteNamespace: (space) => env.FILES.deleteNamespace(space),
     };
     // The failure stays in the chunk's row: the pass itself completes.
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000), failing);
@@ -616,6 +619,7 @@ describe("a chunk between a pass's units", () => {
           deletes.push(shas);
           return env.FILES.deleteChunks(space, shas);
         },
+        deleteNamespace: (space) => env.FILES.deleteNamespace(space),
       };
       const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, storage) => {
         const gate = new WriteGate(storage.storage);
@@ -649,12 +653,14 @@ describe("a chunk between a pass's units", () => {
       putChunks: async () => { throw new Error("FILES is down"); },
       getChunks: (space, reads) => env.FILES.getChunks(space, reads),
       deleteChunks: (space, shas) => env.FILES.deleteChunks(space, shas),
+      deleteNamespace: (space) => env.FILES.deleteNamespace(space),
     };
     const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
       await filesOn(gate.storage, gate.write).namespace();
-      // The write's units: its intent, then (the put refused) its abort, which fails.
-      const files = filesOn(gate.storage, faulty(gate.write, (n) => n === 2), down);
+      // The write's units: its intent, its put's check of the erasure's mark, then (the put
+      // refused) its abort, which fails.
+      const files = filesOn(gate.storage, faulty(gate.write, (n) => n === 3), down);
       return failure(() => files.write(`${W}/a.bin`, filled(INLINE_BYTES + 1, 16),
                                        { expected: null, writer: "owner" }));
     });

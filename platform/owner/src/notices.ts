@@ -11,7 +11,7 @@
 import type { OwnerStorage } from "./gate";
 
 /** The newest notices kept; an older one goes as a new one comes. */
-export const NOTICES_KEPT = 100;
+export const NOTICES_KEPT = 1000;
 /** The characters a notice's detail keeps. */
 export const NOTICE_DETAIL = 1024;
 
