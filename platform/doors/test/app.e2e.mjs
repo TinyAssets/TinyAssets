@@ -318,10 +318,24 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   const groq = await connection.locator("option", { hasText: "groq" }).getAttribute("value");
   await connection.selectOption(groq);
   await form.getByRole("checkbox", { name: "Read your files" }).check();
+  // Every change the making sends, in order: the agent is its agent.json, so that is the
+  // last write, after its folder and its AGENTS.md (review L3).
+  const changes = [];
+  const onRequest = (request) => {
+    const path = new URL(request.url()).pathname;
+    if (/^\/app\/api\/(?:files\/write|tools\/file_(?:mkdir|write|remove|rename))$/.test(path)) {
+      changes.push([path.slice("/app/api/".length), request.postDataJSON().path]);
+    }
+  };
+  page.on("request", onRequest);
   await form.getByRole("button", { name: "Make the agent" }).click();
   await page.waitForURL(`${ORIGIN}/app#agents/main`);
   await page.getByRole("link", { name: "agent.json" }).waitFor();
   await page.getByRole("link", { name: "AGENTS.md" }).waitFor();
+  page.off("request", onRequest);
+  assert.deepEqual(changes, [["tools/file_mkdir", "/workspace/agents/main"],
+                             ["files/write", "/workspace/agents/main/AGENTS.md"],
+                             ["files/write", "/workspace/agents/main/agent.json"]]);
 
   await page.getByPlaceholder("Say something to main").fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
