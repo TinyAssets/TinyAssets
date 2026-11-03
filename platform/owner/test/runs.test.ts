@@ -605,7 +605,7 @@ describe("the admission unit", () => {
       };
       const runs = new Runs(gate.storage, {
         unadmitted: () => "owner_suspended: the owner's account is suspended (billing)",
-        sandboxBound: () => true, sources: never, usable: never, egressible: never,
+        sandboxBound: () => true, sources: never, signinOn: never, usable: never, egressible: never,
         standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,
                  lapsed: never }, stop: never,
@@ -640,7 +640,7 @@ describe("the admission unit", () => {
         throw new Error("a read went past its rows");
       };
       const runs = (capacity: number | null) => new Runs(new WriteGate(state.storage).storage, {
-        unadmitted: never, sandboxBound: never, sources: never, usable: never,
+        unadmitted: never, sandboxBound: never, sources: never, signinOn: never, usable: never,
         egressible: never, standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,
                  lapsed: never }, stop: never,

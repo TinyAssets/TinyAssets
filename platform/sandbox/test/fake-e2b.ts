@@ -39,6 +39,8 @@ interface Script {
   down: number;
   /** A resume of a paused sandbox answered 429, creates still taken. */
   refuseResume: boolean;
+  /** A runner command whose process start envd answers 502 (the sandbox went away). */
+  broken: string | null;
 }
 
 const fake = {
@@ -60,7 +62,7 @@ function reset(): void {
   fake.next = 0;
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
                   full: false, pauseMode: "full", noCount: false, down: 0,
-                  refuseResume: false };
+                  refuseResume: false, broken: null };
 }
 reset();
 
@@ -218,6 +220,9 @@ async function envd(request: Request, url: URL): Promise<Response> {
       process: { cmd: string; args: string[] } };
     const argv = [start.process.cmd, ...start.process.args];
     fake.commands.push({ sandbox: id, argv, user });
+    if (argv[1] !== undefined && argv[1] === fake.script.broken) {
+      return new Response("envd went away", { status: 502 });
+    }
     const done = runner(argv);
     const parts = [envelope({ event: { start: { pid: 42 } } }),
                    ...(done.out === "" ? [] : [envelope({ event: { data: { stdout: b64(done.out) } } })]),

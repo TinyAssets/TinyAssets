@@ -126,6 +126,31 @@ export interface FakeCli {
    * test holds runs live together by an event, never by a guess at how long a start takes.
    */
   readonly holdUntil?: string;
+  /**
+   * HTTP requests it makes before anything else, each to a URL (and headers and body) filled
+   * from what the run gave it: `{env:NAME}`, `{after:NAME}` (a variable's value after its
+   * first `: `), `{argv:KEY}` (the value of its `KEY=...` argument, quotes dropped),
+   * `{json:FILE#a.b}` (`*` the first key), `{placeholder}` (the run's `ta_ph_` key).
+   */
+  readonly requests?: readonly { readonly url: string; readonly method?: string;
+                                 readonly headers?: Readonly<Record<string, string>>;
+                                 readonly body?: string;
+                                 /** Made only when one of its arguments holds this. */
+                                 readonly if?: string }[];
+  /**
+   * A file (`~/...`, under one of the record's session paths) its prompts are kept in, as a
+   * CLI keeps its conversation: `{history}` in a request is what it held before this run.
+   */
+  readonly history?: string;
+  /**
+   * A sign-in (its record's `login.argv`): `lines` printed at once (stdout, or stderr with
+   * `stderr`); with `code`, one line read from stdin, then `writes` made and exit 0; without
+   * it, `writes` made at once, then it stays up (a CLI that does not exit once signed in)
+   * unless `exit` is given.
+   */
+  readonly login?: { readonly lines: readonly string[]; readonly code?: boolean;
+                     readonly stderr?: boolean; readonly writes?: Readonly<Record<string, string>>;
+                     readonly exit?: number; readonly tty?: boolean };
 }
 
 /** The fake CLI's own program: what it was run with goes to `<root>/fake-seen`. */
@@ -139,6 +164,46 @@ const plan = JSON.parse(fs.readFileSync(me + ".plan.json", "utf8"));
 const where = (file) => file.startsWith("~/") ? path.join(process.env.HOME, file.slice(2))
   : path.resolve(file);
 let stdin = "";
+const fill = (text) => text
+  .replace(/\{env:([A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? "")
+  .replace(/\{after:([A-Z0-9_]+)\}/g, (_, name) => (process.env[name] ?? "").split(": ").slice(1)
+    .join(": "))
+  .replace(/\{argv:([^}]+)\}/g, (_, key) => {
+    const arg = process.argv.find((each) => each.startsWith(key + "="));
+    return arg === undefined ? "" : arg.slice(key.length + 1).replace(/^"|"$/g, "");
+  })
+  .replace(/\{json:([^#}]+)#([^}]+)\}/g, (_, file, dotted) => {
+    try {
+      let value = JSON.parse(fs.readFileSync(where(file), "utf8"));
+      for (const key of dotted.split(".")) {
+        value = key === "*" ? Object.values(value)[0] : value[key];
+      }
+      return String(value);
+    } catch { return ""; }
+  })
+  .replace(/\{placeholder\}/g, () =>
+    Object.values(process.env).find((value) => value.startsWith("ta_ph_")) ?? "")
+  .replace(/\{history\}/g, () => {
+    try { return fs.readFileSync(where(plan.history), "utf8"); } catch { return ""; }
+  });
+const request = async () => {
+  for (const each of plan.requests || []) {
+    if (each.if !== undefined && !process.argv.some((arg) => arg.includes(each.if))) {
+      continue;
+    }
+    try {
+      await fetch(fill(each.url), { method: each.method || "POST",
+        headers: Object.fromEntries(Object.entries(each.headers || {}).map(([name, value]) =>
+          [name, fill(value)])),
+        body: each.body === undefined ? undefined : fill(each.body),
+        signal: AbortSignal.timeout(3000) });
+    } catch {}
+  }
+  if (plan.history) {
+    fs.mkdirSync(path.dirname(where(plan.history)), { recursive: true });
+    fs.appendFileSync(where(plan.history), stdin + "\n");
+  }
+};
 const done = () => {
   const dumps = {};
   for (const file of plan.dumps || []) {
@@ -193,10 +258,47 @@ const done = () => {
     exit();
   }
 };
-if (!process.argv.includes("status")) {
+if (plan.login && !process.argv.includes("status")) {
+  const record = (extra) => {
+    const at = performance.timeOrigin + performance.now();
+    fs.writeFileSync(path.join(root, "fake-seen",
+                               path.basename(me) + "." + at.toFixed(3) + "." + process.pid + ".json"),
+      JSON.stringify({ at, argv: process.argv.slice(2), env: process.env, cwd: process.cwd(),
+                       stdin, uid: process.getuid(), gid: process.getgid(),
+                       groups: process.getgroups(), dumps: {}, owners: {},
+                       tty: process.stdout.isTTY === true,
+                       homes: Object.fromEntries(Object.entries(process.env)
+                         .filter(([, value]) => value.startsWith(process.env.HOME + "/"))
+                         .map(([name, value]) => [name, fs.existsSync(value)])), ...extra }));
+  };
+  const finish = () => {
+    for (const [file, text] of Object.entries(plan.login.writes || {})) {
+      fs.mkdirSync(path.dirname(where(file)), { recursive: true });
+      fs.writeFileSync(where(file), text);
+    }
+    record({});
+    if (plan.login.code || plan.login.exit !== undefined) {
+      process.exit(plan.login.exit || 0);
+    }
+    setInterval(() => {}, 1000);  // up until stopped
+  };
+  process.on("SIGTERM", () => process.exit(143));
+  for (const line of plan.login.lines) {
+    (plan.login.stderr ? process.stderr : process.stdout).write(line + "\n");
+  }
+  if (plan.login.code) {
+    process.stdin.on("data", (d) => {
+      stdin += d;
+      if (stdin.includes("\n")) { finish(); }
+    });
+  } else {
+    finish();
+  }
+} else if (!process.argv.includes("status")) {
+  const go = () => request().then(done, done);
   process.stdin.on("data", (d) => { stdin += d; });
-  process.stdin.on("end", done);
-  process.stdin.on("error", done);
+  process.stdin.on("end", go);
+  process.stdin.on("error", go);
 } else { done(); }
 `;
 
@@ -234,7 +336,8 @@ export class Doors {
           response.writeHead(status, { "content-type": "application/json", ...headers });
           response.end(JSON.stringify(value));
         };
-        if (/^\/r\/run_[0-9a-f]{32}\/events$/.test(path)) {
+        if (/^\/r\/run_[0-9a-f]{32}\/events$/.test(path)
+            || /^\/signin\/si_[0-9a-f]{32}\/events$/.test(path)) {
           if (this.ended) {
             return json(403, { error: { code: "run_ended" } });
           }
@@ -322,7 +425,7 @@ export class Doors {
     const until = Date.now() + ms;
     for (;;) {
       const end = this.events().find((post) => post.body["end"] !== undefined
-        && (run === undefined || post.path === `/r/${run}/events`));
+        && (run === undefined || post.path.endsWith(`/${run}/events`)));
       if (end !== undefined) {
         return end;
       }
@@ -436,6 +539,19 @@ export class Sandbox {
     writeFileSync(this.path(`/var/lib/ta/inbox/${start.run}.json`), JSON.stringify(start));
     writeFileSync(this.path("/var/lib/ta/lease.json"), JSON.stringify({
       lease: start.lease, authority,
+      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } }));
+  }
+
+  /** A sign-in's document and the lease's secrets, as the sandbox Worker leaves them. */
+  login(doc: { id: string; engine: string; region?: string | null; mode?: "in" | "out";
+               authority?: string }, doors: Doors): void {
+    writeFileSync(this.path(`/var/lib/ta/inbox/${doc.id}.json`), JSON.stringify({
+      id: doc.id, engine: doc.engine, region: doc.region ?? null, mode: doc.mode ?? "in",
+      authority: doc.authority ?? "owner",
+      urls: { events: `${doors.origin}/signin/${doc.id}/events`,
+              signin: `${doors.origin}/signin` } }));
+    writeFileSync(this.path("/var/lib/ta/lease.json"), JSON.stringify({
+      lease: { lease_id: "b".repeat(32), epoch: 1 }, authority: doc.authority ?? "owner",
       tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } }));
   }
 

@@ -31,7 +31,8 @@ import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./pol
 import {
   AUTHORITY_CHARS, CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, ENGINE_SIGNINS, ERROR_BYTES,
   INPUT_BYTES, MESSAGE_ID_CHARS, NATIVE_ID_CHARS, QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES,
-  RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
+  RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_CODE_MAX, SIGNIN_LIST_CHARS,
+  SIGNIN_MODELS_CHARS, SIGNIN_URL_MAX,
 } from "./run-rows";
 import { SOCKET_TICKETS } from "./socket-shape";
 import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "./wake-kinds";
@@ -1568,6 +1569,32 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The erasure's outside record, confirmed by the doors (`erasure.ts` step 2).
     "ALTER TABLE owner_erasure ADD COLUMN outside INTEGER NOT NULL DEFAULT 0 " +
       "CHECK (outside IN (0, 1))",
+  ]),
+  // 16: the vendor's own sign-in inside a sandbox (slice SIGNIN, `signins.ts`).
+  // `sandbox_signins`: the sign-in in progress, one an authority, holding that sandbox's
+  // lease, its latest prompt (the vendor's URL and code, never a token) and its runner's last
+  // beat; gone at its end. `platform_signins`: the served records whose vendor sign-in the
+  // control record switches on, as the binder or the lane last read them.
+  Object.freeze([
+    "CREATE TABLE sandbox_signins (authority TEXT PRIMARY KEY CHECK (authority = 'owner' " +
+      "OR (length(authority) = 64 AND authority NOT GLOB '*[^0-9a-f]*')), " +
+      "id TEXT NOT NULL UNIQUE CHECK (length(id) = 35 AND id GLOB 'si_*'), " +
+      "engine TEXT NOT NULL CHECK (length(engine) BETWEEN 1 AND 64), " +
+      "mode TEXT NOT NULL CHECK (mode IN ('in', 'out')), " +
+      "region TEXT CHECK (region IS NULL OR length(region) BETWEEN 1 AND 64), " +
+      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
+      "state TEXT NOT NULL CHECK (state IN ('starting', 'open', 'code_sent', 'signed_in', " +
+      "'signed_out', 'failed', 'cancelled', 'refused', 'expired')), " +
+      `url TEXT CHECK (url IS NULL OR length(url) <= ${SIGNIN_URL_MAX}), ` +
+      `code TEXT CHECK (code IS NULL OR length(code) <= ${SIGNIN_CODE_MAX}), ` +
+      "accepts_code INTEGER NOT NULL DEFAULT 0 CHECK (accepts_code IN (0, 1)), " +
+      "started_at REAL NOT NULL, beat_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TRIGGER sandbox_signins_full BEFORE INSERT ON sandbox_signins WHEN (SELECT " +
+      `COUNT(*) FROM sandbox_signins) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
+      `'sandbox_signins_full: ${RUNS_CEILING} sign-ins are live'); END`,
+    "CREATE TABLE platform_signins (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      `engines TEXT NOT NULL CHECK (length(engines) <= ${SIGNIN_LIST_CHARS} ` +
+      "AND engines NOT GLOB '*[^a-z0-9_,-]*'), read_at REAL NOT NULL)",
   ]),
 ]);
 

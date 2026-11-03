@@ -38,6 +38,7 @@ import {
   type DoorsEnv, INBOUND_BODY_MAX, INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN,
 } from "./config";
 import { type Control, deleteRoute, putRoute, readControl, readRoute } from "./directory";
+import { bundledSources, signinsOn } from "./sources";
 import { refusal } from "./tools";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -257,7 +258,9 @@ export async function serveInbound(request: Request, env: DoorsEnv): Promise<Res
   if (!gateOpen(read.control, entry.o)) {
     return answer(503, { error: "maintenance" }, true);
   }
-  const { binding, stub } = withTiers(bindInbound(env, entry), read.control.tiers);
+  // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
+  const { binding, stub } = withTiers(bindInbound(env, entry), {
+    tiers: read.control.tiers, signins: signinsOn(bundledSources(), read.control.signins) });
   try {
     return delivered(routed.shared, await stub.inboundAccept(binding, {
       event_id: routed.eventId, event_at: routed.eventAt, body, headers }));

@@ -45,9 +45,10 @@ const RPC_METHODS = Object.freeze([
   "keyMint", "mailChain", "mailboxAck", "mailboxRead",
   "noticeList", "outsideAgents", "ownerErase", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
-  "registerProposal", "registerPropose", "roomPost", "runEvents", "sandboxRung",
+  "registerProposal", "registerPropose", "roomPost", "runEvents", "runList", "sandboxRung",
   "sessionClose",
-  "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
+  "sessionCloseAll", "sessionExtend", "sessionOpen", "signinCancel", "signinCode",
+  "signinEvents", "signinList", "signinReport", "signinStart", "socketTicket",
   "socketsEnd", "tierRead", "tierSet", "toolProfile", "usageReceipts", "wakeEvents",
   "wakeSubscribe", "wakeUnsubscribe",
 ]);

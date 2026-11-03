@@ -57,6 +57,12 @@
  *   The rest (collections, other files, digests, runs, `code`, whose script calls are held
  *   the same way) change no agent's authority, so the owner's token suffices, as it does for
  *   a full-mode API key.
+ * - `signin/start`, `signin/code`, `signin/cancel`, `signin/list` (slice SIGNIN): the
+ *   vendor's own sign-in (or sign-out) inside the owner's own sandbox or one client's, its
+ *   prompt watched on the app socket by the sign-in's id (`agent/socket-ticket` takes it as
+ *   its `conversation_id`), a pasted code handed back, a sign-in stopped, and the sign-ins in
+ *   progress with each engine's presence.
+ * - `runs` (slice SIGNIN): the owner's past runs, newest first, a page at a time.
  *
  * Every answer but a socket's upgrade carries `SURFACE_HEADERS` (nosniff, a CSP of none).
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
@@ -239,7 +245,7 @@ const fileWrite: Route = async (_env, { binding, stub }, request) => {
 };
 
 /** `sources`: what the app shows of each record; nothing sealed, no endpoint, no argv. */
-function sourceList(sources: Sources): unknown {
+function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
   return {
     sources: sources.ids().map((id) => {
       const record = sources.get(id)!;
@@ -247,6 +253,15 @@ function sourceList(sources: Sources): unknown {
         id, display_name: record.display_name, help_url: record.help_url ?? null,
         suggested: record.suggested, connect: record.connect, unwired: record.unwired ?? null,
         engines: record.engines ?? [], credentials: record.cli?.credential ?? [],
+        // The vendor's own sign-in, as the app offers it: whether there is one, and the
+        // regions the owner chooses among (their names alone).
+        signin: record.cli?.login === undefined ? null : {
+          regions: Object.entries(record.cli.regions ?? {}).map(([region, { display_name }]) =>
+            ({ id: region, display_name })),
+          // Whether the platform offers it (the control record's switch, or the verdict), and
+          // the verdict on the vendor's terms for hosted use, cited.
+          enabled: switchedOn.includes(id),
+          hosted_use: (record.cli.login as { hosted_use: unknown }).hosted_use },
       };
     }),
   };
@@ -362,6 +377,16 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     json(200, await stub.agentStatus(binding, request as never)),
   "agent/cancel": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentCancel(binding, request as never)),
+  "runs": async (_env, { binding, stub }, request) =>
+    json(200, await stub.runList(binding, request as never)),
+  "signin/start": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinStart(binding, request as never)),
+  "signin/code": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinCode(binding, request as never)),
+  "signin/cancel": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinCancel(binding, request as never)),
+  "signin/list": (_env, { binding, stub }, request) =>
+    read(request, () => stub.signinList(binding)),
 });
 
 /** The owner app's socket door's path, and its ticket door's, under the owner surface. */
@@ -488,7 +513,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   if (gated instanceof Response) {
     return gated;
   }
-  const owner = withTiers(unread, gated.tiers);
+  const owner = withTiers(unread, gated);
   try {
     if (registering) {
       const { key_id: id, ...register } = parsed;
@@ -503,7 +528,8 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
       return await connect({ env, bound: owner, body: parsed, request, sources });
     }
     if (listing) {
-      return shaped(parsed, []) ? json(200, sourceList(sources)) : failure(400, NO_FIELDS);
+      return shaped(parsed, []) ? json(200, sourceList(sources, gated.signins))
+        : failure(400, NO_FIELDS);
     }
     if (tool !== null) {
       return await ownerTool(tool, owner, parsed);

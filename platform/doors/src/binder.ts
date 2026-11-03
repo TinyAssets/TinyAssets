@@ -278,11 +278,15 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
 }
 
 /**
- * The binding with the platform control record's tier numbers, as the doors read the record
- * for this call (`control.ts`): the run doors' admission reads them; no request names them.
+ * The binding with what the platform control record holds for this call, as the doors read
+ * it (`control.ts`): its tier numbers, which the run doors' admission reads, and the served
+ * records whose vendor sign-in is switched on, which the object's sign-in doors and its
+ * runs' admission hold to. No request names either.
  */
-export function withTiers({ binding, stub }: Bound, tiers: unknown): Bound {
-  return { binding: { ...binding, tiers }, stub };
+export function withTiers({ binding, stub }: Bound,
+                          gated: { readonly tiers: unknown; readonly signins: readonly string[] }):
+    Bound {
+  return { binding: { ...binding, tiers: gated.tiers, signins: gated.signins }, stub };
 }
 
 /**

@@ -25,4 +25,5 @@ export const AUTOINDEXES: readonly string[] = Object.freeze([
   "sqlite_autoindex_policy_proposals_1",
   "sqlite_autoindex_proposal_shares_1",
   "sqlite_autoindex_runs_1",
+  "sqlite_autoindex_sandbox_signins_2",
 ]);
