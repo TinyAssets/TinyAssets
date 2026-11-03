@@ -465,6 +465,38 @@ function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]
   return { last, result, resultCut, error, session, relayed };
 }
 
+/** A path as the sync agent escapes one it cannot name: `/workspace/`, then printable ASCII. */
+const UNNAMED_PATH = /^\/workspace\/[\x20-\x7e]{1,4096}$/;
+
+/** The most of a sync's unnamed paths a notice names. */
+const UNNAMED_SHOWN = 5;
+
+/**
+ * The owner's notice for a sync's files whose names are not UTF-8 (`ta.sync_unnamed`), in
+ * the object's own words: only the count and the escaped paths come from the event, never
+ * its text (round 8, R8-1); null for any other event, or one not of that shape.
+ */
+export function unnamedNotice(event: unknown): string | null {
+  if (typeof event !== "object" || event === null
+      || (event as Record<string, unknown>)["type"] !== "ta.sync_unnamed") {
+    return null;
+  }
+  const { count, paths } = event as { count?: unknown; paths?: unknown };
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1) {
+    return null;
+  }
+  const named = (Array.isArray(paths) ? paths : [])
+    .filter((path): path is string => typeof path === "string" && UNNAMED_PATH.test(path))
+    .slice(0, Math.min(UNNAMED_SHOWN, count));
+  const one = count === 1;
+  return `${count} file${one ? "" : "s"} or folder${one ? "" : "s"} in its sandbox ${
+    one ? "has a name" : "have names"} that ${one ? "is" : "are"} not UTF-8, so ${
+    one ? "it does" : "they do"} not sync to your files${named.length === 0 ? ""
+    : `: ${named.map((path) => `"${path}"`).join(", ")}${count > named.length
+      ? `, and ${count - named.length} more` : ""}`}. Rename ${one ? "it" : "them"} to sync ${
+    one ? "it" : "them"}.`;
+}
+
 /** `text` cut to at most `bytes` UTF-8 bytes on a character boundary, and whether it was. */
 export function cut(text: string, bytes: number): { text: string; cut: boolean } {
   const encoded = new TextEncoder().encode(text);
@@ -1196,10 +1228,9 @@ export class Runs {
     }
     const { last, result, resultCut, error, session, relayed } = batch(row, events, frames);
     for (const frame of frames) {
-      const event = frame.event as { type?: unknown; message?: unknown } | null;
-      if (frame.seq > row.last_seq && event?.type === "ta.sync_unnamed"
-          && typeof event.message === "string") {
-        this.#deps.notice?.("sync_unnamed", `${row.agent}: ${event.message}`);
+      const notice = frame.seq > row.last_seq ? unnamedNotice(frame.event) : null;
+      if (notice !== null) {
+        this.#deps.notice?.("sync_unnamed", `${row.agent}: ${notice}`);
       }
     }
     // The batch is this run's own heartbeat, as it renews the lease.

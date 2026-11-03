@@ -1772,6 +1772,8 @@ R, S, M and W.
 
   Verification round 8 (R7, APPROVE with fixes): the step measured on the automaton's slowest branch (`/**/` lines, `STEP_NS` 6) and the audit's arithmetic restated (both automata within the 8,192, the indexes' 184 s, the slack); a folder's Aho–Corasick depth in the cost bound, tested 2,000 folders deep; the worst memory class (heads diverging, 45.0 a list byte) recorded, so `LIST_BYTES` is 6 MiB; a file or folder whose name is not UTF-8 said in the run's report, its bytes escaped, and in the owner's notice, never synced in silence; the heartbeat test seconds long, so `platform-tests` keeps within its ten minutes.
 
+  Verification round 9 (R8): a CLI's line shaped as the runner's own event (`ta.…`, `ta_cut`) refused as `ta.cli_refused`, never posted as it, every runner event type tested forged; the unnamed-files notice in the object's own words; `platform-tests`' guard holds each leg's steps, keys and `defaults.run` exactly, the reviewer's mutations its test.
+
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".
