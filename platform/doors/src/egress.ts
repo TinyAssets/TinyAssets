@@ -44,7 +44,7 @@ import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER,
          SANDBOX_HEADER } from "../../owner/src/network";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../owner/src/run-events";
 
-import { type Bound, bindRun, bindSandbox, type Presented, rebound } from "./binder";
+import { type Bound, bindRun, bindSandbox, bindSync, type Presented, rebound } from "./binder";
 import { jsonObject } from "./body";
 import { type DoorsEnv, EGRESS_ORIGIN } from "./config";
 import { ownerGate } from "./control";
@@ -294,6 +294,104 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
   }
 }
 
+/**
+ * The in-VM sync agent's doors (slice S's runner), on the egress host by its sync token
+ * (`x-ta-sync`, the lease's `sync` kind; never the egress token, which reaches none of them):
+ * the change feed (`changes`), a listing for a feed reset (`list`), a file's entry and
+ * bytes (`read`, `chunks`) and the fenced commit (`commit`). The object holds each to its
+ * live lease and, for an outside client's sandbox, to the readable set the feed is filtered
+ * by (`#syncer`), so a content door never shows a path the feed would not. Bytes cross as
+ * base64; a commit's body is bounded (`SYNC_BODY_MAX`), so the runner sends more commits,
+ * not bigger ones.
+ */
+const SYNC_DOOR = /^\/sync\/(changes|list|read|chunks|commit)$/;
+type SyncDoor = "changes" | "list" | "read" | "chunks" | "commit";
+export const SYNC_HEADER = "x-ta-sync";
+/** A sync door's body: one 4 MiB file's base64 and its op, with room for the rest. */
+export const SYNC_BODY_MAX = 8 * 1024 * 1024;
+
+function base64(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+}
+
+/** A commit's ops with each `inline` decoded from base64; anything else as sent. */
+function decodedOps(ops: unknown): unknown {
+  if (!Array.isArray(ops)) {
+    return ops;
+  }
+  return ops.map((op: unknown) => {
+    if (typeof op !== "object" || op === null || !("inline" in op)) {
+      return op;
+    }
+    const inline = (op as { inline: unknown }).inline;
+    if (typeof inline !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(inline)) {
+      return { ...op, inline: null };  // refused by the object's own check
+    }
+    return { ...op, inline: new Uint8Array(Buffer.from(inline, "base64")) };
+  });
+}
+
+async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promise<Response> {
+  if (request.headers.get("Origin") !== null) {
+    return refused("not_found", 404);
+  }
+  if (request.method !== "POST") {
+    return refused("method_not_allowed", 405);
+  }
+  const token = request.headers.get(SYNC_HEADER);
+  if (token === null || token === "") {
+    return refused("sync_token_missing", 401);
+  }
+  const parsed = verifyToken(env.ROUTING_MAC_KEY, "sync", token);
+  if (parsed === null) {
+    return refused("sync_token_unknown", 401);
+  }
+  if (parsed.expires <= Date.now() / 1000) {
+    return refused("sync_token_expired", 401);
+  }
+  const gated = await ownerGate(env, parsed.owner);
+  if (gated !== null) {
+    return gated;
+  }
+  const { binding, stub } = bindSync(env, parsed.owner, parsed.hash);
+  const body = await jsonObject(request, SYNC_BODY_MAX);
+  if (body instanceof Response) {
+    return body;
+  }
+  const answer = (value: unknown) => Response.json(value, {
+    headers: { "Cache-Control": "no-store" } });
+  try {
+    switch (door) {
+      case "changes":
+        return answer(await stub.fileChanges(binding, body as never));
+      case "list":
+        return answer(await stub.fileList(binding, body as never));
+      case "read": {
+        const read = await stub.fileRead(binding, body as never);
+        return answer({ ...read, ...(read.inline === undefined ? {}
+          : { inline: base64(read.inline) }) });
+      }
+      case "chunks": {
+        const read = await stub.fileReadChunks(binding, body as never);
+        return answer({ chunks: read.chunks.map(base64) });
+      }
+      case "commit":
+        return answer(await stub.fileSyncCommit(binding, {
+          ...body, ops: decodedOps(body["ops"]) } as never));
+    }
+  } catch (error) {
+    if (error instanceof Error && error.name === "FileFault") {
+      // A path missing or of the wrong kind, or one the sandbox may not see: its code.
+      return refused(/^[a-z_]{1,32}/.exec(error.message)?.[0] ?? "not_found", 404);
+    }
+    const refusedAs = refusal(error);
+    if (refusedAs === null) {
+      throw error;
+    }
+    return refused(codeOf(refusedAs.message), refusedAs.status);
+  }
+}
+
 export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                                   deadlineMs: number = EGRESS_DEADLINE_MS): Promise<Response> {
   const url = new URL(request.url);
@@ -314,6 +412,10 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   }
   if (url.pathname === SIGNIN_DOOR && url.search === "") {
     return serveSignin(request, env);
+  }
+  const sync = SYNC_DOOR.exec(url.pathname);
+  if (sync !== null && url.search === "") {
+    return serveSync(request, env, sync[1] as SyncDoor);
   }
   const route = ROUTE.exec(url.pathname);
   if (route === null) {

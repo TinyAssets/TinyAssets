@@ -4,7 +4,9 @@
  * - `getByName` appears only in `doors/src/binder.ts`, across every Worker's source, but
  *   for the hooks Worker naming its own class's objects (`this.env.CODEMODE`, in
  *   `hooks/src/index.ts` alone: a code mode execution's sandbox, which binds nothing of an
- *   owner), and no source names another way to an object id (`idFromName`,
+ *   owner) and the sandbox Worker naming its own class's objects (`this.env.SANDBOXES`, in
+ *   `sandbox/src/index.ts` alone: one owner's sandboxes' E2B calls, which bind nothing of
+ *   an owner's object), and no source names another way to an object id (`idFromName`,
  *   `idFromString`, `newUniqueId`). The owner's object names no object at all.
  * - A `Binding` is built only there: no other doors source writes an object literal with
  *   a `caller`.
@@ -29,6 +31,9 @@ const OWNER_DO = "owner/src/owner-do.ts";
 /** The hooks Worker's entry, which names its own class's objects and nothing else. */
 const HOOKS_ENTRY = "hooks/src/index.ts";
 const HOOKS_OWN = new Set(["this.env.CODEMODE"]);
+/** The sandbox Worker's entry, which names its own class's objects and nothing else. */
+const SANDBOX_ENTRY = "sandbox/src/index.ts";
+const SANDBOX_OWN = new Set(["this.env.SANDBOXES"]);
 const SESSION = "doors/src/session.ts";
 const DIRECTORY = "doors/src/directory.ts";
 const CONNECT = "doors/src/connect.ts";
@@ -54,7 +59,8 @@ export function binderProblems(fileName: string, source: string): string[] {
     const on = name === "getByName" && ts.isPropertyAccessExpression(node.parent)
       && node.parent.name === node ? node.parent.expression.getText(file) : null;
     if (name === "getByName" && fileName !== BINDER
-        && !(fileName === HOOKS_ENTRY && on !== null && HOOKS_OWN.has(on))) {
+        && !(fileName === HOOKS_ENTRY && on !== null && HOOKS_OWN.has(on))
+        && !(fileName === SANDBOX_ENTRY && on !== null && SANDBOX_OWN.has(on))) {
       report(node, "names getByName outside the binder");
     }
     if (name !== null && OBJECT_IDS.has(name)) {

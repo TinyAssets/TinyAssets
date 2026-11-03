@@ -1,9 +1,10 @@
 /**
  * The `SANDBOX` interface (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3): what the
- * owner's object asks of slice S's stateless `tinyassets-sandbox` Worker, the only holder
- * of the E2B key, over a service binding. Slice R defines it and calls it; slice S builds
- * the Worker, its config, and its entry in the owner config guard's `SERVICES` (a bound
- * Worker that reaches nothing but E2B).
+ * owner's object asks of the `tinyassets-sandbox` Worker (`platform/sandbox`, slice S), the
+ * only holder of the E2B key, over a service binding. Slice R defined it; slice S built the
+ * Worker, bound it (`wrangler.jsonc`) and held it in the owner config guard's `SERVICES`
+ * (a Worker that reaches nothing but E2B, with one class of its own per owner that
+ * serializes that owner's E2B calls and renews each sandbox before its runtime ceiling).
  *
  * - `start`: resume or create the owner's sandbox and start the in-VM runner for one run, in
  *   the background (E2B's `commands.run(..., { background: true })`), answering at once.
@@ -22,6 +23,12 @@
  *   `unknown` if the runner is lost.
  * - `status`: whether the run's runner still runs, for slice S's lost-runner checks; the
  *   object's status doors read the run's receipt, never this.
+ * - `release` (slice S): the lease ended, so the sandbox is paused unless a run started in
+ *   it since (zero idle tail).
+ *
+ * A start may answer `sandbox_waiting` (`SANDBOX_WAITING`): E2B runs as many sandboxes as
+ * its plan allows, and the run waits (`waiting`), never refused, for the lane to start it
+ * again.
  *
  * Absent, nothing reaches `running`: admission refuses before it writes anything
  * (`SANDBOX_ABSENT`). Tests put a recording fake behind the interface, in tests only.
@@ -90,6 +97,20 @@ export interface SandboxStart {
  */
 export type Started = { readonly started: true } | { readonly started: false; readonly code: string };
 
+/**
+ * The start's answer when the E2B project runs as many sandboxes as its plan allows (the
+ * control record's `sandbox_concurrency_ceiling`, or E2B's own refusal): the run is never
+ * refused for it. It waits (`waiting`, the app's "waiting to start") and the `runs` lane
+ * starts it again, admitted whole, once `SANDBOX_RECHECK_S` passed (slice S).
+ */
+export const SANDBOX_WAITING = "sandbox_waiting";
+/**
+ * How long a run waiting for a sandbox waits before its start is tried again. E2B tells no
+ * one when a sandbox frees, so the lane looks again: a waiting run is a due row, never an
+ * empty poll, and the wait ends the moment a start finds room.
+ */
+export const SANDBOX_RECHECK_S = 30;
+
 /** The sandbox Worker, as the owner's object binds it (`SANDBOX`). */
 export interface SandboxService {
   start(owner: string, start: SandboxStart): Promise<Started>;
@@ -97,6 +118,14 @@ export interface SandboxService {
     Promise<{ readonly cancelled: boolean }>;
   status(owner: string, request: { readonly run: string; readonly lease_id: string }):
     Promise<{ readonly state: "running" | "exited" | "gone" }>;
+  /**
+   * The lease is over: no run lives under it. The sandbox Worker pauses that sandbox at
+   * once unless a run started in it since (ADR-026's zero idle tail; a paused sandbox costs
+   * nothing and keeps its memory, files and sign-ins). Best effort: the sandbox's own
+   * timeout pauses it at its runtime ceiling otherwise.
+   */
+  release(owner: string, request: { readonly lease_id: string }):
+    Promise<{ readonly paused: boolean }>;
 }
 
 /** A start's answer, checked: a refusal's code is a fixed code, never prose. */

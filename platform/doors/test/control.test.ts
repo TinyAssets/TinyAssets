@@ -67,8 +67,21 @@ beforeEach(async () => {
 
 describe("the control record", () => {
   it("is read exactly", () => {
-    expect(parseControl(OPEN)).toEqual(OPEN);
+    expect(parseControl(OPEN)).toEqual({ ...OPEN, sandbox: null });
+    // The sandbox's two numbers ride the same record, both or neither (slice S).
+    expect(parseControl({ ...OPEN, sandbox_runtime_ceiling_s: 3600,
+                          sandbox_concurrency_ceiling: 20 })).toEqual({
+      ...OPEN, sandbox: { runtime_ceiling_s: 3600, concurrency_ceiling: 20 } });
     for (const bad of [null, [], "on", { ...OPEN, outside: "yes" }, { ...OPEN, ordinary: "most" },
+                       { ...OPEN, sandbox_runtime_ceiling_s: 3600 },
+                       { ...OPEN, sandbox_concurrency_ceiling: 20 },
+                       { ...OPEN, sandbox_runtime_ceiling_s: 59, sandbox_concurrency_ceiling: 20 },
+                       { ...OPEN, sandbox_runtime_ceiling_s: 3600.5,
+                         sandbox_concurrency_ceiling: 20 },
+                       { ...OPEN, sandbox_runtime_ceiling_s: 3600,
+                         sandbox_concurrency_ceiling: 0 },
+                       { ...OPEN, sandbox_runtime_ceiling_s: "3600",
+                         sandbox_concurrency_ceiling: 20 },
                        { ...OPEN, inbound: "true" }, { ...OPEN, canary: "alice" },
                        { ...OPEN, canary: [" alice"] }, { ...OPEN, extra: 1 },
                        { outside: "on", ordinary: "all", canary: [] },
@@ -78,7 +91,8 @@ describe("the control record", () => {
   });
 
   it("opens outside work only when read on; the owner's when missing or admitting", () => {
-    const read = (control: Control) => ({ kind: "read", control }) as const;
+    const read = (control: Omit<Control, "sandbox">) =>
+      ({ kind: "read", control: { ...control, sandbox: null } }) as const;
     for (const kind of ["missing", "malformed", "unreadable"] as const) {
       expect(outsideOpen({ kind }, "a")).toBe(false);
     }

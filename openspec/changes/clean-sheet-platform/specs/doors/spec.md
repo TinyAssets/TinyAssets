@@ -270,6 +270,31 @@ A `cli` record SHALL have no single-inference `invoke` (ADR-033 decision 2). It 
 - **WHEN** the owner begins a connect of the `chatgpt` record, which served the in-object loop ADR-034 removes
 - **THEN** it is refused `501` naming why, before any object call
 
+### Requirement: The sandbox runs behind one Worker that reaches only E2B
+The `tinyassets-sandbox` Worker SHALL be the only holder of the E2B API key and SHALL reach nothing but E2B's own hosts (its platform API and envd), binding only its own class (one `SandboxControl` an owner, which serializes that owner's E2B calls) and the directory, read for the control record alone. A start SHALL find the run's authority's sandbox running, resume it (memory kept) or create it from the versioned template with the lease's network, its timeout the control record's `sandbox_runtime_ceiling_s` and paused on timeout; a resume or create past `sandbox_concurrency_ceiling` (E2B's own running count) or refused by E2B for room SHALL answer `sandbox_waiting`; a run on the vendor's own sign-in SHALL widen the network to its record's login and provider hosts and run its `status_argv` there first, answering `signin_required` when none is signed in; the lease's secrets SHALL go to the runner's root-only state directory and the start document without them. Before the runtime ceiling the Worker SHALL renew each running sandbox by a pause with its memory and an immediate resume, at a quiet moment of its CLIs from a sixth of the ceiling before it, or forced a thirtieth before it; a sandbox with no live run SHALL be paused instead, and one E2B kept filesystem-only SHALL restart its runs from their sessions. No number of these SHALL be in code: both ceilings are the control record's, raised with no deploy.
+
+#### Scenario: Renewal at a quiet moment
+- **WHEN** a sandbox with a live run is inside its renewal window and its runner reports its CLIs quiet
+- **THEN** the runner posts `ta.renewing`, holds its posts, the sandbox is paused and resumed, and the runner posts `ta.renewed` and goes on
+
+#### Scenario: The concurrency ceiling reached
+- **WHEN** E2B runs as many sandboxes as the control record allows and a start needs one more
+- **THEN** the start answers `sandbox_waiting` and nothing is created
+
+### Requirement: The sync agent reaches its own doors by the sync token alone
+The doors SHALL serve the in-VM sync agent's doors on the egress host (`/sync/changes`, `/sync/list`, `/sync/read`, `/sync/chunks`, `/sync/commit`) by the lease's sync token (`x-ta-sync`), its MAC verified as the `sync` kind before any object, then its expiry and the maintenance gate; no token, another kind's or a forged one SHALL be refused 401, and a request with an `Origin` 404. The object SHALL hold each read to the readable set its change feed is filtered by, a path outside it answered as missing, and each commit to the live lease and epoch.
+
+#### Scenario: The egress token at a sync door
+- **WHEN** a request presents the egress token as the sync token
+- **THEN** it is refused 401 and no object is reached
+
+### Requirement: The runner runs each CLI from its record, as its own user
+The in-VM runner SHALL post an empty batch as soon as it runs, before the sync; set the run's environment to the allow-list alone (`config.env` filled and `config.inherit` from its own), `HOME` the engine's home; run the CLI as the engine's own unprivileged user (no `sudo`) with `/proc` mounted `hidepid=2` and the runner's secrets in its root-only state directory; invoke the record's `argv`, or `resume_argv` with the session id, each option joined to its value (`--model=<id>`); and post its events within the object's bounds, one post in flight, at least every 20 s, an event past a frame's bound cut and marked, a post answered `events_busy` posted again after `Retry-After`, the end after the sync-out. It SHALL refuse a run whose agent's project files set a variable its credential forbids, a credential- or endpoint-shaped one, or a credential helper; and SHALL stop the CLI with SIGTERM, then a kill after its grace, on a cancel or when the object ended the run.
+
+#### Scenario: A project env file
+- **WHEN** the agent's `.env` sets `ANTHROPIC_API_KEY`
+- **THEN** the CLI never runs and the run ends failed with a `ta.refused` frame
+
 ### Requirement: The runner never syncs a secret's bytes
 The sandbox runner (slices R and S) SHALL refuse to sync out any file, or any transcript line, that contains the bytes of a file under its engine's `secret_paths`, read from the records, so a secret an engine's own tool printed or copied never leaves the sandbox by its content (ADR-031 decision 2), whatever path it was written to.
 

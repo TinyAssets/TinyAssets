@@ -368,9 +368,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
-            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16,
+            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16
+              + 8,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
-              "its result, error, stamp, model, ids, counters, lease and heartbeat at their " +
+              "its result, error, stamp, model, ids, counters, lease, heartbeat and wait (a " +
+              "run waiting for a sandbox, slice S) at their " +
               "widest" },
     // The sandbox leases (review H-1): one an authority, opened only for a live run.
     sandbox_leases: { rows: RUNS_CEILING,

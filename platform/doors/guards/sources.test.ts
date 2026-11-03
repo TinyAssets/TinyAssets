@@ -279,7 +279,7 @@ describe("the engine records", () => {
      () => {
     const catalog = catalogOf(bundledRecords());
     expect(RUN_BASICS).toEqual(["PATH", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "USER",
-                                "SHELL"]);
+                                "SHELL", "NODE_EXTRA_CA_CERTS"]);
     for (const record of engines) {
       for (const credential of record.cli!.credential) {
         const run = runEnv(catalog, record.id, credential);

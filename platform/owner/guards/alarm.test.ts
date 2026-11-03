@@ -58,6 +58,14 @@ const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle", "agents
 const ERASE = "owner/src/erase.ts";
 const GATE = "owner/src/gate.ts";
 /** The banned names each source may still use, as an identifier only. */
+/**
+ * The one Worker source that keeps its own clock (slice S): the sandbox Worker's
+ * `SandboxControl`, a Durable Object of that Worker's own with no Lifecycle and no owner's
+ * data, whose one alarm is its sandboxes' renewal before their runtime ceiling. It may set
+ * and clear its alarm, by identifier, and its `alarm` is its own.
+ */
+const OWN_CLOCK = "sandbox/src/control.ts";
+const OWN_CLOCK_NAMES: readonly string[] = Object.freeze(["setAlarm", "deleteAlarm"]);
 const WIPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   [GATE]: Object.freeze(["deleteAll"]),
   [ERASE]: Object.freeze(["disableAlarms"]),
@@ -126,7 +134,9 @@ export function alarmReach(fileName: string, source: string): string[] {
   const visit = (node: ts.Node): void => {
     if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node))
         && BANNED.has(node.text) && !((WIPES[fileName] ?? []).includes(node.text)
-                                      && ts.isIdentifier(node))) {
+                                      && ts.isIdentifier(node))
+        && !(fileName === OWN_CLOCK && OWN_CLOCK_NAMES.includes(node.text)
+             && ts.isIdentifier(node))) {
       report(node, `names ${node.text}, which only Lifecycle calls`);
     } else if ((ts.isStringLiteralLike(node) || ts.isTemplateHead(node)
                 || ts.isTemplateMiddle(node) || ts.isTemplateTail(node))
@@ -170,7 +180,7 @@ export function alarmReach(fileName: string, source: string): string[] {
         report(node, `${member} does more than \`${RESERVED[member]}\``);
       }
     }
-    if (member === "alarm") {
+    if (member === "alarm" && fileName !== OWN_CLOCK) {
       const body = ts.isMethodDeclaration(node) ? node.body : undefined;
       if (body === undefined || body.statements.length !== 1
           || body.statements[0]!.getText(file) !== HAND_OFF) {

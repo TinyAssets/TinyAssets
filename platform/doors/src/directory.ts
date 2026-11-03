@@ -52,7 +52,49 @@ export interface Control {
    * the run doors. Null when the record holds none: every run is then refused.
    */
   readonly tiers: Tiers | null;
+  /**
+   * The sandbox's platform numbers (slice S; the founder's rule of 2026-11-03), which the
+   * founder edits here with no deploy and the sandbox Worker reads at each start: null
+   * when the record holds none, and the sandbox Worker then starts nothing.
+   */
+  readonly sandbox: SandboxCeilings | null;
 }
+
+/**
+ * The E2B plan's two numbers, as data (`sandbox/src/control.ts`): how long one sandbox may
+ * run before it is paused and resumed (`sandbox_runtime_ceiling_s`: Hobby's 1 hour, Pro's
+ * 24), and how many sandboxes the project may run at once (`sandbox_concurrency_ceiling`:
+ * Hobby 20, Pro 100 and more with add-ons). Both technical ceilings of the vendor's plan:
+ * raising either needs the plan raised first, or E2B refuses.
+ */
+export interface SandboxCeilings {
+  readonly runtime_ceiling_s: number;
+  readonly concurrency_ceiling: number;
+}
+
+/** The longest runtime ceiling a record may name: a week, past any E2B plan's day. */
+const RUNTIME_MAX_S = 7 * 24 * 3600;
+/** The shortest: a minute, so a renewal's window and its edge are whole seconds. */
+const RUNTIME_MIN_S = 60;
+/** The most concurrent sandboxes a record may name, far past E2B's add-ons. */
+const CONCURRENCY_MAX = 100_000;
+
+/** The two numbers checked, or a throw. */
+export function sandboxCeilings(runtime: unknown, concurrency: unknown): SandboxCeilings {
+  if (typeof runtime !== "number" || !Number.isSafeInteger(runtime) || runtime < RUNTIME_MIN_S
+      || runtime > RUNTIME_MAX_S || typeof concurrency !== "number"
+      || !Number.isSafeInteger(concurrency) || concurrency < 1
+      || concurrency > CONCURRENCY_MAX) {
+    throw new Error("the sandbox ceilings are whole numbers in their bounds");
+  }
+  return Object.freeze({ runtime_ceiling_s: runtime, concurrency_ceiling: concurrency });
+}
+
+/** The record's keys: the gates always; the tiers, and the sandbox's two numbers, optional. */
+const CONTROL_KEYS: readonly string[] = Object.freeze(["canary", "inbound", "ordinary",
+                                                       "outside"]);
+const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
+  "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling"]);
 
 function keyName(keyId: string): string {
   if (!KEY_ID.test(keyId)) {
@@ -89,20 +131,30 @@ export async function deleteKey(env: DoorsEnv, keyId: string): Promise<void> {
 
 /** The record parsed exactly, or null when it is anything else. */
 export function parseControl(value: unknown): Control | null {
-  if (!exactly(value, "canary,inbound,ordinary,outside")
-      && !exactly(value, "canary,inbound,ordinary,outside,tiers")) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
-  const { outside, ordinary, canary, inbound, tiers } = value;
+  const keys = Object.keys(value);
+  if (!CONTROL_KEYS.every((key) => keys.includes(key))
+      || !keys.every((key) => CONTROL_KEYS.includes(key) || CONTROL_OPTIONAL.includes(key))) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const { outside, ordinary, canary, inbound, tiers } = record;
+  const runtime = record["sandbox_runtime_ceiling_s"];
+  const concurrency = record["sandbox_concurrency_ceiling"];
   if ((outside !== "on" && outside !== "off")
       || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
-      || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY) {
+      || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY
+      || (runtime === undefined) !== (concurrency === undefined)) {
     return null;
   }
   try {
-    // A record whose tiers are there but malformed is malformed whole: never a guess.
+    // A record whose tiers or sandbox numbers are there but malformed is malformed whole:
+    // never a guess.
     return { outside, ordinary, inbound, canary: Object.freeze(canary.map(principal)),
-             tiers: tiers === undefined ? null : parseTiers(tiers) };
+             tiers: tiers === undefined ? null : parseTiers(tiers),
+             sandbox: runtime === undefined ? null : sandboxCeilings(runtime, concurrency) };
   } catch {
     return null;
   }

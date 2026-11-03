@@ -210,9 +210,9 @@ describe("admission", () => {
   });
 
   it("refuses with no sandbox bound, and no run reaches running", async () => {
-    // The plain object: production's, with no `SANDBOX` until slice S binds it.
+    // The object with no `SANDBOX` bound.
     const owner = `owner-${crypto.randomUUID()}`;
-    const stub = env.OWNER.getByName(owner);
+    const stub = env.BARE.getByName(owner);
     const bind: Binding = { owner, caller: owner, origin: null };
     await defineAgent(stub, bind, "main", SIGNED_IN);
     expect((await failure(() => stub.agentSubmit({ ...bind, tiers: TIERS }, {

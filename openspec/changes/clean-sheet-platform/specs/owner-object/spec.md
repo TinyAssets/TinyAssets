@@ -809,6 +809,17 @@ One engine session runs one invocation at a time, so an input to a conversation 
 - **WHEN** two inputs reach a conversation while its run is live
 - **THEN** both wait, the first starts as that run settles, and the second as the first settles
 
+### Requirement: A run waits for a sandbox, never refused for one
+When the sandbox Worker has no room to start a run's sandbox (`sandbox_waiting`: E2B runs as many sandboxes as the platform control record's `sandbox_concurrency_ceiling`, or E2B itself refuses for room), the run SHALL NOT be refused: it SHALL be put back to `waiting` (the app's "waiting to start", its code `sandbox_waiting`), its input kept, its grant gone and its lease given back as a settle would, and the `runs` lane SHALL start it again, admitted whole, from its recheck (`SANDBOX_RECHECK_S`) on, never before. When a run's lease ends (its last live run settled), the object SHALL release it to the sandbox Worker, which pauses that sandbox unless a run started in it since.
+
+#### Scenario: E2B at its plan's sandboxes
+- **WHEN** a run's start is answered `sandbox_waiting`
+- **THEN** the run is `waiting` with code `sandbox_waiting`, holds no lease or grant, and the lane starts it again once its recheck passed
+
+#### Scenario: The last run of a lease settles
+- **WHEN** the runner's end settles the lease's last live run
+- **THEN** the sandbox Worker is told to release that lease
+
 ### Requirement: `auto` sees the owner's subscriptions, by presence only
 Each sandbox's runner SHALL report its own sandbox's engines' sign-ins (its record's `status_argv`) to the object, which SHALL keep them per sandbox, never a credential: the owner's own sandbox's one row an engine (signed in or not, when it was checked and changed, and the models the runner read it offers), and an outside client's sandbox's on its own lease. A login SHALL never be copied between sandboxes (ADR-031 decision 2): a run SHALL use only its own sandbox's sign-ins, so a client's `auto` run takes a plan only where that client's sandbox is known signed in, else the owner's keys. An agent naming the vendor's sign-in SHALL be admitted unless its sandbox is known signed out (the owner's, `signin_lapsed`); the sandbox's start checks the sign-in there and answers `signin_required` when none is, and the run SHALL settle `failed` (`signin_required`) with a notice to sign in inside that sandbox. `auto` SHALL rank the signed-in engines with the owner's connections by the same ranking, and where a subscription and a key cover one provider it SHALL pick the subscription. A sign-in that lapses SHALL leave the owner a "sign in again" notice, and `auto` (and an agent naming that engine on its sign-in) SHALL be refused `signin_lapsed`, never falling back silently to another source.
 

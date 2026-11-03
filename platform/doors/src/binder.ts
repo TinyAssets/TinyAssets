@@ -226,6 +226,20 @@ export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
 }
 
 /**
+ * The in-VM sync agent's call (slice S's runner) by its sync token, verified at the door
+ * (`routing-mac.ts`, the `sync` kind): the owner it names, and the SHA-256 of its secret,
+ * which the object checks against its live lease (`#syncer`) on its sync doors alone.
+ */
+export function bindSync(env: DoorsEnv, owner: string, tokenHash: string): Bound {
+  if (!HEX64.test(tokenHash)) {
+    throw new Error("a sync binding needs its token's hash");
+  }
+  const named = principal(owner);
+  return bound(env, { owner: named, caller: named, origin: null,
+                      sandbox: { kind: "sync", token: tokenHash } });
+}
+
+/**
  * What a sandbox's call presents beside its egress token: a run's own secret (its path's,
  * on its model calls and MCP door), or the runner's (`x-ta-runner`, on its event door and
  * sign-in report). The binding carries only each one's SHA-256, which the object checks.

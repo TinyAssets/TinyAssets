@@ -73,7 +73,7 @@ import {
 } from "./run-rows";
 import { type Frame, FRAME_VERSION, readEvent } from "./run-events";
 import type { NetworkPlan } from "./network";
-import { type RunConfig, SANDBOX_ABSENT } from "./sandbox";
+import { type RunConfig, SANDBOX_ABSENT, SANDBOX_RECHECK_S, SANDBOX_WAITING } from "./sandbox";
 import { TIER_RUNS, type TierName, type Tiers } from "./tier";
 import { utf8Bytes } from "./text";
 
@@ -505,7 +505,8 @@ export class Runs {
     if (waiting !== null) {
       // Its turn: its source as chosen now, its kept input taken.
       this.#sql.exec("UPDATE runs SET state = 'queued', source = ?, credential = ?, model = ?, " +
-                       "lease_id = ?, epoch = ?, beat_at = ? WHERE id = ? AND state = 'waiting'",
+                       "lease_id = ?, epoch = ?, beat_at = ?, wait_until = NULL, code = NULL " +
+                       "WHERE id = ? AND state = 'waiting'",
                      chosen.engine, chosen.credential, chosen.model, lease.lease_id, lease.epoch,
                      now, waiting);
       prompt = this.#sql.exec<{ prompt: string }>(
@@ -567,9 +568,10 @@ export class Runs {
 
   /**
    * The waiting run whose turn it is, oldest first: the first waiting in a conversation with
-   * no live run, while the tier has room. A read; null for none.
+   * no live run, while the tier has room, and not one waiting for a sandbox until its
+   * recheck (`wait_until`). A read; null for none.
    */
-  nextWaiting(): RunRow | null {
+  nextWaiting(now = Number.POSITIVE_INFINITY): RunRow | null {
     const room = this.#deps.capacity();
     if (room === null || this.live() >= room) {
       return null;
@@ -578,7 +580,47 @@ export class Runs {
       "SELECT w.* FROM runs w WHERE w.state = 'waiting' AND NOT EXISTS (SELECT 1 FROM runs r " +
         `WHERE r.conversation = w.conversation AND r.${LIVE}) AND NOT EXISTS (SELECT 1 FROM ` +
         "runs e WHERE e.conversation = w.conversation AND e.state = 'waiting' " +
-        "AND e.seq < w.seq) ORDER BY w.seq LIMIT 1").toArray()[0] ?? null;
+        "AND e.seq < w.seq) AND (w.wait_until IS NULL OR w.wait_until <= ?) " +
+        "ORDER BY w.seq LIMIT 1", now).toArray()[0] ?? null;
+  }
+
+  /**
+   * In a unit: a run the sandbox had no room to start (`SANDBOX_WAITING`: E2B runs as many
+   * sandboxes as its plan allows) put back to `waiting`, never refused: its input kept
+   * again, its grant revoked and its lease given back as a settle would (it never ran), and
+   * its start tried again from `SANDBOX_RECHECK_S` on, admitted whole. The app reads it as
+   * waiting to start (`code` `sandbox_waiting`). False when it was no longer queued.
+   */
+  waitForSandbox(runId: string, prompt: string, now: number): boolean {
+    const row = this.#sql.exec<{ conversation: string; lease_id: string | null;
+                                 epoch: number | null; client: string | null }>(
+      "SELECT conversation, lease_id, epoch, client FROM runs WHERE id = ? AND state = 'queued'",
+      runId).toArray()[0];
+    if (row === undefined) {
+      return false;
+    }
+    const origin = this.#sql.exec<{ origin: string | null }>(
+      "SELECT origin FROM run_grants WHERE run = ?", runId).toArray()[0]?.origin ?? null;
+    this.#sql.exec("UPDATE runs SET state = 'waiting', lease_id = NULL, epoch = NULL, " +
+                     "beat_at = NULL, wait_until = ?, code = ? WHERE id = ?",
+                   now + SANDBOX_RECHECK_S, SANDBOX_WAITING, runId);
+    this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
+                   runId, prompt, utf8Bytes(prompt), origin);
+    this.#sql.exec("DELETE FROM run_grants WHERE run = ?", runId);
+    if (row.lease_id !== null && this.#sql.exec(
+      `SELECT 1 FROM runs WHERE ${LIVE} AND lease_id = ? AND epoch = ?`, row.lease_id,
+      row.epoch).toArray().length === 0) {
+      if (this.#deps.lease.release(row.lease_id, row.epoch!)) {
+        this.#deps.leaseEnded(row.lease_id);
+      }
+    }
+    return true;
+  }
+
+  /** How many runs wait for a sandbox now. A read. */
+  waitingForSandbox(): number {
+    return this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM runs WHERE state = 'waiting' AND wait_until IS NOT NULL").one().n;
   }
 
   /**
@@ -1206,8 +1248,17 @@ export class Runs {
     const due = !admitted ? null : this.#sql.exec<{ at: number | null }>(
       "SELECT MIN(next_at) AS at FROM run_schedules WHERE next_at IS NOT NULL").one().at;
     const times = due === null ? [] : [Math.max(now, due)];
-    if (admitted && this.nextWaiting() !== null) {
+    if (admitted && this.nextWaiting(now) !== null) {
       times.push(now);  // a waiting run's turn has come
+    }
+    if (admitted) {
+      // A run waiting for a sandbox is looked at again at its recheck.
+      const recheck = this.#sql.exec<{ at: number | null }>(
+        "SELECT MIN(wait_until) AS at FROM runs WHERE state = 'waiting' " +
+          "AND wait_until IS NOT NULL").one().at;
+      if (recheck !== null && recheck > now) {
+        times.push(recheck);  // one due now is the waiting turn above
+      }
     }
     // A live run is looked at again when its lease or its own heartbeat would lapse.
     const leases = new Map(this.#deps.lease.all(now)

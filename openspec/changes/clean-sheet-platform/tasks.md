@@ -18,7 +18,7 @@ test, cutover.
   sandbox to Cloudflare Containers. Measured 2026-10-28: p50 247 ms, p95 706 ms
   over 40 cycles, so E2B stays; paused sandboxes are free, kept indefinitely and
   outside concurrency; Pro 100 concurrent (`e2b-resume-measurement.md`).
-- [ ] E2B resume after hours or days paused (only up to 5 min was measured).
+- [ ] E2B resume after hours or days paused (only up to 5 min was measured). Slice S: 75 minutes paused, resume to first byte 589 ms, its process alive and its files intact (`sandbox-probe.md`); days remain.
 - [x] Durable Object pricing and limits (2026-10-28, facts-verified.md).
 - [ ] 2026 regional availability from Cloudflare's status history (blocked).
 - [x] Dynamic Workers and Facets: open beta, Workers Paid only, $0.002 per Dynamic
@@ -900,7 +900,7 @@ R, S, M and W.
     ids are random; `r2-no-prune-wait`: the settle's prune bounds the table alone;
     `r3-header-unchecked-shape`: a malformed header's hash never matches). The 12 the
     round-1 review found untested (M-6) each have their test.
-- [ ] Slice S builds against the `SANDBOX` interface (`owner/src/sandbox.ts`), and only it:
+- [x] Slice S builds against the `SANDBOX` interface (`owner/src/sandbox.ts`), and only it:
   - the `tinyassets-sandbox` Worker as `SandboxService`: `start(owner, SandboxStart)`
     answers `{started: true}` or `{started: false, code}` (a fixed code) at once, the runner
     in the background; `cancel(owner, {run, lease_id})` sends SIGTERM, then a kill;
@@ -953,6 +953,52 @@ R, S, M and W.
     E2B), and `wrangler.jsonc` binds it;
   - owed probes: E2B's transform on `/r/<run>/<secret>/mcp` and `/r/<run>/events`; whether a
     WebSocket would carry the frames (the POST batches are the path today).
+  - Built (slice S, `platform/sandbox`): the Worker (`src/index.ts`, `src/e2b.ts`, the one
+    module that fetches, E2B's two hosts alone) and its own class `SandboxControl`, one per
+    owner, which serializes that owner's E2B calls (so a release's pause never freezes a run
+    a start just launched) and renews its sandboxes; the versioned template
+    (`template/build.py`, its tag the digest of the runner's bundle, the records and their
+    locks, `E2B_TEMPLATE` held to it by `guards/template.test.ts`); the runner
+    (`runner/*.ts`, bundled; 38 workerd and Node tests against a fake E2B and fake CLIs of
+    each record's event shapes); the sync doors on the egress host (`/sync/*`, by the sync
+    token alone, the object's read doors held to the feed's readable set); `SANDBOX` in the
+    owner config guard's `SERVICES` (its class, the directory, one var, its key) and bound.
+    Probed live: `sandbox-probe.md`.
+  - The founder's rule (2026-11-03): `sandbox_runtime_ceiling_s` and
+    `sandbox_concurrency_ceiling` are the control record's (`directory.ts`); the Worker
+    renews a sandbox (pause with memory, resume) from a sixth of the ceiling before it at
+    a quiet moment, forced a thirtieth before it, `ta.renewing` and `ta.renewed` frames to
+    the app; a CLI that fails just after is resumed from its session; a filesystem-only pause
+    restarts the runs (`recover`); an idle sandbox pauses (`release`, and E2B's timeout).
+    Past the concurrency ceiling (E2B's own `X-Total-Running`, or E2B refusing for room)
+    a start answers `sandbox_waiting` and the run waits (`waiting`, `wait_until`), never
+    refused, the lane starting it again after `SANDBOX_RECHECK_S`. Decided: E2B's own count,
+    not a platform object, since only E2B sees a sandbox its timeout paused, and E2B refuses
+    past its plan regardless.
+  - Deviations, each for the founder's rule or a live finding: `SandboxService` gained
+    `release`, and the object `sandbox_waiting` (`runs.ts`, `wait_until` on `runs`); the
+    Worker keeps a class of its own (the plan said stateless: renewal needs a clock outside
+    the VM, and one owner's calls need one order); `RUN_BASICS` gained
+    `NODE_EXTRA_CA_CERTS` (E2B re-signs the egress door's HTTPS); `prepare` locks down E2B's
+    world-writable system files at each boot.
+- [ ] Owed by slice S:
+  - The vendor sign-in flow (`cli.login`): a door in the object that opens the sandbox's
+    lease with no run, the app's terminal to the CLI's prompt, and the end-of-sign-in report.
+    Needs a vendor account to verify; `signin-check` and the report at each start are built.
+  - The founder's alerts: runs waiting on the concurrency ceiling (each wait is logged
+    `sandbox_waiting`), and E2B credit or spend, which E2B's public API does not expose (no
+    balance or spend endpoint; team metrics give concurrency only). The repo's founder
+    channel is Pushover from GitHub workflows (`scripts/pushover_page.py`), which no Worker
+    reaches: a scheduled workflow reading E2B's `/teams/{id}/metrics/max` against the
+    ceiling is the fit, with `E2B_API_KEY` as a repository secret.
+  - Gemini CLI loads no system settings under the engine's home (it checks every ancestor
+    is root's, probed): the records' checker to admit a root-owned path outside `{home}` for
+    it, and its folder trust, before a Gemini run holds its MCP door and instructions.
+  - Files over one chunk (4 MiB) wait for the upload doors (tasks 6.1's owed byte door);
+    the runner refuses and reports them. The shared abilities (`/workspace/.agents`) are
+    not projected into an engine's skills path; the agent's own are.
+  - Deploy (slice L): the Worker, its secret, the template's build in the deploying
+    project, and the directory's id.
 - [ ] Next slice: TinyAssets agents get an identity in the ledger. Each of the owner's
   agents (`/workspace/agents/<id>/agent.json`) is a ledger identity beside the main agents
   (outside clients), so it takes part in mail, rooms and the board as they do, and mail to
@@ -968,6 +1014,9 @@ R, S, M and W.
     session's network) and list it in `free` if the page says it is free.
 - [ ] Slice S verifies each engine record live, on the pinned version, in a headless E2B VM
   (each value below was not confirmable offline), and fixes the record where it differs:
+  - Slice S verified the pinned installs, their startup and users, and each CLI's
+    not-signed-in run through the runner (`sandbox-probe.md`); every check below
+    that needs a model or a vendor sign-in is the founder's live test's.
   - **Every CLI:** the event shapes against the matchers (session id, final text, error,
     usage, tool calls) on one run and one resume; resume after a cold create restores
     `session_paths` and continues; MCP injection reaches the run-scoped door with no bearer

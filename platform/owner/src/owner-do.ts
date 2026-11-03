@@ -106,7 +106,7 @@ import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type Posted
          RUN_ENDED, type RunSchedule, scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
 import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
-import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
+import { SANDBOX_ABSENT, SANDBOX_WAITING, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
 import { PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers } from "./tier";
@@ -118,7 +118,7 @@ import {
 import { Invalid, Refused } from "./errors";
 import {
   type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
-  type Entry, FileConflict, Files, type Lease, OWNER_AUTHORITY, type SandboxLease, type SyncOp,
+  type Entry, FileConflict, FileFault, Files, type Lease, OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
@@ -352,11 +352,12 @@ export interface AdmissionRequest {
 }
 
 /**
- * The object's environment: three service bindings, `FILES`, to the files Worker, which
+ * The object's environment: four service bindings, `FILES`, to the files Worker, which
  * binds no Durable Object and no service, `GATEWAY`, to the model gateway, which binds
- * nothing, and `HOOKS`, to the hooks Worker, which binds only its own class (the config
- * guard checks every config), and no Durable Object namespace. `SANDBOX`, the sandbox
- * Worker, is typed here and bound by no config until slice S.
+ * nothing, `HOOKS`, to the hooks Worker, which binds only its own class, and `SANDBOX`, to
+ * the sandbox Worker (slice S), which binds only its own class and the directory and
+ * reaches nothing but E2B (the config guard checks every config); and no Durable Object
+ * namespace.
  */
 export interface OwnerEnv {
   readonly FILES: ChunkStore;
@@ -368,8 +369,8 @@ export interface OwnerEnv {
    */
   readonly ROUTING_MAC_KEY: string;
   /**
-   * The sandbox Worker (`sandbox.ts`), slice S's: unbound until then, so every run is
-   * refused (`SANDBOX_ABSENT`) and none reaches `running`.
+   * The sandbox Worker (`sandbox.ts`, `platform/sandbox`). Absent (a config without it, a
+   * test's), every run is refused (`SANDBOX_ABSENT`) and none reaches `running`.
    */
   readonly SANDBOX?: SandboxService;
 }
@@ -1102,6 +1103,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       },
       leaseEnded: (leaseId) => {
         this.#egress.end("lease", (live) => live.lease === leaseId);
+        // Once the unit is over, its sandbox paused: no run lives in it (slice S).
+        queueMicrotask(() => void this.#sandboxRelease(leaseId));
       },
     });
     this.#relay = new Relay({
@@ -2074,12 +2077,34 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  /**
+   * A read door's caller: a file door's (`read_files`, every path it reaches visible), or the
+   * sync agent's by its sync token (slice S), held to the same readable set its change feed
+   * is filtered by (`#syncer`), so no content door shows a path the feed would not.
+   */
+  #reader(binding: Binding, door: "read", capability: "read_files"):
+      (path: string) => boolean {
+    if (binding.sandbox === undefined) {
+      this.#filer(binding, door, capability);
+      return () => true;
+    }
+    return this.#syncer(binding, door, null).test;
+  }
+
+  /** A path the reader may not see is refused as one that does not exist. */
+  #visible(visible: (path: string) => boolean, path: unknown): void {
+    if (typeof path === "string" && !visible(path)) {
+      throw new FileFault("not_found", "no such file");
+    }
+  }
+
   fileList(binding: Binding, request: FileListRequest):
       Promise<{ entries: Entry[]; next: string | null }> {
     return this.#door(() => {
-      this.#filer(binding, "read", "read_files");
+      const visible = this.#reader(binding, "read", "read_files");
       const r = fileFields(request, ["dir", "limit"], ["after"]);
-      return this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
+      const listed = this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
+      return { ...listed, entries: listed.entries.filter((entry) => visible(entry.path)) };
     });
   }
 
@@ -2090,8 +2115,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRead(binding: Binding, request: FileReadRequest):
       Promise<{ entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] }> {
     return this.#door(() => {
-      this.#filer(binding, "read", "read_files");
+      const visible = this.#reader(binding, "read", "read_files");
       const r = fileFields(request, ["path"], ["etag"]);
+      this.#visible(visible, r["path"]);
       const content: Content = this.#files.open(r["path"]);
       if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
         return { entry: content.entry, not_modified: true };
@@ -2105,8 +2131,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileReadChunks(binding: Binding, request: FileChunksRequest):
       Promise<{ chunks: Uint8Array[] }> {
     const reads = await this.#door(() => {
-      this.#filer(binding, "read", "read_files");
+      const visible = this.#reader(binding, "read", "read_files");
       const r = fileFields(request, ["path", "version", "first", "count"]);
+      this.#visible(visible, r["path"]);
       const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
       const first = r["first"];
       const many = r["count"];
@@ -2653,6 +2680,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#runs.settle(admitted.run, "unknown", "start_lost", null, clock());
       } else if (answer.started) {
         this.#runs.started(admitted.run, clock());
+      } else if (answer.code === SANDBOX_WAITING) {
+        // E2B runs as many sandboxes as its plan allows: the run waits, never refused, and
+        // the lane starts it again (`SANDBOX_RECHECK_S`). The founder's alert reads E2B's own
+        // count (owed: `sandbox-probe.md`); this line is the Worker log's record of it.
+        if (this.#runs.waitForSandbox(admitted.run, admitted.prompt, clock())) {
+          console.warn(`${SANDBOX_WAITING}: a run waits for a sandbox to free`);
+        }
       } else {
         this.#runs.settle(admitted.run, "failed", answer.code, null, clock());
         if (answer.code === SIGNIN_REQUIRED) {
@@ -2713,6 +2747,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
+  /**
+   * A lease that ended, its sandbox paused through the sandbox Worker (zero idle tail); a
+   * failure is logged, since the sandbox's own timeout pauses it at its runtime ceiling.
+   */
+  async #sandboxRelease(leaseId: string): Promise<void> {
+    const sandbox = this.env.SANDBOX;
+    if (sandbox === undefined) {
+      return;  // no sandbox bound, so no lease was opened under one
+    }
+    try {
+      await sandbox.release(this.#ownerName(), { lease_id: leaseId });
+    } catch {
+      console.error("a lease's release did not reach the sandbox");
+    }
+  }
+
   /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
   #cancelInSandbox(grants: readonly LiveRun[]): void {
     for (const grant of grants) {
@@ -2732,7 +2782,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     while (clock() < until) {
       const waiting = await this.#door(() => {
         const next = workRefusal(admission(this.#storage)) !== null ? null
-          : this.#runs.nextWaiting();
+          : this.#runs.nextWaiting(clock());
         return next === null ? null : { run: next.id, ask: this.#runs.waitingAsk(next.id)! };
       });
       if (waiting === null) {
