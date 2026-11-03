@@ -73,7 +73,7 @@ test, cutover.
   unset until then); production Google and GitHub apps (founder dashboard work). Until
   then the deployed entry refuses every sign-in loudly (`UNWIRED`). No person registers
   WorkOS settings by hand: the deploy kit sets `WORKOS_API_KEY` on the doors Worker from
-  the `platform-production` environment's secret store, never from a host (Direction 8;
+  the main-only `production` environment's secret store, never from a host (Direction 8;
   the founder moves it there once), and registers the redirect URI with the WorkOS API
   idempotently (`GET /user_management/redirect_uris`, then `POST` only if it is missing,
   never deleting).
@@ -1389,9 +1389,9 @@ R, S, M and W.
   KV's 60 s cache, and a marked object refuses the platform's admit (review L2).
 - [ ] 0c (live, slice L): the dark deploy of the owner and gateway Workers. The kit is
   built (`platform/deploy/deploy.ts`, all six Workers with no route) and runs from the
-  manual workflow `.github/workflows/platform-deploy.yml`, which the founder approves
-  through the `platform-production` environment; its secrets come from that store, never
-  a host (review H2, research 3c). A failed lookup stops it, never reads as absent; a held
+  manual workflow `.github/workflows/platform-deploy.yml`, which the founder dispatches
+  from `main` in the main-only `production` environment; its secrets come from that store,
+  never a host (review H2, research 3c). A failed lookup stops it, never reads as absent; a held
   `GATEWAY_KEYRING` is never generated or replaced, and is rotated only by adding a key;
   the control record is written only when the API answers it is absent; a later deploy
   uploads a version and deploys it, never touching a route; with `--routes` it stops

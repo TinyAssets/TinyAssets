@@ -2,13 +2,16 @@ name: Platform deploy (manual, founder-approved)
 
 # The platform's dark-deploy kit (platform/deploy/deploy.ts, slice L), run by
 # hand. Every run first prints the kit's plan (what it would change) to the job
-# summary; only a run with `mode` other than `plan` then applies it. The job
-# waits on the `platform-production` environment, whose required reviewer is
-# the founder: that approval is the kit's `--yes`.
+# summary; only a run with `mode` other than `plan` then applies it. The
+# founder's dispatch of a mode other than `plan` is the kit's `--yes`; with the
+# founder as the `production` environment's required reviewer
+# (docs/host-actions.md), GitHub also holds each run until approved.
 #
-# Secrets come from the `platform-production` environment's secret store,
-# never from a host (Direction 8). The kit never prints a value and never
-# makes one in a deploy; GATEWAY_KEYRING is made once with `keyring-new` and
+# The job runs in the main-only `production` environment, so a branch's copy
+# of this file never reaches its secrets
+# (tests/test_workflow_production_environment.py). Secrets come from that
+# environment's secret store, never from a host (Direction 8). The kit never
+# prints a value and never makes one in a deploy; GATEWAY_KEYRING is made once with `keyring-new` and
 # rotated with `keyring-add` (both local), then stored here.
 #
 # Modes:
@@ -48,7 +51,7 @@ concurrency:
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
-    environment: platform-production
+    environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

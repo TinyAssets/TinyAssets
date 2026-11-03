@@ -341,7 +341,8 @@ describe("the deploy kit", () => {
                                        "platform-deploy.yml"), "utf8");
     expect(workflow).toMatch(/^on:\s*\n\s+workflow_dispatch:/m);
     expect(workflow).not.toMatch(/^\s+(push|pull_request|schedule):/m);
-    expect(workflow).toMatch(/environment: platform-production/);
+    // The repo's main-only environment (tests/test_workflow_production_environment.py).
+    expect(workflow).toMatch(/^    environment: production$/m);
     expect(workflow).not.toMatch(/ssh|droplet|\/etc\/tinyassets/i);
     for (const name of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_API_KEY",
                         "WORKOS_CLIENT_ID", "OWNER_ISSUER", "E2B_API_KEY", "ROUTING_MAC_KEY",

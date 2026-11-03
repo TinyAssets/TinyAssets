@@ -5,9 +5,9 @@
  * exists, H2's probes (`h2-probes.ts`). Built in slice L, never run by it.
  *
  * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, which the
- * founder approves through the `platform-production` environment, the way the repo makes
- * its other production changes; its secrets come from that environment's secret store,
- * never from a host (Direction 8). Locally, without `--yes`, it prints its plan and changes
+ * founder dispatches from `main` and which runs in the repo's main-only `production`
+ * environment, the way the repo makes its other production changes; its secrets come from
+ * that environment's secret store, never from a host (Direction 8). Locally, without `--yes`, it prints its plan and changes
  * nothing.
  *
  *   node --experimental-strip-types platform/deploy/deploy.ts               # the plan only
@@ -551,7 +551,7 @@ async function main(): Promise<void> {
                       "WORKOS_CLIENT_ID", "OWNER_ISSUER", "E2B_API_KEY", "ROUTING_MAC_KEY",
                       "GATEWAY_KEYRING"]) {
     if (input(name) === undefined) {
-      throw new Error(`${name} is not set (the platform-production environment's secrets)`);
+      throw new Error(`${name} is not set (the production environment's secrets)`);
     }
   }
   keyring(input("GATEWAY_KEYRING"));

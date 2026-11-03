@@ -1,17 +1,19 @@
 # The dark deploy: what it changes
 
 The kit is `platform/deploy/deploy.ts`. It runs from the manual workflow **Platform deploy
-(manual, founder-approved)** (`.github/workflows/platform-deploy.yml`), on `main` only. The
-job waits for your approval on the `platform-production` environment; that approval is the
-kit's `--yes`. Every run prints its plan to the job summary first.
+(manual, founder-approved)** (`.github/workflows/platform-deploy.yml`), on `main` only, in
+the repo's main-only `production` environment. Your dispatch of a mode other than `plan` is
+the kit's `--yes`. Every run prints its plan to the job summary first.
 
 Run it once with mode `plan` and read the list; it changes nothing. Then run it with mode
 `dark`.
 
 ## Before you run it
 
-- **The environment.** Create `platform-production` with you as its required reviewer. Store
-  these as its secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `WORKOS_API_KEY`,
+- **The environment.** The `production` environment (`docs/host-actions.md`) holds the
+  secrets. Add yourself as its required reviewer if you want GitHub to hold each run for
+  your approval as well; whether it has one today is **unverified** here. Store these as
+  its secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `WORKOS_API_KEY`,
   `WORKOS_CLIENT_ID`, `OWNER_ISSUER` (AuthKit's production issuer URL), `E2B_API_KEY`,
   `ROUTING_MAC_KEY`, `GATEWAY_KEYRING`, and, if you want Slack events,
   `INBOUND_SLACK_SIGNING_SECRET`. The kit reads nothing from a host.
