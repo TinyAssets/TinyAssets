@@ -1408,24 +1408,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER sandbox_leases_fenced BEFORE UPDATE OF authority, lease_id, epoch, " +
       "egress_token, sync_token, runner_token ON sandbox_leases BEGIN " +
       "SELECT RAISE(ABORT, 'a lease never changes what it was taken as'); END",
-    // The vendor's own sign-in in progress inside a sandbox (slice SIGNIN, `signins.ts`): one
-    // an authority, holding that sandbox's lease, its latest prompt (the vendor's URL and code,
-    // never a token) and its runner's last beat. Gone at its end.
-    "CREATE TABLE sandbox_signins (authority TEXT PRIMARY KEY CHECK (authority = 'owner' " +
-      "OR (length(authority) = 64 AND authority NOT GLOB '*[^0-9a-f]*')), " +
-      "id TEXT NOT NULL UNIQUE CHECK (length(id) = 35 AND id GLOB 'si_*'), " +
-      "engine TEXT NOT NULL CHECK (length(engine) BETWEEN 1 AND 64), " +
-      "mode TEXT NOT NULL CHECK (mode IN ('in', 'out')), " +
-      "region TEXT CHECK (region IS NULL OR length(region) BETWEEN 1 AND 64), " +
-      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
-      "state TEXT NOT NULL CHECK (length(state) BETWEEN 1 AND 32), " +
-      `url TEXT CHECK (url IS NULL OR length(url) <= ${SIGNIN_URL_MAX}), ` +
-      `code TEXT CHECK (code IS NULL OR length(code) <= ${SIGNIN_CODE_MAX}), ` +
-      "accepts_code INTEGER NOT NULL DEFAULT 0 CHECK (accepts_code IN (0, 1)), " +
-      "started_at REAL NOT NULL, beat_at REAL NOT NULL) WITHOUT ROWID",
-    "CREATE TRIGGER sandbox_signins_full BEFORE INSERT ON sandbox_signins WHEN (SELECT " +
-      `COUNT(*) FROM sandbox_signins) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
-      `'sandbox_signins_full: ${RUNS_CEILING} sign-ins are live'); END`,
     "CREATE TABLE run_grants (" +
       `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
       // The SHA-256 of the run's own secret, which only its CLI's environment holds.
@@ -1588,7 +1570,33 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE owner_erasure ADD COLUMN outside INTEGER NOT NULL DEFAULT 0 " +
       "CHECK (outside IN (0, 1))",
   ]),
-  // 16: a sandbox sync's own uploads name their lease (`files.ts` `#endUploads`), so a lease
+  // 16: the vendor's own sign-in inside a sandbox (slice SIGNIN, `signins.ts`).
+  // `sandbox_signins`: the sign-in in progress, one an authority, holding that sandbox's
+  // lease, its latest prompt (the vendor's URL and code, never a token) and its runner's last
+  // beat; gone at its end. `platform_signins`: the served records whose vendor sign-in the
+  // control record switches on, as the binder or the lane last read them.
+  Object.freeze([
+    "CREATE TABLE sandbox_signins (authority TEXT PRIMARY KEY CHECK (authority = 'owner' " +
+      "OR (length(authority) = 64 AND authority NOT GLOB '*[^0-9a-f]*')), " +
+      "id TEXT NOT NULL UNIQUE CHECK (length(id) = 35 AND id GLOB 'si_*'), " +
+      "engine TEXT NOT NULL CHECK (length(engine) BETWEEN 1 AND 64), " +
+      "mode TEXT NOT NULL CHECK (mode IN ('in', 'out')), " +
+      "region TEXT CHECK (region IS NULL OR length(region) BETWEEN 1 AND 64), " +
+      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
+      "state TEXT NOT NULL CHECK (state IN ('starting', 'open', 'code_sent', 'signed_in', " +
+      "'signed_out', 'failed', 'cancelled', 'refused', 'expired')), " +
+      `url TEXT CHECK (url IS NULL OR length(url) <= ${SIGNIN_URL_MAX}), ` +
+      `code TEXT CHECK (code IS NULL OR length(code) <= ${SIGNIN_CODE_MAX}), ` +
+      "accepts_code INTEGER NOT NULL DEFAULT 0 CHECK (accepts_code IN (0, 1)), " +
+      "started_at REAL NOT NULL, beat_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TRIGGER sandbox_signins_full BEFORE INSERT ON sandbox_signins WHEN (SELECT " +
+      `COUNT(*) FROM sandbox_signins) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
+      `'sandbox_signins_full: ${RUNS_CEILING} sign-ins are live'); END`,
+    "CREATE TABLE platform_signins (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      `engines TEXT NOT NULL CHECK (length(engines) <= ${SIGNIN_LIST_CHARS} ` +
+      "AND engines NOT GLOB '*[^a-z0-9_,-]*'), read_at REAL NOT NULL)",
+  ]),
+  // 17: a sandbox sync's own uploads name their lease (`files.ts` `#endUploads`), so a lease
   // that ends lets go of its sync's open uploads alone, never its client's own writes. No
   // index: the open uploads are at most `MAX_OPEN_INTENTS` rows.
   Object.freeze([

@@ -39,6 +39,21 @@
           ]
         }
       ],
+      "url": {
+        "hosts": [
+          "www.kimi.ai",
+          "www.kimi.com"
+        ],
+        "path": "/code/authorize_device",
+        "params": {},
+        "free": [
+          "user_code"
+        ]
+      },
+      "expires": {
+        "s": 900,
+        "citation": "@moonshot-ai/kimi-code 2.4.1 dist/main.mjs: DEFAULT_DEVICE_CODE_TIMEOUT_MS = 9e5, a local 15-min wall-clock budget on the device code flow, read 2026-11-03"
+      },
       "hosted_use": {
         "verdict": "unclear",
         "citation": "subscription-engines.md section 5 and 12: the help center warns that use with unauthorized platforms or tools may be a violation and enforces a client whitelist; hosting the first-party CLI is not addressed"

@@ -90,7 +90,7 @@ import { jsonObject } from "./body";
 import {
   APP_BODY_MAX, APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE,
 } from "./config";
-import { ownerGate, ownerRead, signinOn } from "./control";
+import { ownerGate, ownerRead } from "./control";
 import {
   deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
@@ -245,8 +245,7 @@ const fileWrite: Route = async (_env, { binding, stub }, request) => {
 };
 
 /** `sources`: what the app shows of each record; nothing sealed, no endpoint, no argv. */
-function sourceList(sources: Sources, switches: Readonly<Record<string, boolean>> | null):
-    unknown {
+function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
   return {
     sources: sources.ids().map((id) => {
       const record = sources.get(id)!;
@@ -261,7 +260,7 @@ function sourceList(sources: Sources, switches: Readonly<Record<string, boolean>
             ({ id: region, display_name })),
           // Whether the platform offers it (the control record's switch, or the verdict), and
           // the verdict on the vendor's terms for hosted use, cited.
-          enabled: signinOn(record, switches),
+          enabled: switchedOn.includes(id),
           hosted_use: (record.cli.login as { hosted_use: unknown }).hosted_use },
       };
     }),
@@ -514,7 +513,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   if (gated instanceof Response) {
     return gated;
   }
-  const owner = withTiers(unread, gated.tiers);
+  const owner = withTiers(unread, gated);
   try {
     if (registering) {
       const { key_id: id, ...register } = parsed;
@@ -534,14 +533,6 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
     }
     if (tool !== null) {
       return await ownerTool(tool, owner, parsed);
-    }
-    if (path === "signin/start") {
-      // Each source's sign-in sits behind its own switch: off, the object is never asked.
-      const rec = typeof parsed["engine"] === "string" ? sources.get(parsed["engine"]) : undefined;
-      if (rec !== undefined && !signinOn(rec, gated.signins)) {
-        return failure(403, "signin_off: signing in to this source inside a sandbox is off " +
-                       "until its vendor's terms for hosted use are verified");
-      }
     }
     return await route!(env, owner, parsed, presented!);
   } catch (error) {

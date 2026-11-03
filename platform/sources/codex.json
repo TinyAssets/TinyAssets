@@ -55,7 +55,18 @@
         "cli_auth_credentials_store=\"file\"",
         "logout"
       ],
-      "expires_s": 900,
+      "url": {
+        "hosts": [
+          "auth.openai.com"
+        ],
+        "path": "/codex/device",
+        "params": {},
+        "free": []
+      },
+      "expires": {
+        "s": 900,
+        "citation": "openai/codex codex-rs/login/src/device_code_auth.rs: Enter this one-time code (expires in 15 minutes) (inflight_research.md section 1, read 2026-11-03)"
+      },
       "hosted_use": {
         "verdict": "unclear",
         "citation": "subscription-engines.md section 2 and 11: no text permits or forbids a platform hosting the unmodified Codex CLI for a user's own ChatGPT sign-in; OpenAI names API keys for automation and ChatGPT sign-in only on trusted private infrastructure"
@@ -63,7 +74,7 @@
     },
     "api_key_env": {
       "openai": {
-        "base_url": "OPENAI_BASE_URL",
+        "base_url": null,
         "api_key": "CODEX_API_KEY",
         "base": "sealed"
       }
@@ -98,7 +109,17 @@
       "api_key": {
         "argv": [
           "-c",
-          "forced_login_method=\"api\""
+          "forced_login_method=\"api\"",
+          "-c",
+          "model_provider=\"tinyassets\"",
+          "-c",
+          "model_providers.tinyassets.name=\"TinyAssets\"",
+          "-c",
+          "model_providers.tinyassets.base_url=\"{base_url}\"",
+          "-c",
+          "model_providers.tinyassets.env_key=\"CODEX_API_KEY\"",
+          "-c",
+          "model_providers.tinyassets.wire_api=\"responses\""
         ]
       }
     },
@@ -242,6 +263,13 @@
     "session_paths": [
       "{home}/.codex/sessions/"
     ],
+    "compaction": {
+      "argv": [
+        "-c",
+        "model_auto_compact_token_limit=1"
+      ],
+      "marker": "You are performing a CONTEXT CHECKPOINT COMPACTION"
+    },
     "hosts": {
       "registry": [
         "registry.npmjs.org"

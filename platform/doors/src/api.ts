@@ -36,7 +36,7 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
   if (gated instanceof Response) {
     return gated;
   }
-  const held = withTiers(bound, gated.tiers);
+  const held = withTiers(bound, gated);
   const tools = await profiled(held);
   if (tools instanceof Response) {
     return tools;

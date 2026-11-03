@@ -180,7 +180,10 @@ export type Unattended =
 
 /** The variables a CLI reads its egress base URL and placeholder key from, for a provider. */
 export interface ApiKeyEnv {
-  /** Null when the CLI takes its base URL from a file template's `{base_url}`. */
+  /**
+   * Null when a file template or an API-key argv (`cli.per_credential.api_key.argv`) carries
+   * `{base_url}`: the CLI takes its base URL from there, not from a variable.
+   */
   readonly base_url: string | null;
   readonly api_key: string;
   /** The door, the connection and the sealed base path, or the door and connection alone. */
@@ -228,6 +231,13 @@ export interface CliSpec {
    * value, `{run_secret}` in it. Absent, the base URL's path carries it (the fallback).
    */
   readonly run_secret_env?: { readonly env: string; readonly value: string };
+  /**
+   * How the route probe makes the CLI compact its context at its next turn (`argv`, put
+   * after its binary on a resumed turn), and the text its compaction request carries
+   * (`marker`, its compact prompt's): the probe holds a compaction's requests to the door's
+   * rules as a turn's. Absent for a CLI the probe does not compact.
+   */
+  readonly compaction?: { readonly argv: readonly string[]; readonly marker: string };
   readonly tools: { readonly allow?: ToolFilter; readonly deny?: ToolFilter };
   readonly unattended_argv: readonly string[];
   readonly home_env: Readonly<Record<string, string>>;
@@ -441,11 +451,34 @@ const FORBID = /^[A-Z][A-Z0-9_]{0,63}\*?$/;
  * own placeholder (`sandboxEnv`).
  */
 const CREDENTIAL_NAME =
-  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT)(?:_|$)/;
+  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT|PROXY)(?:_|$)/;
+/**
+ * A variable that loads code into a process or changes what its runtime loads (Node's
+ * options and module path, the dynamic linker's preloads and paths, Bun's, Python's, Perl's,
+ * Ruby's and the JVM's, a shell's startup file): never a record's own, so nothing a record
+ * sets runs code inside a CLI (review round 4, R4-1).
+ */
+const CODE_LOADING = /^(?:NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|LD_[A-Z0-9_]+|DYLD_[A-Z0-9_]+|BUN_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|PERL5?LIB|PERL5OPT|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|BASH_ENV|ENV|GCONV_PATH|MALLOC_[A-Z0-9_]+)$/;
 /** A settings key shaped like a credential, a credential helper or an environment block. */
 const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
-/** A settings key that moves where a run's calls go: never in a signed-in run's files. */
-const ENDPOINT_KEY = /base_?url|endpoint/i;
+/**
+ * A settings key that moves where a run's calls go, onto another model provider, or through
+ * a proxy: never in a signed-in run's files.
+ */
+const ENDPOINT_KEY = /base_?url|endpoint|provider|proxy/i;
+/**
+ * An argument that moves where a run's calls go, onto another model provider (Codex's
+ * `--oss` names its local ones) or through a proxy: never in an argv a signed-in run gets
+ * (the argv twin of `ENDPOINT_KEY`), so no `-c openai_base_url=...` sends a vendor sign-in's
+ * tokens elsewhere.
+ */
+const ENDPOINT_ARG = /base_?url|endpoint|provider|proxy|^--oss(?:=|$)/i;
+/**
+ * The shapes `{base_url}` may take in an argv: joined to its key, as an option's value
+ * (`--base-url={base_url}`) or a config override's quoted value (`a.b="{base_url}"`), never
+ * a bare argument.
+ */
+const BASE_URL_ARG = /^(?:--[A-Za-z0-9][A-Za-z0-9-]*=\{base_url\}|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*="\{base_url\}")$/;
 /** A bare key, dotted or not, as a line of a settings template that is not JSON writes it. */
 const BARE_KEY = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/;
 /**
@@ -577,7 +610,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     "install", "credential", "unattended", "engine", "instructions", "skills_paths", "mcp",
     "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
     "hosts"], ["login", "regions", "api_key_env", "per_credential", "env", "files",
-               "run_secret_env"]);
+               "run_secret_env", "compaction"]);
   const argvs: [string, string[]][] = [];
   const argv = (item: unknown, what: string, max = 64): string[] => {
     const list = check.strings(item, what, ARG, max);
@@ -673,6 +706,14 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     runSecretEnv = { env: header["env"] as string, value: header["value"] as string };
   }
+  // How the route probe makes it compact at its next turn.
+  let compaction: { argv: readonly string[]; marker: string } | undefined;
+  if (fields["compaction"] !== undefined) {
+    const spec = check.keys(fields["compaction"], "cli.compaction", ["argv", "marker"]);
+    compaction = { argv: Object.freeze(argv(spec["argv"], "cli.compaction.argv", 16)),
+                   marker: check.text(spec["marker"], /^[^\p{Cc}]{8,256}$/u,
+                                      "cli.compaction.marker") };
+  }
 
   // Its home, environment and files.
   const homeEnv = check.stringMap(fields["home_env"], "cli.home_env", ENV_NAME, 8);
@@ -764,10 +805,14 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       }
       apiKeyEnv[provider] = Object.freeze(vars as unknown as ApiKeyEnv);
     }
+    // A declared channel (rule 1): no base-URL variable, so a file template or the API-key
+    // run's own argv carries `{base_url}`.
+    const keyArgv = argvs.find(([what]) => what === "cli.per_credential.api_key.argv")?.[1] ?? [];
     if (Object.values(apiKeyEnv).some((vars) => vars.base_url === null)
-        && !templates.some(([, text]) => text.includes("{base_url}"))) {
-      check.fail("cli.api_key_env names no base-URL variable, so a file template carries " +
-                 "{base_url}");
+        && !templates.some(([, text]) => text.includes("{base_url}"))
+        && !keyArgv.some((arg) => arg.includes("{base_url}"))) {
+      check.fail("cli.api_key_env names no base-URL variable, so a file template or " +
+                 "cli.per_credential.api_key.argv carries {base_url}");
     }
   }
 
@@ -795,6 +840,10 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     // The record's own variables are the run's allow-list (`runEnv`): none is shaped like
     // a credential or an endpoint, and none is HOME or a basic, which the runner sets.
+    const loading = sets.find((name) => CODE_LOADING.test(name));
+    if (loading !== undefined) {
+      check.fail(`the record sets ${loading}, which loads code into the CLI's process`);
+    }
     const shaped = sets.find((name) => CREDENTIAL_NAME.test(name) || name === "HOME"
       || RUN_BASICS.includes(name));
     if (shaped !== undefined) {
@@ -926,6 +975,38 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       }
     }
   }
+  // `{base_url}` only where only an API-key run reads it (rule 2): the API-key run's own
+  // argv, env or files, or anywhere in a record that runs on nothing but a key; and in an
+  // argv joined to its key, never bare (rule 3).
+  const keyOnly = credential.length === 1 && credential[0] === "api_key";
+  for (const [what, text] of [...argvs.flatMap(([what, list]) =>
+    list.map((item): [string, string] => [what, item])), ...templates]) {
+    if (!text.includes("{base_url}")) {
+      continue;
+    }
+    if (!keyOnly && !what.startsWith("cli.per_credential.api_key.")) {
+      check.fail(`${what} carries {base_url}, which only an API-key run reads: put it under ` +
+                 "cli.per_credential.api_key");
+    }
+    if (argvs.some(([name]) => name === what) && !BASE_URL_ARG.test(text)) {
+      check.fail(`${what} carries {base_url} other than joined to its key ` +
+                 "(--option={base_url}, key=\"{base_url}\"), never bare");
+    }
+  }
+  // No argument a signed-in run gets moves where its calls go (rule 4): every argv of a
+  // record that signs in but the API-key run's own and the install's check.
+  if (signsIn) {
+    for (const [what, list] of argvs) {
+      if (what.startsWith("cli.per_credential.api_key.") || what.startsWith("cli.install.")) {
+        continue;
+      }
+      const moved = list.find((arg) => ENDPOINT_ARG.test(arg));
+      if (moved !== undefined) {
+        check.fail(`${what} holds ${JSON.stringify(moved)}, which would move a signed-in ` +
+                   "run's calls to another endpoint or provider");
+      }
+    }
+  }
   // A credential's forbidden arguments are in no argv of the record.
   for (const [kind, words] of forbidden) {
     for (const [what, list] of argvs) {
@@ -954,6 +1035,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     skills_paths: Object.freeze(skills),
     mcp,
     ...(runSecretEnv === undefined ? {} : { run_secret_env: Object.freeze(runSecretEnv) }),
+    ...(compaction === undefined ? {} : { compaction: Object.freeze(compaction) }),
     tools: Object.freeze(tools),
     unattended_argv: Object.freeze(unattendedArgv),
     home_env: Object.freeze(homeEnv),
@@ -1240,61 +1322,183 @@ export function signinHosts(rec: SourceRecord, region: string | null): string[] 
 }
 
 /**
- * Why a sign-in's prompt is not the record's own shape, or null: the URL matches the record's
- * `url_pattern` whole, is `https` and on its login hosts (and the chosen region's); the code
- * is a device code's characters, at most `SIGNIN_CODE_MAX`; the URL visible ASCII, at most
- * `SIGNIN_URL_MAX`. Checked in the VM
- * before a prompt leaves it, and again by the owner's object before the owner sees it.
+ * A sign-in's states, the only ones a frame from the VM may carry (review M1): no text the
+ * VM chose leaves it but the record's own URL and code.
+ */
+export const SIGNIN_STATES = Object.freeze(["starting", "open", "code_sent", "signed_in",
+                                            "signed_out", "failed", "cancelled", "refused",
+                                            "expired"] as const);
+export type SigninState = (typeof SIGNIN_STATES)[number];
+
+/**
+ * Why a sign-in was refused, each in plain words (review L6): the reason a refusal carries,
+ * one of these keys, never a text the VM chose.
+ */
+export const SIGNIN_REFUSALS = Object.freeze({
+  url: "it showed a link that is not the vendor's own sign-in page",
+  code: "it showed a code that is not the vendor's kind of code",
+  credential: "it showed something that looked like a credential",
+  state: "it reported something a sign-in never reports",
+} as const);
+export type SigninRefusal = keyof typeof SIGNIN_REFUSALS;
+
+/**
+ * A URL parameter or fragment key named like a credential, anywhere in its name (so a
+ * suffixed or prefixed one too: `refresh_token_x`, `x_api_key`).
+ */
+const CREDENTIAL_PARAM = /token|secret|passw|api_?key|credential|session/i;
+/** A JSON Web Token: three base64url segments, the first a JSON object's (`eyJ`). */
+const JWT = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+
+/**
+ * Whether `value` looks like a credential: a JSON Web Token, or, as a URL, a parameter or
+ * fragment key named like one. Checked in the VM (beside the engines' own secrets' atoms)
+ * and again on the trusted side.
+ */
+export function credentialLike(value: string): boolean {
+  if (JWT.test(value)) {
+    return true;
+  }
+  let url: URL | null = null;
+  try {
+    url = /^https?:\/\//.test(value) ? new URL(value) : null;
+  } catch {
+    url = null;
+  }
+  return url !== null && [...url.searchParams.keys(),
+                          ...new URLSearchParams(url.hash.replace(/^#/, "")).keys()]
+    .some((key) => CREDENTIAL_PARAM.test(key));
+}
+
+/** A free parameter's value: RFC 3986 section 2.3's unreserved characters, so never a URL. */
+const UNRESERVED = /^[A-Za-z0-9._~-]{1,128}$/;
+
+/**
+ * Why a sign-in's prompt is not the record's own shape (a `SigninRefusal`), or null. The URL:
+ * visible ASCII at most `SIGNIN_URL_MAX`, matching the record's `url_pattern` whole,
+ * `https` on one of the record's `url.hosts` that is among its login hosts (and the chosen
+ * region's), no user, password, port or fragment, its path the record's `url.path` exactly, each of the record's `url.params`
+ * present with exactly its value, the record's `url.free` parameters each at most once with
+ * an unreserved value (a state, a PKCE challenge, a user code: never a URL, so no redirect
+ * chain), and no other parameter (so no other OAuth client's page). The code: a device
+ * code's characters, at most `SIGNIN_CODE_MAX`. Neither credential-shaped
+ * (`credentialLike`). Checked in the VM before a prompt leaves it, and again by the owner's
+ * object before the owner sees it.
  */
 export function signinShape(rec: SourceRecord, region: string | null, url: string | null,
-                            code: string | null): string | null {
-  const login = rec.cli?.login as { url_pattern?: string; code_pattern?: string } | undefined;
+                            code: string | null): SigninRefusal | null {
+  const login = rec.cli?.login as LoginSpec | undefined;
   if (login === undefined) {
-    return "no sign-in";
+    return "state";
   }
   if (url !== null) {
     if (url.length > SIGNIN_URL_MAX || !/^[\x21-\x7e]+$/.test(url)) {
-      return "a URL longer than a URL's bound, or not visible ASCII";
+      return "url";
     }
     let parsed: URL;
     try {
       parsed = new URL(url);
     } catch {
-      return "a URL that is not one";
+      return "url";
     }
-    const whole = login.url_pattern === undefined ? null : new RegExp(login.url_pattern).exec(url);
+    const whole = new RegExp(login.url_pattern).exec(url);
     if (whole === null || whole[1] !== url || parsed.protocol !== "https:"
         || parsed.username !== "" || parsed.password !== "" || parsed.port !== ""
-        || !signinHosts(rec, region).includes(parsed.hostname)) {
-      return `a URL off the vendor's own sign-in hosts (${parsed.hostname})`;
+        || parsed.hash !== "" || url.includes("#")
+        || !signinHosts(rec, region).includes(parsed.hostname)
+        || !login.url.hosts.includes(parsed.hostname) || parsed.pathname !== login.url.path) {
+      return "url";
+    }
+    const seen = new Set<string>();
+    for (const [key, value] of parsed.searchParams) {
+      if (seen.has(key)) {
+        return "url";
+      }
+      seen.add(key);
+      const pinned = login.url.params[key];
+      if (pinned !== undefined ? value !== pinned
+          : !login.url.free.includes(key) || !UNRESERVED.test(value)) {
+        return "url";
+      }
+    }
+    if (Object.keys(login.url.params).some((key) => !seen.has(key))) {
+      return "url";
+    }
+    if (credentialLike(url)) {
+      return "credential";
     }
   }
   // A device code: letters, digits and hyphens (RFC 8628 section 6.1), from a record that
   // shows one at all; the runner took it from the record's `code_pattern` group.
-  if (code !== null && (login.code_pattern === undefined || code.length > SIGNIN_CODE_MAX
-                        || !/^[A-Za-z0-9-]+$/.test(code))) {
-    return "a code not of the vendor's shape";
+  if (code !== null) {
+    if (login.code_pattern === undefined || code.length > SIGNIN_CODE_MAX
+        || !/^[A-Za-z0-9-]+$/.test(code)) {
+      return "code";
+    }
+    if (credentialLike(code)) {
+      return "credential";
+    }
   }
   return null;
+}
+
+/**
+ * Whether a source's vendor sign-in is switched on: the control record's switch for it
+ * (`signins`), or else its record's verdict on the vendor's terms for hosted use (on only
+ * when `allowed`).
+ */
+export function signinOn(rec: SourceRecord,
+                         switches: Readonly<Record<string, boolean>> | null): boolean {
+  const login = rec.cli?.login as LoginSpec | undefined;
+  return login !== undefined && rec.unwired === undefined
+    && (switches?.[rec.id] ?? login.hosted_use.verdict === "allowed");
+}
+
+/** The served records whose sign-in is switched on, sorted: what the binder hands the object. */
+export function signinsOn(sources: Sources,
+                          switches: Readonly<Record<string, boolean>> | null): string[] {
+  return sources.ids().filter((id) => signinOn(sources.get(id)!, switches)).sort();
 }
 
 /** The verdicts on the vendor's terms for a platform hosting its CLI's sign-in. */
 const HOSTED_USE: readonly string[] = Object.freeze(["allowed", "unclear", "forbidden"]);
 
+/** A record's sign-in, as `loginSpec` checked it. */
+export interface LoginSpec {
+  readonly argv: readonly string[];
+  readonly url_pattern: string;
+  /**
+   * The vendor's sign-in page exactly: its hosts (among the login hosts), its path, its fixed
+   * parameters, its free ones.
+   */
+  readonly url: { readonly hosts: readonly string[]; readonly path: string;
+                  readonly params: Readonly<Record<string, string>>;
+                  readonly free: readonly string[] };
+  readonly code_pattern?: string;
+  readonly accepts_code?: true;
+  /** The vendor's code's lifetime, whole seconds, and where that is documented or measured. */
+  readonly expires: { readonly s: number; readonly citation: string };
+  readonly hosted_use: { readonly verdict: string; readonly citation: string };
+}
+
+/** A URL parameter's name, as a record pins it. */
+const PARAM_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+
 /**
  * The vendor's own sign-in in the sandbox, as the runner drives it (always on a terminal of
  * its own): its command, what of its output is shown (`url_pattern` on the record's login
- * hosts, `code_pattern`), whether it takes a pasted code, its status, its sign-out
- * (`logout_argv`, the vendor's own, before its secrets are deleted), the vendor's code's
- * lifetime (`expires_s`), and the verdict on the vendor's terms for hosting it
- * (`hosted_use`, cited), which sets whether the platform offers it unless the control
- * record says otherwise.
+ * hosts, its page pinned by `url`, `code_pattern`), whether it takes a pasted code, its
+ * status, its sign-out (`logout_argv`, the vendor's own, before its secrets are deleted),
+ * the vendor's code's lifetime (`expires`, cited: the sign-in's deadline), and the verdict on
+ * the vendor's terms for hosting it (`hosted_use`, cited), which sets whether the platform
+ * offers it unless the control record says otherwise.
  */
 function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv):
     Record<string, unknown> {
-  const fields = check.keys(value, "cli.login", ["argv", "url_pattern", "hosted_use"], [
+  const fields = check.keys(value, "cli.login", ["argv", "url_pattern", "url", "expires",
+                                                 "hosted_use"], [
     "status_argv", "status_equals", "accepts_code", "code_pattern", "state_checks",
-    "complete_on_state", "logout_argv", "expires_s"]);
+    "complete_on_state", "logout_argv"]);
   argv(fields["argv"], "cli.login.argv", 16);
   if (fields["status_argv"] !== undefined) {
     argv(fields["status_argv"], "cli.login.status_argv", 16);
@@ -1302,10 +1506,29 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
   if (fields["logout_argv"] !== undefined) {
     argv(fields["logout_argv"], "cli.login.logout_argv", 16);
   }
-  const expires = fields["expires_s"];
-  if (expires !== undefined && (typeof expires !== "number" || !Number.isSafeInteger(expires)
-                                || expires < 1)) {
-    check.fail("cli.login.expires_s is the vendor's code's lifetime, whole seconds");
+  const expires = check.keys(fields["expires"], "cli.login.expires", ["s", "citation"]);
+  if (typeof expires["s"] !== "number" || !Number.isSafeInteger(expires["s"])
+      || expires["s"] < 1) {
+    check.fail("cli.login.expires.s is the vendor's code's lifetime, whole seconds");
+  }
+  check.text(expires["citation"], CITATION, "cli.login.expires.citation");
+  const page = check.keys(fields["url"], "cli.login.url", ["hosts", "path", "params", "free"]);
+  if (check.strings(page["hosts"], "cli.login.url.hosts", HOST, 8).length === 0) {
+    check.fail("cli.login.url.hosts names the sign-in page's hosts");
+  }
+  if (typeof page["path"] !== "string" || !/^\/[!-~]{0,255}$/.test(page["path"])
+      || /[?#]/.test(page["path"])) {
+    check.fail("cli.login.url.path is the sign-in page's path exactly");
+  }
+  const params = page["params"];
+  if (!object(params) || Object.keys(params).length > 16
+      || !Object.entries(params).every(([key, item]) => PARAM_NAME.test(key)
+        && typeof item === "string" && item.length <= 1024)) {
+    check.fail("cli.login.url.params maps parameter names to their fixed values");
+  }
+  const free = check.strings(page["free"], "cli.login.url.free", PARAM_NAME, 8);
+  if (free.some((key) => key in (params as Record<string, unknown>))) {
+    check.fail("cli.login.url.free names parameters the record does not fix");
   }
   const hosted = check.keys(fields["hosted_use"], "cli.login.hosted_use",
                             ["verdict", "citation"]);

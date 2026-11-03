@@ -25,9 +25,11 @@ const SECTIONS = Object.freeze([
  */
 const MISSING = Object.freeze({
   export: "Exporting everything you hold is not here yet: its door is being built.",
-  runs: "Only this tab's conversation is shown, and it is not kept across reloads: a list " +
-    "of past runs is not here yet. Each engine's own transcript is kept in your files.",
 });
+
+/** What the Talk section holds: this tab's conversation; the rest is under Past runs. */
+const TALK_NOTE = "Only this tab's conversation is shown, and it is not kept across reloads: " +
+  "your past runs are under Past runs. Each engine's own transcript is kept in your files.";
 
 /** The credential of a subscription signed in inside the sandbox (its record's switch). */
 const SIGNIN_CREDENTIAL = "vendor_login_in_sandbox";
@@ -167,7 +169,7 @@ async function agents(arg) {
                        call("capabilities")]);
   const live = owned.filter((a) => a.retired_at === null);
   // Each engine's credentials are its record's; a subscription's only while its sign-in is
-  // switched on (slice SIGNIN).
+  // switched on.
   const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL
                                                        || record.signin?.enabled === true);
   const engines = sources.filter((s) => s.unwired === null && usable(s).length > 0);
@@ -358,7 +360,7 @@ async function agent(name) {
        h("h1", {}, name),
        h("section", {},
          h("h2", {}, "Talk"),
-         h("p", { class: "muted" }, MISSING.runs),
+         h("p", { class: "muted" }, TALK_NOTE),
          said, field("Message", message),
          h("div", { class: "row" }, action("Send", send, report), cancel),
          state,
@@ -498,20 +500,49 @@ async function rooms() {
 /** The live socket of the sign-in in progress, if any (one at a time in your sandbox). */
 let signinSocket = null;
 
+/** Why a sign-in was refused, in the words the platform's records give (`SIGNIN_REFUSALS`). */
+const SIGNIN_REFUSED = Object.freeze({
+  url: "it showed a link that is not the vendor's own sign-in page",
+  code: "it showed a code that is not the vendor's kind of code",
+  credential: "it showed something that looked like a credential",
+  state: "it reported something a sign-in never reports",
+});
+
+/** The states that end a sign-in. */
+const SIGNIN_ENDS = Object.freeze(["signed_in", "signed_out", "failed", "cancelled", "refused",
+                                   "expired"]);
+
+/** What the owner is told at a sign-in's end. */
+function signinEnded(record, event) {
+  switch (event.state) {
+    case "signed_in": return `Signed in to ${record.display_name}.`;
+    case "signed_out": return `Signed out of ${record.display_name}.`;
+    case "cancelled": return "The sign-in was stopped.";
+    case "expired": return "The code expired; start again.";
+    case "refused": return `The sign-in was stopped: ${SIGNIN_REFUSED[event.reason]
+      ?? "it showed something TinyAssets does not pass on"}. TinyAssets never passes such ` +
+      "a thing on.";
+    default: return "The sign-in did not finish. Try again.";
+  }
+}
+
 function signinPanel(record, present, live) {
   const box = h("div", { class: "signin" });
-  if (!record.signin.enabled) {
-    fill(box, h("p", { class: "muted" },
-                `Signing in with your ${record.display_name} subscription is off for now: ` +
-                `the vendor's terms for a platform hosting its sign-in are ` +
-                `${record.signin.hosted_use.verdict}. `,
-                h("small", {}, record.signin.hosted_use.citation)));
-    return box;
-  }
   const regionPick = record.signin.regions.length === 0 ? null
     : h("select", {}, record.signin.regions.map((region) =>
       h("option", { value: region.id }, region.display_name)));
   const show = (view) => {
+    if (view === null && !record.signin.enabled) {
+      // Off: no sign-in is offered, but a login already here can always be removed.
+      fill(box, h("p", { class: "muted" },
+                  `Signing in with your ${record.display_name} subscription is off for now: ` +
+                  `the vendor's terms for a platform hosting its sign-in are ` +
+                  `${record.signin.hosted_use.verdict}. `,
+                  h("small", {}, record.signin.hosted_use.citation)),
+           present?.signed_in ? h("div", { class: "row" }, action("Sign out",
+             () => begin("out"), report, { class: "danger" })) : null);
+      return;
+    }
     if (view === null) {
       fill(box,
            h("p", { class: "muted" }, present?.signed_in
@@ -552,14 +583,8 @@ function signinPanel(record, present, live) {
       if (event.type !== "ta.signin") {
         return;
       }
-      if (["signed_in", "signed_out", "failed", "cancelled", "refused"].includes(event.state)) {
-        say(event.state === "signed_in" ? `Signed in to ${record.display_name}.`
-          : event.state === "signed_out" ? `Signed out of ${record.display_name}.`
-            : event.state === "cancelled" ? "The sign-in was stopped."
-              : event.state === "refused" ? "The sign-in was stopped: it showed something " +
-                "that looked like a credential, which TinyAssets never passes on."
-                : "The sign-in did not finish. Try again.", event.state.startsWith("signed")
-            ? "good" : "bad");
+      if (SIGNIN_ENDS.includes(event.state)) {
+        say(signinEnded(record, event), event.state.startsWith("signed") ? "good" : "bad");
         signinSocket?.close();
         signinSocket = null;
         sources().catch(report);
@@ -571,12 +596,18 @@ function signinPanel(record, present, live) {
         : { ...current, state: event.state };
       show(current);
     }, () => undefined);
-    // What came before the socket attached: the sign-in's row as it stands.
+    // What came before the socket attached: the sign-in's row as it stands; none, it ended
+    // before the socket attached, and the panel offers a new one.
     const { signins } = await call("signin/list");
     const now = signins.find((each) => each.id === view.id);
     if (now !== undefined) {
       current = now;
       show(now);
+    } else if (signinSocket !== null) {
+      signinSocket.close();
+      signinSocket = null;
+      say("The sign-in ended before it could be shown. Start it again.", "bad");
+      sources().catch(report);
     }
   };
   const begin = async (mode) => {
@@ -623,13 +654,13 @@ async function sources() {
         location.assign(url);
       }, report));
     }
-    if (record.connect.includes("cli") && record.credentials.includes("vendor_login_in_sandbox")
+    if (record.connect.includes("cli") && record.credentials.includes(SIGNIN_CREDENTIAL)
         && record.signin !== null) {
       ways.push(signinPanel(record, presence.get(record.id) ?? null,
                             live.find((each) => each.engine === record.id
                                       && each.authority === "owner") ?? null));
     }
-    if (record.connect.includes("cli") && !record.credentials.includes("vendor_login_in_sandbox")) {
+    if (record.connect.includes("cli") && record.credentials.includes("api_key")) {
       ways.push(h("p", { class: "muted" }, "An engine for your agents: it runs on an API key " +
         "you connect here."));
     }

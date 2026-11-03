@@ -192,8 +192,8 @@ import {
   EGRESS_ORIGIN, type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
 } from "./network";
 import {
-  pastedCode, SIGNIN_ID, signinAuthority, type SigninMode, type SigninView, Signins,
-  signinView,
+  pastedCode, SIGNIN_ID, SIGNIN_OFF, signinAuthority, type SigninMode, type SigninView,
+  Signins, signinView, switchedOn,
 } from "./signins";
 import {
   CLOSED, Doorbell, type RingAnswer, runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender,
@@ -248,6 +248,12 @@ export interface Binding {
    * object's own row.
    */
   readonly tiers?: unknown;
+  /**
+   * The served records whose vendor sign-in the platform's control record switches on, as
+   * the binder read it for this call (`signins.ts`, `switches`): never a request field. The
+   * object keeps the last list it was handed for the runs its own lane starts.
+   */
+  readonly signins?: unknown;
   /**
    * The first-party grant the owner's token was issued under, and that token's expiry
    * (whole seconds), from the provider's own unwrap: a socket ticket's binding, and a
@@ -1598,6 +1604,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       unadmitted: () => workRefusal(admission(storage)),
       sandboxBound: () => env.SANDBOX !== undefined,
       sources: () => bundledSources(),
+      // Each source's vendor sign-in behind its own switch, as the binder last handed them.
+      signinOn: (engine) => switchedOn(storage, undefined, clock()).has(engine),
       usable: () => this.#connections.usable(),
       egressible: () => this.#connections.egressible(),
       standing: (stamp) => {
@@ -1801,6 +1809,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // The tier's numbers, as the binder read them from the control record: kept for the
     // files byte quota and the lane's runs (written only when they changed).
     keepTiers(this.#storage, binding.tiers, clock());
+    // The switched-on sign-ins, likewise: kept for the lane's runs (written only when changed).
+    switchedOn(this.#storage, binding.signins, clock());
     if (!("origin" in binding)) {
       throw new Invalid("invalid outside origin");
     }
@@ -4260,6 +4270,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (mode !== "in" && mode !== "out") {
         throw new Invalid("a sign-in's mode is in or out");
       }
+      // A sign-in sits behind its source's switch; a sign-out never does, so a login is
+      // always removable (review H1).
+      if (mode === "in" && !switchedOn(this.#storage, binding.signins, clock()).has(rec.id)) {
+        throw new Refused(SIGNIN_OFF);
+      }
       const regions = cli.regions === undefined ? [] : Object.keys(cli.regions);
       const region = r["region"] ?? null;
       if (mode === "in" ? (regions.length === 0 ? region !== null
@@ -4314,7 +4329,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async signinEvents(binding: Binding, request: SigninEventsRequest):
       Promise<{ accepted: number; ended: boolean }> {
-    const { row, ended, refused, events, frames } = await this.#door(() => {
+    const { row, ended, stopped, events, frames } = await this.#door(() => {
       this.#bind(binding, "reduce", "egress");
       const lease = this.#runner(binding);
       if (lease === null) {
@@ -4339,8 +4354,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (ended) {
       this.#relay.settled(row.id);  // its tail goes with it
     }
-    if (refused) {
-      // Its CLI stopped: what it showed is not the vendor's page.
+    if (stopped) {
+      // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
       await this.env.SANDBOX?.signinCancel(this.#ownerName(), { authority: row.authority,
                                                                 id: row.id })
         .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
@@ -4357,7 +4372,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const { row, code } = await this.#door(() => {
       this.#owner(binding, "work", "sign in inside a sandbox");
       const r = runFields(request, ["id", "code"]);
-      return { row: this.#signins.get(r["id"]), code: pastedCode(r["code"]) };
+      const code = pastedCode(r["code"]);
+      const row = this.#signins.wantsCode(r["id"], clock());
+      if (!switchedOn(this.#storage, binding.signins, clock()).has(row.engine)) {
+        throw new Refused(SIGNIN_OFF);
+      }
+      return { row, code };
     });
     const sandbox = this.env.SANDBOX;
     if (sandbox === undefined) {
@@ -4696,6 +4716,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
+   * The switched-on sign-ins, read by the lane itself from the control record the object
+   * binds (`CONTROL`), and kept (review N1): so a source switched off stops powering the
+   * lane's runs (a schedule's, a mail's, a waiting one's) at its next pass, though the owner
+   * makes no door call (`ControlGate.signins`, fail-closed).
+   */
+  async #laneSignins(): Promise<void> {
+    const on = await this.#control().signins();
+    await this.#door(() => switchedOn(this.#storage, on, clock()));
+  }
+
+  /**
    * The `runs` lane's pass: runs whose runner was lost settled `unknown`; then each waiting
    * run whose turn came started, oldest first, through the same admission as a door's (one
    * its turn refuses settles `failed`, the refusal in the owner's notices); then each mail
@@ -4704,6 +4735,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * on its row and in the owner's notices, never thrown.
    */
   async #runsPass(_now: number, until: number): Promise<void> {
+    await this.#laneSignins();
     await this.#door(() => this.#runs.lost(clock()));
     while (clock() < until) {
       const waiting = await this.#door(() => {

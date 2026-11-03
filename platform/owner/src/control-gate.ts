@@ -14,6 +14,7 @@
  */
 import { MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen } from "../../doors/src/control";
 import { type ControlRead, readControl } from "../../doors/src/directory";
+import { bundledSources, signinsOn } from "../../doors/src/sources";
 
 /** How long one read of the control record serves a script's calls, in ms. */
 export const CONTROL_FRESH_MS = 1_000;
@@ -32,16 +33,32 @@ export class ControlGate {
     this.#freshMs = freshMs;
   }
 
-  /** Why the gate refuses `owner`'s call now, or null when it admits it. */
-  async refusal(gate: Gate, owner: string): Promise<string | null> {
+  async #read(): Promise<ControlRead> {
     const now = Date.now();
     if (this.#last === null || now - this.#last.at >= this.#freshMs) {
       this.#last = { at: now, read: await readControl(this.#store) };
     }
-    const read = this.#last.read;
+    return this.#last.read;
+  }
+
+  /** Why the gate refuses `owner`'s call now, or null when it admits it. */
+  async refusal(gate: Gate, owner: string): Promise<string | null> {
+    const read = await this.#read();
     if (gate === "outside") {
       return outsideOpen(read, owner) ? null : OUTSIDE_OFF;
     }
     return ownerOpen(read, owner) ? null : MAINTENANCE;
+  }
+
+  /**
+   * The served records whose vendor sign-in is switched on, by the doors' own rule, for the
+   * runs lane (slice SIGNIN review N1): a record that reads well formed gives its `signins`
+   * (else each record's cited verdict); none at all, the verdicts, as the doors hand them; a
+   * record that is malformed or unreadable, none (fail-closed).
+   */
+  async signins(): Promise<string[]> {
+    const read = await this.#read();
+    return read.kind === "read" ? signinsOn(bundledSources(), read.control.signins)
+      : read.kind === "missing" ? signinsOn(bundledSources(), null) : [];
   }
 }

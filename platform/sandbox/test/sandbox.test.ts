@@ -722,6 +722,18 @@ describe("a sign-in", () => {
       .toEqual({ delivered: false });
   });
 
+  it("drops a pasted code whose hand-over failed: it never rests on disk (review L1)",
+     async () => {
+    const who = owner();
+    await stub(who).signin(who, signin({ engine: "claude-code", region: null }) as never);
+    await e2b("/script", { broken: "login-input" });
+    const failed = await stub(who).signinInput(who, { authority: "owner", id: SI, code: "abc#d" })
+      .then(() => null, (error: unknown) => error);
+    expect(failed).toBeInstanceOf(Error);
+    expect((await seen()).commands.slice(-2).map((command) => command.argv.slice(1)))
+      .toEqual([["login-input", SI], ["login-drop", SI]]);
+  });
+
   it("waits its turn in the line as a start does", async () => {
     await e2b("/script", { full: true });
     const who = owner();

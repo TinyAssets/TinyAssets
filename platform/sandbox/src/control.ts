@@ -630,7 +630,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   /**
    * A pasted code to the live sign-in's CLI: left in the runner's root-only inbox and handed
-   * over (`login-input`); whether the sign-in was live to take it.
+   * over at once (`login-input`, which reads and deletes it whatever follows); whether the
+   * sign-in was live to take it. A hand-over that failed drops it (`login-drop`), and a pause
+   * between the two leaves it to the runner's `prepare` at the resume, which deletes every
+   * code left in the inbox before anything else reads it: a code never rests on disk.
    */
   async signinInput(_owner: string, request: { authority: string; id: string; code: string }):
       Promise<{ delivered: boolean }> {
@@ -645,7 +648,12 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       await this.#e2b().upload(handle, `${STATE_DIR}/inbox/${request.id}.code`,
                                new TextEncoder().encode(request.code));
-      return { delivered: (await this.#run(handle, ["login-input", request.id])).code === OK };
+      try {
+        return { delivered: (await this.#run(handle, ["login-input", request.id])).code === OK };
+      } catch (error) {
+        await this.#run(handle, ["login-drop", request.id]).catch(() => undefined);
+        throw error;
+      }
     });
   }
 

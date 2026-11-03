@@ -17,9 +17,15 @@ locks and this script), so a change to any of them is a new template version; th
 Worker's `E2B_TEMPLATE` names it (`sandbox/guards/template.test.ts` holds the two equal).
 
     python3 -m venv v && v/bin/pip install e2b==2.62.0
-    E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py [--tag-only | --check-logins]
+    E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py \
+        [--tag-only | --check-logins | --route-probe]
 
-Every build ends with the standing check of every record's sign-in (`check_logins`).
+Every build ends with two standing checks on throwaway sandboxes of the template just built:
+every record's sign-in up to its prompt (`check_logins`), and every keyed engine's first model
+request reaching the egress door's own path with nothing else leaving the VM
+(`route_probe`). Only once both pass is the template's tag printed, to be pinned, and its
+record written to `passed.json` beside this script (each tag that passed, with what its checks
+found), which the template guard holds the pinned tag to (`sandbox/guards/template.test.ts`).
 """
 import hashlib
 import json
@@ -41,6 +47,8 @@ NODE_SHA256 = "c33c39ed9c80deddde77c960d00119918b9e352426fd604ba41638d6526a4744"
 CPU = 2
 MEMORY_MB = 1024
 TIER = PLATFORM / "owner" / "src" / "tier.ts"
+NETWORK = PLATFORM / "owner" / "src" / "network.ts"
+PASSED = HERE / "passed.json"
 
 
 def runs_ceiling() -> int:
@@ -50,6 +58,27 @@ def runs_ceiling() -> int:
     if found is None:
         raise SystemExit("owner/src/tier.ts names no RUNS_CEILING")
     return int(found.group(1).replace("_", ""))
+
+
+def network_constants():
+    """The egress door's host and the pinned resolvers, as the owner's network plan names them
+    (`EGRESS_HOST`, `DNS_SERVERS`): the production network's fixed parts."""
+    import re
+    text = NETWORK.read_text()
+    host = re.search(r'export const EGRESS_HOST = "([^"]+)";', text)
+    servers = re.search(r"export const DNS_SERVERS: readonly string\[\] = Object\.freeze\("
+                        r"\[([^\]]*)\]\);", text)
+    if host is None or servers is None:
+        raise SystemExit("owner/src/network.ts names no EGRESS_HOST or DNS_SERVERS")
+    return host.group(1), re.findall(r'"([^"]+)"', servers.group(1))
+
+
+def engine_hosts(cli, region):
+    """An engine's vendor hosts, its sign-in's and its model calls', and the chosen region's:
+    what the sandbox Worker widens a sign-in's network by (`engineHosts`)."""
+    chosen = (cli.get("regions") or {}).get(region, {}).get("hosts", {}) if region else {}
+    return sorted({*cli["hosts"]["login"], *cli["hosts"]["provider"],
+                   *chosen.get("login", []), *chosen.get("provider", [])})
 
 
 def engines():
@@ -147,23 +176,32 @@ def template(stage: Path):
 def check_logins(name):
     """The standing check of every record's sign-in on the template just built (slice SIGNIN):
     on a throwaway sandbox, each record's login run up to its prompt (`ta-runner login-probe`,
-    each region of a record with regions) and stopped, its URL on the record's login hosts and
-    never sending the browser to localhost. A pinned CLI's version bump that changes its
-    sign-in fails the build here, not in a user's sign-in. No account is needed; the sandbox is
-    killed whatever happens."""
-    from e2b import Sandbox
+    each region of a record with regions) and stopped, its URL the record's pinned page and
+    never sending the browser to localhost. Each runs under the production egress allowlist
+    (review L3): the strictest plan, the egress door alone, widened by that engine's own hosts
+    as the sandbox Worker widens a sign-in's, all else denied, the resolver pinned; so a
+    vendor that adds a sign-in host fails here too. A pinned CLI's version bump that changes
+    its sign-in fails the build here, not in a user's sign-in. No account is needed; the
+    sandbox is killed whatever happens."""
+    from e2b import ALL_TRAFFIC, Sandbox
+
+    egress, servers = network_constants()
+
+    def plan(hosts):
+        return {"allow_out": [*hosts, egress], "deny_out": [ALL_TRAFFIC], "dns_servers": servers}
 
     results = []
-    sandbox = Sandbox.create(template=name, timeout=900)
+    sandbox = Sandbox.create(template=name, timeout=900, network=plan([]))
     try:
-        sandbox.commands.run("/usr/local/bin/ta-runner prepare 1.1.1.1", user="root",
-                             timeout=300)
+        sandbox.commands.run("/usr/local/bin/ta-runner prepare " + " ".join(servers),
+                             user="root", timeout=300)
         for path in sorted(SOURCES.glob("*.json")):
             record = json.loads(path.read_text())
             cli = record.get("cli") or {}
             if cli.get("login") is None or record.get("unwired"):
                 continue
             for region in sorted(cli.get("regions") or {}) or [None]:
+                sandbox.update_network(plan(engine_hosts(cli, region)))
                 command = f"/usr/local/bin/ta-runner login-probe {record['id']}"
                 if region is not None:
                     command += f" {region}"
@@ -180,6 +218,64 @@ def check_logins(name):
     print(json.dumps({"logins": results}), flush=True)
     if not all(result["ok"] for result in results):
         raise SystemExit("a record's sign-in is not its record's shape on this template")
+    return results
+
+
+def route_probe(name):
+    """The route probe (codexurl_research.md Q4): on a throwaway sandbox of the template just
+    built, `strace` installed while its network is still open (the template itself unchanged),
+    then the network denied to everything but the pinned resolvers, every record that runs on
+    an API key run on every provider it keys as a run runs it (`ta-runner route-probe`: the
+    real invocation and home, the door at its real path on a loopback capture server, a fake
+    sign-in seeded in the engine's store). It passes only if each first model request reached
+    the door's path with the run's key and secret, nothing connected outside, and no request
+    carried the fake sign-in; otherwise the build fails loudly. The sandbox is killed whatever
+    happens."""
+    from e2b import ALL_TRAFFIC, Sandbox
+
+    _egress, servers = network_constants()
+    sandbox = Sandbox.create(template=name, timeout=1800)
+    try:
+        installed = sandbox.commands.run(
+            "(command -v strace || (apt-get -qq update && apt-get -qq install -y strace)) "
+            ">/dev/null 2>&1; command -v strace", user="root", timeout=600)
+        if not installed.stdout.strip():
+            raise SystemExit("the route probe's sandbox has no strace")
+        sandbox.commands.run("/usr/local/bin/ta-runner prepare " + " ".join(servers),
+                             user="root", timeout=300)
+        sandbox.update_network({"deny_out": [ALL_TRAFFIC], "dns_servers": servers})
+        try:
+            done = sandbox.commands.run("/usr/local/bin/ta-runner route-probe " +
+                                        " ".join(servers), user="root", timeout=1500)
+            out, code = done.stdout, 0
+        except Exception as error:  # a non-zero exit: its lines are still printed
+            out, code = getattr(error, "stdout", "") or "", 1
+    finally:
+        sandbox.kill()
+    results = [json.loads(line) for line in out.splitlines() if line.strip()]
+    print(json.dumps({"routes": results}), flush=True)
+    if code != 0 or not results or not all(result["ok"] for result in results):
+        raise SystemExit("a keyed engine's model requests do not reach the egress door alone "
+                         "on this template")
+    return results
+
+
+def record_pass(name, logins, routes):
+    """The tag that passed both checks, with what they found, kept in `passed.json` (one entry
+    a tag, newest last): the record the template guard holds a pinned tag to."""
+    import datetime
+    passed = json.loads(PASSED.read_text()) if PASSED.exists() else []
+    tag_ = name.split(":", 1)[1]
+    passed = [entry for entry in passed if entry["tag"] != tag_]
+    passed.append({
+        "tag": tag_,
+        "passed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "logins": [{"engine": r["engine"], "region": r["region"], "ok": r["ok"],
+                    "host": r.get("host")} for r in logins],
+        "routes": [{"engine": r["engine"], "provider": r["provider"], "ok": r["ok"],
+                    "turns": r.get("turns"), "compacted": r.get("compacted")} for r in routes],
+    })
+    PASSED.write_text(json.dumps(passed, indent=2) + "\n")
 
 
 def main():
@@ -193,12 +289,18 @@ def main():
         if "--check-logins" in sys.argv:
             check_logins(name)
             return
+        if "--route-probe" in sys.argv:
+            route_probe(name)
+            return
         from e2b import Template
         info = Template.build(template(stage), name, cpu_count=CPU, memory_mb=MEMORY_MB,
                               on_build_logs=lambda entry: print(str(entry)[:2000], flush=True))
+        logins = check_logins(name)
+        routes = route_probe(name)
+        # Both standing checks passed: only now the tag, to be pinned, and its record.
+        record_pass(name, logins, routes)
         print(json.dumps({"template": name, "template_id": getattr(info, "template_id", None),
                           "build_id": getattr(info, "build_id", None)}))
-        check_logins(name)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,8 @@
  * tier and the owner's own limits, never a cap of the platform's. The review's attack tests
  * (H1, H2, H3, M1, M2) are here as the fixed behaviour.
  */
-import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { toolsNamed } from "../../doors/src/tools";
 import { PLACE_BYTES } from "../src/bodies";
@@ -498,6 +499,10 @@ describe("attendance (review H2)", () => {
   it("is the mail's: the owner's own mail runs on a source that runs attended only, another " +
      "agent's mail does not", async () => {
     const r = await gated();
+    // Codex's sign-in switched on in the control record, which the lane reads itself.
+    await env.CONTROL.put("c:control", JSON.stringify({
+      outside: "on", ordinary: "all", canary: [], inbound: false, signins: { codex: true } }));
+    onTestFinished(() => env.CONTROL.delete("c:control"));
     await defineAgent(r.stub, r.bind(), "coder", { engine: "codex",
                                                    credential: "vendor_login_in_sandbox",
                                                    scopes: [] });

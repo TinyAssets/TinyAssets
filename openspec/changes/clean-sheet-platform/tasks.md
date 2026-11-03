@@ -527,27 +527,58 @@ account and no deploy.
     opens the sandbox's lease with no run (or joins the live one) and the sandbox Worker
     starts the record's login there (`ta-runner login-launch`) as a pool user, on a terminal
     of its own (util-linux `script` in the VM, so the raw terminal never leaves it), its home
-    from the engine's store. Only the record's shapes leave the VM: a URL matching
-    `url_pattern` on its login hosts (and the chosen region's), a device code of at most 16
-    letters, digits and hyphens; a credential-shaped value is refused as a second line. The
-    owner's object checks each prompt again outside the VM against the record
-    (`signinShape`) before it keeps or relays it, and stops a sign-in whose prompt is not the
-    vendor's (a hijacked engine shows no look-alike page). Frames go to the app's socket by
-    the sign-in's id (`ta.signin`), the app showing the vendor's page's host in words; a
-    pasted code goes on a door held to the owner's session, through the Worker's upload, read
-    once and deleted, over a socket to that login's stdin alone, never logged or stored, and
-    refused once the login ended. The end: the secrets kept in the engine's store, presence
-    reported (`status_argv`, or `state_checks` for a record with none). A sign-out runs the
-    record's `logout_argv` first, then deletes its `secret_paths`. A login is stopped at the
-    vendor's code's lifetime (`expires_s`, Codex 15 min, Gemini 5). A secret a run did not
-    change is never written back over the store's (a refresh token is single-use).
+    from the engine's store. Only the record's shapes leave the VM: the record's pinned page
+    (`cli.login.url`: its hosts among the login hosts and the chosen region's, its path, its
+    fixed parameters exactly, its free ones unreserved values, no other parameter, so no other
+    OAuth client's page and no redirect chain), a device code of at most 16 letters, digits
+    and hyphens; a credential-shaped value is refused as a second line, in the VM (with the
+    stores' secrets) and on the trusted side. The owner's object checks each prompt again
+    outside the VM (`signinShape`) before it keeps or relays it, and stops a sign-in whose
+    prompt is not the vendor's (a hijacked engine shows no look-alike page). Frames carry a
+    sign-in's fixed states only (`SIGNIN_STATES`, a schema CHECK too), the URL and code, and a
+    refusal's fixed reason (`SIGNIN_REFUSALS`), which the app says in plain words: no text
+    the VM chose leaves it. Frames go to the app's socket by the sign-in's id (`ta.signin`),
+    the app showing the vendor's page's host in words; a pasted code (one line, at most a
+    Linux terminal line, 4095) goes on a door held to the owner's session, only to a sign-in
+    whose record takes one and that is showing its prompt, through the Worker's upload, read
+    and deleted at once (dropped if the hand-over fails, and any left by a pause deleted by
+    `prepare` at the resume), over a socket to that login's stdin alone, never logged or
+    stored, and refused once the login ended. The end: the secrets kept in the engine's
+    store, presence reported (`status_argv`, or `state_checks` for a record with none). A
+    sign-out runs the record's `logout_argv` first, then deletes its `secret_paths`.
+  - An open sign-in's bound is each record's `cli.login.expires`, cited: Codex 900 s (its
+    CLI's own text), Gemini 300 s and Kimi 900 s (their pinned CLIs' own timers): the
+    vendors' own. Claude's 600 s is the platform's own bound on an open sign-in (from its
+    start, so the owner's password and 2FA too), since an open sign-in keeps a metered
+    sandbox up: Anthropic documents none and the CLI sets no timer, and RFC 6749's 10-minute
+    code lifetime is context only (`limits-audit.md`); the time a real sign-in with 2FA takes
+    is owed to the founder's live test, and sets it if too tight. The runner stops the login there,
+    and the owner's object ends the sign-in `expired` one lease TTL past it however its
+    runner beats, stopping its CLI and freeing its lease; the app then offers to start again.
+  - A secret goes back to the store by compare-and-swap under a per-engine store generation:
+    only one the run changed, only while the store still holds the copy the run started
+    from, and only in the generation its home was made in. A completed sign-in that writes
+    new secrets, and a sign-out, each move the generation on, so a run live across one never
+    undoes it; one that only began, failed or was stopped moves nothing, so it never discards
+    a live run's refresh. A sign-out also stops that engine's live runs in the sandbox. Every
+    home's snapshot goes with the home. The store's lock names its holder with its boot (a
+    pid repeats after a reboot), is waited on without blocking the runner's heartbeats, and
+    for at most a command's bound, then the call fails loudly.
   - Each source's sign-in sits behind its own switch in the control record (`signins`),
     defaulting to its record's verdict on the vendor's terms for hosted use
     (`cli.login.hosted_use`, cited): Claude Code `allowed` (on); Codex, Gemini and Kimi
-    `unclear` (off). Turning one on is the founder's call.
+    `unclear` (off). Turning one on is the founder's call. The doors hand the switched-on
+    records with every binding, as they hand the tier numbers, and the owner's object holds
+    to them on every path: a sign-in (never a sign-out: a login is always removable), a
+    pasted code, and a run's choice of source (a named engine refused `signin_off`, never a
+    silent key; `auto` passes over a switched-off plan). The runs lane reads the control
+    record itself (`ControlGate.signins`, fail-closed) at each pass, so a source switched
+    off stops powering a schedule's or a mail's run though the owner makes no door call.
   - A standing check: every template build ends by running each record's login up to its
-    prompt on a throwaway sandbox (`ta-runner login-probe`, `build.py --check-logins`),
-    checking its shape and that it never sends the browser to localhost.
+    prompt on a throwaway sandbox under the production egress allowlist (the egress door
+    alone, widened by that engine's own hosts), `ta-runner login-probe`, `build.py
+    --check-logins`, checking its pinned page and that it never sends the browser to
+    localhost.
   - The past runs: `runs` (owner app) and `runList` (the object's door, held to the
     caller's grant: an outside client sees its own), newest first, a page at a time.
   - Owed: a completed sign-in on each vendor (the founder's account, his live test); the
@@ -1446,9 +1477,40 @@ R, S, M and W.
     `baseUrl` per provider; the pi-ai key variables; `.pi/skills` loaded under `--approve`;
     `--tools`; the user-level `mcp.json` reaching the run's door over streamable HTTP; the
     prompt on stdin.
-  - **Codex:** whether `OPENAI_BASE_URL` still sets the built-in provider's base URL in
-    0.166.0, or only the `openai_base_url` config key does: the package's own README says
-    nothing, and the review found the variable only in its network-proxy table.
+  - [x] **Codex:** whether `OPENAI_BASE_URL` still sets the built-in provider's base URL in
+    0.166.0: no, removed in 0.119.0 (`codexurl_research.md`). Built (on `platform-signin`):
+    Codex's key run reaches the door through a custom model provider in its API-key argv
+    (`-c model_provider="tinyassets"`, `model_providers.tinyassets.{name,base_url,env_key,
+    wire_api}`, `env_key` `CODEX_API_KEY`, `wire_api` `responses`), its `api_key_env`
+    base-URL variable null. The checker holds four rules: a null base-URL variable needs a
+    declared channel (a file template or the API-key argv); `{base_url}` only where only a
+    key run reads it; joined to its key, never bare; and no argument a signed-in run gets is
+    endpoint- or provider-shaped. An API-key run's home carries the store's sessions and
+    never its secrets (a vendor sign-in's `auth.json` stays out of a key run's reach). The
+    route probe (`ta-runner route-probe`, `build.py` after every build, on a sandbox whose
+    network denies all but the pinned resolver): every keyed engine on every provider it
+    keys, run as a run runs it with its door on a loopback capture server at the real path
+    and a fake sign-in seeded in the store, passes only if the first model request reached
+    the door's path with the run's key and secret, nothing connected outside (`strace`), and
+    no request carried the fake sign-in; the tag is printed only then. Review round 3: the
+    capture server answers each model request with a minimal valid reply in its sealed
+    API's wire format (Messages, Responses, Chat Completions, Generative Language), so each
+    CLI completes a turn; the probe then resumes it (its home made again from the store) and,
+    where the record says how (`cli.compaction`: Codex's `model_auto_compact_token_limit=1`,
+    its compact prompt's marker), compacts first, and judges every request of both turns,
+    not only the first. A passing tag is recorded with its checks' results in
+    `sandbox/template/passed.json`; the template guard fails CI when the pinned tag has no
+    passing record covering every record's login and route. The endpoint rules name
+    `provider` and `proxy` too (a signed-in run's files and argvs; every run's variables:
+    `HTTPS_PROXY`, `ALL_PROXY`), and Codex's `--oss`. Review round 4: no record sets a
+    variable that loads code into a CLI's process (`NODE_OPTIONS`, `LD_*`, `DYLD_*`, `BUN_*`,
+    `PYTHON*`, Perl's, Ruby's, the JVM's, `BASH_ENV`); the pass record must show a record's
+    compaction where it has `cli.compaction`; a resume passes only if its requests carry the
+    first turn's own word. Left for later: the run secret into a header
+    (`env_http_headers`).
+  - Known gap (review round 3, L-c): the route probe traces `connect()` alone. An unconnected
+    UDP `sendto` or an io_uring connect would not show; none of the pinned CLIs uses either
+    today, and the probe's sandbox denies every outbound address but the resolver anyway.
 - [x] Code mode's VM in the hooks Worker (H0, narrowed by D): `Hooks.codemodeExecute(name,
   request, exchange)` runs one execution in its `CodemodeSandbox` (a
   `CodemodeSandboxDurableObject` subclass with its interrupt budget and memory), handing

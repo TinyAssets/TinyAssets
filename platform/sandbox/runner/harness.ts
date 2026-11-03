@@ -122,6 +122,27 @@ export interface FakeCli {
   /** What `status_argv` prints and exits with. */
   readonly status?: { readonly out: string; readonly exit: number };
   /**
+   * An absolute path it waits to exist before it exits (after its lines and `sleepMs`), so a
+   * test holds runs live together by an event, never by a guess at how long a start takes.
+   */
+  readonly holdUntil?: string;
+  /**
+   * HTTP requests it makes before anything else, each to a URL (and headers and body) filled
+   * from what the run gave it: `{env:NAME}`, `{after:NAME}` (a variable's value after its
+   * first `: `), `{argv:KEY}` (the value of its `KEY=...` argument, quotes dropped),
+   * `{json:FILE#a.b}` (`*` the first key), `{placeholder}` (the run's `ta_ph_` key).
+   */
+  readonly requests?: readonly { readonly url: string; readonly method?: string;
+                                 readonly headers?: Readonly<Record<string, string>>;
+                                 readonly body?: string;
+                                 /** Made only when one of its arguments holds this. */
+                                 readonly if?: string }[];
+  /**
+   * A file (`~/...`, under one of the record's session paths) its prompts are kept in, as a
+   * CLI keeps its conversation: `{history}` in a request is what it held before this run.
+   */
+  readonly history?: string;
+  /**
    * A sign-in (its record's `login.argv`): `lines` printed at once (stdout, or stderr with
    * `stderr`); with `code`, one line read from stdin, then `writes` made and exit 0; without
    * it, `writes` made at once, then it stays up (a CLI that does not exit once signed in)
@@ -130,11 +151,6 @@ export interface FakeCli {
   readonly login?: { readonly lines: readonly string[]; readonly code?: boolean;
                      readonly stderr?: boolean; readonly writes?: Readonly<Record<string, string>>;
                      readonly exit?: number; readonly tty?: boolean };
-  /**
-   * An absolute path it waits to exist before it exits (after its lines and `sleepMs`), so a
-   * test holds runs live together by an event, never by a guess at how long a start takes.
-   */
-  readonly holdUntil?: string;
 }
 
 /** The fake CLI's own program: what it was run with goes to `<root>/fake-seen`. */
@@ -149,6 +165,46 @@ const where = (file) => file.startsWith("~/") ? path.join(process.env.HOME, file
   : file.startsWith("$TA_SCRATCH/") ? path.join(process.env.TA_SCRATCH, file.slice(12))
   : path.resolve(file);
 let stdin = "";
+const fill = (text) => text
+  .replace(/\{env:([A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? "")
+  .replace(/\{after:([A-Z0-9_]+)\}/g, (_, name) => (process.env[name] ?? "").split(": ").slice(1)
+    .join(": "))
+  .replace(/\{argv:([^}]+)\}/g, (_, key) => {
+    const arg = process.argv.find((each) => each.startsWith(key + "="));
+    return arg === undefined ? "" : arg.slice(key.length + 1).replace(/^"|"$/g, "");
+  })
+  .replace(/\{json:([^#}]+)#([^}]+)\}/g, (_, file, dotted) => {
+    try {
+      let value = JSON.parse(fs.readFileSync(where(file), "utf8"));
+      for (const key of dotted.split(".")) {
+        value = key === "*" ? Object.values(value)[0] : value[key];
+      }
+      return String(value);
+    } catch { return ""; }
+  })
+  .replace(/\{placeholder\}/g, () =>
+    Object.values(process.env).find((value) => value.startsWith("ta_ph_")) ?? "")
+  .replace(/\{history\}/g, () => {
+    try { return fs.readFileSync(where(plan.history), "utf8"); } catch { return ""; }
+  });
+const request = async () => {
+  for (const each of plan.requests || []) {
+    if (each.if !== undefined && !process.argv.some((arg) => arg.includes(each.if))) {
+      continue;
+    }
+    try {
+      await fetch(fill(each.url), { method: each.method || "POST",
+        headers: Object.fromEntries(Object.entries(each.headers || {}).map(([name, value]) =>
+          [name, fill(value)])),
+        body: each.body === undefined ? undefined : fill(each.body),
+        signal: AbortSignal.timeout(3000) });
+    } catch {}
+  }
+  if (plan.history) {
+    fs.mkdirSync(path.dirname(where(plan.history)), { recursive: true });
+    fs.appendFileSync(where(plan.history), stdin + "\n");
+  }
+};
 const done = () => {
   const dumps = {};
   for (const file of plan.dumps || []) {
@@ -240,9 +296,10 @@ if (plan.login && !process.argv.includes("status")) {
     finish();
   }
 } else if (!process.argv.includes("status")) {
+  const go = () => request().then(done, done);
   process.stdin.on("data", (d) => { stdin += d; });
-  process.stdin.on("end", done);
-  process.stdin.on("error", done);
+  process.stdin.on("end", go);
+  process.stdin.on("error", go);
 } else { done(); }
 `;
 
