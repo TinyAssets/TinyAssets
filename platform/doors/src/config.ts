@@ -92,16 +92,6 @@ export const INBOUND_PATH = "/hooks/inbound/";
  */
 export const INBOUND_BODY_MAX = API_BODY_MAX;
 
-/**
- * The security bounds on what an unauthenticated caller can make the platform do (slice L;
- * `limits-audit.md`, "Security"): the `ratelimits` bindings, each keyed by the caller's IP.
- * They bound no authenticated caller: the tier's simultaneous runs, the owner's own settings
- * and vendors' limits bound those.
- */
-export interface RateLimit {
-  limit(options: { key: string }): Promise<{ success: boolean }>;
-}
-
 /** The files Worker's chunk entrypoint, as the file door's bytes reach it (`file-bytes.ts`). */
 export interface FilesService {
   putChunks(ns: string, chunks: ChunkPut[]): Promise<{ created: number }>;
@@ -168,18 +158,12 @@ export interface DoorsEnv {
   readonly UPSTREAM: string;
   /**
    * The upstream's client secret (WorkOS's API key: the code exchange and the identity's
-   * deletion need it), copied into the Worker's secrets by the deploy from the production
-   * host's `/etc/tinyassets/env`; absent until then, and every sign-in fails loudly.
+   * deletion need it), set in the Worker's secrets by the deploy kit from the production
+   * environment's secret store; absent until then, and every sign-in fails loudly.
    */
   readonly WORKOS_API_KEY?: string;
   /** The files Worker: only `file-bytes.ts` reaches it, the binder streaming an upload. */
   readonly FILES: FilesService;
-  /** Sign-in starts per caller address (`/authorize`, a consent, a callback). */
-  readonly SIGNIN_LIMIT: RateLimit;
-  /** Metadata fetches an unknown `client_id` triggers, per caller address. */
-  readonly CIMD_LIMIT: RateLimit;
-  /** Unauthenticated failures (a bad bearer or key, a token-endpoint or hook failure). */
-  readonly FAIL_LIMIT: RateLimit;
 }
 
 /**

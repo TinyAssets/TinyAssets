@@ -1,25 +1,28 @@
 name: Platform deploy (manual, founder-approved)
 
 # The platform's dark-deploy kit (platform/deploy/deploy.ts, slice L), run by
-# hand. Every run first prints the kit's plan (what it would change) to the job
-# summary; only a run with `mode` other than `plan` then applies it. The
-# founder's dispatch of a mode other than `plan` is the kit's `--yes`; with the
-# founder as the `production` environment's required reviewer
-# (docs/host-actions.md), GitHub also holds each run until approved.
+# hand from `main`, in two jobs:
+#   plan   - prints what the run would change to the job summary. It holds
+#            only the Cloudflare token (not a production secret) and the
+#            repo's variables, and changes nothing.
+#   apply  - needs the plan, then waits on the main-only `production`
+#            environment: with the founder as its required reviewer
+#            (docs/host-actions.md), GitHub holds it until he approves,
+#            after the plan is on the page. It runs the kit with `--yes`.
 #
-# The job runs in the main-only `production` environment, so a branch's copy
-# of this file never reaches its secrets
-# (tests/test_workflow_production_environment.py). Secrets come from that
-# environment's secret store, never from a host (Direction 8). The kit never
-# prints a value and never makes one in a deploy; GATEWAY_KEYRING is made once with `keyring-new` and
-# rotated with `keyring-add` (both local), then stored here.
+# The apply job's secrets come from the `production` environment's store, so
+# a branch's copy of this file never reaches them
+# (tests/test_workflow_production_environment.py), and never from a host
+# (Direction 8). The kit never prints a value and never makes one in a
+# deploy; GATEWAY_KEYRING is made once with `keyring-new` and rotated with
+# `keyring-add` (both local), then stored here.
 #
 # Modes:
-#   plan    - print what would change; change nothing
-#   dark    - the dark deploy: storage, secrets, six Workers with no route,
-#             the control record when absent, the WorkOS redirect URI
-#   routes  - the cutover's routes (its own approved run)
-#   h2      - H2's probes, once a probe owner exists
+#   plan    - the plan job alone
+#   dark    - storage, secrets, six Workers with no route, the control record
+#             when absent, the WorkOS redirect URI, then the handles canary
+#   routes  - the same, then the routes handed to the doors one at a time
+#   h2      - H2's probes alone, once a probe owner exists; nothing deployed
 
 on:
   workflow_dispatch:
@@ -49,8 +52,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  plan:
     if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
+      OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
+      OWNER_TOKEN_CLAIMS: ${{ vars.OWNER_TOKEN_CLAIMS }}
+      MODE: ${{ inputs.mode }}
+      ROTATE: ${{ inputs.rotate }}
+      MIGRATE: ${{ inputs.migrate }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the platform's pinned tools
+        working-directory: platform
+        run: npm ci
+
+      - name: The plan (changes nothing)
+        run: |
+          set -euo pipefail
+          args=(--public)
+          if [ "${MODE}" = "routes" ]; then args+=(--routes); fi
+          if [ "${MODE}" = "h2" ]; then args+=(--h2); fi
+          if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
+          if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
+          node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"
+
+  apply:
+    needs: plan
+    if: github.ref == 'refs/heads/main' && inputs.mode != 'plan'
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -58,13 +96,14 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
-      WORKOS_CLIENT_ID: ${{ secrets.WORKOS_CLIENT_ID }}
-      OWNER_ISSUER: ${{ secrets.OWNER_ISSUER }}
-      OWNER_TOKEN_CLAIMS: ${{ secrets.OWNER_TOKEN_CLAIMS }}
+      WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
+      OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
+      OWNER_TOKEN_CLAIMS: ${{ vars.OWNER_TOKEN_CLAIMS }}
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       ROUTING_MAC_KEY: ${{ secrets.ROUTING_MAC_KEY }}
       GATEWAY_KEYRING: ${{ secrets.GATEWAY_KEYRING }}
       INBOUND_SLACK_SIGNING_SECRET: ${{ secrets.INBOUND_SLACK_SIGNING_SECRET }}
+      TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
       TA_PROBE_KEY: ${{ secrets.TA_PROBE_KEY }}
       TA_PROBE_KEY_B: ${{ secrets.TA_PROBE_KEY_B }}
       TA_PROBE_APP_TOKEN: ${{ secrets.TA_PROBE_APP_TOKEN }}
@@ -83,22 +122,15 @@ jobs:
         working-directory: platform
         run: npm ci
 
-      - name: The plan (changes nothing)
-        run: |
-          set -euo pipefail
-          args=()
-          if [ "${MODE}" = "routes" ]; then args+=(--routes); fi
-          if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
-          if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
-          node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"
-
       - name: Apply
-        if: inputs.mode != 'plan'
         run: |
           set -euo pipefail
+          if [ "${MODE}" = "h2" ]; then
+            node --experimental-strip-types platform/deploy/deploy.ts --h2
+            exit 0
+          fi
           args=(--yes)
           if [ "${MODE}" = "routes" ]; then args+=(--routes); fi
-          if [ "${MODE}" = "h2" ]; then args+=(--h2); fi
           if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
           if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
           node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"

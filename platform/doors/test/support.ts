@@ -24,19 +24,9 @@ export const OPEN = Object.freeze({ outside: "on", ordinary: "all", canary: [], 
                                     tiers: TIERS });
 export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
 
-/**
- * One request through the doors, its waitUntil work finished. A request that names no
- * caller IP comes from an address of its own, as Cloudflare's `CF-Connecting-IP` names it,
- * so the unauthenticated callers' bounds (`throttle.ts`) count only the tests that set one.
- */
+/** One request through the doors, its waitUntil work finished. */
 export async function call(request: Request, environment: DoorsEnv = doorsEnv):
     Promise<Response> {
-  if (!request.headers.has("CF-Connecting-IP")) {
-    const headers = new Headers(request.headers);
-    headers.set("CF-Connecting-IP", `198.51.100.${crypto.getRandomValues(new Uint8Array(1))[0]}`
-                + `:${crypto.randomUUID()}`);
-    request = new Request(request, { headers });
-  }
   const ctx = createExecutionContext();
   const response = await worker.fetch(request, environment, ctx);
   await waitOnExecutionContext(ctx);

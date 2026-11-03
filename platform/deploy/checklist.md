@@ -2,21 +2,31 @@
 
 The kit is `platform/deploy/deploy.ts`. It runs from the manual workflow **Platform deploy
 (manual, founder-approved)** (`.github/workflows/platform-deploy.yml`), on `main` only, in
-the repo's main-only `production` environment. Your dispatch of a mode other than `plan` is
-the kit's `--yes`. Every run prints its plan to the job summary first.
+two jobs:
 
-Run it once with mode `plan` and read the list; it changes nothing. Then run it with mode
-`dark`.
+1. **`plan`** prints what the run would change to the job summary. It holds only the
+   Cloudflare token and the repo's variables, and changes nothing.
+2. **`apply`** waits for the plan job, then for the main-only `production` environment. With
+   you as that environment's required reviewer, GitHub holds it until you approve it, with
+   the plan already on the page. It then runs the kit with `--yes`.
+
+Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and approve.
 
 ## Before you run it
 
-- **The environment.** The `production` environment (`docs/host-actions.md`) holds the
-  secrets. Add yourself as its required reviewer if you want GitHub to hold each run for
-  your approval as well; whether it has one today is **unverified** here. Store these as
-  its secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `WORKOS_API_KEY`,
-  `WORKOS_CLIENT_ID`, `OWNER_ISSUER` (AuthKit's production issuer URL), `E2B_API_KEY`,
-  `ROUTING_MAC_KEY`, `GATEWAY_KEYRING`, and, if you want Slack events,
-  `INBOUND_SLACK_SIGNING_SECRET`. The kit reads nothing from a host.
+- **Your approval.** Add yourself as the `production` environment's required reviewer
+  (`docs/host-actions.md`), so the apply job waits for you after its plan. Whether it has
+  one today is **unverified** here. Without one, starting a run with a mode other than
+  `plan` is the approval.
+- **The secrets and variables.** The kit reads nothing from a host.
+  - The `production` environment's secrets: `WORKOS_API_KEY`, `E2B_API_KEY`,
+    `ROUTING_MAC_KEY`, `GATEWAY_KEYRING`, `TINYASSETS_WIKI_CANARY_TOKEN` (the handles
+    canary's), and, if you want Slack events, `INBOUND_SLACK_SIGNING_SECRET`.
+  - `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets, where
+    `deploy-worker.yml` already reads them. The plan job reads them too; the repo's
+    workflow guard counts neither as a production secret.
+  - Repository variables, which are not secrets: `OWNER_ISSUER` (AuthKit's production issuer
+    URL), `WORKOS_CLIENT_ID`, and `OWNER_TOKEN_CLAIMS` (below).
   - `WORKOS_API_KEY` lives on the production host today. Move it once, the way
     `copy-secrets-to-production.yml` moved the others.
   - `ROUTING_MAC_KEY` is one random 32-byte value you make and store. The kit never makes it.
@@ -24,8 +34,9 @@ Run it once with mode `plan` and read the list; it changes nothing. Then run it 
     `node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>`, store the
     file's contents, then delete the file.
 - **`auth_time`, settled before anything changes.** Every sign-in needs AuthKit's tokens to
-  carry `auth_time`. Store one real AuthKit token's claims as `OWNER_TOKEN_CLAIMS`, a JSON
-  object (the `fetch-prod-logs` workflow shows a claim receipt). Without it, the kit uses the
+  carry `auth_time`. Store one real AuthKit token's `iss` and `auth_time`, copied from it, as
+  the variable `OWNER_TOKEN_CLAIMS`, a JSON object (the `fetch-prod-logs` workflow shows a
+  claim receipt). The kit reads only those two, so leave out `sub` and the rest. Without it, the kit uses the
   discovery's `claims_supported`. A field that is absent counts as unknown, and unknown stops
   the kit; it never passes. If the token has no `auth_time`, the kit stops and you choose:
   ask AuthKit for it (`max_age=0`), or accept the binder's clock at the code exchange.
@@ -59,8 +70,10 @@ It never counts as "absent".
    never generated or replaced. It is rotated only by adding a key: run `keyring-add` on your
    copy of the stored keyring, store the result, then run with `rotate: GATEWAY_KEYRING`. The
    kit refuses a rotated keyring with fewer than two keys, or whose active key is not among
-   them. Cloudflare never shows a held secret, so the kit cannot compare against the old
-   keyring; `keyring-add` keeps every old key by construction.
+   them. **Residual:** Cloudflare never shows a held secret, so the kit cannot read the
+   deployed keyring back. A two-key ring that dropped the deployed key would pass its check
+   and make every sealed credential unreadable. `keyring-add` keeps every old key by
+   construction, so rotate only with it, on your copy of the stored keyring.
 4. **Six Workers deployed with no public route:** files, gateway, hooks, sandbox, owner,
    doors. None has a `workers.dev` or preview URL. A Worker's first deploy is
    `wrangler deploy`. Later deploys upload a version, then deploy it (`wrangler versions
@@ -73,38 +86,46 @@ It never counts as "absent".
    record is there, or the read fails, the kit leaves it alone.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:**
    `https://tinyassets.io/oauth/upstream/callback`. The kit never deletes one.
-7. **The handles canary** (Fact 11) runs against `tinyassets.io/mcp`. No route moves, so it
-   should show the live connector exactly as before.
+7. **The handles canary** (Fact 11) runs against `tinyassets.io/mcp`, with
+   `TINYASSETS_WIKI_CANARY_TOKEN`. No route moves, so it should show the live connector
+   exactly as before.
 
 ## What it does not change
 
 - No DNS record and no route on `tinyassets.io`. The live connector keeps serving everyone.
 - No owner data. No connector re-authorizes.
-- No WAF rule. See "Later steps".
+- No rate limit and no WAF rule. The platform sets no number on any caller. Cloudflare's
+  own DDoS protection is in front of every Worker.
 
 ## Later steps, each its own approved run
 
-- **Mode `routes`: the cutover's routes.** It attaches the doors' routes (`/mcp*`, `/api/*`,
-  `/hooks/inbound/*`, `/app/api/*`, `/authorize*`, `/oauth/*`, `/.well-known/oauth-*`) and the
-  `egress.tinyassets.io` custom domain, with `wrangler triggers deploy`.
-  - The routes stay with their current Worker until you release them. Wrangler refuses a
-    pattern another Worker holds ("Can't deploy routes that are assigned to another worker",
-    wrangler 4.154's source). When patterns overlap, Cloudflare's routes page says the most
-    specific one wins. So the old proxy's `.well-known/oauth-protected-resource*` would keep
-    that path from the doors.
-  - Before deploying anything, the kit reads the zone's routes. It stops on any route of
-    another Worker that overlaps one of the doors'. Today that is the old proxy
-    (`tinyassets-mcp-proxy`): `mcp*`, `app*`, `api*`, `.well-known/oauth-protected-resource*`
-    and `.well-known/oauth-authorization-server*`.
-  - Release those yourself, as their own approved step, then run `routes`.
-  - Every connector then signs in again once. Update the handles canary's tool list for the
-    new door first.
-- **One WAF rate-limiting rule** on `/authorize` and `/oauth/token`, as a per-IP backstop at
-  the edge (research 3a). You make it in the dashboard. Free allows one rule, Pro two. The
-  zone's plan is **unverified** here; check it in the dashboard before making the rule.
-- **Mode `h2`: H2's probes**, once a probe owner exists. Store `TA_PROBE_KEY` and
-  `TA_PROBE_KEY_B` (two owners' API keys), plus `TA_PROBE_APP_TOKEN` and `TA_PROBE_KEY_ID` for
-  the revoke probe. It deploys as `dark` does, then prints one row per probe.
+- **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
+  the doors' routes over (`/mcp*`, `/api/*`, `/hooks/inbound/*`, `/app/api/*`,
+  `/authorize*`, `/oauth/*`, `/.well-known/oauth-*`) one route at a time, through
+  Cloudflare's routes API, so no path is ever served by nothing:
+  - A pattern another Worker holds is moved to the doors in place (`PUT`, one change). Today
+    that is the old proxy's (`tinyassets-mcp-proxy`) `mcp*`.
+  - A pattern nobody holds is added (`POST`).
+  - Cloudflare sends each URL to the most specific pattern that matches (its routes page).
+    So the old proxy's narrower `.well-known/oauth-protected-resource*` and
+    `.well-known/oauth-authorization-server*` would keep their paths from the doors'
+    `.well-known/oauth-*`. Each is deleted only after the doors' wider pattern exists, so
+    its paths pass straight to the doors.
+  - The old proxy's wider `app*` and `api*` stay. The doors' narrower `app/api/*` and
+    `api/*` already take their own paths, and `/app` itself stays with the proxy.
+  - A refused change stops the run and says which steps are done.
+
+  It then adds the `egress.tinyassets.io` custom domain (`wrangler triggers deploy`) and
+  runs the handles canary. Every connector then signs in again once. Update the handles
+  canary's tool list for the new door first.
+- **Optional: a WAF rate-limiting rule of your own.** The platform sets no number on any
+  caller. If you ever want a per-IP backstop at the edge, make one zone rule in the
+  dashboard (Free allows one, Pro two), with your own number. It is your setting, recorded
+  as such. The zone's plan is **unverified** here.
+- **Mode `h2`: H2's probes alone**, once a probe owner exists. They deploy nothing. Store
+  `TA_PROBE_KEY` and `TA_PROBE_KEY_B` (two owners' API keys), plus `TA_PROBE_APP_TOKEN` and
+  `TA_PROBE_KEY_ID` for the revoke probe, as `production` secrets. It prints one row per
+  probe.
 - **Open the gates** in the control record when you are ready: canary owners first, then
   `outside: "on"`, and `inbound: true` for `/hooks/inbound`.
 

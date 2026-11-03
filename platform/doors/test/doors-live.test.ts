@@ -2,8 +2,9 @@
  * Slice L's doors, in workerd through the real owner object: the platform's explicit admit
  * at sign-up and the erasure's outside record (an erased owner's name resolving nothing
  * again); a set to `revoked` through the provider revoke; the key store; `/hooks/inbound`'s
- * two shapes (a bad HMAC, a replay, the gate, the breaker); the security bounds on
- * unauthenticated callers; and the file door's bytes, streamed to `FILES` by the binder.
+ * two shapes (a bad HMAC, a replay, the gate, the breaker); no caller counted or capped by
+ * the doors (slice L's review, N1); and the file door's bytes, streamed to `FILES` by the
+ * binder.
  */
 import { createHash, createHmac } from "node:crypto";
 
@@ -26,7 +27,6 @@ import { readOwner, readRoute } from "../src/directory";
 import { ERASURE_QUEUE, eraseOutside, erasureQueue } from "../src/erase";
 import { contentDigest } from "../src/file-bytes";
 import { sharedApps } from "../src/inbound";
-import { clientIdOf, metadataUrl } from "../src/throttle";
 import type { OwnerDO } from "./entry";
 import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
@@ -593,7 +593,7 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
   });
 });
 
-describe("unauthenticated callers' bounds", () => {
+describe("no caller is counted or capped by the doors (slice L's review)", () => {
   let fetched: string[] = [];
   let spy: { mockRestore(): void } | undefined;
 
@@ -611,148 +611,81 @@ describe("unauthenticated callers' bounds", () => {
   });
   afterEach(() => spy?.mockRestore());
 
-  function b64url(text: string): string {
-    return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  }
+  /** More failures from one address than the removed failure bound (115) allowed. */
+  const MANY = 117;
+  /** A credential of the right shape that no grant holds. */
+  const stale = () => `${owner()}:${"a".repeat(16)}:${"b".repeat(32)}`;
 
-  /** `count` requests from one address; each's status. */
-  async function from(ip: string, count: number, make: (i: number) => Request):
-      Promise<number[]> {
-    const statuses: number[] = [];
-    for (let i = 0; i < count; i++) {
-      const request = make(i);
-      request.headers.set("CF-Connecting-IP", ip);
-      statuses.push((await call(request)).status);
-    }
-    return statuses;
-  }
-
-  const SIGNIN = 23;
-  const CIMD = 23;
-  const FAIL = 115;
-
-  it("bound an unknown client_id's metadata fetches at /authorize, an upper-case scheme too",
+  it("serves a valid key from an address that sent many bad MCP bearers (review N1, attack 1)",
      async () => {
-    const ip = `203.0.113.7-${crypto.randomUUID()}`;
-    const statuses = await from(ip, CIMD + 7, (i) => {
-      const params = new URLSearchParams({
-        response_type: "code", client_id: `HTTPS://attacker-${i}.example/client.json`,
-        redirect_uri: "https://attacker.example/cb", state: "s", code_challenge: "c".repeat(43),
-        code_challenge_method: "S256", resource: MCP_RESOURCE });
-      return new Request(url(`/authorize?${params}`), { headers: { ...NAVIGATE } });
-    });
-    expect(statuses.slice(0, CIMD).includes(429)).toBe(false);
-    expect(statuses.slice(CIMD + 1).every((status) => status === 429)).toBe(true);
-    expect(fetched.length).toBeLessThanOrEqual(CIMD + 1);
-  });
-
-  it("bound a token request's metadata fetches when it names its client by HTTP Basic",
-     async () => {
-    const ip = `203.0.113.8-${crypto.randomUUID()}`;
-    const statuses = await from(ip, CIMD + 7, (i) => new Request(url("/oauth/token"), {
-      method: "POST",
-      headers: { Authorization: `bAsIc ${btoa(`${encodeURIComponent(
-                   `https://attacker-${i}.example/c.json`)}:x`)}`,
-                 "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "authorization_code", code: "x" }) }));
-    expect(statuses.at(-1)).toBe(429);
-    expect(fetched.length).toBeLessThanOrEqual(CIMD + 1);
-  });
-
-  it("bound a token request's metadata fetches when only its client assertion names the client",
-     async () => {
-    const ip = `203.0.113.9-${crypto.randomUUID()}`;
-    const statuses = await from(ip, CIMD + 7, (i) => {
-      const iss = `https://attacker-${i}.example/c.json`;
-      const assertion = `${b64url(JSON.stringify({ alg: "RS256" }))}.${
-        b64url(JSON.stringify({ iss, sub: iss, aud: url("/oauth/token"), exp: 9e9 }))}.sig`;
-      return new Request(url("/oauth/token"), { method: "POST", body: new URLSearchParams({
-        grant_type: "authorization_code", code: "x", client_assertion: assertion,
-        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" }) });
-    });
-    expect(statuses.at(-1)).toBe(429);
-    expect(fetched.length).toBeLessThanOrEqual(CIMD + 1);
-  });
-
-  it("find the client id as the provider does: Basic first, then an assertion, then the form",
-     () => {
-    const form = (fields: Record<string, string>) => new URLSearchParams(fields);
-    const basic = new Request(url("/oauth/token"), {
-      headers: { Authorization: `BASIC ${btoa("https%3A%2F%2Fa.example%2Fc:x")}` } });
-    expect(clientIdOf(basic, form({}))).toBe("https://a.example/c");
-    const assertion = `e30.${b64url(JSON.stringify({ iss: "https://b.example/c" }))}.s`;
-    expect(clientIdOf(new Request(url("/oauth/token")),
-                      form({ client_assertion: assertion, client_assertion_type: "x" })))
-      .toBe("https://b.example/c");
-    expect(clientIdOf(new Request(url("/oauth/token")), form({ client_id: "c" }))).toBe("c");
-    expect(metadataUrl("HTTPS://a.example/c")).toBe(true);
-    expect(metadataUrl("https://a.example")).toBe(false);
-    expect(metadataUrl("http://a.example/c")).toBe(false);
-  });
-
-  it("never count a refresh by a known client from a shared backend address", async () => {
-    // Claude's and ChatGPT's backends refresh every user's grant from a few addresses: a
-    // success is never counted, whatever the cache holds.
-    const who = owner();
-    const client = await registerClient();
-    const ip = `198.51.100.200-${crypto.randomUUID()}`;
-    let tokens = await connect(client, { owner: who });
-    for (let i = 0; i < FAIL + 5; i++) {
-      const refreshed = await call(new Request(url("/oauth/token"), {
-        method: "POST", headers: { "CF-Connecting-IP": ip },
-        body: new URLSearchParams({ grant_type: "refresh_token", client_id: client.clientId,
-                                    refresh_token: tokens.refresh_token }) }));
-      expect(refreshed.status).toBe(200);
-      tokens = await refreshed.json();
-    }
-  });
-
-  it("count no cheap refusal: a neighbour's non-navigations lock no one out", async () => {
-    const ip = `198.51.100.7-${crypto.randomUUID()}`;
-    const cheap = await from(ip, SIGNIN * 3, () => new Request(url("/authorize")));
-    expect(cheap.every((status) => status === 403)).toBe(true);
-    const person = await call(new Request(url("/authorize?response_type=code"), {
-      headers: { ...NAVIGATE, "CF-Connecting-IP": ip } }));
-    expect(person.status).not.toBe(429);
-  });
-
-  it("bound sign-in starts per address, an IPv6 holder by its /64", async () => {
-    const prefix = `2001:db8:${Math.floor(Math.random() * 0xffff).toString(16)}:1`;
-    const statuses: number[] = [];
-    for (let i = 1; i <= SIGNIN + 5; i++) {
-      statuses.push((await call(new Request(url("/authorize?response_type=code"), {
-        headers: { ...NAVIGATE, "CF-Connecting-IP": `${prefix}::${i.toString(16)}` } }))).status);
-    }
-    expect(statuses.slice(0, SIGNIN).includes(429)).toBe(false);
-    expect(statuses.at(-1)).toBe(429);
-  });
-
-  it("bound failed bearers, keys and hooks, and refuse a caller past the bound before work",
-     async () => {
-    const ip = `198.51.100.9-${crypto.randomUUID()}`;
-    const bad = await from(ip, FAIL + 3, (i) => new Request(url("/api/tools/agents_list"), {
-      method: "POST", body: "{}", headers: { "Content-Type": "application/json",
-        Authorization: `Bearer ta_key_${i.toString(16).padStart(16, "0")}_${"a".repeat(43)}` } }));
-    expect(bad.slice(0, FAIL).every((status) => status === 401)).toBe(true);
-    expect(bad.at(-1)).toBe(429);
-    // Past the bound, even a hook or an /mcp bearer from that address is refused first.
-    const hook = await call(new Request(url(`/hooks/inbound/${"A".repeat(43)}`), {
-      method: "POST", body: "{}", headers: { "CF-Connecting-IP": ip } }));
-    expect(hook.status).toBe(429);
-  });
-
-  it("never count an authenticated caller's calls", async () => {
-    const ip = `198.51.100.11-${crypto.randomUUID()}`;
     const app = await signInApp({ owner: owner() });
     const minted = await json<{ key: string }>(
       await appPost("keys", app.access_token, app.session, { name: "k", scopes: SCOPES }));
-    const used = await from(ip, FAIL + 10, () => new Request(url("/api/tools/agents_list"), {
-      method: "POST", body: "{}", headers: { Authorization: `Bearer ${minted.key}`,
-                                             "Content-Type": "application/json" } }));
-    expect(used.every((status) => status === 200)).toBe(true);
+    const backend = `198.51.100.250-${crypto.randomUUID()}`;
+    for (let i = 0; i < MANY; i++) {
+      const answer = await call(new Request(url("/mcp"), {
+        method: "POST", body: "{}", headers: { "CF-Connecting-IP": backend,
+          "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${stale()}` } }));
+      expect(answer.status).toBe(401);
+    }
+    const valid = await call(new Request(url("/api/tools/agents_list"), {
+      method: "POST", body: "{}", headers: { "CF-Connecting-IP": backend,
+        Authorization: `Bearer ${minted.key}`, "Content-Type": "application/json" } }));
+    expect(valid.status).toBe(200);
   });
 
-  it("answer an overloaded owner object 429 with Retry-After, never retried", async () => {
+  it("serves a live refresh from an address that sent many failed refreshes (review N1, " +
+     "attack 2)", async () => {
+    const client = await registerClient();
+    const backend = `198.51.100.251-${crypto.randomUUID()}`;
+    const live = await connect(client, { owner: owner() });
+    for (let i = 0; i < MANY; i++) {
+      const failed = await call(new Request(url("/oauth/token"), {
+        method: "POST", headers: { "CF-Connecting-IP": backend },
+        body: new URLSearchParams({ grant_type: "refresh_token", client_id: client.clientId,
+                                    refresh_token: stale(), resource: MCP_RESOURCE }) }));
+      expect(failed.status).toBeGreaterThanOrEqual(400);
+      expect(failed.status).not.toBe(429);
+    }
+    const refreshed = await call(new Request(url("/oauth/token"), {
+      method: "POST", headers: { "CF-Connecting-IP": backend },
+      body: new URLSearchParams({ grant_type: "refresh_token", client_id: client.clientId,
+                                  refresh_token: live.refresh_token }) }));
+    expect(refreshed.status).toBe(200);
+  });
+
+  it("refuses no sign-in start and no bad key by count, from one address", async () => {
+    const ip = `198.51.100.9-${crypto.randomUUID()}`;
+    for (let i = 0; i < 40; i++) {
+      const start = await call(new Request(url("/authorize?response_type=code"), {
+        headers: { ...NAVIGATE, "CF-Connecting-IP": ip } }));
+      expect(start.status).not.toBe(429);
+      const key = await call(new Request(url("/api/tools/agents_list"), {
+        method: "POST", body: "{}", headers: { "Content-Type": "application/json",
+          "CF-Connecting-IP": ip,
+          Authorization: `Bearer ta_key_${i.toString(16).padStart(16, "0")}_${"a".repeat(43)}` } }));
+      expect(key.status).toBe(401);
+    }
+  });
+
+  it("sends at most one metadata fetch out for each /authorize in (the provider's bound)",
+     async () => {
+    const ip = `203.0.113.7-${crypto.randomUUID()}`;
+    const sent = 30;
+    for (let i = 0; i < sent; i++) {
+      const params = new URLSearchParams({
+        response_type: "code", client_id: `https://attacker-${i}.example/client.json`,
+        redirect_uri: "https://attacker.example/cb", state: "s", code_challenge: "c".repeat(43),
+        code_challenge_method: "S256", resource: MCP_RESOURCE });
+      const answer = await call(new Request(url(`/authorize?${params}`), {
+        headers: { ...NAVIGATE, "CF-Connecting-IP": ip } }));
+      expect(answer.status).not.toBe(429);
+    }
+    expect(fetched.length).toBeLessThanOrEqual(sent);
+  });
+
+  it("answers an overloaded owner object 429 with Retry-After, never retried", async () => {
     const app = await signInApp({ owner: owner() });
     const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
     const stub = vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({

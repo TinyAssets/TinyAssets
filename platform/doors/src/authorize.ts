@@ -24,11 +24,9 @@
  *    app: `sessionOpen` at the sign-in's time, the session cookie set on the redirect,
  *    and the grant.
  *
- * Only work that costs counts (`throttle.ts`): an `/authorize` navigation, a consent
- * decision and a callback that recovered its state each count one sign-in start, and an
- * `/authorize` naming a metadata document the provider's cache does not hold one metadata
- * fetch; past either bound, `429` before that work. A refusal before any work (a
- * non-navigation, a wrong media type) counts nothing.
+ * No number of ours bounds a sign-in (slice L's review). A metadata document the provider
+ * fetches for a `client_id` is bounded by the provider itself: public https URLs only,
+ * 5 KiB, 10 s, one fetch out for one request in.
  *
  * A resource and its clients never cross: a token for `/app` goes only to a first-party
  * client, and a first-party client never gets one for `/mcp`. An outside client may not
@@ -54,7 +52,6 @@ import { ERASING } from "../../owner/src/erasure";
 import { authorizationServer } from "./oauth";
 import { replaceInstallation } from "./revoke";
 import { mediaType, sessionCookie } from "./session";
-import { cached, callerKey, count, metadataUrl, tooMany } from "./throttle";
 import type { SignIn, Upstream } from "./upstream";
 
 interface Verifier {
@@ -182,18 +179,10 @@ function upstreamOf(source: Upstream | (() => Upstream)): Upstream {
 export async function authorize(request: Request, env: DoorsEnv,
                                 upstream: Upstream | (() => Upstream)): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
-  const key = callerKey(request);
   try {
     if (request.method === "GET") {
       if (!navigation(request)) {
         return text(403, "Open this page in your browser to sign in.");
-      }
-      const clientId = new URL(request.url).searchParams.get("client_id");
-      if (metadataUrl(clientId) && !await cached(clientId) && !await count(env, "cimd", key)) {
-        return tooMany();
-      }
-      if (!await count(env, "signin", key)) {
-        return tooMany();
       }
       const parsed = await oauth.parseAuthRequest(request);
       const forApp = parsed.resource === APP_RESOURCE;
@@ -225,9 +214,6 @@ export async function authorize(request: Request, env: DoorsEnv,
       const body = await boundedText(request, AUTHORIZE_BODY_MAX);
       if (body === null) {
         return text(413, TOO_LARGE);
-      }
-      if (!await count(env, "signin", key)) {
-        return tooMany();
       }
       const form = new URLSearchParams(body);
       const handle = form.get("handle") ?? "";
@@ -296,16 +282,11 @@ async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn)
 export async function callback(request: Request, env: DoorsEnv,
                                source: Upstream | (() => Upstream)): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
-  const key = callerKey(request);
   let resumed: Awaited<ReturnType<typeof oauth.finishUpstream<Verifier>>>;
   try {
     resumed = await oauth.finishUpstream<Verifier>(request);
   } catch (error) {
-    await count(env, "fail", key);  // no state this browser began: a failed lookup
     return failed(error);
-  }
-  if (!await count(env, "signin", key)) {
-    return tooMany();
   }
   const upstream = upstreamOf(source);
   const { request: original, data, headers } = resumed;

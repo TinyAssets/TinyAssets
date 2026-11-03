@@ -14,15 +14,12 @@
  * - `/api/*`: the `Cookie` header removed, then the key (`api.ts`).
  * - `/hooks/inbound/<token>`: the inbound door (`inbound.ts`), the `Cookie` header removed;
  *   any other `/hooks/` path is `404`, its request never read.
- * - `/oauth/token`, `/oauth/revoke`: a failure counts against the caller's address and
- *   client, and one naming a metadata document the provider must fetch against the
- *   caller's metadata fetches; past either, `429` before the provider runs (`throttle.ts`).
  *
- * Unauthenticated failures (a bearer or key the doors cannot validate, an inbound hook
- * refused at its check) count against the caller (`throttle.ts`), and a caller past the
- * bound is refused `429` before any work. An owner object the runtime reports overloaded
- * (its own soft limit of about 1,000 requests a second) is answered `429` with
- * `Retry-After`, never retried: a technical ceiling, not ours.
+ * No caller is counted or capped by the doors (the founder's rule: no invented limits;
+ * slice L's review). An owner object the runtime reports overloaded (Cloudflare's soft
+ * limit of 1,000 requests a second an object) is answered `429` with `Retry-After`, never
+ * retried: a technical ceiling, not ours. Abuse at volume meets Cloudflare's own DDoS
+ * protection, in front of every Worker.
  * - `/app/api/*`: the owner surface (`app.ts`).
  * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
  * - `/oauth/connect/callback/<source>[/<state>]`: a model source's OAuth redirect
@@ -47,12 +44,7 @@ import {
   WEB_CLIENT, WEB_REDIRECT,
 } from "./config";
 import { outsideRead } from "./control";
-import { boundedText } from "./body";
 import { serveInbound } from "./inbound";
-import {
-  blocked, cached, callerKey, clientIdOf, count, metadataUrl, OAUTH_FORM_MAX, overloaded,
-  tooMany,
-} from "./throttle";
 import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
 import { OWNER_SURFACE, withoutCookie } from "./session";
@@ -87,60 +79,12 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext):
 }
 
 /**
- * `act`, from a caller not past the failure bound; its answer counted as one failure when
- * `failed` says so.
+ * Whether `error` is the runtime's report that a Durable Object is overloaded (its
+ * `.overloaded`, which Cloudflare's error-handling page says never to retry).
  */
-async function failures(request: Request, env: DoorsEnv, failed: (answer: Response) => boolean,
-                        act: () => Promise<Response>): Promise<Response> {
-  const key = callerKey(request);
-  if (await blocked("fail", key)) {
-    return tooMany();
-  }
-  const answer = await act();
-  if (failed(answer)) {
-    await count(env, "fail", key);
-  }
-  return answer;
-}
-
-/** A credential the caller presented and the door refused as no credential. */
-function badBearer(request: Request): (answer: Response) => boolean {
-  const presented = request.headers.has("Authorization");
-  return (answer) => presented && answer.status === 401;
-}
-
-async function digest(text: string): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(bytes)].slice(0, 16)
-    .map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/**
- * The token and revoke endpoints: the provider's own, after the bounds on what their
- * unauthenticated failures and metadata fetches may cost.
- */
-async function oauthEndpoint(request: Request, env: DoorsEnv, ctx: ExecutionContext):
-    Promise<Response> {
-  // The form is read from a copy, bounded, before the provider reads the request itself.
-  const form = await boundedText(request.clone(), OAUTH_FORM_MAX);
-  if (form === null) {
-    return new Response("the request body is too large", { status: 413 });
-  }
-  const clientId = clientIdOf(request, new URLSearchParams(form));
-  const key = callerKey(request);
-  const fetching = metadataUrl(clientId) && !await cached(clientId);
-  const client = `${key}:${await digest(clientId ?? "")}`;
-  if ((fetching && await blocked("cimd", key)) || await blocked("fail", client)) {
-    return tooMany();
-  }
-  const answer = await authorizationServer(env).fetch(request, env, ctx);
-  if (answer.status >= 400) {
-    if (fetching) {
-      await count(env, "cimd", key);
-    }
-    await count(env, "fail", client);
-  }
-  return answer;
+export function overloaded(error: unknown): boolean {
+  return typeof error === "object" && error !== null
+    && (error as { overloaded?: unknown }).overloaded === true;
 }
 
 /** Serve one request through the doors, with `upstream` as the owner's sign-in. */
@@ -170,23 +114,19 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   }
   const path = url.pathname;
   if (path === "/mcp" || path.startsWith("/mcp/")) {
-    return failures(request, env, badBearer(request),
-                    () => mcpDoor(withoutCookie(request), env, ctx));
+    return mcpDoor(withoutCookie(request), env, ctx);
   }
   if (path.startsWith("/api/")) {
-    return failures(request, env, badBearer(request),
-                    () => serveApi(withoutCookie(request), env));
+    return serveApi(withoutCookie(request), env);
   }
   if (path.startsWith(INBOUND_PATH)) {
-    // An inbound hook refused at its check: an unknown route, a bad signature or proof.
-    return failures(request, env, (answer) => answer.status === 401 || answer.status === 404,
-                    () => serveInbound(withoutCookie(request), env));
+    return serveInbound(withoutCookie(request), env);
   }
   if (path.startsWith("/hooks/")) {
     return notFound();
   }
   if (path.startsWith(OWNER_SURFACE)) {
-    return failures(request, env, badBearer(request), () => serveApp(request, env, sources));
+    return serveApp(request, env, sources);
   }
   if (path === CONNECT_CALLBACK_PATH || path.startsWith(`${CONNECT_CALLBACK_PATH}/`)) {
     return connectCallback(request, sources);
@@ -202,9 +142,6 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   }
   if (path.startsWith("/.well-known/oauth-protected-resource")) {
     return mcpResource(() => Promise.resolve(notFound())).fetch(request, env, ctx);
-  }
-  if ((path === "/oauth/token" || path === "/oauth/revoke") && request.method === "POST") {
-    return oauthEndpoint(request, env, ctx);
   }
   if (path.startsWith("/.well-known/") || path.startsWith("/oauth/")) {
     return authorizationServer(env).fetch(request, env, ctx);

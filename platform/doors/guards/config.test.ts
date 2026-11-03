@@ -10,7 +10,7 @@
  *   (`not-provisioned-…`), so a deploy fails until cutover creates them.
  * - Four vars: `DCR_ENABLED` `"false"`; `OWNER_ISSUER` and `UPSTREAM` unset
  *   (`not-configured`) as checked in, so every sign-in fails loudly until the deploy kit
- *   fills both from the issuer's live discovery (`deploy/deploy.mjs`); and
+ *   fills both from the issuer's live discovery (`deploy/deploy.ts`); and
  *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's slice lists its issuer, so any other
  *   issuer is refused, never taken for a new owner.
  * - `GATEWAY`: the gateway Worker's `ConnectGateway` entrypoint, whose class in the
@@ -24,8 +24,8 @@
  *   too; and `WORKOS_API_KEY`, the upstream's client secret.
  * - `FILES`: the files Worker, whose `putChunks` the file door's bytes call (slice L); only
  *   `src/file-bytes.ts` names it.
- * - Two `ratelimits`, exactly `SIGNIN_LIMIT` and `CIMD_LIMIT`, keyed by caller IP: the
- *   security bounds on unauthenticated callers (`src/throttle.ts`). No other limit.
+ * - No `ratelimits`: no number of ours bounds any caller (the founder's rule, slice L's
+ *   review); Cloudflare's own DDoS protection is in front of every Worker.
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - Flags: `nodejs_compat` (the owner's shared code), `disable_ctx_exports` (no way to the
@@ -53,7 +53,7 @@ const FLAGS: readonly string[] = Object.freeze(["nodejs_compat", "disable_ctx_ex
 const KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
   "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",
-  "ratelimits", "queues",
+  "queues",
 ]);
 /** The sandbox tokens' routing key (`routing-mac.ts`), the owner's one secret too. */
 const OWNER_SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
@@ -62,15 +62,6 @@ const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY",
                                                          "WORKOS_API_KEY"]) });
 /** The files Worker, for the file door's bytes. */
 const FILES = Object.freeze({ binding: "FILES", service: "tinyassets-files" });
-/** The security bounds on unauthenticated callers, exactly (`throttle.ts`, limits-audit.md). */
-const RATELIMITS = Object.freeze([
-  Object.freeze({ name: "SIGNIN_LIMIT", namespace_id: "1001",
-                  simple: Object.freeze({ limit: 23, period: 60 }) }),
-  Object.freeze({ name: "CIMD_LIMIT", namespace_id: "1002",
-                  simple: Object.freeze({ limit: 23, period: 60 }) }),
-  Object.freeze({ name: "FAIL_LIMIT", namespace_id: "1003",
-                  simple: Object.freeze({ limit: 115, period: 60 }) }),
-]);
 
 /**
  * The doors' one queue: the consumer of the sandbox line's ring queue (slice S,
@@ -175,9 +166,6 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
     problems.push("vars are exactly DCR_ENABLED \"false\", OWNER_ISSUER and UPSTREAM unset " +
                   "and no FOREIGN_ISSUERS");
   }
-  if (JSON.stringify(config["ratelimits"]) !== JSON.stringify(RATELIMITS)) {
-    problems.push("ratelimits are exactly SIGNIN_LIMIT and CIMD_LIMIT");
-  }
   const objects = config["durable_objects"] as { bindings?: unknown } | undefined;
   const bindings = objects?.bindings;
   if (Object.keys(objects ?? {}).join() !== "bindings" || !Array.isArray(bindings)
@@ -280,13 +268,8 @@ describe("doors Worker config", () => {
                                                               queue: "tinyassets-x" }] } }],
     ["another queue's consumer", { queues: { consumers: [{ queue: "tinyassets-x" }] } }],
     ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
-    ["a per-key rate limit", { ratelimits: [...RATELIMITS, { name: "KEY_RL", namespace_id: "1",
-                                                           simple: { limit: 120, period: 60 } }] }],
-    ["no sign-in bound", { ratelimits: [RATELIMITS[1], RATELIMITS[2]] }],
-    ["no failure bound", { ratelimits: [RATELIMITS[0], RATELIMITS[1]] }],
-    ["a CIMD bound changed", { ratelimits: [RATELIMITS[0], { ...RATELIMITS[1],
-                                                           simple: { limit: 5, period: 60 } },
-                                            RATELIMITS[2]] }],
+    ["a rate limit", { ratelimits: [{ name: "KEY_RL", namespace_id: "1",
+                                      simple: { limit: 120, period: 60 } }] }],
     ["an upstream before the deploy", { vars: { ...VARS, UPSTREAM: "{}" } }],
     ["no WORKOS_API_KEY", { secrets: { required: ["ROUTING_MAC_KEY"] } }],
     ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],

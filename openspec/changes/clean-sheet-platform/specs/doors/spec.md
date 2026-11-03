@@ -398,16 +398,12 @@ The sign-in callback SHALL admit an owner the directory has no `o:` record of (t
 - **WHEN** a shared app's request carries a signature that does not verify, or a timestamp older than five minutes
 - **THEN** it is refused `401` and no object is reached
 
-### Requirement: Only unauthenticated callers are rate-bounded
-The doors SHALL cap no authenticated caller's requests. They SHALL count only unauthenticated work that costs the platform something, per caller (an IPv4 address, an IPv6 /64), answering `429`: sign-in starts; metadata fetches of a `client_id` the provider's cache does not hold, at `/authorize`, and at the token and revoke endpoints only when the request fails; and failures (a credential the doors cannot validate, a token-endpoint failure, an inbound hook refused before or at its check). A cheap refusal SHALL never count, and the client id SHALL be found as the OAuth provider finds it (HTTP Basic in any case, a client assertion, the form). Each number SHALL carry its derivation in `limits-audit.md`. An owner object the runtime reports overloaded SHALL answer `429` with `Retry-After`.
+### Requirement: No caller is rate-capped by the doors
+The doors SHALL count or cap no caller's requests, authenticated or not, and SHALL never refuse a valid credential because of what others sent from its address. A metadata document a `client_id` names SHALL be fetched only within the OAuth provider's own bounds (public URLs, 5 KiB, 10 s, one fetch a request). An owner object the runtime reports overloaded SHALL answer `429` with `Retry-After`.
 
-#### Scenario: Fresh client ids from one address
-- **WHEN** one address names 24 unknown metadata URLs as `client_id` at `/authorize` within a minute
-- **THEN** the 24th is answered `429` before any fetch
-
-#### Scenario: A shared backend refreshing
-- **WHEN** many refreshes succeed at `/oauth/token` from one address
-- **THEN** none is counted
+#### Scenario: A shared backend after many failures
+- **WHEN** an MCP host's backend address sends many expired bearers or failed refreshes
+- **THEN** a valid key and a live refresh from that address still succeed
 
 ### Requirement: The binder streams an upload's bytes to FILES
 The owner surface's upload SHALL take one chunk a `PUT`, in any order and again after any failure, put it to `FILES` when the intent still needs it, refuse bytes that are not that declared chunk or a body shorter or longer than it, and answer the chunk's SHA-256 as `Content-Digest`; a file SHALL be bounded by the owner's policy, never by one request, and a refusal mid-upload SHALL answer its fixed code.

@@ -20,7 +20,8 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  kvPresent, listed, NAMESPACES, namespacesOf, registerRedirect, ROUTES, routesHeldElsewhere,
+  DOORS, handover, kvPresent, listed, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
 } from "../../deploy/deploy";
 import { parseControl } from "../src/directory";
@@ -286,32 +287,110 @@ describe("the deploy kit", () => {
     expect(kit).toMatch(/if \(result\.status !== 0\) \{\s*\/\/[^\n]*\n\s*throw new Error/);
   });
 
-  it("refuses routes another Worker holds before deploying anything", async () => {
-    const zone = "/zones?name=tinyassets.io";
-    // The live proxy's routes (deploy/cloudflare-worker/wrangler.toml), plus the doors' own
-    // and an unrelated one.
-    const held = await routesHeldElsewhere(api({
-      [zone]: ok([{ id: "z" }]),
-      "/zones/z/workers/routes": ok([
-        { pattern: "tinyassets.io/mcp*", script: "tinyassets-mcp-proxy" },
-        { pattern: "tinyassets.io/app*", script: "tinyassets-mcp-proxy" },
-        { pattern: "tinyassets.io/api*", script: "tinyassets-mcp-proxy" },
-        { pattern: "tinyassets.io/.well-known/oauth-protected-resource*",
-          script: "tinyassets-mcp-proxy" },
-        { pattern: "tinyassets.io/oauth/*", script: "tinyassets-doors" },
-        { pattern: "tinyassets.io/site*", script: "site" },
-        { pattern: "tinyassets.io/hooks/other" },
-      ]),
-    }), "tinyassets-doors", ROUTES);
-    expect(held).toEqual([
-      "tinyassets.io/mcp* (held by tinyassets-mcp-proxy)",
-      "tinyassets.io/app* (held by tinyassets-mcp-proxy)",
-      "tinyassets.io/api* (held by tinyassets-mcp-proxy)",
-      "tinyassets.io/.well-known/oauth-protected-resource* (held by tinyassets-mcp-proxy)"]);
-    await expect(routesHeldElsewhere(api({ [zone]: ok([{ id: "z" }]) }), "tinyassets-doors", ROUTES))
-      .rejects.toThrow(/could not be read/);
-    await expect(routesHeldElsewhere(api({}), "tinyassets-doors", ROUTES))
-      .rejects.toThrow(/could not be read/);
+  /** The live proxy's routes (`deploy/cloudflare-worker/wrangler.toml`), and others. */
+  const LIVE: readonly Route[] = [
+    { id: "r1", pattern: "tinyassets.io/mcp*", script: "tinyassets-mcp-proxy" },
+    { id: "r2", pattern: "tinyassets.io/app*", script: "tinyassets-mcp-proxy" },
+    { id: "r3", pattern: "tinyassets.io/api*", script: "tinyassets-mcp-proxy" },
+    { id: "r4", pattern: "tinyassets.io/.well-known/oauth-protected-resource*",
+      script: "tinyassets-mcp-proxy" },
+    { id: "r5", pattern: "tinyassets.io/.well-known/oauth-authorization-server*",
+      script: "tinyassets-mcp-proxy" },
+    { id: "r6", pattern: "tinyassets.io/site*", script: "site" },
+  ];
+  /** Paths the doors' routes cover, and two they do not. */
+  const PROBES = ["tinyassets.io/mcp", "tinyassets.io/mcp?x=1", "tinyassets.io/api/tools/a",
+                  "tinyassets.io/.well-known/oauth-protected-resource/mcp",
+                  "tinyassets.io/.well-known/oauth-authorization-server",
+                  "tinyassets.io/app/api/keys", "tinyassets.io/oauth/token",
+                  "tinyassets.io/authorize", "tinyassets.io/hooks/inbound/x",
+                  "tinyassets.io/app", "tinyassets.io/site/x"];
+
+  /** The Worker Cloudflare sends `path` to: the most specific matching pattern's. */
+  function servedBy(routes: Iterable<Route>, path: string): string | undefined {
+    let best: Route | undefined;
+    for (const route of routes) {
+      const wild = route.pattern.endsWith("*");
+      const stem = wild ? route.pattern.slice(0, -1) : route.pattern;
+      if ((wild ? path.startsWith(stem) : path === stem)
+          && (best === undefined || stem.length > best.pattern.replace(/\*$/, "").length)) {
+        best = route;
+      }
+    }
+    return best?.script;
+  }
+
+  /** A fake of Cloudflare's routes API over `start`, checking every path after each change. */
+  function zoneApi(start: readonly Route[], fail?: string) {
+    const table = new Map(start.map((route) => [route.id, { ...route }]));
+    const before = new Map(PROBES.map((path) => [path, servedBy(table.values(), path)]));
+    const calls: string[] = [];
+    let next = 100;
+    const call = async (path: string, init?: RequestInit): Promise<CfAnswer> => {
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${path}`);
+      if (path === "/zones?name=tinyassets.io") {
+        return ok([{ id: "z" }]);
+      }
+      if (method === "GET" && path === "/zones/z/workers/routes") {
+        return ok([...table.values()]);
+      }
+      if (fail !== undefined && `${method} ${path}` === fail) {
+        return { status: 500, body: { success: false, errors: [{ code: 10000 }] } };
+      }
+      const body = JSON.parse(String(init?.body ?? "{}")) as { pattern?: string; script?: string };
+      const id = path.split("/").at(-1)!;
+      if (method === "POST" && path === "/zones/z/workers/routes") {
+        table.set(`n${next}`, { id: `n${next++}`, pattern: body.pattern!, script: body.script! });
+      } else if (method === "PUT" && table.has(id)) {
+        table.set(id, { id, pattern: body.pattern!, script: body.script! });
+      } else if (method === "DELETE" && table.has(id)) {
+        table.delete(id);
+      } else {
+        return { status: 404, body: { success: false, errors: [{ code: 10020 }] } };
+      }
+      for (const [probe, server] of before) {
+        // A path served before the handover is served after every one of its changes.
+        if (server !== undefined) {
+          expect([probe, servedBy(table.values(), probe)]).not.toEqual([probe, undefined]);
+        }
+      }
+      return ok({});
+    };
+    return Object.assign(call, { calls, table, before });
+  }
+
+  it("hands each route from the old proxy to the doors one at a time, no path unserved " +
+     "(review D3)", async () => {
+    const fake = zoneApi(LIVE);
+    const zone = await zoneOf(fake);
+    const steps = handover(await routesOf(fake, zone), DOORS, ROUTES);
+    // Identical patterns move in place; a narrower old one is deleted after the doors' wider
+    // one exists; a wider old one (app*, api*) keeps only the paths the doors do not cover.
+    expect(steps.filter((step) => step.method === "PUT").map((step) => step.pattern))
+      .toEqual(["tinyassets.io/mcp*"]);
+    expect(steps.filter((step) => step.method === "DELETE").map((step) => step.pattern))
+      .toEqual(["tinyassets.io/.well-known/oauth-protected-resource*",
+                "tinyassets.io/.well-known/oauth-authorization-server*"]);
+    const added = steps.findIndex((step) => step.pattern === "tinyassets.io/.well-known/oauth-*");
+    expect(steps.findIndex((step) => step.method === "DELETE")).toBeGreaterThan(added);
+    await runHandover(fake, zone, DOORS, steps);
+    for (const path of PROBES.slice(0, 9)) {
+      expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
+    }
+    expect(servedBy(fake.table.values(), "tinyassets.io/app")).toBe("tinyassets-mcp-proxy");
+    expect(servedBy(fake.table.values(), "tinyassets.io/site/x")).toBe("site");
+    // Run again, it changes nothing.
+    expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
+  });
+
+  it("stops the handover at a refused change, saying what is done", async () => {
+    const fake = zoneApi(LIVE, "PUT /zones/z/workers/routes/r1");
+    const steps = handover(await routesOf(fake, "z"), DOORS, ROUTES);
+    await expect(runHandover(fake, "z", DOORS, steps)).rejects.toThrow(/the steps before it/);
+    expect(fake.calls.filter((call) => call.startsWith("DELETE"))).toEqual([]);
+    await expect(zoneOf(api({}))).rejects.toThrow(/could not be read/);
+    await expect(routesOf(api({}), "z")).rejects.toThrow(/could not be read/);
   });
 
   it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",
@@ -335,21 +414,42 @@ describe("the deploy kit", () => {
     expect(() => versionOf("Uploaded tinyassets-owner")).toThrow(/Version ID/);
   });
 
-  it("runs from a manual workflow the founder approves, its secrets from the environment",
-     () => {
+  it("plans in a job of its own, then applies in the production environment after it " +
+     "(review D1, D2)", () => {
     const workflow = readFileSync(join(PLATFORM, "..", ".github", "workflows",
                                        "platform-deploy.yml"), "utf8");
     expect(workflow).toMatch(/^on:\s*\n\s+workflow_dispatch:/m);
     expect(workflow).not.toMatch(/^\s+(push|pull_request|schedule):/m);
-    // The repo's main-only environment (tests/test_workflow_production_environment.py).
-    expect(workflow).toMatch(/^    environment: production$/m);
     expect(workflow).not.toMatch(/ssh|droplet|\/etc\/tinyassets/i);
-    for (const name of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_API_KEY",
-                        "WORKOS_CLIENT_ID", "OWNER_ISSUER", "E2B_API_KEY", "ROUTING_MAC_KEY",
-                        "GATEWAY_KEYRING"]) {
-      expect(workflow).toContain(`${name}: \${{ secrets.${name} }}`);
+    const plan = workflow.slice(workflow.indexOf("\n  plan:\n"), workflow.indexOf("\n  apply:\n"));
+    const apply = workflow.slice(workflow.indexOf("\n  apply:\n"));
+    // The plan holds no production secret, so it needs no environment and runs first.
+    expect(plan).not.toMatch(/environment:/);
+    expect(plan).toContain("deploy.ts");
+    expect(plan).toContain("args=(--public)");
+    expect(plan).not.toMatch(/--yes/);
+    for (const name of SECRET_INPUTS) {
+      expect(plan).not.toContain(name);
     }
+    for (const name of PUBLIC_INPUTS) {
+      expect(plan).toMatch(new RegExp(`${name}: \\$\\{\\{ (secrets|vars)\\.${name} \\}\\}`));
+    }
+    // The apply job: after the plan, in the repo's main-only environment
+    // (tests/test_workflow_production_environment.py), with every input the kit reads.
+    expect(apply).toMatch(/^    needs: plan$/m);
+    expect(apply).toMatch(/^    environment: production$/m);
+    for (const name of [...PUBLIC_INPUTS, ...SECRET_INPUTS]) {
+      expect(apply).toMatch(new RegExp(`${name}: \\$\\{\\{ (secrets|vars)\\.${name} \\}\\}`));
+    }
+    for (const name of SECRET_INPUTS) {
+      expect(apply).toContain(`${name}: \${{ secrets.${name} }}`);
+    }
+    // The handles canary's own bearer (scripts/_canary_common.py), so Fact 11's canary runs.
+    const canary = /CANARY_TOKEN_ENV = "([A-Z_]+)"/.exec(readFileSync(
+      join(PLATFORM, "..", "scripts", "_canary_common.py"), "utf8"))![1]!;
+    expect(apply).toContain(`${canary}: \${{ secrets.${canary} }}`);
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     expect(kit).not.toMatch(/\/etc\/tinyassets/);
+    expect(kit).toContain("mcp_public_canary.py");
   });
 });

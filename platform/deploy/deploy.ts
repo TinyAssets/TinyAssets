@@ -4,24 +4,33 @@
  * with no public route, runs the handles canary (AGENTS.md Fact 11) and, once a probe owner
  * exists, H2's probes (`h2-probes.ts`). Built in slice L, never run by it.
  *
- * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, which the
- * founder dispatches from `main` and which runs in the repo's main-only `production`
- * environment, the way the repo makes its other production changes; its secrets come from
- * that environment's secret store, never from a host (Direction 8). Locally, without `--yes`, it prints its plan and changes
- * nothing.
+ * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, from `main`: a
+ * `plan` job runs `--public` with the Cloudflare token alone and prints the plan to the job
+ * summary; the `apply` job then waits for the main-only `production` environment (and its
+ * required reviewer, when set) and runs `--yes` with that environment's secrets, never a
+ * host's (Direction 8).
  *
- *   node --experimental-strip-types platform/deploy/deploy.ts               # the plan only
+ *   node --experimental-strip-types platform/deploy/deploy.ts               # the plan
+ *   node --experimental-strip-types platform/deploy/deploy.ts --public      # the plan job's
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes         # the dark deploy
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes --routes  # + the routes
- *   node --experimental-strip-types platform/deploy/deploy.ts --yes --h2      # + H2's probes
+ *   node --experimental-strip-types platform/deploy/deploy.ts --h2          # H2's probes only
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes --migrate owner
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
  *
  * A Worker's first deploy is `wrangler deploy`, with no route and no workers.dev; later
  * ones upload a version and then deploy it (Cloudflare's staged path), so a deploy never
- * touches a route; the routes are their own approved run (`--routes`). A Worker with a
- * pending Durable Object migration is deployed whole only when `--migrate` names it.
+ * touches a route. A Worker with a pending Durable Object migration is deployed whole only
+ * when `--migrate` names it.
+ *
+ * `--routes` hands the doors' routes over after the doors are deployed, one route at a time
+ * through Cloudflare's routes API (`handover`), so no path is ever served by nothing: a
+ * pattern another Worker holds is moved to the doors in place (`PUT`, one atomic change), a
+ * new one is added (`POST`), and only then is another Worker's narrower pattern, which
+ * Cloudflare would prefer to the doors' (the most specific pattern wins, its routes page),
+ * deleted, so its paths pass from that Worker straight to the doors. Then `wrangler
+ * triggers deploy` adds the egress custom domain.
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
@@ -31,18 +40,19 @@
  *   and `ROUTING_MAC_KEY` come from the secret store like the rest (`keyring-new` makes the
  *   first keyring locally, for the founder to store); a held one is never replaced, unless
  *   `--rotate` names it, and a keyring is rotated only by adding a key (the new keyring
- *   must hold two or more keys, the active one among them);
+ *   must hold two or more keys, the active one among them). Cloudflare never shows a held
+ *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
  *   POST; never a delete).
  *
  * Before anything is changed it checks, live: the owner issuer's discovery names
  * `OWNER_ISSUER` exactly and declares its token endpoint auth methods, and one real
- * AuthKit token's claims (`OWNER_TOKEN_CLAIMS`, read from production logs) or the
- * discovery's `claims_supported` show `auth_time`; an absent field is unknown, and unknown
- * stops the kit; the sandbox's `E2B_TEMPLATE` exists at E2B with a ready build; and, with
- * `--routes`, no pattern it would add is held by another Worker (wrangler refuses one, so
- * the kit stops before deploying anything rather than halfway).
+ * AuthKit token's claims (`OWNER_TOKEN_CLAIMS`) or the discovery's `claims_supported` show
+ * `auth_time`; an absent field is unknown, and unknown stops the kit; and the sandbox's
+ * `E2B_TEMPLATE` exists at E2B with a ready build. `--public` makes every Cloudflare read
+ * and the discovery check, and leaves to the apply job the checks that need the production
+ * secrets (E2B, WorkOS, each secret's value), saying so in its plan.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -88,6 +98,14 @@ export const ZONE = "tinyassets.io";
 /** The sandbox's egress host, a custom domain of the doors Worker (`--routes`). */
 export const EGRESS_DOMAIN = "egress.tinyassets.io";
 export const CALLBACK = "https://tinyassets.io/oauth/upstream/callback";
+/** The doors Worker, which the routes are handed to. */
+export const DOORS = "tinyassets-doors";
+/** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
+export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
+  "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
+/** What only the apply job holds: the production environment's secrets. */
+export const SECRET_INPUTS: readonly string[] = Object.freeze([
+  "WORKOS_API_KEY", "E2B_API_KEY", "ROUTING_MAC_KEY", "GATEWAY_KEYRING"]);
 const WORKOS_API = "https://api.workos.com";
 const CF_API = "https://api.cloudflare.com/client/v4";
 /** E2B's platform API (`sandbox/src/e2b.ts`'s), its OpenAPI spec read 2026-11-03. */
@@ -220,36 +238,103 @@ export async function namespacesOf(api: CfApi, account: string): Promise<Map<str
   }
 }
 
-/**
- * Whether two route patterns can match one URL (a trailing `*` matches any rest). Wrangler
- * 4.154 refuses only an identical pattern another Worker holds ("Can't deploy routes that
- * are assigned to another worker"); an overlapping one deploys, and Cloudflare then sends
- * each URL to the most specific pattern (its routes page), so another Worker's more
- * specific pattern would keep part of a door. The kit refuses both.
- */
-export function overlaps(a: string, b: string): boolean {
-  const base = (pattern: string) => pattern.endsWith("*") ? pattern.slice(0, -1) : pattern;
-  return a === b || (a.endsWith("*") && b.startsWith(base(a)))
-    || (b.endsWith("*") && a.startsWith(base(b)));
+/** A Worker route on the zone, as Cloudflare's routes API lists it. */
+export interface Route {
+  readonly id: string;
+  readonly pattern: string;
+  readonly script?: string;
 }
 
-/** Route patterns another Worker holds on the zone that overlap one the kit would add. */
-export async function routesHeldElsewhere(api: CfApi, script: string,
-                                          patterns: readonly string[]): Promise<string[]> {
+/** One change of the handover, in order. */
+export type RouteStep =
+  | { readonly method: "PUT"; readonly id: string; readonly pattern: string;
+      readonly from: string }
+  | { readonly method: "POST"; readonly pattern: string }
+  | { readonly method: "DELETE"; readonly id: string; readonly pattern: string;
+      readonly from: string };
+
+function base(pattern: string): string {
+  return pattern.endsWith("*") ? pattern.slice(0, -1) : pattern;
+}
+
+/**
+ * Whether `narrow` is a more specific pattern than `wide`, matching a part of its URLs:
+ * Cloudflare sends those URLs to `narrow` (the most specific pattern wins).
+ */
+export function narrower(narrow: string, wide: string): boolean {
+  return narrow !== wide && wide.endsWith("*") && narrow.startsWith(base(wide));
+}
+
+/** The zone's id, by its name; a failed read throws. */
+export async function zoneOf(api: CfApi): Promise<string> {
   const zones = await api(`/zones?name=${ZONE}`);
   const zone = Array.isArray(zones.body.result)
     ? (zones.body.result as { id?: string }[])[0]?.id : undefined;
-  if (zones.status !== 200 || zone === undefined) {
+  if (zones.status !== 200 || zones.body.success !== true || zone === undefined) {
     throw new Error(`the zone ${ZONE} could not be read (${zones.status})`);
   }
+  return zone;
+}
+
+/** The zone's Worker routes; a failed read throws. */
+export async function routesOf(api: CfApi, zone: string): Promise<Route[]> {
   const routes = await api(`/zones/${zone}/workers/routes`);
-  if (routes.status !== 200 || !Array.isArray(routes.body.result)) {
+  if (routes.status !== 200 || routes.body.success !== true
+      || !Array.isArray(routes.body.result)) {
     throw new Error(`the zone's routes could not be read (${routes.status})`);
   }
-  return (routes.body.result as { pattern: string; script?: string }[])
-    .filter((route) => patterns.some((pattern) => overlaps(pattern, route.pattern))
-                       && route.script !== undefined && route.script !== script)
-    .map((route) => `${route.pattern} (held by ${route.script})`);
+  return routes.body.result as Route[];
+}
+
+/**
+ * The handover of `patterns` to `script`, in order: each pattern another route holds moved
+ * in place (`PUT`), each missing one added (`POST`), and after each, every other route's
+ * narrower pattern deleted, so its paths fall to `script` with no gap. A wider pattern of
+ * another Worker is left: `script`'s narrower one already takes its own paths from it.
+ */
+export function handover(routes: readonly Route[], script: string,
+                         patterns: readonly string[]): RouteStep[] {
+  const steps: RouteStep[] = [];
+  const deleted = new Set<string>();
+  for (const pattern of patterns) {
+    const held = routes.find((route) => route.pattern === pattern);
+    if (held === undefined) {
+      steps.push({ method: "POST", pattern });
+    } else if (held.script !== script) {
+      steps.push({ method: "PUT", id: held.id, pattern, from: held.script ?? "no Worker" });
+    }
+    for (const route of routes) {
+      if (route.script !== script && !patterns.includes(route.pattern) && !deleted.has(route.id)
+          && narrower(route.pattern, pattern)) {
+        deleted.add(route.id);
+        steps.push({ method: "DELETE", id: route.id, pattern: route.pattern,
+                     from: route.script ?? "no Worker" });
+      }
+    }
+  }
+  return steps;
+}
+
+/** A step, as the plan says it. */
+export function describeStep(step: RouteStep, script: string): string {
+  return step.method === "PUT" ? `move the route ${step.pattern} from ${step.from} to ${script}`
+    : step.method === "POST" ? `add the route ${step.pattern} for ${script}`
+    : `delete ${step.from}'s narrower route ${step.pattern}, its paths now ${script}'s`;
+}
+
+/** Runs the handover's steps in order, each answer checked; the first failure stops it. */
+export async function runHandover(api: CfApi, zone: string, script: string,
+                                  steps: readonly RouteStep[]): Promise<void> {
+  for (const step of steps) {
+    const path = `/zones/${zone}/workers/routes${step.method === "POST" ? "" : `/${step.id}`}`;
+    const answer = await api(path, step.method === "DELETE" ? { method: "DELETE" } : {
+      method: step.method, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pattern: step.pattern, script }) });
+    if (answer.status !== 200 || answer.body.success !== true) {
+      throw new Error(`${describeStep(step, script)} failed (${answer.status}, ${
+        JSON.stringify(codes(answer))}); the steps before it are done, the rest are not`);
+    }
+  }
 }
 
 /** The doors' upstream: the issuer, and its `UPSTREAM` record. */
@@ -434,14 +519,15 @@ export function keyring(text: string | undefined): { active: string; keys: Recor
  */
 export function secretPlan(held: Readonly<Record<string, readonly string[] | null>>,
                            rotate: ReadonlySet<string>,
-                           values: (name: string) => string | undefined):
+                           values: ((name: string) => string | undefined) | null):
     { worker: string; name: string }[] {
   const has = (worker: string, name: string) => (held[worker] ?? []).includes(name);
   if (has("doors", SHARED) !== has("owner", SHARED) && !rotate.has(SHARED)) {
     throw new Error(`only one of the doors and the owner holds ${SHARED}: pass --rotate ` +
                     `${SHARED} to set both again`);
   }
-  if (rotate.has("GATEWAY_KEYRING")) {
+  // `values` null: the plan job, which holds no secret; the apply job checks the ring.
+  if (rotate.has("GATEWAY_KEYRING") && values !== null) {
     const ring = keyring(values("GATEWAY_KEYRING"));
     if (Object.keys(ring.keys).length < 2) {
       throw new Error("a keyring is rotated by adding a key: the new GATEWAY_KEYRING holds " +
@@ -492,19 +578,16 @@ export function versionOf(output: string): string {
  * versions upload` then `versions deploy` at 100%, which leaves the Worker's routes as they
  * are. Wrangler 4.154 refuses a versions upload with a pending Durable Object migration;
  * `--migrate <worker>` names the Workers to deploy whole for that (never the doors, which
- * hold no migration and do hold the routes). The doors' routes, with `--routes`, are
- * `wrangler triggers deploy`.
+ * hold no migration and do hold the routes). The config deployed names no route; the
+ * routes are the handover's.
  */
 function deployWorker(worker: string, config: string, exists: boolean,
-                      migrate: ReadonlySet<string>, routes: boolean): void {
+                      migrate: ReadonlySet<string>): void {
   if (!exists || migrate.has(worker)) {
     wrangler(["deploy", "--config", config]);
   } else {
     const id = versionOf(wrangler(["versions", "upload", "--config", config]));
     wrangler(["versions", "deploy", `${id}@100`, "--yes", "--config", config]);
-  }
-  if (worker === "doors" && routes) {
-    wrangler(["triggers", "deploy", "--config", config]);
   }
 }
 
@@ -534,7 +617,22 @@ async function main(): Promise<void> {
     (process.argv[2] === "keyring-new" ? keyringNew : keyringAdd)(file);
     return;
   }
+  if (flag("--h2")) {
+    // H2's probes alone: they change nothing, and need a routed door and a probe owner.
+    if (flag("--public")) {
+      report(["run H2's probes against the routed doors; nothing is changed"], false);
+      return;
+    }
+    execFileSync(process.execPath, ["--experimental-strip-types",
+                                    join(PLATFORM, "deploy", "h2-probes.ts")],
+                 { stdio: "inherit", env: process.env });
+    return;
+  }
   const apply = flag("--yes");
+  const open = flag("--public");
+  if (apply && open) {
+    throw new Error("--public is the plan job's: it never changes anything");
+  }
   const routes = flag("--routes");
   const rotate = new Set((option("--rotate") ?? "").split(",").filter(Boolean));
   const migrate = new Set((option("--migrate") ?? "").split(",").filter(Boolean));
@@ -547,14 +645,16 @@ async function main(): Promise<void> {
       throw new Error(`platform/${worker} is missing: its slice has not landed`);
     }
   }
-  for (const name of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_API_KEY",
-                      "WORKOS_CLIENT_ID", "OWNER_ISSUER", "E2B_API_KEY", "ROUTING_MAC_KEY",
-                      "GATEWAY_KEYRING"]) {
+  for (const name of [...PUBLIC_INPUTS, ...(open ? [] : SECRET_INPUTS)]) {
     if (input(name) === undefined) {
-      throw new Error(`${name} is not set (the production environment's secrets)`);
+      throw new Error(`${name} is not set (${SECRET_INPUTS.includes(name)
+        ? "the production environment's secrets" : "the workflow's inputs"})`);
     }
   }
-  keyring(input("GATEWAY_KEYRING"));
+  const later = "checked by the apply job before any change";
+  if (!open) {
+    keyring(input("GATEWAY_KEYRING"));
+  }
   const account = input("CLOUDFLARE_ACCOUNT_ID")!;
   const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
   // The live checks, before anything is changed.
@@ -562,16 +662,16 @@ async function main(): Promise<void> {
                                       input("OWNER_TOKEN_CLAIMS"));
   plan.push(`set the doors' OWNER_ISSUER to ${upstream.issuer}, held to its discovery`);
   const template = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
-  if (!await templateReady(template, input("E2B_API_KEY")!)) {
+  if (open) {
+    plan.push(`E2B's ready build of ${template}: ${later}`);
+  } else if (!await templateReady(template, input("E2B_API_KEY")!)) {
     throw new Error(`E2B has no ready build of ${template}: build it (sandbox/template/build.py)`);
   }
+  let zone: string | undefined;
+  let steps: RouteStep[] = [];
   if (routes) {
-    const held = await routesHeldElsewhere(api, "tinyassets-doors", ROUTES);
-    if (held.length > 0) {
-      throw new Error("another Worker holds a route overlapping the doors' (wrangler refuses " +
-                      "an identical one; a more specific one would keep part of a door); " +
-                      `release these first, as their own approved step: ${held.join(", ")}`);
-    }
+    zone = await zoneOf(api);
+    steps = handover(await routesOf(api, zone), DOORS, ROUTES);
   }
   const titles = await namespacesOf(api, account);
   const ids: Record<string, string> = {};
@@ -610,7 +710,7 @@ async function main(): Promise<void> {
     for (const worker of WORKERS) {
       mkdirSync(join(out, worker));
       paths[worker] = join(out, worker, "wrangler.json");
-      writeFileSync(paths[worker]!, JSON.stringify(deployedConfig(worker, ids, upstream, routes),
+      writeFileSync(paths[worker]!, JSON.stringify(deployedConfig(worker, ids, upstream, false),
                                                    null, 2));
     }
     // Secrets first: `secrets.required` refuses a deploy without them.
@@ -618,15 +718,16 @@ async function main(): Promise<void> {
     for (const worker of Object.keys(SECRETS)) {
       held[worker] = await secretsOf(api, account, `tinyassets-${worker}`);
     }
-    for (const { worker, name } of secretPlan(held, rotate, input)) {
+    for (const { worker, name } of secretPlan(held, rotate, open ? null : input)) {
       const value = input(name);
-      if (value === undefined) {
+      if (value === undefined && !open) {
         if (OPTIONAL.includes(name)) {
           continue;
         }
         throw new Error(`${name} has no value for tinyassets-${worker}`);
       }
-      plan.push(`set the secret ${name} on tinyassets-${worker}`);
+      plan.push(`set the secret ${name} on tinyassets-${worker}${open
+        ? ` (its value, or its absence if optional: ${later})` : ""}`);
       if (apply) {
         wrangler(["secret", "put", name, "--config", paths[worker]!], value);
       }
@@ -636,10 +737,9 @@ async function main(): Promise<void> {
       const exists = (worker in held ? held[worker]
         : await secretsOf(api, account, `tinyassets-${worker}`)) !== null;
       plan.push(`${exists && !migrate.has(worker) ? "upload and deploy a version of"
-        : "deploy"} tinyassets-${worker}${worker === "doors" && routes
-        ? `, then its routes: ${[...ROUTES, EGRESS_DOMAIN].join(", ")}` : ""}`);
+        : "deploy"} tinyassets-${worker}, touching no route`);
       if (apply) {
-        deployWorker(worker, paths[worker]!, exists, migrate, routes);
+        deployWorker(worker, paths[worker]!, exists, migrate);
       }
     }
     if (ids["CONTROL"]!.startsWith("planned-")
@@ -656,35 +756,44 @@ async function main(): Promise<void> {
         }
       }
     }
-    plan.push(`WorkOS redirect URI ${CALLBACK}: ${
-      await registerRedirect(input("WORKOS_API_KEY")!, apply)}`);
+    plan.push(`WorkOS redirect URI ${CALLBACK}: ${open ? later
+      : await registerRedirect(input("WORKOS_API_KEY")!, apply)}`);
+    if (routes) {
+      plan.push(...steps.map((step) => describeStep(step, DOORS)));
+      plan.push(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
+      if (apply) {
+        await runHandover(api, zone!, DOORS, steps);
+        const routed = join(out, "doors", "routed.json");
+        writeFileSync(routed, JSON.stringify(deployedConfig("doors", ids, upstream, true),
+                                             null, 2));
+        wrangler(["triggers", "deploy", "--config", routed]);
+      }
+    }
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
-  const summary = `${apply ? "Changed" : "Would change"}:\n${plan.map((step) => `- ${step}`)
-    .join("\n")}`;
-  console.log(summary);
-  if (process.env["GITHUB_STEP_SUMMARY"] !== undefined) {
-    writeFileSync(process.env["GITHUB_STEP_SUMMARY"], `${summary}\n`, { flag: "a" });
-  }
+  report(plan, apply);
   if (!apply) {
     console.log("\nNothing was changed.");
     return;
   }
-  // Fact 11: after a deploy, the handles canary. The dark deploy moved no public route, so
-  // it holds the live door as it was.
+  // Fact 11: after a deploy, the handles canary (it reads TINYASSETS_WIKI_CANARY_TOKEN).
   const canary = spawnSync("python3", [join(REPO, "scripts", "mcp_public_canary.py"),
                                        "--assert-handles"], { stdio: "inherit", cwd: REPO });
   if (canary.status !== 0) {
     throw new Error(`the handles canary failed (exit ${canary.status})`);
   }
-  if (flag("--h2")) {
-    execFileSync(process.execPath, ["--experimental-strip-types",
-                                    join(PLATFORM, "deploy", "h2-probes.ts")],
-                 { stdio: "inherit", env: process.env });
-  } else {
-    console.log("H2's probes wait for a routed door and a probe owner's key: run again with " +
-                "--yes --h2 (h2-probes.ts names what it needs).");
+  console.log("H2's probes wait for a routed door and a probe owner's key: run with --h2 " +
+              "(h2-probes.ts names what it needs).");
+}
+
+/** The plan, printed and written to the job summary. */
+function report(plan: readonly string[], applied: boolean): void {
+  const summary = `${applied ? "Changed" : "Would change"}:\n${plan.map((step) => `- ${step}`)
+    .join("\n")}`;
+  console.log(summary);
+  if (process.env["GITHUB_STEP_SUMMARY"] !== undefined) {
+    writeFileSync(process.env["GITHUB_STEP_SUMMARY"], `${summary}\n`, { flag: "a" });
   }
 }
 

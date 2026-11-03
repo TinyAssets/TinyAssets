@@ -169,29 +169,19 @@ test, cutover.
   a minute; a revoke or a set to `revoked` marks the row, a forget removes it; `keyList`
   and the owner surface's `keys/list`. A held key request is a policy card of type
   `api_key_request` whose scopes must be the grant's, marked applied in the mint's unit.
-- [x] Rate limits, by the founder's rule (no invented limits; slice L, after its review
-  and research 3a): no per-key or per-owner request cap on an authenticated caller, whom
-  the tier's simultaneous runs, the owner's own settings and vendors' limits already
-  bound. Only unauthenticated work that costs the platform something is counted, as
-  security (`doors/src/throttle.ts`, three `ratelimits` bindings keyed by the caller's
-  IPv4 address or IPv6 /64, `limits-audit.md` "security" with each number's derivation):
-  - **sign-in starts** (23 a minute, from KV's included writes): `/authorize`, the
-    consent decision, a callback that recovered its state;
-  - **metadata fetches** (23 a minute; no cost figure prices a fetch, so it equals the
-    sign-in bound): counted at `/authorize`, and at the token and revoke endpoints only
-    on failure, since Claude's and ChatGPT's shared backend addresses refresh there; a
-    client the provider's cache holds is never counted;
-  - **failures** (115 a minute, from KV's included reads at 2 a failure): a bearer or
-    key the doors cannot validate, a token-endpoint failure (per address and client), an
-    inbound hook refused before or at its check.
-
-  A cheap refusal (a non-navigation, a malformed request) is never counted. The client id
-  is found as the OAuth provider finds it: HTTP Basic (its scheme in any case), then a
-  `client_assertion`'s issuer, then the form. An owner object the runtime reports
-  overloaded answers `429`, recorded as a technical ceiling. A carrier NAT waits a minute
-  at most. Miniflare runs the binding; its price and per-location counting are
-  Cloudflare's. Owed with the routes: one zone WAF rule on `/authorize` and
-  `/oauth/token` as an edge backstop (`platform/deploy/checklist.md`).
+- [x] Rate limits, by the founder's rule (no invented limits; slice L, after its second
+  review): the platform sets no number on any caller, authenticated or not. The first
+  round's per-IP counts (sign-in starts, metadata fetches, failures) are deleted with their
+  bindings: each divided an account's included KV quota among IPs, which derives nothing,
+  and the failure count refused valid callers behind an MCP host's shared backend address
+  (review N1, now two tests that a valid key and a live refresh still succeed after many
+  failures from their address). What bounds an unauthenticated caller instead:
+  Cloudflare's always-on DDoS protection in front of every Worker; the OAuth provider's own
+  per-fetch bounds on a metadata document (public URLs, 5 KiB, 10 s, one fetch out a
+  request in), a technical ceiling in `limits-audit.md`; and an owner object the runtime
+  reports overloaded answering `429` with `Retry-After`, Cloudflare's documented soft
+  limit surfaced. A zone WAF rule with the founder's own number stays an optional founder
+  step (`platform/deploy/checklist.md`).
 - [x] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
   the agent's doors (5, A4): `converse`, `run_graph`, `run_status` and `run_cancel` in
   `tools.ts` (the first two destructive, not idempotent and open world, the agent acting
@@ -1394,10 +1384,14 @@ R, S, M and W.
   never a host (review H2, research 3c). A failed lookup stops it, never reads as absent; a held
   `GATEWAY_KEYRING` is never generated or replaced, and is rotated only by adding a key;
   the control record is written only when the API answers it is absent; a later deploy
-  uploads a version and deploys it, never touching a route; with `--routes` it stops
-  first on any route another Worker holds that overlaps the doors' (wrangler 4.154 refuses
-  an identical one; Cloudflare gives an overlap to the most specific). The founder's run
-  is owed (`platform/deploy/checklist.md`).
+  uploads a version and deploys it, never touching a route. A `plan` job prints the plan
+  with the Cloudflare token alone; the `apply` job needs it and waits on the `production`
+  environment, so a required reviewer approves after reading it (review D1), and holds
+  the handles canary's token (D2). `--routes` hands the doors' routes over one at a time
+  through Cloudflare's routes API, a held pattern moved in place and another Worker's
+  narrower one deleted only after the doors' wider one exists, so no path is ever served
+  by nothing (D3, tested against a fake of the API). `--h2` runs the probes alone. The
+  founder's run is owed (`platform/deploy/checklist.md`).
 - [x] Code mode's switch (slice M): the MCP door's `code` tool refuses (`code_mode_off`)
   unless the owner's policy turns `hooks.codemode` on (`owner/test/code-door.test.ts`).
 - [ ] `test_hygiene_gate` reads no platform TypeScript test (slice D review L4): it
