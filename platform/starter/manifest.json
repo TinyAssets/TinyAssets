@@ -1,6 +1,6 @@
 {
   "about": "The starter package: the files every new owner's default agent, main, is seeded with, and the version their updates ship under (starter_research.md section 3). Each file's path is where it lands in the owner's files; its source is the same path under this directory. managed files are replaced while unedited, and an edited one gets a .ta-new copy beside it and one notice; personal files are seeded once and never updated. A file whose change in a version widens what the agent may do names that version and why in widens: it then arrives as a proposal even unedited. agent.json is written last. A path a version drops goes in retired, so a file the owner deleted stays deleted if a later version ships it again. A personal file that moved names its old path in moved_from: an owner who already holds that old file, changed, is seeded at the new path with a copy of it (the old one is left as it is), and told once. bundle.mjs makes starter.json, which the owner's object carries; raise version with every change.",
-  "version": 3,
+  "version": 4,
   "okf": {
     "repository": "GoogleCloudPlatform/open-knowledge-format",
     "commit": "ad30107c31c06aec8a7d5636e0d1058118604e6f",

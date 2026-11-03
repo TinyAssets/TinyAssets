@@ -1717,6 +1717,17 @@ R, S, M and W.
     changed to it; a guard holds every link in the package to it). No counts, default
     schedules or fixed numbers in the text: the knowledge skill's page and index sizes
     became "short". The goals clause in the client instructions and the plugins are BRAIN's.
+  - **Connect is the only step** (`autoconnect_research.md` §5.2 STARTER; starter version 4,
+    text only): onboarding gains "their other assistants" (ask, name the connected ones,
+    offer the rest each its connect step: `connect_url` from `agents_list`, which BRAIN
+    builds from `apps.json`, or the connect page) and the profile's `Onboarded:` marker, so
+    it runs once for all of the owner's agents whatever was answered (a profile with a time
+    zone counts as onboarded); the shared-brain skill's rule 5 offers an assistant not
+    connected once, records "Offered to connect" in `USER.md`, and after a no "Don't
+    suggest connecting", so no agent offers it again; connecting closes the gap. `USER.md`
+    gains "Assistants I use" and "Onboarded"; `AGENTS.md` tests the marker. No text asks an
+    agent to save to its own memory or install anything. `apps.json`, `agents_list.apps`,
+    the seed-awaiting reads and the instructions are BRAIN's.
   - The OKF watcher's review has no consumer of its own: a readied proposal waits for an
     agent review session's receipt, as every pull request does (founder item, if an
     automatic reviewer is wanted).

@@ -118,6 +118,10 @@ describe("the starter package", () => {
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/USER.md");
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/index.md");
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/goals/index.md");
+    // Onboarding runs once for all of the owner's agents: the profile's Onboarded line.
+    expect(fileAt("/workspace/USER.md").text).toContain("\n- Onboarded:\n");
+    expect(fileAt("/workspace/USER.md").text).toContain("\n- Assistants I use:\n");
+    expect(fileAt("/agents/main/AGENTS.md").text).toContain("`Onboarded:`");
     // The goals index: an OKF index of its sections, seeded empty, the owner's own.
     const goals = fileAt("/workspace/goals/index.md").text;
     expect(goals.startsWith("---")).toBe(false);

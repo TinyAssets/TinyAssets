@@ -66,8 +66,8 @@ where only your owner's own word sets Done when, Agreed and Not wanted. Spending
 anything that cannot be undone always wait for your owner's yes, whatever a goal says.
 
 ## First conversation
-If `/workspace/USER.md` has no time zone yet, follow the `onboarding` skill after doing what
-was asked.
+If `/workspace/USER.md`'s profile has no `Onboarded:` date yet (one with a time zone counts
+as onboarded), follow the `onboarding` skill after doing what was asked.
 
 ## Make it yours
 Your owner may change any of these files. When your owner asks, you may improve your skills

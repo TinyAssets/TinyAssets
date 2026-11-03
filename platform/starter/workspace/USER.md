@@ -13,5 +13,7 @@ it short: detail belongs in the knowledge base.
 - Time zone:
 - Wants help with:
 - Messaging me unasked:
+- Assistants I use:
+- Onboarded:
 
 ## Directives

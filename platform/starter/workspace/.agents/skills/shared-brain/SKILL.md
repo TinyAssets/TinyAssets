@@ -8,8 +8,8 @@ metadata:
 # The shared brain
 
 Your owner's TinyAssets workspace is shared by all of their agents, from every app and every
-engine. It holds what they told any agent, their work, and the tasks agents have taken. Three
-rules keep it one brain instead of many.
+engine. It holds what they told any agent, their work, and the tasks agents have taken.
+These rules keep it one brain instead of many.
 
 ## 1. Look here before asking
 Before acting for your owner, read `/workspace/goals/index.md` (their goals, the `goals`
@@ -49,9 +49,23 @@ purchase, a booking, an edit of a shared file or area), claim it on the board:
   it does not, write the row on its etag, saying in the body that you took it over and when.
 The `rooms-and-board` skill has the board's details.
 
-## When your memory and the workspace differ
+## 4. When your memory and the workspace differ
 A newer entry in TinyAssets is the source over your own memory or your app's memory: use it,
 and tell your owner when the two differ. If yours is newer, update the workspace (rule 2).
+
+## 5. Assistants not yet connected
+When your owner says, or clearly shows, that they use an AI assistant, check whether
+`agents_list` shows it connected to TinyAssets. A file that merely mentions a product is not
+your owner using it. If it is not connected, and `/workspace/USER.md` says neither that it
+was offered nor not to suggest it, offer it once:
+- after doing what was asked, claim `offer:connect:<app>` on the board (rule 3), then say
+  briefly that it can share this same workspace, with its connect step:
+  its `connect_url` from `agents_list` (TinyAssets' list of apps, `apps.json`), or
+  `https://tinyassets.io/connect` where it shows none;
+- add it to the profile's `Assistants I use:` line, and write the directive
+  `- Offered to connect <app>` with when it was observed;
+- on a no, write `- Don't suggest connecting <app>`, and no agent raises it again;
+- once it is connected, the gap is closed: connecting is your owner's act, in that app.
 
 ## Always
 - Never store secrets: passwords, keys, tokens, codes.
