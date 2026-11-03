@@ -45,7 +45,7 @@ import { Invalid } from "./errors";
 import { type Content, cut, chunkedId, FileConflict, type Files, INLINE_BYTES, inlineId }
   from "./files";
 import type { OwnerStorage, Write } from "./gate";
-import { ownersOnly, storedPath } from "./paths";
+import { ownersOnly, storedPath, within, WORKSPACE } from "./paths";
 
 /**
  * The most paths a package may name, its files and the paths it once shipped and dropped
@@ -67,6 +67,11 @@ export interface StarterFile {
   readonly class: StarterClass;
   /** The version whose change to this file widens what the agent may do, and why. */
   readonly widens?: { readonly version: number; readonly why: string };
+  /**
+   * A personal file's earlier path, retired: an owner who holds a changed file there is
+   * seeded here with a copy of it (the old file is left as it is) and told once.
+   */
+  readonly moved_from?: string;
   readonly text: string;
 }
 
@@ -108,11 +113,18 @@ export function starterPackage(value: unknown): StarterPackage {
   const paths = new Set<string>();
   const files = pkg.files.map((file: Partial<StarterFile>): StarterFile => {
     const path = storedPath(file.path);
-    if (!ownersOnly(path) || path.endsWith(NEWER) || paths.has(path)
-        || (file.class !== "managed" && file.class !== "personal")
-        || typeof file.text !== "string") {
-      throw new Invalid(`starter file ${String(file.path)} is a distinct path in the owner's ` +
-                        "trees, managed or personal, with its text");
+    // A managed file is instructions, in the owner's trees; a personal one (the profile, the
+    // workspace's map) is data, anywhere in the workspace, for every agent to write.
+    if (!within(path, WORKSPACE) || path === WORKSPACE || path.endsWith(NEWER)
+        || paths.has(path) || (file.class !== "managed" && file.class !== "personal")
+        || (file.class === "managed" && !ownersOnly(path)) || typeof file.text !== "string") {
+      throw new Invalid(`starter file ${String(file.path)} is a distinct path in the workspace ` +
+                        "(a managed one in the owner's trees), managed or personal, with its " +
+                        "text");
+    }
+    if (file.moved_from !== undefined && (file.class !== "personal"
+        || !(Array.isArray(retired) && retired.includes(file.moved_from)))) {
+      throw new Invalid(`starter file ${path} moved from a retired path, and is personal`);
     }
     const widens = file.widens;
     if (widens !== undefined && (!Number.isSafeInteger(widens.version) || widens.version < 2
@@ -122,7 +134,9 @@ export function starterPackage(value: unknown): StarterPackage {
     }
     paths.add(path);
     return Object.freeze({ path, class: file.class, text: file.text,
-                           ...(widens === undefined ? {} : { widens }) });
+                           ...(widens === undefined ? {} : { widens }),
+                           ...(file.moved_from === undefined ? {}
+                             : { moved_from: storedPath(file.moved_from) }) });
   });
   const agents = files.filter((file) => file.path.endsWith("/agent.json"));
   if (agents.length > 0 && files.at(-1) !== agents.at(-1)) {
@@ -191,6 +205,11 @@ export interface StarterDeps {
   readonly notice: (type: string, detail: string) => void;
   /** Whether the owner is admitted for work: a read. */
   readonly admitted: () => boolean;
+  /**
+   * Whether the files can take a write: the tier's numbers, which bound the files' bytes,
+   * are known (a door's binding hands them). A read; true when omitted.
+   */
+  readonly ready?: () => boolean;
   readonly clock: () => number;
 }
 
@@ -234,8 +253,8 @@ export class Starter {
 
   /** When the lane next has work: now while the carried version is not reconciled, past a retry. */
   next(now: number): number | null {
-    if (this.#pkg === null || !this.#deps.admitted()) {
-      return null;
+    if (this.#pkg === null || !this.#deps.admitted() || this.#deps.ready?.() === false) {
+      return null;  // nothing to do, or no write could land yet: no failure to tell of
     }
     const state = this.#state();
     if (state !== undefined && state.version >= this.#pkg.version) {
@@ -301,6 +320,7 @@ export class Starter {
     const edited: string[] = [];
     const proposed: string[] = [];
     const withdrawn: string[] = [];
+    const moved: string[] = [];
     for (const file of pkg.files) {
       const bytes = new TextEncoder().encode(file.text);
       const id = contentIdOf(bytes);
@@ -353,7 +373,7 @@ export class Starter {
         } else if (seeded && widening(file, this.version(), null, bytes) !== null) {
           await this.#offer(file, bytes, null, "proposed", null, id);
           proposed.push(`${file.path}: ${widening(file, this.version(), null, bytes)}`);
-        } else if (!await this.#install(file, bytes, "")) {
+        } else if (!await this.#install(file, await this.#movedBytes(file, moved) ?? bytes, "")) {
           await owned(await this.#deps.write(() => {
             const now = this.#deps.files.stat(file.path);
             return now?.kind === "file" ? this.#deps.files.open(file.path) : null;
@@ -427,6 +447,11 @@ export class Starter {
           `new version is beside ${edited.length === 1 ? "it" : "each"} as ${NEWER}: ${
             edited.join(", ")}. Ask your agent to merge, or delete the ${NEWER} file.`);
       }
+      if (moved.length > 0) {
+        this.#deps.notice("starter_moved", `Your agent's files moved (version ${pkg.version}): ${
+          moved.join("; ")}. Every one of your agents now reads the new place. The old file is ` +
+          "left as it was and nothing reads it any more: delete it when you like.");
+      }
       if (withdrawn.length > 0) {
         this.#deps.notice("starter_withdrawn", `A TinyAssets update (version ${pkg.version}) ` +
           `takes back what it had proposed for ${withdrawn.join(", ")}: the ${NEWER} ` +
@@ -475,6 +500,29 @@ export class Starter {
     }
     await this.#record(file, this.#pkg!.version, "installed", contentIdOf(bytes), null);
     return true;
+  }
+
+  /**
+   * The bytes to seed a moved personal file with: the owner's file at its old path when it is
+   * theirs (changed from what the starter installed there, or never the starter's), its move
+   * told in `moved`; null to seed the package's own text.
+   */
+  async #movedBytes(file: StarterFile, moved: string[]): Promise<Uint8Array | null> {
+    const from = file.moved_from;
+    if (from === undefined) {
+      return null;
+    }
+    const found = await this.#deps.write(() => {
+      const entry = this.#deps.files.stat(from);
+      const receipt = this.#sql.exec<{ installed: string | null }>(
+        "SELECT installed FROM starter_receipts WHERE path = ?", from).toArray()[0];
+      return { content: entry?.kind === "file" ? this.#deps.files.open(from) : null, receipt };
+    });
+    if (found.content === null || found.content.content_id === found.receipt?.installed) {
+      return null;  // gone, or the starter's own text untouched: the new text is seeded
+    }
+    moved.push(`${from} is now ${file.path}, copied with what it held`);
+    return this.#bytes(found.content);
   }
 
   /**

@@ -13,7 +13,7 @@ import { AGENT_UNDEFINED } from "../src/agent-file";
 import { SEARCH_ANSWER_BYTES, searchPage, type Scanned } from "../src/file-search";
 import { Notices } from "../src/notices";
 import type { OwnerDO } from "../src/owner-do";
-import { NEWER, Starter, type StarterFile, starterPackage, type StarterPackage }
+import { carried, NEWER, Starter, type StarterFile, starterPackage, type StarterPackage }
   from "../src/starter";
 import { gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
@@ -248,6 +248,74 @@ describe("review round 3 (F3)", () => {
   });
 });
 
+describe("the shared brain's move of the profile (starter version 2)", () => {
+  const OLD = `${AGENTS}/USER.md`;
+  const v1 = starterPackage({ version: 1, files: [
+    file(`${AGENTS}/SOUL.md`, "soul", { class: "personal" }),
+    file(OLD, "# profile template", { class: "personal" }),
+    file(`${AGENTS}/agent.json`, agentJson(["read_files"]))] });
+  const v2 = starterPackage({ version: 2, retired: [OLD], files: [
+    file(`${AGENTS}/SOUL.md`, "soul", { class: "personal" }),
+    file("/workspace/USER.md", "# new profile template", { class: "personal", moved_from: OLD }),
+    file("/workspace/index.md", "* [Profile](/USER.md) - the owner", { class: "personal" }),
+    file(`${AGENTS}/agent.json`, agentJson(["read_files"]))] });
+
+  it("seeds an owner who filled the old profile with a copy of it, the old file left", async () => {
+    const r = await rig();
+    await pass(r, v1);
+    const { entry } = await r.stub.fileStat(r.bind(null), { path: OLD });
+    await r.stub.fileWrite(r.session(null), { path: OLD, expected_etag: entry!.etag,
+                                              content: text("- Call them Alex.") });
+    await pass(r, v2);
+    expect(await readText(r, "/workspace/USER.md")).toBe("- Call them Alex.");
+    expect(await readText(r, OLD)).toBe("- Call them Alex.");
+    expect(await readText(r, "/workspace/index.md")).toBe("* [Profile](/USER.md) - the owner");
+    const moved = await notices(r, "starter_moved");
+    expect(moved).toHaveLength(1);
+    expect(moved[0]).toContain(`${OLD} is now /workspace/USER.md`);
+    expect((await receipts(r))[OLD]).toMatchObject({ class: "personal" });  // kept, retired
+  });
+
+  it("seeds the new template for an owner who never filled the old one", async () => {
+    const r = await rig();
+    await pass(r, v1);
+    await pass(r, v2);
+    expect(await readText(r, "/workspace/USER.md")).toBe("# new profile template");
+    expect(await readText(r, OLD)).toBe("# profile template");
+    expect(await notices(r, "starter_moved")).toEqual([]);
+  });
+
+  it("refuses a managed file outside the owner's trees, and a move from no retired path", () => {
+    expect(() => starterPackage({ version: 1, files: [file("/workspace/x.md", "x"),
+      file(`${AGENTS}/agent.json`, agentJson([]))] })).toThrow(/owner's trees/);
+    expect(() => starterPackage({ version: 1, files: [
+      file("/workspace/USER.md", "x", { class: "personal", moved_from: OLD }),
+      file(`${AGENTS}/agent.json`, agentJson([]))] })).toThrow(/retired/);
+  });
+});
+
+describe("seeding before the tier's numbers are known (after slice L)", () => {
+  it("waits for them, writing nothing and telling nothing, rather than failing", async () => {
+    const r = await rig();
+    const now = Date.now() / 1000;
+    const pkg = starterPackage({ version: 1, files: [file(`${AGENTS}/agent.json`, agentJson([]))] });
+    const seen = await inGate(r.stub, async (_instance, _state, gate) => {
+      const starter = new Starter({
+        storage: gate.storage, files: filesOn(gate.storage, gate.write), write: gate.write,
+        admitted: () => true, ready: () => false, clock: () => now, notice: () => {
+          throw new Error("no notice while it waits");
+        },
+      }, pkg);
+      const next = starter.next(now);
+      await starter.run(now);
+      return { next, version: starter.version() };
+    });
+    expect(seen).toEqual({ next: null, version: 0 });
+    expect((await r.stub.fileStat(r.bind(null), { path: `${AGENTS}/agent.json` })).entry)
+      .toBeNull();
+  });
+});
+
 describe("seeding (review L3)", () => {
   it("lets a new owner's first converse find main, before the lane's alarm has run",
      async () => {
@@ -259,7 +327,7 @@ describe("seeding (review L3)", () => {
     expect(refused.message).toMatch(/^no_source/);
     expect((await r.stub.fileStat(r.bind(null), { path: `${AGENTS}/agent.json` })).entry)
       .not.toBeNull();
-    expect((await r.stub.starterReceipts(r.bind(null))).version).toBe(1);
+    expect((await r.stub.starterReceipts(r.bind(null))).version).toBe(carried().version);
   });
 });
 

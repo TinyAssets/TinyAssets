@@ -67,12 +67,12 @@ describe("the starter package", () => {
       const refused = spawnSync(process.execPath, [join(copy, "bundle.mjs")], { encoding: "utf8" });
       expect(refused.status).toBe(1);
       expect(refused.stderr).toContain(gone);
-      manifest.retired = [gone];
+      manifest.retired = [...manifest.retired, gone];
       writeFileSync(manifestPath, JSON.stringify(manifest));
       const kept = spawnSync(process.execPath, [join(copy, "bundle.mjs")], { encoding: "utf8" });
       expect([kept.status, kept.stderr]).toEqual([0, ""]);
       expect(JSON.parse(readFileSync(join(copy, "starter.json"), "utf8")).retired)
-        .toEqual([gone]);
+        .toContain(gone);
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }
@@ -98,15 +98,28 @@ describe("the starter package", () => {
     }
   });
 
-  it("holds the default agent's four files and the shared skills, agent.json last", () => {
+  it("holds the default agent's files, the owner-wide profile and map, and the shared " +
+     "skills, agent.json last", () => {
     expect(bundled.files.map((file) => file.path.replace(/^\/workspace\//, ""))).toEqual([
       ".agents/skills/knowledge/SKILL.md", ".agents/skills/knowledge/references/okf-spec.md",
       ".agents/skills/schedule/SKILL.md", ".agents/skills/rooms-and-board/SKILL.md",
       ".agents/skills/onboarding/SKILL.md", ".agents/skills/scratch/SKILL.md",
-      "agents/main/SOUL.md", "agents/main/USER.md", "agents/main/AGENTS.md",
-      "agents/main/agent.json"]);
+      ".agents/skills/shared-brain/SKILL.md", "agents/main/SOUL.md", "USER.md", "index.md",
+      "agents/main/AGENTS.md", "agents/main/agent.json"]);
     expect(bundled.files.filter((file) => file.class === "personal").map((file) => file.path))
-      .toEqual(["/workspace/agents/main/SOUL.md", "/workspace/agents/main/USER.md"]);
+      .toEqual(["/workspace/agents/main/SOUL.md", "/workspace/USER.md", "/workspace/index.md"]);
+    // The profile moved from main's own folder to the workspace's root, shared by every agent.
+    expect(fileAt("/workspace/USER.md")).toMatchObject({
+      moved_from: "/workspace/agents/main/USER.md" });
+    expect((bundled as Bundled & { retired: string[] }).retired)
+      .toEqual(["/workspace/agents/main/USER.md"]);
+    expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/USER.md");
+    expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/index.md");
+    // The map is OKF index lines, no frontmatter: data, not behaviour.
+    const map = fileAt("/workspace/index.md").text;
+    expect(map.startsWith("---")).toBe(false);
+    expect(map.split("\n").filter((line) => line.startsWith("* ")).every((line) =>
+      /^\* \[[^\]]+\]\(\/[^)]*\) - \S/.test(line))).toBe(true);
     // The engine is the strongest connected source; its scopes let it schedule its own runs.
     const agent = agentFile(fileAt("/agent.json").text);
     expect(agent).toMatchObject({ engine: "auto", model: null, credential: null,
@@ -124,7 +137,7 @@ describe("the starter package", () => {
                      "allowed-tools", "disable-model-invocation"];
     const skills = bundled.files.filter((file) => file.path.endsWith("/SKILL.md"));
     expect(skills.map((file) => file.path.split("/").at(-2))).toEqual(
-      ["knowledge", "schedule", "rooms-and-board", "onboarding", "scratch"]);
+      ["knowledge", "schedule", "rooms-and-board", "onboarding", "scratch", "shared-brain"]);
     for (const skill of skills) {
       const front = frontOf(skill.text);
       expect([...front.keys()].filter((key) => !allowed.includes(key))).toEqual([]);

@@ -1,6 +1,6 @@
 ---
 name: rooms-and-board
-description: Talk in TinyAssets rooms with your owner, their other agents and outside agents (Claude, ChatGPT, Grok, Muse), and use the shared board as the task list. Use when posting, replying, reading what is new, or taking, updating and finishing tasks.
+description: Talk in TinyAssets rooms with your owner, their other agents and their agents in other apps, and use the shared board as the task list. Use when posting, replying, reading what is new, claiming an act, or taking, updating and finishing tasks.
 metadata:
   ta-starter: "rooms-and-board@1"
 ---
@@ -24,8 +24,8 @@ metadata:
 - Answer when you are addressed, or when you add clear value. Otherwise stay quiet.
 - One complete reply, not fragments.
 - Speak as yourself, never as your owner.
-- Never post private content (`USER.md`, the knowledge base, your owner's mail) into a room
-  with anyone but your owner, unless your owner asked you to.
+- Never post private content (`/workspace/USER.md`, the knowledge base, your owner's mail)
+  into a room with anyone but your owner, unless your owner asked you to.
 
 ## The board
 The board is the collection `board`: one row a task. A row's body is a short markdown task:
@@ -41,5 +41,15 @@ Notes.
   row with `collection_get`.
 - **Take** a task by writing it with `collection_write` on its current etag, `owner` set to
   you. A conflict means someone else took or changed it: read it again; do not overwrite.
+- **Claim an act** before you take it, when another of your owner's agents could take it
+  too: create the row `<kind>:<stable key>` (the act's own identity) with
+  `expected_etag: ""`, which creates it only if it does not exist. Its body has
+  `status: doing`, `owner:` and `until:` (an ISO time). A conflict means it is claimed: read
+  it, and stop or coordinate in a room.
+- **A lease:** `until:` is how long the claim holds. A row still `doing` past its `until:`
+  may be taken over by writing it on its current etag (compare and swap), with a line in the
+  body saying who took it over and when; a conflict means someone else got there first.
+- **Done:** write the row on its etag with `status: done`, what was done and where the result
+  is (a link, a confirmation, a file), so the next agent sees it before acting.
 - Never mark your owner's own task done. Say it looks done and let them close it.
 - An answer with `reset: true` means read the board again whole, then go on from the cursor.

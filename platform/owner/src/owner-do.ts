@@ -1533,6 +1533,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#notices = new Notices(storage);
     this.#starter = new Starter({
       storage, files: this.#files, write, admitted, clock,
+      // The files' byte quota is the tier's storage: until a door hands the numbers, no write
+      // lands, so a seed waits for them rather than failing (the first door's call keeps them).
+      ready: () => keptTiers(storage) !== null,
       notice: (type, detail) => this.#notices.add(type, detail, clock()),
     }, internals.starter === undefined ? carried() : internals.starter);
     const owner = () => {
@@ -1808,7 +1811,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const { owner, caller } = this.#bind(binding, door);
     // The tier's numbers, as the binder read them from the control record: kept for the
     // files byte quota and the lane's runs (written only when they changed).
+    const unread = keptTiers(this.#storage) === null;
     keepTiers(this.#storage, binding.tiers, clock());
+    if (unread && keptTiers(this.#storage) !== null && this.#starter.version() === 0) {
+      // The first numbers a new owner's door hands: its seed, which waited for them, is due.
+      queueMicrotask(() => void this.#schedule.sync());
+    }
     if (!("origin" in binding)) {
       throw new Invalid("invalid outside origin");
     }

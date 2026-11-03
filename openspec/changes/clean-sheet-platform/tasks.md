@@ -1676,8 +1676,23 @@ R, S, M and W.
     (the token is the founder's own), never failing the run on a notification, with the
     user token only in the steps that push or call `gh`, and its loops touching only its
     own `okf-watch/` branches (R2-M2, R2-L3).
-  - **Migration 15:** slice L (PR #5401) adds a migration 15 too. Once it lands, merge
-    main and renumber the starter's.
+  - Review round 3 (rvsa, APPROVE on the merge of main): merged slice L (its migration 15;
+    the starter's is 16 here, 18 once SIGNIN's 16 and STORE's 17 land before it); SEEDED test owners
+    admitted as L's sign-up admits them; a retired path's unadopted proposal withdrawn
+    (F3-retired-proposal); the race-free seed wait in the suite (F3-seed-wait); the bundle
+    guard says loudly when main's history is missing.
+  - **The shared brain** (`shared_brain_research.md` §6.2, items 1 to 5; starter version 2):
+    the owner's profile moved to the owner-wide `/workspace/USER.md` (`moved_from` the retired
+    `agents/main/USER.md`: an owner who filled the old one is seeded with a copy of it, the
+    old file left, and told once; an untouched one gets the new template); the workspace's
+    map `/workspace/index.md` seeded (OKF index lines, no frontmatter); a new
+    `shared-brain` skill (look here before asking, write answers here, claim before acting;
+    a newer TinyAssets entry wins over the agent's own memory); the `rooms-and-board` board
+    section's create-only claims, `until:` leases and takeover by compare and swap; the
+    `knowledge` skill's scope the whole workspace, with the derived-map rule. A personal
+    file may now sit outside the owner's trees; a managed one may not. The doors' part
+    (client instructions, `file_write` and `file_edit`, descriptions, the connect page,
+    plugins) is the BRAIN slice's, after STARTER and STORE merge.
   - The OKF watcher's review has no consumer of its own: a readied proposal waits for an
     agent review session's receipt, as every pull request does (founder item, if an
     automatic reviewer is wanted).

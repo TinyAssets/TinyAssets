@@ -174,11 +174,12 @@ describe("the owner app's file routes", () => {
   it("write and read an agent's files as text, against their etags", async () => {
     const app = await signInApp({ owner: owner() });
     const { access_token: token, session } = app;
-    for (const path of ["/workspace/agents", "/workspace/agents/main"]) {
+    // An agent of the owner's own making: main is the starter's, seeded at sign-up.
+    for (const path of ["/workspace/agents", "/workspace/agents/helper"]) {
       await answered(await appPost("tools/file_mkdir", token, session,
                                    { path, expected_etag: null }));
     }
-    const path = "/workspace/agents/main/AGENTS.md";
+    const path = "/workspace/agents/helper/AGENTS.md";
     const text = "# main\n\nBe brief. Ünïcode stays.\n";
     const written = await answered(await appPost("files/write", token, session,
                                                  { path, expected_etag: "", text }));

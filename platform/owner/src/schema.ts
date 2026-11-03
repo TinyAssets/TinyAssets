@@ -1569,8 +1569,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE owner_erasure ADD COLUMN outside INTEGER NOT NULL DEFAULT 0 " +
       "CHECK (outside IN (0, 1))",
   ]),
-  // 16 (17 once slice STORE's migration, which lands first, is merged before it): the
-  // starter package (starter.ts): a receipt for each path of the carried package
+  // 16 here; 18 once slice SIGNIN's (16) and slice STORE's (17), which land first, are
+  // merged before it: the starter package (starter.ts): a receipt for each path of the carried package
   // (at most `STARTER_FILES_MAX`, its files and retired paths together; any other path loses its
   // receipt at the next pass), and the one row of the version last reconciled whole, its retry and the version
   // whose failure the owner was told of.
