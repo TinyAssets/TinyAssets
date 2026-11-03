@@ -13,8 +13,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { verifyToken } from "../../doors/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
 import type { ModelInfo } from "../src/connections";
-import { EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
-import { RUN_DEADLINE_S } from "../src/network";
+import { EGRESS_BEAT_S, EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
+import { EGRESS_DEADLINE_S } from "../src/network";
 import type { Binding } from "../src/owner-do";
 import { apiRules } from "../../gateway/src/api-rules";
 import { egressPrice, NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
@@ -24,7 +24,7 @@ import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
-import { failure } from "./support";
+import { failure, TIERS } from "./support";
 import type { SandboxRun } from "../src/owner-do";
 import type { NetworkPlan } from "../src/network";
 import { hashed, ownerRun, secretOf } from "./runs-support";
@@ -175,6 +175,12 @@ async function ended(opened: EgressOpened, waitMs = 2000): Promise<boolean> {
 }
 
 const held = ({ lease_id, epoch }: Leased) => ({ lease_id, epoch });
+
+/** One reservation's state and outcome. */
+async function state(r: Gated, reservation: string) {
+  return (await r.sql("SELECT state, outcome FROM egress_reservations WHERE id = ?",
+                      reservation))[0];
+}
 
 async function rows(r: Gated) {
   return r.sql("SELECT state, code, ended, outcome, status, bytes, bytes_hint " +
@@ -420,13 +426,14 @@ describe("an egress call", () => {
     expect(await version()).toBe(2);
   });
 
-  it("is held to the rate: open at once, and opened a minute, to its window's edge",
+  it("is held to the open calls the tier's runs give, and to no rate a minute",
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
     const lease = await leased(r);
     const open: EgressOpened[] = [];
-    for (let i = 0; i < EGRESS_LIMITS.open; i++) {
+    // The tier's runs scale it: the tests' control record's free tier.
+    for (let i = 0; i < EGRESS_LIMITS.openPerRun * TIERS.free.runs; i++) {
       open.push(await admitted(r, lease, connection));
     }
     expect(await refusedWith(r, lease.as(), connection)).toBe("egress_rate");
@@ -435,7 +442,7 @@ describe("an egress call", () => {
     await admitted(r, lease, connection);
     await r.sql("UPDATE egress_reservations SET state = 'settled', outcome = 'complete', " +
                   "settled_at = opened_at WHERE state = 'open'");
-    // The minute's window: a row 59 s old counts, one 61 s old does not; refused ones never.
+    // Any number opened within the minute: only the open ones count.
     await r.sql("DELETE FROM egress_reservations");
     const now = Date.now() / 1000;
     const fill = (count: number, at: number, state: string) => r.sql(
@@ -446,27 +453,27 @@ describe("an egress call", () => {
         "SELECT i FROM n)", lease.lease_id, lease.run, lease.egress, connection, at, state,
       state === "refused" ? "egress_rate" : null, state === "settled" ? "complete" : null, at,
       count);
-    await fill(EGRESS_LIMITS.perMinute - 1, now - 59, "settled");
-    await fill(50, now - 61, "settled");
+    await fill(5_000, now - 10, "settled");
     await fill(30, now - 30, "refused");
     await admitted(r, lease, connection);
-    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_rate");
   }, 120_000);
 
-  it("receipts at most the minute's refusals, apart from the admitted calls' receipts",
+  it("receipts every refusal, keeping the newest refusalsKept, apart from the admitted",
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
     const lease = await leased(r);
     const opened = await admitted(r, lease, connection);
     await r.stub.egressSettle(lease.as(), settle(opened.reservation));
-    for (let i = 0; i < EGRESS_LIMITS.refusalsPerMinute + 20; i++) {
+    expect(EGRESS_LIMITS.refusalsKept).toBe(500);
+    for (let i = 0; i < 8; i++) {
       await r.stub.egressOpen(lease.as(), request(connection, { path: `/v1/files/${i}` }));
     }
     const late = await r.stub.egressOpen(lease.as(), request(connection, { path: "/v1/x" }));
-    expect(late).toEqual({ ok: false, code: "egress_endpoint_refused", receipt: null });
+    expect(late).toMatchObject({ ok: false, code: "egress_endpoint_refused" });
+    expect((late as { receipt: unknown }).receipt).not.toBeNull();
     expect(await r.sql("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'refused'"))
-      .toEqual([{ n: EGRESS_LIMITS.refusalsPerMinute }]);
+      .toEqual([{ n: 9 }]);
     expect(await r.sql("SELECT state FROM egress_reservations WHERE id = ?", opened.reservation))
       .toEqual([{ state: "settled" }]);
   }, 120_000);
@@ -993,6 +1000,37 @@ describe("the owner's erasure", () => {
 });
 
 describe("a reservation", () => {
+  it("beaten by its door stays open; with its beats stopped it is settled lost within " +
+     "minutes, and past the day's deadline whatever its beats", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    const opened = await admitted(r, lease, connection);
+    // Opened long ago, but beaten just now: its door still streams it.
+    await r.sql("UPDATE egress_reservations SET opened_at = opened_at - ?", 10 * LOST_AFTER_S);
+    expect(await r.stub.egressBeat(lease.as(), { reservation: opened.reservation }))
+      .toEqual({ beat: true });
+    await admitted(r, lease, connection);
+    expect((await state(r, opened.reservation)))
+      .toMatchObject({ state: "open" });
+    // Its beats stop (a doors restart): lost three beats on, its slot and charge let go.
+    await r.sql("UPDATE egress_reservations SET beat_at = beat_at - ? WHERE id = ?",
+                LOST_AFTER_S + 1, opened.reservation);
+    await admitted(r, lease, connection);
+    expect((await state(r, opened.reservation)))
+      .toMatchObject({ state: "settled", outcome: "lost" });
+    expect(await r.stub.egressBeat(lease.as(), { reservation: opened.reservation }))
+      .toEqual({ beat: false });
+    // A row beaten forever is still lost past the door's one-day deadline.
+    const forever = await admitted(r, lease, connection);
+    await r.sql("UPDATE egress_reservations SET opened_at = opened_at - ? WHERE id = ?",
+                EGRESS_DEADLINE_S + 2 * EGRESS_BEAT_S, forever.reservation);
+    await r.stub.egressBeat(lease.as(), { reservation: forever.reservation });
+    await admitted(r, lease, connection);
+    expect((await state(r, forever.reservation)))
+      .toMatchObject({ state: "settled", outcome: "lost" });
+  });
+
   it("never settled is settled lost past its door's deadline, its charge unknown", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
@@ -1042,10 +1080,9 @@ describe("the sandbox's lease", () => {
     const lease = await leased(r, false);
     const tokens = { egress: lease.opened.egress_token, sync: lease.opened.sync_token };
     for (const [kind, token] of Object.entries(tokens) as ["egress" | "sync", string][]) {
-      expect(token).toMatch(/^[A-Za-z0-9_-]+\.[0-9]{10,11}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
-      // It dies with the run's deadline.
-      expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.expires)
-        .toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) + RUN_DEADLINE_S - 5);
+      expect(token).toMatch(/^[A-Za-z0-9_-]+\.0\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
+      // It has no deadline of its own: it lives while its lease is renewed.
+      expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.expires).toBe(0);
       expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.owner).toBe(r.name);
       // Each is its own kind's alone.
       expect(verifyToken(env.ROUTING_MAC_KEY, kind === "egress" ? "sync" : "egress", token))
@@ -1060,10 +1097,8 @@ describe("the sandbox's lease", () => {
     expect(await r.sql("SELECT epoch FROM file_space")).toEqual([{ epoch: lease.epoch }]);
     expect(JSON.stringify(await r.sql("SELECT * FROM sandbox_leases")))
       .not.toContain(lease.opened.egress_token.split(".")[2]);
-    // No run sets a deadline: the tokens die with the sandbox's own continuous-runtime
-    // ceiling, never sooner, and the lease's close settles its runs unknown.
-    expect(verifyToken(env.ROUTING_MAC_KEY, "egress", lease.opened.egress_token)!.expires)
-      .toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + RUN_DEADLINE_S);
+    // No run meets a deadline: the tokens die with the lease, and its close settles its
+    // runs unknown.
     await r.in((instance) => instance.sandbox.close(held(lease)));
     expect(await r.stub.agentStatus(r.bind(), { run_id: lease.run }))
       .toMatchObject({ state: "unknown", code: "lease_closed" });

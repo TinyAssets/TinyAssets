@@ -137,6 +137,20 @@ export interface GatewayService {
     Promise<Resealed & { readonly expires_at: number | null }>;
   revokeAtProvider(owner: string, connection: string, version: number, blob: string):
     Promise<{ readonly revoked: boolean }>;
+  /**
+   * One wake sent with a doorbell subscription's sealed secret (slice W): the gateway opens
+   * the blob (and the replaced one's, inside its rotation window) and makes the send.
+   */
+  ringDoorbell(owner: string, subscription: string, version: number, blob: string,
+               previous: { readonly version: number; readonly blob: string } | null,
+               request: { readonly headers: Readonly<Record<string, string>>;
+                          readonly body: string; readonly event_id: string }):
+    Promise<
+      | { readonly state: "answered"; readonly status: number;
+          readonly retry_after: string | null;
+          readonly resealed?: { readonly blob: string; readonly kid: string;
+                                readonly version: number } }
+      | { readonly state: "refused" } | { readonly state: "unknown" }>;
 }
 
 /** What the owner is shown of a connection: never its blob. */

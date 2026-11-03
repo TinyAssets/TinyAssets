@@ -8,8 +8,8 @@ G4, then one deletion slice (its §1.7, done: section 5), engine records, runs, 
 sandbox (live), the MCP door, wakes, doors live, before real data, the founder's live
 test, cutover.
 
-- [ ] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. The files default (`max_bytes` 1 GiB) is the first to raise. The list goes to the founder before anything ships. Listed, no value changed, in slice D: `limits-audit.md`; the founder's review and the changes are owed.
-- [x] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy. Slice R: `c:control`'s `tiers` (`doors/src/directory.ts`, parsed by `owner/src/tier.ts`), handed by the binder to the run doors, the owner's tier on its own admission row set by the platform alone (`tierSet`); the simultaneous runs held at admission. The storage figure is carried; the files byte quota's slice turns `max_bytes` into it.
+- [x] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. Listed in slice D; applied in slice LIM (founder, 2026-11-02 and 2026-11-03), after the placement rule and the structural changes it needed (ADR-035): `limits-audit.md` holds the values that ship, each classed. The files byte quota is the tier's storage; the model policy's per-run caps are off by default; a lease's tokens live while the lease does. The owner-bound guard's worst case is 42.3% of the 10 GB, 774.1 MB under half (`limits-audit.test.ts`). Owed, flagged in the audit: the collections' and ledger's byte bounds dropped for the tier's figure; the files' history rule counted in bytes (`max_entries` past 30,000); a live check of `limits.subrequests` at 10,000,000; R2 read latency from an owner object, measured live.
+- [x] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy. Slice R: `c:control`'s `tiers` (`doors/src/directory.ts`, parsed by `owner/src/tier.ts`), handed by the binder to the run doors, the owner's tier on its own admission row set by the platform alone (`tierSet`); the simultaneous runs held at admission. The storage figure is the files byte quota's `max_bytes` (slice LIM), kept from every door's binding.
 
 ## 1. Verify the unverified facts
 
@@ -59,10 +59,14 @@ test, cutover.
   bounded; no token exchange callback is installed; and the owner is named from the
   sign-in's issuer against an explicit list (`OWNER_ISSUER`, and `FOREIGN_ISSUERS`, empty
   until a provider's slice lists its issuer), any other issuer refused loudly.
-- [ ] An owner's `grantSet` to `revoked` (the object's set door) revokes no OAuth provider
+- [x] An owner's `grantSet` to `revoked` (the object's set door) revokes no OAuth provider
   grant: only the doors' `grantRevoke` path (`revoke.ts`) kills the client's refresh
   tokens. Route a set to `revoked` through the same provider revoke (rename review N1).
-- [ ] Live AuthKit wiring: an `Upstream` (`doors/src/upstream.ts`) for AuthKit's
+  Slice L: the owner surface's `grants/set` (`revoke.ts`'s `setClient`) runs the same
+  `providerRevoke` as `grants/revoke` when the set leaves the grant `revoked`, and deletes a
+  key's directory entry as a key's revoke does; the object marks the key store's row.
+- [x] Live AuthKit wiring (slice L; its live check owed to the founder's deploy): an
+  `Upstream` (`doors/src/upstream.ts`) for AuthKit's
   production environment, with its redirect URI `https://tinyassets.io/oauth/upstream/callback`,
   the code exchange and the ID token's signature, issuer, audience and `auth_time`
   against its JWKS; `OWNER_ISSUER` set to AuthKit's issuer (the config guard pins it
@@ -75,7 +79,22 @@ test, cutover.
   Owner creation by explicit platform admit at sign-up (the binder can't tell sign-up from
   sign-in today); until then a fresh object is created admitted on first sign-in, and
   erasure ends in `deleteAll` plus the `erased` row.
-- [ ] The AuthKit upstream refuses an ID token without `auth_time`: there is no clock
+  Built (slice L): `doors/src/oidc.ts`, a generic OpenID Connect code flow with PKCE, as
+  data: `OWNER_ISSUER` and the `UPSTREAM` record (endpoints, client id, the identity's
+  deletion URL), both `not-configured` as checked in (the config guard), filled by the
+  deploy kit (`platform/deploy/deploy.ts`) from the issuer's live discovery, which must name
+  `OWNER_ISSUER` exactly and list `auth_time`, or nothing deploys; the secret
+  `WORKOS_API_KEY`. `prompt=login`, `scope=openid` and the PKCE challenge again as the ID
+  token's `nonce`. A half-configured Worker throws (`upstreamOf`). The deploy kit copies
+  the key and registers the redirect URI idempotently; it is not run. **Explicit platform
+  admit**: a fresh object is `pending` (migration 10's row; the admission guard's pin
+  updated in place, nothing deployed) and every door and lane refuses it
+  (`owner_unadmitted`) until `admissionSet {admit: true}` from the reserved caller, which
+  the sign-in callback sends (`binder.ts`'s `bindPlatform`, the admin path's one constant,
+  `admin/src/caller.ts`) when the directory holds no `o:` record of the owner, then writes
+  `o:<owner>` admitted. The admit is idempotent and lifts no suspension. Owed live: the
+  exact `iss` against a live token, and AuthKit's production Google and GitHub apps.
+- [x] The AuthKit upstream refuses an ID token without `auth_time`: there is no clock
   fallback (this replaces the research's "use the binder's own clock"), since the fence
   and the session's 600 s bound both rest on the sign-in's real time. The binder names
   the owner from the token's issuer and subject: AuthKit's subjects stay owner ids as
@@ -84,17 +103,44 @@ test, cutover.
   refused), so linking a second provider to an existing owner is that slice's own act.
   The AuthKit slice sets `OWNER_ISSUER` to the exact `iss` its tokens carry, checked
   against a live token, since any other spelling refuses every sign-in.
+  Slice L: `verifiedIdToken` refuses no `auth_time`, a wrong or trailing-slash issuer,
+  another audience, another flow's nonce, an expired or future token, HS256 or `none`, an
+  unknown key and a forged body (`doors/test/authkit.test.ts`, a real RSA key).
 - [ ] DNS, routes and deploy: the doors Worker's routes on `tinyassets.io` (`/mcp`,
   `/api/*`, `/hooks/inbound/*`, `/app/api/*`, `/authorize`, `/oauth/*`,
   `/.well-known/oauth-*`), the `OAUTH_KV` and `DIRECTORY` namespaces, then the handles
   canary (Fact 11). Cutover (9); every existing connector re-authorizes once, since the
   issuer moves from AuthKit to `https://tinyassets.io`.
-- [ ] `/hooks/inbound`: the capability-URL and shared-app (Slack HMAC) shapes in the
+  Built, not run (slice L): `platform/deploy/deploy.ts` and the founder's
+  `platform/deploy/checklist.md`. It prints its plan and changes nothing without `--yes`;
+  creates the three KV namespaces, the bucket and the ring queue when missing; sets each
+  Worker's secrets when missing (the routing key on the doors and the owner together or
+  not at all); deploys files, gateway, hooks, sandbox, owner and doors with no route from
+  their checked-in configs with only the ids and the upstream filled (`guards/deploy.test.ts`);
+  writes a closed control record when there is none; registers the WorkOS redirect URI;
+  then runs the handles canary. `--routes` adds the routes above and the
+  `egress.tinyassets.io` custom domain (the cutover's: they take the paths from
+  `tinyassets-mcp-proxy`). Owed: the founder's run; the handles canary's tool set for the
+  new door before `--routes`.
+- [x] `/hooks/inbound`: the capability-URL and shared-app (Slack HMAC) shapes in the
   binder, the directory's `h:` and `i:` entries, the 1 MiB cap and the `control.inbound`
   gate, and a new owner door `inboundAccept` (config, revision, dedupe, owner-held
-  secrets, the breaker).
+  secrets, the breaker). Slice L: `doors/src/inbound.ts` and `owner/src/inbound.ts`. The
+  body bound is the platform's one request ceiling (`INBOUND_BODY_MAX` is `API_BODY_MAX`,
+  16 MiB), not a 1 MiB of its own; a body past 2 KiB is placed in R2 as mail's is. Shared
+  apps are data (`doors/shared-apps.json`: Slack's `v0` HMAC, its five minutes' skew, its
+  envelope's fields), proved by the platform's signing secret the record names
+  (`INBOUND_SLACK_SIGNING_SECRET`; without it that app's door refuses loudly). An event is
+  the owner's mail to the binding's agent, keyed by binding, revision and event id, so a
+  retry is deduped by the ledger's own key; a route at an older revision is refused
+  `binding_withdrawn`. The breaker (3 in 60 s, the Python's) counts a shared app's
+  full-mailbox refusals and no-ops it until the owner changes the binding. Owner surface:
+  `hooks/create` (a capability URL shown once), `hooks/list`, `hooks/set`, `hooks/revoke`.
+- [ ] The shared app's install flow (Slack's OAuth v2 install, which proves the owner holds
+  the workspace) writes the object's `shared` binding and its `i:` entry; until it lands
+  no route makes one, and a shared app's event for an install no owner made is a no-op.
 - [x] Owner admission and erasure, in the owner's object: an `admission` row
-  (`admitted | suspended{billing, abuse} | erased`), checked in `#bind` at every door
+  (`pending | admitted | suspended{billing, abuse} | erased`; `pending` added by slice L), checked in `#bind` at every door
   and by every lane with `require_work` semantics, an erasure tombstone so a stale
   `getByName` never recreates an erased owner, and a new door `admissionSet` taken only
   from a reserved `platform` caller, with a guard keeping that name out of every source
@@ -104,15 +150,25 @@ test, cutover.
   extra read, no 60 s lag), the alarm reads it locally, and erasure needs an object
   tombstone anyway. The binder keeps the platform gates (`control.ordinary`, the
   canary) from the directory.
-- [ ] The key store in the owner's object: a new door holding each API key's id, name,
+- [x] The key store in the owner's object: a new door holding each API key's id, name,
   mint time and last use, so the owner's key list and erasure can enumerate key ids
   (the grant row holds only the key's client hash), the 25-key count is strict, and
   an agent's held API-key request is applied with its grant (`_apply_key_request`).
-- [ ] Rate limits: two `ratelimits` bindings, 120 a minute per key and 600 per owner,
-  declared approximate (their price and miniflare support unverified); the config guard
-  admits them with their slice. They count JSON-RPC messages, not HTTP requests (a
-  2025-11-25 batch is one request of many calls), and a third limit bounds the CIMD
-  metadata fetches an unknown `client_id` makes the provider send.
+  Slice L: `owner/src/keys.ts` (`owner_keys`, migration 15); `keyMint` writes the row and
+  the grant in one unit, counting live keys strictly at LIM's 1,000 (the owner-set
+  clients' bound, held equal by a test); a call by a key marks its last use at most once
+  a minute; a revoke or a set to `revoked` marks the row, a forget removes it; `keyList`
+  and the owner surface's `keys/list`. A held key request is a policy card of type
+  `api_key_request` whose scopes must be the grant's, marked applied in the mint's unit.
+- [x] Rate limits, by the founder's rule (no invented limits; slice L): no per-key or
+  per-owner request cap on an authenticated caller, whom the tier's simultaneous runs, the
+  owner's own settings and vendors' limits already bound. Only what an unauthenticated
+  caller can make the platform do is bounded, as security (`doors/src/throttle.ts`, two
+  `ratelimits` bindings keyed by `CF-Connecting-IP`, `limits-audit.md`): the CIMD metadata
+  fetches an unknown `client_id` triggers at `/authorize`, `/oauth/token` and
+  `/oauth/revoke` (20 a minute; a client the provider's cache holds costs nothing and is
+  never counted), and sign-in attempts (60 a minute). Miniflare runs the binding; its
+  price and per-location counting are Cloudflare's.
 - [x] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
   the agent's doors (5, A4): `converse`, `run_graph`, `run_status` and `run_cancel` in
   `tools.ts` (the first two destructive, not idempotent and open world, the agent acting
@@ -125,7 +181,7 @@ test, cutover.
   `converse` answers `running` and is polled through `run_status`; when the SDK serves it, a
   task id is the operation id, `tasks/get` `agentStatus`, `tasks/cancel` `agentCancel`.
   MCP clients' tool-call timeouts against the 25 s default wait are a live probe.
-- [ ] Plan correction (doors section): "plus the earlier revision for Claude channels"
+- [x] Plan correction (doors section; applied to the plan of record by slice L): "plus the earlier revision for Claude channels"
   becomes "plus 2025-11-25 for clients still on MCP SDK 1.x, served statelessly from
   the same handler"; Claude channels are local stdio plugins that cannot use 2026-07-28,
   so a TinyAssets channel is a stdio plugin calling the door as an ordinary client (S9).
@@ -157,12 +213,21 @@ test, cutover.
   Built in `platform/doors` with a test each; the outside kill switch reaching the
   object's alarm is task 7's doorbell, and `_apply_key_request` comes with the key store
   above.
-- [ ] Owed by 6.1. The file door's bytes: the binder streams chunks to `FILES` itself
+- [x] Owed by 6.1. The file door's bytes: the binder streams chunks to `FILES` itself
   (decided: the binder is the trust root and already reaches every owner's object, so
   its reading an owner's namespace from that owner's object weakens no isolation), with
   the object's `fileUploadBegin`/`fileUploadCommit` around it and the whole-file digest
   (`Repr-Digest`) computed and served as it streams; the object's chunk doors stay for
   in-object callers (the environment, the sync agent's small files).
+  Slice L (`doors/src/file-bytes.ts`): the owner surface's `files/upload/begin`,
+  `PUT files/upload/<intent_id>` and `files/upload/commit`. The binder reads the intent's
+  plan and the owner's namespace (`fileUploadTarget`), cuts the body into the plan's
+  chunks one at a time, refuses bytes that are not the declared chunk, puts the ones still
+  needed two a call (R2 checks each hash again), reports them (`fileUploadStored`), and
+  serves the body's SHA-256 as `Repr-Digest`, checking one the client sent. Owed: a
+  streamed download, and an outside client's file-bytes tool; a binder put racing an
+  erasure's mark leaves its chunk in the erased namespace, which the erasure's prefix
+  delete after its wipe takes.
 
 ## 3. Owner object
 
@@ -436,18 +501,24 @@ account and no deploy.
   `connections/oauth/finish`. `history.replaceState` clears the fragment before any other
   script runs; the page loads no third-party script; it is served with
   `Referrer-Policy: no-referrer` and a strict CSP.
-- [ ] Each RFC 6749 source's provider registration of its own redirect URI,
+- [x] Each RFC 6749 source's provider registration of its own redirect URI,
   `https://tinyassets.io/oauth/connect/callback/<source-id>`, registered exactly, never as
   a prefix, and matched exactly by the provider (RFC 9700 §4.1); OpenRouter's key exchange
   takes any callback: `.../callback/openrouter_user_models_v1/<state>`; Sign in with
   ChatGPT's hosted client and registration once OpenAI approves (founder), which then
-  drops its record's `unwired`.
-- [ ] The key exchange's residual mix-up, before any uncurated source: a source on an
+  drops its record's `unwired`. Slice L: as data, each OAuth record's
+  `oauth.redirect_registration` (`exact` at its own callback, or a key exchange's
+  `any_callback` with its state's segment), held by the checker to the URI the doors derive
+  (`redirectOf`), listed for the founder in `platform/deploy/checklist.md`. Owed: the
+  registrations at the providers themselves (only `chatgpt`, parked, needs one today).
+- [x] The key exchange's residual mix-up, before any uncurated source: a source on an
   authorization server the platform does not curate (an MCP server, or a source from an
   owner's package) must not share these connect flows while a key-exchange source such as
   OpenRouter (no `state`, no `iss`) can be connected; that source's own slice solves it
   (for example a separate flow family, or no key exchange beside it) before such sources
-  are allowed.
+  are allowed. Slice L: a record may be marked
+  `curated: false`, and `catalogOf` refuses any catalog serving one with OAuth beside a key
+  exchange, naming the mix-up (`guards/registrations.test.ts`).
 - [ ] Append-only migrations from the first deploy: once a migration has run on a live
   object it is never edited (G3 edited migration 6 in place only because nothing is
   deployed), held by a guard that pins each deployed migration's text by digest.
@@ -1150,7 +1221,9 @@ R, S, M and W.
   - Owed by the owner surface (tasks 2): an `/app/api` route for the owner to name a
     client's profile and its `tools.custom` (the doors reach `grantSet` and `policyWrite`
     today, no route names a profile).
-- [ ] H2 live, narrowed to code mode (owed to slice L's dark deploy, which needs the
+- [ ] H2 live, narrowed to code mode (its probes built by slice L as
+  `platform/deploy/h2-probes.ts`, run by `deploy.ts --yes --h2` once the doors are routed
+  and two probe owners hold keys; owed to slice L's dark deploy, which needs the
   founder's OK to deploy the hooks Worker): probe what workerd cannot show: a script past
   its interrupt budget against the Worker's `cpu_ms`; the blocking isolation (10 s of a
   script's compute against another owner's); whether `exchange` calls count as
@@ -1179,19 +1252,52 @@ R, S, M and W.
   window was not measured (workerd shows it: the delete kept, the tombstone lost). The
   window stands until slice 10's outside record closes it. Gate: the erasure door SHALL
   NOT ship before that outside record, or the explicit platform admit, exists; until
-  then no door reaches erasure (`erase.ts`).
-- [ ] 0c (live, slice L): the dark deploy of the owner and gateway Workers.
+  then no door reaches erasure (`erase.ts`). **Closed by slice L, with both:** the erasure
+  door (`POST /app/api/account/erase`, in session, confirmed by the owner's words;
+  `doors/src/erase.ts`) writes the directory's `o:<owner>` erased first, deletes the
+  owner's `k:`, `h:` and `i:` entries and revokes every OAuth grant it holds, then the
+  object's `ownerErase`, then deletes the AuthKit identity (a failure there is retried at
+  that identity's next sign-in, which is refused). A wiped object that lost its tombstone
+  is `pending`, never admitted, and no sign-in admits the name again
+  (`doors/test/doors-live.test.ts`). Residual: a location whose KV cached the owner's
+  missing `o:` within 60 s of its sign-up could admit a crash-wiped name once.
+- [ ] 0c (live, slice L): the dark deploy of the owner and gateway Workers. The kit is
+  built (`platform/deploy/deploy.ts`, all six Workers with no route); the founder's run is
+  owed, after slice S lands.
 - [x] Code mode's switch (slice M): the MCP door's `code` tool refuses (`code_mode_off`)
   unless the owner's policy turns `hooks.codemode` on (`owner/test/code-door.test.ts`).
 - [ ] `test_hygiene_gate` reads no platform TypeScript test (slice D review L4): it
   reported "tests added 0, removed 0" for a slice that removed 21 test files, so a lost
   test there is caught only by review. Follow-up for the gate: count `it(` cases under
   `platform/*/test` and `platform/*/guards` against the base.
-- [ ] Limits (slice D's audit, `limits-audit.md`): the founder approves the proposed
-  table first; then each raise is its own change, its structural prerequisite before it
-  (collection history and grant scopes counted in bytes; the ledger's recipients bounded
-  by their own count), the owner-bound guard recomputed (`limits-proposed.test.ts` holds
-  the table's worst case under half today).
+- [x] Limits (slice LIM, ADR-035): the placement rule (a body past 2,048 bytes, a
+  collection row's, a history entry's or a message's, lives in R2 through the files plane,
+  up to 8 MiB in two chunks, written R2 first then its reference, a crashed placement's
+  upload expiring in 10 minutes, charged to its writer's files scope within the tier's
+  storage, retention making room first); the collection rows and history counted in
+  laid-out bytes, tombstones among them; one recipient a message (the key); the
+  mailboxes' caps within the ceilings (`ledger_full` when only unread mail is held); grant
+  scopes counted in bytes; the collections' and ledger's byte caps and the egress
+  per-minute rates removed; then every raise, and the files' `max_bytes` the tier's
+  storage. The erasure refuses uploads and puts under its mark, waits out the puts in
+  flight, and deletes the owner's R2 namespace by prefix before and after its wipe.
+  Merged after slices ID and M: a mail to an own agent is bounded by the body bound alone,
+  its run reading the body from R2 as it starts (a waiting run's input row keeps only the
+  mail's reference); a long reply is placed before the settle's unit and posted in it by
+  reference, so a crash leaves an orphan upload for the sweep, never a lost reply; the
+  digests and a mail chain read placed bodies; slice M's change orders are counted in the
+  collections' charges. Round 3: a pruned deletion resets a feed reader behind it
+  (`erasure_floor`, `reset`); an egress reservation is beaten by its door every minute and
+  lost three beats on, the day's deadline kept; one 16 MiB request-body ceiling (API, owner
+  surface, egress door, gateway) with bodies at half of it; a race between an events post's
+  units refuses the post (`events_raced`) so no reply is lost; the erasure holds its mark a
+  day before its R2 step and wipe, its Lifecycle job waking it (no in-memory wait); a conflict copy's free name in one range
+  read; a placed write past a chunk mid-delete begins again.
+  Owed: the owner export (slice P) reads the placed bodies' chunks with the files'; SSE-C
+  on them with the files' chunks; live, R2 read latency from an owner object and the
+  longest put in flight against `PUT_GRACE_MS`; slice L's isolate memory probe, with a
+  16 MiB request body; a live check of `limits.subrequests` at
+  10,000,000.
 
 ## 6. Files and sandbox
 
@@ -1259,35 +1365,56 @@ R, S, M and W.
 
 ## 7. Wakes and outside agents
 
-- [ ] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions.
-- [ ] The doorbell: a `WakeSender` the object constructs and its alarm calls in process
-  (ChatGPT MCP Events, then Claude `/fire`), its construction tested through the object,
-  since the lanes read it through a getter whose capture no test can tell until then; it
-  consumes the schedule's open wakes and
-  revokes, and a send finishes inside the 60 s claim lease or its outcome is `unknown`.
-  The lane bounds each send and revoke itself at `WAKE_SEND_MS`, `LANE_HUNG_S -
-  LANE_PASS_S` (15 s), whatever the sender does (a late send is marked and left to its
-  lease, never sent again; a late revoke is due again after it), and the
-  pass takes no new row past `LANE_PASS_S`, so a pass ends inside its lane's hung
-  timeout whatever the batch.
-  The subscribe door tags each callback with the generation `mailboxSubscriber`
-  returns, and a revoke erases only callbacks at or before its generation. The door
-  stores the callback in the same object transaction as `mailboxSubscriber`, or the
-  store re-checks, as it writes, that the generation is past the agent's
-  `revoked_through` and that the agent is still enabled, so a revoke scheduled between
-  the two can never be outlived by the callback. The doorbell rechecks the client's
-  grant (`Grants.live`) immediately before it sends, and keeps each `wakes` lane pass
-  short: Lifecycle's drive loop awaits a pass inline, so a slow one delays every other
-  job on the object, PiHarness's wake job among them; a send already in flight when a
-  revoke lands is not stopped, and counts as `unknown`, never replayed, only if it
-  fails.
-  Deferred from 3.4, as the Python's tick had them: no wake is claimed while the outside
-  kill switch (`TINYASSETS_OUTSIDE_DENY`) is off or the owner is not admitted
-  (`require_work`: the claim reads the admission row in its own unit, built in F1). The kill switch reaches the alarm through the owner Worker's own `CONTROL` binding
-  (slice M), the namespace of the `c:control` record alone: the `wakes` lane reads it
-  through `ControlGate` (`control-gate.ts`, the outside gate) once a pass before it claims,
-  and claims nothing on closed or a failure. No doorbell Worker is needed for it.
-  Admission is the object's own row (2).
+- [x] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions. Built in
+  slice W and its review: wake kinds are data (`owner/wake-kinds.json`, `wake-kinds.ts`),
+  each record citing its vendor's page and limits: ChatGPT MCP Events (the client
+  subscribes; Standard Webhooks), Claude `/fire` and Grok webhook routines (the owner
+  pastes the vendor's URL and token in its session, the owner app's `agent/doorbell`;
+  bearer), Muse with no push (it catches up on its own schedule; nothing polls). Mail
+  rings its recipient, never its sender (slice ID's mail wakes settle against the
+  `ledger_wakes` CHECK of 1 to 7 change bits). A board or room write rings only for the
+  owner's own act (an outside client's or a run's rings no one, so no two agents wake each
+  other without end), only agents subscribed to that board or room whose grant reads it,
+  and only for a change anyone may see. Each wake folds into the agent's one open wake,
+  which says what changed and the owner-wide cursor it is after, so `inbox_digest` or
+  `board_digest` after it returns just the change. The wake cap is the owner's own
+  setting, off by default (`agent/wake-limits`), spaced by one `wake_tat` column with no
+  invented high; `ledger_rings` is gone.
+- [x] The doorbell: a `WakeSender` the object constructs and its `wakes` lane calls in
+  process. Its secrets are sealed by the gateway (`gateway/src/doorbell.ts`: `sealDoorbell`
+  and `verifyDoorbell` on the doors' entrypoint, `ringDoorbell` on the owner's), bound to
+  the owner and the subscription; the object holds the blob alone and the gateway opens it
+  and makes the send, with no redirect and no body read, dual-signing with the replaced
+  secret for the record's rotation window. An agent holds several subscriptions (a dot and
+  a Work chat), each by the id derived from its principal, URL, event and arguments, at
+  most `SUBSCRIPTIONS_PER_AGENT` (16) an enabled agent, counted in the schema and priced in
+  the owner-bound guard, so no client fills another's room. The send is marked before its
+  first byte and rechecked (subscriptions, grant, kill switch) just before it; a late or
+  failed send settles `unknown` and is never replayed. Each subscription's outcome is its
+  own: a retry rings only the ones a `429` left owed, and one that took the wake wakes the
+  mail. A `429` waits its Retry-After as sent, an unreadable, zero or past one an
+  exponential backoff; a `410` or `413` keeps the subscription; a record's dead-token
+  status (Claude's `401`) notices the owner once, until a new token is pasted. The
+  records and callback checks are `wake-records.ts`, which imports nothing but the errors
+  and the records' file, and the gateway's isolation guard walks its whole import closure. A
+  grant change erases a client's subscriptions only, never an owner-set token. The kill
+  switch is the owner Worker's `CONTROL` read through `ControlGate`; admission is the
+  object's own row (2). Callbacks to loopback, private, metadata, single-label or our own
+  hosts are refused, the gateway's fetch is `global_fetch_strictly_public`, and vendor
+  hosts are pinned as data where a vendor has one.
+- [x] W2, MCP Events at the MCP door (`doors/src/events.ts`): `events` in `initialize` and
+  `server/discover`, `events/list` (`tinyassets.changed`), `events/subscribe` with the
+  gateway's signed challenge (a bounded read, a constant-time compare; a failure is
+  OpenAI's `-32015` with a `data.reason`, not the sketch's provisional `-32027`), `ttlMs`
+  granted as `refreshBefore`, `events/unsubscribe` by name, arguments and URL, and the
+  event's own time as `timestamp`. A run's MCP door serves none of it.
+- [ ] Owed live, none of it reachable from here: each vendor end to end (a ChatGPT dot and
+  Work chat subscribing, a Claude `/fire`, a Grok webhook routine, Muse's catch-up); the
+  SSRF probe (a callback whose DNS answers 127.0.0.1, 10.x or 169.254.169.254 is refused
+  by `global_fetch_strictly_public`); Grok's webhook host, to pin as data once seen; and
+  whether Claude's over-limit fire answers `429`.
+- [ ] Not built, by choice: a verification cache (each subscribe verifies again) and
+  retries of a `5xx` (the wake settles failed; the next change rings).
 
 ## 8. Founder live test
 

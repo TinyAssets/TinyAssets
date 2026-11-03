@@ -217,7 +217,9 @@ async function challengeOf(verifier: string): Promise<string> {
  * client secret; `fetcher` reaches the issuer (the global fetch, or a test's fake).
  */
 export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: string,
-                             fetcher: typeof fetch = fetch): Upstream {
+                             fake?: typeof fetch): Upstream {
+  const fetcher = (url: string, init: RequestInit): Promise<Response> =>
+    fake === undefined ? fetch(url, init) : fake(url, init);
   if (typeof secret !== "string" || secret === "") {
     throw new Error("WORKOS_API_KEY, the upstream's client secret, is not set");
   }

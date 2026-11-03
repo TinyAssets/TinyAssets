@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
 import { Invalid, Refused } from "../src/errors";
+import { HISTORY_CHARGE, ROW_CHARGE, SEQ_CHARGE, USAGE_CHARGE } from "../src/schema";
 import { etags, failure, history, inObject, type Owner, ownerObject, rows } from "./support";
 
 const ROOM = "room:chess:main";
@@ -105,37 +106,35 @@ describe("the revision primitive", () => {
     expect((await rows(stub)).map((r) => r[1])).toEqual(["p", "s"]); // a get writes nothing
   });
 
-  it("a full collection refuses a new row", async () => {
-    const { stub, name: alice } = ownerObject();
-    await inObject(stub, { maxRows: 1 }, (store) => {
-      const row = store.write(alice, alice, "board", "a", "1", "", false);
-      expect(() => store.write(alice, alice, "board", "b", "1", "", false))
-        .toThrow(/full/);
-      expect(store.write(alice, alice, "board", "a", "2", row.etag, false).revision)
-        .toBe(2);
-    });
-    expect(LIMITS.maxRows).toBe(1000);
-  });
-
-  it("an owner's collections are bounded in rows and bytes", async () => {
+  it("bounds the owner's rows by what they take, names and index entries counted",
+     async () => {
     // Across every collection of one owner; another owner's object is untouched.
     const { stub, name: alice } = ownerObject();
-    await inObject(stub, { maxOwnerRows: 2, maxOwnerBytes: 24 }, (store) => {
-      // A body counts twice: the row, and its history.
-      const a = store.write(alice, alice, "room:a:main", "x", "1234", "", false);
-      store.write(alice, alice, "room:b:main", "x", "1234", "", false);
-      expect(() => store.write(alice, alice, "room:c:main", "x", "", "", false))
-        .toThrow("the owner's collections are full");
-      expect(() => store.write(alice, alice, "room:a:main", "x", "caféé", a.etag, false))
-        .toThrow("the owner's collections are full"); // 16 + 14 - 4
-      expect(store.write(alice, alice, "room:a:main", "x", "123456", a.etag, false)
-        .revision).toBe(2);
+    const charge = (state: DurableObjectState) => state.storage.sql.exec<{ rows_charge: number }>(
+      "SELECT rows_charge FROM collection_space").one().rows_charge;
+    const one = await inObject(stub, {}, (store, state) => {
+      store.write(alice, alice, "room:a:main", "x", "1234", "", false);
+      return charge(state);
     });
-    expect(await rows(stub)).toHaveLength(2);
+    // A row with long names takes more: the charge counts every byte of them, four times.
+    const long = await inObject(stub, {}, (store, state) => {
+      store.write(alice, alice, `room:${"n".repeat(250)}`, "y".repeat(256), "1234", "", false);
+      return charge(state) - one;
+    });
+    expect(long).toBeGreaterThan(2 * one);
+    await inObject(stub, { maxRowsCharge: one + long + 1 }, (store) => {
+      expect(() => store.write(alice, alice, "room:c:main", "x", "1", "", false))
+        .toThrow("the owner's collections are full");
+      // A write that takes no more passes, so an owner over a lowered bound still writes.
+      const a = store.get(alice, "room:a:main", "x").row!;
+      expect(store.write(alice, alice, "room:a:main", "x", "4321", a.etag, false).revision)
+        .toBe(2);
+    });
     const { stub: bobs } = ownerObject();
-    await inObject(bobs, { maxOwnerRows: 2, maxOwnerBytes: 24 }, (store) => {
+    await inObject(bobs, { maxRowsCharge: one + long + 1 }, (store) => {
       expect(store.write("bob", "bob", "room:c:main", "x", "1", "", false).revision).toBe(1);
     });
+    expect(LIMITS.maxRowsCharge).toBe(256 * 1024 * 1024);
   });
 
   it("the RPC door carries the binder's caller and a conflict", async () => {
@@ -157,51 +156,40 @@ describe("the revision primitive", () => {
     expect(elsewhere.message).toBe("this object belongs to another owner");
   });
 
-  it("a player at its row share still takes a turn on a shared row", async () => {
-    // Only a creation counts against the share; a takeover charges the row's bytes.
+  it("holds an outside writer to the owner's own share, and all of them to its reserve",
+     async () => {
     const { stub, name: alice } = ownerObject();
+    const client = (n: number) => `client:${String(n).repeat(64)}`;
     const room = "room:go:main";
-    await inObject(stub, { maxWriterRows: 2 }, (store) => {
-      const put = (caller: string, rowId: string, etag = "") =>
-        store.write(alice, caller, room, rowId, "stone", etag, false);
-      const cell0 = put("bob", "cell0");
-      put("cara", "cell1");
-      put("cara", "cell2");
-      expect(() => put("cara", "cell3")).toThrow("this writer's share");
-      expect(put("cara", "cell0", cell0.etag).writer).toBe("cara");
+    const charged = await inObject(stub, {}, (store, state) => {
+      store.write(alice, alice, room, "probe", "stone", "", false, "write", null, client(1));
+      const taken = state.storage.sql.exec<{ who: string; charge: number }>(
+        "SELECT who, charge FROM collection_usage ORDER BY who").toArray();
+      store.clear(alice, room, null);
+      return taken;
     });
-    const cell1 = (await etags(stub))["cell1"]!;
-    await inObject(stub, { maxWriterRows: 2, maxWriterBytes: 4 }, (store) => {
-      // Takes over all 5 bytes.
-      expect(() => store.write(alice, "bob", room, "cell1", "stone", cell1, false))
-        .toThrow("this writer's share");
-    });
-  });
-
-  it("two accounts cannot launder a row share", async () => {
-    // Rows count against their creator: a takeover by a second account frees nothing.
-    const { stub, name: alice, as } = ownerObject();
-    const room = "room:go:main";
-    const limits = { maxWriterRows: 2 };
+    // The row counted in its writer's own share and all outside writers'.
+    expect(charged.map((row) => row.who)).toEqual(["*", client(1)]);
+    const each = charged[0]!.charge;
+    // Ten rows of room: a writer 30% of it (three), all of them 50% (five).
+    const limits = { maxRowsCharge: 10 * each + 1 };
+    const shares = { client_share: 30, owner_reserve: 50 };
     await inObject(stub, limits, (store) => {
-      const put = (caller: string, rowId: string, etag = "", body = "xx") =>
-        store.write(alice, caller, room, rowId, body, etag, false);
-      const made = [0, 1].map((n) => put("m1", `r${n}`));
-      for (const row of made) {
-        put("m2", row.row_id, row.etag, ""); // m2 takes both over
-      }
-      expect(() => put("m1", "r2")).toThrow("this writer's share"); // m1's rows live on
-      put("honest", "h0");
-      put("honest", "h1");
-    });
-    // The owner's clear-by-writer matches creator or writer: m1's rows go, though m2
-    // last wrote them, and m1 may create again.
-    expect(await stub.collectionClear(as(alice), { collection: room, writer: "m1" }))
-      .toEqual({ deleted: 2 });
-    await inObject(stub, limits, (store) => {
-      store.write(alice, "m1", room, "r2", "xx", "", false);
-    });
-    expect(Object.keys(await etags(stub)).sort()).toEqual(["h0", "h1", "r2"]);
+      const put = (filer: string, rowId: string, etag = "") =>
+        store.write(alice, alice, room, rowId, "stone", etag, false, "write", null, filer);
+      const r0 = put(client(1), "r0");
+      put(client(1), "r1");
+      put(client(1), "r2");
+      expect(() => put(client(1), "r3")).toThrow("this writer's share");
+      put(client(2), "s0");
+      put(client(2), "s1");
+      expect(() => put(client(3), "t0")).toThrow("outside writers' share");
+      // A takeover moves the row's charge to its new writer, and the owner's own rows count
+      // in neither share.
+      put("owner", "r0", r0.etag);
+      put(client(1), "r3");
+      put("owner", "o0");
+    }, shares);
   });
 
   it("a seq collision fails loudly and deletes nothing", async () => {
@@ -223,32 +211,25 @@ describe("the revision primitive", () => {
     expect(Object.keys(await etags(stub)).sort()).toEqual(["a", "b"]);
   });
 
-  it("one visitor fills only its own share and the owner clears", async () => {
-    // A visitor stops at its share; another still writes; one room cannot starve another.
+  it("a clear never moves a reader's cursor back, and only the owner clears", async () => {
     const { stub, name: alice, as } = ownerObject();
-    const limits = { maxWriterRows: 2, maxCollectionBytes: 12 };
-    const put = (store: Collections, caller: string, rowId: string, body = "1",
-                 collection = ROOM) => store.write(alice, caller, collection, rowId, body, "",
-                                                   true);
-    await inObject(stub, limits, (store) => {
+    const put = (store: Collections, caller: string, rowId: string) =>
+      store.write(alice, caller, ROOM, rowId, "1", "", true);
+    await inObject(stub, {}, (store) => {
       put(store, "mallory", "a");
       put(store, "mallory", "b");
-      expect(() => put(store, "mallory", "c")).toThrow("this writer's share");
       put(store, "cara", "c1");
-      // 3 rows and their history, 6, + 8 > 12
-      expect(() => put(store, alice, "big", "1234")).toThrow("the collection is full");
-      put(store, alice, "big", "1234", "room:go:main");
     });
     const refused = await failure(() => stub.collectionClear(as("mallory"), {
       collection: ROOM, writer: null }));
     expect(refused.message).toBe("only the owner may clear collection rows");
     expect(await stub.collectionClear(as(alice), { collection: ROOM, writer: "mallory" }))
       .toEqual({ deleted: 2 });
-    await inObject(stub, limits, (store) => put(store, "mallory", "c"));
+    await inObject(stub, {}, (store) => put(store, "mallory", "c"));
     expect(await stub.collectionClear(as(alice), { collection: ROOM, writer: null }))
       .toEqual({ deleted: 2 });
     // A clear never moves a reader's cursor back: the next row is past every old seq.
-    expect((await inObject(stub, limits, (store) => put(store, "cara", "z"))).seq).toBe(5);
+    expect((await inObject(stub, {}, (store) => put(store, "cara", "z"))).seq).toBe(5);
     expect((await stub.collectionPull(as("cara"), { collection: ROOM, after: 4, limit: 10 }))
       .cursor).toBe(5);
   });
@@ -281,27 +262,90 @@ describe("the primitive's history", () => {
     expect(erase.message).toMatch(/history_op/);
   });
 
-  it("keeps the last revisions and counts in the byte bounds", async () => {
+  it("is bounded in bytes, oldest first, and a key with no entry left repeats no revision",
+     async () => {
+    const { stub, name: alice } = ownerObject();
+    const space = (state: DurableObjectState) => state.storage.sql.exec<{
+      charge: number; revision_floor: number }>(
+      "SELECT charge, revision_floor FROM collection_space").one();
+    const held = await inObject(stub, {}, (store, state) => {
+      const a = store.write(alice, alice, "board", "a", "aaaa", "", false);
+      store.delete(alice, "board", "a", a.etag);  // its tombstone: revision 2
+      store.write(alice, alice, "board", "b", "bbbb", "", false);
+      return space(state);
+    });
+    expect(held).toMatchObject({ revision_floor: 0 });
+    // One more entry passes the charge: the oldest, a's tombstone, goes, and its revision
+    // becomes the floor.
+    await inObject(stub, { maxHistoryCharge: held.charge + 1 }, (store, state) => {
+      store.write(alice, alice, "board", "c", "cccc", "", false);
+      expect(space(state).revision_floor).toBe(2);
+      expect(space(state).charge).toBeLessThanOrEqual(held.charge + 1);
+      // Made again, `a` goes on past every revision a prune let go.
+      expect(store.write(alice, alice, "board", "a", "again", "", false).revision).toBe(3);
+    });
+    expect((await history(stub)).map((h) => [h[1], h[2], h[3]]))
+      .toEqual([["a", 3, "write"], ["c", 1, "write"]]);
+  });
+
+  it("holds an erased key's tombstone in its bytes, and prunes it oldest first", async () => {
+    // A key erased and never made again leaves one entry; many such keys are bounded by
+    // the history's charge, and the floor keeps their revisions from repeating.
+    const { stub, name: alice } = ownerObject();
+    const one = await inObject(stub, {}, (store, state) => {
+      const row = store.write(alice, alice, "board", "k0", "v", "", false);
+      store.delete(alice, "board", "k0", row.etag);
+      return state.storage.sql.exec<{ charge: number }>("SELECT charge FROM collection_space")
+        .one().charge;
+    });
+    await inObject(stub, { maxHistoryCharge: 3 * one }, (store, state) => {
+      for (let n = 1; n < 20; n++) {
+        const row = store.write(alice, alice, "board", `k${n}`, "v", "", false);
+        store.delete(alice, "board", `k${n}`, row.etag);
+      }
+      const kept = state.storage.sql.exec<{ n: number; charge: number }>(
+        "SELECT COUNT(*) AS n, (SELECT charge FROM collection_space) AS charge " +
+          "FROM collection_history").one();
+      expect(kept.charge).toBeLessThanOrEqual(3 * one);
+      expect(kept.n).toBeLessThan(20);
+      // k0's tombstone was the oldest: made again, it goes past the pruned revisions.
+      expect(store.write(alice, alice, "board", "k0", "again", "", false).revision)
+        .toBeGreaterThan(2);
+    });
+  });
+
+  it("lets an emptied collection's seq row go, and never takes its cursor back", async () => {
     const { stub, name: alice, as } = ownerObject();
-    const row = await inObject(stub, { maxRevisions: 3 }, (store) => {
+    await inObject(stub, {}, (store, state) => {
+      store.write(alice, alice, "room:a:main", "x", "1", "", false);
+      store.write(alice, alice, "room:a:main", "y", "2", "", false);
+      store.clear(alice, "room:a:main", null);
+      expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM collection_seqs").one().n)
+        .toBe(0);
+      expect(store.write(alice, alice, "room:a:main", "x", "3", "", false).seq).toBe(3);
+    });
+    expect((await stub.collectionPull(as(alice), { collection: "room:a:main", after: 2,
+                                                   limit: 10 })).rows.map((r) => r.body))
+      .toEqual(["3"]);
+  });
+
+  it("keeps every revision its bytes allow, read a page of entries at a time", async () => {
+    const { stub, name: alice } = ownerObject();
+    await inObject(stub, { maxPull: 3 }, (store) => {
       let last = { etag: "" };
       for (let n = 0; n < 5; n++) {
         last = store.write(alice, alice, "board", "t", `v${n}`, last.etag, false);
       }
-      return last;
-    });
-    expect((await history(stub)).map((h) => [h[2], h[4]])).toEqual(
-      [[3, "v2"], [4, "v3"], [5, "v4"]]);
-    expect((await stub.collectionHistory(as("bob"), { collection: "board", row_id: "t" }))
-      .entries.map((e) => e.body)).toEqual(["v2", "v3", "v4"]);
-    await inObject(stub, { maxRevisions: 3, maxCollectionBytes: 9 }, (store) => {
-      // Six bytes of history and two of the row: a new row of two needs four more.
-      expect(() => store.write(alice, alice, "board", "u", "ab", "", false))
-        .toThrow("the collection is full");
-      // A write that prunes an old entry frees its bytes in the same transaction.
-      expect(store.write(alice, alice, "board", "t", "v5", row.etag, false).revision)
+      const first = store.history("bob", "board", "t");
+      expect([first.entries.map((e) => e.body), first.more, first.before_revision])
+        .toEqual([["v2", "v3", "v4"], true, 3]);
+      const older = store.history("bob", "board", "t", 3);
+      expect([older.entries.map((e) => e.body), older.more, older.before_revision])
+        .toEqual([["v0", "v1"], false, null]);
+      expect(store.write(alice, alice, "board", "t", "v5", last.etag, false).revision)
         .toBe(6);
     });
+    expect((await history(stub)).length).toBe(6);
   });
 
   it("is visible as its row is", async () => {
@@ -339,49 +383,44 @@ function seeded(seed: number): () => number {
   };
 }
 
-type Usage = Record<string, [number, number, number]>;
+type Usage = Record<string, number>;
 
-/** The bounds' counters recounted from the rows and history, by the same scopes. */
+/**
+ * The bounds' counters recounted from the rows, the seq rows and the share rows, by the
+ * schema's own charges, and the history's (`history`).
+ */
 function recount(sql: SqlStorage): Usage {
-  const used: Usage = {};
-  const add = (key: string, rows: number, rowBytes: number, historyBytes: number) => {
-    const [r, b, h] = used[key] ?? [0, 0, 0];
-    used[key] = [r + rows, b + rowBytes, h + historyBytes];
+  const one = (query: string) => sql.exec<{ n: number }>(query).one().n;
+  const shares = Object.fromEntries(sql.exec<{ who: string; charge: number }>(
+    `SELECT who, SUM(charge) AS charge FROM (SELECT filer AS who, ${ROW_CHARGE("r")} AS charge ` +
+      "FROM collection_rows r WHERE filer != 'owner' UNION ALL SELECT '*', " +
+      `${ROW_CHARGE("r")} FROM collection_rows r WHERE filer != 'owner') GROUP BY who`)
+    .toArray().map((row) => [row.who, row.charge]));
+  const usage = sql.exec<{ charge: number }>(
+    `SELECT COALESCE(SUM(${USAGE_CHARGE("u")}), 0) AS charge FROM collection_usage u`).one().charge;
+  return {
+    ...shares,
+    rows: one(`SELECT COALESCE(SUM(${ROW_CHARGE("r")}), 0) AS n FROM collection_rows r`)
+      + one(`SELECT COALESCE(SUM(${SEQ_CHARGE("s")}), 0) AS n FROM collection_seqs s`) + usage,
+    history: one(`SELECT COALESCE(SUM(${HISTORY_CHARGE("h")}), 0) AS n FROM collection_history h`),
   };
-  const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
-  for (const row of sql.exec<{ collection: string; writer: string; creator: string;
-                               body: string }>(
-    "SELECT collection, writer, creator, body FROM collection_rows").toArray()) {
-    const size = bytes(row.body);
-    add("owner||", 1, size, 0);
-    add(`collection|${row.collection}|`, 1, size, 0);
-    add(`writer|${row.collection}|${row.writer}`, 1, size, 0);
-    add(`creator|${row.collection}|${row.creator}`, 1, size, 0);
-  }
-  for (const entry of sql.exec<{ collection: string; writer: string; body_json: string }>(
-    "SELECT collection, writer, body_json FROM collection_history").toArray()) {
-    const size = bytes(entry.body_json);
-    add("owner||", 0, 0, size);
-    add(`collection|${entry.collection}|`, 0, 0, size);
-    add(`writer|${entry.collection}|${entry.writer}`, 0, 0, size);
-  }
-  return Object.fromEntries(Object.entries(used).filter(([, v]) => v.some((n) => n !== 0)));
 }
 
 function counters(sql: SqlStorage): Usage {
-  return Object.fromEntries(sql.exec<{ scope: string; collection: string; who: string;
-                                       rows: number; row_bytes: number;
-                                       history_bytes: number }>(
-    "SELECT * FROM collection_usage").toArray().map((u) => [
-    `${u.scope}|${u.collection}|${u.who}`, [u.rows, u.row_bytes, u.history_bytes]]));
+  const space = sql.exec<{ charge: number; rows_charge: number }>(
+    "SELECT charge, rows_charge FROM collection_space").one();
+  return { ...Object.fromEntries(sql.exec<{ who: string; charge: number }>(
+    "SELECT who, charge FROM collection_usage").toArray().map((u) => [u.who, u.charge])),
+           rows: space.rows_charge, history: space.charge };
 }
 
 describe("the bounds' counters", () => {
   it.each([1, 7, 42, 1009, 65537])("equal a recount after every step (seed %i)", async (seed) => {
     const { stub, name: owner } = ownerObject();
     const outcomes = await inObject(stub, {
-      maxRevisions: 3, maxWriterRows: 4, maxWriterBytes: 160, maxRows: 9,
-      maxCollectionBytes: 600, maxOwnerRows: 20, maxOwnerBytes: 1400,
+      maxRowsCharge: 12_000,
+      // The history pruned by what it takes, on the way.
+      maxHistoryCharge: 6000,
     }, (store, state) => {
       const random = seeded(seed);
       const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
@@ -402,8 +441,10 @@ describe("the bounds' counters", () => {
               .join("");
             const etag = current !== null && random() < 0.9 ? current.etag
               : random() < 0.5 ? "" : "stale";
+            // An outside writer's rows count in its own share and all outside writers'.
             store.write(owner, caller, collection, rowId, body, etag,
-                        current?.private ?? random() < 0.2, pick(["write", "move", "claim"]));
+                        current?.private ?? random() < 0.2, pick(["write", "move", "claim"]),
+                        null, caller === owner ? "owner" : `client:${caller[0]!.repeat(64)}`);
           } else if (roll < 0.9) {
             store.delete(owner, collection, rowId, current?.etag ?? "stale");
           } else {
@@ -415,6 +456,8 @@ describe("the bounds' counters", () => {
         counted[outcome] = (counted[outcome] ?? 0) + 1;
         expect(counters(state.storage.sql), `seed ${seed}, step ${step}`)
           .toEqual(recount(state.storage.sql));
+        expect(counters(state.storage.sql)["history"]!, `seed ${seed}, step ${step}`)
+          .toBeLessThanOrEqual(6000);
       }
       return counted;
     });
@@ -477,8 +520,8 @@ describe("the RPC door's owner-only erases", () => {
 describe("the primitive's errors", () => {
   it("names each kind", async () => {
     const { stub, name: alice } = ownerObject();
-    await inObject(stub, { maxRows: 1 }, (store) => {
-      store.write(alice, alice, "board", "a", "1", "", false);
+    await inObject(stub, {}, (store) => store.write(alice, alice, "board", "a", "1", "", false));
+    await inObject(stub, { maxRowsCharge: 1 }, (store) => {
       expect(() => store.write(alice, alice, "board", "b", "1", "", false))
         .toThrow(Refused);
       expect(() => store.write(alice, alice, "board", "a", "1", "", false))

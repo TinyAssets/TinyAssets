@@ -26,7 +26,7 @@ import {
 import { principal } from "../../owner/src/text";
 import { ADMIN_CALLER } from "../../admin/src/caller";
 
-import { verifyToken } from "./routing-mac";
+import { LEASE_LIVED, verifyToken } from "./routing-mac";
 
 import {
   APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
@@ -292,7 +292,7 @@ export function bindSignOut({ binding, stub }: Bound, grantId: string): Bound {
  */
 export function bindTicket(env: DoorsEnv, ticket: string): { bound: Bound; hash: string } | null {
   const parsed = verifyToken(env.ROUTING_MAC_KEY, "socket", ticket);
-  if (parsed === null || parsed.expires <= Date.now() / 1000) {
+  if (parsed === null || parsed.expires === LEASE_LIVED || parsed.expires <= Date.now() / 1000) {
     return null;
   }
   return { bound: bound(env, { owner: parsed.owner, caller: parsed.owner, origin: null }),

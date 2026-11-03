@@ -157,21 +157,32 @@ export const OUTCOMES: readonly string[] = Object.freeze(["complete", "aborted",
 export type Outcome = "complete" | "aborted" | "failed" | "deadline" | "ended";
 
 /**
- * The longest one sandbox request may stream, in seconds: the gateway's own forward
- * deadline (`FORWARD_DEADLINE_MS`, a test holds the two equal), which the door keeps too,
- * so a stream the gateway never ends is still settled.
+ * The longest one sandbox request may stream, in seconds: a day, the sandbox's own most (an
+ * E2B Pro session runs at most 24 hours, `engines-replan.md` §3), since a Worker's
+ * subrequest has no time limit while its client stays connected (Cloudflare's Workers
+ * limits). The gateway's own forward deadline (`FORWARD_DEADLINE_MS`, a test holds the two
+ * equal), which the door keeps too, so a stream the gateway never ends is still settled.
  */
-export const EGRESS_DEADLINE_S = 300;
-/** The largest model call the egress door reads, as the gateway's own bound (`BODY_MAX`). */
-export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
+export const EGRESS_DEADLINE_S = 86_400;
 /**
- * The sandbox lease's tokens' life, in seconds from the lease's open: a day, the sandbox's
- * own continuous-runtime ceiling on E2B Pro (a technical ceiling, reset by a pause; slice S's
- * probe confirms it for ours). It is no platform run deadline: the sandbox itself stops
- * there. Both tokens carry it under their MAC, so the door refuses a dead lease's token
- * without reaching the owner's object; the runs live under the lease end with it.
+ * How often a streaming call's door beats its open reservation (`egressBeat`), in seconds:
+ * the object settles a reservation lost three missed beats on (`LOST_AFTER_S`).
  */
-export const RUN_DEADLINE_S = 24 * 60 * 60;
+export const EGRESS_BEAT_S = 60;
+/**
+ * The most bytes one request body a Worker reads whole: the platform's one ceiling for it,
+ * the egress door's and the gateway's model call (`BODY_MAX`), the API's and the owner
+ * surface's tool calls (`API_BODY_MAX`, `APP_BODY_MAX`), a row's or a message's body at
+ * half of it (`BODY_BYTES_MAX`, room for its JSON escapes). A technical ceiling of the
+ * isolate's 128 MB (Cloudflare's Workers limits), shared by its concurrent requests: the
+ * text read (16 MiB, held at most twice that as UTF-16), its parsed copy (as much again)
+ * and its serialized copy to the next hop (16 MiB) come to 80 MiB at worst, leaving room
+ * for the rest. The live memory probe is owed to slice L. Streaming the bodies would lift
+ * it; it is not taken, since a tool call's arguments are parsed whole as JSON at the door
+ * and the gateway meters a model call's whole body, so neither path streams today.
+ * Providers take more (Anthropic's Messages API, 128 MB), past what an isolate holds.
+ */
+export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
 
 /** The egress door's host: always allowed, the one host the transform is set on. */
 export const EGRESS_HOST = "egress.tinyassets.io";

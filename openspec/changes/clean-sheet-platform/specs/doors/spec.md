@@ -327,3 +327,50 @@ A sandbox token SHALL be refused at `/api`, `/mcp` and `/app`, and the owner's o
 #### Scenario: A token presented as a bearer
 - **WHEN** a sandbox's egress or sync token is sent to `/api/tools/*`, `/mcp` or `/app/api/*`
 - **THEN** each answers `401`
+
+### Requirement: The MCP door serves MCP Events for doorbells
+The MCP door SHALL advertise `events` in its `initialize` and `server/discover` capabilities and serve `events/list` (the one event, `tinyassets.changed`, its arguments and its payload, to an outside client whose grant reads), `events/subscribe` and `events/unsubscribe`, webhook delivery only. A subscribe SHALL be checked before any byte (the event, its arguments, an `https` callback the record admits, a `whsec_` secret) and authorized for the caller's own subscribing agent in that command center; then the gateway SHALL verify the callback with a signed single-use challenge, reading at most a bounded answer and comparing it in constant time, and seal it. A failed verification SHALL answer the record's code (`-32015`, OpenAI's) with a `data.reason` category, never the endpoint's body. The id SHALL be derived from the caller, URL, event and arguments and never accepted; `ttlMs` SHALL be granted as `refreshBefore` (omitted, the record's default; `null`, none; one no date can write refused before anything is stored). An agent's subscriptions past its bound SHALL answer `-32025` with `data.max`. A run's MCP door SHALL serve none of it: it lists no event and may subscribe or end none.
+
+#### Scenario: A ChatGPT dot subscribes
+- **WHEN** a client whose agent is registered for MCP Events subscribes a callback that echoes the challenge
+- **THEN** the answer carries the derived id, a `refreshBefore` a day out, `cursor: null` and `truncated: false`, and the object holds the sealed blob alone
+
+#### Scenario: A callback that does not echo the challenge
+- **WHEN** the callback answers another challenge, or `404`
+- **THEN** the subscribe answers `-32015` with `challenge_failed` or `http_4xx`, and nothing is stored
+
+
+### Requirement: The owner's sign-in is the configured issuer's OpenID Connect flow
+The doors SHALL sign the owner in with the code flow and PKCE against `OWNER_ISSUER`, its endpoints and client the `UPSTREAM` record, both unset as checked in and filled at deploy from the issuer's discovery, which must name `OWNER_ISSUER` exactly. The ID token SHALL be RS256 under a key of the issuer's JWKS, its issuer, audience, nonce (the flow's challenge), times, subject and `auth_time` checked; a token without `auth_time` SHALL be refused, with no clock fallback.
+
+#### Scenario: A token without auth_time, or from another issuer
+- **WHEN** the issuer answers an ID token missing `auth_time`, or naming another issuer
+- **THEN** the sign-in fails and no owner is bound
+
+### Requirement: Sign-up is the platform's explicit admit, and erasure its outside record
+The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased. The owner's erasure SHALL write that record first, delete the owner's `k:`, `h:` and `i:` entries and revoke its every OAuth grant, then erase the object, then delete the identity at the issuer.
+
+#### Scenario: An erased owner's name
+- **WHEN** an erased owner's key, capability URL, refresh token or sign-in is presented, or a stale `getByName` reaches its wiped object
+- **THEN** each is refused, and the object refuses every door, never admitted again
+
+### Requirement: Inbound events are proved and routed by the binder
+`/hooks/inbound/<token>` SHALL exist only while the control record's `inbound` gate is on, take a body within the platform's one request ceiling, prove a shared app's request by the platform's signing secret its data record names (an HMAC over the timestamp and raw bytes within its skew) and route its single installation by the directory's `i:` entry, and route a capability URL by its token's hash (`h:`).
+
+#### Scenario: A bad HMAC, and a replay past the skew
+- **WHEN** a shared app's request carries a signature that does not verify, or a timestamp older than five minutes
+- **THEN** it is refused `401` and no object is reached
+
+### Requirement: Only unauthenticated callers are rate-bounded
+The doors SHALL cap no authenticated caller's requests. They SHALL bound, per caller IP, the CIMD metadata fetches an unknown `client_id` triggers and the sign-in attempts, answering `429`; a `client_id` the provider's cache holds SHALL never count.
+
+#### Scenario: Fresh client ids from one address
+- **WHEN** one address names 21 unknown metadata URLs as `client_id` within a minute
+- **THEN** the 21st is answered `429` before any fetch
+
+### Requirement: The binder streams an upload's bytes to FILES
+The owner surface's upload SHALL stream the body to `FILES` in the intent's declared chunks, refusing bytes that are not the declared chunk and a body shorter or longer than the file, and answer the body's SHA-256 as `Repr-Digest`.
+
+#### Scenario: A tampered chunk
+- **WHEN** an upload's body differs from its declared chunk
+- **THEN** it is refused `400`, and nothing of that chunk is reported stored

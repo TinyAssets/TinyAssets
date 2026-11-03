@@ -5,8 +5,10 @@
  * A token is `<owner>.<expires>.<secret>.<mac>`:
  * - `owner`, the owner id as the binder names the owner's object (`getByName`), base64url:
  *   it tells nothing but which object, as every binding's owner does;
- * - `expires`, the run's deadline in Unix seconds (decimal): past it the door refuses the
- *   token without reaching any object, so a dead run's token costs the object nothing;
+ * - `expires`, in Unix seconds (decimal), past which the door refuses the token without
+ *   reaching any object: a socket ticket's 30 s. `0` for a sandbox lease's egress and sync
+ *   tokens, which have no deadline of their own: they live while their lease is renewed,
+ *   which the owner's object checks (its heartbeat; `files.ts`'s `LIVE_LEASE`);
  * - `secret`, 256 random bits, base64url, whose SHA-256 alone the owner's object keeps, on
  *   its lease;
  * - `mac`, HMAC-SHA-256 under the routing key over the token's kind, owner, expiry and
@@ -24,6 +26,9 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 
 import { principal } from "../../owner/src/text";
 
+/** A lease's egress or sync token's expiry: none of its own, its lease's (renewed). */
+export const LEASE_LIVED = 0;
+
 /** The Worker secret both Workers hold. */
 export const ROUTING_MAC_KEY = "ROUTING_MAC_KEY";
 /** The shortest routing key, in bytes once decoded. */
@@ -35,7 +40,7 @@ export const KEY_MIN_BYTES = 32;
 export type TokenKind = "egress" | "sync" | "socket";
 
 const TOKEN =
-  /^([A-Za-z0-9_-]{1,2732})\.([1-9][0-9]{9,10})\.([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/;
+  /^([A-Za-z0-9_-]{1,2732})\.(0|[1-9][0-9]{9,10})\.([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/;
 const KEY = /^[A-Za-z0-9_-]+$/;
 const DOMAIN = "ta-sandbox-token-v2";
 
@@ -61,14 +66,15 @@ export function tokenHash(secret: string): string {
 
 /**
  * A fresh `kind` token for `owner` under the routing key, good until `expires` (Unix
- * seconds, the run's deadline), and the hash of its secret, the only part of it the owner's
- * object keeps.
+ * seconds; `LEASE_LIVED` for a lease's token, which its lease's life bounds), and the hash
+ * of its secret, the only part of it the owner's object keeps.
  */
 export function mintToken(key: unknown, kind: TokenKind, owner: string, expires: number):
     { readonly token: string; readonly hash: string } {
   const bytes = keyBytes(key);
-  if (!Number.isSafeInteger(expires) || !/^[1-9][0-9]{9,10}$/.test(String(expires))) {
-    throw new Error("a sandbox token's expiry is whole Unix seconds");
+  if (!Number.isSafeInteger(expires) || !/^(0|[1-9][0-9]{9,10})$/.test(String(expires))
+      || (expires === LEASE_LIVED && kind === "socket")) {
+    throw new Error("a sandbox token's expiry is whole Unix seconds, or its lease's");
   }
   const routing = Buffer.from(principal(owner), "utf8").toString("base64url");
   const secret = randomBytes(32).toString("base64url");

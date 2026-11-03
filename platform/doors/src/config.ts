@@ -68,9 +68,16 @@ export const SIGN_IN_MAX_AGE_S = 600;
 export const CLOCK_MARGIN_S = 5;
 
 /** The largest body each door reads; past it, `413` before anything is parsed. */
+/** The consent form: its handle and decision, a few short fields. */
 export const AUTHORIZE_BODY_MAX = 4 * 1024;
-export const APP_BODY_MAX = 64 * 1024;
-export const API_BODY_MAX = 1024 * 1024;
+/**
+ * A tool call's arguments: the request body's one ceiling (`EGRESS_BODY_MAX`, 16 MiB, the
+ * isolate's 128 MB), which carries a body of the most bytes (`BODY_BYTES_MAX`, half of it)
+ * with room for its JSON escapes; a test holds the three.
+ */
+export const API_BODY_MAX = 16 * 1024 * 1024;
+/** The owner surface's requests (a run's input among them): as a tool call's. */
+export const APP_BODY_MAX = API_BODY_MAX;
 
 /** `OWNER_ISSUER` until the AuthKit slice sets AuthKit's production issuer. */
 export const ISSUER_NOT_CONFIGURED = "not-configured";
@@ -112,6 +119,14 @@ export interface ConnectService {
            grant: { code: string; verifier: string; redirect_uri: string }, record: Source):
     Promise<Exchanged>;
   verify(owner: string, connection: string, version: number, blob: string): Promise<Verified>;
+  /** A wake token the owner pasted, sealed for its subscription (slice W). */
+  sealDoorbell(owner: string, subscription: string, version: number,
+               input: { record: string; url: string; secret: string }): Promise<Sealed>;
+  /** An MCP Events callback, verified by a signed challenge, then sealed (slice W). */
+  verifyDoorbell(owner: string, subscription: string, version: number,
+                 input: { record: string; url: string; secret: string }):
+    Promise<{ readonly verified: true; readonly sealed: Sealed }
+            | { readonly verified: false; readonly reason: string }>;
 }
 
 /** What `wrangler.jsonc` binds, exactly (the config guard). */

@@ -310,7 +310,7 @@ describe("the gateway Worker", () => {
   it("gives the doors' entrypoint only the connect steps", async () => {
     // The doors' own tests reach it over their real `GATEWAY` binding; here, its surface.
     expect(Object.getOwnPropertyNames(ConnectGateway.prototype).sort())
-      .toEqual(["constructor", "exchange", "seal", "verify"]);
+      .toEqual(["constructor", "exchange", "seal", "sealDoorbell", "verify", "verifyDoorbell"]);
     const connect = new ConnectGateway(createExecutionContext(), env);
     const { blob } = await connect.seal("alice", "c1", 1, "sk-good", ANTHROPIC);
     expect((await connect.verify("alice", "c1", 1, blob)).models.length).toBeGreaterThan(0);

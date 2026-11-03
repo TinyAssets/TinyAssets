@@ -46,7 +46,9 @@
  * (ADR-034), in the owner's sandbox or on their vendor's platform, and no package's code
  * runs in this object.
  * Claiming and settling wakes is the `wakes` lane's own, in process, with the doorbell's
- * {@link WakeSender}; file housekeeping (expired uploads and temporary directories,
+ * {@link WakeSender} (`Doorbell`, slice W: each vendor's wake from its `wake-kinds.json`
+ * record, after the kill switch in `CONTROL`), to the callback an agent's client stores
+ * at `wakeSubscribe` or the owner at `agentDoorbell`; file housekeeping (expired uploads and temporary directories,
  * history prunes, garbage chunk deletes) is the `files` lane's. No door reaches either.
  *
  * The owner's model connections (`connections.ts`) hold only blobs the gateway sealed;
@@ -96,7 +98,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import { mintToken } from "../../doors/src/routing-mac";
+import { LEASE_LIVED, mintToken } from "../../doors/src/routing-mac";
 import {
   type ProfileName, profileNames, refusal, takesRequest, type Tool, toolsNamed,
 } from "../../doors/src/tools";
@@ -117,18 +119,23 @@ import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type MailAn
          type PostedFrame, QUEUE_FULL, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
          scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
-import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
+import { EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
 import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
 import { type ApiKey, keyId, keyName, Keys } from "./keys";
 import {
-  bindingId, created as inboundCreated, Inbound, type InboundBinding, ownerProof, PROOF_INVALID,
+  bindingId, created as inboundCreated, Inbound, type InboundBinding, type InboundRow,
+  ownerProof, PROOF_INVALID,
 } from "./inbound";
 import { proves } from "./inbound-proof";
-import { PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers } from "./tier";
 import {
-  type Changed, Collections, Conflict, type HistoryEntry, type Page, type Row,
+  keepTiers, keptTiers, PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers,
+} from "./tier";
+import { Bodies, type Located, PLACE_BYTES, type Placed, placedAs, type Placing } from "./bodies";
+import {
+  type Changed, type Changes, checkBody, Collections, Conflict, type History,
+  type HistoryEntry, type Page, type Row,
 } from "./collections";
 import {
   CONNECTION_UNAVAILABLE, type ConnectionView, Connections, CREDENTIAL_EXPIRED,
@@ -136,7 +143,7 @@ import {
 } from "./connections";
 import { Invalid, Refused } from "./errors";
 import {
-  type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
+  type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef, type ChunkStore, type Content,
   type Entry, FileConflict, Files, type Lease, OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
@@ -146,17 +153,16 @@ import {
   CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
 } from "./codemode";
 import {
-  type Actor, type Agent, type ChainMail, clock, type Delivery, Ledger, type MailAuthority,
-  type MailPage, RUN_NO_MAILBOX,
-  apiKeyOrigin, MAIL_HEADER_BYTES, mailInput, MAX_BODY, type NativeAgent, nativeId, type Origin,
-  outsideOrigin,
-  type Posted, registrant, type Source,
+  type Actor, type Agent, type ChainMail, checkMessage, clock, type Delivery, Ledger,
+  type MailAuthority, type MailPage, RUN_NO_MAILBOX,
+  apiKeyOrigin, MAIL_HEADER_BYTES, mailInput, type NativeAgent, nativeId, type Origin,
+  outsideOrigin, type Posted, registrant, type Source,
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
-import { ERASE_RETRY_MS, ERASING, erasing, wiped } from "./erasure";
+import { ERASE_RETRY_MS, ERASING, erasing, PUT_GRACE_MS, wiped } from "./erasure";
 import {
-  type Change, customTools, fileSettings, hookSettings, modelSettings, Policy,
+  type Change, customTools, fileLimits, hookSettings, modelSettings, Policy,
   type PolicyDocument, type Projection, type Receipt,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
@@ -166,16 +172,20 @@ import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, wit
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
-import { codePoints, principal } from "./text";
+import { codePoints, principal, utf8Bytes } from "./text";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
   type SandboxBinding, sandboxBinding, settleRequest,
 } from "./egress";
 import {
-  type EgressPolicy, networkDocument, RUN_DEADLINE_S, type NetworkPlan, runUrls, sandboxEnv,
+  type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
 } from "./network";
-import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
+import {
+  CLOSED, Doorbell, type RingAnswer, runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender,
+  WAKES_PER_ALARM,
+} from "./wakes";
+import { eventKind, type Events, follows, kindFor, wakeKinds } from "./wake-kinds";
 
 /**
  * Whose object this is, who is asking and through what: set by the binder from a
@@ -309,7 +319,8 @@ export interface AgentRequest {
 
 export interface WakeLimitsRequest {
   readonly agent_id: string;
-  readonly max_wakes_per_hour: number;
+  /** The owner's hourly cap on the agent's wakes, or null for none (the default). */
+  readonly max_wakes_per_hour: number | null;
   readonly batch_window_s: number;
   readonly expected_generation: number;
 }
@@ -403,10 +414,11 @@ export type RowHead =
      & { readonly head: string; readonly body_chars: number })
   | Extract<Changed, { deleted: true }>;
 
-/** Rows changed past a digest's cursor, and the next cursor. */
+/** Rows changed past a digest's cursor, and the next cursor; `reset` as `Changes`'. */
 export interface Heads {
   readonly cursor: number;
   readonly rows: RowHead[];
+  readonly reset?: true;
 }
 
 /** One code mode script (`codeRun`). */
@@ -446,9 +458,41 @@ export interface CodeCalls {
   readonly cancelled: number;
 }
 
-export interface SubscriberRequest {
-  readonly command_center_id: string;
+/**
+ * An agent's client's MCP Events subscription, as the MCP door hands it once it verified
+ * the callback and the gateway sealed it: the id the door derived (from the caller, URL,
+ * event and arguments; never the client's), the event, the arguments (its command center,
+ * and the board or rooms it follows), the sealed blob, and when it lapses (seconds, or null).
+ */
+export interface SubscribeRequest {
+  readonly subscription_id: string;
+  readonly name: string;
+  readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
+                        readonly rooms?: readonly string[] };
+  readonly blob: string;
+  readonly kid: string;
+  readonly version: number;
+  readonly expires_at: number | null;
+}
+
+/** The caller that holds a subscription ending it: the id the door derived. */
+export interface UnsubscribeRequest {
+  readonly subscription_id: string;
+}
+
+/**
+ * The owner setting an agent's doorbell: the kind it pasted a token for, the id the door
+ * derived, what it follows, and the blob the gateway sealed the token and URL into.
+ */
+export interface AgentDoorbellRequest {
   readonly agent_id: string;
+  readonly kind: string;
+  readonly subscription_id: string;
+  readonly board: boolean;
+  readonly rooms: readonly string[];
+  readonly blob: string;
+  readonly kid: string;
+  readonly version: number;
 }
 
 /** A key's mint (`keyMint`): its id, name and scopes, and an agent's held request. */
@@ -746,6 +790,11 @@ export interface KeyRequest {
   readonly row_id: string;
 }
 
+/** A history read: a row's key, and the revision to read before for older entries. */
+export interface HistoryRequest extends KeyRequest {
+  readonly before_revision?: number;
+}
+
 export interface DeleteRequest {
   readonly collection: string;
   readonly row_id: string;
@@ -885,9 +934,16 @@ function headChars(value: unknown): number {
   return value;
 }
 
+/** Changed rows with their placed bodies (ADR-035) read from R2 set in them. */
+function filledChanges(changes: Changes, bodies: ReadonlyMap<string, string>): Changes {
+  return { ...changes, rows: changes.rows.map((row) => row.deleted ? row
+    : filled(row as Extract<Changed, { deleted: false }> & { content_id?: string }, bodies)) };
+}
+
 /** Changed rows as a digest shows them: each body cut to its first `chars` characters. */
-function heads(changes: { cursor: number; rows: Changed[] }, chars: number): Heads {
+function heads(changes: Changes, chars: number): Heads {
   return {
+    ...(changes.reset === true ? { reset: true } : {}),
     cursor: changes.cursor,
     rows: changes.rows.map((row): RowHead => {
       if (row.deleted) {
@@ -942,6 +998,66 @@ async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileCo
   }
 }
 
+/**
+ * How often a mailbox read reads its placed bodies again when mail that came between its
+ * read of them and its unit put an unread placed body first (ADR-035).
+ */
+const READ_TRIES = 3;
+
+/** The placed contents a read's rows name (ADR-035). */
+function contentsOf(rows: readonly object[]): string[] {
+  return rows.flatMap((row) => {
+    const id = (row as { readonly content_id?: string }).content_id;
+    return id === undefined ? [] : [id];
+  });
+}
+
+/** A row or entry with its placed body read in, as a caller sees it. */
+function filled<T extends { readonly body: string; readonly content_id?: string }>(
+    row: T, bodies: ReadonlyMap<string, string>): T {
+  if (row.content_id === undefined) {
+    return row;
+  }
+  const { content_id: contentId, ...rest } = row;
+  const body = bodies.get(contentId);
+  if (body === undefined) {
+    throw new Error("a placed body its row names was not read");
+  }
+  return { ...rest, body } as T;
+}
+
+/**
+ * What a writing door's answer shows of placed bodies (ADR-035): the content ids it names,
+ * located in its unit, and the answer with them read in.
+ */
+interface Shown<T> {
+  readonly contents: (value: T) => readonly string[];
+  readonly fill: (value: T, bodies: ReadonlyMap<string, string>) => T;
+}
+
+/** A conflict's current row, read back whole, as `get` and `pull` show it. */
+function conflictShown<T extends object>(): Shown<T> {
+  return {
+    contents: (value) => "conflict" in value && value.conflict !== null
+      ? contentsOf([value.conflict as Row]) : [],
+    fill: (value, bodies) => "conflict" in value && value.conflict !== null
+      ? { ...value, conflict: filled(value.conflict as Row, bodies) } : value,
+  };
+}
+
+/**
+ * Whose files scope a door's rows count in (ADR-035): the owner's, an outside client's
+ * (`client:<id>`), or a visiting owner's own, `client:` and its principal's hash, so a
+ * visitor is held to the owner's `client_share` as a client is.
+ */
+function filerOf(account: Account): string {
+  if (account.origin !== null) {
+    return `client:${account.origin.client}`;
+  }
+  return account.caller === account.owner ? "owner"
+    : `client:${createHash("sha256").update(`visitor\n${account.caller}`, "utf8").digest("hex")}`;
+}
+
 /** Who a file change is by, in its history: the owner, or the outside client it came through. */
 function fileWriter(account: Account): string {
   return account.origin === null ? "owner" : `client:${account.origin.client}`;
@@ -957,10 +1073,14 @@ function flag(value: unknown, what: string): boolean {
 /** The agent a scoped client acts as when its call names none. */
 export const MAIN_AGENT = "main";
 /**
- * The most bytes a mail's input is: its envelope, and its body (`MAX_BODY` characters of up
- * to 4 bytes); a queued input's.
+ * The bytes a mail's run's input takes in the waiting inputs' queue: none, since its row
+ * keeps only the mail's reference (ADR-035); the queue's rows bound it.
  */
-const MAIL_INPUT_BYTES = MAIL_HEADER_BYTES + 4 * MAX_BODY;
+const MAIL_INPUT_BYTES = 0;
+/** How many times a placed body begins again past a chunk the sweep is deleting. */
+const PLACE_TRIES = 5;
+/** What only the owner does with a mail chain: read it (`mailChain`). */
+const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 
@@ -1090,7 +1210,7 @@ export interface LaneDeps {
     next(now: number): number | null;
     run(now: number, until: number): Promise<void>;
   };
-  /** The doorbell, or null until tasks 7 constructs one: read at each use, never kept. */
+  /** The doorbell (`wakes.ts`), or null for none: read at each use, never kept. */
   readonly sender: () => WakeSender | null;
   /** Whether the owner is admitted (`require_work`): read at each use. */
   readonly admitted: () => boolean;
@@ -1114,9 +1234,12 @@ export function ownerLanes(deps: LaneDeps):
     // only while the owner is admitted (`require_work`): a suspended owner's wait.
     wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null
                                                        && deps.admitted()),
-             run: (_now, until) => deps.runWakes(deps.ledger, deps.sender(), deps.clock,
-                                                 deps.write, WAKES_PER_ALARM, WAKE_SEND_MS,
-                                                 until) },
+             // The kill switch closed: nothing claimed, and the job held a retry out.
+             run: async (_now, until) => {
+               const done = await deps.runWakes(deps.ledger, deps.sender(), deps.clock,
+                                                deps.write, WAKES_PER_ALARM, WAKE_SEND_MS, until);
+               return done === CLOSED ? { hold: deps.clock() + WAKE_RETRY_S } : done;
+             } },
     files: { next: (now) => deps.files.nextAlarm(now),
              run: (now, until) => deps.files.collect(now, until) },
     // Connection housekeeping: expired flows, unclaimed pending rows, provider revokes.
@@ -1132,6 +1255,8 @@ export function ownerLanes(deps: LaneDeps):
 export interface Internals {
   readonly erasure?: (internal: Erasure) => void;
   readonly eraseRetryMs?: number;
+  /** The erasure's wait for a put begun before its mark (`PUT_GRACE_MS`), for the tests. */
+  readonly putGraceMs?: number;
   /** The sandbox's lease API, which the sandbox slice reaches in the object (`SandboxLeases`). */
   readonly sandbox?: (internal: SandboxLeases) => void;
   /** Code mode's bounds, smaller in a test than production's (`codemode.ts`). */
@@ -1199,6 +1324,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
+  /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
+  readonly #bodies: Bodies;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
   readonly #connections: Connections;
@@ -1216,6 +1343,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #inbound: Inbound;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly #posts = new PostGate();
+  /**
+   * A long reply's body placed before an events unit (`runEvents`), set only for that
+   * synchronous unit, for its settle to post by reference (`#answer`).
+   */
+  #replyPlaced: Placed | null = null;
   /** Who waits on a run's settle, on this instance only: a door's bounded wait. */
   readonly #waiters = new Map<string, Set<() => void>>();
   /** Code mode's bounds: production's, unless a test passed smaller. */
@@ -1229,11 +1361,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /**
-   * What rings outside agents' doorbells, called in process by the `wakes` lane. None
-   * until the doorbell slice (tasks 7) constructs one here; until then the lane only
-   * recovers lapsed claims, and open wakes and revokes stay pending without a job.
+   * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
+   * lane: every wake kind's request from its record, after the kill switch (`CONTROL`).
    */
-  readonly #sender: WakeSender | null = null;
+  readonly #sender: WakeSender;
   /**
    * Whether this object's database is an erased owner's tombstone, as the object found it
    * starting (`admission.ts`): it then migrates nothing, starts no Lifecycle, and every door
@@ -1257,24 +1388,33 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#storage = storage;
     this.#tombstone = tombstoned(storage.sql);
     const admitted = () => workRefusal(admission(storage)) === null;
-    this.#collections = new Collections(storage);
     this.#policy = new Policy(storage);
+    // The files byte quota is the tier's storage (ADR-034 decision 8), as last handed.
+    // Retention kept in R2 makes room first at the byte quota: the oldest placed history,
+    // then the oldest acked mail with a placed body (ADR-035).
+    this.#files = new Files(storage, env.FILES, () => fileLimits(
+      this.#policy.read().document,
+      keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
+      (filer) => this.#collections.reclaim(filer) || this.#ledger.reclaim(filer),
+      // Each agent's ledger identity follows its `agent.json`, in the file change's own unit.
+      (path, present, now) => {
+        const agent = AGENT_FILE.exec(path)?.[1];
+        if (agent !== undefined) {
+          if (present) {
+            this.#ledger.appear(agent, now);
+          } else {
+            this.#ledger.retire(agent, now);
+          }
+        }
+      });
+    this.#bodies = new Bodies(this.#files, storage, write);
+    // An outside writer's share of the collections is the owner's own `client_share`.
+    this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
+                                        () => fileLimits(this.#policy.read().document, null));
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted);
-    // Each agent's ledger identity follows its `agent.json`, in the file change's own unit.
-    this.#files = new Files(storage, env.FILES,
-                            () => fileSettings(this.#policy.read().document), write,
-                            (path, present, now) => {
-                              const agent = AGENT_FILE.exec(path)?.[1];
-                              if (agent !== undefined) {
-                                if (present) {
-                                  this.#ledger.appear(agent, now);
-                                } else {
-                                  this.#ledger.retire(agent, now);
-                                }
-                              }
-                            });
+    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted,
+                              () => this.#collections.clock(), this.#bodies.adopt);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
     const owner = () => {
@@ -1285,6 +1425,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return named;
     };
     this.#ownerName = owner;
+    this.#sender = new Doorbell({
+      ledger: this.#ledger, live: (client) => this.#grants.live(client), write, clock,
+      reads: (client, center) => this.#grants.reads(client, { universe: center,
+                                                               agent: MAIN_AGENT,
+                                                               capability: "read_graph" }),
+      touched: (rooms, after) => this.#collections.touched(rooms, after),
+      notice: (type, detail) => write(() => this.#notices.add(type, detail, clock())),
+      // The kill switch: the control record, read once a pass, as the doors read it.
+      gate: async () => await this.#control().refusal("outside", owner()) === null,
+      // The secret is the gateway's alone: it opens the blob and makes the send.
+      ring: (subscription, version, blob, previous, request): Promise<RingAnswer> =>
+        env.GATEWAY.ringDoorbell(owner(), subscription, version, blob, previous, request),
+    });
     this.#connections = new Connections(storage, write, () => env.GATEWAY, owner,
                                         this.#notices, clock);
     this.#egress = new Egress(storage, {
@@ -1294,6 +1447,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return grant === null ? undefined : grant.connection;
       },
       runUsage: (run) => this.#runs.usage(run),
+      tierRuns: () => keptTiers(storage)?.[ownerTier(storage)].runs ?? null,
       generation: () => this.#policy.egressGeneration(),
       credential: (connection, nowMs) => {
         try {
@@ -1408,6 +1562,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#relay.closeAll("erased");
         this.#cancelInSandbox(this.#runs.liveRuns());
       },
+      // Every R2 copy of the owner's: files and placed bodies alike are the files plane's
+      // chunks (ADR-035), deleted by the namespace's prefix once every put this instance
+      // began has landed (no new one begins under the mark), and again after the wipe.
+      blobs: async () => {
+        const ns = this.#files.storedNamespace();
+        await this.#files.settled();
+        if (ns !== null) {
+          await this.#files.eraseNamespace(ns);
+        }
+        return ns;
+      },
+      blobsAgain: async (ns) => {
+        if (ns !== null) {
+          await this.#files.eraseNamespace(ns);
+        }
+      },
+      putGraceMs: internals.putGraceMs ?? PUT_GRACE_MS,
       wipe: () => this.#gate.wipe(writeTombstone),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
@@ -1490,6 +1661,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return this.#runAccount(binding, door);
     }
     const { owner, caller } = this.#bind(binding, door);
+    // The tier's numbers, as the binder read them from the control record: kept for the
+    // files byte quota and the lane's runs (written only when they changed).
+    keepTiers(this.#storage, binding.tiers, clock());
     if (!("origin" in binding)) {
       throw new Invalid("invalid outside origin");
     }
@@ -1998,69 +2172,105 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * events are a no-op until the owner changes the binding.
    */
   inboundAccept(binding: Binding, request: InboundEvent): Promise<InboundAnswer> {
-    return this.#synced(() => {
+    return this.#placing((): { body: unknown; writer: string } | { done: InboundAnswer } => {
       const { owner } = this.#bind(binding, "work", "inbound");
-      if (binding.origin !== null || binding.caller !== owner || binding.session !== undefined
-          || binding.source !== undefined) {
-        throw new Invalid("invalid inbound binding");
-      }
-      const route = binding.inbound!;
-      const row = this.#inbound.current(bindingId(route.binding), route.revision);
-      const r = policyFields(request, ["event_id", "event_at", "body", "headers"]);
-      const eventId = r["event_id"];
-      const eventAt = r["event_at"];
-      const body = r["body"];
-      const headers = r["headers"];
-      if (typeof eventId !== "string" || !eventId.trim() || codePoints(eventId) > 256
-          || typeof eventAt !== "number" || !Number.isSafeInteger(eventAt) || eventAt < 0
-          || eventAt > 999_999_999_999 || !(body instanceof Uint8Array)
-          || typeof headers !== "object" || headers === null || Array.isArray(headers)) {
-        throw new Invalid("an inbound event is its id, its time, its bytes and its headers");
-      }
-      const shared = row.kind === "shared";
-      if (shared && row.tripped === 1) {
-        return { state: "no_op", error: "breaker_tripped" };
-      }
-      const proof = ownerProof(row);
       const now = clock();
-      if (proof !== null && !proves(proof.profile, headers as Record<string, string>, body,
-                                    proof.secret, now)) {
-        throw new Refused(PROOF_INVALID);
+      const event = this.#inboundEvent(binding, owner, request, now);
+      if ("done" in event) {
+        return event;
       }
-      const key = createHash("sha256")
-        .update(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${eventId}`, "utf8")
-        .digest("hex");
-      const cmid = `inb_${key}`;
-      const prior = this.#ledger.ownerPosted(cmid);
-      const envelope = JSON.stringify({ inbound: {
-        binding: row.binding_id, event_id: eventId, event_at: eventAt,
-        raw_base64: Buffer.from(body).toString("base64") } });
+      try {
+        const resend = this.#ledger.prepare(null, event.room, event.cmid, event.envelope, null);
+        if (resend !== null) {
+          return { done: { state: "admitted", receipt: resend.message_id, deduped: true } };
+        }
+      } catch (error) {
+        return { done: this.#inboundRefused(event.row, error, now) };
+      }
+      return { body: event.envelope, writer: "owner" };
+    }, (placed) => {
+      const { owner } = this.#bind(binding, "work", "inbound");
+      const now = clock();
+      const event = this.#inboundEvent(binding, owner, request, now);
+      if ("done" in event) {
+        return event.done;
+      }
       this.#keepTiers(binding);
       try {
-        const posted = this.#ledger.post(null, `dm:${nativeId(row.agent)}`, cmid, envelope,
-                                         null, now, null);
-        this.#inbound.succeeded(row);
-        return { state: "admitted", receipt: posted.message_id, deduped: prior !== null };
+        const posted = this.#ledger.post(null, event.room, event.cmid, event.envelope, null,
+                                         now, null, placed, "owner");
+        this.#inbound.succeeded(event.row);
+        return { state: "admitted", receipt: posted.message_id, deduped: false };
       } catch (error) {
-        if (error instanceof Refused && /mailbox is full/.test(error.message)) {
-          if (shared && this.#inbound.failed(row, now)) {
-            this.#notices.add("inbound", `An inbound app's events to ${row.agent} were ` +
-                              "paused: its mailbox was full. Change the binding to resume.", now);
-          }
-          return { state: "refused", error: "mailbox_full", retry: true };
-        }
-        if (error instanceof Refused && error.message === "conflict") {
-          return { state: "refused", error: "event_conflict" };
-        }
-        if (error instanceof Invalid && /message body/.test(error.message)) {
-          return { state: "refused", error: "too_large" };
-        }
-        if (error instanceof Refused) {
-          return { state: "refused", error: "agent_unavailable" };
-        }
-        throw error;
+        return this.#inboundRefused(event.row, error, now);
       }
-    });
+    }, { synced: true });
+  }
+
+  /**
+   * An inbound event checked in its unit: the binding at the route's revision, enabled, an
+   * owner-held proof on the raw bytes, and its mail's room, key and envelope; or the no-op a
+   * tripped breaker answers.
+   */
+  #inboundEvent(binding: Binding, owner: string, request: InboundEvent, now: number):
+      { done: InboundAnswer }
+      | { row: InboundRow; room: string; cmid: string; envelope: string } {
+    if (binding.origin !== null || binding.caller !== owner || binding.session !== undefined
+        || binding.source !== undefined) {
+      throw new Invalid("invalid inbound binding");
+    }
+    const route = binding.inbound!;
+    const row = this.#inbound.current(bindingId(route.binding), route.revision);
+    const r = policyFields(request, ["event_id", "event_at", "body", "headers"]);
+    const eventId = r["event_id"];
+    const eventAt = r["event_at"];
+    const body = r["body"];
+    const headers = r["headers"];
+    if (typeof eventId !== "string" || !eventId.trim() || codePoints(eventId) > 256
+        || typeof eventAt !== "number" || !Number.isSafeInteger(eventAt) || eventAt < 0
+        || eventAt > 999_999_999_999 || !(body instanceof Uint8Array)
+        || typeof headers !== "object" || headers === null || Array.isArray(headers)) {
+      throw new Invalid("an inbound event is its id, its time, its bytes and its headers");
+    }
+    if (row.kind === "shared" && row.tripped === 1) {
+      return { done: { state: "no_op", error: "breaker_tripped" } };
+    }
+    const proof = ownerProof(row);
+    if (proof !== null && !proves(proof.profile, headers as Record<string, string>, body,
+                                  proof.secret, Math.floor(now))) {
+      throw new Refused(PROOF_INVALID);
+    }
+    const key = createHash("sha256")
+      .update(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${eventId}`, "utf8")
+      .digest("hex");
+    const envelope = JSON.stringify({ inbound: {
+      binding: row.binding_id, event_id: eventId, event_at: eventAt,
+      raw_base64: Buffer.from(body).toString("base64") } });
+    return { row, room: `dm:${nativeId(row.agent)}`, cmid: `inb_${key}`, envelope };
+  }
+
+  /**
+   * An inbound event the agent's mail refused: a full mailbox counts toward a shared app's
+   * breaker (and its trip is the owner's notice); the rest are the event's own refusals.
+   */
+  #inboundRefused(row: InboundRow, error: unknown, now: number): InboundAnswer {
+    if (error instanceof Refused && /mailbox is full|mail is full/.test(error.message)) {
+      if (row.kind === "shared" && this.#inbound.failed(row, Math.floor(now))) {
+        this.#notices.add("inbound", `An inbound app's events to ${row.agent} were paused: ` +
+                          "its mailbox was full. Change the binding to resume.", now);
+      }
+      return { state: "refused", error: "mailbox_full", retry: true };
+    }
+    if (error instanceof Refused && error.message === "conflict") {
+      return { state: "refused", error: "event_conflict" };
+    }
+    if (error instanceof Invalid && /message body/.test(error.message)) {
+      return { state: "refused", error: "too_large" };
+    }
+    if (error instanceof Refused) {
+      return { state: "refused", error: "agent_unavailable" };
+    }
+    throw error;
   }
 
   // -- THE FILE DOOR'S BYTES: the binder streams chunks to FILES (slice L; tasks 6.1) ----
@@ -2207,6 +2417,40 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }));
   }
 
+  /**
+   * Only the owner itself, in its session, sets an agent's doorbell where its wake kind's
+   * record has the owner hand it over (`callback: owner`: Claude's `/fire`, Grok's webhook
+   * routine), for the agent's own kind: the blob the gateway sealed the pasted token and
+   * URL into (`sealDoorbell`, from the owner surface), under the id the door derived, and
+   * what it follows. A repeat refreshes it. The object never sees the token; a refusal's
+   * receipt holds only its request's digest.
+   */
+  agentDoorbell(binding: Binding, request: AgentDoorbellRequest):
+      Promise<{ agent_id: string; subscription_id: string }> {
+    return this.#door(() => this.#widening(binding, "work", "OUTSIDE_AGENTS.doorbell", request,
+                                           "set its agents' doorbells", () => {
+      const r = ledgerFields(request, ["agent_id", "kind", "subscription_id", "board", "rooms",
+                                       "blob", "kid", "version"]);
+      const stored = this.#ledger.subscribe(null, {
+        subscription_id: r["subscription_id"] as string, agent_id: r["agent_id"] as string,
+        kind: r["kind"] as string, board: r["board"] as boolean,
+        rooms: r["rooms"] as readonly string[], blob: r["blob"] as string,
+        kid: r["kid"] as string, version: r["version"] as number, expires_at: null,
+      });
+      return { agent_id: stored.agent_id, subscription_id: r["subscription_id"] as string };
+    }));
+  }
+
+  /** Only the owner itself, in its session, ends a doorbell it pasted, by its id. */
+  agentDoorbellEnd(binding: Binding, request: UnsubscribeRequest):
+      Promise<{ unsubscribed: boolean }> {
+    return this.#door(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.doorbell_end",
+                                           request, "end its agents' doorbells", () => {
+      const r = ledgerFields(request, ["subscription_id"]);
+      return { unsubscribed: this.#ledger.unsubscribe(null, r["subscription_id"]) };
+    }));
+  }
+
   /** Only the owner itself, in its session, deletes an agent. */
   deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
@@ -2228,20 +2472,37 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * `converse` call would.
    */
   roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
-    return this.#synced(() => {
+    return this.#placing((): { body: unknown; writer: string } | { done: Posted } => {
       const account = this.#account(binding, "work");
-      const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
       this.#scope(account, "write_graph");
-      const actor = this.#actor(account);
-      const authority = this.#mailAuthority(binding, account);
-      const to = this.#ledger.recipient(actor, r["room_id"]);
-      if (to.native !== null) {
-        this.#mailsAgent(account, authority, to.native);
-        this.#keepTiers(binding);
-      }
+      const { r, actor } = this.#poster(account, binding, request);
+      // The room, the sender, the parent, the caps and a resend, before any byte is placed.
+      const resend = this.#ledger.prepare(actor, r["room_id"], r["client_message_id"],
+                                          r["body"], r["parent_id"]);
+      return resend !== null ? { done: resend } : { body: r["body"], writer: filerOf(account) };
+    }, (placed) => {
+      const account = this.#account(binding, "work");
+      this.#scope(account, "write_graph");
+      const { r, actor, authority } = this.#poster(account, binding, request);
       return this.#ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
-                               r["parent_id"], clock(), authority);
-    });
+                               r["parent_id"], clock(), authority, placed, filerOf(account));
+    }, { synced: true });
+  }
+
+  /**
+   * A post's caller checked, in each of its units: the first places nothing for a post the
+   * checks refuse, and the second commits only what they still allow.
+   */
+  #poster(account: Account, binding: Binding, request: PostRequest) {
+    const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
+    const actor = this.#actor(account);
+    const authority = this.#mailAuthority(binding, account);
+    const to = this.#ledger.recipient(actor, r["room_id"]);
+    if (to.native !== null) {
+      this.#mailsAgent(account, authority, to.native);
+      this.#keepTiers(binding);
+    }
+    return { r, actor, authority };
   }
 
   /** Who a caller is in the ledger: a run, its agent; else the owner or the outside client. */
@@ -2407,15 +2668,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return set;
   }
 
+  /**
+   * A mailbox page. Its placed bodies (ADR-035) are read from R2 first, located in a unit
+   * of their own; the read's unit then marks only what it returns, and ends the page before
+   * a placed body it was not handed (one that arrived between), which a further read of
+   * the bodies picks up.
+   */
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
-    return this.#door(() => {
+    return this.#rereading(() => {
+      const account = this.#account(binding, "read");
+      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
+      this.#noMailbox(account);
+      this.#scope(account, "read_graph");
+      return this.#ledger.placedNext(account.origin, r["limit"]);
+    }, (bodies) => {
       const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
       this.#noMailbox(account);
       this.#scope(account, "read_graph");
       return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
-                               r["pad_bytes"] ?? 0);
-    });
+                               r["pad_bytes"] ?? 0, clock(), bodies);
+    }, (page) => page.messages.length === 0 && page.more);
   }
 
   mailboxAck(binding: Binding, request: AckRequest): Promise<{ reader: string; through: number }> {
@@ -2438,30 +2711,46 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * row only to its writer. Its mail part is a mailbox read, so a run is refused it
    * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
    */
-  inboxDigest(binding: Binding, request: InboxDigestRequest):
+  async inboxDigest(binding: Binding, request: InboxDigestRequest):
       Promise<{ mail: MailPage; rooms: Heads }> {
-    return this.#door(() => {
+    // Its placed bodies (ADR-035), mail and rows, are read from R2 between its units, as a
+    // mailbox read's; the read's unit marks only the mail it returns.
+    const { mail, rooms, bodies, head } = await this.#rereading(() => {
       const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit", "after"], ["max_bytes", "head_chars"]);
       this.#noMailbox(account);
       this.#scope(account, "read_graph");
-      const head = headChars(r["head_chars"]);
+      return [...this.#ledger.placedNext(account.origin, r["limit"]),
+              ...contentsOf(this.#collections.changed(account.caller, { prefix: ROOM_PREFIX },
+                                                      r["after"], r["limit"]).rows)];
+    }, (bodies) => {
+      const account = this.#account(binding, "read");
+      const r = ledgerFields(request, ["limit", "after"], ["max_bytes", "head_chars"]);
+      this.#noMailbox(account);
+      this.#scope(account, "read_graph");
+      const changes = this.#collections.changed(account.caller, { prefix: ROOM_PREFIX },
+                                                r["after"], r["limit"]);
       return {
-        mail: this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null, 0),
-        rooms: heads(this.#collections.changed(account.caller, { prefix: ROOM_PREFIX },
-                                               r["after"], r["limit"]), head),
+        mail: this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null, 0, clock(),
+                                bodies),
+        rooms: changes, bodies, head: headChars(r["head_chars"]),
       };
-    });
+    }, ({ mail: page, rooms: changes, bodies }) => (page.messages.length === 0 && page.more)
+      || contentsOf(changes.rows).some((id) => !bodies.has(id)));
+    return { mail, rooms: heads(filledChanges(rooms, bodies), head) };
   }
 
   /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
-  boardDigest(binding: Binding, request: BoardDigestRequest): Promise<Heads> {
-    return this.#door(() => {
+  async boardDigest(binding: Binding, request: BoardDigestRequest): Promise<Heads> {
+    const { changes, head } = await this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["limit", "after"], ["head_chars"]);
-      return heads(this.#collections.changed(caller, { collection: BOARD }, r["after"],
-                                             r["limit"]), headChars(r["head_chars"]));
-    });
+      const changes = this.#collections.changed(caller, { collection: BOARD }, r["after"],
+                                                r["limit"]);
+      return { value: { changes, head: headChars(r["head_chars"]) },
+               contents: contentsOf(changes.rows) };
+    }, (value, bodies) => ({ ...value, changes: filledChanges(value.changes, bodies) }));
+    return heads(changes, head);
   }
 
   /**
@@ -2516,7 +2805,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { owner: account.owner, script: r["script"],
                tools: toolsNamed(names.filter((name) => name !== CODE)), gate };
     });
-    const control = new ControlGate(this.env.CONTROL, this.#controlFreshMs);
+    const control = this.#control();
     const closed = await control.refusal(gate, owner);
     if (closed !== null) {
       throw new Refused(closed);
@@ -2621,32 +2910,111 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * The owner's view of a mail chain (agents' mail to each other included), from any of its
    * messages, such as the mail a run's receipt names: oldest first, after `after`.
    */
-  mailChain(binding: Binding, request: ChainRequest):
+  async mailChain(binding: Binding, request: ChainRequest):
       Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
+    // Its placed bodies (ADR-035) are read from R2 between its units, as a mailbox read's.
+    const { root, messages, more } = await this.#rereading(
+      () => this.#chain(this.#owner(binding, "read", CHAINS), request, new Map()).placed,
+      (bodies) => this.#chain(this.#owner(binding, "read", CHAINS), request, bodies),
+      (page) => page.placed.length > 0);
+    return { root, messages, more };
+  }
+
+  /** A chain page as the owner reads it, handed the placed bodies read so far. */
+  #chain(_owner: Account, request: ChainRequest, bodies: ReadonlyMap<string, string>) {
+    const r = ledgerFields(request, ["message_id", "limit"], ["after"]);
+    return this.#ledger.chain(r["message_id"], r["after"] ?? 0, r["limit"], bodies);
+  }
+
+  /**
+   * The events this caller's client may subscribe (MCP Events `events/list`): each
+   * subscribing wake kind's, to an outside client (never a run) whose grant reads somewhere.
+   * Asked for a command center (`events/subscribe`, before the door sends its callback a
+   * byte), only its one enabled subscribing agent's there, where it holds `read_graph`; a
+   * caller with none is refused.
+   */
+  wakeEvents(binding: Binding, commandCenter?: string): Promise<{ events: Events[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read", "read its agents' mail chains");
-      const r = ledgerFields(request, ["message_id", "limit"], ["after"]);
-      return this.#ledger.chain(r["message_id"], r["after"] ?? 0, r["limit"]);
+      const account = this.#account(binding, "read");
+      const grant = account.grant;
+      if (account.origin === null || account.run !== null || grant === null) {
+        if (commandCenter !== undefined) {
+          throw new Refused("only an agent's own client subscribes its doorbell");
+        }
+        return { events: [] };
+      }
+      if (commandCenter === undefined) {
+        const reads = grant.mode === "full"
+          || grant.scopes.some((scope) => scope.capability === "read_graph");
+        return { events: reads ? wakeKinds().flatMap((kind) => kind.push?.events ?? []) : [] };
+      }
+      if (typeof commandCenter !== "string") {
+        throw new Invalid("invalid subscription arguments");
+      }
+      this.#scope(account, "read_graph", commandCenter);
+      const agent = this.#ledger.subscriber(account.origin, commandCenter);
+      if (agent === undefined) {
+        throw new Refused("not this caller's subscribing agent");
+      }
+      return { events: [kindFor(agent.delivery_method)!.push!.events!] };
     });
   }
 
   /**
-   * W4: a `mailbox.message` subscribe must name the caller's own ringing agent, and a
-   * scoped client needs `read_graph` in that command center. The answer's `generation`
-   * tags the callback the subscribe door stores, so a revoke made before it never
-   * erases it.
+   * An agent's own client subscribes (MCP Events `events/subscribe`), once the MCP door
+   * verified its callback and the gateway sealed it: for its one enabled agent in the command
+   * center its arguments name, where a scoped client needs `read_graph`. A run is refused.
+   * The subscription is stored under the id the door derived, its lifetime as granted. The
+   * answer never holds the callback.
    */
-  mailboxSubscriber(binding: Binding, request: SubscriberRequest):
-      Promise<{ agent_id: string; generation: number }> {
-    return this.#door(() => {
+  wakeSubscribe(binding: Binding, request: SubscribeRequest):
+      Promise<{ subscription_id: string; agent_id: string; expires_at: number | null }> {
+    return this.#synced(() => {
       const account = this.#account(binding, "work");
-      const r = ledgerFields(request, ["command_center_id", "agent_id"]);
-      this.#scope(account, "read_graph", r["command_center_id"]);
-      // A run acts as its own agent, which is reached by mail, never by a doorbell.
-      const generation = this.#ledger.subscriber(account.run === null ? account.origin : null,
-                                                 r["command_center_id"], r["agent_id"]);
-      return { agent_id: r["agent_id"] as string, generation };
+      const r = ledgerFields(request, ["subscription_id", "name", "arguments", "blob", "kid",
+                                       "version", "expires_at"]);
+      if (account.origin === null || account.run !== null) {
+        throw new Refused("only an agent's own client subscribes its doorbell");
+      }
+      if (typeof r["name"] !== "string" || eventKind(r["name"]) === null) {
+        throw new Invalid("unknown event");
+      }
+      const args = r["arguments"] as Record<string, unknown> | null;
+      const follow = follows(args, ["command_center_id"]);
+      const center = args?.["command_center_id"];
+      if (typeof center !== "string") {
+        throw new Invalid("invalid subscription arguments");
+      }
+      this.#scope(account, "read_graph", center);
+      const stored = this.#ledger.subscribe(account.origin, {
+        subscription_id: r["subscription_id"] as string, command_center_id: center,
+        board: follow.board, rooms: follow.rooms, blob: r["blob"] as string,
+        kid: r["kid"] as string, version: r["version"] as number,
+        expires_at: r["expires_at"] as number | null,
+      });
+      return { subscription_id: r["subscription_id"] as string, ...stored };
     });
+  }
+
+  /**
+   * The caller that holds a subscription ends it (MCP Events `events/unsubscribe`), by the
+   * id the door derived; repeating it is harmless. A run is refused.
+   */
+  wakeUnsubscribe(binding: Binding, request: UnsubscribeRequest):
+      Promise<{ unsubscribed: boolean }> {
+    return this.#door(() => {
+      const account = this.#account(binding, "reduce");
+      const r = ledgerFields(request, ["subscription_id"]);
+      if (account.origin === null || account.run !== null) {
+        throw new Refused("only the client that holds a subscription ends it");
+      }
+      return { unsubscribed: this.#ledger.unsubscribe(account.origin, r["subscription_id"]) };
+    });
+  }
+
+  /** The platform's gates as this object reads them (`control-gate.ts`), from `CONTROL`. */
+  #control(): ControlGate {
+    return new ControlGate(this.env.CONTROL, this.#controlFreshMs);
   }
 
   /**
@@ -2801,68 +3169,205 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A collection door's caller: the owner, a visiting owner, or an outside client the
    * owner's account acts through, admitted against its grant and held to `capability`.
    */
-  #collector(binding: Binding, door: DoorClass, capability: Capability):
-      { owner: string; caller: string } {
+  #collector(binding: Binding, door: DoorClass, capability: Capability): Account {
     const account = this.#account(binding, door, { visitors: true });
     this.#scope(account, capability);
     return account;
   }
 
+  /**
+   * A write door with a body (ADR-035). Its first unit checks its caller and request
+   * (`prepare`, the body and the writer it is placed as); a body its row keeps is written
+   * in that same unit (`act`). A body past `PLACE_BYTES` is begun there instead, sent to R2,
+   * and written in a second unit, which checks the caller again and adopts it; its upload
+   * is released after, whatever the unit did (none once adopted).
+   */
+  async #placing<T>(prepare: () => { body: unknown; writer: string } | { done: T },
+                    act: (placed: Placed | null) => T,
+                    options: { synced?: boolean; shown?: Shown<T> } = {}): Promise<T> {
+    const shown = options.shown;
+    const located = (value: T) => ({ value, located: this.#bodies.locate(
+      shown === undefined ? [] : shown.contents(value)) });
+    // A body whose chunk the sweep is deleting this moment begins again once the delete
+    // lands (review rvlim L5), a few times, then the refusal stands.
+    let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
+    for (let tries = 1; first === undefined; tries++) {
+      try {
+        first = await this.#door(():
+            { done: { value: T; located: Located } } | { placing: Placing } => {
+          const prepared = prepare();
+          if ("done" in prepared) {
+            return { done: located(prepared.done) };
+          }
+          const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
+          return placing === null ? { done: located(act(null)) } : { placing };
+        });
+      } catch (error) {
+        if (!(error instanceof Refused) || error.message !== CHUNK_DELETING
+            || tries >= PLACE_TRIES) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100 * tries));
+      }
+    }
+    let done: { value: T; located: Located };
+    if ("done" in first) {
+      done = first.done;
+    } else {
+      const placed = await this.#bodies.send(first.placing);
+      try {
+        done = await this.#door(() => located(act(placed)));
+      } finally {
+        await this.#bodies.release(placed);
+      }
+    }
+    if (options.synced === true) {
+      await this.#schedule.sync();
+    }
+    // A conflict's current row, placed, is read back whole, as a read door reads it.
+    return shown === undefined || done.located.size === 0 ? done.value
+      : shown.fill(done.value, await this.#bodies.fetch(done.located));
+  }
+
+  /**
+   * A read door's unit, then the placed bodies its rows name read from R2 and set in them
+   * (ADR-035): `unit` returns its result and the content ids it names, located in the
+   * same unit, so each is the content its row named.
+   */
+  /**
+   * A read door whose unit marks what it returns (a mailbox read, ADR-035): the placed
+   * bodies it would return located in a unit of their own (`locate`, its caller checked),
+   * read from R2, then its unit (`read`, the caller checked again) handed them; it reads
+   * again, a few times at most, while `again` says mail between put an unread placed body
+   * first.
+   */
+  async #rereading<T>(locate: () => readonly string[],
+                      read: (bodies: ReadonlyMap<string, string>) => T,
+                      again: (value: T) => boolean): Promise<T> {
+    for (let tries = 0; ; tries++) {
+      const located = await this.#door(() => this.#bodies.locate(locate()));
+      const bodies = await this.#bodies.fetch(located);
+      const value = await this.#door(() => read(bodies));
+      if (!again(value) || tries >= READ_TRIES) {
+        return value;
+      }
+    }
+  }
+
+  async #reading<T>(unit: () => { value: T; contents: readonly string[] },
+                    fill: (value: T, bodies: ReadonlyMap<string, string>) => T,
+                    synced = false): Promise<T> {
+    const { value, located } = await this.#door(() => {
+      const read = unit();
+      return { value: read.value, located: this.#bodies.locate(read.contents) };
+    });
+    if (synced) {
+      await this.#schedule.sync();  // a delete that rang an agent's doorbell (`#ring`)
+    }
+    return fill(value, located.size === 0 ? new Map() : await this.#bodies.fetch(located));
+  }
+
+  /**
+   * Ring the agents that follow `collection` for a change past `after` (slice W): only for
+   * the owner's own act (an outside client's write, or a run's, rings no agent, so no two
+   * agents wake each other without end, as slice ID's mail rings only the agent it
+   * addresses), only for the board or a room, only for a change anyone may see, and only
+   * agents with a live subscription following it whose grant reads their command center.
+   * Each wake says what changed and the cursor before it, so its digest is just the change.
+   */
+  #ring(account: Account, collection: string, after: number): void {
+    const change = collection === BOARD ? "board"
+      : collection.startsWith(ROOM_PREFIX) ? "rooms" : null;
+    if (account.origin !== null || account.run !== null || change === null
+        || !this.#collections.touched([collection], after)) {
+      return;
+    }
+    const agents = this.#ledger.followers(collection, change === "board", clock())
+      .filter((agent) => this.#grants.reads(agent.client, {
+        universe: agent.command_center_id, agent: MAIN_AGENT, capability: "read_graph" }));
+    if (agents.length) {
+      this.#ledger.changed(change, after, agents.map((agent) => agent.agent_id));
+    }
+  }
+
+  /** A row written by compare-and-swap; the owner's own board or room write rings (`#ring`). */
   collectionWrite(binding: Binding, request: WriteRequest): Promise<{ row: Row } | Conflicted> {
-    return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "work", "write_graph");
+    return this.#placing(() => {
+      const account = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
                        ["history_op"]);
-      return conflicted(() => ({
-        row: this.#collections.write(owner, caller, r["collection"] as string,
+      return { body: checkBody(r["body"]), writer: filerOf(account) };
+    }, (placed) => {
+      const account = this.#collector(binding, "work", "write_graph");
+      const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
+                       ["history_op"]);
+      const collection = r["collection"] as string;
+      const before = this.#collections.clock();
+      const written = conflicted(() => ({
+        row: this.#collections.write(account.owner, account.caller, collection,
                                      r["row_id"] as string, r["body"], r["expected_etag"],
-                                     r["private"], "history_op" in r ? r["history_op"] : "write"),
+                                     r["private"], "history_op" in r ? r["history_op"] : "write",
+                                     placed, filerOf(account)),
       }));
-    });
+      this.#ring(account, collection, before);
+      return written;
+    }, { shown: conflictShown(), synced: true });
   }
 
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
-    return this.#door(() => {
+    return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "after", "limit"]);
-      return this.#collections.pull(caller, r["collection"] as string, r["after"], r["limit"]);
-    });
+      const page = this.#collections.pull(caller, r["collection"] as string, r["after"],
+                                          r["limit"]);
+      return { value: page, contents: contentsOf(page.rows) };
+    }, (page, bodies) => ({ ...page, rows: page.rows.map((row) => filled(row, bodies)) }));
   }
 
   collectionGet(binding: Binding, request: KeyRequest): Promise<{ row: Row | null }> {
-    return this.#door(() => {
+    return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "row_id"]);
-      return this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
-    });
+      const got = this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
+      return { value: got, contents: contentsOf(got.row === null ? [] : [got.row]) };
+    }, (got, bodies) => ({ row: got.row === null ? null : filled(got.row, bodies) }));
   }
 
-  collectionHistory(binding: Binding, request: KeyRequest): Promise<{ entries: HistoryEntry[] }> {
-    return this.#door(() => {
+  collectionHistory(binding: Binding, request: HistoryRequest): Promise<History> {
+    return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
-      const r = fields(request, ["collection", "row_id"]);
-      return this.#collections.history(caller, r["collection"] as string, r["row_id"] as string);
-    });
+      const r = fields(request, ["collection", "row_id"], ["before_revision"]);
+      const kept = this.#collections.history(caller, r["collection"] as string,
+                                             r["row_id"] as string, r["before_revision"] ?? null);
+      return { value: kept, contents: contentsOf(kept.entries) };
+    }, (kept, bodies) => ({ ...kept, entries: kept.entries.map((entry) => filled(entry, bodies)) }));
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest):
       Promise<{ deleted: number } | Conflicted> {
-    return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
-      this.#ownerOnly(owner, caller, "delete");
+    return this.#reading(() => {
+      const account = this.#collector(binding, "reduce", "write_graph");
+      this.#ownerOnly(account.owner, account.caller, "delete");
       const r = fields(request, ["collection", "row_id", "expected_etag"]);
-      return conflicted(() => this.#collections.delete(
-        caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
+      const before = this.#collections.clock();
+      const value = conflicted(() => this.#collections.delete(
+        account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
       ));
-    });
+      this.#ring(account, r["collection"] as string, before);
+      return { value, contents: conflictShown<typeof value>().contents(value) };
+    }, conflictShown<{ deleted: number } | Conflicted>().fill, true);
   }
 
   collectionClear(binding: Binding, request: ClearRequest): Promise<{ deleted: number }> {
-    return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
-      this.#ownerOnly(owner, caller, "clear");
+    return this.#synced(() => {
+      const account = this.#collector(binding, "reduce", "write_graph");
+      this.#ownerOnly(account.owner, account.caller, "clear");
       const r = fields(request, ["collection", "writer"]);
-      return this.#collections.clear(caller, r["collection"] as string, r["writer"]);
+      const before = this.#collections.clock();
+      const cleared = this.#collections.clear(account.caller, r["collection"] as string,
+                                              r["writer"]);
+      this.#ring(account, r["collection"] as string, before);
+      return cleared;
     });
   }
 
@@ -3286,7 +3791,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async runEvents(binding: Binding, request: EventsRequest):
       Promise<{ accepted: number; settled: string | null }> {
-    const done = await this.#door(() => {
+    // A reply this batch's settle would post, past `PLACE_BYTES`, is placed in R2 first, in
+    // the gate's own first unit (ADR-035): the settle's unit then posts it by reference, so a
+    // crash between leaves only an orphan upload for the sweep, never a lost reply.
+    const placing = await this.#door(() => {
       // At most `EVENTS_IN_FLIGHT` posts held at once, whatever the tier: one more is
       // refused before anything is written, and its runner posts it again.
       this.#posts.enter();
@@ -3297,13 +3805,40 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           throw new Refused(RUN_ENDED);
         }
         const r = eventsRequest(request);
-        return this.#runs.events(binding.run as string, lease, r.frames, r.end, clock());
+        const reply = this.#runs.answering(binding.run as string, lease, r.frames, r.end);
+        return reply === null || utf8Bytes(reply.result) <= PLACE_BYTES ? null
+          : { placing: this.#beginReply(reply) };
       } catch (error) {
         this.#posts.leave();
         throw error;
       }
     });
+    let placed: Placed | null = null;
     try {
+      placed = placing?.placing == null ? null : await this.#bodies.send(placing.placing);
+      const done = await this.#door(() => {
+        this.#bind(binding, "reduce", "run");
+        const lease = this.#runner(binding);
+        if (lease === null) {
+          throw new Refused(RUN_ENDED);
+        }
+        const r = eventsRequest(request);
+        // Another batch landed between the units (a runner's retry): the reply this settle
+        // would post is not the one placed, so the batch is posted again, never dropped. A
+        // reply whose writer's files refused it (no placing) settles with a notice instead.
+        const reply = this.#runs.answering(binding.run as string, lease, r.frames, r.end);
+        if (reply !== null && utf8Bytes(reply.result) > PLACE_BYTES
+            && !placedAs(placed, reply.result)
+            && !(placing !== null && placing.placing === null)) {
+          throw new Refused(EVENTS_RACED);
+        }
+        this.#replyPlaced = placed;
+        try {
+          return this.#runs.events(binding.run as string, lease, r.frames, r.end, clock());
+        } finally {
+          this.#replyPlaced = null;
+        }
+      });
       this.#relay.relay(done.conversation, done.frames);
       if (done.settled !== null) {
         this.#relay.settled(binding.run as string);
@@ -3311,7 +3846,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return { accepted: done.frames.length, settled: done.settled };
     } finally {
+      await this.#bodies.release(placed);
       this.#posts.leave();
+    }
+  }
+
+  /**
+   * In a unit: a long reply's upload begun as its writer's (the run's client's, or the
+   * owner's), or null when its body stays in its row or its writer's files refuse it; that
+   * settle then leaves the owner a notice (`#answer`).
+   */
+  #beginReply(answer: MailAnswer): Placing | null {
+    try {
+      return this.#bodies.begin(answer.result,
+                                answer.stamp === null ? "owner" : `client:${answer.stamp.client}`);
+    } catch (error) {
+      if (!(error instanceof Refused || error instanceof Invalid)) {
+        throw error;
+      }
+      return null;
     }
   }
 
@@ -3330,9 +3883,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                  generation: answer.stamp.generation,
                  authenticated_at: answer.stamp.authenticated_at,
                  universe: answer.stamp.universe };
+    // Past the placement threshold its body was placed before this unit (`runEvents`).
+    this.#reply(answer, authority,
+                utf8Bytes(answer.result) > PLACE_BYTES ? this.#replyPlaced : null);
+  }
+
+  /** A mail's reply posted in this unit, its body placed or not; a refusal a notice. */
+  #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
     try {
       this.#ledger.answer({ native: answer.agent }, answer.mail, answer.run, answer.result,
-                          clock(), authority);
+                          clock(), authority, placed);
     } catch (error) {
       if (!(error instanceof Refused || error instanceof Invalid)) {
         console.error("a mail's reply failed in the ledger; the run's settle stands");
@@ -3602,8 +4162,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       try {
         const read = await this.#readAgent(waiting.ask.agent);
+        const prompt = waiting.ask.mail === null ? waiting.ask.prompt
+          : await this.#mailPrompt(waiting.ask.mail.message, waiting.ask.agent);
         await this.#launch(read, () => ({
-          ...waiting.ask, tiers: tierNumbers(this.#storage, undefined, clock()) }), waiting.run);
+          ...waiting.ask, prompt, tiers: tierNumbers(this.#storage, undefined, clock()) }),
+                           waiting.run);
       } catch (error) {
         if (!(error instanceof Refused || error instanceof Invalid)) {
           throw error;
@@ -3620,15 +4183,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
     }
     while (clock() < until) {
-      const mail = await this.#door(() => {
+      // A placed body (ADR-035) is read from R2 between the lane's units, as a door's.
+      const next = (bodies: ReadonlyMap<string, string>) => {
         if (workRefusal(admission(this.#storage)) !== null) {
           return null;
         }
         if (this.#runs.queueRoom(MAIL_INPUT_BYTES)) {
           this.#ledger.release();  // the inputs' queue has room for any held mail again
         }
-        return this.#ledger.nextMail();
-      });
+        return this.#ledger.nextMail(bodies);
+      };
+      const mail = await this.#rereading(() => {
+        const found = next(new Map());
+        return found?.content_id == null ? [] : [found.content_id];
+      }, next, (found) => found?.content_id != null);
       if (mail === null) {
         break;
       }
@@ -3659,6 +4227,26 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         });
       }
     }
+  }
+
+  /**
+   * A waiting mail run's input, read again from its mail as it starts: the row kept only the
+   * mail's reference, and a placed body (ADR-035) is read from R2 between the lane's units.
+   * A mail no longer held, or whose body is not its own, refuses the run.
+   */
+  async #mailPrompt(messageId: string, agent: string): Promise<string> {
+    const mail = await this.#rereading(() => {
+      const found = this.#ledger.mailFor(messageId, nativeId(agent));
+      return found?.content_id == null ? [] : [found.content_id];
+    }, (bodies) => this.#ledger.mailFor(messageId, nativeId(agent), bodies),
+    (found) => found?.content_id != null);
+    if (mail === null) {
+      throw new Refused("mail_missing: the mail this run answers is no longer held");
+    }
+    if (mail.body === null) {
+      throw new Refused(`mail_${mail.integrity}: the mail's body is ${mail.integrity}`);
+    }
+    return mailInput(mail, mail.body);
   }
 
   /**
@@ -3886,18 +4474,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * In a unit, as a run's admission finds no live lease of its authority: that sandbox's
-   * lease taken, its egress and sync tokens minted (they die with the sandbox's
-   * continuous-runtime ceiling, `RUN_DEADLINE_S`, whatever the lease does, and the lease's
-   * row with them) and the runner's own secret, and the owner's network made with the egress
-   * token in its transform. A lease that lapsed is replaced: its streams end with it.
+   * lease taken, its egress and sync tokens minted (they live while the lease is renewed,
+   * by its heartbeat, with no deadline of their own, `LEASE_LIVED`, so no run meets a fixed
+   * one) and the runner's own secret, and the owner's network made with the egress token in
+   * its transform. A lease that lapsed is replaced: its streams and tokens end with it.
    */
   #openLease(owner: () => string, now: number, authority: string) {
-    const deadline = Math.floor(now) + RUN_DEADLINE_S;
-    const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), deadline);
-    const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), deadline);
+    const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), LEASE_LIVED);
+    const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), LEASE_LIVED);
     const runner = randomBytes(32).toString("hex");
     const lease = this.#files.leaseAcquire(authority, "sandbox", {
-      egress: egress.hash, sync: sync.hash, runner: secretHash(runner), deadline });
+      egress: egress.hash, sync: sync.hash, runner: secretHash(runner) });
     const live = new Set(this.#files.liveLeases(now).map((each) => each.lease_id));
     this.#egress.end("lease", (stream) => !live.has(stream.lease));
     const { document } = this.#policy.read();
@@ -3996,6 +4583,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * and the bytes it streamed; a blob the gateway resealed meanwhile is kept by the
    * connection's compare-and-swap.
    */
+  /**
+   * A streaming call's beat from its door (`EGRESS_BEAT_S`): the open reservation its egress
+   * token opened is still its door's, so it is not settled lost.
+   */
+  egressBeat(binding: Binding, request: { reservation: string }): Promise<{ beat: boolean }> {
+    return this.#door(() => {
+      this.#bind(binding, "reduce", "egress");
+      return { beat: this.#egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
+                                       clock()) };
+    });
+  }
+
   egressSettle(binding: Binding, request: Record<string, unknown>):
       Promise<{ settled: boolean }> {
     return this.#door(() => {

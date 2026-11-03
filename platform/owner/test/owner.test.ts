@@ -4,6 +4,7 @@ import { DurableObject, env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { LIMITS } from "../src/collections";
+import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
 import { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS, migrate } from "../src/schema";
 import { failure, ownerObject } from "./support";
@@ -25,26 +26,28 @@ const PULL = { collection: "board", after: 0, limit: 1 };
  * slice brings them back as run doors).
  */
 const RPC_METHODS = Object.freeze([
-  "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "boardDigest",
+  "admissionSet", "agentCancel", "agentDoorbell", "agentDoorbellEnd", "agentRun", "agentStatus", "agentSubmit",
+  "boardDigest",
   "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
-  "connectionRevoke", "deleteAgent", "disableAgent", "egressOpen", "egressReceipts",
-  "egressSettle", "erasureNames", "fileChanges", "fileHistory", "fileHistoryPurge", "fileList",
+  "connectionRevoke", "deleteAgent", "disableAgent", "egressBeat", "egressOpen",
+  "egressReceipts", "egressSettle", "erasureNames", "fileChanges", "fileHistory",
+  "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
   "fileRestore", "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin",
   "fileUploadChunks", "fileUploadCommit", "fileUploadStored", "fileUploadTarget",
   "fileUsage", "fileWrite",
   "flowFinish", "grantForget",
-  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboundAccept", "inboundCreate",
-  "inboundList", "inboundRevoke", "inboundSet", "inboxDigest", "keyList", "keyMint", "mailChain",
-  "mailboxAck",
-  "mailboxRead",
-  "mailboxSubscriber", "noticeList", "outsideAgents", "ownerErase", "policyProposal", "policyPropose",
+  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboundAccept",
+  "inboundCreate", "inboundList", "inboundRevoke", "inboundSet", "inboxDigest", "keyList",
+  "keyMint", "mailChain", "mailboxAck", "mailboxRead",
+  "noticeList", "outsideAgents", "ownerErase", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "runEvents", "sessionClose",
   "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
-  "socketsEnd", "tierSet", "toolProfile", "usageReceipts",
+  "socketsEnd", "tierSet", "toolProfile", "usageReceipts", "wakeEvents", "wakeSubscribe",
+  "wakeUnsubscribe",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */
@@ -114,14 +117,24 @@ describe("schema migration on wake", () => {
       .toMatch(/newer than this code/);
   });
 
-  it("stores no row body past the schema's ceiling, and maxRow sits within it", async () => {
-    const ceiling = Number(/length\(body\) <= (\d+)/.exec(MIGRATIONS.flat().join(" "))?.[1]);
-    expect(LIMITS.maxRow).toBeLessThanOrEqual(ceiling);
+  it("keeps no body past PLACE_BYTES in a row: a larger one is placed (ADR-035)", async () => {
+    const ceiling = Number(/length\(CAST\(body AS BLOB\)\) <= (\d+)/
+      .exec(MIGRATIONS.flat().join(" "))?.[1]);
+    expect(ceiling).toBe(PLACE_BYTES);
+    // A placed body is any size up to what one call moves whole, cut into chunks.
+    expect(LIMITS.maxRowBytes).toBe(2 * CHUNK_BYTES);
     const { stub } = ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
-      expect(() => state.storage.sql.exec(
-        "INSERT INTO collection_rows VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w', 1)",
-        "x".repeat(ceiling + 1))).toThrow(/CHECK/);
+      const insert = (body: string, bytes: number, content: string | null) =>
+        state.storage.sql.exec(
+          "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
+            "private, body, updated_at, creator, body_bytes, content_id, filer, change) " +
+            "VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w', ?, ?, 'owner', 1)", body, bytes, content);
+      expect(() => insert("x".repeat(ceiling + 1), ceiling + 1, null)).toThrow(/CHECK/);
+      // A placed body's row names its content and keeps no text; a small one is never placed.
+      expect(() => insert("x", ceiling + 1, "c".repeat(64))).toThrow(/CHECK/);
+      expect(() => insert("", ceiling, "c".repeat(64))).toThrow(/CHECK/);
+      expect(() => insert("xy", 3, null)).toThrow(/CHECK/);
     });
   });
 });

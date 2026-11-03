@@ -99,7 +99,8 @@ export function toolTable(): readonly Tool[] {
       description: "Read what is new for this agent in one call: its unacknowledged mail, " +
         "oldest first, and the rows of the owner's rooms changed after a cursor, each " +
         "with the head of its body. Acknowledge mail with mailbox_ack; read a whole row " +
-        "with collection_get.",
+        "with collection_get. An answer with reset true means a deletion past the cursor " +
+        "is no longer kept: read the rooms again whole, then go on from the cursor given.",
       input: args({ limit: int("At most this many messages, and this many room rows"),
                     after },
                   { max_bytes: int("At most this many mail body bytes in all"),
@@ -108,7 +109,9 @@ export function toolTable(): readonly Tool[] {
       title: "Board digest", ...READ,
       description: "Read the owner's board rows changed after a cursor in one call, each " +
         "with its etag and the head of its body. Claim a row with collection_write on " +
-        "its etag; read a whole row with collection_get.",
+        "its etag; read a whole row with collection_get. An answer with reset true means " +
+        "a deletion past the cursor is no longer kept: read the board again whole " +
+        "(collection_pull), then go on from the cursor given.",
       input: args({ limit: int("At most this many rows"), after }, { head_chars: head }) },
     { name: "mailbox_read", door: "mailboxRead", capability: "read_graph",
       title: "Read mailbox", ...READ,
@@ -160,8 +163,10 @@ export function toolTable(): readonly Tool[] {
                     limit: int("At most this many rows") }) },
     { name: "collection_history", door: "collectionHistory", capability: "read_graph",
       title: "Collection row history", ...READ,
-      description: "Read the kept history of one collection row.",
-      input: args({ collection, row_id: row }) },
+      description: "Read the kept history of one collection row, newest first by page; " +
+        "pass before_revision for the older entries when the answer says more.",
+      input: args({ collection, row_id: row },
+                  { before_revision: int("Entries before this revision") }) },
     { name: "collection_write", door: "collectionWrite", capability: "write_graph",
       title: "Write collection row", ...CHANGE,
       description: "Write one collection row against its current etag.",
