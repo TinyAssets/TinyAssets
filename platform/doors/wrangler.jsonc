@@ -18,11 +18,13 @@
 //   collide, and the owner's object reaches no directory entry.
 // - FILES: the files Worker, whose putChunks the file door's bytes call (the binder streams
 //   an upload's chunks to it, src/file-bytes.ts). Only src/file-bytes.ts reaches it.
-// - SIGNIN_LIMIT and CIMD_LIMIT: Cloudflare's ratelimits binding, the two security bounds
-//   on what an unauthenticated caller can make the platform do, keyed by the caller's IP
-//   (src/throttle.ts; limits-audit.md, Security): sign-in attempts, 60 a minute, and the
-//   CIMD metadata fetches an unknown client_id triggers, 20 a minute. No limit bounds an
-//   authenticated caller.
+// - SIGNIN_LIMIT, CIMD_LIMIT and FAIL_LIMIT: Cloudflare's ratelimits binding, the security
+//   bounds on what an unauthenticated caller can make the platform do, keyed by the
+//   caller's address, an IPv6 one by its /64 (src/throttle.ts): sign-in starts, metadata
+//   fetches of an unknown client_id, and unauthenticated failures. Each number's
+//   derivation is in limits-audit.md (Security). No limit bounds an authenticated caller.
+// - queues: also the consumer of the erasure queue (slice L, src/erase.ts), whose one
+//   producer is the owner Worker: {owner}, the erasure's outside record.
 // - DCR_ENABLED: the deprecated dynamic-registration fallback, off. OWNER_ISSUER:
 //   AuthKit's issuer, whose subjects stay owner ids; unset until the AuthKit slice, so
 //   every sign-in fails loudly. FOREIGN_ISSUERS: the other issuers whose owners are
@@ -68,8 +70,9 @@
     { "binding": "FILES", "service": "tinyassets-files" }
   ],
   "ratelimits": [
-    { "name": "SIGNIN_LIMIT", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
-    { "name": "CIMD_LIMIT", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } }
+    { "name": "SIGNIN_LIMIT", "namespace_id": "1001", "simple": { "limit": 23, "period": 60 } },
+    { "name": "CIMD_LIMIT", "namespace_id": "1002", "simple": { "limit": 23, "period": 60 } },
+    { "name": "FAIL_LIMIT", "namespace_id": "1003", "simple": { "limit": 115, "period": 60 } }
   ],
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "not-provisioned-oauth" },
@@ -78,7 +81,8 @@
   ],
   "queues": {
     "consumers": [
-      { "queue": "tinyassets-sandbox-ring" }
+      { "queue": "tinyassets-sandbox-ring" },
+      { "queue": "tinyassets-erasure" }
     ]
   }
 }

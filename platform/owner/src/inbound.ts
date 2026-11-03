@@ -11,7 +11,8 @@
  *   sender's HMAC signature, or a token header), whose secret the owner holds here.
  * - `shared`: an installation of a platform shared app (Slack), whose requests the binder
  *   proves by the platform's signing secret; the directory routes the installation (`i:`)
- *   here. Its install flow, which proves the owner holds the workspace, is owed (tasks 2).
+ *   here. Its install flow, which proves the owner holds the workspace, is owed (tasks 2),
+ *   and until it lands `create` refuses every shared binding (`INSTALL_PROOF`).
  *
  * **Config and revision.** A binding names its agent and whether it is enabled; every
  * change moves its revision, and the directory's entry carries the revision it routes, so
@@ -52,6 +53,8 @@ export const BREAKER_WINDOW_S = 60;
 export const NOT_CONFIGURED = "binding_not_configured: no such inbound binding";
 export const WITHDRAWN = "binding_withdrawn: the inbound binding was changed or withdrawn";
 export const PROOF_INVALID = "inbound_proof_invalid: the event's proof does not verify";
+export const INSTALL_PROOF = "install_proof_required: a shared app's installation is made by " +
+  "its install flow alone";
 
 const BINDING_ID = /^[0-9a-f]{32}$/;
 const ROUTE = /^(?:h:[0-9a-f]{64}|i:[a-z][a-z0-9_]{0,31}:(?:workspace|enterprise):[0-9a-f]{64})$/;
@@ -133,15 +136,18 @@ export function created(request: unknown): Created {
   if (r["kind"] !== "capability" && r["kind"] !== "shared") {
     throw new Invalid("an inbound binding is a capability URL or a shared app's install");
   }
+  if (r["kind"] === "shared") {
+    // Only a shared app's install flow, which proves the owner holds the workspace, may
+    // name an installation; until it lands no owner may claim one (another workspace's
+    // team id would route that workspace's events here).
+    throw new Refused(INSTALL_PROOF);
+  }
   if (typeof r["route"] !== "string" || r["route"].length > ROUTE_MAX || !ROUTE.test(r["route"])
       || (r["kind"] === "capability") !== r["route"].startsWith("h:")) {
     throw new Invalid("an inbound binding's route is its directory entry");
   }
   const proof = r["profile"] === undefined || r["profile"] === null ? null
     : checkedProfile(r["profile"]);
-  if (proof !== null && r["kind"] === "shared") {
-    throw new Invalid("a shared app's binding is proved by the platform, never by the owner");
-  }
   const secret = r["secret"] === undefined || r["secret"] === null ? null : r["secret"];
   if (secret !== null && (typeof secret !== "string" || secret.length < 16
                           || secret.length > SECRET_MAX)) {

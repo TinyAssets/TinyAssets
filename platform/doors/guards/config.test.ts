@@ -62,12 +62,14 @@ const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY",
                                                          "WORKOS_API_KEY"]) });
 /** The files Worker, for the file door's bytes. */
 const FILES = Object.freeze({ binding: "FILES", service: "tinyassets-files" });
-/** The two security bounds on unauthenticated callers, exactly (`throttle.ts`). */
+/** The security bounds on unauthenticated callers, exactly (`throttle.ts`, limits-audit.md). */
 const RATELIMITS = Object.freeze([
   Object.freeze({ name: "SIGNIN_LIMIT", namespace_id: "1001",
-                  simple: Object.freeze({ limit: 60, period: 60 }) }),
+                  simple: Object.freeze({ limit: 23, period: 60 }) }),
   Object.freeze({ name: "CIMD_LIMIT", namespace_id: "1002",
-                  simple: Object.freeze({ limit: 20, period: 60 }) }),
+                  simple: Object.freeze({ limit: 23, period: 60 }) }),
+  Object.freeze({ name: "FAIL_LIMIT", namespace_id: "1003",
+                  simple: Object.freeze({ limit: 115, period: 60 }) }),
 ]);
 
 /**
@@ -76,7 +78,8 @@ const RATELIMITS = Object.freeze([
  * No producer: the doors put nothing on a queue.
  */
 const QUEUES = Object.freeze({ consumers: Object.freeze([
-  Object.freeze({ queue: "tinyassets-sandbox-ring" })]) });
+  Object.freeze({ queue: "tinyassets-sandbox-ring" }),
+  Object.freeze({ queue: "tinyassets-erasure" })]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
 const GATEWAY = Object.freeze({ binding: "GATEWAY", service: "tinyassets-gateway",
                                 entrypoint: "ConnectGateway" });
@@ -279,9 +282,11 @@ describe("doors Worker config", () => {
     ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
     ["a per-key rate limit", { ratelimits: [...RATELIMITS, { name: "KEY_RL", namespace_id: "1",
                                                            simple: { limit: 120, period: 60 } }] }],
-    ["no sign-in bound", { ratelimits: [RATELIMITS[1]] }],
+    ["no sign-in bound", { ratelimits: [RATELIMITS[1], RATELIMITS[2]] }],
+    ["no failure bound", { ratelimits: [RATELIMITS[0], RATELIMITS[1]] }],
     ["a CIMD bound changed", { ratelimits: [RATELIMITS[0], { ...RATELIMITS[1],
-                                                           simple: { limit: 5, period: 60 } }] }],
+                                                           simple: { limit: 5, period: 60 } },
+                                            RATELIMITS[2]] }],
     ["an upstream before the deploy", { vars: { ...VARS, UPSTREAM: "{}" } }],
     ["no WORKOS_API_KEY", { secrets: { required: ["ROUTING_MAC_KEY"] } }],
     ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],

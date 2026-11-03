@@ -174,10 +174,12 @@ export interface DoorsEnv {
   readonly WORKOS_API_KEY?: string;
   /** The files Worker: only `file-bytes.ts` reaches it, the binder streaming an upload. */
   readonly FILES: FilesService;
-  /** Sign-in attempts per caller IP (`/authorize`, the upstream callback). */
+  /** Sign-in starts per caller address (`/authorize`, a consent, a callback). */
   readonly SIGNIN_LIMIT: RateLimit;
-  /** CIMD metadata fetches an unknown `client_id` triggers, per caller IP. */
+  /** Metadata fetches an unknown `client_id` triggers, per caller address. */
   readonly CIMD_LIMIT: RateLimit;
+  /** Unauthenticated failures (a bad bearer or key, a token-endpoint or hook failure). */
+  readonly FAIL_LIMIT: RateLimit;
 }
 
 /**

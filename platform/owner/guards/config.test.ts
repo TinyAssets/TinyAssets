@@ -57,7 +57,14 @@ const ENV_KEYS: ReadonlySet<string> = new Set([
 const LIMITS = Object.freeze({ subrequests: 10_000_000 });
 /** The keys the top level may set: an environment's, the schema, the environments, its secret. */
 const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env", "secrets",
-                                                 "kv_namespaces"]);
+                                                 "kv_namespaces", "queues"]);
+/**
+ * The owner Worker's one queue (slice L): the producer of the erasure queue, whose one
+ * consumer, the doors Worker, makes an erasure's outside record and confirms it to that
+ * owner's object (`doors/src/erase.ts`); a message is `{owner}`, granting nothing.
+ */
+export const OWNER_QUEUES = Object.freeze({ producers: Object.freeze([
+  Object.freeze({ binding: "ERASURES", queue: "tinyassets-erasure" })]) });
 /**
  * The owner Worker's one secret, declared by name (it binds nothing): the routing key the
  * sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), the doors Worker's too.
@@ -255,6 +262,9 @@ export function configProblems(config: Config,
         problems.push(`${where}kv_namespaces is other than the doors' CONTROL namespace`);
       } else if (key === "limits" && JSON.stringify(scope[key]) !== JSON.stringify(LIMITS)) {
         problems.push(`${where}limits are not ${JSON.stringify(LIMITS)}`);
+      } else if (key === "queues"
+                 && JSON.stringify(scope[key]) !== JSON.stringify(OWNER_QUEUES)) {
+        problems.push(`${where}queues are other than the erasure queue's producer`);
       } else if (key === "secrets" && JSON.stringify(scope[key]) !== JSON.stringify(SECRETS)) {
         problems.push(`${where}secrets declares other than ROUTING_MAC_KEY`);
       } else if (key === "migrations") {
@@ -652,7 +662,7 @@ describe("owner Worker config", () => {
     expect([...ENV_KEYS, "services"].filter((key) => !env.includes(key))).toEqual([]);
     // Every key wrangler offers beyond the allow-list is refused, bindings among them.
     for (const key of ["durable_objects", "r2_buckets",
-                       "d1_databases", "queues", "vars", "ai", "workflows", "browser",
+                       "d1_databases", "vars", "ai", "workflows", "browser",
                        "vectorize", "hyperdrive", "analytics_engine_datasets",
                        "dispatch_namespaces", "mtls_certificates", "send_email",
                        "tail_consumers", "unsafe", "secrets_store_secrets", "worker_loaders",

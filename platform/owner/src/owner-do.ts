@@ -161,7 +161,9 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
-import { ERASE_RETRY_MS, ERASING, erasing, PUT_GRACE_MS, wiped } from "./erasure";
+import {
+  ERASE_RETRY_MS, ERASING, erasing, markOutside, outsideDone, PUT_GRACE_MS, wiped,
+} from "./erasure";
 import {
   type Change, customTools, fileLimits, hookSettings, modelSettings, Policy,
   type PolicyDocument, type Projection, type Receipt,
@@ -504,6 +506,9 @@ export interface KeyMintRequest {
   readonly proposal?: { readonly request_id: string; readonly digest: string };
 }
 
+/** An erasure door's refusal when no erasure is under way. */
+export const NO_ERASURE = "no erasure of this owner is under way";
+
 /** What the owner types to erase its account. */
 export const ERASE_CONFIRM = "erase my account";
 
@@ -590,6 +595,11 @@ export interface OwnerEnv {
    * test's), every run is refused (`SANDBOX_ABSENT`) and none reaches `running`.
    */
   readonly SANDBOX?: SandboxService;
+  /**
+   * The erasure queue's producer (slice L): `{owner}`, which the doors consume to make the
+   * erasure's outside record (`doors/src/erase.ts`). Absent, an erasure fails loudly.
+   */
+  readonly ERASURES?: { send(message: { owner: string }): Promise<void> };
 }
 
 /**
@@ -1585,8 +1595,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       },
       // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
       // state of them deleted (slice S review H-6). None bound, none was ever made.
+      // A config with no sandbox bound fails the erasure loudly, never skips it.
       sandboxes: async () => {
-        await this.env.SANDBOX?.erase(this.#ownerName());
+        if (this.env.SANDBOX === undefined) {
+          throw new Error("the erasure cannot reach the sandbox Worker: SANDBOX is not bound");
+        }
+        await this.env.SANDBOX.erase(this.#ownerName());
+      },
+      // The outside record: the doors told through the erasure queue until they confirm.
+      outside: async () => {
+        if (await this.#door(() => outsideDone(storage))) {
+          return true;
+        }
+        if (this.env.ERASURES === undefined) {
+          throw new Error("the erasure cannot reach the doors: ERASURES is not bound");
+        }
+        await this.env.ERASURES.send({ owner: this.#ownerName() });
+        return false;
       },
       // Every R2 copy of the owner's: files and placed bodies alike are the files plane's
       // chunks (ADR-035), deleted by the namespace's prefix once every put this instance
@@ -2002,6 +2027,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         if (set.mode === "revoked") {
           this.#keys.revoked(set.client, Math.floor(clock()));
+          this.#evictRevoked();
         }
         return set;
       });
@@ -2021,6 +2047,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         const revoked = this.#grants.revoke(r["client"], clock());
         this.#endClient(revoked.client);
         this.#keys.revoked(revoked.client, Math.floor(clock()));
+        this.#evictRevoked();
         return revoked;
       });
     });
@@ -2110,17 +2137,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- ERASURE: the owner's own erasure (slice L; `erase.ts`, `erasure.ts`) ------------
 
   /**
-   * The owner erases its account, in its live session: the erasure's order (`erasure.ts`)
-   * from its mark, which this door begins; it answers once the wipe is done, or, should an
-   * attempt fail, once the mark stands (the erasure's job and every start resume it). The
-   * binder has already written the outside record and deleted the owner's directory
-   * entries, its OAuth grants and its identity (`doors/src/erase.ts`), so no sign-in or
-   * inbound route resolves the owner again and the platform never admits the name again:
-   * a stale `getByName` finds the tombstone, or, should a crash have lost it, a pending
-   * object that refuses everything (`admission.ts`).
+   * The owner erases its account, in its live session, confirmed by its typed words: the
+   * object's mark first, durable before this answers (every door refuses from then on),
+   * then the erasure's own job drives every other step (`erasure.ts`): the outside record
+   * through the doors, the sandboxes, the R2 copies and the wipe, each retried until done,
+   * none of them resting on this request finishing.
    */
-  async ownerErase(binding: Binding, request: EraseRequest):
-      Promise<{ erasing: true; erased: boolean }> {
+  async ownerErase(binding: Binding, request: EraseRequest): Promise<{ erasing: true }> {
     const confirmed = await this.#door(() => this.#widening(binding, "reduce", "owner_erase",
                                                             request, "erase its account", () => {
       erasureConfirmed(request);
@@ -2129,29 +2152,50 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (!confirmed) {
       throw new Error("an erasure's widening returned without confirming it");
     }
-    try {
-      // Resolves at the mark while the R2 step waits out its grace (`PUT_GRACE_MS`); the
-      // erasure's job finishes it.
-      await this.#erasure.erase();
-      return { erasing: true, erased: this.#erasure.erased };
-    } catch {
-      console.error("the owner's erasure failed after its mark; it resumes");  // no ids
-      return { erasing: true, erased: false };
-    }
+    await this.#erasure.begin();
+    return { erasing: true };
   }
 
   /**
-   * What the owner's directory holds for it, as the object knows it: each key's id and
-   * each inbound binding's route. The binder deletes them at the owner's erasure, before the
-   * object's mark (`doors/src/erase.ts`).
+   * The erasure's outside step, as the doors take it from the erasure queue: what the
+   * directory holds for the owner (its keys' ids, its inbound routes), read only while the
+   * owner is marked erasing, and only by the platform's reserved caller; null once the
+   * owner is wiped (its outside record confirmed before the wipe).
    */
-  erasureNames(binding: Binding, request: EraseRequest):
-      Promise<{ keys: string[]; routes: string[] }> {
-    return this.#door(() => this.#widening(binding, "reduce", "owner_erase_names", request,
-                                           "erase its account", () => {
-      erasureConfirmed(request);
+  erasureOutside(binding: Binding): Promise<{ keys: string[]; routes: string[] } | null> {
+    return this.#door(() => {
+      if ((this.#tombstone || this.#erasure.erased) && binding?.caller === PLATFORM_CALLER) {
+        return null;
+      }
+      const { caller } = this.#bind(binding, "admission", "erasure");
+      this.#platformErasure(binding, caller);
       return { keys: this.#keys.ids(), routes: this.#inbound.routes() };
-    }));
+    });
+  }
+
+  /** The doors' confirmation that the outside record is done: the wipe may go on. */
+  erasureOutsideDone(binding: Binding): Promise<{ confirmed: true }> {
+    return this.#door(() => {
+      if ((this.#tombstone || this.#erasure.erased) && binding?.caller === PLATFORM_CALLER) {
+        return { confirmed: true } as const;
+      }
+      const { caller } = this.#bind(binding, "admission", "erasure");
+      this.#platformErasure(binding, caller);
+      markOutside(this.#storage);
+      this.#erasure.resume();
+      return { confirmed: true };
+    });
+  }
+
+  /** The platform's reserved caller, at an erasure under way, and no one else. */
+  #platformErasure(binding: Binding, caller: string): void {
+    if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
+        || binding.session !== undefined || binding.source !== undefined) {
+      throw new Refused(PLATFORM_ONLY);
+    }
+    if (!erasing(this.#storage)) {
+      throw new Refused(NO_ERASURE);
+    }
   }
 
   // -- INBOUND: the owner's event sources (slice L; `inbound.ts`) ----------------------
@@ -2268,8 +2312,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                   proof.secret, Math.floor(now))) {
       throw new Refused(PROOF_INVALID);
     }
+    // An HMAC with no timestamp signs the body alone, so a captured body could come again
+    // under a new event id: such an event is keyed by its bytes, a replay always deduped.
+    const unstamped = proof?.profile.method === "hmac-sha256"
+      && proof.profile.timestamp_header === undefined;
+    const identity = unstamped
+      ? `body:${createHash("sha256").update(body).digest("hex")}` : `id:${eventId}`;
     const key = createHash("sha256")
-      .update(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${eventId}`, "utf8")
+      .update(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${identity}`, "utf8")
       .digest("hex");
     const envelope = JSON.stringify({ inbound: {
       binding: row.binding_id, event_id: eventId, event_at: eventAt,
@@ -2330,6 +2380,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = fileFields(request, ["intent_id", "chunks"]);
       return this.#files.stored(r["intent_id"], r["chunks"]);
     });
+  }
+
+  /** In the revoke's transaction: revoked rows past their bound forgotten, keys with them. */
+  #evictRevoked(): void {
+    for (const client of this.#grants.evictRevoked(clock())) {
+      this.#keys.forgotten(client);
+    }
   }
 
   /**
@@ -3054,17 +3111,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * no other door, and no owner is named so.
    */
   #bind(binding: Binding, door: DoorClass | "admission",
-        sandbox: "none" | "egress" | "sync" | "run" | "inbound" = "none"):
+        sandbox: "none" | "egress" | "sync" | "run" | "inbound" | "erasure" = "none"):
       { owner: string; caller: string } {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refused(OWNER_ERASED);
     }
     const inbound = typeof binding === "object" && binding !== null && "inbound" in binding;
     const inboundDoor = sandbox === "inbound";
-    if (inboundDoor) {
+    // The erasure's own platform doors are the one way in while the owner is marked, and
+    // only for the platform's reserved caller.
+    const erasureDoor = sandbox === "erasure" && door === "admission"
+      && typeof binding === "object" && binding !== null && binding.caller === PLATFORM_CALLER;
+    if (inboundDoor || sandbox === "erasure") {
       sandbox = "none";
     }
-    if (erasing(this.#storage)) {
+    if (erasing(this.#storage) && !erasureDoor) {
       this.#erasure.resume(true);
       throw new Refused(ERASING);
     }

@@ -391,6 +391,16 @@ export function bindPlatform(env: DoorsEnv, signedIn: Bound): Bound {
 }
 
 /**
+ * The platform's own binding for `owner` at its erasure's outside record (`erase.ts`): the
+ * reserved admin caller, which the owner's object takes only at its erasure doors and only
+ * while the owner is marked erasing.
+ */
+export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
+  const named = principal(owner);
+  return bound(env, { owner: named, caller: ADMIN_CALLER, origin: null });
+}
+
+/**
  * An inbound event's route as the directory holds it (`inbound.ts`): the owner it names, on
  * its own account, with the binding and revision the entry carries, which the object holds
  * against its own (`inboundAccept` alone takes it); the control record's tier numbers ride

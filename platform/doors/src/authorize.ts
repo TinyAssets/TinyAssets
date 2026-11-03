@@ -24,9 +24,11 @@
  *    app: `sessionOpen` at the sign-in's time, the session cookie set on the redirect,
  *    and the grant.
  *
- * Every `/authorize` and callback counts against the caller's sign-in attempts, and a
- * `client_id` the provider must fetch the metadata of against its CIMD fetches
- * (`throttle.ts`): past either, `429` before anything else.
+ * Only work that costs counts (`throttle.ts`): an `/authorize` navigation, a consent
+ * decision and a callback that recovered its state each count one sign-in start, and an
+ * `/authorize` naming a metadata document the provider's cache does not hold one metadata
+ * fetch; past either bound, `429` before that work. A refusal before any work (a
+ * non-navigation, a wrong media type) counts nothing.
  *
  * A resource and its clients never cross: a token for `/app` goes only to a first-party
  * client, and a first-party client never gets one for `/mcp`. An outside client may not
@@ -48,10 +50,11 @@ import {
 } from "./config";
 import { outsideOpen, ownerOpen } from "./control";
 import { putOwner, readControl, readOwner } from "./directory";
+import { ERASING } from "../../owner/src/erasure";
 import { authorizationServer } from "./oauth";
 import { replaceInstallation } from "./revoke";
 import { mediaType, sessionCookie } from "./session";
-import { cimdAllowed, signInAllowed, tooMany } from "./throttle";
+import { cached, callerKey, count, metadataUrl, tooMany } from "./throttle";
 import type { SignIn, Upstream } from "./upstream";
 
 interface Verifier {
@@ -167,20 +170,29 @@ function failed(error: unknown): Response {
   throw error;
 }
 
+/**
+ * The owner's sign-in, built only where a sign-in needs it: a bad `UPSTREAM` breaks
+ * sign-in alone, never another door.
+ */
+function upstreamOf(source: Upstream | (() => Upstream)): Upstream {
+  return typeof source === "function" ? source() : source;
+}
+
 /** `GET` and `POST /authorize`. */
-export async function authorize(request: Request, env: DoorsEnv, upstream: Upstream):
-    Promise<Response> {
-  if (!await signInAllowed(env, request)) {
-    return tooMany();
-  }
+export async function authorize(request: Request, env: DoorsEnv,
+                                upstream: Upstream | (() => Upstream)): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
+  const key = callerKey(request);
   try {
     if (request.method === "GET") {
       if (!navigation(request)) {
         return text(403, "Open this page in your browser to sign in.");
       }
-      if (!await cimdAllowed(env, request,
-                             new URL(request.url).searchParams.get("client_id"))) {
+      const clientId = new URL(request.url).searchParams.get("client_id");
+      if (metadataUrl(clientId) && !await cached(clientId) && !await count(env, "cimd", key)) {
+        return tooMany();
+      }
+      if (!await count(env, "signin", key)) {
         return tooMany();
       }
       const parsed = await oauth.parseAuthRequest(request);
@@ -197,7 +209,7 @@ export async function authorize(request: Request, env: DoorsEnv, upstream: Upstr
         return text(400, "This app may not send access to TinyAssets itself.");
       }
       if (forApp) {
-        return await signIn(oauth, upstream, parsed);
+        return await signIn(oauth, upstreamOf(upstream), parsed);
       }
       const details = await oauth.describeConsent(parsed);
       const consent = await oauth.beginConsent(parsed);
@@ -214,6 +226,9 @@ export async function authorize(request: Request, env: DoorsEnv, upstream: Upstr
       if (body === null) {
         return text(413, TOO_LARGE);
       }
+      if (!await count(env, "signin", key)) {
+        return tooMany();
+      }
       const form = new URLSearchParams(body);
       const handle = form.get("handle") ?? "";
       if (form.get("decision") !== "approve") {
@@ -223,7 +238,7 @@ export async function authorize(request: Request, env: DoorsEnv, upstream: Upstr
       // No `remember`: the approval is this authorization's alone. The grant's scopes
       // are cut to the catalogue when it is made.
       const approved = await oauth.approveConsent(request, handle);
-      return await signIn(oauth, upstream, approved.request, approved.headers);
+      return await signIn(oauth, upstreamOf(upstream), approved.request, approved.headers);
     }
     return text(405, "method not allowed");
   } catch (error) {
@@ -237,13 +252,28 @@ export async function authorize(request: Request, env: DoorsEnv, upstream: Upstr
  * again at the next sign-in (the admit is idempotent) and a record never names an owner
  * its object did not admit.
  */
-async function admit(env: DoorsEnv, signedIn: SignIn, owner: string): Promise<void> {
+async function admit(env: DoorsEnv, signedIn: SignIn, owner: string): Promise<boolean> {
   const platform = bindPlatform(env, await bindSignIn(env, signedIn));
-  const { state } = await platform.stub.admissionSet(platform.binding, { admit: true });
+  let state: string;
+  try {
+    ({ state } = await platform.stub.admissionSet(platform.binding, { admit: true }));
+  } catch (error) {
+    if (erasedRefusal(error)) {
+      return false;  // marked erasing, or erased: never admitted again
+    }
+    throw error;
+  }
   if (state === "pending") {
     throw new Error("the platform's admit left the owner pending");
   }
   await putOwner(env, owner, { s: "admitted", t: now() });
+  return true;
+}
+
+/** The object's refusal of an owner being erased, or erased. */
+function erasedRefusal(error: unknown): boolean {
+  return error instanceof Error && error.name === "Refused"
+    && (error.message === ERASING || error.message.startsWith("owner_erased:"));
 }
 
 /**
@@ -263,18 +293,21 @@ async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn)
 }
 
 /** `GET /oauth/upstream/callback`: the verified sign-in becomes the grant. */
-export async function callback(request: Request, env: DoorsEnv, upstream: Upstream):
-    Promise<Response> {
-  if (!await signInAllowed(env, request)) {
-    return tooMany();
-  }
+export async function callback(request: Request, env: DoorsEnv,
+                               source: Upstream | (() => Upstream)): Promise<Response> {
   const oauth = authorizationServer(env).getOAuthApi(env);
+  const key = callerKey(request);
   let resumed: Awaited<ReturnType<typeof oauth.finishUpstream<Verifier>>>;
   try {
     resumed = await oauth.finishUpstream<Verifier>(request);
   } catch (error) {
+    await count(env, "fail", key);  // no state this browser began: a failed lookup
     return failed(error);
   }
+  if (!await count(env, "signin", key)) {
+    return tooMany();
+  }
+  const upstream = upstreamOf(source);
   const { request: original, data, headers } = resumed;
   const params = new URL(request.url).searchParams;
   const code = params.get("code");
@@ -303,8 +336,9 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
     if (!outsideOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
     }
-    if (record === null) {
-      await admit(env, signedIn, owner);
+    if (record === null && !await admit(env, signedIn, owner)) {
+      return redirect(authorizationErrorRedirect(original, "access_denied",
+                                                 "this account was erased"), headers);
     }
     const props: McpProps = {
       kind: "mcp", owner, ...await mcpOrigin(original.clientId, original.redirectUri),
@@ -324,11 +358,21 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
     if (!ownerOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
     }
-    if (record === null) {
-      await admit(env, signedIn, owner);
+    if (record === null && !await admit(env, signedIn, owner)) {
+      return redirect(authorizationErrorRedirect(original, "access_denied",
+                                                 "this account was erased"), headers);
     }
     const { binding, stub } = await bindSignIn(env, signedIn);
-    const { session } = await stub.sessionOpen(binding);
+    let session: string;
+    try {
+      ({ session } = await stub.sessionOpen(binding));
+    } catch (error) {
+      if (erasedRefusal(error)) {
+        return redirect(authorizationErrorRedirect(original, "access_denied",
+                                                   "this account was erased"), headers);
+      }
+      throw error;
+    }
     const props: AppProps = { kind: "app", owner };
     // Each device keeps its own grant: the app on a phone and in a browser stay signed in
     // together, and sign-out revokes the presented token's grant alone (`app.ts`).

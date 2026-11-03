@@ -59,7 +59,6 @@ import openai from "../../sources/openai.json";
 import openrouter from "../../sources/openrouter_user_models_v1.json";
 import pi from "../../sources/pi.json";
 import xai from "../../sources/xai.json";
-import { CONNECT_CALLBACK } from "./config";
 
 /** The records the doors serve, as the files hold them. Never written: each read is a copy. */
 const BUNDLED: readonly unknown[] = Object.freeze([
@@ -84,21 +83,7 @@ export interface Rfc6749 {
   readonly issuer?: string;
   /** Its metadata's RFC 9207 flag: every authorization response then carries `iss`. */
   readonly authorization_response_iss_parameter_supported?: true;
-  readonly redirect_registration: RedirectRegistration;
 }
-
-/**
- * A source's redirect URI as registered at its provider (tasks 2, the RFC 6749 sources'
- * registrations; slice L), as data the deploy checklist reads: an RFC 6749 source's own
- * `https://tinyassets.io/oauth/connect/callback/<id>`, registered exactly and matched
- * exactly by the provider (RFC 9700 §4.1), never a prefix; a key exchange's, which its
- * provider takes as any callback the flow names (OpenRouter's), so nothing is registered
- * and the flow's state rides its last segment. The checker holds `uri` to the one the doors
- * derive (`connect.ts`'s `redirectFor`), so the data can never name another.
- */
-export type RedirectRegistration =
-  | { readonly match: "exact"; readonly uri: string }
-  | { readonly match: "any_callback"; readonly uri: string };
 
 /** The Python's `pkce_user_key_v1` (OpenRouter): the code buys an API key. */
 export interface UserKey {
@@ -106,15 +91,9 @@ export interface UserKey {
   readonly authorization_endpoint: string;
   readonly authorize_params: Readonly<Record<string, string>>;
   readonly exchange_endpoint: string;
-  readonly redirect_registration: RedirectRegistration;
 }
 
 export type OAuthSpec = Rfc6749 | UserKey;
-
-/** The redirect URI the doors derive for a source (`connect.ts`): one per source. */
-export function redirectOf(id: string): string {
-  return `${CONNECT_CALLBACK}/${id}`;
-}
 
 /** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
 export type CredentialKind = "vendor_login_in_sandbox" | "api_key";
@@ -269,12 +248,6 @@ export interface SourceRecord {
   readonly connect: readonly ConnectMethod[];
   /** Why every connect of this source is refused for now; absent when it is served. */
   readonly unwired?: string;
-  /**
-   * `false` for a source on an authorization server the platform does not curate (an MCP
-   * server's, an owner package's): no catalog serves one beside a key exchange (the
-   * residual mix-up, `catalogOf`). Absent, the record is the platform's own, curated.
-   */
-  readonly curated?: false;
   /** What the gateway seals with the secret: every source but a CLI's. */
   readonly upstream?: Upstream;
   readonly endpoints?: readonly Endpoint[];
@@ -378,41 +351,17 @@ function authorizeParams(check: ReturnType<typeof checker>, value: unknown):
   return Object.freeze({ ...params });
 }
 
-/**
- * A record's registration of its redirect URI, held to the one the doors derive: exact for
- * an RFC 6749 source, any callback (its state's segment after it) for a key exchange.
- */
-function registration(check: ReturnType<typeof checker>, value: unknown, id: string,
-                      keyExchange: boolean): RedirectRegistration {
-  const fields = check.keys(value, "oauth.redirect_registration", ["match", "uri"], []);
-  const derived = redirectOf(id);
-  if (keyExchange) {
-    if (fields["match"] !== "any_callback" || fields["uri"] !== `${derived}/{state}`) {
-      check.fail("a key exchange's redirect_registration is any_callback at its own " +
-                 "callback with its state's segment");
-    }
-    return Object.freeze({ match: "any_callback", uri: `${derived}/{state}` });
-  }
-  if (fields["match"] !== "exact" || fields["uri"] !== derived) {
-    check.fail("an RFC 6749 source's redirect_registration is its own callback, matched " +
-               "exactly");
-  }
-  return Object.freeze({ match: "exact", uri: derived });
-}
-
-function oauthSpec(check: ReturnType<typeof checker>, value: unknown, id: string): OAuthSpec {
+function oauthSpec(check: ReturnType<typeof checker>, value: unknown): OAuthSpec {
   const protocol = object(value) ? value["protocol"] : undefined;
   if (protocol === "pkce_user_key_v1") {
     const fields = check.keys(value, "oauth", ["protocol", "authorization_endpoint",
-                                               "exchange_endpoint", "redirect_registration"],
-                              ["authorize_params"]);
+                                               "exchange_endpoint"], ["authorize_params"]);
     return Object.freeze({
       protocol,
       authorization_endpoint: check.https(fields["authorization_endpoint"],
                                           "oauth.authorization_endpoint"),
       authorize_params: authorizeParams(check, fields["authorize_params"]),
       exchange_endpoint: check.https(fields["exchange_endpoint"], "oauth.exchange_endpoint"),
-      redirect_registration: registration(check, fields["redirect_registration"], id, true),
     });
   }
   if (protocol !== "rfc6749") {
@@ -420,9 +369,8 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown, id: string
   }
   const fields = check.keys(value, "oauth", [
     "protocol", "authorization_endpoint", "token_endpoint", "client_id", "client_auth",
-    "refresh_with", "redirect_registration"], [
-    "authorize_params", "scope", "revocation_endpoint", "resource", "issuer",
-    "authorization_response_iss_parameter_supported"]);
+    "refresh_with"], ["authorize_params", "scope", "revocation_endpoint", "resource",
+                      "issuer", "authorization_response_iss_parameter_supported"]);
   const issuer = fields["issuer"];
   const iss = fields["authorization_response_iss_parameter_supported"];
   if (issuer !== undefined) {
@@ -458,7 +406,6 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown, id: string
     ...optional("resource", (item) => check.https(item, "oauth.resource")),
     ...(issuer === undefined ? {} : { issuer: issuer as string }),
     ...(iss === undefined ? {} : { authorization_response_iss_parameter_supported: true }),
-    redirect_registration: registration(check, fields["redirect_registration"], id, false),
   });
 }
 
@@ -1347,7 +1294,7 @@ export function sourceRecord(value: unknown): SourceRecord {
     check.fail("connect lists api_key and oauth, or cli alone, each once");
   }
   const base = ["id", "display_name", "connect"];
-  const optional = ["help_url", "suggested", "unwired", "curated"];
+  const optional = ["help_url", "suggested", "unwired"];
   const cli = connect.includes("cli");
   const fields = cli ? check.keys(copy, "the record", [...base, "cli"], optional)
     : check.keys(copy, "the record",
@@ -1366,10 +1313,6 @@ export function sourceRecord(value: unknown): SourceRecord {
   }
   if (fields["unwired"] !== undefined) {
     record["unwired"] = check.text(fields["unwired"], /^[^\p{Cc}]{1,256}$/u, "unwired");
-  }
-  if (fields["curated"] !== undefined) {
-    record["curated"] = fields["curated"] === false ? false
-      : check.fail("curated is false or absent (absent: the platform's own record)");
   }
   if (cli) {
     record["cli"] = cliSpec(check, fields["cli"]);
@@ -1396,7 +1339,7 @@ export function sourceRecord(value: unknown): SourceRecord {
   }
   record["engines"] = Object.freeze(engines);
   if (connect.includes("oauth")) {
-    const oauth = oauthSpec(check, fields["oauth"], id);
+    const oauth = oauthSpec(check, fields["oauth"]);
     record["oauth"] = oauth;
     try {
       sealedSource(record as unknown as SourceRecord, "oauth");
@@ -1450,21 +1393,6 @@ export function catalogOf(records: readonly unknown[]): Sources {
   }
   const byId = (id: string): unknown => records.find((record) =>
     object(record) && record["id"] === id);
-  // The key exchange's residual mix-up (tasks 2): a key exchange (no `state`, no `iss`)
-  // shares the connect flows only with curated authorization servers. A source the platform
-  // does not curate is refused beside one, until that source's slice gives it a flow family
-  // of its own.
-  const oauthOf = (record: unknown) => object(record) && object(record["oauth"])
-    ? record["oauth"] : null;
-  const exchanging = records.some((record) => oauthOf(record)?.["protocol"]
-                                              === "pkce_user_key_v1");
-  const uncurated = records.find((record) => object(record) && record["curated"] === false
-                                             && oauthOf(record) !== null);
-  if (exchanging && uncurated !== undefined) {
-    throw new SourceRecordError(`source record ${JSON.stringify(
-      String((uncurated as Record<string, unknown>)["id"]))}: an authorization server the ` +
-      "platform does not curate shares no connect flow with a key exchange (the mix-up)");
-  }
   return {
     get: (id) => {
       const found = typeof id === "string" && SOURCE_ID.test(id) ? byId(id) : undefined;

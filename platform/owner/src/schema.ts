@@ -1565,6 +1565,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "failures TEXT NOT NULL DEFAULT '[]' CHECK (length(failures) <= 64), " +
       "tripped INTEGER NOT NULL DEFAULT 0 CHECK (tripped IN (0, 1)), " +
       "created_at INTEGER NOT NULL, changed_at INTEGER NOT NULL)",
+    // The erasure's outside record, confirmed by the doors (`erasure.ts` step 2).
+    "ALTER TABLE owner_erasure ADD COLUMN outside INTEGER NOT NULL DEFAULT 0 " +
+      "CHECK (outside IN (0, 1))",
   ]),
 ]);
 

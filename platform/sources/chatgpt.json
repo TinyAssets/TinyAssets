@@ -45,10 +45,6 @@
     },
     "resource": "https://api.openai.com/v1",
     "scope": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
-    "refresh_with": "provider",
-    "redirect_registration": {
-      "match": "exact",
-      "uri": "https://tinyassets.io/oauth/connect/callback/chatgpt"
-    }
+    "refresh_with": "provider"
   }
 }

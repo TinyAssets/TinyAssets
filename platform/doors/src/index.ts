@@ -10,7 +10,9 @@ import { type DoorsEnv, ISSUER_NOT_CONFIGURED, UPSTREAM_NOT_CONFIGURED } from ".
 import { serve } from "./doors";
 import { oidcUpstream, upstreamConfig } from "./oidc";
 import { ringQueue } from "./ring";
-import { bundledSources } from "./sources";
+import { ERASURE_QUEUE, erasureQueue } from "./erase";
+import { connectSources } from "./redirects";
+import { bundledRecords } from "./sources";
 import { UNWIRED, type Upstream } from "./upstream";
 
 /**
@@ -32,7 +34,10 @@ export function upstreamOf(env: DoorsEnv): Upstream {
 
 export default Object.freeze({
   fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
-    serve(request, env, ctx, upstreamOf(env), bundledSources()),
-  // The sandbox line's doorbell (`ring.ts`): the ring queue, its one consumer.
-  queue: (batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> => ringQueue(batch, env),
+    serve(request, env, ctx, () => upstreamOf(env), connectSources(bundledRecords())),
+  // Two queues: the sandbox line's doorbell (`ring.ts`), and the erasure's outside record
+  // (`erase.ts`), each its one consumer.
+  queue: (batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> =>
+    batch.queue === ERASURE_QUEUE ? erasureQueue(batch, env, () => upstreamOf(env))
+      : ringQueue(batch, env),
 });

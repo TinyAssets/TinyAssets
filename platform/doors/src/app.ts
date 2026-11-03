@@ -65,10 +65,11 @@ import {
 } from "./api-keys";
 import { CONNECT_ROUTES, ConnectRefused, sealDoorbell } from "./connect";
 import { eraseOwner } from "./erase";
-import { streamUpload, UPLOAD_BEGIN, UPLOAD_COMMIT, UPLOAD_PREFIX } from "./file-bytes";
+import {
+  streamUpload, UPLOAD_ABORT, UPLOAD_BEGIN, UPLOAD_COMMIT, UPLOAD_PREFIX,
+} from "./file-bytes";
 import { HOOK_ROUTES } from "./inbound";
 import { revokeClient, setClient } from "./revoke";
-import type { Upstream } from "./upstream";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "./sources";
@@ -97,7 +98,7 @@ export function bearer(request: Request): string | null {
 }
 
 type Route = (env: DoorsEnv, owner: Bound, request: Record<string, unknown>,
-              token: string, upstream: Upstream) => Promise<Response>;
+              token: string) => Promise<Response>;
 
 /**
  * Sign-out: the session closed in the object when the browser presented it, and the
@@ -170,13 +171,14 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
   "keys/list": async (_env, owner) => json(200, await listKeys(owner)),
   "grants/set": async (env, owner, request) => json(200, await setClient(env, owner, request)),
-  "account/erase": async (env, owner, request, _token, upstream) =>
-    json(200, await eraseOwner(env, owner, request, upstream),
-         { "Set-Cookie": clearedCookie() }),
+  "account/erase": async (_env, owner, request) =>
+    json(200, await eraseOwner(owner, request), { "Set-Cookie": clearedCookie() }),
   "files/upload/begin": async (_env, { binding, stub }, request) =>
     json(200, await stub.fileUploadBegin(binding, request as never)),
   "files/upload/commit": async (_env, { binding, stub }, request) =>
     json(200, await stub.fileUploadCommit(binding, request as never)),
+  "files/upload/abort": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadAbort(binding, request as never)),
   "hooks/create": async (env, owner, request) =>
     json(200, await HOOK_ROUTES["hooks/create"]!(env, owner, request)),
   "hooks/list": async (env, owner, request) =>
@@ -280,8 +282,8 @@ async function ownerToken(env: DoorsEnv, token: string | null) {
   return app;
 }
 
-export async function serveApp(request: Request, env: DoorsEnv, sources: Sources,
-                               upstream: Upstream): Promise<Response> {
+export async function serveApp(request: Request, env: DoorsEnv, sources: Sources):
+    Promise<Response> {
   if (new URL(request.url).pathname.slice(OWNER_SURFACE.length) === SOCKET_PATH) {
     return socketUpgrade(request, env);  // its credential is its ticket, never a bearer
   }
@@ -292,7 +294,8 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   }
   const session = sessionOf(request);
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
-  if (path.startsWith(UPLOAD_PREFIX) && path !== UPLOAD_BEGIN && path !== UPLOAD_COMMIT) {
+  if (path.startsWith(UPLOAD_PREFIX) && path !== UPLOAD_BEGIN && path !== UPLOAD_COMMIT
+      && path !== UPLOAD_ABORT) {
     // An upload's bytes: the owner's token, the maintenance gate, then the stream.
     const owner = bindOwner(env, token, undefined);
     const gated = await ownerGate(env, owner.binding.owner);
@@ -334,7 +337,7 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
     if (connect !== undefined) {
       return await connect({ env, bound: owner, body: parsed, request, sources });
     }
-    return await route!(env, owner, parsed, presented!, upstream);
+    return await route!(env, owner, parsed, presented!);
   } catch (error) {
     if (error instanceof KeyRefused || error instanceof ConnectRefused) {
       return failure(error.status, error.message);

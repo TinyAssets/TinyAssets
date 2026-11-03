@@ -1,26 +1,27 @@
 /**
- * The file door's bytes (tasks 2, "Owed by 6.1"; slice L): the binder streams an upload's
- * chunks to `FILES` itself. Decided in 6.1: the binder is the trust root and already
- * reaches every owner's object, so its reading an owner's chunk namespace from that owner's
- * object weakens no isolation, and a file's bytes never pass through the owner's object.
+ * The file door's bytes (tasks 2, "Owed by 6.1"; slice L, after its review): the binder
+ * streams an upload's chunks to `FILES` itself. Decided in 6.1: the binder is the trust
+ * root and already reaches every owner's object, so its reading an owner's chunk namespace
+ * from that owner's object weakens no isolation, and a file's bytes never pass through the
+ * owner's object.
  *
  * The owner's app, on the owner surface, with its own token:
  * 1. `files/upload/begin` (JSON): the object's `fileUploadBegin`, the file's size and the
- *    SHA-256 of each 4 MiB of it, as `fileUploadBegin` takes them; its intent.
- * 2. `PUT files/upload/<intent_id>` (`application/octet-stream`): the file's bytes, whole
- *    and in order. The door asks the object for the intent's plan and the owner's namespace
- *    (`fileUploadTarget`), cuts the stream into the plan's chunks, holding one chunk at a
- *    time, checks each against its declared SHA-256, puts each the intent still needs to
- *    `FILES` (two at a time, R2 checking each hash again) and reports them stored
- *    (`fileUploadStored`). The whole body's SHA-256 is computed as it streams and served as
- *    `Repr-Digest` (RFC 9530); a `Repr-Digest` the client sent is checked against it.
+ *    SHA-256 of each 4 MiB of it; its intent, and the chunks it still needs.
+ * 2. `PUT files/upload/<intent_id>/<index>` (`application/octet-stream`), one per chunk of
+ *    the plan, in any order and again after any failure: exactly that chunk's bytes. The
+ *    door reads the plan and the owner's namespace (`fileUploadTarget`), checks the bytes
+ *    against the chunk's declared SHA-256, puts a chunk the intent still needs to `FILES`
+ *    (R2 checks its hash again) and reports it (`fileUploadStored`). It answers the chunk's
+ *    SHA-256 as `Content-Digest` (RFC 9530) and checks one the client sent. A chunk sent
+ *    again is answered without a second put, so an upload resumes where it stopped.
  * 3. `files/upload/commit` (JSON): the object's `fileUploadCommit`.
  *
- * Bytes that are not the declared chunk at their place are refused (`400`) and nothing of
- * them is reported stored; a body shorter or longer than the declared file, too. The
- * object's chunk doors (`fileUploadChunks`) stay for in-object callers (the environment,
- * the sync agent's small files). A body is bounded by the intent's declared size, which the
- * owner's `max_file_bytes` bounds, and by Cloudflare's own request size.
+ * So a file is bounded by the owner's policy (`max_file_bytes`, the intent's plan), never
+ * by one request: each request carries one chunk, at most 4 MiB, far inside Cloudflare's
+ * per-request body size (100 MB on Free and Pro, by its Workers limits page). A refusal at
+ * any step (an expired intent, the erasure's mark, a chunk R2 refused) answers its fixed
+ * code. The object's chunk doors (`fileUploadChunks`) stay for in-object callers.
  */
 import { createHash } from "node:crypto";
 
@@ -34,83 +35,54 @@ import { refusal } from "./tools";
 export const UPLOAD_PREFIX = "files/upload/";
 export const UPLOAD_BEGIN = "files/upload/begin";
 export const UPLOAD_COMMIT = "files/upload/commit";
-const INTENT = /^[0-9a-f]{32}$/;
-/** Chunks one `FILES` call carries: two, as the files Worker's batch takes. */
-const PER_CALL = 2;
+export const UPLOAD_ABORT = "files/upload/abort";
+const CHUNK_PATH = /^([0-9a-f]{32})\/(0|[1-9][0-9]{0,5})$/;
 
 function failure(status: number, message: string, headers: HeadersInit = {}): Response {
   return Response.json({ error: message }, { status, headers: { "Cache-Control": "no-store",
                                                                ...headers } });
 }
 
-/** Reads a stream in exact-size pieces, holding at most one piece and one read. */
-class Pieces {
-  readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
-  #held: Uint8Array = new Uint8Array(0);
-  #done = false;
-
-  constructor(body: ReadableStream<Uint8Array> | null) {
-    this.#reader = (body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() }))
-      .getReader();
-  }
-
-  /** Exactly `size` bytes, or null when the stream ends first. */
-  async take(size: number): Promise<Uint8Array | null> {
-    const out = new Uint8Array(size);
-    let at = 0;
-    while (at < size) {
-      if (this.#held.byteLength === 0) {
-        if (this.#done) {
-          return null;
-        }
-        const { done, value } = await this.#reader.read();
-        if (done) {
-          this.#done = true;
-          continue;
-        }
-        this.#held = value;
-      }
-      const part = this.#held.subarray(0, size - at);
-      out.set(part, at);
-      at += part.byteLength;
-      this.#held = this.#held.subarray(part.byteLength);
-    }
-    return out;
-  }
-
-  /** Whether the stream holds no more bytes. */
-  async ended(): Promise<boolean> {
-    while (this.#held.byteLength === 0 && !this.#done) {
-      const { done, value } = await this.#reader.read();
-      if (done) {
-        this.#done = true;
-      } else {
-        this.#held = value;
-      }
-    }
-    return this.#held.byteLength === 0;
-  }
-
-  async cancel(): Promise<void> {
-    await this.#reader.cancel().catch(() => undefined);
-  }
-}
-
-/** A `Repr-Digest` member for SHA-256 (RFC 9530): `sha-256=:<base64>:`. */
-export function reprDigest(digest: Buffer): string {
+/** A `Content-Digest` member for SHA-256 (RFC 9530): `sha-256=:<base64>:`. */
+export function contentDigest(digest: Buffer): string {
   return `sha-256=:${digest.toString("base64")}:`;
 }
 
-/** The SHA-256 a client's `Repr-Digest` names, or undefined when it names none. */
+/** The SHA-256 a client's `Content-Digest` names, or undefined when it names none. */
 function claimed(request: Request): string | undefined {
-  const header = request.headers.get("Repr-Digest");
+  const header = request.headers.get("Content-Digest");
   return header === null ? undefined
     : /(?:^|,)\s*sha-256=:([A-Za-z0-9+/=]+):/.exec(header)?.[1] ?? "";
 }
 
-/** `PUT files/upload/<intent_id>`: the file's bytes, streamed to `FILES` by the binder. */
+/** The body's bytes when they are exactly `size`, or null for a shorter or longer one. */
+async function exactly(request: Request, size: number): Promise<Uint8Array | null> {
+  const declared = request.headers.get("Content-Length");
+  if (declared !== null && declared !== String(size)) {
+    return null;
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  const reader = (request.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() }))
+    .getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (at + value.byteLength > size) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    out.set(value, at);
+    at += value.byteLength;
+  }
+  return at === size ? out : null;
+}
+
+/** `PUT files/upload/<intent_id>/<index>`: one chunk's bytes, put to `FILES` by the binder. */
 export async function streamUpload(request: Request, env: DoorsEnv, { binding, stub }: Bound,
-                                   intentId: string): Promise<Response> {
+                                   path: string): Promise<Response> {
   if (request.method !== "PUT") {
     return failure(405, "method not allowed");
   }
@@ -118,12 +90,44 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
       !== "application/octet-stream") {
     return failure(415, "an upload's bytes are application/octet-stream");
   }
-  if (!INTENT.test(intentId)) {
-    return failure(404, "no such upload");
+  const named = CHUNK_PATH.exec(path);
+  if (named === null) {
+    return failure(404, "an upload's bytes go to files/upload/<intent_id>/<chunk index>");
   }
-  let target: Awaited<ReturnType<typeof stub.fileUploadTarget>>;
+  const intentId = named[1]!;
+  const index = Number(named[2]);
   try {
-    target = await stub.fileUploadTarget(binding, { intent_id: intentId });
+    const target = await stub.fileUploadTarget(binding, { intent_id: intentId });
+    const chunk = target.chunks[index];
+    if (chunk === undefined) {
+      return failure(404, `the upload has ${target.chunks.length} chunks`);
+    }
+    if (chunk.size > CHUNK_BYTES) {
+      throw new Error("an upload's plan names a chunk larger than a chunk");
+    }
+    const bytes = await exactly(request, chunk.size);
+    if (bytes === null) {
+      return failure(400, `chunk ${index} is ${chunk.size} bytes`);
+    }
+    const digest = createHash("sha256").update(bytes).digest();
+    const headers = { "Content-Digest": contentDigest(digest) };
+    const sent = claimed(request);
+    if (sent !== undefined && sent !== digest.toString("base64")) {
+      return failure(400, "the chunk's SHA-256 is not the Content-Digest it was sent with",
+                     headers);
+    }
+    if (digest.toString("hex") !== chunk.sha256) {
+      return failure(400, `the bytes of chunk ${index} are not the chunk the upload declared`,
+                     headers);
+    }
+    const needed = target.pending.includes(chunk.sha256);
+    if (needed) {
+      await env.FILES.putChunks(target.namespace, [{ sha256: chunk.sha256, bytes }]);
+      await stub.fileUploadStored(binding, { intent_id: intentId, chunks: [chunk.sha256] });
+    }
+    return Response.json({ intent_id: intentId, index, stored: needed,
+                           pending: target.pending.length - (needed ? 1 : 0) },
+                         { headers: { "Cache-Control": "no-store", ...headers } });
   } catch (error) {
     const refused = refusal(error);
     if (refused === null) {
@@ -131,56 +135,4 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
     }
     return failure(refused.status, refused.message);
   }
-  const pending = new Set(target.pending);
-  const whole = createHash("sha256");
-  const pieces = new Pieces(request.body);
-  let batch: { sha256: string; bytes: Uint8Array }[] = [];
-  let stored = 0;
-  const flush = async (): Promise<void> => {
-    if (batch.length === 0) {
-      return;
-    }
-    const sent = batch;
-    batch = [];
-    await env.FILES.putChunks(target.namespace, sent);
-    await stub.fileUploadStored(binding, { intent_id: intentId,
-                                           chunks: sent.map(({ sha256 }) => sha256) });
-    stored += sent.length;
-  };
-  for (const [index, chunk] of target.chunks.entries()) {
-    if (chunk.size > CHUNK_BYTES) {
-      throw new Error("an upload's plan names a chunk larger than a chunk");
-    }
-    const bytes = await pieces.take(chunk.size);
-    if (bytes === null) {
-      await flush();
-      return failure(400, "the body ended before the declared file did");
-    }
-    whole.update(bytes);
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
-    if (sha256 !== chunk.sha256) {
-      await pieces.cancel();
-      await flush();
-      return failure(400, `the bytes of chunk ${index} are not the chunk the upload declared`);
-    }
-    if (pending.delete(sha256)) {
-      batch.push({ sha256, bytes });
-      if (batch.length === PER_CALL) {
-        await flush();
-      }
-    }
-  }
-  await flush();
-  if (!await pieces.ended()) {
-    await pieces.cancel();
-    return failure(400, "the body is longer than the declared file");
-  }
-  const digest = whole.digest();
-  const headers = { "Repr-Digest": reprDigest(digest) };
-  const sent = claimed(request);
-  if (sent !== undefined && sent !== digest.toString("base64")) {
-    return failure(400, "the body's SHA-256 is not the Repr-Digest it was sent with", headers);
-  }
-  return Response.json({ intent_id: intentId, chunks: target.chunks.length, stored },
-                       { headers: { "Cache-Control": "no-store", ...headers } });
 }

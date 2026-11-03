@@ -121,13 +121,32 @@ function json(bytes: Uint8Array, what: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** A response's JSON, read no further than `max` bytes: a larger one is refused while read. */
 async function bounded(response: Response, max: number, what: string): Promise<unknown> {
-  const text = await response.text();
-  if (text.length > max) {
-    throw new Error(`the upstream's ${what} is too large`);
+  const reader = (response.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() }))
+    .getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`the upstream's ${what} is too large`);
+    }
+    parts.push(value);
+  }
+  const whole = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    whole.set(part, at);
+    at += part.byteLength;
   }
   try {
-    return JSON.parse(text);
+    return JSON.parse(new TextDecoder().decode(whole));
   } catch {
     throw new Error(`the upstream's ${what} is not JSON`);
   }
@@ -184,7 +203,8 @@ export async function verifiedIdToken(token: unknown, issuer: string, config: Up
   const audiences = typeof audience === "string" ? [audience]
     : Array.isArray(audience) ? audience : [];
   if (!audiences.includes(config.client_id)
-      || (audiences.length > 1 && claims["azp"] !== config.client_id)) {
+      || ((audiences.length > 1 || claims["azp"] !== undefined)
+          && claims["azp"] !== config.client_id)) {
     throw new Error("the ID token is not for our client");
   }
   if (!whole(claims["exp"]) || claims["exp"] <= at - CLOCK_MARGIN_S) {

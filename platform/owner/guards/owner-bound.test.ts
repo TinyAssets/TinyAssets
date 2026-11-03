@@ -367,12 +367,13 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        bytes: ROW + 64, by: "one per client",
                        indexes: { sqlite_autoindex_proposal_shares_1: key(64) } },
     policy_usage: { rows: 1, bytes: ROW, by: "one row" },
-    outside_clients: { rows: G.maxFreeClients + G.maxOwnerClients,
-                       bytes: ROW + 8 + GRANT_BYTES * G.maxOwnerClients
-                         / (G.maxFreeClients + G.maxOwnerClients),
-                       by: "free clients (no scopes, no name) and owner-set ones (their " +
-                         "scopes' JSON at the schema's byte ceiling, and a name), each with " +
-                         "its revision (migration 9)",
+    outside_clients: { rows: G.maxFreeClients + 2 * G.maxOwnerClients,
+                       bytes: ROW + 8 + (GRANT_BYTES + CLIENT_NAME * 4) * G.maxOwnerClients
+                         / (G.maxFreeClients + 2 * G.maxOwnerClients),
+                       by: "free clients (no scopes, no name), live owner-set ones (their " +
+                         "scopes' JSON at the schema's byte ceiling, and a name) and as many " +
+                         "revoked ones (no scopes, a name; slice L), each with its revision " +
+                         "(migration 9)",
                        indexes: { sqlite_autoindex_outside_clients_1: key(64),
                                   outside_clients_listed: key(NUMBER, 64),
                                   outside_clients_free: key(NUMBER) } },
@@ -773,7 +774,7 @@ describe("the owner's database bound", () => {
     expect(source("schema")).toContain("\"path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND " +
                                        "2048 AND \" +\n      \"path NOT GLOB '*[^ -~]*'), \" +");
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
-      .toBe(2000 * (256 + 8) + 1000 * (65_536 + 80 * 4));
+      .toBe(3000 * (256 + 8) + 1000 * (65_536 + 80 * 4) + 1000 * 80 * 4);
     // The structural bounds (ADR-035): one recipient a message; history in bytes.
     expect(TERMS["ledger_recipients"]!.rows).toBe(LEDGER_LIMITS.maxMessages);
     expect(TERMS["collection_history"]).toMatchObject({ rows: 1, charged: true,

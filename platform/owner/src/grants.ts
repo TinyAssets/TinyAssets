@@ -65,9 +65,13 @@
  *   MCP client with no row is recorded only from a sign-in known to be after it.
  * Any other row is exactly what its client's next verified call records again, so it is
  * free: past `maxFreeClients` the oldest free row goes, and a new client is never
- * refused. Rows the owner sets are bounded by `maxOwnerClients`, revoked ones included,
- * refused at the owner's own `set` with the way out named (forget revoked clients); a
- * revoke, a narrowing that must always land, is never refused. Rows agents and stamped
+ * refused. The owner's live set rows are bounded by `maxOwnerClients`, refused at the
+ * owner's own `set` with the way out named (revoke one); a revoked row never counts there
+ * (slice L: a revoked key never holds a live key's place). Revoked set rows are bounded
+ * apart, by `maxOwnerClients` again: past it the oldest revoked row no agent or held
+ * registration holds is forgotten, as `forgetRevoked` forgets it (an MCP client's moves the
+ * owner-wide fence, so its pre-revoke credentials stay dead). A revoke, a narrowing that
+ * must always land, is never refused. Rows agents and stamped
  * work hold are bounded by their own bounds.
  *
  * Declared differences from the Python:
@@ -379,9 +383,10 @@ export class Grants {
       if (row !== undefined && row.source !== source) {
         throw new Refused("outside client source changed");
       }
-      if (row?.owner_set !== 1 && this.#usage().owner_clients >= this.#limits.maxOwnerClients) {
-        throw new Refused("the owner's managed outside clients are at their limit; forget " +
-                          "revoked clients to make room");
+      const live = row?.owner_set === 1 && row.mode !== "revoked";
+      if (mode !== "revoked" && !live && this.#liveSet() >= this.#limits.maxOwnerClients) {
+        throw new Refused("the owner's managed outside clients are at their limit; revoke " +
+                          "one to make room");
       }
       const profile = (change.profile ?? row?.profile ?? DEFAULT_PROFILE) as string;
       const moved = row === undefined
@@ -484,6 +489,33 @@ export class Grants {
    * `outside_revoke`, a narrowing: revoke one client's grant now, never refused for a
    * bound. A client with no grant has nothing to revoke; a revoked one stays as it is.
    */
+  /** The owner's live set rows: what `maxOwnerClients` bounds at a set. */
+  #liveSet(): number {
+    return this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM outside_clients WHERE owner_set = 1 AND mode != 'revoked'")
+      .one().n;
+  }
+
+  /**
+   * In the caller's transaction: the revoked set rows past `maxOwnerClients` forgotten,
+   * oldest revoke first, any an agent or a held registration holds kept; the clients gone.
+   */
+  evictRevoked(now: number): string[] {
+    const over = this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM outside_clients WHERE owner_set = 1 AND mode = 'revoked'")
+      .one().n - this.#limits.maxOwnerClients;
+    if (over <= 0) {
+      return [];
+    }
+    const rows = this.#sql.exec<Stored & Record<string, SqlStorageValue>>(
+      "SELECT * FROM outside_clients WHERE owner_set = 1 AND mode = 'revoked' AND agents = 0 " +
+        "AND held = 0 ORDER BY revoked_at, client LIMIT ?", over).toArray();
+    for (const row of rows) {
+      this.#forget(row, null, now);
+    }
+    return rows.map((row) => row.client);
+  }
+
   revoke(clientId: unknown, now: number):
       { client: string; revoked: boolean; generation: number; revision: number } {
     const client = outsideClient(clientId);

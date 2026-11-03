@@ -7,24 +7,28 @@
  */
 import { createHash, createHmac } from "node:crypto";
 
-import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import {
+  env, evictDurableObject, runDurableObjectAlarm, runInDurableObject,
+} from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ADMIN_CALLER } from "../../admin/src/caller";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
 import { ERASING } from "../../owner/src/erasure";
-import { BREAKER_FAILURES } from "../../owner/src/inbound";
+import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
+import { NO_ERASURE } from "../../owner/src/owner-do";
 import { nativeId } from "../../owner/src/ledger";
 import type { Binding } from "../../owner/src/owner-do";
 import { defineAgent } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
 import { API_BODY_MAX, INBOUND_BODY_MAX, MCP_RESOURCE, now } from "../src/config";
 import { readOwner, readRoute } from "../src/directory";
-import { reprDigest } from "../src/file-bytes";
+import { ERASURE_QUEUE, eraseOutside, erasureQueue } from "../src/erase";
+import { contentDigest } from "../src/file-bytes";
 import { sharedApps } from "../src/inbound";
-import { CIMD_CACHE } from "../src/throttle";
+import { clientIdOf, metadataUrl } from "../src/throttle";
 import type { OwnerDO } from "./entry";
-import { FORGOTTEN } from "./fake-upstream";
+import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
   appCallback, appPost, call, connect, doorsEnv, legacyTool, NAVIGATE, OPEN, refresh,
   registerClient,
@@ -106,7 +110,24 @@ describe("sign-up", () => {
 });
 
 describe("the erasure", () => {
-  it("writes the outside record first, so an erased owner's name resolves nothing again",
+  /** The object's erasure queue as the doors would consume it: each message sent, run. */
+  async function consume(who: string): Promise<string[]> {
+    const sent = await runInDurableObject(env.OWNER.getByName(who), (instance: OwnerDO) =>
+      instance.erasures.sent.splice(0).map((message) => message.owner));
+    const done: string[] = [];
+    for (const named of sent) {
+      done.push(await eraseOutside(doorsEnv, named, () => FAKE_UPSTREAM));
+    }
+    return done;
+  }
+
+  /** The erasure's job, once its retry is due (the test object's 500 ms). */
+  async function finish(who: string): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await runDurableObjectAlarm(env.OWNER.getByName(who));
+  }
+
+  it("marks the object first; its job's outside record then leaves the name resolving nothing",
      async () => {
     const { who, app } = await owned();
     // A key, an inbound URL and an MCP client, each a way back to the owner.
@@ -120,10 +141,15 @@ describe("the erasure", () => {
     const erased = await appPost("account/erase", app.access_token, app.session,
                                  { confirm: "erase my account" });
     expect(erased.status).toBe(200);
-    expect(await erased.json()).toMatchObject({ erasing: true, identity_deleted: true,
-                                               keys: 1, routes: 1 });
+    expect(await erased.json()).toEqual({ erasing: true });
     expect(erased.headers.getSetCookie().join()).toMatch(/__Host-ta-owner=;/);
-    // The outside record, the directory's entries gone, the identity deleted.
+    // The mark first: every door refuses from the answer on.
+    expect((await failure(() => env.OWNER.getByName(who).grantList(ownerBinding(who)))).message)
+      .toBe(ERASING);
+    expect(await sqlIn(who, "SELECT outside FROM owner_erasure")).toEqual([{ outside: 0 }]);
+    // The queue's message, consumed: the outside record, then the confirmation (the job may
+    // send it more than once; each after the first finds the work done).
+    expect(await consume(who)).toContain("done");
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "erased" });
     expect(await env.DIRECTORY.get(`k:${minted.key_id}`)).toBeNull();
     expect(await readRoute(doorsEnv, hook.route)).toBeNull();
@@ -138,32 +164,97 @@ describe("the erasure", () => {
     expect(event.status).toBe(404);
     expect((await refresh(client, tokens.refresh_token)).status).toBe(400);
     const again = await appCallback({ owner: who });
-    expect(again.back.status).toBe(302);
     expect(new URL(again.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
     expect(FORGOTTEN).toEqual([who, who]);  // the identity's deletion tried again
-    // The object is under its erasure's mark (its R2 step and wipe wait out the put grace,
-    // then leave the tombstone), and refuses every door meanwhile.
+    // The job finishes the wipe (the confirmation in), leaving the tombstone alone.
+    await finish(who);
+    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
     expect((await failure(() => env.OWNER.getByName(who).grantList(ownerBinding(who)))).message)
-      .toMatch(new RegExp(`${ERASING}|${OWNER_ERASED}`));
+      .toBe(OWNER_ERASED);
+  });
+
+  it("finishes a half-done erasure: a lost message is sent again until the outside record lands",
+     async () => {
+    const { who, app } = await owned();
+    await appPost("account/erase", app.access_token, app.session, { confirm: "erase my account" });
+    // The request is gone and its message lost: the object's own job sends again.
+    await runInDurableObject(env.OWNER.getByName(who), (instance: OwnerDO) => {
+      instance.erasures.sent.splice(0);
+    });
+    await finish(who);
+    // Not wiped without the outside record: the wipe waits for the doors' confirmation.
+    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "admitted" }]);
+    // Locked out meanwhile: the mark refuses sign-in, though no outside record exists yet.
+    expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
+    const during = await appCallback({ owner: who });
+    expect(new URL(during.back.headers.get("Location")!).searchParams.get("error"))
+      .toBe("access_denied");
+    expect(await consume(who)).toContain("done");
+    await finish(who);
+    expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "erased" });
+    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
+    // A message after the wipe is done already.
+    expect(await eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM)).toBe("wiped");
+  });
+
+  it("writes no outside record for an owner no erasure has marked", async () => {
+    const { who } = await owned();
+    expect((await failure(() => eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM))).message)
+      .toBe(NO_ERASURE);
+    expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
+    // The queue's consumer drops it, and a message out of shape, without retrying.
+    const acked: string[] = [];
+    const retried: string[] = [];
+    const message = (body: unknown, id: string) => ({
+      id, timestamp: new Date(), attempts: 1, body,
+      ack: () => { acked.push(id); }, retry: () => { retried.push(id); } });
+    await erasureQueue({ queue: ERASURE_QUEUE, messages: [
+      message({ owner: who }, "m1"), message({ owner: who, extra: 1 }, "m2")],
+      retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
+                       doorsEnv, () => FAKE_UPSTREAM);
+    expect([acked, retried]).toEqual([["m1", "m2"], []]);
+  });
+
+  it("retries an outside record whose identity deletion fails, and finishes on the next try",
+     async () => {
+    const { who, app } = await owned();
+    await appPost("account/erase", app.access_token, app.session, { confirm: "erase my account" });
+    const sent = await runInDurableObject(env.OWNER.getByName(who), (instance: OwnerDO) =>
+      instance.erasures.sent.splice(0));
+    const failing = { ...FAKE_UPSTREAM, forget: () => Promise.reject(new Error("WorkOS down")) };
+    const retried: string[] = [];
+    await erasureQueue({ queue: ERASURE_QUEUE, messages: [{
+      id: "m1", timestamp: new Date(), attempts: 1, body: sent[0],
+      ack: () => undefined, retry: () => { retried.push("m1"); } }],
+      retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
+                       doorsEnv, () => failing);
+    expect(retried).toEqual(["m1"]);
+    expect(await sqlIn(who, "SELECT outside FROM owner_erasure")).toEqual([{ outside: 0 }]);
+    expect(await eraseOutside(doorsEnv, who, () => FAKE_UPSTREAM)).toBe("done");
+    await finish(who);
+    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
   });
 
   it("closes the crash window: a wiped object that lost its tombstone is pending, never admitted",
      async () => {
     const { who, app } = await owned();
     await appPost("account/erase", app.access_token, app.session, { confirm: "erase my account" });
+    await consume(who);
     // The crash the window names: the wipe durable, the tombstone lost.
     await runInDurableObject(env.OWNER.getByName(who), async (_instance: OwnerDO, state) => {
       await state.storage.deleteAll();
     });
     await evictDurableObject(env.OWNER.getByName(who));
     const remade = env.OWNER.get(env.OWNER.idFromName(who));
-    expect((await failure(() => remade.grantList(ownerBinding(who)))).message).toMatch(OWNER_UNADMITTED);
+    expect((await failure(() => remade.grantList(ownerBinding(who)))).message)
+      .toMatch(OWNER_UNADMITTED);
     // And no sign-in admits the name again: the directory's record refuses it first.
     const again = await appCallback({ owner: who });
     expect(new URL(again.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
-    expect((await failure(() => remade.grantList(ownerBinding(who)))).message).toMatch(OWNER_UNADMITTED);
+    expect((await failure(() => remade.grantList(ownerBinding(who)))).message)
+      .toMatch(OWNER_UNADMITTED);
   });
 
   it("erases nothing without the session or the owner's words", async () => {
@@ -174,8 +265,8 @@ describe("the erasure", () => {
       const refused = await appPost("account/erase", app.access_token, session, body);
       expect(refused.status).toBeGreaterThanOrEqual(400);
     }
+    expect(await sqlIn(who, "SELECT COUNT(*) AS n FROM owner_erasure")).toEqual([{ n: 0 }]);
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "admitted" }]);
   });
 });
 
@@ -277,17 +368,18 @@ function slackEvent(team: string, eventId: string): Record<string, unknown> {
            authorizations: [{ is_enterprise_install: false, team_id: team }] };
 }
 
-/** A shared app's install for `who`, as its owed install flow will write it. */
+/**
+ * A shared app's install for `who`, as its owed install flow will write it: the object's
+ * row (no door makes one before that flow's proof) and the directory's route.
+ */
 async function slackInstall(who: string, team: string): Promise<string> {
   const route = `i:slack:workspace:${createHash("sha256").update(team).digest("hex")}`;
-  const stub = env.OWNER.getByName(who);
-  // The owed install flow's two writes: the object's binding (in session), the route.
-  const app = await signInApp({ owner: who });
-  const session = app.session;
-  const made = await stub.inboundCreate({ owner: who, caller: who, origin: null, session },
-                                        { kind: "shared", agent: "main", route });
-  await env.DIRECTORY.put(route, JSON.stringify({ o: who, b: made.binding_id, r: made.revision }));
-  return made.binding_id;
+  const id = crypto.randomUUID().replace(/-/g, "");
+  await sqlIn(who, "INSERT INTO inbound_bindings (binding_id, kind, agent, enabled, revision, " +
+              "route, created_at, changed_at) VALUES (?, 'shared', 'main', 1, 1, ?, ?, ?)",
+              id, route, now(), now());
+  await env.DIRECTORY.put(route, JSON.stringify({ o: who, b: id, r: 1 }));
+  return id;
 }
 
 function mail(who: string): Promise<Record<string, unknown>[]> {
@@ -440,6 +532,17 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     expect((await call(unsigned)).status).toBe(401);
   });
 
+  it("is never claimed by an owner: no door makes a shared binding before its install flow",
+     async () => {
+    const who = owner();
+    const app = await signInApp({ owner: who });
+    const route = `i:slack:workspace:${createHash("sha256").update("TOTHER").digest("hex")}`;
+    expect((await failure(() => env.OWNER.getByName(who).inboundCreate(
+      { owner: who, caller: who, origin: null, session: app.session },
+      { kind: "shared", agent: "main", route }))).message).toBe(INSTALL_PROOF);
+    expect(await sqlIn(who, "SELECT COUNT(*) AS n FROM inbound_bindings")).toEqual([{ n: 0 }]);
+  });
+
   it("dedupes a replayed event inside the skew, and no-ops an install no owner made", async () => {
     const who = owner();
     await signInApp({ owner: who });
@@ -491,128 +594,249 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
 });
 
 describe("unauthenticated callers' bounds", () => {
-  it("bound the CIMD fetches an unknown client_id makes, per caller IP, before any fetch",
-     async () => {
-    const ip = `203.0.113.${crypto.getRandomValues(new Uint8Array(1))[0]}-cimd-${crypto.randomUUID()}`;
+  let fetched: string[] = [];
+  let spy: { mockRestore(): void } | undefined;
+
+  beforeEach(() => {
+    fetched = [];
+    const real = globalThis.fetch;
+    spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const request = new Request(input as RequestInfo, init);
+      if (/attacker-\d+\.example/i.test(request.url)) {
+        fetched.push(request.url);
+        return new Response("nope", { status: 404 });
+      }
+      return real(input as RequestInfo, init);
+    });
+  });
+  afterEach(() => spy?.mockRestore());
+
+  function b64url(text: string): string {
+    return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  /** `count` requests from one address; each's status. */
+  async function from(ip: string, count: number, make: (i: number) => Request):
+      Promise<number[]> {
     const statuses: number[] = [];
-    for (let i = 0; i < 21; i++) {
+    for (let i = 0; i < count; i++) {
+      const request = make(i);
+      request.headers.set("CF-Connecting-IP", ip);
+      statuses.push((await call(request)).status);
+    }
+    return statuses;
+  }
+
+  const SIGNIN = 23;
+  const CIMD = 23;
+  const FAIL = 115;
+
+  it("bound an unknown client_id's metadata fetches at /authorize, an upper-case scheme too",
+     async () => {
+    const ip = `203.0.113.7-${crypto.randomUUID()}`;
+    const statuses = await from(ip, CIMD + 7, (i) => {
       const params = new URLSearchParams({
-        response_type: "code", client_id: `https://unknown-${i}.example/client.json`,
-        redirect_uri: "https://unknown.example/cb", state: "s", code_challenge: "c".repeat(43),
+        response_type: "code", client_id: `HTTPS://attacker-${i}.example/client.json`,
+        redirect_uri: "https://attacker.example/cb", state: "s", code_challenge: "c".repeat(43),
         code_challenge_method: "S256", resource: MCP_RESOURCE });
-      statuses.push((await call(new Request(url(`/authorize?${params}`), {
-        headers: { ...NAVIGATE, "CF-Connecting-IP": ip } }))).status);
-    }
-    expect(statuses.slice(0, 20).every((status) => status !== 429)).toBe(true);
-    expect(statuses[20]).toBe(429);
-    // A client the provider's cache holds costs no fetch, and is never refused.
-    const cached = "https://known.example/client.json";
-    await (await caches.open(CIMD_CACHE)).put(cached, Response.json({ client_id: cached }, {
-      headers: { "Cache-Control": "public, max-age=3600" } }));
-    const known = await call(new Request(url(`/authorize?${new URLSearchParams({
-      response_type: "code", client_id: cached, redirect_uri: "https://known.example/cb",
-      state: "s", code_challenge: "c".repeat(43), code_challenge_method: "S256",
-      resource: MCP_RESOURCE })}`), { headers: { ...NAVIGATE, "CF-Connecting-IP": ip } }));
-    expect(known.status).not.toBe(429);
+      return new Request(url(`/authorize?${params}`), { headers: { ...NAVIGATE } });
+    });
+    expect(statuses.slice(0, CIMD).includes(429)).toBe(false);
+    expect(statuses.slice(CIMD + 1).every((status) => status === 429)).toBe(true);
+    expect(fetched.length).toBeLessThanOrEqual(CIMD + 1);
   });
 
-  it("bound an unknown client_id's fetches at the token endpoint too", async () => {
-    const ip = `cimd-token-${crypto.randomUUID()}`;
-    const statuses: number[] = [];
-    for (let i = 0; i < 21; i++) {
-      statuses.push((await call(new Request(url("/oauth/token"), {
-        method: "POST", headers: { "CF-Connecting-IP": ip },
-        body: new URLSearchParams({ grant_type: "authorization_code", code: "x",
-                                    client_id: `https://unknown-t${i}.example/c.json` }) }))).status);
-    }
-    expect(statuses[20]).toBe(429);
-    expect(statuses.slice(0, 20).every((status) => status !== 429)).toBe(true);
-  });
-
-  it("bound sign-in attempts per caller IP, and never an authenticated caller's calls",
+  it("bound a token request's metadata fetches when it names its client by HTTP Basic",
      async () => {
-    const ip = `signin-${crypto.randomUUID()}`;
-    const statuses: number[] = [];
-    for (let i = 0; i < 61; i++) {
-      statuses.push((await call(new Request(url("/authorize"), {
-        headers: { "CF-Connecting-IP": ip } }))).status);
+    const ip = `203.0.113.8-${crypto.randomUUID()}`;
+    const statuses = await from(ip, CIMD + 7, (i) => new Request(url("/oauth/token"), {
+      method: "POST",
+      headers: { Authorization: `bAsIc ${btoa(`${encodeURIComponent(
+                   `https://attacker-${i}.example/c.json`)}:x`)}`,
+                 "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "authorization_code", code: "x" }) }));
+    expect(statuses.at(-1)).toBe(429);
+    expect(fetched.length).toBeLessThanOrEqual(CIMD + 1);
+  });
+
+  it("bound a token request's metadata fetches when only its client assertion names the client",
+     async () => {
+    const ip = `203.0.113.9-${crypto.randomUUID()}`;
+    const statuses = await from(ip, CIMD + 7, (i) => {
+      const iss = `https://attacker-${i}.example/c.json`;
+      const assertion = `${b64url(JSON.stringify({ alg: "RS256" }))}.${
+        b64url(JSON.stringify({ iss, sub: iss, aud: url("/oauth/token"), exp: 9e9 }))}.sig`;
+      return new Request(url("/oauth/token"), { method: "POST", body: new URLSearchParams({
+        grant_type: "authorization_code", code: "x", client_assertion: assertion,
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" }) });
+    });
+    expect(statuses.at(-1)).toBe(429);
+    expect(fetched.length).toBeLessThanOrEqual(CIMD + 1);
+  });
+
+  it("find the client id as the provider does: Basic first, then an assertion, then the form",
+     () => {
+    const form = (fields: Record<string, string>) => new URLSearchParams(fields);
+    const basic = new Request(url("/oauth/token"), {
+      headers: { Authorization: `BASIC ${btoa("https%3A%2F%2Fa.example%2Fc:x")}` } });
+    expect(clientIdOf(basic, form({}))).toBe("https://a.example/c");
+    const assertion = `e30.${b64url(JSON.stringify({ iss: "https://b.example/c" }))}.s`;
+    expect(clientIdOf(new Request(url("/oauth/token")),
+                      form({ client_assertion: assertion, client_assertion_type: "x" })))
+      .toBe("https://b.example/c");
+    expect(clientIdOf(new Request(url("/oauth/token")), form({ client_id: "c" }))).toBe("c");
+    expect(metadataUrl("HTTPS://a.example/c")).toBe(true);
+    expect(metadataUrl("https://a.example")).toBe(false);
+    expect(metadataUrl("http://a.example/c")).toBe(false);
+  });
+
+  it("never count a refresh by a known client from a shared backend address", async () => {
+    // Claude's and ChatGPT's backends refresh every user's grant from a few addresses: a
+    // success is never counted, whatever the cache holds.
+    const who = owner();
+    const client = await registerClient();
+    const ip = `198.51.100.200-${crypto.randomUUID()}`;
+    let tokens = await connect(client, { owner: who });
+    for (let i = 0; i < FAIL + 5; i++) {
+      const refreshed = await call(new Request(url("/oauth/token"), {
+        method: "POST", headers: { "CF-Connecting-IP": ip },
+        body: new URLSearchParams({ grant_type: "refresh_token", client_id: client.clientId,
+                                    refresh_token: tokens.refresh_token }) }));
+      expect(refreshed.status).toBe(200);
+      tokens = await refreshed.json();
     }
-    expect(statuses.slice(0, 60).every((status) => status === 403)).toBe(true);
-    expect(statuses[60]).toBe(429);
-    // An API key's calls from that same address are bounded by nothing here.
+  });
+
+  it("count no cheap refusal: a neighbour's non-navigations lock no one out", async () => {
+    const ip = `198.51.100.7-${crypto.randomUUID()}`;
+    const cheap = await from(ip, SIGNIN * 3, () => new Request(url("/authorize")));
+    expect(cheap.every((status) => status === 403)).toBe(true);
+    const person = await call(new Request(url("/authorize?response_type=code"), {
+      headers: { ...NAVIGATE, "CF-Connecting-IP": ip } }));
+    expect(person.status).not.toBe(429);
+  });
+
+  it("bound sign-in starts per address, an IPv6 holder by its /64", async () => {
+    const prefix = `2001:db8:${Math.floor(Math.random() * 0xffff).toString(16)}:1`;
+    const statuses: number[] = [];
+    for (let i = 1; i <= SIGNIN + 5; i++) {
+      statuses.push((await call(new Request(url("/authorize?response_type=code"), {
+        headers: { ...NAVIGATE, "CF-Connecting-IP": `${prefix}::${i.toString(16)}` } }))).status);
+    }
+    expect(statuses.slice(0, SIGNIN).includes(429)).toBe(false);
+    expect(statuses.at(-1)).toBe(429);
+  });
+
+  it("bound failed bearers, keys and hooks, and refuse a caller past the bound before work",
+     async () => {
+    const ip = `198.51.100.9-${crypto.randomUUID()}`;
+    const bad = await from(ip, FAIL + 3, (i) => new Request(url("/api/tools/agents_list"), {
+      method: "POST", body: "{}", headers: { "Content-Type": "application/json",
+        Authorization: `Bearer ta_key_${i.toString(16).padStart(16, "0")}_${"a".repeat(43)}` } }));
+    expect(bad.slice(0, FAIL).every((status) => status === 401)).toBe(true);
+    expect(bad.at(-1)).toBe(429);
+    // Past the bound, even a hook or an /mcp bearer from that address is refused first.
+    const hook = await call(new Request(url(`/hooks/inbound/${"A".repeat(43)}`), {
+      method: "POST", body: "{}", headers: { "CF-Connecting-IP": ip } }));
+    expect(hook.status).toBe(429);
+  });
+
+  it("never count an authenticated caller's calls", async () => {
+    const ip = `198.51.100.11-${crypto.randomUUID()}`;
     const app = await signInApp({ owner: owner() });
     const minted = await json<{ key: string }>(
       await appPost("keys", app.access_token, app.session, { name: "k", scopes: SCOPES }));
-    for (let i = 0; i < 70; i++) {
-      const used = await call(new Request(url("/api/tools/agents_list"), {
-        method: "POST", headers: { Authorization: `Bearer ${minted.key}`, "CF-Connecting-IP": ip,
-                                   "Content-Type": "application/json" }, body: "{}" }));
-      expect(used.status).toBe(200);
-    }
+    const used = await from(ip, FAIL + 10, () => new Request(url("/api/tools/agents_list"), {
+      method: "POST", body: "{}", headers: { Authorization: `Bearer ${minted.key}`,
+                                             "Content-Type": "application/json" } }));
+    expect(used.every((status) => status === 200)).toBe(true);
+  });
+
+  it("answer an overloaded owner object 429 with Retry-After, never retried", async () => {
+    const app = await signInApp({ owner: owner() });
+    const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
+    const stub = vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
+      keyList: () => Promise.reject(busy) }) as never);
+    const answer = await appPost("keys/list", app.access_token, null, {});
+    stub.mockRestore();
+    expect(answer.status).toBe(429);
+    expect(answer.headers.get("Retry-After")).toBe("1");
   });
 });
 
 describe("the file door's bytes", () => {
-  async function begun(bytes: Uint8Array) {
+  const CHUNK = 4 * 1024 * 1024;
+  const FILE = new Uint8Array(CHUNK + 4096).map((_byte, i) => (i * 131 + 7) % 251);
+  const pieces = [FILE.subarray(0, CHUNK), FILE.subarray(CHUNK)];
+
+  async function begun() {
     const { who, app } = await owned();
-    const chunks: string[] = [];
-    for (let at = 0; at < bytes.byteLength; at += 4 * 1024 * 1024) {
-      chunks.push(createHash("sha256").update(bytes.subarray(at, at + 4 * 1024 * 1024))
-        .digest("hex"));
-    }
+    const chunks = pieces.map((piece) => createHash("sha256").update(piece).digest("hex"));
     const begin = await appPost("files/upload/begin", app.access_token, null,
-                                { size: bytes.byteLength, chunks });
+                                { size: FILE.byteLength, chunks });
     expect(begin.status).toBe(200);
     const { intent_id } = await json<{ intent_id: string }>(begin);
     return { who, app, intent_id };
   }
 
-  function put(token: string, intent: string, body: Uint8Array,
+  function put(token: string, intent: string, index: number, body: Uint8Array,
                headers: Record<string, string> = {}): Promise<Response> {
-    return call(new Request(url(`/app/api/files/upload/${intent}`), {
+    return call(new Request(url(`/app/api/files/upload/${intent}/${index}`), {
       method: "PUT", body, headers: { Authorization: `Bearer ${token}`,
                                       "Content-Type": "application/octet-stream", ...headers } }));
   }
 
-  const FILE = new Uint8Array(4 * 1024 * 1024 + 4096).map((_byte, i) => (i * 131 + 7) % 251);
-
-  it("streams the chunks to FILES itself, serves the body's Repr-Digest, and commits", async () => {
-    const { who, app, intent_id } = await begun(FILE);
-    const digest = createHash("sha256").update(FILE).digest();
-    const sent = await put(app.access_token, intent_id, FILE,
-                           { "Repr-Digest": reprDigest(digest) });
-    expect(sent.status).toBe(200);
-    expect(sent.headers.get("Repr-Digest")).toBe(reprDigest(digest));
-    expect(await sent.json()).toEqual({ intent_id, chunks: 2, stored: 2 });
+  it("takes one chunk a PUT, in any order, resumes, serves each Content-Digest, and commits",
+     async () => {
+    const { who, app, intent_id } = await begun();
+    const second = await put(app.access_token, intent_id, 1, pieces[1]!);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ intent_id, index: 1, stored: true, pending: 1 });
+    const digest = createHash("sha256").update(pieces[0]!).digest();
+    const first = await put(app.access_token, intent_id, 0, pieces[0]!,
+                            { "Content-Digest": contentDigest(digest) });
+    expect(first.headers.get("Content-Digest")).toBe(contentDigest(digest));
+    expect(await first.json()).toEqual({ intent_id, index: 0, stored: true, pending: 0 });
+    // Sent again after a failure: answered, never put twice.
+    expect(await (await put(app.access_token, intent_id, 0, pieces[0]!)).json())
+      .toMatchObject({ stored: false, pending: 0 });
     const committed = await appPost("files/upload/commit", app.access_token, null, {
       intent_id, path: "/workspace/big.bin", expected_etag: null });
     expect(committed.status).toBe(200);
     const read = await env.OWNER.getByName(who).fileRead(ownerBinding(who),
                                                         { path: "/workspace/big.bin" });
     expect(read.entry.size).toBe(FILE.byteLength);
-    expect(read.chunks).toHaveLength(2);
   });
 
-  it("refuses bytes that are not the declared chunk, a short body and a long one", async () => {
-    const { app, intent_id } = await begun(FILE);
-    const wrong = FILE.slice();
+  it("refuses bytes that are not the declared chunk, a short or long chunk, and no such index",
+     async () => {
+    const { app, intent_id } = await begun();
+    const wrong = pieces[0]!.slice();
     wrong[10] = wrong[10]! ^ 0xff;
-    const refused = await put(app.access_token, intent_id, wrong);
+    const refused = await put(app.access_token, intent_id, 0, wrong);
     expect(refused.status).toBe(400);
     expect(await refused.json()).toEqual({
       error: "the bytes of chunk 0 are not the chunk the upload declared" });
-    expect((await put(app.access_token, intent_id, FILE.subarray(0, 1000))).status).toBe(400);
-    const longer = new Uint8Array(FILE.byteLength + 1);
-    longer.set(FILE);
-    expect((await put(app.access_token, intent_id, longer)).status).toBe(400);
+    expect((await put(app.access_token, intent_id, 1, pieces[1]!.subarray(0, 10))).status)
+      .toBe(400);
+    const longer = new Uint8Array(pieces[1]!.byteLength + 1);
+    longer.set(pieces[1]!);
+    expect((await put(app.access_token, intent_id, 1, longer)).status).toBe(400);
+    expect((await put(app.access_token, intent_id, 2, pieces[1]!)).status).toBe(404);
   });
 
-  it("refuses a body whose Repr-Digest it does not match, and an outside credential", async () => {
-    const { app, intent_id } = await begun(FILE);
-    const other = reprDigest(createHash("sha256").update("other").digest());
-    expect((await put(app.access_token, intent_id, FILE, { "Repr-Digest": other })).status)
-      .toBe(400);
-    expect((await put("ta_key_0000000000000000_" + "a".repeat(43), intent_id, FILE)).status)
-      .toBe(403);
+  it("answers a refusal mid-upload with its fixed code, and refuses an outside credential",
+     async () => {
+    const { app, intent_id } = await begun();
+    await appPost("files/upload/abort", app.access_token, null, { intent_id });
+    const gone = await put(app.access_token, intent_id, 0, pieces[0]!);
+    expect(gone.status).toBe(403);
+    expect(await gone.json()).toMatchObject({ error: expect.stringMatching(/no such upload/) });
+    const other = contentDigest(createHash("sha256").update("other").digest());
+    const { app: second, intent_id: next } = await begun();
+    expect((await put(second.access_token, next, 0, pieces[0]!, { "Content-Digest": other }))
+      .status).toBe(400);
+    expect((await put("ta_key_0000000000000000_" + "a".repeat(43), next, 0, pieces[0]!))
+      .status).toBe(403);
   });
 });
