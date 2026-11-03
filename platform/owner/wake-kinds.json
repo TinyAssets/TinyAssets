@@ -1,5 +1,5 @@
 {
-  "about": "One record per vendor wake mechanism (slice W, tasks 7). The doorbell (owner/src/wakes.ts) is one sender for all of them: what differs is here. A record with no push says so; its agent catches up through inbox_digest and board_digest on its own schedule, and TinyAssets never polls. Evidence labels are main-agents.md's: V read in full, VS through a search extract (the host was unreachable), 3P third party. Placeholders, each a whole JSON string: {wake} the wake object, {text} its one line, {event_id}, {timestamp}, {subscription_id}.",
+  "about": "One record per vendor wake mechanism (slice W, tasks 7). The doorbell (owner/src/wakes.ts, through the gateway's ringDoorbell) is one sender for all of them: what differs is here. A record with no push says so and names no delivery method; its agent registers as pull and catches up through inbox_digest and board_digest on its own schedule, and TinyAssets never polls. Evidence labels are main-agents.md's: V read in full, VS through a search extract (the host was unreachable), 3P third party. Placeholders, each a whole JSON string: {wake} the wake object, {text} its one line, {event_id}, {timestamp} (the change's own time), {subscription_id}. Every number here is the vendor's or the protocol's, and cited.",
   "kinds": [
     {
       "id": "chatgpt_mcp_events",
@@ -7,7 +7,7 @@
       "agents": "ChatGPT dots and Work chats",
       "delivery_method": "mcp_event",
       "push": {
-        "mechanism": "MCP Events: the agent's own client calls events/subscribe with a callback URL and a Standard Webhooks signing secret; ChatGPT receives the event in the subscribed chat or dot and follows the user's instructions for it.",
+        "mechanism": "MCP Events: the agent's own client calls events/subscribe with a callback URL and a Standard Webhooks signing secret, which TinyAssets verifies with a signed single-use challenge before it activates; ChatGPT receives the event in the subscribed chat or dot and follows the user's instructions for it.",
         "callback": "subscribe",
         "url": { "hosts": null, "path": null },
         "secret": "^whsec_[A-Za-z0-9+/]{32,88}={0,2}$",
@@ -15,15 +15,26 @@
         "headers": { "Content-Type": "application/json", "X-MCP-Subscription-Id": "{subscription_id}" },
         "body": { "eventId": "{event_id}", "name": "tinyassets.changed", "timestamp": "{timestamp}", "cursor": null, "data": "{wake}" },
         "max_body_bytes": 262144,
-        "gone": [410]
+        "token_dead": [],
+        "events": {
+          "name": "tinyassets.changed",
+          "description": "Something changed for your registered agent: mail to it, or a board or room row it follows. Carries IDs, cursors and the kind of change only, never content; read just the change with the digest the event names (inbox_digest or board_digest, after its cursor).",
+          "verify_error_code": -32015,
+          "verify_timeout_ms": 10000,
+          "default_ttl_ms": 86400000,
+          "rotation_grace_s": 300
+        }
       },
       "catch_up": "A ChatGPT scheduled task (hourly on paid plans) that reads inbox_digest and board_digest.",
       "vendor_limits": [
-        "Webhook only, HTTPS, no redirects, one event per request, at most 256 KiB, Standard Webhooks signing, no retry on 410 or 413.",
+        "Webhook only, HTTPS, no redirects, one event per request, at most 256 KiB, Standard Webhooks signing; do not retry deliveries that return 410 or 413 (the subscription stays).",
+        "Verification failure is JSON-RPC -32015 CallbackEndpointError with a data.reason category, and its example send times out at 10 s (OpenAI's page; the design sketch's provisional -32027 is not what ChatGPT reads).",
+        "ttlMs omitted is the server's default lifetime; the design sketch recommends grants up to about a day. A refresh's new secret is dual-signed for a short window; receivers reject a webhook-timestamp more than 5 minutes old, so 300 s covers every in-flight delivery.",
         "Event-triggered tasks: 30 runs an hour and 720 a day; not on Free, Go or FedRAMP."
       ],
       "citations": [
-        { "url": "https://developers.openai.com/plugins/build/mcp-events", "read": "2026-11-01", "evidence": "VS" },
+        { "url": "https://developers.openai.com/plugins/build/mcp-events", "read": "2026-11-03", "evidence": "V" },
+        { "url": "https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md", "read": "2026-11-03", "evidence": "V" },
         { "url": "https://help.openai.com/en/articles/10291617", "read": "2026-11-01", "evidence": "VS" }
       ]
     },
@@ -33,23 +44,25 @@
       "agents": "Claude scheduled tasks (not Duet, which has no documented wake)",
       "delivery_method": "routine_fire",
       "push": {
-        "mechanism": "The scheduled task's API trigger: POST /fire with the task's own bearer token, shown once, which the owner pastes into TinyAssets. Each fire starts a new session; the body's text arrives wrapped as untrusted data, and the task's prompt opts in to acting on it.",
+        "mechanism": "The scheduled task's API trigger: POST /fire with the task's own bearer token, shown once, which the owner pastes into TinyAssets, where the gateway seals it. Each fire starts a new session; the body's text arrives wrapped as untrusted data, and the task's prompt opts in to acting on it.",
         "callback": "owner",
         "url": { "hosts": ["api.anthropic.com"], "path": "^/v1/claude_code/routines/[A-Za-z0-9_]{1,128}/fire$" },
         "secret": "^[!-~]{16,512}$",
         "auth": "bearer",
         "headers": { "Content-Type": "application/json", "anthropic-beta": "experimental-cc-routine-2026-04-01", "anthropic-version": "2023-06-01" },
         "body": { "text": "{text}" },
-        "max_body_bytes": 65536,
-        "gone": []
+        "max_body_bytes": null,
+        "token_dead": [401],
+        "events": null
       },
       "catch_up": "The scheduled task's own schedule (hourly or slower) reads inbox_digest and board_digest.",
       "vendor_limits": [
-        "30 fires an hour per task, shared with Run now; 100 API fires an hour per account; no overage.",
+        "30 fires an hour per task, shared with Run now; 100 API fires an hour per account; no overage. The page does not say an over-limit fire answers 429: owed to the live test.",
+        "A regenerated or deleted token fails with a 401 authentication error: the owner is told, and pastes the new one.",
         "Custom connector tools are missing from scheduled runs while issue #106037 (and #102388 for cloud routines) is open: re-test before relying on it."
       ],
       "citations": [
-        { "url": "https://code.claude.com/docs/en/routines", "read": "2026-11-01", "evidence": "V" },
+        { "url": "https://code.claude.com/docs/en/routines", "read": "2026-11-03", "evidence": "V" },
         { "url": "https://github.com/anthropics/claude-code/issues/106037", "read": "2026-11-01", "evidence": "V" }
       ]
     },
@@ -59,19 +72,21 @@
       "agents": "Grok Bot routines",
       "delivery_method": "webhook",
       "push": {
-        "mechanism": "A routine with a webhook trigger: the owner copies its URL and key from the routine on desktop into TinyAssets; the POST carries the key as a bearer token and a JSON body, which the Bot receives beside the routine's instruction. A 200 only means the run started.",
+        "mechanism": "A routine with a webhook trigger: the owner copies its URL and key from the routine on desktop into TinyAssets, where the gateway seals the key; the POST carries the key as a bearer token and a JSON body, which the Bot receives beside the routine's instruction. A 200 only means the run started.",
         "callback": "owner",
         "url": { "hosts": null, "path": null },
         "secret": "^[!-~]{16,512}$",
         "auth": "bearer",
         "headers": { "Content-Type": "application/json" },
         "body": "{wake}",
-        "max_body_bytes": 65536,
-        "gone": []
+        "max_body_bytes": null,
+        "token_dead": [],
+        "events": null
       },
       "catch_up": "A routine on a schedule (at least 5 minutes apart) that reads inbox_digest and board_digest.",
       "vendor_limits": [
-        "200 runs an hour per routine and 300 an hour per user; over it a run fails with \"Automation run rate limit exceeded\" and is not retried. Each run uses plan usage."
+        "200 runs an hour per routine and 300 an hour per user; over it a run fails with \"Automation run rate limit exceeded\" and is not retried. Each run uses plan usage.",
+        "The webhook URL's host is not readable from here (docs.x.ai unreachable): no host is pinned until it is, and the live test records it."
       ],
       "citations": [
         { "url": "https://docs.x.ai/grok-bot/skills-routines-and-automations", "read": "2026-11-01", "evidence": "VS" },
@@ -82,9 +97,9 @@
       "id": "muse_recurring_task",
       "vendor": "Meta",
       "agents": "Meta Muse",
-      "delivery_method": "pull",
+      "delivery_method": null,
       "push": null,
-      "catch_up": "Muse's own recurring scheduled task (daily, weekly or a custom interval), connected by the owner's ADR-028 key in Muse's Secrets tab, reads inbox_digest and board_digest. Meta documents no push for third-party connectors, so TinyAssets sends none and polls nothing.",
+      "catch_up": "Muse's own recurring scheduled task (daily, weekly or a custom interval), connected by the owner's ADR-028 key in Muse's Secrets tab, reads inbox_digest and board_digest; its agent registers with delivery pull. Meta documents no push for third-party connectors, so TinyAssets sends none and polls nothing.",
       "vendor_limits": [
         "The minimum recurring interval is not documented."
       ],

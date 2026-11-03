@@ -16,32 +16,35 @@
  *
  * The doorbell ({@link Doorbell}) is the object's one {@link WakeSender}, which the object
  * constructs and the lane calls in process, so no wake can be claimed or settled over
- * RPC. It sends every vendor's wake from that vendor's record (`wake-kinds.ts`): ChatGPT's
- * MCP Events, Claude's `/fire`, Grok's webhook routines; Muse has no push, so nothing is
- * sent to it. The outside kill switch is the platform's control record (`c:control`, in
- * the owner Worker's control namespace, which holds it alone, `control-gate.ts`), read
- * with the doors' own rule
- * (`outsideOpen`): the lane asks `open()` once a pass, before it claims, and claims nothing
+ * RPC. It builds each subscription's request from its vendor's record (`wake-kinds.ts`):
+ * ChatGPT's MCP Events, Claude's `/fire`, Grok's webhook routines; Muse has no push, so
+ * nothing is sent to it. The object never holds a doorbell's secret: the gateway opens the
+ * subscription's sealed blob, adds the record's auth and makes the send
+ * (`gateway/src/doorbell.ts`). The outside kill switch is the platform's control record
+ * (`c:control`, in the owner Worker's control namespace, `control-gate.ts`), read with the
+ * doors' own rule: the lane asks `open()` once a pass, before it claims, and claims nothing
  * on closed, a failure or no answer.
  */
 import { Invalid } from "./errors";
 import type { Write } from "./gate";
-import { type Ledger, type Outcome, outcome, type WakeTarget } from "./ledger";
+import {
+  type Ledger, type LiveCallback, type Outcome, outcome, WAKE_LEASE_S, type WakeTarget,
+} from "./ledger";
 import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
-import { type DoorbellRequest, doorbellRequest, kindNamed, type WakeContent } from "./wake-kinds";
+import { type Change, type DoorbellRequest, doorbellRequest, kindNamed, type WakeContent }
+  from "./wake-kinds";
 
 /** At most this many rows per pass per lane run; a run with more due runs again at once. */
 export const WAKES_PER_ALARM = 16;
 /**
- * How long a row whose pass failed in process waits before the lane takes it again, and
- * how long the lane holds its job when the kill switch is closed (a flip reaches every
- * location within KV's 60 s).
+ * How long the lane holds its job when the kill switch is closed: the time a flip takes
+ * to reach every location (KV's 60 s), so a sooner read sees the same record.
  */
 export const WAKE_RETRY_S = 60;
 /**
- * How long the lane waits on one send or revoke, and on the kill switch's answer: what is
- * left of the lane's hung timeout once the pass stops taking rows, so a pass ends inside
- * it whatever a sender does.
+ * How long the lane waits on one send, and on the kill switch's answer: what is left of
+ * the lane's hung timeout once the pass stops taking rows, so a pass ends inside it
+ * whatever a sender does.
  */
 export const WAKE_SEND_MS = (LANE_HUNG_S - LANE_PASS_S) * 1000;
 /** What a pass answers when the kill switch was closed: it claimed nothing. */
@@ -61,13 +64,6 @@ export interface WakeSender {
    * any connection is `failed` with reason `not_sent`.
    */
   send(target: WakeTarget, mark: () => Promise<void>): Promise<Outcome>;
-  /**
-   * Erase the agent's callbacks tagged at or before `generation` (the subscription
-   * generation each subscribe returned), and never a newer one: the agent was disabled,
-   * moved to another delivery method or deleted, and may since have been re-enabled and
-   * subscribed again. Erasing twice is harmless.
-   */
-  revoke(agentId: string, generation: number): Promise<void>;
 }
 
 /**
@@ -77,19 +73,18 @@ export interface WakeSender {
  * First the recover pass: each claim past its lease, by its own index, whether or not
  * there is a sender, so open work ahead of it can never starve it. Then, with a sender and
  * due rows, the kill switch, asked once (`open()`, bounded at `sendMs`): closed, failed or
- * late claims nothing. Then the claim pass: each due open row once, a wake sent or a
- * revoke carried out, taking none once the wall clock reaches `until` (`schedule.ts`,
- * `LANE_PASS_S`). One failing row (the sender's call, or the row's own step) is logged and
- * backed off `WAKE_RETRY_S` in its row, so it never stops the others, never makes the pass
- * throw and never loops the alarm. Only a failure to write that backoff, a storage fault,
- * throws.
+ * late claims nothing. Then the claim pass: each due open row once, taking none once the
+ * wall clock reaches `until` (`schedule.ts`, `LANE_PASS_S`). One failing row (the
+ * sender's call, or the row's own step) is logged and backed off a lease in its row
+ * (`WAKE_LEASE_S`, the lane's own smallest interval), so it never stops the others, never
+ * makes the pass throw and never loops the alarm. Only a failure to write that backoff, a
+ * storage fault, throws.
  *
- * The lane bounds each send and revoke itself, at `sendMs`, rather than trust every
- * sender to: a late one is left to its lease. A
- * late send is marked first, since a byte may have left, so its lapsed claim recovers as
- * `unknown`, never sent again; a late revoke recovers due again, since erasing twice is
- * harmless. Every write (a recovery, a claim, a mark, a settle, a backoff) is one unit
- * through `write`, the object's gate (`gate.ts`), between the sends, never the whole pass.
+ * The lane bounds each send itself, at `sendMs`, rather than trust every sender to: a late
+ * one is marked first, since a byte may have left, and left to its lease, so its lapsed
+ * claim recovers as `unknown`, never sent again. Every write (a recovery, a claim, a mark,
+ * a settle, a backoff) is one unit through `write`, the object's gate (`gate.ts`), between
+ * the sends, never the whole pass.
  */
 export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock: () => number,
                                write: Write, limit: number = WAKES_PER_ALARM,
@@ -100,7 +95,7 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
       await write(() => ledger.recover(lapsed.wake_id, clock()));
     } catch {
       console.error("outside-agent wake recovery failed");  // no ids, URL or body in the log
-      await write(() => ledger.defer(lapsed.wake_id, clock() + WAKE_RETRY_S));
+      await write(() => ledger.defer(lapsed.wake_id, clock() + WAKE_LEASE_S));
     }
   }
   if (sender === null) {
@@ -121,17 +116,6 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
     }
     try {
       const claim = await write(() => ledger.claim(wake.wake_id, clock()));
-      if (claim.outcome === "revoke") {
-        const revoking = sender.revoke(claim.target.agent_id, claim.target.generation);
-        if (await inTime(revoking, sendMs) === "late") {
-          revoking.catch(() => undefined);
-          console.error("a doorbell revoke ran past its bound; it is left to its lease");
-          continue;
-        }
-        await write(() => ledger.settle(claim.target.wake_id, claim.target.claim_id,
-                                        { state: "sent" }, clock()));
-        continue;
-      }
       if (claim.outcome !== "claimed") {
         continue;
       }
@@ -154,63 +138,85 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
       accepted += answer.state === "sent" ? 1 : 0;
     } catch {
       console.error("outside-agent wake failed");  // no ids, URL or body in the log
-      await write(() => ledger.defer(wake.wake_id, clock() + WAKE_RETRY_S));
+      await write(() => ledger.defer(wake.wake_id, clock() + WAKE_LEASE_S));
     }
   }
   return accepted;
 }
 
-/** How a doorbell request leaves: production's global `fetch`, a recording fake in tests. */
-export type Transport = (request: Request) => Promise<Response>;
+/** The gateway's answer to one ring (`gateway/src/doorbell.ts`). */
+export type RingAnswer =
+  | { readonly state: "answered"; readonly status: number; readonly retry_after: string | null;
+      readonly resealed?: { readonly blob: string; readonly kid: string;
+                            readonly version: number } }
+  | { readonly state: "refused" }
+  | { readonly state: "unknown" };
+
+/** One subscription's send through the gateway: its sealed blob, and the object's request. */
+export type Ring = (subscription: string, version: number, blob: string,
+                    previous: { readonly version: number; readonly blob: string } | null,
+                    request: DoorbellRequest) => Promise<RingAnswer>;
 
 /** What the doorbell reads and calls: the object's, handed in by the object. */
 export interface DoorbellDeps {
   readonly ledger: Ledger;
   /** Whether an outside client's grant still stands (`Grants.live`), read at each send. */
   readonly live: (client: string) => boolean;
+  /** Whether that client's grant reads its agent's command center (`read_graph`). */
+  readonly reads: (client: string, center: string) => boolean;
+  /** Whether any of these room collections changed past `after` (`Collections.touched`). */
+  readonly touched: (rooms: readonly string[], after: number) => boolean;
+  /** A notice for the owner (`notices.ts`), in a unit of its own. */
+  readonly notice: (type: string, detail: string) => Promise<void>;
   readonly write: Write;
   readonly clock: () => number;
   /** The kill switch: whether the control record lets this owner's outside work go now. */
   readonly gate: () => Promise<boolean>;
-  readonly transport: Transport;
+  readonly ring: Ring;
 }
 
-/** What a wake says, and the digests that answer just its change. */
-export function wakeContent(target: WakeTarget): WakeContent {
+/** What a wake says to one subscription: just the changes it follows. */
+export function wakeContent(target: WakeTarget, changes: readonly Change[]): WakeContent {
   const read = [
-    ...(target.changes.includes("mail") || target.changes.includes("rooms")
-      ? ["inbox_digest"] : []),
-    ...(target.changes.includes("board") ? ["board_digest"] : []),
+    ...(changes.includes("mail") || changes.includes("rooms") ? ["inbox_digest"] : []),
+    ...(changes.includes("board") ? ["board_digest"] : []),
   ];
   return { agent_id: target.agent_id, command_center_id: target.command_center_id,
-           changes: target.changes, cursor: target.cursor, after: target.after, read };
+           changes, cursor: target.cursor, after: target.after, read };
 }
 
-/** A 429's `Retry-After`, in seconds: a delta or an HTTP date; null when unreadable. */
+/** A 429's `Retry-After` as sent, in seconds (a delta, or an HTTP date); null unreadable. */
 function retryAfterOf(value: string | null, now: number): number | null {
   if (value === null) {
     return null;
   }
-  if (/^\d{1,9}$/.test(value.trim())) {
+  if (/^\d{1,15}$/.test(value.trim())) {
     return Number(value.trim());
   }
   const at = Date.parse(value);
   return Number.isNaN(at) ? null : Math.max(0, at / 1000 - now);
 }
 
+/** One subscription's answer, as the wake's outcome ranks it. */
+type Answered = { readonly status: number; readonly retry_after: number | null };
+
 /**
- * The object's doorbell: one sender for every wake kind, from that kind's record.
+ * The object's doorbell: one sender for every wake kind, from that kind's record, through
+ * the gateway.
  *
- * A send reads its client's grant and the agent's live callback (`Ledger.callback`: stored
- * past the agent's newest scheduled revoke, for its current kind, unexpired), builds the
- * record's request (refused before any byte, `failed` `not_sent`, when the callback no
- * longer passes the record), marks the row, then reads both again immediately before the
- * byte: a revoke, a disable or a grant change that landed meanwhile wins, and nothing is
- * sent. No callback, or a grant that no longer stands, is `suppressed`: the agent catches
- * up through its digests on its own schedule. The request never follows a redirect, and
- * its answer's body is never read. A transport failure after the mark is `unknown`, never
- * replayed; a 2xx is `sent`; a 429 `rate_limited`, with its `Retry-After`; a status the
- * record names `gone` erases the callback; anything else is `failed` with its status.
+ * A send reads its client's grant (it stands, and reads the agent's command center) and the
+ * agent's live subscriptions, keeps those that follow the wake's changes (mail always; the
+ * board if it follows the board; rooms if a room it names changed past the wake's cursor),
+ * builds each one's request from its record, marks the row, then reads both again
+ * immediately before the first byte: a revoke, a disable or a grant change that landed
+ * meanwhile wins, and nothing is sent. No subscription left, or a grant that no longer
+ * stands or reads, is `suppressed`: the agent catches up through its digests on its own
+ * schedule. Each subscription is rung through the gateway, its blob resealed there when its
+ * kid retired. The wake is `unknown` if any send may have left without an answer, else
+ * `sent` if any was accepted (2xx), else `rate_limited` for the longest 429's
+ * `Retry-After`, else `failed` with the first status: a 410 or 413 keeps the subscription
+ * (the MCP Events spec), and a status the record names `token_dead` leaves the owner a
+ * notice that its pasted token no longer works.
  */
 export class Doorbell implements WakeSender {
   readonly #deps: DoorbellDeps;
@@ -228,20 +234,44 @@ export class Doorbell implements WakeSender {
     }
   }
 
-  async send(target: WakeTarget, mark: () => Promise<void>): Promise<Outcome> {
-    const { ledger, live, clock } = this.#deps;
-    const now = clock();
+  /** The changes `callback` follows of `target`'s. */
+  #follows(callback: LiveCallback, target: WakeTarget): Change[] {
+    return target.changes.filter((change) => change === "mail"
+      || (change === "board" && callback.board)
+      || (change === "rooms" && callback.rooms.length > 0
+          && this.#deps.touched(callback.rooms, target.after)));
+  }
+
+  /** The subscriptions to ring now, or why none: the grant, its reach, or none follows. */
+  #live(target: WakeTarget): LiveCallback[] | "grant" | "scope" | "no_callback" {
+    const { ledger, live, reads, clock } = this.#deps;
     if (!live(target.client)) {
-      return { state: "suppressed", reason: "grant" };
+      return "grant";
     }
-    const callback = ledger.callback(target.agent_id, now);
-    const kind = callback === null ? null : kindNamed(callback.kind);
-    if (callback === null || kind === null || kind.push === null) {
-      return { state: "suppressed", reason: "no_callback" };
+    if (!reads(target.client, target.command_center_id)) {
+      return "scope";
     }
-    let request: DoorbellRequest;
+    const callbacks = ledger.callbacks(target.agent_id, clock())
+      .filter((callback) => this.#follows(callback, target).length > 0);
+    return callbacks.length ? callbacks : "no_callback";
+  }
+
+  async send(target: WakeTarget, mark: () => Promise<void>): Promise<Outcome> {
+    const found = this.#live(target);
+    if (typeof found === "string") {
+      return { state: "suppressed", reason: found };
+    }
+    let requests: { callback: LiveCallback; request: DoorbellRequest }[];
     try {
-      request = doorbellRequest(kind, callback, wakeContent(target), target.wake_id, now);
+      requests = found.map((callback) => {
+        const kind = kindNamed(callback.kind);
+        if (kind === null) {
+          throw new Invalid("this subscription's kind is gone");
+        }
+        return { callback, request: doorbellRequest(
+          kind, callback.subscription_id, wakeContent(target, this.#follows(callback, target)),
+          target.wake_id, target.at) };
+      });
     } catch (error) {
       if (error instanceof Invalid) {
         return { state: "failed", reason: "not_sent" };
@@ -249,38 +279,63 @@ export class Doorbell implements WakeSender {
       throw error;
     }
     await mark();
-    // Immediately before the byte: a revoke, disable or grant change since wins.
-    const again = ledger.callback(target.agent_id, clock());
-    if (!live(target.client) || again === null || again.generation !== callback.generation) {
+    // Immediately before the first byte: a revoke, disable or grant change since wins.
+    const again = this.#live(target);
+    if (typeof again === "string") {
       return { state: "failed", reason: "not_sent" };
     }
-    let status: number;
-    let retry: string | null;
-    try {
-      const response = await this.#deps.transport(new Request(request.url, {
-        method: "POST", headers: request.headers, body: request.body, redirect: "manual",
-      }));
-      status = response.status;
-      retry = response.headers.get("Retry-After");
-      await response.body?.cancel();
-    } catch {
-      return { state: "unknown" };  // a byte may have left: never replayed
+    const still = new Set(again.map((callback) => callback.subscription_id));
+    const answers: Answered[] = [];
+    let unknown = false;
+    for (const { callback, request } of requests) {
+      if (!still.has(callback.subscription_id)) {
+        continue;  // ended since: never sent to
+      }
+      let rung: RingAnswer;
+      try {
+        rung = await this.#deps.ring(callback.subscription_id, callback.version, callback.blob,
+                                     callback.previous, request);
+      } catch {
+        unknown = true;  // the gateway's answer was lost: a byte may have left
+        continue;
+      }
+      if (rung.state === "unknown") {
+        unknown = true;
+        continue;
+      }
+      if (rung.state === "refused") {
+        continue;  // never sent: its blob or URL no longer passes
+      }
+      if (rung.resealed !== undefined) {
+        const { blob, kid, version } = rung.resealed;
+        await this.#deps.write(() => this.#deps.ledger.resealed(callback.subscription_id, blob,
+                                                                 kid, version));
+      }
+      answers.push({ status: rung.status,
+                     retry_after: retryAfterOf(rung.retry_after, this.#deps.clock()) });
+      const dead = kindNamed(callback.kind)?.push?.token_dead ?? [];
+      if (callback.principal === "owner" && dead.includes(rung.status)) {
+        await this.#deps.notice("doorbell_token_refused",
+                                `${target.agent_id}: ${callback.kind} answered ${rung.status}; ` +
+                                "paste the token the vendor shows now");
+      }
     }
-    if (status >= 200 && status < 300) {
-      return { state: "sent", status };
+    if (unknown) {
+      return { state: "unknown" };
     }
-    if (status === 429) {
-      return { state: "rate_limited", status, retry_after: retryAfterOf(retry, clock()) };
+    const accepted = answers.find((answer) => answer.status >= 200 && answer.status < 300);
+    if (accepted !== undefined) {
+      return { state: "sent", status: accepted.status };
     }
-    if (kind.push.gone.includes(status)) {
-      await this.#deps.write(() => ledger.eraseCallbacks(target.agent_id, callback.generation));
-      return { state: "failed", status, reason: "gone" };
+    const limited = answers.filter((answer) => answer.status === 429);
+    if (limited.length) {
+      const waits = limited.map((answer) => answer.retry_after);
+      return { state: "rate_limited", status: 429,
+               retry_after: waits.includes(null) ? null
+                 : Math.max(...waits.map((wait) => wait ?? 0)) };
     }
-    return { state: "failed", status };
-  }
-
-  async revoke(agentId: string, generation: number): Promise<void> {
-    const { ledger, write } = this.#deps;
-    await write(() => ledger.eraseCallbacks(agentId, generation));
+    const first = answers[0];
+    return first === undefined ? { state: "failed", reason: "not_sent" }
+      : { state: "failed", status: first.status };
   }
 }

@@ -5,8 +5,8 @@
  * The Python's broker tick becomes one alarm pass (`runWakes`) on the owner's own object
  * with a scripted doorbell (`FakeSender`); its op journal becomes the wake row's
  * may-have-sent mark. The cross-owner fairness test has no counterpart: each object is
- * its own owner. The kill switch, owner admission, event store and HTTP doorbell are the
- * doorbell slice's (openspec clean-sheet-platform tasks 7).
+ * its own owner. The doorbell itself, the kill switch and admission are
+ * `doorbell.test.ts`'s (slice W).
  */
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -38,22 +38,22 @@ async function states(r: Rig, table = "ledger_wakes"): Promise<string[]> {
 
 /** Only the wake rows' states, leaving out revokes. */
 async function wakeStates(r: Rig): Promise<string[]> {
-  return (await wakes(r)).filter((w) => w["kind"] === "wake").map((w) => w["state"] as string);
+  return (await wakes(r)).map((w) => w["state"] as string);
 }
 
 /** A write gate over the object's storage, as the object's lanes write through. */
 const gateOf = (state: DurableObjectState) => new WriteGate(state.storage).write;
 
 /** A ringing agent with no batch window, registered and tuned in `ledger` itself. */
-function ringing(ledger: Ledger, from = MUSE, perHour = 12): string {
+function ringing(ledger: Ledger, from = MUSE, perHour: number | null = null): string {
   const id = ledger.register(from, MCP, RINGS).agent_id;
   ledger.setWakeLimits(id, perHour, 0);
   return id;
 }
 
 /**
- * A doorbell that ignores its own bound: each send and revoke hangs until `release`, and a
- * send never calls `mark()` first, so only the lane can mark it.
+ * A doorbell that ignores its own bound: each send hangs until `release`, and never calls
+ * `mark()` first, so only the lane can mark it.
  */
 class HangingSender extends FakeSender {
   readonly #waiting: (() => void)[] = [];
@@ -66,11 +66,6 @@ class HangingSender extends FakeSender {
     this.sent.push(target);
     await new Promise<void>((resolve) => this.#waiting.push(resolve));
     return { state: "sent", status: 202 };
-  }
-
-  override async revoke(agentId: string, generation: number): Promise<void> {
-    this.revoked.push([agentId, generation]);
-    await new Promise<void>((resolve) => this.#waiting.push(resolve));
   }
 }
 
@@ -104,7 +99,7 @@ describe("one open wake per ringing recipient", () => {
     expect(target).toEqual({
       wake_id: wake!["wake_id"], claim_id: target!.claim_id, agent_id: muse,
       command_center_id: "alpha", client: MUSE.client, family: MUSE.family, cursor: 0,
-      through: 2, changes: ["mail"], after: 0,
+      through: 2, changes: ["mail"], after: 0, at: wake!["created_at"],
     });
     expect(await states(r)).toEqual(["sent"]);
     expect(new Set(await states(r, "ledger_recipients"))).toEqual(new Set(["woken"]));
@@ -127,7 +122,9 @@ describe("one open wake per ringing recipient", () => {
     expect((await wakes(r)).map((w) => [w["agent_id"], w["state"]])).toEqual([[muse, "sent"]]);
     expect(await r.tick(clock() + HOUR_S)).toBe(0);
     expect(r.sender.sent).toHaveLength(1);
-    const refused = await failure(() => r.stub.wakeSubscribe(r.bind(DOT), subscription(dot)));
+    void dot;
+    const refused = await failure(() => r.stub.wakeSubscribe(r.bind(DOT), subscription(
+      "alpha", { client: DOT.client })));
     expect(refused.message).toBe("not this caller's subscribing agent");  // no doorbell
   });
 
@@ -137,19 +134,21 @@ describe("one open wake per ringing recipient", () => {
     // Each half of the identity alone is not the identity.
     const clientOnly = { client: MUSE.client, family: DOT.family };
     const familyOnly = { client: DOT.client, family: MUSE.family };
-    for (const [from, agent] of [[DOT, muse], [MUSE, "agent_" + "0".repeat(16)],
-                                 [null, muse], [clientOnly, muse],
-                                 [familyOnly, muse]] as const) {
-      const refused = await failure(() => r.stub.wakeSubscribe(r.bind(from),
-                                                               subscription(agent)));
+    for (const from of [DOT, null, clientOnly, familyOnly]) {
+      const refused = await failure(() => r.stub.wakeSubscribe(r.bind(from), subscription(
+        "alpha", { client: from?.client ?? MUSE.client })));
       expect(refused.name).toBe("Refused");
     }
     const wrongCenter = await failure(() => r.stub.wakeSubscribe(r.bind(MUSE),
-                                                                 subscription(muse, "beta")));
+                                                                 subscription("beta")));
     expect(wrongCenter.name).toBe("Refused");
-    expect(await r.stub.wakeSubscribe(r.bind(MUSE), subscription(muse)))
-      .toEqual({ agent_id: muse, generation: 1 });  // each subscribe opens the next
-    expect(await r.subscribe(MUSE, muse)).toBe(2);
+    const door = subscription();
+    expect(await r.stub.wakeSubscribe(r.bind(MUSE), door))
+      .toEqual({ subscription_id: door.subscription_id, agent_id: muse, expires_at: null });
+    // The same identity again refreshes it; another URL is another subscription.
+    expect(await r.subscribe(MUSE)).toBe(door.subscription_id);
+    await r.subscribe(MUSE, "alpha", { url: "https://doorbell.test/work-chat" });
+    expect(await r.sql("SELECT agent_id FROM wake_callbacks")).toHaveLength(2);
   });
 
   it("suppresses a disabled agent's open wake, or one moved off mcp_event", async () => {
@@ -166,34 +165,23 @@ describe("one open wake per ringing recipient", () => {
     await r.post(null, `dm:${muse}`, { cmid: "c2" });
     await r.register(MUSE, "Muse", "pull");
     expect(await wakeStates(r)).toEqual(["suppressed", "suppressed"]);
-    const second = (await wakes(r)).filter((w) => w["kind"] === "wake")[1]!;
+    const second = (await wakes(r))[1]!;
     expect(JSON.parse(second["receipt_json"] as string)).toEqual({ reason: "delivery_method" });
   });
 
-  it("suppresses a wake left open for a disabled agent at claim, and revokes what it lost",
-     async () => {
+  it("erases a disabled agent's subscriptions with it, and suppresses a wake left open at " +
+     "claim", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
-    await r.subscribe(MUSE, muse);
+    await r.subscribe(MUSE);
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "revoked" });
-    expect(await r.tick()).toBe(0);  // the disable's own revoke
-    expect(r.sender.revoked).toEqual([[muse, 1]]);
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);  // in the disable's unit
     // A wake left open by a direct store change, as a crash would.
-    await r.sql("UPDATE ledger_wakes SET state = 'pending', settled_at = NULL " +
-                "WHERE kind = 'wake'");
+    await r.sql("UPDATE ledger_wakes SET state = 'pending', settled_at = NULL");
     expect(await r.tick()).toBe(0);
     expect(r.sender.sent).toEqual([]);
     expect(await wakeStates(r)).toEqual(["suppressed"]);
-    expect(await r.tick()).toBe(0);
-    expect(r.sender.revoked).toEqual([[muse, 1]]);  // that subscription is revoked already
-    // A crash that lost the suppression and the revoke's record too: the claim catches it.
-    await r.sql("UPDATE ledger_wakes SET state = 'pending', settled_at = NULL " +
-                "WHERE kind = 'wake'");
-    await r.sql("UPDATE outside_agents SET revoked_through = 0");
-    expect(await r.tick()).toBe(0);
-    expect(await r.tick()).toBe(0);  // its revoke, on the next pass
-    expect(r.sender.revoked).toEqual([[muse, 1], [muse, 1]]);
   });
 });
 
@@ -220,10 +208,13 @@ describe("a wake is sent once and never replayed", () => {
     expect(await wakeReceipts(r)).toEqual(["rate_limited", "wake_accepted"]);
   });
 
-  it("clamps Retry-After to one second through one day; unreadable waits a minute", () => {
-    expect([0.2, 1, 120, 10 ** 9, -5].map(retryAfter)).toEqual([1, 1, 120, 86_400, 1]);
-    expect([null, undefined, Number.NaN, Number.POSITIVE_INFINITY].map(retryAfter))
-      .toEqual([60, 60, 60, 60]);
+  it("waits a Retry-After exactly as sent; one it could not read backs off by attempt", () => {
+    expect([0, 0.2, 120, 3 * 86_400, 10 ** 9].map((wait) => retryAfter(wait, 1)))
+      .toEqual([0, 0.2, 120, 3 * 86_400, 10 ** 9]);
+    expect([1, 2, 3, 4].map((attempts) => retryAfter(null, attempts)))
+      .toEqual([WAKE_LEASE_S, 2 * WAKE_LEASE_S, 4 * WAKE_LEASE_S, 8 * WAKE_LEASE_S]);
+    expect([undefined, Number.NaN, -5, Number.POSITIVE_INFINITY]
+      .map((wait) => retryAfter(wait, 1))).toEqual([60, 60, 60, 60]);
   });
 
   it("refuses a doorbell answer outside the outcome's shape", () => {
@@ -319,14 +310,13 @@ describe("a wake is sent once and never replayed", () => {
       expect(r.sender.sent).toHaveLength(step + 1);
     }
     const stored = JSON.stringify([r.sender.sent, await r.table("ledger_wakes"),
-                                   await r.table("ledger_receipts"),
-                                   await r.table("ledger_rings")]);
+                                   await r.table("ledger_receipts")]);
     for (const body of bodies) {
       expect(stored).not.toContain(body);
     }
     for (const target of r.sender.sent) {
-      expect(Object.keys(target).sort()).toEqual(["after", "agent_id", "changes", "claim_id", "client",
-        "command_center_id", "cursor", "family", "through", "wake_id"]);
+      expect(Object.keys(target).sort()).toEqual(["after", "agent_id", "at", "changes",
+        "claim_id", "client", "command_center_id", "cursor", "family", "through", "wake_id"]);
     }
   });
 });
@@ -343,7 +333,7 @@ describe("a claim settles only by its holder", () => {
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, now);
       ledger.post(null, `dm:${dot}`, "c2", "hello", null, now);  // its batch window: not due
       const due = ledger.dueOpen(now, 16);
-      expect(due.map((w) => [w.agent_id, w.kind, w.state])).toEqual([[muse, "wake", "pending"]]);
+      expect(due.map((w) => [w.agent_id, w.state])).toEqual([[muse, "pending"]]);
       const later = ledger.agents(null).find((a) => a.agent_id === dot)!;
       expect(later.batch_window_s).toBe(60);
       const claim = ledger.claim(due[0]!.wake_id, now);
@@ -376,7 +366,6 @@ describe("a claim settles only by its holder", () => {
                                  "WHERE wake_id = ?", target.wake_id);
           return r.sender.send(target, mark);
         },
-        revoke: (agentId, generation) => r.sender.revoke(agentId, generation),
       };
       return runWakes(ledgerOn(state.storage), lapsing, () => now, gateOf(state));
     });
@@ -477,28 +466,39 @@ describe("a claim settles only by its holder", () => {
 });
 
 describe("W3 limits", () => {
-  it("caps an agent's rings per hour and pushes the wake past the cap", async () => {
+  it("holds the owner's cap with one counter: one ring each hour over the cap", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event",
                                   { max_wakes_per_hour: 2, batch_window_s: 0 });
     const t = clock() + 1;
-    for (const [n, at] of [[1, t], [2, t + 10]] as const) {
-      await r.post(null, `dm:${muse}`, { cmid: `c${n}` });
-      expect(await r.tick(at)).toBe(1);
-    }
-    await r.post(null, `dm:${muse}`, { cmid: "c3" });
-    expect(await r.tick(t + 20)).toBe(0);
-    expect(r.sender.sent).toHaveLength(2);
+    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    expect(await r.tick(t)).toBe(1);
+    await r.post(null, `dm:${muse}`, { cmid: "c2" });
+    expect(await r.tick(t + 10)).toBe(0);
     const open = (await wakes(r)).find((w) => w["state"] === "pending")!;
-    expect(open["due"]).toBeCloseTo(t + HOUR_S, 6);  // when the first ring leaves the hour
+    expect(open["due"]).toBeCloseTo(t + HOUR_S / 2, 6);
     expect((await r.table("ledger_recipients")).map((x) => x["state"]))
-      .toEqual(["woken", "woken", "held_cap"]);
-    expect(await r.tick(t + HOUR_S - 1)).toBe(0);
-    expect(await r.tick(t + HOUR_S)).toBe(1);
+      .toEqual(["woken", "held_cap"]);
+    expect(await r.tick(t + HOUR_S / 2 - 1)).toBe(0);
+    expect(await r.tick(t + HOUR_S / 2)).toBe(1);
     expect((await r.table("ledger_recipients")).map((x) => x["state"]))
-      .toEqual(["woken", "woken", "woken"]);
-    // The rings older than an hour are pruned at the next claim.
-    expect((await r.table("ledger_rings")).map((x) => x["at"])).toEqual([t + 10, t + HOUR_S]);
+      .toEqual(["woken", "woken"]);
+    // The cap's whole state is one column on the agent's row.
+    const [agent] = await r.sql("SELECT wake_tat FROM outside_agents");
+    expect(agent!["wake_tat"]).toBeCloseTo(t + HOUR_S, 6);
+  });
+
+  it("takes any whole cap from 1, or none", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event",
+                                  { max_wakes_per_hour: 100_000, batch_window_s: 0 });
+    expect((await r.stub.outsideAgents(r.bind(null))).agents[0]!.max_wakes_per_hour)
+      .toBe(100_000);
+    const t = clock() + 1;
+    for (const n of [1, 2, 3]) {
+      await r.post(null, `dm:${muse}`, { cmid: `c${n}` });
+      expect(await r.tick(t + n)).toBe(1);  // 0.036 s apart: never held at this rate
+    }
   });
 
   it("reads held mail as read, with its receipt", async () => {
@@ -517,25 +517,22 @@ describe("W3 limits", () => {
       .toHaveLength(2);
   });
 
-  it("holds a lowered cap to the newest rings still in the hour", async () => {
+  it("counts a changed cap afresh", async () => {
     const r = await rig();
     const t = clock();
-    const capped = await r.inLedger({}, (ledger) => {
-      const muse = ringing(ledger, MUSE, 3);
-      for (const n of [0, 1, 2]) {
-        ledger.post(null, `dm:${muse}`, `c${n}`, "x", null, t + 10 * n);
-        const claim = ledger.claim(ledger.dueOpen(t + 10 * n, 1)[0]!.wake_id, t + 10 * n);
-        if (claim.outcome !== "claimed") {
-          throw new Error("expected a claim");
-        }
-        ledger.settle(claim.target.wake_id, claim.target.claim_id, { state: "sent" }, t + 10 * n);
+    const claims = await r.inLedger({}, (ledger) => {
+      const muse = ringing(ledger, MUSE, 1);
+      ledger.post(null, `dm:${muse}`, "c0", "x", null, t);
+      const first = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
+      if (first.outcome !== "claimed") {
+        throw new Error("expected a claim");
       }
-      ledger.setWakeLimits(muse, 2, 0);  // three rings in the hour, two allowed
-      ledger.post(null, `dm:${muse}`, "c3", "x", null, t + 30);
-      return ledger.claim(ledger.dueOpen(t + 30, 1)[0]!.wake_id, t + 30);
+      ledger.settle(first.target.wake_id, first.target.claim_id, { state: "sent" }, t);
+      ledger.setWakeLimits(muse, 1, 0);  // the same cap, set again: counted afresh
+      ledger.post(null, `dm:${muse}`, "c1", "x", null, t + 10);
+      return ledger.claim(ledger.dueOpen(t + 10, 1)[0]!.wake_id, t + 10).outcome;
     });
-    // Two rings may stand in any hour: the second newest leaves it first.
-    expect(capped).toEqual({ outcome: "capped", due: t + 10 + HOUR_S });
+    expect(claims).toBe("claimed");
   });
 
   it("pushes a new wake's due time by the agent's batch window", async () => {
@@ -546,97 +543,6 @@ describe("W3 limits", () => {
     expect(wake!["due"] as number - (wake!["created_at"] as number)).toBe(300);
     expect(await r.tick((wake!["due"] as number) - 1)).toBe(0);
     expect(await r.tick(wake!["due"] as number)).toBe(1);
-  });
-});
-
-describe("a revoke of a suppressed agent's callbacks", () => {
-  it("is scheduled once per subscription, on disable, off mcp_event and on delete",
-     async () => {
-    const r = await rig();
-    const muse = await r.register(MUSE, "Muse", "mcp_event");
-    const dot = await r.register(DOT, "Dot", "pull");
-    const revokes = async () => (await wakes(r)).filter((w) => w["kind"] === "revoke")
-      .map((w) => [w["agent_id"], w["state"], w["generation"]]);
-    await r.stub.disableAgent(r.session(null), { agent_id: dot, reason: "gone" });
-    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "gone" });
-    expect(await revokes()).toEqual([]);  // neither ever subscribed: no callback to erase
-    await r.register(MUSE, "Muse", "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "gone" });
-    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "again" });
-    expect(await revokes()).toEqual([[muse, "pending", 1]]);  // once for that subscription
-    expect(await r.tick()).toBe(0);
-    expect([r.sender.revoked, r.sender.callbacks.get(muse)]).toEqual([[[muse, 1]], new Set()]);
-    expect(await revokes()).toEqual([[muse, "sent", 1]]);
-    expect(await wakeReceipts(r)).toEqual(["revoked"]);
-    expect(JSON.parse((await r.table("ledger_receipts")).at(-1)!["detail_json"] as string))
-      .toEqual({ generation: 1 });
-    await r.register(MUSE, "Muse", "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.register(MUSE, "Muse", "pull");  // off mcp_event
-    await r.register(MUSE, "Muse", "mcp_event");
-    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
-    expect(await revokes()).toEqual([[muse, "sent", 1], [muse, "pending", 2]]);
-    await r.tick();
-    expect(r.sender.revoked).toEqual([[muse, 1], [muse, 2]]);
-  });
-
-  it("never erases the callback of an agent re-enabled after its revoke was scheduled",
-     async () => {
-    const r = await rig();
-    const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
-    await r.subscribe(MUSE, muse);
-    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
-    await r.register(MUSE, "Muse", "mcp_event");  // re-enabled before the revoke ran
-    expect(await r.subscribe(MUSE, muse)).toBe(2);
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
-    expect(await r.tick(clock() + 1)).toBe(1);
-    // The stale revoke still erased the old callback, and only it.
-    expect(r.sender.revoked).toEqual([[muse, 1]]);
-    expect(r.sender.callbacks.get(muse)).toEqual(new Set([2]));
-    expect(r.sender.sent.map((t) => t.agent_id)).toEqual([muse]);
-    const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
-    expect([agent!.disabled_reason, agent!.subscription, agent!.revoked_through])
-      .toEqual([null, 2, 1]);
-  });
-
-  it("raises an open revoke's generation instead of opening a second", async () => {
-    const r = await rig();
-    const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
-    await r.register(MUSE, "Muse", "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
-    expect((await wakes(r)).map((w) => [w["kind"], w["state"], w["generation"]]))
-      .toEqual([["revoke", "pending", 2]]);
-    await r.tick();
-    expect([r.sender.revoked, r.sender.callbacks.get(muse)]).toEqual([[[muse, 2]], new Set()]);
-  });
-
-  it("is due again after a lapsed lease, since erasing callbacks twice is harmless",
-     async () => {
-    const r = await rig();
-    const t = clock();
-    const state = await r.inLedger({}, (ledger) => {
-      const muse = ringing(ledger);
-      ledger.subscribe(MUSE, subscription(muse));
-      ledger.register(MUSE, MCP, { ...RINGS, delivery_method: "pull" }, t);  // off mcp_event
-      ledger.register(MUSE, MCP, RINGS, t);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t + 10);  // an open wake too
-      const [revoke] = ledger.dueOpen(t, 16);
-      const claim = ledger.claim(revoke!.wake_id, t);
-      expect(claim.outcome).toBe("revoke");
-      expect(() => ledger.settle(revoke!.wake_id, (claim as { target: { claim_id: string } })
-        .target.claim_id, { state: "unknown" }, t)).toThrow("a revoke settles sent");
-      return ledger.recover(revoke!.wake_id, t + WAKE_LEASE_S);
-    });
-    expect(state).toBe("pending");
-    // It stays its own row: a revoke never folds into the agent's open wake.
-    expect((await wakes(r)).map((w) => [w["kind"], w["state"]]))
-      .toEqual([["revoke", "pending"], ["wake", "pending"]]);
-    expect(await r.tick(t + WAKE_LEASE_S)).toBe(1);
-    expect(r.sender.revoked).toHaveLength(1);
   });
 });
 
@@ -678,7 +584,7 @@ describe("the wakes lane of the object's one schedule", () => {
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
       const ledger = ledgerOn(state.storage);
       const row = () => state.storage.sql.exec(
-        "SELECT state, marked FROM ledger_wakes WHERE kind = 'wake'").one();
+        "SELECT state, marked FROM ledger_wakes").one();
       ledger.post(null, `dm:${ringing(ledger)}`, "c1", "hello", null, t - 100);
       const hanging = new HangingSender();
       const started = Date.now();
@@ -697,27 +603,6 @@ describe("the wakes lane of the object's one schedule", () => {
     expect([out.late, out.released]).toEqual([{ state: "sending", marked: 1 },
                                               { state: "sending", marked: 1 }]);
     expect([out.after, out.sent]).toEqual([{ state: "unknown", marked: 1 }, 1]);
-  });
-
-  it("bounds each revoke itself: a late one is due again after its lease", async () => {
-    const r = await rig();
-    const t = clock();
-    const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage);
-      const row = () => state.storage.sql.exec(
-        "SELECT state, marked FROM ledger_wakes WHERE kind = 'revoke'").one();
-      const muse = ringing(ledger);
-      ledger.subscribe(MUSE, subscription(muse));
-      ledger.register(MUSE, MCP, { ...RINGS, delivery_method: "pull" }, t);  // off mcp_event
-      const hanging = new HangingSender();
-      await runWakes(ledger, hanging, () => t, gateOf(state), WAKES_PER_ALARM, 30);
-      const late = row();
-      const sender = new FakeSender();
-      await runWakes(ledger, sender, () => t + WAKE_LEASE_S, gateOf(state), WAKES_PER_ALARM, 30);
-      return { late, after: row(), revoked: [hanging.revoked.length, sender.revoked.length] };
-    });
-    expect(out).toEqual({ late: { state: "sending", marked: 0 },
-                          after: { state: "sent", marked: 0 }, revoked: [1, 1] });
   });
 
   it("backs a row whose step fails off in its own row, never in a loop (review N8)",
@@ -862,26 +747,14 @@ describe("the wakes lane of the object's one schedule", () => {
  * if its rule is dropped.
  */
 describe("the registry's quieter rules", () => {
-  it("hides a deleted agent's tombstone from its own outside caller's listing", async () => {
-    const r = await rig();
-    const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
-    const [tombstone] = await r.table("outside_agents");
-    expect([tombstone!["agent_id"], tombstone!["deleted_at"] !== null]).toEqual([muse, true]);
-    expect((await r.stub.outsideAgents(r.bind(MUSE))).agents).toEqual([]);
-    expect((await r.stub.outsideAgents(r.bind(null))).agents).toEqual([]);
-  });
-
   it("refuses a subscribe for its own agent once that agent is disabled", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
-    const refused = await failure(() => r.subscribe(MUSE, muse));
+    const refused = await failure(() => r.subscribe(MUSE));
     expect([refused.name, refused.message])
       .toEqual(["Refused", "not this caller's subscribing agent"]);
-    const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
-    expect(agent!.subscription).toBe(0);
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
   });
 
   it("lets an outside caller disable its own agent only by both halves of its identity",
@@ -904,48 +777,4 @@ describe("the registry's quieter rules", () => {
     expect(agent!.disabled_reason).toBeNull();
   });
 
-  it("keeps a deleted agent's tombstone while its revoke is being sent", async () => {
-    const r = await rig();
-    const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
-    const at = clock() + 1;
-    const claim = await r.inLedger({}, (ledger) => ledger.claim(ledger.dueOpen(at, 1)[0]!.wake_id,
-                                                                at));
-    if (claim.outcome !== "revoke") {
-      throw new Error("expected the revoke claimed");
-    }
-    await r.stub.deleteAgent(r.session(null), { agent_id: muse });  // its revoke is in flight
-    expect((await r.table("outside_agents")).map((a) => a["deleted_at"] !== null))
-      .toEqual([true]);
-    await r.inLedger({}, (ledger) => ledger.settle(claim.target.wake_id, claim.target.claim_id,
-                                                   { state: "sent" }, at + 1));
-    expect(await r.table("outside_agents")).toEqual([]);
-  });
-
-  it("purges a tombstone only once no revoke of it is left to run", async () => {
-    const r = await rig();
-    const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
-    const at = clock() + 1;
-    const first = await r.inLedger({}, (ledger) => ledger.claim(ledger.dueOpen(at, 1)[0]!.wake_id,
-                                                                at));
-    if (first.outcome !== "revoke") {
-      throw new Error("expected the revoke claimed");
-    }
-    // While the first revoke is in flight the agent comes back, subscribes and is deleted
-    // again: a second revoke, for its newer callback, opens beside the first.
-    expect(await r.register(MUSE, "Muse", "mcp_event")).toBe(muse);
-    expect(await r.subscribe(MUSE, muse)).toBe(2);
-    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
-    expect((await r.table("ledger_wakes")).map((w) => [w["state"], w["generation"]]))
-      .toEqual([["sending", 1], ["pending", 2]]);
-    await r.inLedger({}, (ledger) => ledger.settle(first.target.wake_id, first.target.claim_id,
-                                                   { state: "sent" }, at + 1));
-    expect((await r.table("outside_agents")).map((a) => a["agent_id"])).toEqual([muse]);
-    await r.tick(at + 2);
-    expect(r.sender.revoked).toEqual([[muse, 2]]);
-    expect(await r.table("outside_agents")).toEqual([]);
-  });
 });

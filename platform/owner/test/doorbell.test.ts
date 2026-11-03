@@ -1,167 +1,215 @@
 /**
- * The doorbell (slice W, tasks 7): each wake kind's request from its record, the kill
- * switch in the control record (`CONTROL`), admission, a revoke never outlived, a slow send
- * never replayed, and a wake that leads its agent's digest to just the change.
+ * The doorbell (slice W, tasks 7): each wake kind's request from its record, sent by the
+ * gateway with the secret only it can open; the kill switch in the control record
+ * (`CONTROL`); admission; a revoke never outlived; a slow send never replayed; a write that
+ * rings only the agents following it whose grant reads it, and never an agent's own; and a
+ * wake that leads its agent's digest to just the change.
  *
- * The object is production's but for its transport (`RungOwnerDO`): each request is
- * recorded as it leaves, never sent. Each test opens the kill switch for its own owner
- * only (the maintenance gate's canary list).
+ * The object is production's but for a recorder on its GATEWAY's rings (`RungOwnerDO`):
+ * each ring is recorded as the object asks it, then made by the real gateway, whose sends
+ * reach the fake receiver (`gateway/test/fake-upstream.ts`, read back from
+ * `https://status.test/doorbell`). Each test opens the kill switch for its own owner only
+ * (the maintenance gate's canary list), and uses its own callback paths.
  */
 import { createHmac } from "node:crypto";
 
-import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM_CALLER } from "../src/admission";
-import { outsideAdmits } from "../src/control-gate";
 import { WriteGate } from "../src/gate";
 import { clock, type Origin, WAKE_LEASE_S } from "../src/ledger";
-import type { Binding, OwnerDO } from "../src/owner-do";
-import { checkKinds, wakeKinds } from "../src/wake-kinds";
-import { CLOSED, Doorbell, runWakes, type Transport } from "../src/wakes";
+import type { OwnerDO } from "../src/owner-do";
+import { checkKinds, subscriptionId, wakeKinds } from "../src/wake-kinds";
+import { CLOSED, Doorbell, type RingAnswer, runWakes } from "../src/wakes";
 import raw from "../wake-kinds.json" with { type: "json" };
-import {
-  CALLBACK, DOT, ledgerOn, MCP, MUSE, rig, type Rig, subscription, WHSEC,
-} from "./ledger-support";
+import { DOT, EVENT, ledgerOn, ledgerSubscription, MCP, MUSE, rig, type Rig, WHSEC }
+  from "./ledger-support";
 import { failure } from "./support";
 import type { Rang, RungOwnerDO } from "./worker";
 
-const FIRE = "https://api.anthropic.com/v1/claude_code/routines/trig_01ABCDEF/fire";
-const GROK = "https://bots.example.net/hooks/routine-7";
-const TOKEN = "sk-test-0123456789abcdef";
+const TOKEN = "sk-ant-oat01-" + "t".repeat(40);
+const KEY = Buffer.from(WHSEC.slice("whsec_".length), "base64");
 
-type Rung = Rig & { rang: () => Promise<Rang[]> };
+type Rung = Rig & {
+  rang: () => Promise<Rang[]>;
+  /** A path of this test's own on the fake receiver. */
+  path: string;
+};
 
 async function rung(): Promise<Rung> {
   const r = await rig(env.RUNG as unknown as DurableObjectNamespace<OwnerDO>);
-  return { ...r, rang: () => runInDurableObject(r.stub, (i: OwnerDO) =>
-    [...(i as RungOwnerDO).doorbell.rang]) };
+  return { ...r, path: `t${crypto.randomUUID().slice(0, 8)}`,
+           rang: () => runInDurableObject(r.stub, (i: OwnerDO) => [...(i as RungOwnerDO).rang]) };
 }
 
-/** The directory's control record: the kill switch on for `owners` only, or off. */
+/** What the fake receiver took on this test's paths, oldest first. */
+async function received(r: Rung): Promise<{ url: string; redirect: string;
+                                            headers: Record<string, string>; body: string }[]> {
+  const all = await (await fetch("https://status.test/doorbell")).json() as
+    { url: string; redirect: string; headers: Record<string, string>; body: string }[];
+  return all.filter((request) => request.url.includes(r.path));
+}
+
+/** The control record: the kill switch on for `owners` only, or off. */
 async function control(owners: readonly string[], outside: "on" | "off" = "on"): Promise<void> {
   await env.CONTROL.put("c:control", JSON.stringify({
     outside, ordinary: "canary", canary: owners, inbound: false,
   }));
 }
 
-/** Run the object's alarm until no wake is pending or being sent, or `n` requests left. */
+/** Run the object's alarm until `n` rings were asked and no wake is due. */
 async function rings(r: Rung, n: number): Promise<Rang[]> {
   for (let tries = 0; tries < 300; tries++) {
     await runDurableObjectAlarm(r.stub);
-    const sent = await r.rang();
-    const open = await r.sql("SELECT 1 FROM ledger_wakes WHERE kind = 'wake' " +
-                             "AND state IN ('pending', 'sending') AND due <= ?", clock());
-    if (sent.length >= n && open.length === 0) {
-      return sent;
+    const asked = await r.rang();
+    const open = await r.sql("SELECT 1 FROM ledger_wakes WHERE state IN ('pending', 'sending') " +
+                             "AND due <= ?", clock());
+    if (asked.length >= n && open.length === 0) {
+      return asked;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("the wakes were not rung");
+  throw new Error("the wakes were not rung: " + JSON.stringify([
+    (await r.rang()).length, await r.sql("SELECT state, due, receipt_json FROM ledger_wakes"),
+    await r.wakesAt(), clock()]));
 }
 
-function write(r: Rig, collection: string, rowId: string, caller: Binding = r.bind(null),
+function write(r: Rig, collection: string, rowId: string, caller = r.bind(null),
                isPrivate = false) {
   return r.stub.collectionWrite(caller, { collection, row_id: rowId, body: `body of ${rowId}`,
                                           expected_etag: "", private: isPrivate });
 }
 
-/** A ringing agent with no batch window, its delivery `method`. */
-function agent(r: Rig, from: Origin, method: string): Promise<string> {
-  return r.register(from, from === MUSE ? "Muse" : "Dot", method);
+/**
+ * An agent's client's MCP Events subscription, as the MCP door makes it: its id derived,
+ * its callback sealed by the gateway (as `verifyDoorbell` seals it once verified).
+ */
+async function subscribed(r: Rung, from: Origin = MUSE, follows: { board?: boolean; rooms?: string[] }
+                            = {}, path = "chat", ttlMs: number | null = null) {
+  const url = `https://doorbell.test/${r.path}/${path}`;
+  const args = { command_center_id: "alpha", board: follows.board ?? false,
+                 rooms: follows.rooms ?? [] };
+  const id = subscriptionId(from.client, url, EVENT, args);
+  const sealed = await env.CONNECT.sealDoorbell(r.owner, id, 1,
+                                                { record: "chatgpt_mcp_events", url, secret: WHSEC });
+  await r.stub.wakeSubscribe(r.bind(from), {
+    subscription_id: id, name: EVENT, arguments: args, blob: sealed.blob, kid: sealed.kid,
+    version: 1, expires_at: ttlMs === null ? null : clock() + ttlMs / 1000 });
+  return { id, url };
 }
 
-describe("each wake kind sends its own record's shape", () => {
-  it("ChatGPT MCP Events: a Standard Webhooks signed event, IDs and cursors only", async () => {
-    const r = await rung();
-    await control([r.owner]);
-    const muse = await agent(r, MUSE, "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.post(null, `dm:${muse}`, { body: "a secret plan" });
-    const [sent] = await rings(r, 1);
-    const [wake] = await r.sql("SELECT wake_id, state FROM ledger_wakes WHERE kind = 'wake'");
-    expect(wake!["state"]).toBe("sent");
-    expect([sent!.url, sent!.method, sent!.redirect]).toEqual([CALLBACK, "POST", "manual"]);
-    const { headers, body } = sent!;
-    expect(Object.keys(headers).sort()).toEqual(["content-type", "webhook-id",
-      "webhook-signature", "webhook-timestamp", "x-mcp-subscription-id"]);
-    expect(headers["x-mcp-subscription-id"]).toBe("sub-1");
-    expect(headers["webhook-id"]).toBe(wake!["wake_id"]);
-    const key = Buffer.from(WHSEC.slice("whsec_".length), "base64");
-    const signed = createHmac("sha256", key)
-      .update(`${headers["webhook-id"]}.${headers["webhook-timestamp"]}.${body}`).digest("base64");
-    expect(headers["webhook-signature"]).toBe(`v1,${signed}`);
-    expect(JSON.parse(body)).toEqual({
-      eventId: wake!["wake_id"], name: "tinyassets.changed",
-      timestamp: new Date(Number(headers["webhook-timestamp"]) * 1000).toISOString(),
-      cursor: null,
-      data: { agent_id: muse, command_center_id: "alpha", changes: ["mail"], cursor: 0,
-              after: 0, read: ["inbox_digest"] },
-    });
-    expect(body).not.toContain("secret plan");
-  });
+/** The owner's pasted token for an agent, as the owner surface's route makes it. */
+async function pasted(r: Rung, agent: string, kind: string, url: string,
+                      follows: { board?: boolean; rooms?: string[] } = {}) {
+  const board = follows.board ?? false;
+  const rooms = follows.rooms ?? [];
+  const id = subscriptionId("owner", url, kind, { agent_id: agent, board, rooms });
+  const sealed = await env.CONNECT.sealDoorbell(r.owner, id, 1,
+                                                { record: kind, url, secret: TOKEN });
+  return r.stub.agentDoorbell(r.session(null), {
+    agent_id: agent, kind, subscription_id: id, board, rooms, blob: sealed.blob, kid: sealed.kid,
+    version: 1 });
+}
 
-  it("Claude /fire: the owner's token as a bearer, the beta header, one line of text",
+function signed(id: string, stamp: string, body: string): string {
+  return "v1," + createHmac("sha256", KEY).update(`${id}.${stamp}.${body}`).digest("base64");
+}
+
+type Delivered = { eventId: string; name: string; timestamp: string; cursor: null;
+                   data: { agent_id: string; changes: string[]; after: number; read: string[] } };
+
+describe("each wake kind sends its own record's shape, its secret the gateway's alone", () => {
+  it("ChatGPT MCP Events: a signed event, IDs and cursors only, nothing in the clear here",
      async () => {
     const r = await rung();
     await control([r.owner]);
-    const claude = await agent(r, MUSE, "routine_fire");
-    // The client cannot hand it over; the owner does, in session, on the vendor's own path.
-    expect((await failure(() => r.stub.wakeSubscribe(r.bind(MUSE), subscription(claude))))
-      .message).toBe("not this caller's subscribing agent");
-    expect((await failure(() => r.stub.agentDoorbell(r.bind(null),
-      { agent_id: claude, url: FIRE, secret: TOKEN }))).message)
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    const { id, url } = await subscribed(r);
+    await r.post(null, `dm:${muse}`, { body: "a secret plan" });
+    const [asked] = await rings(r, 1);
+    const [wake] = await r.sql("SELECT wake_id, state, created_at FROM ledger_wakes");
+    expect(wake!["state"]).toBe("sent");
+    // The object never held the secret or the URL: only the gateway's blob.
+    const stored = JSON.stringify(await r.sql("SELECT * FROM wake_callbacks"));
+    expect([stored.includes(WHSEC), stored.includes(url), stored.includes(r.path)])
+      .toEqual([false, false, false]);
+    expect(asked!.request.headers).toEqual({ "Content-Type": "application/json",
+                                              "X-MCP-Subscription-Id": id });
+    const [sent] = await received(r);
+    expect([sent!.url, sent!.redirect]).toEqual([url, "manual"]);
+    expect(sent!.headers["webhook-id"]).toBe(wake!["wake_id"]);
+    expect(sent!.headers["webhook-signature"])
+      .toBe(signed(sent!.headers["webhook-id"]!, sent!.headers["webhook-timestamp"]!, sent!.body));
+    expect(JSON.parse(sent!.body)).toEqual({
+      eventId: wake!["wake_id"], name: EVENT, cursor: null,
+      timestamp: new Date(Math.floor((wake!["created_at"] as number) * 1000)).toISOString(),
+      data: { agent_id: muse, command_center_id: "alpha", changes: ["mail"], cursor: 0,
+              after: 0, read: ["inbox_digest"] },
+    });
+    expect(sent!.body).not.toContain("secret plan");
+  });
+
+  it("Claude /fire: the owner's pasted token, sealed, sent as a bearer with its headers",
+     async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const claude = await r.register(MUSE, "Claude", "routine_fire");
+    const url = `https://api.anthropic.com/v1/claude_code/routines/trig_${r.path}/fire`;
+    // Only the owner, in session, for the agent's own kind.
+    expect((await failure(() => r.stub.agentDoorbell(r.bind(null), {
+      agent_id: claude, kind: "claude_routine_fire", subscription_id: "sub_" + "0".repeat(32),
+      board: true, rooms: [], blob: "b", kid: "k1", version: 1 }))).message)
       .toBe("interactive owner session required");
-    for (const url of ["https://api.anthropic.com.example.org/v1/claude_code/routines/t/fire",
-                       "https://api.anthropic.com/v1/messages", "http://api.anthropic.com" +
-                       "/v1/claude_code/routines/t/fire", "https://1.2.3.4/x"]) {
-      expect((await failure(() => r.stub.agentDoorbell(r.session(null),
-        { agent_id: claude, url, secret: TOKEN }))).name).not.toBe("Error");
-    }
-    expect(await r.stub.agentDoorbell(r.session(null), { agent_id: claude, url: FIRE,
-                                                         secret: TOKEN }))
-      .toEqual({ agent_id: claude, generation: 1 });
+    expect((await failure(() => pasted(r, claude, "grok_webhook_routine",
+                                       `https://doorbell.test/${r.path}/grok`))).message)
+      .toBe("not an agent whose doorbell the owner sets");
+    expect(await pasted(r, claude, "claude_routine_fire", url, { board: true }))
+      .toMatchObject({ agent_id: claude });
     await write(r, "board", "t1");
-    const [sent] = await rings(r, 1);
-    expect(sent!.url).toBe(FIRE);
-    expect(sent!.headers).toEqual({
+    await rings(r, 1);
+    const [sent] = await received(r);
+    expect(sent!.headers).toMatchObject({
       "authorization": `Bearer ${TOKEN}`, "content-type": "application/json",
       "anthropic-beta": "experimental-cc-routine-2026-04-01", "anthropic-version": "2023-06-01",
     });
-    const { text } = JSON.parse(sent!.body) as { text: string };
-    expect(text).toBe(`TinyAssets: new board for agent ${claude} in alpha. Read just the ` +
-                      "change: board_digest with after=0.");
+    expect(JSON.parse(sent!.body)).toEqual({
+      text: `TinyAssets: new board for agent ${claude} in alpha. Read just the change: ` +
+        "board_digest with after=0." });
   });
 
   it("Grok's webhook routine: the routine's key as a bearer, the wake as JSON", async () => {
     const r = await rung();
     await control([r.owner]);
-    const grok = await agent(r, MUSE, "webhook");
-    await r.stub.agentDoorbell(r.session(null), { agent_id: grok, url: GROK, secret: TOKEN });
+    const grok = await r.register(MUSE, "Grok", "webhook");
+    await pasted(r, grok, "grok_webhook_routine", `https://doorbell.test/${r.path}/grok`,
+                 { rooms: ["room:app:lobby"] });
+    await write(r, "room:app:den", "m0");  // not a room it follows: rings nothing
+    expect(await r.table("ledger_wakes")).toEqual([]);
     await write(r, "room:app:lobby", "m1");
-    const [sent] = await rings(r, 1);
-    expect([sent!.url, sent!.headers["authorization"]]).toEqual([GROK, `Bearer ${TOKEN}`]);
+    await rings(r, 1);
+    const [sent] = await received(r);
+    expect(sent!.headers["authorization"]).toBe(`Bearer ${TOKEN}`);
     expect(JSON.parse(sent!.body)).toEqual({
-      agent_id: grok, command_center_id: "alpha", changes: ["rooms"], cursor: 0, after: 0,
-      read: ["inbox_digest"],
-    });
+      agent_id: grok, command_center_id: "alpha", changes: ["rooms"], cursor: 0, after: 1,
+      read: ["inbox_digest"] });
   });
 
   it("Muse: no push, so no wake and no doorbell; it catches up on its own schedule",
      async () => {
     const r = await rung();
     await control([r.owner]);
-    const muse = await agent(r, MUSE, "pull");
+    const muse = await r.register(MUSE, "Muse", "pull");
     await r.post(null, `dm:${muse}`);
     await write(r, "board", "t1");
     expect(await r.table("ledger_wakes")).toEqual([]);
-    expect((await failure(() => r.stub.agentDoorbell(r.session(null),
-      { agent_id: muse, url: GROK, secret: TOKEN }))).message)
+    expect((await failure(() => pasted(r, muse, "grok_webhook_routine",
+                                       `https://doorbell.test/${r.path}/x`))).message)
       .toBe("not an agent whose doorbell the owner sets");
-    const record = wakeKinds().find((kind) => kind.delivery_method === "pull")!;
-    expect([record.push, record.catch_up]).toEqual([null, expect.stringContaining(
-      "inbox_digest and board_digest")]);
+    const record = wakeKinds().find((kind) => kind.id === "muse_recurring_task")!;
+    expect([record.push, record.delivery_method]).toEqual([null, null]);
+    expect(record.catch_up).toContain("inbox_digest and board_digest");
   });
 });
 
@@ -171,7 +219,7 @@ describe("the records are data, checked whole", () => {
       .toEqual([["chatgpt_mcp_events", "mcp_event", "subscribe"],
                 ["claude_routine_fire", "routine_fire", "owner"],
                 ["grok_webhook_routine", "webhook", "owner"],
-                ["muse_recurring_task", "pull", undefined]]);
+                ["muse_recurring_task", null, undefined]]);
     expect(wakeKinds().every((kind) => kind.citations.length > 0)).toBe(true);
     const [first, ...rest] = raw.kinds;
     const broken = (change: Record<string, unknown>) =>
@@ -181,7 +229,9 @@ describe("the records are data, checked whole", () => {
     expect(broken({ secret: "whsec_.*" })).toThrow("anchored");
     expect(broken({ auth: "basic" })).toThrow("bearer or standard_webhooks");
     expect(broken({ headers: { Authorization: "x" } })).toThrow("never the auth's own");
-    expect(() => checkKinds({ ...raw, kinds: [first, first] })).toThrow("share a id");
+    expect(broken({ auth: "bearer" })).toThrow("signed by webhook");
+    expect(broken({ max_body_bytes: 12 })).toThrow("max_body_bytes");
+    expect(() => checkKinds({ ...raw, kinds: [first, first] })).toThrow("share an id");
     expect(() => checkKinds({ ...raw, kinds: [{ ...first, citations: [] }] }))
       .toThrow("cites no source");
   });
@@ -191,8 +241,8 @@ describe("the kill switch and admission", () => {
   it("claims nothing while the switch is off, or the maintenance gate leaves the owner out",
      async () => {
     const r = await rung();
-    const muse = await agent(r, MUSE, "mcp_event");
-    await r.subscribe(MUSE, muse);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r);
     for (const [owners, outside] of [[[r.owner], "off"], [["someone-else"], "on"]] as const) {
       await control(owners, outside);
       await r.post(null, `dm:${muse}`, { cmid: `c-${outside}` });
@@ -203,29 +253,24 @@ describe("the kill switch and admission", () => {
       expect(await r.wakesAt()).toBeGreaterThan(clock() + 30);  // held, never a busy loop
     }
     await env.CONTROL.delete("c:control");  // missing: closed too
-    expect(await outsideAdmits(env.CONTROL, r.owner)).toBe(false);
+    await runInDurableObject(r.stub, (i: OwnerDO) => i.alarm());
+    expect(await r.rang()).toEqual([]);
     await control([r.owner]);
-    expect(await outsideAdmits(env.CONTROL, r.owner)).toBe(true);
     await r.sql("DELETE FROM cf_agents_jobs");  // the hold lifts at its time; here, now
-    await evictDurableObject(r.stub);
-    await r.stub.outsideAgents(r.bind(null));  // a wake re-derives the schedule
+    await write(r, "notes", "n1");  // a door re-derives the lane's job from the rows
     expect(await rings(r, 1)).toHaveLength(1);
   });
 
   it("claims nothing for an owner not admitted, though the switch is on", async () => {
     const r = await rung();
     await control([r.owner]);
-    const muse = await agent(r, MUSE, "mcp_event");
-    await r.subscribe(MUSE, muse);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r);
     await r.stub.admissionSet({ owner: r.owner, caller: PLATFORM_CALLER, origin: null },
                               { reason: "billing", suspended: true });
     await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
-      const ledger = ledgerOn(state.storage);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, clock() - 10);
+      ledgerOn(state.storage).post(null, `dm:${muse}`, "c1", "hello", null, clock() - 10);
     });
-    await evictDurableObject(r.stub);
-    await r.stub.outsideAgents(r.bind(null));  // a wake re-derives the schedule
-    expect(await r.wakesAt()).toBeNull();  // a suspended owner's open wakes arm nothing
     await runInDurableObject(r.stub, (i: OwnerDO) => i.alarm());
     expect((await r.table("ledger_wakes")).map((w) => [w["state"], w["claim_id"]]))
       .toEqual([["pending", null]]);
@@ -233,24 +278,92 @@ describe("the kill switch and admission", () => {
   });
 });
 
-describe("a revoke is never outlived", () => {
-  it("lands mid-pass: the next agent's wake is suppressed and its callback already gone",
+describe("a write rings only who follows it and may read it, and never on an agent's own", () => {
+  it("rings a board follower on the owner's write, but no one on an outside client's",
      async () => {
     const r = await rung();
     await control([r.owner]);
-    const muse = await agent(r, MUSE, "mcp_event");
-    const dot = await agent(r, DOT, "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.subscribe(DOT, dot);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    const dot = await r.register(DOT, "Dot", "mcp_event");
+    await subscribed(r, MUSE, { board: true });
+    await subscribed(r, DOT, { board: true }, "dot");
+    // An agent's write, or a run's, rings no agent: so two agents never wake each other
+    // without end (OpenAI's feedback-loop check; slice ID's rule).
+    for (let round = 0; round < 3; round++) {
+      await write(r, "board", `m${round}`, r.bind(MUSE));
+      await write(r, "board", `d${round}`, r.bind(DOT));
+    }
+    expect(await r.table("ledger_wakes")).toEqual([]);
+    await write(r, "board", "o1");
+    const asked = await rings(r, 2);
+    const woken = asked.map((ring) => (JSON.parse(ring.request.body) as Delivered).data.agent_id);
+    expect(woken.sort()).toEqual([muse, dot].sort());
+  });
+
+  it("never rings an agent whose grant cannot read the change", async () => {
+    const r = await rung();
+    await control([r.owner]);
+    await r.register(DOT, "Dot", "mcp_event");
+    await subscribed(r, DOT, { board: true }, "dot");
+    const scope = (capability: string) => ({ universe: "alpha", agent: "main", capability });
+    await r.stub.grantSet(r.session(null), {
+      client: DOT.client, source: "mcp", mode: "scoped", scopes: [scope("write_graph")],
+      expected_revision: (await r.stub.grantList(r.bind(null))).clients
+        .find((c: { client: string }) => c.client === DOT.client)!.revision, name: "",
+    } as never);
+    await write(r, "board", "o1");
+    expect(await r.table("ledger_wakes")).toEqual([]);
+    expect(await r.rang()).toEqual([]);
+  });
+
+  it("names the change and the cursor its digest is after, and nothing else", async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r, MUSE, { board: true, rooms: ["room:app:lobby"] });
+    await write(r, "board", "t0");
+    const [first] = (await rings(r, 1)).map((ring) => JSON.parse(ring.request.body) as Delivered);
+    expect([first!.data.changes, first!.data.read, first!.data.after])
+      .toEqual([["board"], ["board_digest"], 0]);
+    const board = await r.stub.boardDigest(r.bind(MUSE), { limit: 50, after: first!.data.after });
+    expect(board.rows.map((row) => row.row_id)).toEqual(["t0"]);
+    await write(r, "board", "secret", r.bind(null), true);  // a private row rings no one
+    expect(await r.sql("SELECT 1 FROM ledger_wakes WHERE state = 'pending'")).toEqual([]);
+    // Mail and the room it follows, in one wake: just those, after the cursor it names.
+    await r.stub.policyWakeLimits(r.session(null), {
+      agent_id: muse, max_wakes_per_hour: null, batch_window_s: 3600,
+      expected_generation: (await r.stub.policyRead(r.bind(null))).generation });
+    const before = (await r.sql("SELECT change FROM collection_clock"))[0]!["change"];
+    await r.post(null, `dm:${muse}`, { body: "new mail" });
+    await write(r, "room:app:lobby", "m1");
+    await write(r, "room:app:den", "m2");  // not followed
+    await r.sql("UPDATE ledger_wakes SET due = ? WHERE state = 'pending'", clock() - 1);
+    await write(r, "notes", "n1");  // a door re-derives the lane's job from the rows
+    const last = JSON.parse((await rings(r, 2))[1]!.request.body) as Delivered;
+    expect([last.data.changes, last.data.read, last.data.after])
+      .toEqual([["mail", "rooms"], ["inbox_digest"], before]);
+    const inbox = await r.stub.inboxDigest(r.bind(MUSE), { limit: 50, after: last.data.after });
+    expect(inbox.mail.messages.map((m) => m.body)).toEqual(["new mail"]);
+    expect(inbox.rooms.rows.map((row) => row.row_id)).toEqual(["m1", "m2"]);
+  });
+});
+
+describe("a revoke is never outlived", () => {
+  it("lands mid-pass: the next agent's wake is suppressed and its subscription already gone",
+     async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    const dot = await r.register(DOT, "Dot", "mcp_event");
+    await subscribed(r, MUSE, { board: true });
+    await subscribed(r, DOT, { board: true }, "dot");
     const session = r.session(null);
-    const woken = (sent: Rang) => (JSON.parse(sent.body) as { data: { agent_id: string } })
-      .data.agent_id;
-    // As the first wake leaves, the owner disables the other agent.
+    const woken = (ring: Rang) => (JSON.parse(ring.request.body) as Delivered).data.agent_id;
     await runInDurableObject(r.stub, (i: OwnerDO) => {
       const instance = i as RungOwnerDO;
-      instance.doorbell.during = async () => {
-        instance.doorbell.during = null;
-        const first = woken(instance.doorbell.rang.at(-1)!);
+      instance.during = async () => {
+        instance.during = null;
+        const first = woken(instance.rang.at(-1)!);
         await instance.disableAgent(session, { agent_id: first === muse ? dot : muse,
                                                reason: "revoked" });
       };
@@ -261,9 +374,10 @@ describe("a revoke is never outlived", () => {
     expect(sent).toHaveLength(1);
     const other = sent[0] === muse ? dot : muse;
     const states = Object.fromEntries((await r.table("ledger_wakes"))
-      .filter((w) => w["kind"] === "wake").map((w) => [w["agent_id"], w["state"]]));
+      .map((w) => [w["agent_id"], w["state"]]));
     expect(states).toEqual({ [sent[0]!]: "sent", [other]: "suppressed" });
-    expect((await r.sql("SELECT * FROM wake_callbacks ORDER BY agent_id")).map((c) => c["agent_id"])).toEqual(sent);
+    expect((await r.sql("SELECT agent_id FROM wake_callbacks")).map((c) => c["agent_id"]))
+      .toEqual(sent);
   });
 
   it("lands between the mark and the byte: nothing is sent", async () => {
@@ -274,7 +388,7 @@ describe("a revoke is never outlived", () => {
       const muse = ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
                                                delivery_method: "mcp_event", recipe_id: null })
         .agent_id;
-      ledger.subscribe(MUSE, subscription(muse));
+      ledger.subscribe(MUSE, ledgerSubscription(), t);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
       const gate = new WriteGate(state.storage).write;
       let units = 0;
@@ -286,50 +400,88 @@ describe("a revoke is never outlived", () => {
         }
         return done;
       }) as typeof gate;
-      const sent: Request[] = [];
-      const transport: Transport = async (request) => {
-        sent.push(request);
-        return new Response(null, { status: 202 });
-      };
-      const doorbell = new Doorbell({ ledger, live: () => true, write, clock: () => t,
-                                      gate: async () => true, transport });
+      let sent = 0;
+      const doorbell = new Doorbell({
+        ledger, live: () => true, reads: () => true, touched: () => false,
+        notice: async () => undefined, write, clock: () => t, gate: async () => true,
+        ring: async () => {
+          sent++;
+          return { state: "answered", status: 202, retry_after: null };
+        } });
       const accepted = await runWakes(ledger, doorbell, () => t, write);
-      return { accepted, sent: sent.length,
+      return { accepted, sent,
                wake: state.storage.sql.exec("SELECT state, marked, receipt_json FROM " +
-                                            "ledger_wakes WHERE kind = 'wake'").one() };
+                                            "ledger_wakes").one() };
     });
     expect(out).toEqual({ accepted: 0, sent: 0, wake: {
       state: "failed", marked: 1, receipt_json: '{"reason":"not_sent","through":1}' } });
   });
 
-  it("never erases a re-enabled agent's newer callback, which still rings", async () => {
+  it("keeps the owner's pasted token through a grant change, and erases the client's own",
+     async () => {
     const r = await rung();
-    await control([r.owner]);
-    const muse = await agent(r, MUSE, "mcp_event");
-    expect(await r.subscribe(MUSE, muse)).toBe(1);
-    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
-    expect(await r.sql("SELECT * FROM wake_callbacks ORDER BY agent_id")).toEqual([]);  // gone in the disable's own unit
-    await agent(r, MUSE, "mcp_event");
-    expect(await r.subscribe(MUSE, muse)).toBe(2);
-    await r.post(null, `dm:${muse}`);
-    await rings(r, 1);
-    const revokes = (await r.table("ledger_wakes")).filter((w) => w["kind"] === "revoke");
-    expect(revokes.map((w) => [w["state"], w["generation"]])).toEqual([["sent", 1]]);
-    expect((await r.sql("SELECT * FROM wake_callbacks ORDER BY agent_id")).map((c) => c["generation"])).toEqual([2]);
-    expect(await r.rang()).toHaveLength(1);
+    const claude = await r.register(MUSE, "Claude", "routine_fire");
+    await pasted(r, claude, "claude_routine_fire",
+                 `https://api.anthropic.com/v1/claude_code/routines/trig_${r.path}/fire`);
+    await r.stub.grantSet(r.session(null), {
+      client: MUSE.client, source: "mcp", mode: "scoped",
+      scopes: [{ universe: "alpha", agent: "main", capability: "read_graph" }],
+      expected_revision: (await r.stub.grantList(r.bind(null))).clients
+        .find((c: { client: string }) => c.client === MUSE.client)!.revision, name: "",
+    } as never);
+    expect((await r.sql("SELECT principal FROM wake_callbacks")).map((c) => c["principal"]))
+      .toEqual(["owner"]);
   });
 
-  it("lets only the client that holds a callback unsubscribe it", async () => {
+  it("lets only the caller that holds a subscription end it, a refresh replacing its secret",
+     async () => {
     const r = await rung();
-    const muse = await agent(r, MUSE, "mcp_event");
-    await r.subscribe(MUSE, muse);
-    const end = { agent_id: muse, subscription_id: "sub-1" };
+    await r.register(MUSE, "Muse", "mcp_event");
+    const { id } = await subscribed(r);
+    await subscribed(r);  // a refresh: the same id, the old secret kept to sign beside it
+    const [row] = await r.sql("SELECT previous_blob IS NOT NULL AS rotating, " +
+                              "previous_until - refreshed_at AS grace FROM wake_callbacks");
+    expect(row).toEqual({ rotating: 1, grace: 300 });
+    const end = { subscription_id: id };
     expect(await r.stub.wakeUnsubscribe(r.bind(DOT), end)).toEqual({ unsubscribed: false });
     expect((await failure(() => r.stub.wakeUnsubscribe(r.bind(null), end))).message)
       .toBe("only the client that holds a subscription ends it");
     expect(await r.stub.wakeUnsubscribe(r.bind(MUSE), end)).toEqual({ unsubscribed: true });
     expect(await r.stub.wakeUnsubscribe(r.bind(MUSE), end)).toEqual({ unsubscribed: false });
-    expect(await r.sql("SELECT * FROM wake_callbacks ORDER BY agent_id")).toEqual([]);
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
+  });
+
+  it("stops at a subscription's granted expiry, and keeps it across a restart", async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await subscribed(r, MUSE, {}, "short", 60_000);
+    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await rings(r, 1);
+    await r.sql("UPDATE wake_callbacks SET expires_at = ?", clock() - 1);
+    await r.post(null, `dm:${muse}`, { cmid: "c2" });
+    await rings(r, 1);
+    expect((await r.table("ledger_wakes")).map((w) => w["state"])).toEqual(["sent", "suppressed"]);
+    expect(await r.rang()).toHaveLength(1);
+  });
+
+  it("holds the owner's subscriptions to their recorded ceiling", async () => {
+    const r = await rung();
+    const refused = await r.inLedger({}, (ledger) => {
+      ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
+                                   delivery_method: "mcp_event", recipe_id: null });
+      for (let n = 0; n < 128; n++) {
+        ledger.subscribe(MUSE, { ...ledgerSubscription(),
+                                 subscription_id: "sub_" + n.toString(16).padStart(32, "0") });
+      }
+      try {
+        ledger.subscribe(MUSE, { ...ledgerSubscription(), subscription_id: "sub_" + "f".repeat(32) });
+        return "stored";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    });
+    expect(refused).toContain("subscription_limit");
   });
 });
 
@@ -342,13 +494,17 @@ describe("a send's answer", () => {
       const muse = ledger.register(MUSE, MCP, { command_center_id: "alpha", display_name: "Muse",
                                                delivery_method: "mcp_event", recipe_id: null })
         .agent_id;
-      ledger.subscribe(MUSE, subscription(muse));
+      ledger.subscribe(MUSE, ledgerSubscription(), t);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
       const write = new WriteGate(state.storage).write;
       let sent = 0;
-      const doorbell = new Doorbell({ ledger, live: () => true, write, clock: () => t,
-                                      gate: async () => true,
-                                      transport: () => { sent++; return new Promise(() => {}); } });
+      const doorbell = new Doorbell({
+        ledger, live: () => true, reads: () => true, touched: () => false,
+        notice: async () => undefined, write, clock: () => t, gate: async () => true,
+        ring: () => {
+          sent++;
+          return new Promise<RingAnswer>(() => undefined);
+        } });
       const first = await runWakes(ledger, doorbell, () => t, write, 16, 30);
       const late = state.storage.sql.exec("SELECT state, marked FROM ledger_wakes").one();
       const again = await runWakes(ledger, doorbell, () => t + WAKE_LEASE_S, write, 16, 30);
@@ -359,78 +515,49 @@ describe("a send's answer", () => {
                           after: { state: "unknown", marked: 1 }, sent: 1 });
   });
 
-  it("waits out a 429, erases a gone callback, and never follows a redirect", async () => {
+  it("waits out a Retry-After of days as sent, keeps a subscription on 410, never redirects",
+     async () => {
     const r = await rung();
     await control([r.owner]);
-    const muse = await agent(r, MUSE, "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await runInDurableObject(r.stub, (i: OwnerDO) => {
-      const { doorbell } = i as RungOwnerDO;
-      doorbell.answers.push(302, 429, 410);
-      doorbell.retryAfter.push(null, "120");
-    });
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    for (const [n, path] of ["status-302", "status-429?retry=259200", "status-410"].entries()) {
+      await r.sql("DELETE FROM wake_callbacks");
+      await subscribed(r, MUSE, {}, path);
+      await r.post(null, `dm:${muse}`, { cmid: path });
+      await r.sql("UPDATE ledger_wakes SET due = ? WHERE state != 'sent'", clock() - 1);
+      await write(r, "notes", path);
+      await rings(r, n + 1);
+      if (n === 1) {  // the 429 waits exactly the three days it asked, never cut to one
+        const [limited] = await r.sql("SELECT state, due - ? AS wait, receipt_json FROM " +
+                                      "ledger_wakes WHERE state = 'rate_limited'", clock());
+        expect(JSON.parse(limited!["receipt_json"] as string))
+          .toMatchObject({ status: 429, retry_after: 259200 });
+        expect(limited!["wait"] as number).toBeGreaterThan(259200 - 60);
+      }
+    }
+    const receipts = (await r.table("ledger_wakes")).map((w) =>
+      JSON.parse(w["receipt_json"] as string));
+    expect(receipts).toMatchObject([{ status: 302 }, { status: 410 }]);
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toHaveLength(1);  // 410 keeps it
+    expect((await received(r)).every((request) => request.redirect === "manual")).toBe(true);
+  }, 30_000);
+
+  it("tells the owner when a pasted token is refused as dead, and keeps it", async () => {
+    const r = await rung();
+    await control([r.owner]);
+    const claude = await r.register(MUSE, "Claude", "routine_fire");
+    await pasted(r, claude, "claude_routine_fire",
+                 `https://api.anthropic.com/v1/claude_code/routines/trig_status_401_${r.path}/fire`);
+    await r.post(null, `dm:${claude}`);
     await rings(r, 1);
-    await r.post(null, `dm:${muse}`, { cmid: "c2" });
-    await rings(r, 2);
-    const [limited] = await r.sql("SELECT receipt_json FROM ledger_wakes " +
-                                  "WHERE state = 'rate_limited'");
-    expect(JSON.parse(limited!["receipt_json"] as string))
-      .toEqual({ status: 429, retry_after: 120, through: 2 });
-    await r.sql("UPDATE ledger_wakes SET due = ? WHERE state = 'rate_limited'", clock() - 1);
-    await write(r, "notes", "n1");  // a door re-derives the lane's job from the rows
-    await rings(r, 3);
-    expect((await r.table("ledger_wakes")).map((w) => [w["state"],
-      JSON.parse(w["receipt_json"] as string)]))
-      .toEqual([["failed", { status: 302, through: 1 }],
-                ["failed", { status: 410, reason: "gone", through: 2 }]]);
-    expect(await r.sql("SELECT * FROM wake_callbacks ORDER BY agent_id")).toEqual([]);
+    const notices = (await r.stub.noticeList(r.session(null))).notices;
+    expect(notices.map((n: { type: string }) => n.type)).toContain("doorbell_token_refused");
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toHaveLength(1);
   });
 });
 
-describe("a wake leads its agent's digest to just the change", () => {
-  it("names the change and the cursor its digest is after", async () => {
-    const r = await rung();
-    await control([r.owner]);
-    const muse = await agent(r, MUSE, "mcp_event");
-    const dot = await agent(r, DOT, "mcp_event");
-    await r.subscribe(MUSE, muse);
-    await r.subscribe(DOT, dot);
-    await write(r, "board", "t0");
-    const data = (sent: Rang) => (JSON.parse(sent.body) as {
-      data: { agent_id: string; changes: string[]; after: number; read: string[] } }).data;
-    const first = (await rings(r, 2)).map(data);
-    expect(first.map((d) => [d.agent_id, d.changes, d.read, d.after]).sort()).toEqual(
-      [[muse, ["board"], ["board_digest"], 0], [dot, ["board"], ["board_digest"], 0]].sort());
-    // Muse writes the next row itself: only Dot is woken, and its digest is just that row.
-    await write(r, "board", "t1", r.bind(MUSE));
-    const [, , next] = await rings(r, 3);
-    const woken = data(next!);
-    expect([woken.agent_id, woken.after]).toEqual([dot, 1]);
-    const digest = await r.stub.boardDigest(r.bind(DOT), { limit: 50, after: woken.after });
-    expect(digest.rows.map((row) => row.row_id)).toEqual(["t1"]);
-    await write(r, "board", "mine", r.bind(null), true);  // a private row rings no one
-    expect(await r.sql("SELECT 1 FROM ledger_wakes WHERE state = 'pending'")).toEqual([]);
-    expect(await r.rang()).toHaveLength(3);
-    // Mail and a room in one wake: the inbox digest after its cursor holds just those.
-    await r.stub.policyWakeLimits(r.session(null), {
-      agent_id: muse, max_wakes_per_hour: null, batch_window_s: 3600,
-      expected_generation: (await r.stub.policyRead(r.bind(null))).generation });
-    await r.post(null, `dm:${muse}`, { body: "new mail" });
-    await write(r, "room:app:lobby", "m1");
-    await r.sql("UPDATE ledger_wakes SET due = ? WHERE agent_id = ? AND state = 'pending'",
-                clock() - 1, muse);
-    await write(r, "notes", "n1");  // a door re-derives the lane's job from the rows
-    await rings(r, 5);
-    const mine = (await r.rang()).map(data).filter((d) => d.agent_id === muse).at(-1)!;
-    expect([mine.changes, mine.read]).toEqual([["mail", "rooms"], ["inbox_digest"]]);
-    const inbox = await r.stub.inboxDigest(r.bind(MUSE), { limit: 50, after: mine.after });
-    expect(inbox.mail.messages.map((m) => m.body)).toEqual(["new mail"]);
-    expect(inbox.rooms.rows.map((row) => row.row_id)).toEqual(["m1"]);
-  });
-});
-
-it("answers closed from the pass itself when the switch is closed", async () => {
+it("answers closed from the pass itself when the switch is closed, fails or never answers",
+   async () => {
   const r = await rung();
   const t = clock();
   const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
@@ -441,8 +568,9 @@ it("answers closed from the pass itself when the switch is closed", async () => 
     ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
     const write = new WriteGate(state.storage).write;
     const doorbell = (gate: () => Promise<boolean>) => new Doorbell({
-      ledger, live: () => true, write, clock: () => t, gate,
-      transport: async () => new Response(null, { status: 202 }) });
+      ledger, live: () => true, reads: () => true, touched: () => false,
+      notice: async () => undefined, write, clock: () => t, gate,
+      ring: async () => ({ state: "answered", status: 202, retry_after: null }) });
     return [await runWakes(ledger, doorbell(async () => false), () => t, write),
             await runWakes(ledger, doorbell(async () => { throw new Error("KV down"); }),
                            () => t, write),

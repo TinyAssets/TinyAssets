@@ -9,6 +9,7 @@ import {
 } from "../src/ledger";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
+import { subscriptionId } from "../src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import { alarmOf, laneAt } from "./support";
 
@@ -16,15 +17,36 @@ export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
 export const MCP: Source = Object.freeze({ kind: "mcp", ref: "conn-1" });
 /** A callback an agent's client subscribes (MCP Events): a public HTTPS URL, a `whsec_` key. */
-export const CALLBACK = "https://hooks.example.com/tinyassets/events";
+export const CALLBACK = "https://doorbell.test/tinyassets/events";
 export const WHSEC = "whsec_" + btoa(String.fromCharCode(...Array.from({ length: 32 },
                                                                        (_, n) => n + 1)));
+/** The MCP Events event the subscribing kind lists. */
+export const EVENT = "tinyassets.changed";
 
-/** A subscribe's fields from an agent's own client, with this callback. */
-export function subscription(agentId: string, commandCenter = "alpha",
-                             extra: Record<string, unknown> = {}) {
-  return { command_center_id: commandCenter, agent_id: agentId, subscription_id: "sub-1",
-           url: CALLBACK, secret: WHSEC, expires_at: null, ...extra };
+/**
+ * An MCP Events subscription as the MCP door hands it on, its blob a stand-in (the tests that
+ * send seal a real one through the gateway): its id derived as the door derives it.
+ */
+export function subscription(commandCenter = "alpha",
+                             extra: { board?: boolean; rooms?: string[]; blob?: string;
+                                      url?: string; expires_at?: number | null;
+                                      client?: string } = {}) {
+  const args = { command_center_id: commandCenter, board: extra.board ?? false,
+                 rooms: extra.rooms ?? [] };
+  return {
+    subscription_id: subscriptionId(extra.client ?? MUSE.client, extra.url ?? CALLBACK, EVENT,
+                                    args),
+    name: EVENT, arguments: args, blob: extra.blob ?? "v1.stand-in", kid: "k1", version: 1,
+    expires_at: extra.expires_at ?? null,
+  };
+}
+
+/** The same subscription, as the ledger's `subscribe` takes it. */
+export function ledgerSubscription(commandCenter = "alpha", client = MUSE.client) {
+  const door = subscription(commandCenter, { client });
+  return { subscription_id: door.subscription_id, command_center_id: commandCenter,
+           board: false, rooms: [], blob: door.blob, kid: door.kid, version: 1,
+           expires_at: null };
 }
 
 /** The `n`th distinct outside identity, for tests that need many agents. */
@@ -35,23 +57,12 @@ export function origin(n: number): Origin {
 
 type Row = Record<string, SqlStorageValue>;
 
-/**
- * A doorbell that answers from a script: an outcome, or `crash` to die mid-send. It
- * keeps each agent's callbacks by the subscription generation they were tagged with, and
- * a revoke erases only those at or before its generation, as the contract says.
- */
+/** A doorbell that answers from a script: an outcome, or `crash` to die mid-send. */
 export class FakeSender implements WakeSender {
   /** Whether the kill switch is closed: `open()` answers its negation. */
   closed = false;
   readonly sent: WakeTarget[] = [];
-  readonly revoked: [string, number][] = [];
   readonly answers: (Outcome | "crash")[] = [];
-  readonly callbacks = new Map<string, Set<number>>();
-
-  /** The subscribe door storing a callback tagged with its generation. */
-  subscribed(agentId: string, generation: number): void {
-    this.callbacks.set(agentId, (this.callbacks.get(agentId) ?? new Set()).add(generation));
-  }
 
   async open(): Promise<boolean> {
     return !this.closed;
@@ -65,12 +76,6 @@ export class FakeSender implements WakeSender {
       throw new Error("the object died after the request left");
     }
     return answer;
-  }
-
-  async revoke(agentId: string, generation: number): Promise<void> {
-    this.revoked.push([agentId, generation]);
-    const live = [...(this.callbacks.get(agentId) ?? [])].filter((g) => g > generation);
-    this.callbacks.set(agentId, new Set(live));
   }
 }
 
@@ -169,12 +174,12 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
       stub.mailboxRead(bind(origin), { limit, ...budget }),
     ack: (origin: Origin | null, through: number) =>
       stub.mailboxAck(bind(origin), { through }),
-    /** The agent's own client subscribes its callback; the fake doorbell keeps it too. */
-    subscribe: async (origin: Origin, agentId: string, commandCenter = "alpha") => {
-      const { generation } = await stub.wakeSubscribe(bind(origin),
-                                                      subscription(agentId, commandCenter));
-      sender.subscribed(agentId, generation);
-      return generation;
+    /** The agent's own client subscribes (its blob a stand-in); the subscription's id. */
+    subscribe: async (origin: Origin, commandCenter = "alpha",
+                      extra: Parameters<typeof subscription>[1] = {}) => {
+      const stored = await stub.wakeSubscribe(bind(origin), subscription(
+        commandCenter, { client: origin.client, ...extra }));
+      return stored.subscription_id;
     },
     /** A whole table, in insertion order. */
     table: (name: string): Promise<Row[]> => runInDurableObject(stub, (_i: OwnerDO, state) =>
@@ -208,7 +213,7 @@ export async function wakeReceipts(r: Rig): Promise<string[]> {
 /** Every counter the ledger's bounds read, and the same numbers counted from the rows. */
 export async function counters(r: Rig): Promise<[Row, Row]> {
   const [usage] = await r.sql(
-    "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes, tombstones, " +
+    "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes, " +
       "(SELECT json_group_object(reader, unacked || '/' || unacked_bytes) FROM " +
       "(SELECT * FROM ledger_readers WHERE unacked > 0 ORDER BY reader)) AS mailboxes, " +
       "(SELECT json_group_object(agent_id, unacked_to_owner || '/' || unacked_to_owner_bytes) " +
@@ -224,7 +229,6 @@ export async function counters(r: Rig): Promise<[Row, Row]> {
       "(SELECT COUNT(*) FROM ledger_messages) AS messages, " +
       "(SELECT COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM message_bodies) AS body_bytes, " +
       "(SELECT COUNT(*) FROM ledger_wakes WHERE settled_at IS NOT NULL) AS settled_wakes, " +
-      "(SELECT COUNT(*) FROM outside_agents WHERE deleted_at IS NOT NULL) AS tombstones, " +
       "(SELECT json_group_object(agent_id, n || '/' || b) FROM (SELECT r.agent_id, " +
       "COUNT(*) AS n, SUM(m.body_bytes) AS b FROM ledger_recipients r JOIN ledger_messages m " +
       "USING (message_id) WHERE r.unacked = 1 GROUP BY r.agent_id ORDER BY r.agent_id)) " +

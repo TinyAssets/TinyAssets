@@ -51,7 +51,7 @@ import {
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
-import { CALLBACK_SECRET_CHARS, CALLBACK_URL_CHARS } from "../src/wake-kinds";
+import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_KEPT } from "../src/wake-kinds";
 import { PLATFORM } from "./sources";
 
 const SRC = join(PLATFORM, "owner", "src");
@@ -186,8 +186,6 @@ const EGRESS_CHARS = inline("schema", /length\(egress\) <= ([0-9]+)/);
 /** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
 const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
 const CLIENT_NAME = inline("grants", /codePoints\(name\) > ([0-9]+)/);
-/** The most wakes an hour policy lets an agent take, the rings one hour keeps (`ledger.ts`). */
-const WAKES_AN_HOUR = inline("ledger", /maxWakesPerHour: Object\.freeze\(\{ low: [0-9]+, high: ([0-9]+) \}\)/);
 
 /** The platform's limit on one object's database. */
 export const DATABASE_BYTES = 10_000_000_000;
@@ -348,16 +346,14 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_readers: { rows: L.maxAgentRows, bytes: ROW, by: "one per agent" },
     ledger_receipts: { rows: L.maxReceipts, bytes: ROW + 1 * KIB,
                        by: "maxReceipts" },
-    ledger_rings: { rows: L.maxAgentRows * WAKES_AN_HOUR, bytes: ROW,
-                    by: "an hour's wakes per agent, at the policy's most an hour" },
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-    wake_callbacks: { rows: L.maxAgents,
-                      bytes: ROW + CALLBACK_URL_CHARS + CALLBACK_SECRET_CHARS + 256,
-                      by: "one doorbell callback per enabled agent (slice W: a revoke erases " +
-                        "it in its own transaction): its URL, secret and subscription id at " +
-                        "the schema's ceilings, printable ASCII" },
+    wake_callbacks: { rows: SUBSCRIPTIONS_KEPT,
+                      bytes: ROW + 2 * DOORBELL_BLOB_CHARS + ARGUMENTS_CHARS + 2 * 64,
+                      by: "SUBSCRIPTIONS_KEPT doorbell subscriptions (slice W), each its sealed " +
+                        "blob and the one a refresh replaced at DOORBELL_BLOB_CHARS, its " +
+                        "arguments at ARGUMENTS_CHARS, its id and principal" },
     collection_rows: { rows: C.maxOwnerRows, bytes: ROW + CHANGE_BYTES + C.maxOwnerBytes /
                                                                 C.maxOwnerRows,
                        by: "maxOwnerRows; rows and history bytes within maxOwnerBytes; its " +
@@ -594,13 +590,12 @@ describe("the owner's database bound", () => {
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
     expect([CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
       .toEqual([1000, 4300, 655_360, 65_536]);
-    expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
-      .toEqual([512, 80, 60, 64]);
+    expect([SCOPE_FIELD, CLIENT_NAME, GRANT_LIMITS.maxScopes]).toEqual([512, 80, 64]);
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
     expect(TERMS["model_spend"]!.rows).toBe(4300);
-    expect(TERMS["ledger_rings"]!.rows).toBe(LEDGER_LIMITS.maxAgentRows * 60);
+    expect(TERMS["wake_callbacks"]!.rows).toBe(128);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["connections"]!.bytes).toBe(256 + 4 * 655_360 + 4 * 16_384);
     expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 64);

@@ -13,6 +13,8 @@ declare namespace Cloudflare {
     SWITCHED: DurableObjectNamespace<import("./worker").SwitchedOwnerDO>;
     CACHED: DurableObjectNamespace<import("./worker").CachedOwnerDO>;
     RUNG: DurableObjectNamespace<import("./worker").RungOwnerDO>;
+    /** The gateway's connect entrypoint, test-only: a test seals a doorbell's token as the doors do. */
+    CONNECT: import("../../doors/src/config").ConnectService;
     FILES: import("../src/files").ChunkStore;
     GATEWAY: Service<import("../../gateway/src/index").default>;
     HOOKS: import("../src/codemode").HooksService;

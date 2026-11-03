@@ -45,12 +45,3 @@ export class ControlGate {
     return ownerOpen(read, owner) ? null : MAINTENANCE;
   }
 }
-
-/**
- * Whether outside work for `owner` may go now (slice W: the `wakes` lane's kill switch,
- * read fresh once a pass): the record read, well formed, `outside` on and the maintenance
- * gate admitting the owner. Missing, malformed or unreadable is closed.
- */
-export async function outsideAdmits(store: KVNamespace, owner: string): Promise<boolean> {
-  return outsideOpen(await readControl(store), owner);
-}

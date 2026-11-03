@@ -25,7 +25,7 @@ const PULL = { collection: "board", after: 0, limit: 1 };
  * slice brings them back as run doors).
  */
 const RPC_METHODS = Object.freeze([
-  "admissionSet", "agentCancel", "agentDoorbell", "agentRun", "agentStatus", "agentSubmit",
+  "admissionSet", "agentCancel", "agentDoorbell", "agentDoorbellEnd", "agentRun", "agentStatus", "agentSubmit",
   "boardDigest",
   "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
@@ -42,7 +42,8 @@ const RPC_METHODS = Object.freeze([
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "runEvents", "sessionClose",
   "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
-  "socketsEnd", "tierSet", "toolProfile", "usageReceipts", "wakeSubscribe", "wakeUnsubscribe",
+  "socketsEnd", "tierSet", "toolProfile", "usageReceipts", "wakeEvents", "wakeSubscribe",
+  "wakeUnsubscribe",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */

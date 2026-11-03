@@ -348,7 +348,7 @@ describe("outside agents register from a verified identity", () => {
     const r = await rig();
     const refused = await failure(() => r.register(MUSE, "Muse", "a2a"));
     expect([refused.name, refused.message]).toEqual(
-      ["Refused", "only mcp_event, routine_fire, webhook, pull delivery are available yet"]);
+      ["Refused", "only pull, mcp_event, routine_fire, webhook delivery are available yet"]);
     expect((await failure(() => r.register(MUSE, "Muse", "carrier pigeon"))).message)
       .toBe("unknown delivery method");
     const agent = await r.registered(MUSE, "Muse", "mcp_event");
@@ -358,8 +358,8 @@ describe("outside agents register from a verified identity", () => {
       agent_id: agent.agent_id, max_wakes_per_hour: 12, batch_window_s: 60,
       expected_generation: (await r.stub.policyRead(r.bind(null))).generation, ...extra })).agent;
     for (const [extra, reason] of [
-      [{ max_wakes_per_hour: 0 }, "max_wakes_per_hour is 1 to 60, or null for none"],
-      [{ max_wakes_per_hour: 61 }, "max_wakes_per_hour is 1 to 60, or null for none"],
+      [{ max_wakes_per_hour: 0 }, "max_wakes_per_hour is a whole number from 1, or null for none"],
+      [{ max_wakes_per_hour: 1.5 }, "max_wakes_per_hour is a whole number from 1, or null for none"],
       [{ batch_window_s: -1 }, "batch_window_s is a whole number of seconds from 0"],
       [{ batch_window_s: 1.5 }, "batch_window_s is a whole number of seconds from 0"],
       [{ agent_id: "agent_x" }, "agent not found"],
@@ -518,13 +518,12 @@ describe("the ledger's binding", () => {
     const tables = (await r.sql("SELECT name FROM sqlite_master WHERE type = 'table'"))
       .map((t) => t["name"]);
     for (const table of ["outside_agents", "ledger_messages", "ledger_recipients",
-                         "ledger_receipts", "ledger_readers", "ledger_wakes", "ledger_rings",
+                         "ledger_receipts", "ledger_readers", "ledger_wakes", "wake_callbacks",
                          "message_bodies", "ledger_usage"]) {
       expect(tables).toContain(table);
     }
     expect(await r.table("ledger_usage")).toEqual([
-      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0,
-        tombstones: 0 }]);
+      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0 }]);
   });
 });
 

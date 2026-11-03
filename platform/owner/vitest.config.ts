@@ -168,6 +168,8 @@ export default defineConfig({
                 CACHED: { className: "CachedOwnerDO", useSQLite: true },
               },
               bindings: { TEST_KEYRING: KEYRING, ROUTING_MAC_KEY: ROUTING_KEY },
+              serviceBindings: { CONNECT: { name: "tinyassets-gateway",
+                                            entrypoint: "ConnectGateway" } },
               outboundService: "fake-upstream",
               workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), fakeUpstream()],
             },
