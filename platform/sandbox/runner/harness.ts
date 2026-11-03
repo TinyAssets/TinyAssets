@@ -138,6 +138,11 @@ export interface FakeCli {
                                  /** Made only when one of its arguments holds this. */
                                  readonly if?: string }[];
   /**
+   * A file (`~/...`, under one of the record's session paths) its prompts are kept in, as a
+   * CLI keeps its conversation: `{history}` in a request is what it held before this run.
+   */
+  readonly history?: string;
+  /**
    * A sign-in (its record's `login.argv`): `lines` printed at once (stdout, or stderr with
    * `stderr`); with `code`, one line read from stdin, then `writes` made and exit 0; without
    * it, `writes` made at once, then it stays up (a CLI that does not exit once signed in)
@@ -177,7 +182,10 @@ const fill = (text) => text
     } catch { return ""; }
   })
   .replace(/\{placeholder\}/g, () =>
-    Object.values(process.env).find((value) => value.startsWith("ta_ph_")) ?? "");
+    Object.values(process.env).find((value) => value.startsWith("ta_ph_")) ?? "")
+  .replace(/\{history\}/g, () => {
+    try { return fs.readFileSync(where(plan.history), "utf8"); } catch { return ""; }
+  });
 const request = async () => {
   for (const each of plan.requests || []) {
     if (each.if !== undefined && !process.argv.some((arg) => arg.includes(each.if))) {
@@ -190,6 +198,10 @@ const request = async () => {
         body: each.body === undefined ? undefined : fill(each.body),
         signal: AbortSignal.timeout(3000) });
     } catch {}
+  }
+  if (plan.history) {
+    fs.mkdirSync(path.dirname(where(plan.history)), { recursive: true });
+    fs.appendFileSync(where(plan.history), stdin + "\n");
   }
 };
 const done = () => {

@@ -1502,8 +1502,12 @@ R, S, M and W.
     `sandbox/template/passed.json`; the template guard fails CI when the pinned tag has no
     passing record covering every record's login and route. The endpoint rules name
     `provider` and `proxy` too (a signed-in run's files and argvs; every run's variables:
-    `HTTPS_PROXY`, `ALL_PROXY`), and Codex's `--oss`. Left for later: the run secret into a
-    header (`env_http_headers`).
+    `HTTPS_PROXY`, `ALL_PROXY`), and Codex's `--oss`. Review round 4: no record sets a
+    variable that loads code into a CLI's process (`NODE_OPTIONS`, `LD_*`, `DYLD_*`, `BUN_*`,
+    `PYTHON*`, Perl's, Ruby's, the JVM's, `BASH_ENV`); the pass record must show a record's
+    compaction where it has `cli.compaction`; a resume passes only if its requests carry the
+    first turn's own word. Left for later: the run secret into a header
+    (`env_http_headers`).
   - Known gap (review round 3, L-c): the route probe traces `connect()` alone. An unconnected
     UDP `sendto` or an io_uring connect would not show; none of the pinned CLIs uses either
     today, and the probe's sandbox denies every outbound address but the resolver anyway.

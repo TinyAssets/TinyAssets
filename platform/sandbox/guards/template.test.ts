@@ -74,7 +74,8 @@ interface Passed {
   readonly logins: readonly { engine: string; region: string | null; ok: boolean }[];
   readonly routes: readonly { engine: string; provider: string; ok: boolean;
                               turns: readonly { exit: number; answered: boolean;
-                                                resumed: boolean }[] | null }[];
+                                                resumed: boolean }[] | null;
+                              compacted: boolean | null }[];
 }
 
 describe("the template", () => {
@@ -90,6 +91,7 @@ describe("the template", () => {
     const records = files(SOURCES).filter((path) => path.endsWith(".json")
       && !path.includes("/locks/")).map((path) => JSON.parse(readFileSync(path, "utf8")) as {
         id: string; unwired?: string; cli?: { credential: string[]; login?: unknown;
+                                              compaction?: unknown;
                                               regions?: Record<string, unknown>;
                                               api_key_env?: Record<string, unknown> } });
     const logins = records.filter((rec) => rec.cli?.login !== undefined
@@ -101,9 +103,12 @@ describe("the template", () => {
       Object.keys(rec.cli!.api_key_env!).map((provider) => `${rec.id}:${provider}`)).sort();
     expect(entry!.logins.filter((each) => each.ok)
       .map((each) => `${each.engine}:${each.region ?? ""}`).sort()).toEqual(logins);
+    // A record that says how to compact it (`cli.compaction`) passed only once it compacted.
+    const compacts = new Set(records.filter((rec) => rec.cli?.compaction !== undefined)
+      .map((rec) => rec.id));
     expect(entry!.routes.filter((each) => each.ok && each.turns?.length === 2
       && each.turns.every((one) => one.exit === 0 && one.answered)
-      && each.turns[1]!.resumed).map((each) => `${each.engine}:${each.provider}`).sort())
-      .toEqual(routes);
+      && each.turns[1]!.resumed && (!compacts.has(each.engine) || each.compacted === true))
+      .map((each) => `${each.engine}:${each.provider}`).sort()).toEqual(routes);
   });
 });

@@ -142,6 +142,15 @@ turns is judged.
   `sandbox/template/passed.json`, which the template guard holds the pin to.
 - Every sandbox killed; the account listed 0 running after.
 
+### A resume proven by its history (review round 4, template `sf26c8eb4a2f657bf`)
+
+The first turn's prompt carries a word of its own (`probe<hex>`); the resumed turn passes only
+if its requests carry that word, so a CLI that silently starts a fresh conversation fails. A
+development run on `sad436b51fe608258` with the new runner (1 sandbox, 2 sandbox-minutes),
+then the build of `sf26c8eb4a2f657bf`: all five logins and all eleven routes pass, each
+resume carrying the first turn's word, Codex compacting. Recorded in `passed.json`, pinned.
+Every sandbox killed; 0 running after.
+
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)
 
 The runner posted its sign-ins (`claude-code`, `codex`: `signed_in: false`), synced in, ran the

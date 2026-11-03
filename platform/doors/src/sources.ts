@@ -452,6 +452,13 @@ const FORBID = /^[A-Z][A-Z0-9_]{0,63}\*?$/;
  */
 const CREDENTIAL_NAME =
   /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT|PROXY)(?:_|$)/;
+/**
+ * A variable that loads code into a process or changes what its runtime loads (Node's
+ * options and module path, the dynamic linker's preloads and paths, Bun's, Python's, Perl's,
+ * Ruby's and the JVM's, a shell's startup file): never a record's own, so nothing a record
+ * sets runs code inside a CLI (review round 4, R4-1).
+ */
+const CODE_LOADING = /^(?:NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|LD_[A-Z0-9_]+|DYLD_[A-Z0-9_]+|BUN_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|PERL5?LIB|PERL5OPT|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|BASH_ENV|ENV|GCONV_PATH|MALLOC_[A-Z0-9_]+)$/;
 /** A settings key shaped like a credential, a credential helper or an environment block. */
 const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
 /**
@@ -833,6 +840,10 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     // The record's own variables are the run's allow-list (`runEnv`): none is shaped like
     // a credential or an endpoint, and none is HOME or a basic, which the runner sets.
+    const loading = sets.find((name) => CODE_LOADING.test(name));
+    if (loading !== undefined) {
+      check.fail(`the record sets ${loading}, which loads code into the CLI's process`);
+    }
     const shaped = sets.find((name) => CREDENTIAL_NAME.test(name) || name === "HOME"
       || RUN_BASICS.includes(name));
     if (shaped !== undefined) {

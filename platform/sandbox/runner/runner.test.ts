@@ -963,24 +963,28 @@ describe("the route probe (codexurl_research.md Q4)", () => {
 
   /** Each keyed engine's fake CLI calling its door the way its record hands it over. */
   function honest(): void {
-    box.cli("claude-code", { lines: said("claude-code"), requests: [{
-      url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
+    box.cli("claude-code", { lines: said("claude-code"),
+                             history: "~/.claude/projects/p/history.txt", requests: [{
+      url: "{env:ANTHROPIC_BASE_URL}/v1/messages", body: "{history}",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: said("codex"), requests: [{
-      url: "{argv:model_providers.tinyassets.base_url}/responses",
+    box.cli("codex", { lines: said("codex"), history: "~/.codex/sessions/history.txt",
+                       requests: [{
+      url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }, {
       // Told to compact (its record's `compaction.argv`), it sends its compact prompt first.
       if: CODEX_COMPACT.argv.at(-1)!,
       url: "{argv:model_providers.tinyassets.base_url}/responses",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" },
       body: JSON.stringify({ input: CODEX_COMPACT.marker }) }] });
-    box.cli("gemini", { lines: said("gemini"), requests: [{
-      url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent",
+    box.cli("gemini", { lines: said("gemini"), history: "~/.gemini/tmp/p/chats/history.txt",
+                        requests: [{
+      url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent", body: "{history}",
       headers: { "x-goog-api-key": "{env:GEMINI_API_KEY}" } }] });
-    box.cli("pi", { lines: said("pi"), requests: [{
+    box.cli("pi", { lines: said("pi"), history: "~/.pi/agent/sessions/history.txt",
+                    requests: [{
       url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat/completions",
-      headers: { authorization: "Bearer {placeholder}" } }] });
+      body: "{history}", headers: { authorization: "Bearer {placeholder}" } }] });
   }
 
   type Probed = { engine: string; provider: string; ok: boolean; reason: string | null;
@@ -1025,14 +1029,27 @@ describe("the route probe (codexurl_research.md Q4)", () => {
     }
   }, 240_000);
 
+  it("fails a CLI whose resume silently starts afresh: the first turn's word never comes back",
+     () => {
+    honest();
+    box.cli("gemini", { lines: said("gemini"), requests: [{
+      url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent",
+      headers: { "x-goog-api-key": "{env:GEMINI_API_KEY}" } }] });
+    const { code, lines } = probe();
+    expect(code).toBe(3);
+    expect(lines.find((line) => line.engine === "gemini")!.reason)
+      .toMatch(/none of the first turn's history/);
+  }, 240_000);
+
   it("fails a CLI that does not complete its turn, or does not compact when told", () => {
     honest();
     box.cli("claude-code", { lines: [], requests: [{
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: said("codex"), requests: [{
-      url: "{argv:model_providers.tinyassets.base_url}/responses",
+    box.cli("codex", { lines: said("codex"), history: "~/.codex/sessions/history.txt",
+                       requests: [{
+      url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }] });
     const { code, lines } = probe();
     expect(code).toBe(3);

@@ -1815,6 +1815,9 @@ async function probeRoute(rec: SourceRecord, provider: string,
   const secret = hex(32);
   const connection = `c${hex(12)}`;
   const marker = `ta_fake_signin_${hex(16)}`;
+  // The first turn's own word, which a resumed turn's requests carry only if it loaded the
+  // first turn's history (a CLI that silently starts afresh fails).
+  const nonce = `probe${hex(8)}`;
   const engine = runEnv(sources, rec.id, "api_key");
   const keyed = sandboxEnv([{ connection, provider, egress }], () => hex(16),
                            { ...engine, run, secret, connection });
@@ -1828,7 +1831,8 @@ async function probeRoute(rec: SourceRecord, provider: string,
   const first: StartDoc = {
     run, agent: "route-probe", conversation: `cv_${hex(16)}`, engine: rec.id,
     credential: "api_key", model: null, session_id: null,
-    prompt: "Reply with the word OK.", unattended: false, authority: "owner",
+    prompt: `Remember the word ${nonce}. Reply with the word OK.`, unattended: false,
+    authority: "owner",
     lease: { lease_id: hex(16), epoch: 1 },
     config: { generation: 1, env, inherit: engine.inherit },
     urls: { mcp: `${origin}/r/${run}/${secret}/mcp`, mcp_bare: `${origin}/r/${run}/mcp`,
@@ -1957,6 +1961,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
 
   let reason: string | null = null;
   let compacted: boolean | null = null;
+  let history: boolean | null = null;
   try {
     if (spawnSync("strace", ["-V"], { encoding: "utf8" }).status !== 0) {
       throw new Error("strace is not installed in the probe's sandbox");
@@ -1983,6 +1988,10 @@ async function probeRoute(rec: SourceRecord, provider: string,
     if (two.exit !== 0 || !two.answered) {
       throw new Error(`the resumed turn did not complete (exit ${two.exit}${two.answered ? ""
         : ", no final text"}): ${two.stderr.trim().slice(-300)}`);
+    }
+    history = requests.slice(before).some((request) => request.body.includes(nonce));
+    if (!history) {
+      throw new Error("the resumed turn's requests carry none of the first turn's history");
     }
     if (cli.compaction !== undefined) {
       compacted = requests.slice(before).some((request) =>
@@ -2021,7 +2030,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
   return { engine: rec.id, provider, ok: reason === null, reason,
            turns: turns.map((each) => ({ exit: each.exit, answered: each.answered,
                                          resumed: each.resumed })),
-           compacted,
+           compacted, history,
            requests: requests.map((request) => `${request.method} ${request.url.split("?")[0]}`),
            connects: [...new Set(turns.flatMap((each) => each.connects))] };
 }
