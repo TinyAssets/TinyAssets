@@ -210,7 +210,7 @@ function httpsDoors(urls: SandboxStart["urls"]): boolean {
 
 /** The start's document as the runner reads it: everything but the lease's own secrets. */
 function startDocument(start: SandboxStart): unknown {
-  const { tokens: _tokens, network: _network, ...rest } = start;
+  const { tokens: _tokens, network: _network, route: _route, ...rest } = start;
   return rest;
 }
 
@@ -417,7 +417,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * none.
    */
   async #ensure(owner: string, authority: string, network: E2bNetwork | null,
-                ceilings: SandboxCeilings): Promise<{ handle: Handle } | "waiting" | "lost"> {
+                ceilings: SandboxCeilings, route?: string):
+      Promise<{ handle: Handle } | "waiting" | "lost"> {
     const e2b = this.#e2b();
     const row = this.#row(authority);
     const found = row === null ? null : await e2b.info(row.sandbox_id);
@@ -469,7 +470,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         network: network!,
         // Opaque names, so E2B's own list shows whose it is to us and to no one else.
         metadata: { ta_sandbox: await opaque(`${owner}\n${authority}`),
-                    ta_owner: await ownerTag(owner) },
+                    ta_owner: await ownerTag(owner),
+                    // Sealed, so only the doors open it: the route of E2B's lifecycle events.
+                    ...(route === undefined ? {} : { ta_route: route }) },
       });
       const info = await e2b.info(created.sandboxID);
       this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at) VALUES " +
@@ -492,6 +495,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async start(owner: string, start: SandboxStart): Promise<Started> {
     if (!RUN.test(start.run) || !AUTHORITY.test(start.authority)
         || !LEASE.test(start.lease.lease_id) || (start.tokens === null) !== (start.network === null)
+        || typeof start.route !== "string" || !/^[A-Za-z0-9_-]{40,2048}$/.test(start.route)
         || !httpsDoors(start.urls)) {
       throw new Error("a sandbox start names its run, its authority, its lease and its " +
                       "https doors on the egress host");
@@ -505,7 +509,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const network = start.network === null ? null : e2bNetwork(start.network.network);
       const hosts = vendorHosts(start);
       const first = network === null ? null : widened(network, hosts) ?? network;
-      const got = await this.#ensure(owner, start.authority, first, ceilings);
+      const got = await this.#ensure(owner, start.authority, first, ceilings, start.route);
       if (got === "waiting") {
         return { started: false, code: CODES.waiting };
       }

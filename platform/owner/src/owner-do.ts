@@ -98,7 +98,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import { LEASE_LIVED, mintToken } from "../../doors/src/routing-mac";
+import { LEASE_LIVED, mintToken, sealRoute } from "../../doors/src/routing-mac";
 import {
   type ProfileName, profileNames, refusal, takesRequest, type Tool, toolsNamed,
 } from "../../doors/src/tools";
@@ -168,7 +168,7 @@ import { MIGRATIONS, migrate } from "./schema";
 import { chunkLine, decodeCursor, encodeCursor, END_LINE, readPage } from "./export";
 import { Backups } from "./backup";
 import { ExportHolds } from "./export-holds";
-import { METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
+import { type BilledEvent, billedEvent, METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal, utf8Bytes } from "./text";
@@ -1877,9 +1877,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } while (Date.now() < until);
   }
 
+  /**
+   * One execution E2B billed, from its signed lifecycle event, which the doors verified and
+   * routed here by its sealed route (`doors/src/e2b-hooks.ts`): the platform's alone.
+   */
+  sandboxBilled(binding: Binding, event: BilledEvent): Promise<{ counted: boolean }> {
+    return this.#door(() => {
+      const { caller } = this.#bind(binding, "admission");
+      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
+          || binding.session !== undefined || binding.source !== undefined) {
+        throw new Refused(PLATFORM_ONLY);
+      }
+      return { counted: this.#sandboxTime.billed(billedEvent(event)) };
+    });
+  }
+
   /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
   sandboxDays(binding: Binding, request: { days?: number }): Promise<{
-      days: { day: string; seconds: number }[] }> {
+      days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
+              gb_seconds: number }[] }> {
     return this.#door(() => {
       this.#owner(binding, "read", "read its sandbox time");
       const days = request?.days ?? 31;
@@ -3936,6 +3952,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         session_id: admitted.session_id, prompt: admitted.prompt, unattended,
         authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
         network: admitted.network, config: admitted.config,
+        route: sealRoute(this.env.ROUTING_MAC_KEY, { owner: this.#ownerName(),
+                                                     authority: admitted.authority }),
         urls: runUrls(admitted.run, admitted.secret) }));
     } catch {
       console.error("a run's start had no answer; it is settled unknown");

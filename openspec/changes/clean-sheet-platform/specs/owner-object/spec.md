@@ -796,6 +796,10 @@ Only the owner's own authority SHALL create, change, move into or out of, or rem
 ### Requirement: Erasing the owner ends every run before the owner is wiped
 Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; delete every chunk its rows name from R2, its files' and its placed bodies' (ADR-035), and every nightly manifest (each a copy of the owner's wrapped data key), repeatable; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
 
+#### Scenario: Erasure is complete past the platform's recovery window
+- **WHEN** the owner is erased
+- **THEN** the account-erase answer names `complete_at`, the wipe plus 30 days: a Durable Object's point-in-time recovery can restore its database, and with it the wrapped data key, for 30 days, so crypto-erasure is complete only past that window
+
 #### Scenario: A crash mid-erasure
 - **WHEN** the object dies after the mark, or after every run ended, or after Lifecycle's alarm was disabled, or its wipe failed
 - **THEN** the doors still refuse, and the next start finishes it: the owner deleted, its tombstone left

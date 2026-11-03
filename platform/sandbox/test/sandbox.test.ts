@@ -72,7 +72,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
-    unattended: false, authority: "owner", lease: LEASE,
+    unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
     tokens: { egress_token: "egress", sync_token: "sync", runner_token: hex(64, "d") },
     network: NETWORK as never,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },

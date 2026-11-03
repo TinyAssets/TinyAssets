@@ -24,6 +24,8 @@
 //   bytes, base64url, generated at deploy and set in the owner Worker too); the egress
 //   door verifies a token by it before any stub call (src/routing-mac.ts).
 //   `secrets.required` makes a deploy without it fail.
+// - E2B_WEBHOOK_SECRET: the signature secret of E2B's sandbox lifecycle webhook
+//   (src/e2b-hooks.ts, `/hooks/e2b/lifecycle`), set and registered with E2B by slice L's kit.
 // `global_fetch_strictly_public` is required for Client ID Metadata Documents: the
 // provider fetches a client's metadata URL, and the flag keeps that fetch off same-zone
 // routing (its SSRF protection); without it the provider will not advertise CIMD.
@@ -39,7 +41,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "vars": { "DCR_ENABLED": "false", "OWNER_ISSUER": "not-configured", "FOREIGN_ISSUERS": "[]" },
-  "secrets": { "required": ["ROUTING_MAC_KEY"] },
+  "secrets": { "required": ["ROUTING_MAC_KEY", "E2B_WEBHOOK_SECRET"] },
   "durable_objects": {
     "bindings": [
       { "name": "OWNER", "class_name": "OwnerDO", "script_name": "tinyassets-owner" }

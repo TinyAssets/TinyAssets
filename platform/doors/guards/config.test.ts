@@ -18,8 +18,9 @@
  *   `src/connect.ts` names it (the binder guard).
  * - `EGRESS`: the gateway Worker's `EgressGateway` entrypoint, whose class serves exactly
  *   `forward` (G4's egress door). Only `src/egress.ts` names it.
- * - One secret, `ROUTING_MAC_KEY`, declared by name (`secrets.required`, which binds
- *   nothing): the routing key sandbox tokens are MAC'd under, the owner Worker's too. No other service: `FILES`
+ * - Two secrets, declared by name (`secrets.required`, which binds nothing):
+ *   `ROUTING_MAC_KEY`, the routing key sandbox tokens are MAC'd under, the owner Worker's
+ *   too; `E2B_WEBHOOK_SECRET`, E2B's lifecycle webhook's signature secret (slice P). No other service: `FILES`
  *   joins with the file-bytes door (tasks 2, owed by 6.1), and rate limits with their
  *   binding.
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
@@ -59,7 +60,10 @@ const KEYS: ReadonlySet<string> = new Set([
 const QUEUES = Object.freeze({ consumers: Object.freeze([
   Object.freeze({ queue: "tinyassets-sandbox-ring" })]) });
 /** The doors' one secret, the sandbox tokens' routing key (`routing-mac.ts`), and the owner's. */
-const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
+const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY",
+                                                         "E2B_WEBHOOK_SECRET"]) });
+/** The owner Worker's: the routing key alone. */
+const OWNER_SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
 const GATEWAY = Object.freeze({ binding: "GATEWAY", service: "tinyassets-gateway",
                                 entrypoint: "ConnectGateway" });
@@ -145,10 +149,10 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
     problems.push(`compatibility_flags are exactly ${FLAGS.join(", ")}`);
   }
   if (JSON.stringify(config["secrets"]) !== JSON.stringify(SECRETS)) {
-    problems.push("secrets declares exactly ROUTING_MAC_KEY");
+    problems.push("secrets declares exactly ROUTING_MAC_KEY and E2B_WEBHOOK_SECRET");
   }
   const ownerConfig = platform.get("tinyassets-owner");
-  if (JSON.stringify(ownerConfig?.["secrets"]) !== JSON.stringify(SECRETS)) {
+  if (JSON.stringify(ownerConfig?.["secrets"]) !== JSON.stringify(OWNER_SECRETS)) {
     problems.push("the owner Worker declares the same ROUTING_MAC_KEY");
   }
   if (JSON.stringify(config["vars"]) !== JSON.stringify(VARS)) {

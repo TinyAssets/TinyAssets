@@ -3,7 +3,12 @@
  * each run in it, for the founder's cost view (E2B bills a running sandbox by the second).
  * It limits nothing: no door, no admission and no run reads it to refuse.
  *
- * - **Source.** The sandbox Worker is the one that starts, pauses, resumes and kills a
+ * - **Truth.** What E2B bills: its signed lifecycle events (paused, killed) carry each
+ *   execution's start, its billed milliseconds, vCPUs and memory, which the doors verify and
+ *   hand here (`billed`); each is counted once by its id, split across the UTC days it ran,
+ *   into `sandbox_days`' billed columns. It covers what the Worker did not cause: E2B's own
+ *   timeout pauses and kills, a Worker lost mid-call, time kept warm.
+ * - **Estimate, and the fallback.** The sandbox Worker is the one that starts, pauses, resumes and kills a
  *   sandbox (slice S's `SandboxControl`, which serializes them per owner), and it logs each
  *   as it happens, with its time: `start` (created) and `resume` begin a running span,
  *   `pause` and `kill` end it. The owner's object reads that log after its cursor
@@ -52,6 +57,19 @@ export const METER_RETRY_S = 300;
 export const SPANS_KEPT = 1000;
 /** Days of sandbox seconds kept, past a year of the cost view. */
 export const DAYS_KEPT = 400;
+/** E2B events' ids kept to count each once: E2B retries a delivery within minutes. */
+export const BILLED_KEPT = 10_000;
+
+/** One execution E2B billed, from its signed lifecycle event (`doors/src/e2b-hooks.ts`). */
+export interface BilledEvent {
+  readonly id: string;
+  readonly authority: string;
+  readonly kind: "paused" | "killed";
+  readonly started_at: number;
+  readonly execution_ms: number;
+  readonly vcpu: number;
+  readonly memory_mb: number;
+}
 /** The most log entries one read takes. */
 export const METER_BATCH = 1000;
 
@@ -205,10 +223,63 @@ export class SandboxTime {
                      "ORDER BY started_at DESC LIMIT -1 OFFSET ?)", SPANS_KEPT);
   }
 
-  /** The owner's sandbox seconds by day, newest first, and what is running now. A read. */
-  days(limit: number): { day: string; seconds: number }[] {
-    return this.#sql.exec<{ day: string; ms: number }>(
-      "SELECT day, ms FROM sandbox_days ORDER BY day DESC LIMIT ?", limit).toArray()
-      .map((row) => ({ day: row.day, seconds: row.ms / 1000 }));
+  /**
+   * In a unit: one execution E2B billed, counted once by its event's id, each UTC day it ran
+   * given its part of the billed ms, vCPU-ms and MB-ms. Whether it was new.
+   */
+  billed(event: BilledEvent): boolean {
+    const fresh = this.#sql.exec("INSERT INTO sandbox_billed (event_id, at) VALUES (?, ?) " +
+                                   "ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+                                 event.id, Date.now()).toArray().length > 0;
+    if (!fresh) {
+      return false;
+    }
+    const end = event.started_at + event.execution_ms;
+    for (let at = event.started_at; at < end;) {
+      const until = Math.min(end, Math.floor(at / DAY_MS) * DAY_MS + DAY_MS);
+      const ms = until - at;
+      this.#sql.exec("INSERT INTO sandbox_days (day, ms, billed_ms, vcpu_ms, mb_ms) VALUES " +
+                       "(?, 0, ?, ?, ?) ON CONFLICT (day) DO UPDATE SET billed_ms = billed_ms + " +
+                       "excluded.billed_ms, vcpu_ms = vcpu_ms + excluded.vcpu_ms, mb_ms = " +
+                       "mb_ms + excluded.mb_ms", dayOf(at), ms, ms * event.vcpu,
+                     ms * event.memory_mb);
+      at = until;
+    }
+    this.#sql.exec("DELETE FROM sandbox_days WHERE day NOT IN (SELECT day FROM sandbox_days " +
+                     "ORDER BY day DESC LIMIT ?)", DAYS_KEPT);
+    this.#sql.exec("DELETE FROM sandbox_billed WHERE event_id IN (SELECT event_id FROM " +
+                     "sandbox_billed ORDER BY at DESC LIMIT -1 OFFSET ?)", BILLED_KEPT);
+    return true;
+  }
+
+  /**
+   * The owner's sandbox time by day, newest first: the Worker's estimate (`seconds`) and what
+   * E2B billed (`billed_seconds`, `vcpu_seconds`, `gb_seconds`). A read.
+   */
+  days(limit: number): { day: string; seconds: number; billed_seconds: number;
+                         vcpu_seconds: number; gb_seconds: number }[] {
+    return this.#sql.exec<{ day: string; ms: number; billed_ms: number; vcpu_ms: number;
+                            mb_ms: number }>(
+      "SELECT day, ms, billed_ms, vcpu_ms, mb_ms FROM sandbox_days ORDER BY day DESC LIMIT ?",
+      limit).toArray()
+      .map((row) => ({ day: row.day, seconds: row.ms / 1000, billed_seconds: row.billed_ms / 1000,
+                       vcpu_seconds: row.vcpu_ms / 1000, gb_seconds: row.mb_ms / 1024 / 1000 }));
   }
 }
+
+/** A billed event as the doors handed it, checked whole: anything else fails loudly. */
+export function billedEvent(value: unknown): BilledEvent {
+  const event = value as Record<string, unknown>;
+  const whole = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  if (typeof value !== "object" || value === null || Object.keys(value).sort().join()
+        !== "authority,execution_ms,id,kind,memory_mb,started_at,vcpu"
+      || typeof event["id"] !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(event["id"])
+      || typeof event["authority"] !== "string" || !AUTHORITY.test(event["authority"])
+      || (event["kind"] !== "paused" && event["kind"] !== "killed")
+      || !whole(event["started_at"]) || !whole(event["execution_ms"])
+      || !whole(event["vcpu"]) || !whole(event["memory_mb"])) {
+    throw new Error("a billed sandbox event is out of shape");
+  }
+  return event as unknown as BilledEvent;
+}
+

@@ -35,6 +35,26 @@
 import { Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 
+/**
+ * How long after the wipe an erasure is complete: a SQLite Durable Object can be restored
+ * "to any point in the past 30 days" (Cloudflare's SQLite storage API, point-in-time
+ * recovery), and that copy holds the owner's wrapped data key. So the prefix deletes are the
+ * erasure, and crypto-erasure (`files/src/datakey.ts`) its backstop, complete only once the
+ * wipe is older than this window. The account-erase answer says so (`erasureAnswer`).
+ */
+export const RECOVERY_WINDOW_S = 30 * 86_400;
+
+/**
+ * What the account-erase door answers (slice 10 builds the door): erased now, every door
+ * refusing, and complete, past the platform's own point-in-time recovery, at `complete_at`.
+ */
+export function erasureAnswer(wipedAt: number): { erased: true; complete_at: number;
+                                                   note: string } {
+  return { erased: true, complete_at: wipedAt + RECOVERY_WINDOW_S,
+           note: "The owner's data is deleted. A platform recovery copy of the owner's " +
+             "database exists for 30 days after; past complete_at, nothing of it remains." };
+}
+
 /** What every door and lane answers while the owner is erased. */
 export const ERASING = "this owner is being erased";
 /** How long an erasure waits before it is tried again, should an attempt fail. */

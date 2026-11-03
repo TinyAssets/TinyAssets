@@ -177,6 +177,7 @@ const PART_ENTRY = constant("backup", "PART_ENTRY");
 const EXPORTS_OPEN = constant("export", "EXPORTS_OPEN");
 const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");
 const DAYS_KEPT = constant("sandbox-time", "DAYS_KEPT");
+const BILLED_KEPT = constant("sandbox-time", "BILLED_KEPT");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
 const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
 const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
@@ -563,7 +564,9 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                      bytes: ROW + 64 + 2 * 8,
                      by: "SPANS_KEPT closed spans, and one open an authority (the owner's " +
                        "and each client's)" },
-    sandbox_days: { rows: DAYS_KEPT, bytes: ROW + 8 + 8,
+    sandbox_billed: { rows: BILLED_KEPT, bytes: ROW + 128 + 8,
+                      by: "BILLED_KEPT E2B event ids, to count each once" },
+    sandbox_days: { rows: DAYS_KEPT, bytes: ROW + 8 + 4 * 8,
                     by: "DAYS_KEPT days of sandbox seconds" },
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.

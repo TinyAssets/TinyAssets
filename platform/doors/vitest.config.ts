@@ -130,7 +130,8 @@ export default defineConfig({
             wrangler: { configPath: "./wrangler.jsonc" },
             miniflare: {
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
-              bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY },
+              bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
+                          E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret" },
               // HOOKS: the owner object's (in this script for the tests), to the real
               // hooks Worker, as the owner config binds it.
               serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks" },

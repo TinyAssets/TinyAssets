@@ -17,7 +17,7 @@ import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
   tombstoned, writeTombstone,
 } from "../src/admission";
-import { ERASE_RETRY_MS, ERASING } from "../src/erasure";
+import { ERASE_RETRY_MS, ERASING, erasureAnswer, RECOVERY_WINDOW_S } from "../src/erasure";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, Ledger } from "../src/ledger";
@@ -420,4 +420,11 @@ describe("the erasure's tombstone", () => {
     expect(await sqlIn(other.stub(), "SELECT state FROM owner_admission"))
       .toEqual([{ state: "admitted" }]);
   }, 30_000);
+});
+
+describe("the account-erase answer", () => {
+  it("names when erasure is complete: past the platform's 30-day point-in-time recovery", () => {
+    expect(RECOVERY_WINDOW_S).toBe(30 * 86_400);
+    expect(erasureAnswer(1_000)).toMatchObject({ erased: true, complete_at: 1_000 + 30 * 86_400 });
+  });
 });

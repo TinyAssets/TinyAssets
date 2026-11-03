@@ -178,6 +178,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   sandbox_meter: "the sandbox meter's cursor in the sandbox Worker's log",
   sandbox_spans: "the sandbox meter's open and recent spans",
   sandbox_days: "the platform's cost meter: sandbox seconds a day",
+  sandbox_billed: "the E2B events already counted, by id",
 });
 
 /** The exported tables' names, in order. */

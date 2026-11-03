@@ -1530,8 +1530,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "authority TEXT NOT NULL CHECK (length(authority) BETWEEN 1 AND 64), " +
       "started_at INTEGER NOT NULL, ended_at INTEGER CHECK (ended_at IS NULL " +
       "OR ended_at >= started_at), PRIMARY KEY (authority, started_at)) WITHOUT ROWID",
+    // A UTC day's sandbox time: the sandbox Worker's own log (`ms`, the estimate) and what
+    // E2B billed, from its signed lifecycle events (the truth): ms, vCPU-ms and MB-ms.
     "CREATE TABLE sandbox_days (day TEXT PRIMARY KEY CHECK (length(day) = 8 " +
-      "AND day NOT GLOB '*[^0-9]*'), ms INTEGER NOT NULL CHECK (ms >= 0)) WITHOUT ROWID",
+      "AND day NOT GLOB '*[^0-9]*'), ms INTEGER NOT NULL CHECK (ms >= 0), " +
+      "billed_ms INTEGER NOT NULL DEFAULT 0 CHECK (billed_ms >= 0), " +
+      "vcpu_ms INTEGER NOT NULL DEFAULT 0 CHECK (vcpu_ms >= 0), " +
+      "mb_ms INTEGER NOT NULL DEFAULT 0 CHECK (mb_ms >= 0)) WITHOUT ROWID",
+    // E2B's lifecycle events already counted, by their id: each counted once.
+    "CREATE TABLE sandbox_billed (event_id TEXT PRIMARY KEY CHECK (length(event_id) " +
+      "BETWEEN 1 AND 128), at INTEGER NOT NULL) WITHOUT ROWID",
     // The one storage number (founder, 2026-11-03): a body kept inline in its row is user
     // content too, counted in `body_bytes`, owner-wide and in its writer's files scope (its
     // `filer`), so the tier's storage holds every byte a user stores wherever it lives.

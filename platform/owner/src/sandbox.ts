@@ -94,6 +94,11 @@ export interface SandboxStart {
    * template carries `{run_secret}` (a header, `x-ta-run`) takes `mcp_bare` as its
    * `{mcp_url}`, the secret in the header and out of the URL.
    */
+  /**
+   * Whose sandbox this is, sealed for E2B's metadata (`sealRoute`, slice P): E2B echoes it on
+   * its signed lifecycle events, which the doors open to reach this owner's object.
+   */
+  readonly route: string;
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
 }
