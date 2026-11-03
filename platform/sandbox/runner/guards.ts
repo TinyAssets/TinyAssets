@@ -25,11 +25,13 @@ const CREDENTIAL_NAME =
 /** A settings key naming a credential helper. */
 const HELPER_KEY = /helper/i;
 /**
- * The shortest secret atom: shorter strings (a flag, a region, a model name) occur in
- * ordinary text and would refuse files that hold no secret, and every credential the
- * records' engines write (OAuth access and refresh tokens, API keys) is far longer.
+ * The shortest secret atom: the shortest credential any record's provider issues, a Google
+ * API key (39 characters, `AIza` and 35 more; Anthropic's, OpenAI's and Moonshot's keys
+ * and every engine's OAuth tokens are longer). A shorter string in a secret file (a flag, a
+ * region, a model name, an account id) is no credential, and occurs in ordinary text, so
+ * refusing it would refuse files that hold no secret.
  */
-export const ATOM_MIN = 16;
+export const ATOM_MIN = 39;
 
 /** Whether `name` is in `forbid` (an exact name, or a `PREFIX*`). */
 function forbidden(forbid: readonly string[], name: string): boolean {

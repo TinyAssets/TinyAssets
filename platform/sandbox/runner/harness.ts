@@ -52,6 +52,8 @@ export interface FakeCli {
   readonly links?: Readonly<Record<string, string>>;
   /** Files whose text it reports (or `null` when it cannot read one), the same way. */
   readonly dumps?: readonly string[];
+  /** Files whose every ancestor's owner it reports, up to `/`. */
+  readonly owners?: readonly string[];
   /** A process left running after it exits (to be killed by uid). */
   readonly daemon?: boolean;
   /** What `status_argv` prints and exits with. */
@@ -74,12 +76,21 @@ const done = () => {
   for (const file of plan.dumps || []) {
     try { dumps[file] = fs.readFileSync(where(file), "utf8"); } catch { dumps[file] = null; }
   }
+  const owners = {};
+  for (const file of plan.owners || []) {
+    const chain = [];
+    for (let at = where(file); ; at = path.dirname(at)) {
+      chain.push({ path: at, uid: fs.statSync(at).uid });
+      if (at === "/") { break; }
+    }
+    owners[file] = chain;
+  }
   const at = performance.timeOrigin + performance.now();
   fs.writeFileSync(path.join(root, "fake-seen",
                              path.basename(me) + "." + at.toFixed(3) + "." + process.pid + ".json"),
     JSON.stringify({ at, argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), stdin,
                      uid: process.getuid(), gid: process.getgid(), groups: process.getgroups(),
-                     dumps }));
+                     dumps, owners }));
   if (process.argv.includes("status")) {
     const status = plan.status || { out: "", exit: 1 };
     process.stdout.write(status.out);
@@ -292,7 +303,8 @@ export class Sandbox {
   /** What the engine's fake CLI was run with, each time. */
   seen(engine: string): { argv: string[]; env: Record<string, string>; cwd: string;
                           stdin: string; uid: number; gid: number; groups: number[];
-                          dumps: Record<string, string | null> }[] {
+                          dumps: Record<string, string | null>;
+                          owners: Record<string, { path: string; uid: number }[]> }[] {
     const bin = sources.get(engine)!.cli!.install.bin;
     const dir = join(this.root, "fake-seen");
     return readdirSync(dir).filter((name) => name.startsWith(`${bin}.`) && name.endsWith(".json"))

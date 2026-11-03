@@ -21,7 +21,8 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { parse, PLATFORM, workerSources } from "../../owner/guards/sources";
-import { LEASE_TTL_MS } from "../runner/runner";
+import { HEARTBEAT_MS, LEASE_TTL_MS } from "../runner/runner";
+import { KILL_WITHIN_MS } from "../runner/users";
 import { CHUNK_BYTES, COMMIT_OPS, FEED_LIMIT, INLINE_BYTES, SYNC_BODY } from "../runner/sync";
 import { E2B_API, E2B_ENVD } from "../src/e2b";
 
@@ -98,6 +99,7 @@ describe("the sandbox Worker", () => {
         .reduce((product, factor) => product * Number(factor.trim()), 1);
     };
     expect(LEASE_TTL_MS).toBe(number(files, "LEASE_TTL_S") * 1000);
+    expect(KILL_WITHIN_MS).toBe(HEARTBEAT_MS);
     const egress = readFileSync(join(PLATFORM, "doors", "src", "egress.ts"), "utf8");
     expect([CHUNK_BYTES, INLINE_BYTES, COMMIT_OPS, FEED_LIMIT, SYNC_BODY]).toEqual([
       number(manifest, "CHUNK_BYTES"), number(files, "INLINE_BYTES"),

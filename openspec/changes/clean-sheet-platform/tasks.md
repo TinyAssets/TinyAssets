@@ -976,7 +976,11 @@ R, S, M and W.
     (`recover`). Its alarm is armed again on every path: a failed look backs off from the
     measured request time, never past the soonest edge; an unreadable control record is read
     as the last numbers read; a sandbox paused while a lease runs in it is resumed, E2B's
-    refusal asked again and logged `sandbox_renewal_refused` (review H-5). An idle sandbox
+    refusal asked again and logged `sandbox_renewal_refused` (review H-5). No retry runs at
+    alarm speed (verification F-1): a failed look backs off from the measured request time,
+    sooner only for an edge still ahead, and a pending resume or pause backs off per row, at
+    most a lease's TTL apart. A renewing sandbox holds its slot in the line across its pause
+    and resume (F-2), so the first owner waiting cannot create into it. An idle sandbox
     pauses at its release, at its renewal look, or once idle a lease's TTL (the release
     never come); a pause E2B answered busy is asked again.
   - The line (review M-3, M-4): a start needing one more running sandbox waits its turn, so
@@ -1030,6 +1034,8 @@ R, S, M and W.
     workflows (`scripts/pushover_page.py`), which no Worker reaches: a scheduled workflow
     reading E2B's `/teams/{id}/metrics/max` against the ceiling is the fit, with
     `E2B_API_KEY` as a repository secret.
+  - Gemini loading its `{system}` settings, live (F-3): the founder's live test, on a run
+    past the sign-in.
   - Deploy (slice L): the Worker, its secret, the ring queue, the template's build in the
     deploying project, and the control namespace's id.
 - [x] Slice ID: TinyAssets agents get an identity in the ledger (`ledger.ts`, migration 13,

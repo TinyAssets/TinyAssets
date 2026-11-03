@@ -399,7 +399,12 @@ describe("cancel, status and release", () => {
     expect(await stub(who).release(who, { lease_id: LEASE.lease_id })).toEqual({ paused: false });
     // The look comes back at once, not at the renewal window.
     expect(await alarmOf(who)).toBeLessThan(Date.now() + 5_000);
+    // The look is due at once: the runtime may run it before the test does.
     await runDurableObjectAlarm(stub(who));
+    const until = Date.now() + 5_000;
+    while ((await seen()).sandboxes[0]!.state !== "paused" && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     expect((await seen()).sandboxes[0]!.state).toBe("paused");
     expect(await alarmOf(who)).toBeNull();
   });
@@ -561,6 +566,76 @@ describe("the look before the runtime ceiling", () => {
     const state = await seen();
     expect(state.sandboxes[0]!.state).toBe("running");
     expect(state.commands.at(-1)!.argv[1]).toBe("renewed");
+  });
+
+  it("backs off through an E2B outage past the edge, never at alarm speed (F-1)", async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
+    const who = owner();
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/age", { id, s: CEILING + 5 });  // past its edge: E2B's own timeout's now
+    await e2b("/script", { down: 1_000_000 });
+    const waits: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      await runDurableObjectAlarm(stub(who));
+      waits.push((await alarmOf(who))! - Date.now());
+    }
+    expect(waits[0]!).toBeGreaterThan(300);
+    for (let i = 1; i < waits.length; i += 1) {
+      expect(waits[i]!).toBeGreaterThan(waits[i - 1]! * 1.5);
+    }
+    await e2b("/script", { down: 0 });
+  });
+
+  it("asks a paused sandbox a lease runs in to resume backing off while E2B refuses (F-1)",
+     async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
+    const who = owner();
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/pause", { id });
+    await e2b("/script", { refuseResume: true });
+    const waits: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      await runDurableObjectAlarm(stub(who));
+      waits.push((await alarmOf(who))! - Date.now());
+    }
+    expect(waits[0]!).toBeGreaterThan(300);
+    for (let i = 1; i < waits.length; i += 1) {
+      expect(waits[i]!).toBeGreaterThan(waits[i - 1]! * 1.5);
+    }
+    await e2b("/script", { refuseResume: false });
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+  });
+
+  it("keeps a renewal's slot across its pause: the first in line cannot take it (F-2)",
+     async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+    const who = owner();
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    // The renewal's pause lands, its resume is refused: the slot E2B's count shows free is
+    // the renewal's, held in the line.
+    await e2b("/script", { others: 1, refuseResume: true });
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes[0]!.state).toBe("paused");
+    expect((await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved).toBe(1);
+    const creates = (await seen()).calls.filter((call) => call.path === "/v2/sandboxes"
+                                                && call.method === "POST").length;
+    const waiter = owner();
+    expect(await stub(waiter).start(waiter, start())).toEqual({ started: false,
+                                                               code: CODES.waiting });
+    expect((await seen()).calls.filter((call) => call.path === "/v2/sandboxes"
+                                       && call.method === "POST")).toHaveLength(creates);
+    // The resume goes: the slot is given back and the line rung.
+    await e2b("/script", { refuseResume: false });
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes.find((box) => box.id === id)!.state).toBe("running");
+    expect((await env.SLOTS.getByName(SLOTS).turn("nobody")).reserved).toBe(0);
+    await rung(waiter);
   });
 
   it("leaves a paused, idle sandbox alone, with no alarm", async () => {

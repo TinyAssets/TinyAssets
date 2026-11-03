@@ -100,6 +100,18 @@ const RENEWAL_MS = RENEWING_MS + PAUSE_MAX_MS + RESUME_MAX_MS + PREPARE_MS + REN
  */
 const RETRY_BASE_MS = 480;
 /**
+ * The longest a retry waits, however often it failed: a lease's TTL. A run whose runner the
+ * owner's object has not heard from in `LEASE_TTL_S` is settled lost, so a paused sandbox a
+ * lease runs in is asked to resume at least that often while E2B refuses.
+ */
+const RETRY_MAX_MS = LEASE_TTL_S * 1000;
+
+/** The wait before the `tries`-th retry: doubling from the measured request time. */
+export function backoff(tries: number): number {
+  return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, tries - 1), RETRY_MAX_MS);
+}
+
+/**
  * Cloudflare's wall-clock limit on one alarm handler, 15 minutes: one look for a quiet
  * moment ends inside it with room for the renewals after, and the next alarm looks on.
  */
@@ -129,6 +141,9 @@ interface Row {
   paused: number;
   /** When its runner was first seen with no live run (ms), while it has none since. */
   idle_since: number | null;
+  /** A pending resume or pause E2B did not take: when it is asked again, and how often it was. */
+  retry_at: number | null;
+  tries: number;
 }
 
 const RUN = /^run_[0-9a-f]{32}$/;
@@ -234,7 +249,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("CREATE TABLE IF NOT EXISTS sandboxes (authority TEXT PRIMARY KEY, " +
                      "sandbox_id TEXT NOT NULL, lease_id TEXT, end_at REAL NOT NULL, " +
                      "renewing INTEGER NOT NULL DEFAULT 0, releasing INTEGER NOT NULL " +
-                     "DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0, idle_since REAL)");
+                     "DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0, idle_since REAL, retry_at REAL, " +
+                     "tries INTEGER NOT NULL DEFAULT 0)");
     this.#sql.exec("CREATE TABLE IF NOT EXISTS launched (run TEXT PRIMARY KEY, " +
                      "authority TEXT NOT NULL, lease_id TEXT NOT NULL)");
     // The control record's sandbox numbers as last read, and the looks failed in a row.
@@ -357,9 +373,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       await this.#run(handle, ["renewed"]);
     }
     const after = await e2b.info(resumed.sandboxID);
-    this.#sql.exec("UPDATE sandboxes SET renewing = 0, paused = 0, end_at = ? WHERE " +
-                     "authority = ?", after === null ? Date.now() : Date.parse(after.endAt),
-                   row.authority);
+    this.#sql.exec("UPDATE sandboxes SET renewing = 0, paused = 0, retry_at = NULL, tries = 0, " +
+                     "end_at = ? WHERE authority = ?",
+                   after === null ? Date.now() : Date.parse(after.endAt), row.authority);
+    // A renewal's slot, held across its pause, given back to the line.
+    await this.#slots().unreserve(resumed.sandboxID);
     return handle;
   }
 
@@ -395,14 +413,16 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const handle = await this.#resume(row, found, network, ceilings);
       return handle === null ? "lost" : { handle };
     }
-    if (!(await slots.turn(owner))) {
+    const { turn, reserved } = await slots.turn(owner);
+    if (!turn) {
       return wait();
     }
     try {
       const count = await e2b.running();
       // E2B's count is the team's, and advisory: unknown, the create is tried and E2B's
-      // own refusal holds the plan.
-      if (count !== null && count >= ceilings.concurrency_ceiling) {
+      // own refusal holds the plan. A renewal's sandbox, paused for a moment, keeps its slot
+      // (`reserved`): counted, and with no count to set it against, nothing is tried.
+      if (count === null ? reserved > 0 : count + reserved >= ceilings.concurrency_ceiling) {
         return await wait();
       }
       if (found !== null) {
@@ -598,13 +618,29 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (await e2b.pause(found.sandboxID) === "busy") {
       return false;  // a previous snapshot is still being written: the look asks again
     }
-    this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);
+    this.#sql.exec("UPDATE sandboxes SET releasing = 0, retry_at = NULL, tries = 0 WHERE " +
+                     "authority = ?", row.authority);
     this.#paused(row.authority);
     await this.#freed();
     return true;
   }
 
+  /** A pending resume or pause asked again later, backing off: when. */
+  #later(authority: string): number {
+    const row = this.#row(authority);
+    const tries = (row?.tries ?? 0) + 1;
+    const at = Date.now() + backoff(tries);
+    this.#sql.exec("UPDATE sandboxes SET tries = ?, retry_at = ? WHERE authority = ?", tries, at,
+                   authority);
+    return at;
+  }
+
   #forget(authority: string): void {
+    const row = this.#row(authority);
+    if (row !== null) {
+      // A renewal's slot it held is the line's again.
+      this.ctx.waitUntil(this.#slots().unreserve(row.sandbox_id).catch(() => undefined));
+    }
     this.#sql.exec("DELETE FROM sandboxes WHERE authority = ?", authority);
     this.#sql.exec("DELETE FROM launched WHERE authority = ?", authority);
   }
@@ -644,12 +680,12 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const ceilings = this.#known();
     let soonest = at;
     for (const row of this.#rows()) {
-      if (row.renewing === 1 || row.releasing === 1) {
-        soonest = Math.min(soonest, Date.now() + PAUSE_MAX_MS);
+      if (row.renewing === 1 || row.releasing === 1
+          || (row.paused === 1 && this.#leased(row.authority))) {
+        // Asked at once the first time, then at its back-off: never at alarm speed.
+        soonest = Math.min(soonest, row.retry_at ?? Date.now());
       } else if (row.paused === 1) {
-        if (this.#leased(row.authority)) {
-          soonest = Date.now();
-        }
+        continue;  // paused and idle: nothing to do
       } else if (ceilings !== null) {
         // The renewal window, and the idle look a lease's TTL on.
         soonest = Math.min(soonest, row.end_at - ceilings.renewal_window_s * 1000,
@@ -671,21 +707,25 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    */
   override async alarm(): Promise<void> {
     const began = Date.now();
-    let next = Number.POSITIVE_INFINITY;
+    let next: number;
     try {
       next = await this.#look(began);
       this.#sql.exec("UPDATE known SET failures = 0");
     } catch (error) {
+      // E2B unreachable, or answering out of shape: asked again, backing off from the
+      // measured request time, and sooner only for an edge still ahead (one already past is
+      // E2B's own timeout's to pause; the next look resumes it). Never at alarm speed.
       console.error("a sandbox look failed; it is tried again, backing off", error);
       this.#sql.exec("UPDATE known SET failures = failures + 1");
       const failures = this.#sql.exec<{ failures: number }>("SELECT failures FROM known")
         .toArray()[0]?.failures ?? 1;
-      const edges = this.#rows().map((row) => row.end_at - RENEW_EDGE_MS);
-      next = Math.min(Date.now() + RETRY_BASE_MS * 2 ** (failures - 1),
-                      Math.max(Date.now(), Math.min(...edges)));
-    } finally {
-      await this.#arm(next);
+      const now = Date.now();
+      const ahead = this.#rows().map((row) => row.end_at - RENEW_EDGE_MS)
+        .filter((edge) => edge > now);
+      await this.ctx.storage.setAlarm(Math.min(now + backoff(failures), ...ahead));
+      return;
     }
+    await this.#arm(next);
   }
 
   async #look(began: number): Promise<number> {
@@ -744,7 +784,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return Number.POSITIVE_INFINITY;  // paused and idle: nothing to do
       }
       // Paused while a lease runs in it (a renewal cut short, or E2B's own timeout): resumed,
-      // its slot its own. E2B refusing is retried, backing off, and is the founder's alert.
+      // its slot its own, held in the line until it runs. E2B refusing is retried, backing
+      // off, and is the founder's alert.
+      await this.#slots().reserve(found.sandboxID);
       try {
         if (await this.#resume(row, found, null, ceilings) === null) {
           this.#forget(row.authority);
@@ -758,13 +800,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         console.error("sandbox_renewal_refused: E2B refused to resume a sandbox a lease runs " +
                       "in; asked again");
         this.#sql.exec("UPDATE sandboxes SET renewing = 1 WHERE authority = ?", row.authority);
-        return Date.now() + PAUSE_MAX_MS;
+        return this.#later(row.authority);
       }
     }
     if (row.releasing === 1) {
       const paused = await this.#reap(row);
       const after = this.#row(row.authority);
-      return after?.releasing === 1 ? Date.now() + PAUSE_MAX_MS
+      return after?.releasing === 1 ? this.#later(row.authority)
         : paused || after === null ? Number.POSITIVE_INFINITY : after.end_at - windowMs;
     }
     const endAt = Date.parse(found.endAt);
@@ -781,15 +823,15 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         await this.#freed();
         return Number.POSITIVE_INFINITY;
       }
-      return Date.now() + PAUSE_MAX_MS;
+      return this.#later(row.authority);
     }
     if (!quiet && !state.quiet && Date.now() < endAt - RENEW_EDGE_MS) {
       return Date.now();  // the look for a quiet moment goes on in the next alarm
     }
     await this.#renew(row, handle, endAt, ceilings);
     const after = this.#row(row.authority);
-    return after === null || after.renewing === 1 ? Date.now() + PAUSE_MAX_MS
-      : after.end_at - windowMs;
+    return after === null ? Number.POSITIVE_INFINITY
+      : after.renewing === 1 ? this.#later(row.authority) : after.end_at - windowMs;
   }
 
   /**
@@ -812,7 +854,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
     this.#sql.exec("DELETE FROM launched WHERE authority = ?", row.authority);
     if (await this.#pause(found.sandboxID, Date.parse(found.endAt)) !== "paused") {
-      return Date.now() + PAUSE_MAX_MS;
+      return this.#later(row.authority);
     }
     this.#paused(row.authority);
     this.#sql.exec("UPDATE sandboxes SET idle_since = NULL WHERE authority = ?", row.authority);
@@ -823,13 +865,15 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /**
    * One renewal: the runner posts `renewing` and holds its posts (`renew-wait` now: every
    * live run, one launched since the quiet look included); the row is marked renewing, so a
-   * look that fails after the pause resumes it; the sandbox is paused with its memory and
-   * resumed at once, its slot its own.
+   * look that fails after the pause resumes it; its slot is held in the line across the
+   * pause and the resume (`reserve`), so the first owner waiting cannot create into the
+   * moment it frees; the sandbox is paused with its memory and resumed at once.
    */
   async #renew(row: Row, handle: Handle, endAt: number, ceilings: SandboxCeilings):
       Promise<void> {
     const e2b = this.#e2b();
     await this.#run(handle, ["renew-wait", String(Date.now())]);
+    await this.#slots().reserve(handle.sandboxID);
     this.#sql.exec("UPDATE sandboxes SET renewing = 1 WHERE authority = ?", row.authority);
     const paused = await this.#pause(handle.sandboxID, endAt);
     if (paused === "gone") {
@@ -870,6 +914,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       for (const id of ids) {
         await e2b.kill(id);
+        await this.#slots().unreserve(id);
       }
       await this.#slots().leave(owner);
       await this.ctx.storage.deleteAlarm();

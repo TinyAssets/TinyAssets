@@ -51,7 +51,7 @@ was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or t
 | **World-writable system files** | E2B's base image boots with `/usr/local/bin` (the runner's Node), `/usr/bin/envd`, `/etc/inittab` and systemd units writable by every user, and a template build's `chmod` does not survive into the sandbox. The runner's `prepare` takes every user's write away (once a boot, about 7 s) and fails loudly if any remains; verified after it and across a pause. |
 | Config files | The run's MCP config is root's, read-only to the CLI (an append failed). |
 
-## The review round (2026-11-03, template `s2470aee6d75344fc`; 3 throwaway sandboxes, under 2 sandbox-minutes)
+## The review round (2026-11-03, templates `s2470aee6d75344fc` and `s04af25e74977d042`; 4 throwaway sandboxes, under 2 sandbox-minutes)
 
 | Probe | Result |
 |---|---|
@@ -59,6 +59,8 @@ was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or t
 | The list by metadata, both states | `GET /v2/sandboxes?metadata=ta_owner%3D<tag>&state=running,paused` answered exactly the tagged sandbox: the erasure's stray search. `X-Total-Running` present (`1`). |
 | `ta-runner prepare` on the built template | Exit 0: `/proc` hidden, nothing writable by another user left, `sudo` taken away; `ta-runner state` answers `{live: 0, quiet: true}`. |
 | Modes across a memory pause and resume | Nothing writable by another user (others, or group `ta`) right after the resume, before any `prepare`: **E2B did not loosen modes on a memory resume** (`pauseMode: full`). `prepare` re-checks at every resume regardless. |
+| The verification's follow-ups (template `s04af25e74977d042`: `sudoers` kept with no include) | The same results again: envd 401/401/200, `prepare` exit 0 at the boot and after a memory resume, nothing writable, no user but root may `sudo`. |
+| Owed to the founder's live test | A Gemini run loading its `{system}` settings with no "Parent directory is not owned by root" warning, yolo kept (needs a run past the sign-in; the runner test checks every ancestor is root's as the CLI sees it). |
 | Clean-up | Each sandbox killed; the account listed **0 running or paused** after. |
 
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)

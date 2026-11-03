@@ -13,6 +13,11 @@
  *   (`sandboxRung`), whose waiting runs then start again through their whole admission. A
  *   start that got its sandbox leaves the line and rings the next (room may be left); one
  *   that found none again keeps its place; an owner with no run waiting leaves.
+ * - **A renewal keeps its slot.** A renewing sandbox is paused for about a second, which
+ *   frees a slot in E2B's count; it holds that slot here (`reserve`) across its pause and
+ *   resume, and every start counts the slots held as taken (`turn`), so the first owner in
+ *   line cannot create into it (the founder's rule: no run dies at the ceiling). Giving it
+ *   back rings the line.
  * - **What no doorbell sees.** E2B's count is the team's: a sandbox outside the platform
  *   that ends, or E2B's own capacity coming back (`503`), rings nothing. So while anyone
  *   waits, the first in line is rung again, its wait doubling from `LEASE_TTL_S` (the
@@ -44,6 +49,7 @@ export class SandboxSlots extends DurableObject<SlotsEnv> {
                      "seq INTEGER NOT NULL UNIQUE, misses INTEGER NOT NULL DEFAULT 0)");
     this.#sql.exec("CREATE TABLE IF NOT EXISTS line (only INTEGER PRIMARY KEY CHECK " +
                      "(only = 1), next_seq INTEGER NOT NULL, ceiling_s INTEGER NOT NULL)");
+    this.#sql.exec("CREATE TABLE IF NOT EXISTS held (sandbox_id TEXT PRIMARY KEY)");
   }
 
   #head(): { owner: string; misses: number } | null {
@@ -51,10 +57,27 @@ export class SandboxSlots extends DurableObject<SlotsEnv> {
       "SELECT owner, misses FROM waiting ORDER BY seq LIMIT 1").toArray()[0] ?? null;
   }
 
-  /** Whether `owner` may try for one more running sandbox now. */
-  async turn(owner: string): Promise<boolean> {
+  /**
+   * Whether `owner` may try for one more running sandbox now, and how many slots renewals
+   * hold meanwhile (taken, whatever E2B's count says).
+   */
+  async turn(owner: string): Promise<{ turn: boolean; reserved: number }> {
     const head = this.#head();
-    return head === null || head.owner === owner;
+    return { turn: head === null || head.owner === owner,
+             reserved: this.#sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM held").one().n };
+  }
+
+  /** A renewing sandbox's slot held across its pause and resume. */
+  async reserve(sandboxId: string): Promise<void> {
+    this.#sql.exec("INSERT INTO held (sandbox_id) VALUES (?) ON CONFLICT DO NOTHING", sandboxId);
+  }
+
+  /** The slot given back (the sandbox runs again, or is gone): the line is rung. */
+  async unreserve(sandboxId: string): Promise<void> {
+    if (this.#sql.exec("DELETE FROM held WHERE sandbox_id = ? RETURNING sandbox_id", sandboxId)
+      .toArray().length > 0) {
+      await this.#ring();
+    }
   }
 
   /**

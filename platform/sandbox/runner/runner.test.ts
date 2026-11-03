@@ -179,7 +179,8 @@ describe("the invocation", () => {
      "with folder trust", async () => {
     const start = startDoc(doors, "gemini", { config: config("gemini") });
     box.cli("gemini", { lines: SHAPES["gemini"]!.lines,
-                        dumps: [box.path(`/etc/ta/runs/${start.run}/gemini-settings.json`)] });
+                        dumps: [box.path(`/etc/ta/runs/${start.run}/gemini-settings.json`)],
+                        owners: [box.path(`/etc/ta/runs/${start.run}/gemini-settings.json`)] });
     box.start(start);
     box.runner("launch", start.run);
     await doors.ended_(25_000, start.run);
@@ -189,6 +190,12 @@ describe("the invocation", () => {
     const settings = JSON.parse(seen.dumps[path]!);
     expect(settings.security).toEqual({ folderTrust: { enabled: false } });
     expect(settings.mcpServers.tinyassets.httpUrl).toBe(start.urls.mcp);
+    // Gemini CLI loads system settings only when the file and every ancestor up to `/` are
+    // root's (its "Parent directory is not owned by root" check), as the CLI saw them.
+    const chain = seen.owners[path]!;
+    expect(chain.at(-1)!.path).toBe("/");
+    expect(chain.filter((each) => each.uid !== 0)).toEqual([]);
+    expect(seen.uid).not.toBe(0);
   });
 
   it("passes codex its MCP door with the secret in the path", async () => {

@@ -347,13 +347,16 @@ function prepare(servers: readonly string[]): number {
  * `user` back in group `sudo` and grants it `NOPASSWD: ALL` in `/etc/sudoers` at each boot
  * (probed live: the template's build removed both, and a fresh sandbox had both again). No
  * run's user can become `user` (it has no password, and only the Worker reaches envd), so
- * this is the template's promise kept, not a door closed: `/etc/sudoers` keeps its defaults,
- * its includes and root's line and nothing else, the `sudo` group has no member, and each of
+ * this is the template's promise kept, not a door closed: `/etc/sudoers` keeps its defaults
+ * and root's line and nothing else (no include), the `sudo` group has no member, and each of
  * `user`, `ta-sync` and a pool user is checked refused.
  */
 function lockSudo(): void {
+  // Its defaults and root's line, and no include of any kind (`@include`, `#include`,
+  // their `dir` forms): an included file is one more grant this check would not read.
   const kept = readFileSync("/etc/sudoers", "utf8").split("\n").filter((line) =>
-    line.trim() === "" || /^\s*(#|Defaults|@include|root\s)/.test(line));
+    line.trim() === "" || (/^\s*(#|Defaults|root\s)/.test(line)
+                           && !/^\s*[@#]include/.test(line)));
   writeFileSync("/etc/sudoers.ta", `${kept.join("\n").trimEnd()}\n`, { mode: 0o440 });
   const valid = spawnSync("visudo", ["-cf", "/etc/sudoers.ta"], { encoding: "utf8" });
   if (valid.status !== 0) {
@@ -612,7 +615,7 @@ async function syncCommand(): Promise<number> {
     }
   }
   try {
-    const client = new SyncClient(job.origin, job.token, HEARTBEAT_MS);
+    const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
     const place = { local: LOCAL_WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
                     sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
                     records: RECORDS };

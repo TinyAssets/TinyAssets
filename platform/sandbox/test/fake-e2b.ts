@@ -37,6 +37,8 @@ interface Script {
   noCount: boolean;
   /** How many info calls answer 500 (E2B unreachable) before they answer again. */
   down: number;
+  /** A resume of a paused sandbox answered 429, creates still taken. */
+  refuseResume: boolean;
 }
 
 const fake = {
@@ -57,7 +59,8 @@ function reset(): void {
   fake.rings = [];
   fake.next = 0;
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
-                  full: false, pauseMode: "full", noCount: false, down: 0 };
+                  full: false, pauseMode: "full", noCount: false, down: 0,
+                  refuseResume: false };
 }
 reset();
 
@@ -177,7 +180,7 @@ async function api(request: Request, url: URL): Promise<Response> {
     if (box.state === "running") {
       return connected(box);
     }
-    if (fake.script.full) {
+    if (fake.script.full || fake.script.refuseResume) {
       return Response.json({ code: 429, message: "concurrency" }, { status: 429 });
     }
     box.state = "running";

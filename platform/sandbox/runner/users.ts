@@ -114,18 +114,30 @@ export function processesOf(uid: number): number[] {
 }
 
 /**
+ * The longest a user's processes may outlive their SIGKILL: the runner's heartbeat
+ * (`HEARTBEAT_MS`, 20 s, which `guards/config.test.ts` holds equal), so a run's end is
+ * held no longer than one more heartbeat. A process still there after it is stuck in the
+ * kernel (uninterruptible sleep): the user is not given back, loudly.
+ */
+export const KILL_WITHIN_MS = 20_000;
+
+/**
  * Every process of `uid` killed, until none is left: `kill -9 -1` run as that user (which
  * signals all of its processes at once, so a process forking as it dies is caught too),
- * then each one `/proc` still shows.
+ * then each one `/proc` still shows; any left past `KILL_WITHIN_MS` fails.
  */
 export function killAll(uid: number): void {
   if (uid === 0) {
     throw new Error("root's processes are never killed by uid");
   }
+  const deadline = Date.now() + KILL_WITHIN_MS;
   for (;;) {
     const left = processesOf(uid);
     if (left.length === 0) {
       return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`processes of uid ${uid} outlived their kill: ${left.join(" ")}`);
     }
     spawnSync("setpriv", [`--reuid=${uid}`, `--regid=${uid}`, "--clear-groups", "--",
                           "/bin/kill", "-9", "-1"], { stdio: "ignore" });

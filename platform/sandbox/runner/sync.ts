@@ -62,12 +62,18 @@ export class SyncFenced extends Error {
  * doubling to at most `ceilingMs` (the runner's heartbeat, the cadence the lease is renewed
  * at), with no count: the run's own cancel ends it. Any other answer fails at once.
  */
+/**
+ * The sync doors' client: a call refused for the moment (the network, `429`, `503`) is
+ * asked again with no count, its wait doubling from `firstMs` (the runner's flush cadence:
+ * no sooner than its next batch of frames would go) to `ceilingMs` (a heartbeat: the run's
+ * report is never held longer than one).
+ */
 export class SyncClient {
-  constructor(readonly origin: string, readonly token: string, readonly ceilingMs: number,
-              readonly fetcher: typeof fetch = fetch) {}
+  constructor(readonly origin: string, readonly token: string, readonly firstMs: number,
+              readonly ceilingMs: number, readonly fetcher: typeof fetch = fetch) {}
 
   async post(door: string, body: unknown): Promise<Record<string, unknown>> {
-    for (let wait = 250; ; wait = Math.min(wait * 2, this.ceilingMs)) {
+    for (let wait = this.firstMs; ; wait = Math.min(wait * 2, this.ceilingMs)) {
       let response: Response;
       try {
         response = await this.fetcher(`${this.origin}/sync/${door}`, {
