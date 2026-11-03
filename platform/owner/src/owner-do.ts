@@ -1627,8 +1627,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       let natives = this.#ledger.natives(own);
       const grant = account.grant;
       if (!own && grant !== null && grant.mode === "scoped") {
+        // Where it acts: a run's stamp's universe, or the command center of a client's one
+        // enabled agent; none (no agent registered yet) covers none of them.
+        const mine = account.origin === null ? [] : this.#ledger.agents(account.origin)
+          .filter((agent) => agent.disabled_reason === null);
         const universe = account.run !== null ? account.run.stamp?.universe ?? null
-          : this.#universe(account);
+          : mine.length === 1 ? mine[0]!.command_center_id : null;
         natives = natives.filter((native) => universe !== null && holds(grant, {
           universe, agent: native.agent, capability: "converse" }));
       }
