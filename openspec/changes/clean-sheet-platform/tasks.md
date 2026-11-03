@@ -1702,6 +1702,8 @@ R, S, M and W.
 
   Verification round 3 (REQUEST_CHANGES), fixed: the sync-ignore notice never scans the owner's files in a write (a sync's write carries its sync agent's count; any other says files may be held back), the matcher a set lookup for literal lines; the agent form's subscription signed in inside the sandbox restored beside APP's filter, with `test:app` cases for both paths; a session hashed again only when its size or change time moved; a secret-refused session reported once; a client named by its display name whatever its id.
 
+  Verification round 4 (REQUEST_CHANGES), fixed: the run's heartbeat posts through sync-in and sync-out (the sync agent a child the runner waits on without blocking), so a sync longer than the lease keeps it; the matcher fast with no cap on lines (pattern lines behind a length and character check, each name and directory matched once), the reviewer's hostile lists 0.012 to 0.048 ms a path, a slow match said in the run's report; the notice's "may hold back" sentence on every added line, the sandbox's count only for the owner's own lease. Then main (slice L) merged: the lease column is migration 16.
+
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".

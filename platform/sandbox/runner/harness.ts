@@ -247,6 +247,8 @@ if (plan.login && !process.argv.includes("status")) {
 `;
 
 export interface Posted {
+  /** When it came, by the doors' clock. */
+  readonly at: number;
   readonly path: string;
   readonly headers: IncomingMessage["headers"];
   readonly body: Record<string, unknown>;
@@ -270,6 +272,8 @@ export class Doors {
    * message (a full storage's 507 among them), or null to begin it.
    */
   refuseBegin: (size: number) => { status: number; message: string } | null = () => null;
+  /** How long the first sync commit waits before it is answered: a slow sync-out. */
+  commitDelayMs = 0;
   /** Uploads the sync agent aborted, by intent id. */
   readonly aborted: string[] = [];
   #server: Server | null = null;
@@ -284,7 +288,7 @@ export class Doors {
         const raw = Buffer.concat(parts).toString("utf8");
         const body = raw === "" ? {} : JSON.parse(raw) as Record<string, unknown>;
         const path = request.url ?? "";
-        this.posts.push({ path, headers: request.headers, body });
+        this.posts.push({ at: Date.now(), path, headers: request.headers, body });
         const json = (status: number, value: unknown, headers: Record<string, string> = {}) => {
           response.writeHead(status, { "content-type": "application/json", ...headers });
           response.end(JSON.stringify(value));
@@ -347,6 +351,15 @@ export class Doors {
             intent.got.push(chunk.sha256);
           }
           return json(200, { created: (body["chunks"] as unknown[]).length });
+        }
+        if (path === "/sync/commit" && this.commitDelayMs > 0) {
+          const wait = this.commitDelayMs;
+          this.commitDelayMs = 0;
+          const ops = body["ops"] as { path: string; op: string }[];
+          setTimeout(() => json(200, { outcomes: ops.map((op) => ({ path: op.path,
+            outcome: "committed",
+            entry: op.op === "remove" ? null : { version: this.#version += 1 } })) }), wait);
+          return;
         }
         if (path === "/sync/commit") {
           const ops = body["ops"] as { path: string; op: string }[];

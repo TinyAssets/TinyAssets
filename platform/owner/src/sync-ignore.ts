@@ -35,29 +35,55 @@ export function defaultSyncIgnore(): readonly string[] {
 
 /**
  * Whether `text` matches `pattern` (`*` any run of characters, `?` any one), in time linear
- * in the text for a pattern. A pattern of `*` alone (the common one, `*.pyc`) is matched by
- * its literal pieces in order, leftmost first; one with `?` walks the pattern's positions
- * together (a set of states, no backtracking). No pattern can make a match slow.
+ * in the text for a pattern: its pieces between the stars matched in order, leftmost first
+ * (`?` any one character within a piece), the first piece at the start and the last at the
+ * end. Text or a pattern past the basic plane (a `?` must take a whole code point) walks the
+ * pattern's positions together instead (a set of states, no backtracking).
  */
 export function wildcard(pattern: string, text: string): boolean {
-  return pattern.includes("?") ? states(pattern, text) : stars(pattern, text);
+  return WIDE.test(pattern) || WIDE.test(text) ? states(pattern, text)
+    : pieces(pattern.split("*"), text);
 }
 
-function stars(pattern: string, text: string): boolean {
-  const pieces = pattern.split("*");
-  if (pieces.length === 1) {
-    return pattern === text;
+/** A surrogate: a code point past the basic plane, two string units. */
+const WIDE = /[\uD800-\uDFFF]/;
+
+/** Where `piece` (`?` any one unit) first matches `text` at or after `from`, or -1. */
+function find(piece: string, text: string, from: number): number {
+  if (!piece.includes("?")) {
+    return text.indexOf(piece, from);
   }
-  const first = pieces[0]!;
-  const last = pieces.at(-1)!;
-  if (text.length < first.length + last.length || !text.startsWith(first)
-      || !text.endsWith(last)) {
+  for (let at = from; at + piece.length <= text.length; at++) {
+    if (fits(piece, text, at)) {
+      return at;
+    }
+  }
+  return -1;
+}
+
+function fits(piece: string, text: string, at: number): boolean {
+  for (let i = 0; i < piece.length; i++) {
+    if (piece[i] !== "?" && piece[i] !== text[at + i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function pieces(parts: readonly string[], text: string): boolean {
+  if (parts.length === 1) {
+    return parts[0]!.length === text.length && fits(parts[0]!, text, 0);
+  }
+  const first = parts[0]!;
+  const last = parts.at(-1)!;
+  const end = text.length - last.length;
+  if (end < first.length || !fits(first, text, 0) || !fits(last, text, end)) {
     return false;
   }
-  const end = text.length - last.length;
   let at = first.length;
-  for (const piece of pieces.slice(1, -1)) {
-    const found = piece === "" ? at : text.indexOf(piece, at);
+  for (let i = 1; i < parts.length - 1; i++) {
+    const piece = parts[i]!;
+    const found = piece === "" ? at : find(piece, text, at);
     if (found < 0 || found + piece.length > end) {
       return false;
     }
@@ -98,6 +124,55 @@ function states(pattern: string, text: string): boolean {
 
 type Kind = "custom" | "default";
 
+/** The characters a text holds, folded into 32 bits: a pattern's must all be among them. */
+function charsOf(text: string): number {
+  let mask = 0;
+  for (let i = 0; i < text.length; i++) {
+    mask |= 1 << (text.charCodeAt(i) & 31);
+  }
+  return mask;
+}
+
+/**
+ * One pattern line, with what any text it matches must have: at least `min` units (and
+ * exactly that with no star), and every literal character of it (`chars`). Most texts fail
+ * one of those in a comparison or two, so a long list costs a pass over cheap checks, and
+ * only the few left are matched.
+ */
+interface Pattern {
+  readonly text: string;
+  readonly parts: readonly string[];
+  readonly kind: Kind;
+  readonly min: number;
+  readonly exact: boolean;
+  readonly chars: number;
+}
+
+function patternOf(text: string, kind: Kind): Pattern {
+  const literal = text.replace(/[*?]/g, "");
+  return { text, parts: text.split("*"), kind, min: text.replace(/\*/g, "").length,
+           exact: !text.includes("*"), chars: charsOf(literal) };
+}
+
+/** The kind of the first of `patterns` (custom lines first) matching `text`, or null. */
+function matchAny(patterns: readonly Pattern[], text: string): Kind | null {
+  if (patterns.length === 0) {
+    return null;
+  }
+  const chars = charsOf(text);
+  const wide = WIDE.test(text);
+  for (const pattern of patterns) {
+    if ((pattern.chars & chars) !== pattern.chars
+        || (!wide && (pattern.exact ? text.length !== pattern.min : text.length < pattern.min))) {
+      continue;
+    }
+    if (wide ? states(pattern.text, text) : pieces(pattern.parts, text)) {
+      return pattern.kind;  // the custom lines come first (`compiled`)
+    }
+  }
+  return null;
+}
+
 /**
  * The sync-ignore's lines compiled once: each a name anywhere or a path from the workspace;
  * a literal line a set member (a lookup per path segment, however many lines), a line with
@@ -107,7 +182,7 @@ function compiled(lines: readonly string[]) {
   const defaults = new Set(DEFAULT_IGNORES);
   const names = { custom: new Set<string>(), default: new Set<string>() };
   const paths = { custom: new Set<string>(), default: new Set<string>() };
-  const patterns = new Map<string, { text: string; path: boolean; kind: Kind }>();
+  const patterns = { names: new Map<string, Pattern>(), paths: new Map<string, Pattern>() };
   for (const line of lines) {
     const text = line.trim().replace(/\/+$/, "");
     if (text === "" || text.startsWith("#")) {
@@ -117,49 +192,71 @@ function compiled(lines: readonly string[]) {
     const path = text.includes("/");
     const anchored = path ? text.replace(/^\/+/, "") : text;
     if (/[*?]/.test(anchored)) {
-      const key = `${kind}\n${path}\n${anchored}`;
-      patterns.set(key, { text: anchored, path, kind });
+      // A custom line first, so the pass can stop at it.
+      (path ? patterns.paths : patterns.names).set(`${kind}\n${anchored}`,
+                                                    patternOf(anchored, kind));
     } else {
       (path ? paths : names)[kind].add(anchored);
     }
   }
-  return { names, paths, patterns: [...patterns.values()] };
+  const ordered = (all: Map<string, Pattern>) =>
+    [...all.values()].sort((a, b) => Number(a.kind === "default") - Number(b.kind === "default"));
+  return { names, paths, namePatterns: ordered(patterns.names),
+           pathPatterns: ordered(patterns.paths) };
 }
+
+/**
+ * The most names and path prefixes a matcher remembers: a tree's directories repeat in
+ * every path under them, so each is matched once; past it the memory starts again, so it
+ * holds the same however large the tree.
+ */
+const REMEMBERED = 65_536;
 
 /**
  * The matcher of a sync-ignore's lines: for a workspace path (relative to `/workspace`),
  * `custom` when a line of the owner's own (or a run's) names it, `default` when only a
- * default line does, or null. The sync-ignore file itself is never matched. Its cost a path
- * is a set lookup a segment and prefix, and one match a pattern line.
+ * default line does, or null. The sync-ignore file itself is never matched. A path costs a
+ * set lookup a segment and prefix, and the pattern lines' cheap checks for each name and
+ * prefix not met before (a directory's once, for every path under it).
  */
 export function ignoredBy(lines: readonly string[]): (rel: string) => Kind | null {
-  const { names, paths, patterns } = compiled(lines);
+  const { names, paths, namePatterns, pathPatterns } = compiled(lines);
+  const byName = new Map<string, Kind | null>();
+  const byPrefix = new Map<string, Kind | null>();
+  const remembered = (memory: Map<string, Kind | null>, key: string,
+                      work: () => Kind | null): Kind | null => {
+    const known = memory.get(key);
+    if (known !== undefined) {
+      return known;
+    }
+    if (memory.size >= REMEMBERED) {
+      memory.clear();
+    }
+    const kind = work();
+    memory.set(key, kind);
+    return kind;
+  };
+  const nameKind = (name: string) => remembered(byName, name, () =>
+    names.custom.has(name) ? "custom"
+      : matchAny(namePatterns, name) ?? (names.default.has(name) ? "default" : null));
+  const prefixKind = (prefix: string) => remembered(byPrefix, prefix, () =>
+    paths.custom.has(prefix) ? "custom"
+      : matchAny(pathPatterns, prefix) ?? (paths.default.has(prefix) ? "default" : null));
   return (rel) => {
     if (rel === SYNC_IGNORE_REL || SYNC_IGNORE_REL.startsWith(`${rel}/`)) {
       return null;  // the file itself, and the folders on its way, are never kept out
     }
     const parts = rel.split("/");
-    const prefixes = parts.map((_, i) => parts.slice(0, i + 1).join("/"));
     let found: Kind | null = null;
-    for (const part of parts) {
-      if (names.custom.has(part)) {
+    let prefix = "";
+    for (let i = 0; i < parts.length; i++) {
+      prefix = i === 0 ? parts[0]! : `${prefix}/${parts[i]!}`;
+      const name = nameKind(parts[i]!);
+      const path = prefixKind(prefix);
+      if (name === "custom" || path === "custom") {
         return "custom";
       }
-      found = found ?? (names.default.has(part) ? "default" : null);
-    }
-    for (const prefix of prefixes) {
-      if (paths.custom.has(prefix)) {
-        return "custom";
-      }
-      found = found ?? (paths.default.has(prefix) ? "default" : null);
-    }
-    for (const pattern of patterns) {
-      if ((pattern.path ? prefixes : parts).some((each) => wildcard(pattern.text, each))) {
-        if (pattern.kind === "custom") {
-          return "custom";
-        }
-        found = "default";
-      }
+      found = found ?? name ?? path;
     }
     return found;
   };

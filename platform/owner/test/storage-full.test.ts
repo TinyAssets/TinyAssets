@@ -217,18 +217,40 @@ describe("the sync's ignore list", () => {
       .filter((each) => each.type === "sync_ignore_changed")[0]!.detail;
     const detail = await changed();
     expect(detail).toContain("by a run in your sandbox:");
+    expect(detail).toContain("Its new lines may hold back files you keep");
     expect(detail).toContain("its lines hold back 6 files you keep (2 with changes in the " +
                              "sandbox)");
     const [receipt] = (await r.stub.policyReceipts(r.bind(null))).receipts
       .filter((each) => each.rule === "sync_ignore");
     expect(receipt!.decision).toBe("a run in your sandbox");
-    // Nothing held back, or a count that is no count: the notice says nothing of it.
     const version = async () => ((await r.stub.fileRead(r.bind(null),
       { path: `${W}/.ta/sync-ignore` })) as { entry: { version: number } }).entry.version;
-    await sync("node_modules\nsrc\ndist\n", { kept: 0, changed: 0 }, await version());
+    // A count of 0 never takes the sentence away: a new line is said whatever the count.
+    await sync("node_modules\nsrc\nbuild-out\n", { kept: 0, changed: 0 }, await version());
+    expect(await changed()).toContain("Its new lines may hold back files you keep");
+    expect(await changed()).not.toContain("In the sync that wrote it");
+    // Only a default line added, and a count that is no count: nothing held back is said.
+    await sync("node_modules\nsrc\nbuild-out\ndist\n", { kept: 1, changed: 5 },
+               await version());
     expect(await changed()).not.toContain("hold back");
-    await sync("node_modules\nsrc\n", { kept: 1, changed: 5 }, await version());
-    expect(await changed()).not.toContain("hold back");
+  });
+
+  it("never gives an outside client's sandbox count, which sees only its part of the files " +
+     "(verification round 3, R3-2)", async () => {
+    const r = await rig();
+    const client = "c".repeat(64);
+    const lease = await inFiles(r.stub, {}, (files) =>
+      files.leaseAcquire(client, "sandbox-1", TOKENS));
+    await sqlIn(r.stub, "INSERT INTO outside_clients (client, source, mode, scopes, generation, " +
+      "name, first_seen, last_seen) VALUES (?, 'mcp', 'full', '[]', 1, '', 1, 1)", client);
+    await r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch,
+      ops: [{ op: "write", path: `${W}/.ta/sync-ignore`, base: null, inline: text("AGENTS.md\n"),
+              held_back: { kept: 0, changed: 0 } } as never] });
+    const [notice] = (await r.stub.noticeList(r.bind(null))).notices
+      .filter((each) => each.type === "sync_ignore_changed");
+    expect(notice!.detail).toContain("by the outside client");
+    expect(notice!.detail).toContain("Its new lines may hold back files you keep");
+    expect(notice!.detail).not.toContain("In the sync that wrote it");
   });
 
   it("says a list written outside a sync may hold back kept files when it adds a line, at " +

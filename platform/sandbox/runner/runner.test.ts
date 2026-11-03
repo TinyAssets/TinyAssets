@@ -25,6 +25,8 @@ import { processesOf } from "./users";
 import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./harness";
 
 const sources = bundledSources();
+/** The runner's heartbeat (`runner.ts` `HEARTBEAT_MS`). */
+const HEARTBEAT_MS = 20_000;
 
 /** Each record's own event shapes: a session id, a tool call, the final text, usage. */
 const SHAPES: Record<string, { lines: unknown[]; session: string | null; text: string;
@@ -691,6 +693,20 @@ describe("the sync", () => {
     expect(JSON.stringify(doors.posts.filter((post) => post.path === "/sync/commit")))
       .not.toContain(token);
   });
+
+  it("keeps posting its heartbeat through a sync-out longer than a heartbeat, so a long " +
+     "sync keeps its lease (verification round 3, R3-1)", async () => {
+    // The commit answered after more than a heartbeat's wait: the run's lease is renewed by
+    // its event posts alone, so a sync-out that stopped them would lose it.
+    doors.commitDelayMs = HEARTBEAT_MS + 3_000;
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "notes.md": "long sync" } });
+    const { start } = await run("codex");
+    const commit = doors.posts.find((post) => post.path === "/sync/commit")!;
+    const during = doors.posts.filter((post) => post.path === `/r/${start.run}/events`
+      && post.at > commit.at + 1_000 && post.at < commit.at + HEARTBEAT_MS + 3_000);
+    expect(during.length).toBeGreaterThanOrEqual(1);
+    expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/notes.md");
+  }, 90_000);
 
   it("sends a file past one chunk through the upload doors, chunk by chunk", async () => {
     const big = "a".repeat(4 * 1024 * 1024) + "b".repeat(4 * 1024 * 1024) + "c".repeat(1024);

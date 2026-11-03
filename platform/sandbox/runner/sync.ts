@@ -476,6 +476,8 @@ export interface SyncReport {
   readonly skipped: readonly { readonly path: string; readonly reason: string }[];
   /** Skipped files past the listed ones (held back files are listed at most `LISTED`). */
   readonly skipped_unlisted: number;
+  /** How long matching the sync-ignore list took this sync, in ms. */
+  readonly match_ms: number;
 }
 
 /** Held-back files a report lists by path, at most: past them it counts them. */
@@ -783,7 +785,17 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
   }
   await send();
-  const ignored = ignoredBy(syncIgnore(place.local));
+  const matcher = ignoredBy(syncIgnore(place.local));
+  // How long matching the list took, so a slow list says so in the run's report.
+  let matchMs = 0;
+  const ignored = (rel: string) => {
+    const began = performance.now();
+    try {
+      return matcher(rel);
+    } finally {
+      matchMs += performance.now() - began;
+    }
+  };
   /** Kept out: a custom line's path, or a default line's path the owner does not keep yet. */
   const out = (rel: string): boolean => {
     const why = ignored(rel);
@@ -831,7 +843,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   }
   await offer(SYNC_IGNORE, place.local, localOf(place, SYNC_IGNORE));
   await send();
-  return { committed, conflicts, refused, skipped, skipped_unlisted: Math.max(0, held - LISTED) };
+  return { committed, conflicts, refused, skipped, skipped_unlisted: Math.max(0, held - LISTED),
+           match_ms: Math.round(matchMs) };
 }
 
 /** Whether a kept file's sandbox copy differs from what the owner's files hold. */

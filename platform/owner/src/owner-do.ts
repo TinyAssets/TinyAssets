@@ -3561,17 +3561,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const who = this.#writerNamed(change.writer);
     this.#policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
     let held = "";
-    const synced = this.#heldBack;
-    if (present && synced !== null) {
-      // A sandbox's sync wrote it: its sync agent counted, in its own sandbox, the files the
-      // owner keeps that the list holds back (`sync.ts`), never this write's unit.
-      if (synced.kept > 0) {
-        held = ` In the sync that wrote it, its lines hold back ${synced.kept} file${
-          synced.kept === 1 ? "" : "s"} you keep (${synced.changed} with changes in the ` +
-          "sandbox): your files keep the version they have, and each sync reports them.";
-      }
-    } else if (present && change.content_id !== null) {
-      // Any other writer: its new lines are read (a set's work, the list at most an inline
+    if (present && change.content_id !== null) {
+      // Whoever wrote it, its new lines are read (a set's work, the list at most an inline
       // file), never matched against the owner's files here.
       const lines = (bytes: Uint8Array | null) => bytes === null ? null
         : ruleLines(new TextDecoder().decode(bytes).split("\n"));
@@ -3583,6 +3574,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (after === null || after.some((line) => !was.has(line) && !defaults.has(line))) {
         held = " Its new lines may hold back files you keep from syncing their changes; " +
           "each sandbox sync reports the files they hold back.";
+      }
+      // The owner's own sandbox, whose mirror is the owner's whole tree, adds what its sync
+      // agent counted (`sync.ts`); an outside client's sees only its part, so its count is
+      // never given, and no count ever takes the sentence away.
+      const synced = this.#heldBack;
+      if (synced !== null && /^lease:[0-9]+$/.test(change.writer) && synced.kept > 0) {
+        held += ` In the sync that wrote it, its lines hold back ${synced.kept} file${
+          synced.kept === 1 ? "" : "s"} you keep (${synced.changed} with changes in the ` +
+          "sandbox): your files keep the version they have, and each sync reports them.";
       }
     }
     this.#notices.add("sync_ignore_changed", `${SYNC_IGNORE} was ${outcome} by ${who}: what ` +

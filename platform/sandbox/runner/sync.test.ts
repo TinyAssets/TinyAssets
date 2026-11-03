@@ -437,3 +437,48 @@ describe("the list's own write carries what it holds back", () => {
   });
 });
 
+describe("the sync-ignore matcher against hostile lists (verification round 3, R3-1)", () => {
+  // The reviewer's paths: six segments, each file's name its own; its directories repeat.
+  const rel = (i: number) =>
+    `project-${i % 50}/src/module-${i % 997}/lib/deeper/component-file-number-${i}.ts`;
+  const perPath = (lines: string[], paths: number) => {
+    const matches = ignoredBy(lines);
+    const started = performance.now();
+    for (let i = 0; i < paths; i++) {
+      matches(rel(i));
+    }
+    return (performance.now() - started) / paths;
+  };
+
+  // Measured on this host: 0.012, 0.029, 0.029 and 0.048 ms a path (they were 1.27, 5.9 and
+  // 16.8 before); the bound is ten times that, for a slower host.
+  it.each([
+    ["star-only", (i: number) => `*${i}*x*y*z`],
+    ["?-patterns", (i: number) => `?*${i}*q`],
+    ["?-path patterns", (i: number) => `?*/*${i}*q`],
+    ["patterns whose characters every path holds", (i: number) => `p*/?*${i}*-`],
+  ])("matches 2,000 %s at well under a millisecond a path", (_, line) => {
+    expect(perPath(Array.from({ length: 2_000 }, (_, i) => line(i)), 3_000)).toBeLessThan(0.5);
+  });
+
+  it("matches ? and * as before, whatever it remembered", () => {
+    const matches = ignoredBy(["?.log", "a*b?d", "src/*/gen", "*.tmp", "node_modules"]);
+    for (let pass = 0; pass < 2; pass++) {
+      expect(["x.log", "xy.log", "aXXbcd", "abd", "src/a/gen/f", "src/gen", "q/r.tmp",
+              "node_modules/x", "a/node_modules"].map(matches))
+        .toEqual(["custom", null, "custom", null, "custom", null, "custom", "default",
+                  "default"]);
+    }
+    expect(wildcard("?", "\u{1F600}")).toBe(true);
+    expect(wildcard("??", "\u{1F600}")).toBe(false);
+  });
+
+  it("says how long matching took in the sync's report", async () => {
+    const { place: p, local } = place();
+    writeFileSync(join(local, "a.txt"), "a");
+    const report = await syncOut(client((door, body) => door === "commit" ? commitAll(body)
+      : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    expect(typeof report.match_ms).toBe("number");
+  });
+});
+

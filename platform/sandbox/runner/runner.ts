@@ -653,8 +653,13 @@ interface SyncJob {
   readonly paths?: readonly string[];
 }
 
-/** The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. */
-function syncAgent(job: SyncJob): { report: Record<string, unknown> | null; code: number } {
+/**
+ * The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. It runs
+ * as a child the runner waits on without blocking, so the run's heartbeat goes on posting
+ * (each post renews the lease) however long a sync takes.
+ */
+async function syncAgent(job: SyncJob):
+    Promise<{ report: Record<string, unknown> | null; code: number }> {
   const as = user(ROOT, "ta-sync");
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
                                        process.argv[1]!, "sync"]);
@@ -664,10 +669,19 @@ function syncAgent(job: SyncJob): { report: Record<string, unknown> | null; code
       env[name] = process.env[name]!;
     }
   }
-  const done = spawnSync(argv[0]!, argv.slice(1), { input: JSON.stringify(job), env,
-                                                     encoding: "utf8",
-                                                     // Its report whole, however many paths.
-                                                     maxBuffer: Number.POSITIVE_INFINITY });
+  const child = spawn(argv[0]!, argv.slice(1), { env, stdio: ["pipe", "pipe", "pipe"] });
+  const out: Buffer[] = [];
+  const err: Buffer[] = [];
+  child.stdout!.on("data", (chunk: Buffer) => { out.push(chunk); });
+  child.stderr!.on("data", (chunk: Buffer) => { err.push(chunk); });
+  child.stdin!.end(JSON.stringify(job));
+  const status = await new Promise<number | null>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => { resolve(code); });
+  });
+  // Its report whole, however many paths.
+  const done = { status, stdout: Buffer.concat(out).toString("utf8"),
+                 stderr: Buffer.concat(err).toString("utf8") };
   let report: Record<string, unknown> | null = null;
   try {
     report = JSON.parse(done.stdout) as Record<string, unknown>;
@@ -749,6 +763,9 @@ async function syncCommand(): Promise<number> {
   }
 }
 
+/** How long matching the sync-ignore list may take before the run's report says so. */
+const SLOW_MATCH_MS = 5_000;
+
 /** The paths an event names at most: past them, its count says how many more. */
 const EVENT_PATHS = 100;
 
@@ -781,6 +798,14 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
   }
   if ((report?.conflicts ?? []).length > 0) {
     outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts });
+  }
+  // A slow list says so, so the owner sees why a sync took long: its pattern lines (`*`,
+  // `?`) cost the most. Said past `SLOW_MATCH_MS`, which refuses nothing.
+  if ((report?.match_ms ?? 0) >= SLOW_MATCH_MS) {
+    outbox.push({ type: "ta.sync_ignore_slow", match_ms: report!.match_ms,
+                  message: `Matching /workspace/.ta/sync-ignore took ${
+                    Math.round(report!.match_ms / 1000)} s of this sync; its lines with * or ? ` +
+                    "cost the most." });
   }
 }
 
@@ -1080,7 +1105,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       outbox.push({ type: "ta.recovered" });
     }
     await reportSignins(start, lease);
-    if (syncAgent(job("in")).code === FENCED) {
+    if ((await syncAgent(job("in"))).code === FENCED) {
       throw new SyncFenced("the sync door fenced the lease");
     }
     synced = true;
@@ -1210,7 +1235,6 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
     exitCode = exitCode === 0 ? 1 : exitCode;
   } finally {
-    clearInterval(pump);
     try {
       // A full disk: ext4 keeps root's own blocks (probed: root still wrote at 0 free), but
       // what follows copies the run's changed sessions back and stages the unsent ones, and
@@ -1269,7 +1293,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           }
         }
         const held = sessions.length === 0 ? {}
-          : (syncAgent({ ...job("known"), paths: sessions.map((each) => each.path) })
+          : ((await syncAgent({ ...job("known"), paths: sessions.map((each) => each.path) }))
             .report?.["known"] ?? {}) as Record<string, string | null>;
         for (const session of sessions) {
           if (held[session.path] === session.digest
@@ -1291,7 +1315,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
                     0o755);
         }
         safeWrite(STATE, SESSIONS_SEEN, new TextEncoder().encode(JSON.stringify(next)), 0o600);
-        const done = syncAgent(job("out", secrets));
+        const done = await syncAgent(job("out", secrets));
         remove(out);
         if (done.code === FENCED) {
           outbox.push({ type: "ta.sync_fenced" });
@@ -1311,6 +1335,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       if (as !== null) {
         give(STATE, as);
       }
+      // The heartbeat went on through sync-out, so a long sync kept its lease.
+      clearInterval(pump);
       await poster.finish(exitCode);
       state.ended = true;
       state.seq = outbox.seq;
