@@ -1134,6 +1134,18 @@ def test_comment_and_label_events_do_not_start_tests() -> None:
                         assert "linux_oracle.py" not in code
 
 
+
+def test_the_slow_marker_stays_until_the_cutover():
+    """slow-tests is gone, but its marker line stays in pyproject.toml.
+
+    pyproject.toml is in build-image.yml's push paths, so editing it redeploys the
+    old stack's daemon. The unused marker goes at the cutover, with that chain.
+    """
+    text = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"slow: stress/race tests; opt-in via `pytest -m slow`",' in text
+    assert "'pyproject.toml'" in (_REPO / ".github/workflows/build-image.yml").read_text(
+        encoding="utf-8")
+
 pytestmark = pytest.mark.verifies(
     'ci-linux-proof-venue:'
     'The required shards run the unchanged gate runner',
