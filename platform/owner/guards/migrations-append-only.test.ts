@@ -65,19 +65,23 @@ function git(...args: string[]): string {
                                      stdio: ["ignore", "pipe", "pipe"] });
 }
 
-/** The lock on `base`; null when the base has none yet. Throws when `base` is unknown. */
-function baseLock(base: string): Lock | null {
+/**
+ * The lock on `base`; null only when the base's tree has no lock file. Throws when `base` is
+ * unknown, and when the lock is in its tree but cannot be read: the legs check out without
+ * file contents (`filter: blob:none`), so reading it fetches its blob, and a fetch that fails
+ * is an error, never "no lock". Whether the file exists is read from the tree, which is local.
+ */
+export function baseLock(base: string, run: (...args: string[]) => string = git): Lock | null {
   try {
-    git("rev-parse", "--verify", "--quiet", `${base}^{commit}`);
+    run("rev-parse", "--verify", "--quiet", `${base}^{commit}`);
   } catch {
     throw new Error(`${base} is not in this checkout: fetch it (the guard never passes ` +
                     "without its base)");
   }
-  try {
-    return JSON.parse(git("show", `${base}:${LOCK}`)) as Lock;
-  } catch {
+  if (run("ls-tree", "--name-only", base, "--", LOCK).trim() !== LOCK) {
     return null;
   }
+  return JSON.parse(run("show", `${base}:${LOCK}`)) as Lock;
 }
 
 describe("the migration lock against the base branch", () => {
@@ -103,6 +107,20 @@ describe("the migration lock against the base branch", () => {
     // Before the first deploy, migrations may still change in place.
     expect(lockGrowthProblems({ first_deploy: null, deployed: [] },
                               { first_deploy: first, deployed: ["e".repeat(64)] })).toEqual([]);
+  });
+
+  it("fails when the base's lock is in its tree but cannot be read", () => {
+    const tree = (...args: string[]): string => {
+      if (args[0] === "ls-tree") {
+        return `${LOCK}\n`;
+      }
+      if (args[0] === "show") {
+        throw new Error("fatal: could not fetch the blob");
+      }
+      return "";
+    };
+    expect(() => baseLock("abc", tree)).toThrow(/could not fetch/);
+    expect(baseLock("abc", (...args) => (args[0] === "ls-tree" ? "" : ""))).toBeNull();
   });
 
   it("reads its base from the event, and refuses one it does not have", () => {
