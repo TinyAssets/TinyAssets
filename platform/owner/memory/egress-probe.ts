@@ -14,8 +14,10 @@
  * - `doors`: `serveEgress` itself, its owner's object a fake that admits every call and
  *   reserves it as asked (the owner's own rules have their own tests), its control record
  *   open; and `/hoard`, the control, which reads a body whole and holds it;
- * - `gateway`: the gateway's own `EgressGateway`, the blob sealed here (`/seal`), and its
- *   pool's state (`/pool`);
+ * - `gateway`: the gateway's own `EgressGateway`, the blob sealed here (`/seal`), its pool's
+ *   state (`/pool`), and `/parse`: a body read by the gateway's own `readHeld`, weighed by its
+ *   own `parseWeight`, then parsed, serialized and encoded as the metered path does, a
+ *   checkpoint after each (review H1: the weight must cover each phase);
  * - `upstream`: the provider.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -25,7 +27,7 @@ import { serveEgress } from "../../doors/src/egress";
 import { LEASE_LIVED, mintToken } from "../../doors/src/routing-mac";
 import { builtinCatalog } from "../../gateway/src/catalog";
 import { secret, source } from "../../gateway/src/credential";
-import { GATEWAY_POOL_SLOTS } from "../../gateway/src/forward";
+import { GATEWAY_POOL_SLOTS, weighedBody } from "../../gateway/src/held";
 import { binding, seal } from "../../gateway/src/keyring";
 import { learnMeter, meteredRecord } from "../../gateway/src/meter";
 import { isolatePool } from "../src/slots";
@@ -50,7 +52,8 @@ const SECRET = "d".repeat(64);
 
 /** The provider's record: Anthropic's Messages API, its key sealed by this gateway. */
 const ANTHROPIC = Object.freeze({
-  upstream: { provider: "anthropic", api: "anthropic-messages", base_url: "https://api.anthropic.com",
+  upstream: { provider: "anthropic", api: "anthropic-messages",
+              base_url: "https://api.anthropic.com",
               auth: { header: "x-api-key", scheme: "" } },
   endpoints: [{ origin: "https://api.anthropic.com", paths: ["/v1/messages"], methods: ["POST"] }],
 });
@@ -146,6 +149,26 @@ export default class Probe extends WorkerEntrypoint<Env> {
     const url = new URL(request.url);
     if (url.pathname === "/gc") {
       return collected();
+    }
+    if (url.pathname === "/parse") {
+      const call = url.searchParams.get("call") ?? "0";
+      // As `prepared` holds them: the text and the tree, then the tree and the output, then
+      // the output and its bytes; the read's own result let go once its text is taken.
+      const read = await weighedBody(request, Number(request.headers.get("content-length")),
+                                     null, new AbortController().signal);
+      let text: string | null = read.text;
+      read.text = null;
+      let tree: unknown = JSON.parse(text!);
+      await checkpoint(this.env, "parse", call);
+      text = null;
+      let out: string | null = JSON.stringify(tree);
+      await checkpoint(this.env, "stringify", call);
+      tree = null;
+      const bytes = new TextEncoder().encode(out);
+      out = null;
+      await checkpoint(this.env, "encode", call);
+      return Response.json({ ...read, sent: bytes.byteLength,
+                             dropped: text === null && tree === null && out === null });
     }
     if (url.pathname === "/pool") {
       return Response.json(isolatePool(GATEWAY_POOL_SLOTS).state());

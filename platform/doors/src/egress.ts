@@ -603,6 +603,10 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   let reserving: Promise<unknown> | null = null;
   const kept: { rejected: Response | null } = { rejected: null };
   const reserve = (call: { model: string; tier: string | null }): Promise<Reservation> => {
+    if (stopped !== null) {
+      // A call the door stopped is never reserved: nothing will be sent for it.
+      return Promise.resolve({ refused: `egress_${stopped as Outcome}` });
+    }
     const asked = bound.stub.egressReserve(binding, { reservation, model: call.model,
                                                       tier: call.tier })
       .then((reserved): Reservation => {

@@ -11,7 +11,8 @@
  * `OWNER_CHUNK_SLOTS`, the gateway's); the counts test holds each capacity times its slot's
  * cost, with the Worker's baseline and what no unit models, within the isolate's 128 MB.
  *
- * **Waiting.** A slot that is not free now is waited for, first come first served, up to
+ * **Waiting.** A slot that is not free now is waited for (the owners waiting taking turns,
+ * each owner's own calls first come first served: `SlotPool`), up to
  * `SLOT_WAIT_MS`; at most `waiters` wait at once. Past either, the call is refused `busy`,
  * told and retryable, before it changes anything. So contention queues briefly instead of
  * refusing ordinary load, and an overload is loud, never a lost write.
@@ -61,16 +62,29 @@ export interface PoolState {
 
 interface Waiter {
   readonly units: number;
+  readonly owner: string;
   readonly grant: (slot: Slot) => void;
   readonly refuse: () => void;
 }
 
-/** A pool of `capacity` slots, waits of at most `waitMs`, at most `waiters` waiting. */
+/**
+ * A pool of `capacity` slots, waits of at most `waitMs`, at most `waiters` waiting.
+ *
+ * **Fair across owners** (a shared isolate, the gateway's): each waiter names its owner, and
+ * the owners with waiters take turns, round-robin, each owner's own calls first come first
+ * served. The waiters are shared without a fixed cap an owner: when they are full, a newcomer
+ * whose owner waits less than the owner waiting most takes the place of that owner's newest
+ * waiter, which is refused `busy`. So one owner's calls never starve another's, and an owner
+ * alone may use the whole pool. Calls that name no owner are one owner's (the owner
+ * object's own isolate).
+ */
 export class SlotPool {
   readonly capacity: number;
   readonly #waitMs: number;
   readonly #waiters: number;
-  readonly #queue: Waiter[] = [];
+  /** Each owner's waiters, in turn order: the next owner served is the first. */
+  readonly #queues = new Map<string, Waiter[]>();
+  #waiting = 0;
   #held = 0;
   #peak = 0;
 
@@ -83,36 +97,76 @@ export class SlotPool {
     this.#waiters = waiters;
   }
 
-  /** `units` slots, now or once free (first come first served), or refused `busy`. */
-  acquire(units: number): Promise<Slot> {
+  /** `units` slots for `owner`, now or once free (its turn, its own first), or `busy`. */
+  acquire(units: number, owner = ""): Promise<Slot> {
     if (!Number.isSafeInteger(units) || units < 1 || units > this.capacity) {
       throw new Error(`a call takes 1 to ${this.capacity} slots, not ${units}`);
     }
-    if (this.#queue.length === 0 && this.#held + units <= this.capacity) {
+    if (this.#waiting === 0 && this.#held + units <= this.capacity) {
       return Promise.resolve(this.#take(units));
     }
-    if (this.#queue.length >= this.#waiters) {
+    if (this.#waiting >= this.#waiters && !this.#makeRoom(owner)) {
       return Promise.reject(new SlotBusy());
     }
     return new Promise<Slot>((resolve, reject) => {
       const waiter: Waiter = {
         units,
+        owner,
         grant: (slot) => {
           clearTimeout(timer);
           resolve(slot);
         },
-        refuse: () => reject(new SlotBusy()),
+        refuse: () => {
+          clearTimeout(timer);
+          reject(new SlotBusy());
+        },
       };
       const timer = setTimeout(() => {
-        const at = this.#queue.indexOf(waiter);
-        if (at >= 0) {
-          this.#queue.splice(at, 1);
+        if (this.#remove(waiter)) {
           waiter.refuse();
-          this.#drain();  // a large waiter gone may free the head for smaller ones
+          this.#drain();  // a large waiter gone may free the turn for smaller ones
         }
       }, this.#waitMs);
-      this.#queue.push(waiter);
+      const queue = this.#queues.get(owner);
+      if (queue === undefined) {
+        this.#queues.set(owner, [waiter]);
+      } else {
+        queue.push(waiter);
+      }
+      this.#waiting += 1;
     });
+  }
+
+  /** The waiters full: the newest waiter of the owner waiting most refused, if not `owner`. */
+  #makeRoom(owner: string): boolean {
+    let most: Waiter[] | null = null;
+    for (const queue of this.#queues.values()) {
+      if (most === null || queue.length > most.length) {
+        most = queue;
+      }
+    }
+    const mine = this.#queues.get(owner)?.length ?? 0;
+    if (most === null || most.length <= mine + 1) {
+      return false;
+    }
+    const evicted = most.at(-1)!;
+    this.#remove(evicted);
+    evicted.refuse();
+    return true;
+  }
+
+  #remove(waiter: Waiter): boolean {
+    const queue = this.#queues.get(waiter.owner);
+    const at = queue?.indexOf(waiter) ?? -1;
+    if (queue === undefined || at < 0) {
+      return false;
+    }
+    queue.splice(at, 1);
+    if (queue.length === 0) {
+      this.#queues.delete(waiter.owner);
+    }
+    this.#waiting -= 1;
+    return true;
   }
 
   #take(units: number): Slot {
@@ -131,15 +185,30 @@ export class SlotPool {
     };
   }
 
+  /**
+   * The owners' turns: the first owner in turn order is served its oldest waiter if it fits,
+   * then goes to the back; one that does not fit waits for it, so a large call is never
+   * starved by smaller ones behind it.
+   */
   #drain(): void {
-    while (this.#queue.length > 0 && this.#held + this.#queue[0]!.units <= this.capacity) {
-      const next = this.#queue.shift()!;
+    for (;;) {
+      const [owner, queue] = this.#queues.entries().next().value ?? [];
+      if (owner === undefined || queue === undefined
+          || this.#held + queue[0]!.units > this.capacity) {
+        return;
+      }
+      const next = queue.shift()!;
+      this.#queues.delete(owner);
+      if (queue.length > 0) {
+        this.#queues.set(owner, queue);  // its turn taken: to the back
+      }
+      this.#waiting -= 1;
       next.grant(this.#take(next.units));
     }
   }
 
   state(): PoolState {
-    return { capacity: this.capacity, held: this.#held, waiting: this.#queue.length,
+    return { capacity: this.capacity, held: this.#held, waiting: this.#waiting,
              peak: this.#peak };
   }
 

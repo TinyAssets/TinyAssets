@@ -424,10 +424,12 @@ describe("the gateway Worker", () => {
     const model = await responsesModel();
     const pool = isolatePool(GATEWAY_POOL_SLOTS);
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
-    // A call of the whole bound takes the whole pool while its reserve is pending.
+    // A call that weighs the whole pool (15 MiB, a non-ASCII character in it: `held.ts`) takes
+    // every slot while its reserve is pending.
     let grant: () => void = () => undefined;
     const pending = new Promise<void>((resolve) => { grant = resolve; });
-    const whole = JSON.stringify({ model: model.id, input: "x".repeat(BODY_MAX - 200) });
+    const whole = JSON.stringify({ model: model.id,
+                                   input: `${"x".repeat(15 * 1024 * 1024 - 300)}é` });
     const first = egress.forward("alice", "c1", 1, blob, posted("/v1/responses", whole,
       { "x-fake-mode": "held" }), async (call) => {
       await pending;

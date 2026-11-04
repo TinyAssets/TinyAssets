@@ -179,13 +179,13 @@ export const EGRESS_BEAT_S = 60;
  * The most bytes one request body a Worker reads whole: the platform's one ceiling for it,
  * the egress door's and the gateway's model call (`BODY_MAX`), the API's and the owner
  * surface's tool calls (`API_BODY_MAX`, `APP_BODY_MAX`), a row's or a message's body at
- * half of it (`BODY_BYTES_MAX`, room for its JSON escapes). A technical ceiling, derived
- * (egress shape research §2): the egress door streams a model call's body, and the gateway,
- * which parses it once, holds at most `REQUEST_FACTOR` (4) times it while it reads, rewrites
- * and uploads it, in slots of its pool (`GATEWAY_POOL_SLOTS`, 16 of one 4 MiB chunk); so the
- * largest call is the whole pool, 64 MiB, at 4 times its bytes: 16 MiB (the gateway's
- * `BODY_MAX`, held equal by its tests). Providers take more (Anthropic's Messages API,
- * 128 MB), past what one pool holds.
+ * half of it (`BODY_BYTES_MAX`, room for its JSON escapes). A technical ceiling: the egress
+ * door streams a model call's body and holds none of it, and the gateway, which parses it
+ * once, weighs each call by its bytes and its structural tokens in slots of its pool
+ * (`gateway/src/held.ts`, measured in workerd and asserted by the memory leg), so an ASCII body
+ * of 16 MiB fits the pool and one with a non-ASCII character fits to 15 MiB, a heavier one
+ * refused `egress_too_large`. Providers take more (Anthropic's Messages API, 128 MB), past
+ * what one pool holds.
  */
 export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
 

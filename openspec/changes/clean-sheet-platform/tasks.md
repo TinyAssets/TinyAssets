@@ -2438,13 +2438,30 @@ R, S, M and W.
   model call once, for the model and tier the gateway read (the schema's triggers set its
   charge from none to held once, on an open row); an unreserved open row is open as any
   other (rate, beats, settled `lost` charged nothing). The gateway's metered path takes
-  ⌈4·CL / 4 MiB⌉ slots of its pool (`GATEWAY_POOL_SLOTS` 16, PR 2's `slots.ts`; `busy` past
-  the wait), reads at most `Content-Length` decoded chunk-wise, parses once, refuses spelling
+  slots of its pool as its body arrives and by its weight (`GATEWAY_POOL_SLOTS` 16, PR 2's
+  `slots.ts`; `busy` past the wait; see the review below), reads `Content-Length` decoded
+  chunk-wise, parses once, refuses spelling
   aliases (`aliased`: `generation_config.max_output_tokens` and case-folded keys, the open
   metering bypass on Google calls), reads model and tier from that parse, awaits `reserve`,
   clamps in place, encodes once and uploads through a `FixedLengthStream` in 64 KiB writes,
-  its slots let go at the upload's end. `EGRESS_BODY_MAX` = `BODY_MAX` = pool ÷ 4, derived.
+  its slots let go at the upload's end.
   `hintsOf`, `HINT_KEYS` and `egress_reservation_mismatch`'s use are gone.
+  Review rveg (REQUEST_CHANGES), fixed: a call is weighed by what its tree can cost, its bytes
+  and its structural tokens counted as they stream in (`gateway/src/held.ts`: 4.25 a byte with
+  a non-ASCII character, 2.25 without, 32 B a token, measured in workerd over 19 shapes, the
+  worst empty objects at 11.67 and nesting at 15 times the body), one weighing more than the
+  pool refused `egress_too_large` (H1), and the memory leg samples right after the parse, the
+  stringify and the encode for ten shapes, failing on an under-count; its slots are taken as
+  its bytes arrive, its weight's once the body is in, its read and its reserve stopped at its
+  caller's stop and past `heldDeadlineMs` (the pool's wait plus the body at 0.18 MiB/s, one
+  slot's worth a pool wait), and the pool's waiters are served round-robin by owner, sharing
+  the waiters without a fixed cap (H2); a key past ASCII at a read level, and a body `model`
+  where the path names it, refused (M1, M2); every end before the fetch settled `failed` (M3);
+  a body shorter than its `Content-Length` refused, the slots let go on a throw before the
+  fetch, a stopped call never reserved nor sent, and the deploy kit's one-after-another order
+  recorded in `deploy/checklist.md` (lows). Measuring it showed a dead local of a suspended
+  async function is still kept: the read now returns through `weighedBody`, so its text is
+  held once.
   The memory leg's egress cases (`owner/memory/egress.mjs`, run by `leg.mjs`: the real door
   and gateway in isolates of their own, sampled at the provider's checkpoints), measured in
   workerd: the door at 16 against 4 MiB held -0.38 MiB, the gateway -0.01 MiB (each at most a
@@ -2454,7 +2471,9 @@ R, S, M and W.
   control (a door reading the body whole) reads 11.99 MiB more. A caller's stop now ends the
   answer closed, not errored with its abort, so workerd's "Uncaught (in promise) AbortError"
   per stopped call (14 in the doors' egress suite, on `main` too) is gone.
-  Owed: `egress_aliased_key`, `egress_reserve_refused` and `busy` stay in `forward.ts`'s own
+  Owed: a sandbox's real upload rate, measured live, against `MIN_RATE`;
+  `egress_aliased_key`, `egress_reserve_refused`, `egress_too_large` and `busy` stay in
+  `forward.ts`'s own
   table (`EGRESS_CODES`) and join `failure.ts`'s, and `egress_reservation_mismatch` leaves
   it, at the next E2B template build (the runner bundles `failure.ts`, so a change to it is a
   new template); live, `memoryUsageBytes` for the gateway and the doors.

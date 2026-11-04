@@ -7,10 +7,11 @@ import { describe, expect, it } from "vitest";
 
 import { aliased, apiRules, ruledApis, valueAt } from "../src/api-rules";
 import type { Meter } from "../src/credential";
-import { BODY_MAX, GATEWAY_POOL_SLOTS, REQUEST_FACTOR, requestSlots } from "../src/forward";
+import { ASCII_BYTE_COST, BODY_MAX, BYTE_COST, GATEWAY_POOL_SLOTS, heldDeadlineMs, MIN_RATE,
+         parseWeight, TEXT_COST, Tokens, TOKEN_COST, weightSlots } from "../src/held";
 import { clamped } from "../src/meter";
 import { EGRESS_BODY_MAX } from "../../owner/src/network";
-import { UNIT_BYTES } from "../../owner/src/slots";
+import { SLOT_WAIT_MS, UNIT_BYTES } from "../../owner/src/slots";
 
 describe("a key the rules read, spelled another way (egress shape research §4)", () => {
   it("is refused at every level the rules read: Google's snake_case, any case-folded alias",
@@ -23,7 +24,23 @@ describe("a key the rules read, spelled another way (egress shape research §4)"
                         { GenerationConfig: {} }]) {
       expect(aliased(google, body)).toBe(true);
     }
+    // A path-named model (Google's) is never also named in the body, in any spelling.
+    for (const body of [{ model: "models/dearer", contents: [] }, { Model: "x" },
+                        { "mod\u0435l": "x" }]) {
+      expect(aliased(google, body)).toBe(true);
+    }
     const completions = apiRules("openai-completions")!;
+    // A key past ASCII at a read level: Go folds U+017F to s and the Kelvin sign to k (review
+    // M1), and no provider's schema has one.
+    for (const body of [{ model: "m", max_tokens: 10, "max_token\u017f": 999_999 },
+                        { model: "m", "max_completion_token\u017f": 999_999 },
+                        { model: "m", "\u017fervice_tier": "priority" },
+                        { model: "m", stream: true, "\u017ftream_options": {} },
+                        { model: "m", "tool\u017f": [{ type: "browser_search" }] },
+                        { model: "m", "\u212aey": 1 },
+                        { model: "m", tools: [{ "typ\u0435": "browser_search" }] }]) {
+      expect(aliased(completions, body)).toBe(true);
+    }
     for (const body of [{ model: "m", MAX_TOKENS: 999_999 }, { model: "m", Model: "other" },
                         { model: "m", maxCompletionTokens: 9 }, { model: "m", N: 3 },
                         { model: "m", streamOptions: { include_usage: false } },
@@ -152,18 +169,48 @@ describe("the clamp in place", () => {
   });
 });
 
-describe("the gateway's pool", () => {
-  it("derives the body bound: the whole pool at the request factor, the egress door's too",
+describe("the gateway's weight of a held call (review H1)", () => {
+  it("counts the structural tokens as the bytes stream in, strings and escapes kept apart",
      () => {
+    const counted = (...pieces: string[]) => {
+      const tokens = new Tokens();
+      for (const piece of pieces) {
+        tokens.feed(new TextEncoder().encode(piece));
+      }
+      return [tokens.count, tokens.ascii];
+    };
+    expect(counted('{"a":[1,2,{}],"b":"x"}')).toEqual([11, true]);
+    // A string's own brackets, commas, colons and escaped quotes are not structure.
+    expect(counted('{"a":"{[,:\\"]}"}')).toEqual([4, true]);
+    // A chunk boundary inside an escape or a string changes nothing; non-ASCII is seen.
+    expect(counted('{"a":"x\\', '",[]', '"}', ',"\u2014":1}')).toEqual(counted(
+      '{"a":"x\\",[]"}', ',"\u2014":1}'));
+    expect(counted('{"k":"\u2014"}')).toEqual([4, false]);
+    expect(counted("[]".repeat(3))).toEqual([3, true]);
+  });
+
+  it("weighs a call by its bytes and its tokens, refusing one past the pool", () => {
     expect(GATEWAY_POOL_SLOTS).toBe(16);
-    expect(REQUEST_FACTOR).toBe(4);
-    expect(BODY_MAX).toBe(GATEWAY_POOL_SLOTS * UNIT_BYTES / REQUEST_FACTOR);
-    expect(EGRESS_BODY_MAX).toBe(BODY_MAX);
-    expect(requestSlots(0)).toBe(1);
-    expect(requestSlots(1)).toBe(1);
-    expect(requestSlots(1024 * 1024)).toBe(1);
-    expect(requestSlots(1024 * 1024 + 1)).toBe(2);
-    expect(requestSlots(4 * 1024 * 1024)).toBe(4);
-    expect(requestSlots(BODY_MAX)).toBe(GATEWAY_POOL_SLOTS);
+    expect(BODY_MAX).toBe(EGRESS_BODY_MAX);
+    expect(parseWeight(100, 0, true)).toBe(ASCII_BYTE_COST * 100);
+    expect(parseWeight(100, 0, false)).toBe(BYTE_COST * 100);
+    expect(parseWeight(0, 10, true)).toBe(TOKEN_COST * 10);
+    expect(weightSlots(0)).toBe(1);
+    expect(weightSlots(UNIT_BYTES)).toBe(1);
+    expect(weightSlots(UNIT_BYTES + 1)).toBe(2);
+    // The ceilings the costs derive: an ASCII body of the door's 16 MiB fits; a 16 MiB body
+    // with a non-ASCII character, or a 4 MiB one of empty objects, does not.
+    const pool = GATEWAY_POOL_SLOTS * UNIT_BYTES;
+    expect(parseWeight(BODY_MAX, 0, true)).toBeLessThanOrEqual(pool);
+    expect(parseWeight(15 * 1024 * 1024, 0, false)).toBeLessThanOrEqual(pool);
+    expect(parseWeight(BODY_MAX, 0, false)).toBeGreaterThan(pool);
+    expect(parseWeight(4 * 1024 * 1024, 4 * 1024 * 1024 * 2 / 3, true)).toBeGreaterThan(pool);
+  });
+
+  it("holds a slot no longer than the pool's wait plus its body at the slowest rate", () => {
+    expect(MIN_RATE).toBe(UNIT_BYTES / TEXT_COST / (SLOT_WAIT_MS / 1000));
+    expect(heldDeadlineMs(0)).toBe(SLOT_WAIT_MS);
+    expect(heldDeadlineMs(BODY_MAX)).toBe(SLOT_WAIT_MS + Math.ceil(1000 * BODY_MAX / MIN_RATE));
+    expect(heldDeadlineMs(BODY_MAX)).toBeLessThan(120_000);
   });
 });

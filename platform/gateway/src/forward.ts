@@ -33,7 +33,8 @@ import { aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, serve
          tierMultiplier, unpricedOption, valueAt } from "./api-rules";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
-import { UNIT_BYTES, isolatePool, type Slot, SlotBusy } from "../../owner/src/slots";
+import { BODY_MAX, heldDeadlineMs, Hold, HeldRefusal, raced, weighedBody, weightSlots }
+  from "./held";
 
 /** The longest one forwarded request may run (§6: a policy write's bound on a stream). */
 export const FORWARD_DEADLINE_MS = 24 * 60 * 60 * 1000;
@@ -41,77 +42,10 @@ export const FORWARD_DEADLINE_MS = 24 * 60 * 60 * 1000;
 /** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;
 
-/**
- * The gateway's pool (`slots.ts`, egress shape research §2 and §5): 16 slots of one
- * `UNIT_BYTES` each, 64 MiB, beside the gateway's idle live set (12 MiB, measured in
- * workerd). A metered call holds its request whole while it reads, parses, rewrites and
- * uploads it, at most `REQUEST_FACTOR` times its `Content-Length` at once (the text and the
- * tree while parsing, the tree and the output while serializing, the output and its bytes
- * while encoding; 3.8 times for a body with any non-ASCII character, the worst shape
- * measured), so it takes ⌈4·CL / 4 MiB⌉ slots before it reads a byte and lets them go when
- * the upload's last write is taken. While the provider thinks it holds a count of calls, not
- * bytes (0.12 MiB each, measured), so no slot is held across that wait.
- */
-export const GATEWAY_POOL_SLOTS = 16;
-export const REQUEST_FACTOR = 4;
-/**
- * A metered call's body bound, derived: the most one call can take, the whole pool, at
- * `REQUEST_FACTOR` (16 MiB). The egress door's `EGRESS_BODY_MAX` is the same figure.
- */
-export const BODY_MAX = GATEWAY_POOL_SLOTS * UNIT_BYTES / REQUEST_FACTOR;
-
-/** The slots a metered call of `length` bytes takes: ⌈`REQUEST_FACTOR`·CL / chunk⌉. */
-export function requestSlots(length: number): number {
-  return Math.max(1, Math.ceil(REQUEST_FACTOR * length / UNIT_BYTES));
-}
+export { BODY_MAX, GATEWAY_POOL_SLOTS } from "./held";
 
 /** The bytes each write of a metered call's upload carries. */
 const UPLOAD_SLICE = 64 * 1024;
-
-/**
- * The body's text and its byte length: at most `limit` bytes read, each chunk decoded as it
- * comes (a streaming fatal `TextDecoder`), so no copy of its bytes is gathered.
- * `invalid_request` past `limit` (the rest unread) or for bytes that are not UTF-8.
- */
-export async function boundedText(request: Request, limit: number):
-    Promise<{ text: string; bytes: number }> {
-  if (request.body === null) {
-    return { text: "", bytes: 0 };
-  }
-  const reader = request.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
-  let text = "";
-  let bytes = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      bytes += value.byteLength;
-      if (bytes > limit) {
-        throw new Failure("invalid_request");
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    text += decoder.decode();
-  } catch {
-    reader.cancel().catch(() => undefined);
-    throw new Failure("invalid_request");
-  }
-  return { text, bytes };
-}
-
-/** The body read and parsed: its text unreachable once this returns, so one is held. */
-async function parsedBody(request: Request, limit: number):
-    Promise<{ parsed: unknown; bytes: number }> {
-  const { text, bytes } = await boundedText(request, limit);
-  try {
-    return { parsed: JSON.parse(text), bytes };
-  } catch {
-    throw new Failure("invalid_request");
-  }
-}
 
 /** A metered call's rewritten body on its way up, and its end (its slots let go). */
 interface Upload {
@@ -272,12 +206,13 @@ function secretsOf(credential: Credential): string[] {
  * The metered path's own fixed codes, beside `failure.ts`'s: a key the rules read spelled
  * another way (`aliased`); the owner's object refused the call's reservation (the egress
  * door answers the object's own code and receipt in its place); the pool full past its wait
- * (`slots.ts`: told, retryable, never a loss). Kept here, not in `failure.ts`, because the
+ * (`slots.ts`: told, retryable, never a loss); a call that alone weighs more than the pool
+ * (`held.ts`). Kept here, not in `failure.ts`, because the
  * sandbox's runner bundles `failure.ts` and a change to it is a new E2B template build;
  * they join its table at the next one.
  */
 const EGRESS_CODES = Object.freeze({ egress_aliased_key: 400, egress_reserve_refused: 403,
-                                     busy: 503 });
+                                     busy: 503, egress_too_large: 413 });
 type RefusalCode = Code | keyof typeof EGRESS_CODES;
 
 function refusal(code: RefusalCode, resealed?: Resealed): Response {
@@ -350,8 +285,9 @@ function meteringOf(value: unknown): Metering {
 
 /**
  * A sandbox's model call, metered (G4), once the owner's object admitted it: held to pi-ai's
- * own model call for the sealed API (`learnMeter`); its slots taken (`requestSlots`), its
- * body read within its `Content-Length` and parsed once; refused for what no reservation
+ * own model call for the sealed API (`learnMeter`); its slots taken as it arrives
+ * (`held.ts`), its body read to its `Content-Length` and parsed once; refused for what no
+ * reservation
  * bounds; its model and tier read from that parse and reserved through `reserve`; then its
  * output cap clamped to the reservation's `max_output_tokens`, so what it can cost is what
  * the owner's object reserved, and forwarded as `forward` forwards. The outcome comes once
@@ -380,15 +316,20 @@ type Prepared = { readonly refused: RefusalCode }
  * the reserve for what the reservation cannot bound, so a refused shape is never charged.
  */
 async function prepared(request: Request, length: number, credential: Credential, any: Meter,
-                        path: string, catalog: Catalog, reserve: Reserve,
-                        ended: () => void): Promise<Prepared> {
-  let read: { parsed: unknown; bytes: number } | null = await parsedBody(request, length)
-    .catch(() => null);
-  if (read === null) {
+                        path: string, catalog: Catalog, reserve: Reserve, hold: Hold,
+                        signal: AbortSignal, ended: () => void): Promise<Prepared> {
+  // The body, read under slots taken as it arrives; then its weight's slots, before the parse.
+  let read: Awaited<ReturnType<typeof weighedBody>> | null =
+    await weighedBody(request, length, hold, signal);
+  await hold.grow(weightSlots(read.weight));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(read.text!);
+  } catch {
     return { refused: "invalid_request" };
   }
+  read.text = null;
   const rules = apiRules(credential.upstream.api);
-  let parsed = read.parsed;
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
       || rules === null) {
     return { refused: "unmetered" };
@@ -431,7 +372,7 @@ async function prepared(request: Request, length: number, credential: Credential
     return { refused: "egress_unpriced_option" };
   }
   // The call reserved for the model and tier this parse read, the only reading there is.
-  const reserved = await reserve({ model: id, tier });
+  const reserved = await raced(reserve({ model: id, tier }), signal);
   if (!("metering" in reserved)) {
     return { refused: "egress_reserve_refused" };
   }
@@ -513,61 +454,80 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   let model: Model<Api> | null = null;
   let listed = false;
   let upload: Upload | null = null;
+  let held: AbortSignal | null = null;
   if (metered !== null) {
     const { reserve, catalog } = metered;
-    // Only pi-ai's own model call for the sealed API is metered; nothing else is read.
-    const any = await learnMeter(catalog, credential.upstream, bearer(credential));
+    // Only pi-ai's own model call for the sealed API is metered; nothing else is read. A throw
+    // here sent nothing, so it is `failed` (M3), as every end before the fetch is.
+    const any = await learnMeter(catalog, credential.upstream, bearer(credential))
+      .catch(() => undefined);
+    if (any === undefined) {
+      return refused("internal", resealed);
+    }
     if (any === null || !meteredCall(scopeOf(credential, any), request.method,
                                      target.pathname)) {
       return refused("unmetered", resealed);
     }
-    // Its declared length, which the owner's object admitted it by: read no further.
+    // Its declared length, which the owner's object admitted it by: read exactly it.
     const declared = request.headers.get("content-length");
     if (declared === null || !/^[0-9]{1,15}$/.test(declared) || Number(declared) > BODY_MAX) {
       return refused("invalid_request", resealed);
     }
-    let slot: Slot;
-    try {
-      slot = await isolatePool(GATEWAY_POOL_SLOTS).acquire(requestSlots(Number(declared)));
-    } catch (error) {
-      if (error instanceof SlotBusy) {
-        return refused("busy", resealed);
-      }
-      throw error;
-    }
+    // Held from its first slot to its upload's last write: to its deadline, and its stop.
+    const deadline = AbortSignal.timeout(heldDeadlineMs(Number(declared)));
+    held = AbortSignal.any([cancelled.signal, deadline]);
+    const hold = new Hold(bound.owner, held);
     let ready: Prepared;
     try {
       ready = await prepared(request, Number(declared), credential, any, target.pathname,
-                             catalog, reserve, () => slot.release());
+                             catalog, reserve, hold, held, () => hold.release());
     } catch (error) {
-      slot.release();
-      throw error;
+      hold.release();
+      // Nothing was sent: the call is `failed`, whatever stopped it (M3).
+      return refused(cancelled.signal.aborted ? "aborted"
+        : error instanceof HeldRefusal ? error.code
+          : deadline.aborted ? "invalid_request" : "internal", resealed);
     }
     if ("refused" in ready) {
-      slot.release();
+      hold.release();
       return refused(ready.refused, resealed);
     }
     ({ upload, model, listed } = ready);
     body = upload.body;
+    // Past its deadline, or stopped, the upload ends there.
+    held.addEventListener("abort", () => upload?.stop(), { once: true });
   }
   const headers = new Headers();
-  // A metered call's provider beta headers go only where its API's rules account for them.
-  const betas = metered === null ? null : apiRules(credential.upstream.api)?.betas ?? [];
-  for (const [name, value] of request.headers) {
-    if (!CREDENTIAL_HEADERS.includes(name) && !HOP_HEADERS.includes(name) && !internal(name)
-        && !(betas !== null && /-beta$/.test(name) && !betas.includes(name))) {
-      headers.append(name, value);
+  let deadline: AbortSignal;
+  let signal: AbortSignal;
+  try {
+    // A metered call's provider beta headers go only where its API's rules account for them.
+    const betas = metered === null ? null : apiRules(credential.upstream.api)?.betas ?? [];
+    for (const [name, value] of request.headers) {
+      if (!CREDENTIAL_HEADERS.includes(name) && !HOP_HEADERS.includes(name) && !internal(name)
+          && !(betas !== null && /-beta$/.test(name) && !betas.includes(name))) {
+        headers.append(name, value);
+      }
     }
+    // `set` replaces every value the request sent under the sealed header's name.
+    headers.set(credential.upstream.auth.header, authValue(credential));
+    // Plain bytes back, so the redaction reads what the provider wrote.
+    headers.set("accept-encoding", "identity");
+    if (metered !== null) {
+      headers.delete("content-length");
+    }
+    deadline = AbortSignal.timeout(deadlineMs);
+    signal = AbortSignal.any([request.signal, deadline, cancelled.signal]);
+  } catch {
+    // Nothing was sent: the upload's slots go with it (L2), and the call is `failed` (M3).
+    upload?.stop();
+    return refused("internal", resealed);
   }
-  // `set` replaces every value the request sent under the sealed header's name.
-  headers.set(credential.upstream.auth.header, authValue(credential));
-  // Plain bytes back, so the redaction reads what the provider wrote.
-  headers.set("accept-encoding", "identity");
-  if (metered !== null) {
-    headers.delete("content-length");
+  // A call its caller stopped before it was sent is never sent (L3).
+  if (cancelled.signal.aborted) {
+    upload?.stop();
+    return refused("aborted", resealed);
   }
-  const deadline = AbortSignal.timeout(deadlineMs);
-  const signal = AbortSignal.any([request.signal, deadline, cancelled.signal]);
   let upstream: Response;
   try {
     upstream = await nativeFetch(target, {

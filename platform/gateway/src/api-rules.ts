@@ -53,8 +53,11 @@
  * `generation_config.max_output_tokens` as `generationConfig.maxOutputTokens` ("Parsers
  * accept both the lowerCamelCase name ... and the original proto field name"), and Go's
  * `encoding/json` v1 matches a key case-blind, so an unread spelling the gateway forwards
- * could set a cap it never clamped. Derived, not invented: the gateway sends its own parse,
- * so an alias is the one way a body could say what the rules did not read.
+ * could set a cap it never clamped. Go folds Unicode case as well (U+017F, `ſ`, is `s`), and
+ * every provider's schema is ASCII, so a key past ASCII at a level the rules read is refused
+ * too; so is a body's `model` where the path names the model. Derived, not invented: the
+ * gateway sends its own parse, so an alias is the one way a body could say what the rules did
+ * not read.
  */
 
 /** A call the provider does not bill, with the page that says so (`free`). */
@@ -346,6 +349,9 @@ export function unpricedOption(rules: ApiRules, body: unknown): boolean {
   });
 }
 
+/** A key with any character past ASCII. */
+const NOT_ASCII = /[^\x00-\x7f]/;
+
 /** A key as a spelling-blind parser matches it: ASCII case and snake/camel folded together. */
 function folded(key: string): string {
   return key.replace(/_/g, "").toLowerCase();
@@ -363,9 +369,16 @@ function readPaths(rules: ApiRules): (readonly string[])[] {
 /**
  * Whether the body spells a key the rules read another way (see the header): at each level a
  * read path passes through, and in each tool entry, a key that is not a read key but folds
- * to one (`folded`).
+ * to one (`folded`), or any key that is not ASCII (every provider's schema is ASCII, and a
+ * parser that folds Unicode case reads `max_tokenſ`, U+017F, as `max_tokens`); and, for an
+ * API whose path names the model, a body key that names one, in any spelling (a transcoder
+ * that binds the path's field may read the body's).
  */
 export function aliased(rules: ApiRules, body: unknown): boolean {
+  if (rules.model === null && typeof body === "object" && body !== null && !Array.isArray(body)
+      && Object.keys(body).some((key) => NOT_ASCII.test(key) || folded(key) === "model")) {
+    return true;
+  }
   const levels = new Map<string, { at: readonly string[]; names: Set<string> }>();
   for (const path of readPaths(rules)) {
     for (let depth = 0; depth < path.length; depth++) {
@@ -380,7 +393,8 @@ export function aliased(rules: ApiRules, body: unknown): boolean {
       return false;
     }
     const read = new Set([...names].map(folded));
-    return Object.keys(value).some((key) => !names.has(key) && read.has(folded(key)));
+    return Object.keys(value).some((key) => NOT_ASCII.test(key)
+      || (!names.has(key) && read.has(folded(key))));
   };
   if ([...levels.values()].some(({ at, names }) => spelledOtherwise(valueAt(body, at), names))) {
     return true;

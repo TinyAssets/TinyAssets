@@ -875,6 +875,29 @@ describe("settlement", () => {
     expect(await spends(box.owner)).toMatchObject([{ state: "settled", est_cost: null }]);
   });
 
+  it("never reserves a call it stopped: the gateway's late reserve is refused at the door",
+     async () => {
+    const box = await sandbox();
+    let late: unknown = null;
+    const holding: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: (_owner, _connection, _version, _blob, _request, reserve, stop) => {
+        // The gateway's parse ends after the door stopped the call, then asks to reserve it.
+        stop.getReader().read().then(async () => {
+          late = await reserve!({ model: box.model, tier: null });
+        }, () => undefined);
+        return new Promise(() => undefined);
+      } } };
+    const pending = send(egressRequest(box), holding);
+    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
+    const response = await pending;
+    expect([response.status, await codeOf(response)]).toEqual([503, "egress_ended"]);
+    await until(async () => late !== null, "the late reserve");
+    expect(late).toEqual({ refused: "egress_ended" });
+    await settledOf(box.owner);
+    expect(await spends(box.owner)).toMatchObject([{ state: "settled", est_cost: null }]);
+  });
+
   it("settles a call whose client left before any answer at once (its request's signal)",
      async () => {
     const box = await sandbox();

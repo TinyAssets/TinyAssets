@@ -74,6 +74,44 @@ describe("a slot pool", () => {
     slot.release();
   });
 
+  it("serves the owners waiting in turn, each owner's own calls first come first served",
+     async () => {
+    const pool = new SlotPool(1, 5000);
+    const holding = await pool.acquire(1, "a");
+    const order: string[] = [];
+    const wait = (owner: string, name: string) => pool.acquire(1, owner).then((slot) => {
+      order.push(name);
+      slot.release();
+    });
+    // Owner a queues three calls before owner b queues one: b is served second, not fourth.
+    const calls = [wait("a", "a1"), wait("a", "a2"), wait("a", "a3"), wait("b", "b1")];
+    await tick();
+    holding.release();
+    await Promise.all(calls);
+    expect(order).toEqual(["a1", "b1", "a2", "a3"]);
+  });
+
+  it("shares its waiters without a cap an owner: a newcomer takes the place of the owner " +
+     "waiting most", async () => {
+    const pool = new SlotPool(1, 5000, 3);
+    const holding = await pool.acquire(1, "a");
+    const flooded = [pool.acquire(1, "a"), pool.acquire(1, "a"), pool.acquire(1, "a")]
+      .map((call) => call.then((slot) => { slot.release(); return "landed"; },
+                               (error: Error) => error.message));
+    await tick();
+    // The waiters are full of a's: b's call takes the place of a's newest, which is busy.
+    const other = pool.acquire(1, "b").then((slot) => { slot.release(); return "landed"; });
+    await tick();
+    expect(pool.state().waiting).toBe(3);
+    // Another of a's, past the waiters, is busy itself: a already waits most.
+    expect((await pool.acquire(1, "a").catch((error: Error) => error)) instanceof SlotBusy)
+      .toBe(true);
+    holding.release();
+    expect(await Promise.all(flooded)).toEqual(["landed", "landed", BUSY]);
+    expect(await other).toBe("landed");
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  });
+
   it("is one pool an isolate, its capacity its Worker's one figure", () => {
     const pool = isolatePool(7);
     expect(isolatePool(7)).toBe(pool);
