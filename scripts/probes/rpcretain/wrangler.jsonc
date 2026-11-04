@@ -1,0 +1,20 @@
+// The RPC retention probe Worker (rpcretain-probe.yml). Throwaway, workers.dev only, bound to
+// no TinyAssets resource; the workflow deploys it and deletes it with its namespace. The
+// runtime is the owner Worker's (platform/owner/wrangler.jsonc): the same date and flags.
+// SELF is a service binding to this Worker's own Store entrypoint, so a chunk crosses RPC as
+// the owner's do to FILES. Sender and receiver may share an isolate, which only makes the test
+// stricter (both sides' garbage counts against one 128 MB). config.mjs writes a bootstrap copy
+// without SELF, deployed first, so the binding's target exists. TOKEN is not here: the
+// workflow uploads it per run with --secrets-file.
+{
+  "name": "rr-rpcretain-probe",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat", "disable_ctx_exports"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "limits": { "cpu_ms": 30000 },
+  "durable_objects": { "bindings": [{ "name": "PROBER", "class_name": "Prober" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Prober"] }],
+  "services": [{ "binding": "SELF", "service": "rr-rpcretain-probe", "entrypoint": "Store" }]
+}
