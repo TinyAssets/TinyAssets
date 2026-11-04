@@ -1152,13 +1152,31 @@ function conflicted<T>(act: () => T): T | Conflicted {
 /** Files an append never changes: text put after their end breaks what they mean. */
 const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
 /**
- * The tries an append makes before it is refused `file_busy`: each lost try means another
- * write to the same file landed between its read and its write, and a write of a chunked
- * file holds one of the owner's open uploads while it lands, so this many losses in a row
- * is more than every upload the owner can have open at once (`MAX_OPEN_INTENTS`) landing on
- * one file: a flood, never ordinary company.
+ * The tries a large append makes before it is refused `file_busy` (a small one is one unit
+ * and never retries). A try is lost only when another write to the same file commits while
+ * this one's chunks are out at `FILES`. Another chunked write holds one of the owner's open
+ * uploads while its chunks are out, and the owner has at most `MAX_OPEN_INTENTS` open, this
+ * one's among them, so those in flight when it starts can beat it at most
+ * `MAX_OPEN_INTENTS - 1` times before every one has landed: `MAX_OPEN_INTENTS` tries outlast
+ * them. A small whole write holds no upload; one landing in each of that many windows in a
+ * row is a flood, refused loudly rather than retried without end. Measured (review rvbr):
+ * 80 and then 300 concurrent appends to one small file all landed, none refused.
  */
-export const APPEND_TRIES = MAX_OPEN_INTENTS + 1;
+export const APPEND_TRIES = MAX_OPEN_INTENTS;
+/**
+ * An outside agent's or a run's remove, rename or restore with no etag: it never removes,
+ * moves or overwrites an entry it did not read (review R2-L3, as `UNREAD_WRITE`).
+ */
+export const UNREAD_CHANGE = "expected_etag is the entry's current etag, or \"\" where there " +
+  "is none: read it first (file_stat, fetch or file_read)";
+
+/** A change by an outside client or a run names the etag it read; the owner's app need not. */
+function heldToRead(account: Account, asked: unknown): void {
+  if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
+    throw new Invalid(UNREAD_CHANGE);
+  }
+}
+
 /** An outside agent's or a run's whole write with no etag: it never replaces a file unread. */
 export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
   "only when absent: read the file first (fetch, file_read or file_stat)";
@@ -4436,8 +4454,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * and the text are written again, at any size. The text is at most one chunk (4 MiB).
    * A structured file (`STRUCTURED`: JSON, TOML, YAML) is refused: text put after its end
    * breaks what it means however whole its bytes stay, so it is edited (the founder,
-   * 2026-11-04). Each try checks the caller's authority and the agent trees again, and an
-   * append that loses `APPEND_TRIES` times in a row is refused `file_busy`.
+   * 2026-11-04). A file that stays small (at most `INLINE_BYTES` with the text) is read and
+   * written in one unit (`Files.writeSmall`), so its append never meets another write and
+   * never tries twice. A larger one is written around its chunks' `FILES` calls, so another
+   * write to it can land between its read and its commit: it then reads again, checking the
+   * caller's authority and the agent trees each try, at most `APPEND_TRIES` times, past which
+   * it is refused `file_busy`.
    */
   async fileAppend(binding: Binding, request: FileAppendRequest): Promise<{ entry: Entry }> {
     await this.#seededFor(() => {
@@ -4471,14 +4493,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           throw new Refused(`file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
                             "append again");
         }
-        const now = await this.#door(() => {
+        const read = await this.#door((): { done: Entry } | { now: Content | null } => {
           authorize();
           const entry = this.#files.stat(path);
           if (entry !== null && entry.kind !== "file") {
             throw new Invalid(`${path} is a directory`);
           }
-          return entry === null ? null : this.#files.open(path);
+          const content = entry === null ? null : this.#files.open(path);
+          const before = content === null ? new Uint8Array(0) : content.inline;
+          if (before !== undefined && before.byteLength + added.byteLength <= INLINE_BYTES) {
+            // Small: read and written in this one unit, so nothing lands between.
+            const whole = new Uint8Array(before.byteLength + added.byteLength);
+            whole.set(before, 0);
+            whole.set(added, before.byteLength);
+            return { done: this.#files.writeSmall(path, whole, {
+              expected: entry?.etag ?? "", mode: entry?.mode, writer: fileWriter(account) }) };
+          }
+          return { now: content };
         });
+        if ("done" in read) {
+          return { entry: read.done };
+        }
+        const now = read.now;
         let bytes = added;
         let prefix: ChunkRef[] = [];
         if (now !== null) {
@@ -4675,6 +4711,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const account = this.#filer(binding, "reduce", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "recursive"]);
       this.#ownersTree(binding, account, "FILES.remove", request, r["path"]);
+      heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => this.#files.remove(r["path"], {
         expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
         writer: fileWriter(account) }));
@@ -4687,6 +4724,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
       this.#ownersTree(binding, account, "FILES.rename", request, r["from"], r["to"]);
+      heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => ({
         entry: this.#files.rename(r["from"], r["to"], {
           expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
@@ -4710,6 +4748,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "version", "expected_etag"]);
       this.#ownersTree(binding, account, "FILES.restore", request, r["path"]);
+      heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => ({
         entry: this.#files.restore(r["path"], r["version"], {
           expected: r["expected_etag"], writer: fileWriter(account) }),

@@ -285,17 +285,22 @@ export function toolTable(): readonly Tool[] {
     { name: "file_remove", door: "fileRemove", capability: "write_files",
       title: "Remove file", ...CHANGE,
       description: "Remove a file or directory against its current etag.",
-      input: args({ path, expected_etag: etag,
+      input: args({ path, expected_etag: str("The entry's current etag, from file_stat, " +
+                                             "fetch or file_read"),
                     recursive: bool("Whether a directory's contents go too") }) },
     { name: "file_rename", door: "fileRename", capability: "write_files",
       title: "Rename file", ...CHANGE,
       description: "Rename a file or directory against its current etag.",
-      input: args({ from: path, to: path, expected_etag: etag,
+      input: args({ from: path, to: path,
+                    expected_etag: str("The entry's current etag, from file_stat, fetch or " +
+                                       "file_read"),
                     replace: bool("Whether an entry at the new path is replaced") }) },
     { name: "file_restore", door: "fileRestore", capability: "write_files",
       title: "Restore file version", ...CHANGE,
       description: "Make a kept version of a file its current content.",
-      input: args({ path, version: int("The kept version to restore"), expected_etag: etag }) },
+      input: args({ path, version: int("The kept version to restore"),
+                    expected_etag: str("The path's current etag, or \"\" when no file is " +
+                                       "there now") }) },
     { name: "converse", door: "agentSubmit", capability: "converse",
       title: "Talk with an agent", ...CHANGE,
       description: "Send a message to one of the owner's agents: a run of its engine in a new " +

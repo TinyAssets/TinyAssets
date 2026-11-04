@@ -12,7 +12,8 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../owner/guards/sources";
 import raw from "../apps.json" with { type: "json" };
-import { appList, checkedApps, connectUrl, registrationRefusal, vendorOf } from "../src/apps";
+import { appList, checkedApps, connectUrl, refusedRegistrationLine, registrationRefusal,
+         vendorOf } from "../src/apps";
 import { MCP_RESOURCE } from "../src/config";
 import { CLIENT_INSTRUCTIONS } from "../src/instructions";
 import { toolTable } from "../src/tools";
@@ -230,6 +231,27 @@ describe("apps.json", () => {
     ] as const) {
       expect(registrationRefusal({ client_name: name, redirect_uris: uris }, apps),
              `${name} ${JSON.stringify(uris)}`).not.toBeNull();
+    }
+  });
+
+  it("logs a refused registration naming a dcr vendor, bounded and escaped, and no other " +
+     "(review R2-M1)", () => {
+    const line = refusedRegistrationLine({ client_name: "Grok Bot", token_endpoint_auth_method:
+      "none", redirect_uris: ["https://grok.example/cb\n\"forged\": 1", 7,
+                              ...Array.from({ length: 10 }, (_, i) => `https://x.test/${i}`)] });
+    expect(line).toMatch(/^dcr_refused \{/);
+    const logged = JSON.parse(line!.slice("dcr_refused ".length));
+    expect(logged).toEqual({ app: "grok", client_name: "Grok Bot", more: 4,
+      redirect_uris: ["https://grok.example/cb\n\"forged\": 1", "(number)",
+                      ...Array.from({ length: 6 }, (_, i) => `https://x.test/${i}`)] });
+    // One line: the newline inside a URI is escaped, never a second log line.
+    expect(line!.split("\n").length).toBe(1);
+    const long = refusedRegistrationLine({ client_name: `Gemini ${"x".repeat(1000)}`,
+                                           redirect_uris: [`https://g.test/${"y".repeat(1000)}`] });
+    expect(long!.length).toBeLessThan(700);
+    for (const metadata of [{ client_name: "ChatGPT" }, { client_name: "Some Agent" }, {},
+                            { client_name: 7 }]) {
+      expect(refusedRegistrationLine(metadata)).toBeNull();
     }
   });
 

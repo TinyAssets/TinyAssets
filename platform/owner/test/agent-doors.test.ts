@@ -59,11 +59,15 @@ describe("the owner's agent definitions (review H1)", () => {
     await r.stub.fileMkdir(client, { path: "/workspace/skills/x", expected_etag: null });
     expect(await r.stub.fileWrite(client, { path: "/workspace/skills/x/SKILL.md",
       expected_etag: "", content: bytes("# x") })).toHaveProperty("entry");
+    // An outside agent changes an entry at the etag it read (review R2-L3).
+    const etagOf = async (path: string) =>
+      (await r.stub.fileStat(r.bind(null), { path })).entry!.etag;
     expect(await r.stub.fileRename(client, { from: "/workspace/skills/x/SKILL.md",
-      to: "/workspace/skills/x/OLD.md", expected_etag: null, replace: false }))
-      .toHaveProperty("entry");
-    expect(await r.stub.fileRemove(client, { path: "/workspace/skills/x", expected_etag: null,
-                                             recursive: true })).toHaveProperty("removed");
+      to: "/workspace/skills/x/OLD.md", expected_etag: await etagOf("/workspace/skills/x/SKILL.md"),
+      replace: false })).toHaveProperty("entry");
+    expect(await r.stub.fileRemove(client, { path: "/workspace/skills/x",
+      expected_etag: await etagOf("/workspace/skills/x"), recursive: true }))
+      .toHaveProperty("removed");
     // The owner narrows that agent's grant (its own setting): even with write_files, it then
     // changes nothing under the agent trees, and still writes the rest of the workspace.
     const [row] = (await r.stub.grantList(r.bind(null))).clients;
@@ -150,10 +154,14 @@ describe("the owner's agent definitions (review H1)", () => {
     expect("entry" in made && made.entry.writer).toBe(`client:${MUSE.client}`);
     expect(await r.stub.fileWrite(client, { path: `${GOALS_DIR}/b.md`, expected_etag: "",
       content: bytes("# b") })).toHaveProperty("entry");
+    const etagOf = async (path: string) =>
+      (await r.stub.fileStat(r.bind(null), { path })).entry!.etag;
     expect(await r.stub.fileRename(client, { from: `${GOALS_DIR}/b.md`,
-      to: `${GOALS_DIR}/c.md`, expected_etag: null, replace: false })).toHaveProperty("entry");
-    expect(await r.stub.fileRemove(client, { path: `${GOALS_DIR}/c.md`, expected_etag: null,
-                                             recursive: false })).toHaveProperty("removed");
+      to: `${GOALS_DIR}/c.md`, expected_etag: await etagOf(`${GOALS_DIR}/b.md`),
+      replace: false })).toHaveProperty("entry");
+    expect(await r.stub.fileRemove(client, { path: `${GOALS_DIR}/c.md`,
+      expected_etag: await etagOf(`${GOALS_DIR}/c.md`), recursive: false }))
+      .toHaveProperty("removed");
     // The owner narrows that agent's grant: it then changes no goal (whose Agreed section is
     // what agents may do unasked), and still writes the rest of the workspace.
     const [row] = (await r.stub.grantList(r.bind(null))).clients;

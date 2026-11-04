@@ -186,8 +186,9 @@ describe("an outside client's share", () => {
       await write(r, null, longPath(dir, MAX_PATH_BYTES, 2000 + i));
     }
     // The client still writes what frees, and short files once it has room.
-    await r.stub.fileRemove(r.bind(MUSE), { path: longPath(dir, MAX_PATH_BYTES, 0),
-                                            expected_etag: null, recursive: false });
+    const gone = longPath(dir, MAX_PATH_BYTES, 0);
+    await r.stub.fileRemove(r.bind(MUSE), { path: gone, recursive: false,
+      expected_etag: (await r.stub.fileStat(r.bind(null), { path: gone })).entry!.etag });
     await counted(r);
   });
 

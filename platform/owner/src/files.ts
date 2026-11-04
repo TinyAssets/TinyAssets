@@ -1313,6 +1313,20 @@ export class Files {
   }
 
   /**
+   * Write small content (at most `INLINE_BYTES`) as `path` in the caller's own unit: one
+   * transaction, no `FILES` call and no await, so a door that read the file in the same unit
+   * writes exactly over what it read (`fileAppend`'s small case, which can never lose).
+   */
+  writeSmall(path: unknown, bytes: Uint8Array,
+             options: { expected: unknown; mode?: unknown; writer: string }): Entry {
+    if (bytes.byteLength > INLINE_BYTES) {
+      throw new Invalid(`a small write is at most ${INLINE_BYTES} bytes`);
+    }
+    return this.#writeInline(storedPath(path), bytes, expectedEtag(options.expected),
+                             modeOf(options.mode), options.writer, true, "write");
+  }
+
+  /**
    * Write bytes as `path`: inline, or chunked (intent, bytes to `FILES`, commit), the
    * object's own writes and the doors' small ones, at most `WHOLE_BYTES` at once.
    * `prefix` is whole chunks of content already stored that come first (an append or a

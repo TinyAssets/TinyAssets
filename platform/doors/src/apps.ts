@@ -259,6 +259,35 @@ export function vendorOf(clientId: string, clientName: string | null,
   return named === null ? null : { id: named.id, verified: false };
 }
 
+/** At most this many redirects, and this many characters of each text, go in the line. */
+const LOGGED_REDIRECTS = 8;
+const LOGGED_CHARS = 256;
+
+/**
+ * The one log line of a refused registration whose `client_name` names a `dcr` app, or null
+ * for any other (review R2-M1): its app's id, `client_name` and `redirect_uris`, the
+ * client's own public metadata, cut to `LOGGED_REDIRECTS` URIs of `LOGGED_CHARS` characters
+ * and escaped as JSON, no header and nothing else of the request. It is what the founder
+ * reads (`wrangler tail` or the doors' Workers logs) at a vendor's first connect attempt, to
+ * record its redirects. Only a name a `dcr` app's names match is logged, so anonymous
+ * registrations cannot fill the logs.
+ */
+export function refusedRegistrationLine(metadata: Record<string, unknown>,
+                                        apps: readonly App[] = appList()): string | null {
+  const name = metadata["client_name"];
+  const app = typeof name === "string" ? byName(name, apps) : null;
+  if (app === null || app.registration !== "dcr" || typeof name !== "string") {
+    return null;
+  }
+  const uris = Array.isArray(metadata["redirect_uris"]) ? metadata["redirect_uris"] : [];
+  return `dcr_refused ${JSON.stringify({
+    app: app.id, client_name: name.slice(0, LOGGED_CHARS),
+    redirect_uris: uris.slice(0, LOGGED_REDIRECTS).map((uri: unknown) =>
+      typeof uri === "string" ? uri.slice(0, LOGGED_CHARS) : `(${typeof uri})`),
+    ...(uris.length > LOGGED_REDIRECTS ? { more: uris.length - LOGGED_REDIRECTS } : {}),
+  })}`;
+}
+
 /**
  * Why a dynamic registration is refused, or null to take it: its `client_name` must name an
  * app whose client registers dynamically (`registration: "dcr"`), and every one of its

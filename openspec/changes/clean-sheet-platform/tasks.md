@@ -2203,11 +2203,13 @@ R, S, M and W.
   `writer` values, never an agent's say-so; the user's only acts are connect, sign in and
   answer):
   1. **Turn DCR on** in the go-ahead deploy (`DCR_ENABLED: "true"`). For each `dcr` vendor
-     (Grok via Cursor's backend, Gemini, Muse, Cursor) read its real `client_name` and its
-     `redirect_uris` from its first registration attempt, which is refused while its
-     `match.redirects` is empty (dynamic registration is off for it until then), and record
-     both in `apps.json` with the date: only then can it register, and only to those
-     redirects. Confirm Claude's and ChatGPT's CIMD hosts and redirects (`claude.ai`,
+     (Grok via Cursor's backend, Gemini, Muse, Cursor), the founder makes its first connect
+     attempt while `wrangler tail` runs on the doors Worker (or with the doors' Workers logs
+     open). That attempt's registration is refused, since its `match.redirects` is empty, and
+     the doors log one `dcr_refused` line holding the app's id, its real `client_name` and its
+     `redirect_uris` (bounded, escaped JSON; `apps.ts` `refusedRegistrationLine`). Record those
+     redirects (and the name, if it is not matched as expected) in `apps.json` with the date,
+     and redeploy: only then can it register, and only to those redirects. Confirm Claude's and ChatGPT's CIMD hosts and redirects (`claude.ai`,
      `chatgpt.com` or `openai.com`) in their first grant rows (`vendor_verified` 1).
   2. **MCP-first onboarding** (`ui-test`, Claude.ai): a fresh account that never opened
      the app; connect through `apps.json`'s Claude link; first message "help me plan this
@@ -2258,6 +2260,13 @@ R, S, M and W.
     "always", "every time" and broad triggers (L5); `file_list` and `agents_list` wait for the
     seed (L6); an append rechecks the agent trees on each try and stops after
     `APPEND_TRIES` (65: one more than the owner's open uploads) lost tries, `file_busy` (L7).
+  - Review rvbr round 2, fixed: a refused registration naming a `dcr` vendor logs one
+    bounded `dcr_refused` line (its app, `client_name`, `redirect_uris`), which live step 1
+    reads (R2-M1); a small file's append is read and written in one unit and never retries,
+    and only a larger one's retry is capped, at `MAX_OPEN_INTENTS` (64) tries, the chunked
+    writes that can be in flight at once (R2-L1); the old canary stays provisioned until the
+    switch (R2-L2); `file_remove`, `file_rename` and `file_restore` take a string etag from
+    clients and runs (R2-L3); `starter.ts`'s personal-file comment (R2-L4).
 - [ ] Owed by BRAIN to later slices: the submissions themselves (`platform/plugins/SUBMIT.md`,
   the founder's outward act); Claude's plugin directory follows a repository, so the plugin
   may need its own repository or a published subfolder; a Gemini listing would need a
@@ -2332,7 +2341,8 @@ R, S, M and W.
 - [ ] **The founder's and the canary's owners start fresh** (the founder's ruling, 2026-11-04):
   the founder's main account and every canary owner account begin on the new platform with
   nothing imported, so the founder goes through the whole onboarding from the first
-  connection, and the canary exercises it each time it runs. In the cutover window:
+  connection, and each fresh canary owner exercises it once, at its first run. In the
+  cutover window:
   1. **Back up, never import.** Their old-platform data is exported and kept privately as a
      backup. It is proven saved before anything is dropped (Fact 13): the export's own
      listing and checksums are read back from where it is kept. It is **not** imported into
@@ -2340,6 +2350,12 @@ R, S, M and W.
   2. **Admit empty.** Their new owner objects are admitted empty (`admissionSet` from the
      platform caller, and the `o:` record), so the starter seed and onboarding run at their
      first connection.
+     **The old canary stays provisioned until the switch.** `deploy/deploy_fail_safe.sh`
+     refuses a data-moving deploy while the core canary is not provisioned (`provisioned=1`
+     from `scripts/verify_core_canary_provision.py`, which checks the pinned
+     `TINYASSETS_CANARY_UNIVERSE_ID`), and the cutover's own moves are such deploys. So the
+     old canary account and its variables are left as they are until the switch is done; the
+     reworked scripts of step 3 and that gate change together, in one change after it.
   3. **A canary that starts from a fresh, seeded owner.** The canary's live checks run from
      an owner just seeded: onboarding first, then the usual checks. What the scripts
      `docs/host-actions.md` names, and `openspec/specs/core-capability-assurance/spec.md`,

@@ -132,6 +132,22 @@ describe("dynamic registration (the founder's ruling: for vendors with no CIMD)"
       await refused(name, "https://phish.example/cb");
     }
   });
+
+  it("logs one line for a refused registration naming a dcr vendor, for the founder to " +
+     "record its redirects (R2-M1), and none for any other", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await register(on, "Grok", "https://real-grok.example/oauth/callback");
+      await register(on, "Some Agent", "https://other.test/cb");
+      const lines = warn.mock.calls.map((args) => String(args[0]))
+        .filter((line) => line.startsWith("dcr_refused "));
+      expect(lines.map((line) => JSON.parse(line.slice("dcr_refused ".length)))).toEqual([
+        { app: "grok", client_name: "Grok",
+          redirect_uris: ["https://real-grok.example/oauth/callback"] }]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("a CIMD document on a vendor's host that sends access elsewhere (review M2)", () => {

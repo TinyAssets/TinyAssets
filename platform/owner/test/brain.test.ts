@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { CHUNK_BYTES, type Entry } from "../src/files";
 import type { Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
-import { APPEND_TRIES, UNREAD_WRITE } from "../src/owner-do";
+import { APPEND_TRIES, UNREAD_CHANGE, UNREAD_WRITE } from "../src/owner-do";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure, text } from "./support";
@@ -54,6 +54,20 @@ describe("an append (file_append)", () => {
     expect(history.changes.map((v) => v.size)).toEqual([12, 6]);
   });
 
+  it("appends to a small file in one unit: three hundred at once all land, none refused",
+     async () => {
+    const r = await rig();
+    const lines = Array.from({ length: 300 }, (_, i) => `${i}\n`);
+    // At most INLINE_BYTES with every line, so each append reads and writes in one unit.
+    await Promise.all(lines.map((content, i) => r.stub.fileAppend(r.bind(i % 2 ? MUSE : OTHER),
+                                                                  { path: NOTES, content })));
+    expect((await textOf(r, NOTES)).split("\n").filter((line) => line !== "").sort())
+      .toEqual(lines.map((line) => line.trim()).sort());
+    // Its size is every line once: none was written twice.
+    expect((await r.stub.fileStat(r.bind(null), { path: NOTES })).entry!.size)
+      .toBe(lines.join("").length);
+  });
+
   it("loses no append when two land at once", async () => {
     const r = await rig();
     await r.stub.fileAppend(r.bind(MUSE), { path: NOTES, content: "start\n" });
@@ -88,7 +102,7 @@ describe("an append (file_append)", () => {
         .message, path).toBe("a structured file (JSON, TOML or YAML) is never appended to: " +
                              "read it and change it with file_edit");
     }
-    expect(APPEND_TRIES).toBe(65);
+    expect(APPEND_TRIES).toBe(64);
   });
 
   it("refuses what is not text, past one chunk, or a directory", async () => {
@@ -151,6 +165,36 @@ describe("a whole write (file_write) from an outside agent (review H1)", () => {
     expect(await r.stub.fileWrite(r.bind(null), { path: NOTES, expected_etag: null,
                                                   content: "the owner's\n" }))
       .toHaveProperty("entry");
+  });
+});
+
+describe("a remove, rename or restore from an outside agent (review R2-L3)", () => {
+  it("names the etag it read: none is refused; the owner's app keeps null", async () => {
+    const r = await rig();
+    const made = (await r.stub.fileWrite(r.bind(null), { path: NOTES, expected_etag: "",
+                                                         content: "one\n" })) as { entry: Entry };
+    for (const call of [
+      () => r.stub.fileRemove(r.bind(MUSE), { path: NOTES, expected_etag: null,
+                                              recursive: false }),
+      () => r.stub.fileRename(r.bind(MUSE), { from: NOTES, to: "/workspace/moved.md",
+                                              expected_etag: null, replace: true }),
+      () => r.stub.fileRestore(r.bind(MUSE), { path: NOTES, version: made.entry.version,
+                                               expected_etag: null }),
+    ]) {
+      expect((await failure(call)).message).toBe(UNREAD_CHANGE);
+    }
+    expect(await textOf(r, NOTES)).toBe("one\n");
+    // At the etag it read, each lands.
+    const moved = await r.stub.fileRename(r.bind(MUSE), { from: NOTES, to: "/workspace/m.md",
+      expected_etag: made.entry.etag, replace: false });
+    expect(moved).toHaveProperty("entry");
+    const etag = ("entry" in moved ? moved.entry : made.entry).etag;
+    expect(await r.stub.fileRemove(r.bind(MUSE), { path: "/workspace/m.md", expected_etag: etag,
+                                                   recursive: false })).toHaveProperty("removed");
+    // The owner's own app may still change with no etag.
+    await r.stub.fileWrite(r.bind(null), { path: NOTES, expected_etag: null, content: "two\n" });
+    expect(await r.stub.fileRemove(r.bind(null), { path: NOTES, expected_etag: null,
+                                                   recursive: false })).toHaveProperty("removed");
   });
 });
 

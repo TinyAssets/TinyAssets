@@ -35,7 +35,7 @@ import {
   type ValidatedAccessToken,
 } from "@cloudflare/workers-oauth-provider";
 
-import { registrationRefusal } from "./apps";
+import { refusedRegistrationLine, registrationRefusal } from "./apps";
 import {
   ACCESS_TOKEN_TTL_S, APP_RESOURCE, dcrEnabled, type DoorsEnv, ISSUER, MCP_RESOURCE,
   REFRESH_TOKEN_TTL_S, SCOPES,
@@ -53,7 +53,15 @@ export function authorizationServer(env: DoorsEnv): OAuthAuthorizationServer<Doo
       clientRegistrationEndpoint: REGISTRATION_ENDPOINT,
       clientRegistrationCallback: ({ clientMetadata }) => {
         const refused = registrationRefusal(clientMetadata);
-        return refused === null ? undefined : { description: refused };
+        if (refused === null) {
+          return undefined;
+        }
+        // A dcr vendor's real name and redirects, for the founder to record (live step 1).
+        const line = refusedRegistrationLine(clientMetadata);
+        if (line !== null) {
+          console.warn(line);
+        }
+        return { description: refused };
       },
     } : {}),
     accessTokenTTL: ACCESS_TOKEN_TTL_S,
