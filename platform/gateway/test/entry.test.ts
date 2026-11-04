@@ -359,6 +359,46 @@ describe("the gateway Worker", () => {
       .toEqual([500, { error: { code: "internal", message: "internal" } }]);
   }, 60_000);
 
+  it("ends an answer its caller stopped mid-stream cleanly, the provider's request cut",
+     async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await gateway.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
+    const claude = builtinCatalog();
+    let named: { id: string } | undefined;
+    for (const record of claude.provider("anthropic")!.getModels()
+      .filter((candidate) => candidate.api === "anthropic-messages")) {
+      if (await learnMeter(claude, ANTHROPIC.upstream, "sk-good", meteredRecord(
+        claude, ANTHROPIC.upstream, record.id)!) !== null) {
+        named = record;
+        break;
+      }
+    }
+    const stop = new IdentityTransformStream();
+    const answer = await egress.forward("alice", "c2", 1, blob, posted("/v1/messages",
+      JSON.stringify({ model: named!.id, max_tokens: 50, stream: true,
+                       messages: [{ role: "user", content: "cmd:slow-stopped" }] })),
+      granting(), stop.readable);
+    const reader = answer.response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await stop.writable.getWriter().close();
+    // The stop's abort is not carried back as the answer's error: the caller knows why.
+    for (;;) {
+      if ((await reader.read()).done) {
+        break;
+      }
+    }
+    expect(JSON.parse(await new Response(answer.outcome).text())).toEqual({ state: "unknown" });
+    for (let tries = 0; tries < 100; tries++) {
+      const seen = await (await fetch("https://status.test/cancelled?id=stopped"))
+        .json() as { cancelled: boolean | null };
+      if (seen.cancelled === true) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error("the provider's request was never cut");
+  });
+
   it("sends the provider the clamped parse as bytes, with its Content-Length", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;

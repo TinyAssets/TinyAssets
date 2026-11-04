@@ -630,7 +630,14 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
            outcome };
 }
 
-/** `body`, whose cancel by its reader also aborts the provider's request; `ended` at its end. */
+/**
+ * `body`, whose cancel by its reader also aborts the provider's request; `ended` at its end.
+ * When the caller stopped the call (`cancelled`, its stop stream or its cancel), the answer
+ * ends there: closed, not errored with the abort the stop caused. The caller already knows
+ * why it stopped, and an abort error carried back over the RPC stream to a door that no
+ * longer reads it is a rejection nothing can handle (workerd logs each one as uncaught). A
+ * provider's own failure, or the gateway's deadline, still errors the answer.
+ */
 function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
                    ended: () => void): ReadableStream<Uint8Array> {
   const reader = body.getReader();
@@ -646,7 +653,11 @@ function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
         }
       } catch (error) {
         ended();
-        controller.error(error);
+        if (cancelled.signal.aborted) {
+          controller.close();
+        } else {
+          controller.error(error);
+        }
       }
     },
     cancel(reason) {
