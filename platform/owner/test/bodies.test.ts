@@ -211,7 +211,7 @@ describe("the placement rule", () => {
     });
     expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
     expect(await inR2(ns, file)).toMatch(/^missing: /);
-  }, 30_000);
+  });
 
   it("holds the raised bodies at their bounds and refuses one past", async () => {
     const { stub, as, name } = ownerObject();
@@ -386,7 +386,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
                                                            before_revision: 3 });
     expect([older.entries.map((e) => e.body[0]), older.more, older.before_revision])
       .toEqual([["a", "b"], false, null]);
-  }, 60_000);
+  });
 
   it("L5: a placed write past a chunk the sweep is deleting begins again once it is gone",
      async () => {
@@ -447,5 +447,5 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     });
     expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
     expect(await inR2(ns, "", straySha)).toMatch(/^missing: /);
-  }, 30_000);
+  });
 });

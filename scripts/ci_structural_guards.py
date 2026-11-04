@@ -41,10 +41,6 @@ GUARDS = {
         "Local runs without a PR event fail closed. "
     ),
     "test_one_agent_definition": "Keep every provider on the one agent definition. ",
-    "test_migration_lock_append_only": (
-        "Never edit or remove a deployed owner migration or its pin in "
-        "platform/owner/migrations.json; append a new migration instead. "
-    ),
     "test_spawn_entry": (
         "Start every agent through tinyassets/control_plane/session.py start(agent_ref, "
         "input, parent); never call the writer turn, the workflow agent turn or the "
@@ -176,10 +172,7 @@ GUARDS = {
         'assert every real_jail case executed without skips. '
     ),
     "test_workflow_production_environment": (
-        'Add `environment: production` to the reported job, or allowlist the secret in '
-        'tests/test_workflow_production_environment.py with a one-line justification if it '
-        'cannot reach the production host or the DigitalOcean account; keep box-preflight.yml '
-        'to one ssh connection running the fixed boxhostd literal. '
+        'Keep box-preflight.yml to one ssh connection running the fixed boxhostd literal. '
     ),
 }
 

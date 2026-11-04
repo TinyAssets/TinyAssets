@@ -348,7 +348,7 @@ describe("the egress door", () => {
     const [spent] = await sqlIn(box.owner, "SELECT COALESCE(SUM(cost), 0) AS cost " +
                                             "FROM model_spend WHERE period GLOB 'd:*'");
     expect(spent!["cost"]).toBe(charged.reduce((sum, row) => sum + (row["est_cost"] as number), 0));
-  }, 60_000);
+  });
 
   it("prices a dated snapshot as the model the call named, and keeps its id; a call that " +
      "listed fallbacks stays unknown", async () => {
@@ -488,7 +488,7 @@ describe("the egress door", () => {
     expect(received!.length).toBe(bytes.length);
     expect(Buffer.compare(Buffer.from(received!), Buffer.from(bytes))).toBe(0);
     await settledOf(box.owner);
-  }, 60_000);
+  });
 
   it("holds a call to the model policy's caps alone: a purchase threshold refuses nothing",
      async () => {
@@ -853,7 +853,7 @@ describe("settlement", () => {
     await settledOf(box.owner);
     expect(await reservations(box.owner)).toMatchObject([{ state: "settled",
                                                            outcome: "ended" }]);
-  }, 30_000);
+  });
 
   it("closes the gateway's stop stream when the stream ends before any answer", async () => {
     const box = await sandbox();

@@ -27,12 +27,12 @@ describe("the owner's notices", () => {
     expect(kept[0]!.detail.startsWith(`${NOTICES_KEPT + 4} `)).toBe(true);
     expect(kept.at(-1)!.detail.startsWith("5 ")).toBe(true);
     expect([...kept[0]!.detail].length).toBe(NOTICE_DETAIL);
-  }, 30_000);
+  });
 
   it("are read by the owner alone", async () => {
     const r = await rig();
     expect((await r.stub.noticeList(r.bind(null))).notices).toEqual([]);
     expect((await failure(() => r.stub.noticeList(r.bind(MUSE)))).message)
       .toBe("only the owner may read its notices");
-  }, 30_000);
+  });
 });

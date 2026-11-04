@@ -126,7 +126,7 @@ function differences(lines: readonly string[], paths: readonly string[]): string
 }
 
 describe("the sync-ignore, as git reads a .gitignore", () => {
-  it("answers every path as git does, over all 310 of GitHub's templates", () => {
+  it("answers every path as git does, over all 310 of GitHub's templates", { tags: ["large"] }, () => {
     const files = templates();
     expect(files).toHaveLength(310);
     let checked = 0;
@@ -139,9 +139,9 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
     }
     expect(checked).toBeGreaterThan(20_000);
     expect(found).toEqual([]);
-  }, 600_000);
+  });
 
-  it("answers random lists as git does: negation, **, classes, escapes, folders only", () => {
+  it("answers random lists as git does: negation, **, classes, escapes, folders only", { tags: ["large"] }, () => {
     let seed = 20261103;
     const random = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
     const pick = <T>(xs: readonly T[]) => xs[Math.floor(random() * xs.length)]!;
@@ -164,7 +164,7 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
       found.push(...differences(lines, paths).map((each) => `${JSON.stringify(lines)} ${each}`));
     }
     expect(found).toEqual([]);
-  }, 600_000);
+  });
 
   it("never ignores itself, nor the folders on its way", () => {
     const matcher = ignoredBy(["*", ".ta/", ".ta/sync-ignore"]);
@@ -282,7 +282,7 @@ const bytesOf = (text: string) => Buffer.byteLength(text, "utf8");
 
 describe("the review's hostile lists (rounds 1 to 6)", () => {
   it.each([...HOSTILE, DEEP])("%s: git's answers with the lines that fit, at the automaton's cost",
-                   (label, list, path) => {
+                   { tags: ["large"] }, (label, list, path) => {
     const lines = [...defaultSyncIgnore(), ...list];
     const past = new Set(unappliedLines(lines).map((each) => each.line));
     const applied = lines.filter((each) => !past.has(each.trim()));
@@ -337,7 +337,7 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     const bound = ((2 * name + 1) * (words * STEP_NS + INDEX_NS) + folder * INDEX_NS) * 1.5
       / 1e6;
     expect(perPath).toBeLessThanOrEqual(bound);
-  }, 300_000);
+  });
 });
 
 /**
@@ -371,7 +371,7 @@ describe("its memory", () => {
 
   it("holds, at `LIST_BYTES` of any class (each measured at a quarter of it, a list byte's " +
      "heap), what the sandbox's heap leaves beside the agent",
-     () => {
+     { tags: ["large"] }, () => {
     expect(LIST_BYTES * HEAP_PER_LIST_BYTE).toBeLessThanOrEqual(SANDBOX_HEAP - AGENT_PEAK);
     const used = () => process.memoryUsage().heapUsed + process.memoryUsage().arrayBuffers;
     // Two full collections settle what a collection leaves for the next (weak maps, the
@@ -402,5 +402,5 @@ describe("its memory", () => {
       }
       expect(perByte, label).toBeLessThanOrEqual(HEAP_PER_LIST_BYTE);
     }
-  }, 300_000);
+  });
 });

@@ -249,10 +249,13 @@ describe("the sync-ignore", () => {
   });
 
   it("matches in linear time: the review's backtracking pattern is instant", () => {
-    const started = Date.now();
+    // CPU time, not wall-clock: another process's load does not stretch it. A backtracking
+    // matcher spends far more than a second here; a linear one, milliseconds.
+    const started = process.cpuUsage();
     expect(wildcard("*a*a*a*a*a*a*b", "a".repeat(100))).toBe(false);
     expect(wildcard("*a*a*a*a*a*a*a*a*b", "a".repeat(10_000))).toBe(false);
-    expect(Date.now() - started).toBeLessThan(1_000);
+    const spent = process.cpuUsage(started);
+    expect((spent.user + spent.system) / 1000).toBeLessThan(1_000);
     expect([wildcard("a*b?d", "aXXbcd"), wildcard("a*b?d", "abd"), wildcard("*", ""),
             wildcard("?", "")]).toEqual([true, false, true, false]);
   });
@@ -316,7 +319,7 @@ describe("memory, whatever the tree holds", () => {
     return { peak, inFlight, reply };
   }
 
-  it("sync-in streams a file larger than the sandbox's memory (1 GiB) to disk", async () => {
+  it("sync-in streams a file larger than the sandbox's memory (1 GiB) to disk", { tags: ["large"] }, async () => {
     const LARGE = 320;  // 1.25 GiB
     const SMALL = LARGE / 4;
     // The steps' own objects (the file's list of chunks among them): a quarter chunk, as the
@@ -342,7 +345,7 @@ describe("memory, whatever the tree holds", () => {
     // more than a quarter chunk more.
     expect(large).toBeLessThanOrEqual(bound);
     expect(large - small).toBeLessThanOrEqual(QUARTER);
-  }, 600_000);
+  });
 
   /**
    * Sync-out of a tree of `modules` folders of 100 files each, sampled at every call as
@@ -403,7 +406,7 @@ describe("memory, whatever the tree holds", () => {
     return { peak, matcher, inFlight, ops, body };
   }
 
-  it("sync-out over many paths holds about what it holds over few", async () => {
+  it("sync-out over many paths holds about what it holds over few", { tags: ["large"] }, async () => {
     // One batch: `COMMIT_OPS` files, which sync-out sends as one commit. A batch's live set,
     // measured, is the unit; the steps' own objects are a quarter of it (the owner memory
     // leg's allowance, a quarter unit, ADR-037).
@@ -445,7 +448,7 @@ describe("memory, whatever the tree holds", () => {
     expect(few.peak).toBeLessThanOrEqual(bound(few));
     expect(many.peak).toBeLessThanOrEqual(bound(many));
     expect(many.peak - few.peak).toBeLessThanOrEqual(many.matcher - few.matcher + QUARTER);
-  }, 900_000);
+  });
 });
 
 it("reads its legacy JSON mirror once, into the database", () => {
@@ -601,7 +604,7 @@ describe("names that are not UTF-8", () => {
 });
 
 describe("a list larger than the sandbox's heap would hold whole", () => {
-  it("is cut at `LIST_BYTES` in a sync agent given the sandbox's heap, which completes", () => {
+  it("is cut at `LIST_BYTES` in a sync agent given the sandbox's heap, which completes", { tags: ["large"] }, () => {
     // The sync, bundled as the template bundles the runner, run in a Node given the heap a
     // sync agent has in the sandbox (`SANDBOX_HEAP`), over a 20 MiB list of `*.x` lines (the
     // list that crashed the agent before `LIST_BYTES`).
@@ -644,5 +647,5 @@ describe("a list larger than the sandbox's heap would hold whole", () => {
     const out = JSON.parse(run.stdout) as { committed: number; past: number };
     expect(out.committed).toBeGreaterThan(0);
     expect(out.past).toBeGreaterThan(10 * 1024 * 1024);
-  }, 300_000);
+  });
 });

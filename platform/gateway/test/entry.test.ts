@@ -283,7 +283,7 @@ describe("the gateway Worker", () => {
     const owned = await gateway.forward("alice", "c1", 1, blob, new Request(
       "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }));
     expect(owned.status).toBe(200);
-  }, 30_000);
+  });
 
   it("reserves a model call for the model and tier its one parse read, wherever the keys lie",
      async () => {
@@ -357,7 +357,7 @@ describe("the gateway Worker", () => {
     const wrong = await call(text, other);
     expect([wrong.response.status, await wrong.response.json()])
       .toEqual([500, { error: { code: "internal", message: "internal" } }]);
-  }, 60_000);
+  });
 
   it("ends an answer its caller stopped mid-stream cleanly, the provider's request cut",
      async () => {
@@ -464,7 +464,7 @@ describe("the gateway Worker", () => {
     expect(await answered.response.json()).toEqual({ length: new TextEncoder().encode(
       JSON.stringify({ ...JSON.parse(whole), max_output_tokens: 100 })).byteLength });
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
-  }, 60_000);
+  });
 
   it("gives the doors' entrypoint only the connect steps", async () => {
     // The doors' own tests reach it over their real `GATEWAY` binding; here, its surface.

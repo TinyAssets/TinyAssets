@@ -1,0 +1,62 @@
+{
+  "factor": 4,
+  "measured": "2026-11-04, one local run of each workspace (4 cores, 15 GB), not yet a CI leg's",
+  "medium": {
+    "ci/guards": {
+      "slowest_ms": 1886,
+      "test": "ci/guards/legs.test.ts > platform-tests and platform-sizes run every workspace's tests, whole, each leg its command alone"
+    },
+    "doors/guards": {
+      "slowest_ms": 1242,
+      "test": "doors/guards/binder.test.ts > binder guard finds the binder alone binding, in every Worker's source"
+    },
+    "doors/workerd": {
+      "slowest_ms": 2685,
+      "test": "doors/test/runs.test.ts > a run's live events keep a settled run's tail no longer: the live runs' tails have its room"
+    },
+    "files/guards": {
+      "slowest_ms": 946,
+      "test": "files/guards/r2-keys.test.ts > r2-keys guard finds every R2 key built by chunkKey, and the bucket named only by the files Worker"
+    },
+    "files/workerd": {
+      "slowest_ms": 125,
+      "test": "files/test/chunks.test.ts > putChunks takes a full batch of two 4 MiB chunks"
+    },
+    "gateway/guards": {
+      "slowest_ms": 290,
+      "test": "gateway/guards/isolation.test.ts > gateway isolation guards finds the keyring named only in keyring.ts, and no OWNER or getByName, over the whole import closure"
+    },
+    "gateway/workerd": {
+      "slowest_ms": 11026,
+      "test": "gateway/test/held.test.ts > the verification's cases (rveg2) never counts a wait for a unit against the sender (V-M2)"
+    },
+    "hooks/guards": {
+      "slowest_ms": 41,
+      "test": "hooks/guards/isolation.test.ts > hooks isolation guards find no owner binding, no storage and no import from outside"
+    },
+    "owner/guards": {
+      "slowest_ms": 2423,
+      "test": "owner/guards/alarm.test.ts > alarm guard finds no alarm reach past Lifecycle in any Worker's source"
+    },
+    "owner/workerd": {
+      "slowest_ms": 9666,
+      "test": "owner/test/archive-mail.test.ts > the archive lane keeps a segment a purge's rewrite makes again byte for byte, its content still held"
+    },
+    "sandbox/guards": {
+      "slowest_ms": 131,
+      "test": "sandbox/guards/config.test.ts > the sandbox Worker reaches E2B's own hosts alone"
+    },
+    "sandbox/runner": {
+      "slowest_ms": 6746,
+      "test": "sandbox/runner/runner.test.ts > the store's generation and its lock (review round 2: N2, N3) lets a completed sign-in's new login win over a run live across it"
+    },
+    "sandbox/workerd": {
+      "slowest_ms": 148,
+      "test": "sandbox/test/sandbox.test.ts > an erasure kills every sandbox of the owner, paused and strays included, and forgets the owner"
+    }
+  },
+  "large": {
+    "slowest_ms": 60689,
+    "test": "sandbox/runner/runner.test.ts > the store's generation and its lock (review round 2: N2, N3) waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly"
+  }
+}

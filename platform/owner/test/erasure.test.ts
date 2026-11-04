@@ -132,7 +132,7 @@ describe("the owner's admission", () => {
     expect(await r.stub().admissionSet(r.platform, { reason: "abuse", suspended: false }))
       .toEqual({ state: "admitted", reasons: [] });
     expect((await r.stub().policyRead(r.bind(null))).generation).toBeGreaterThan(0);
-  }, 60_000);
+  });
 
   it("is set only by the platform's reserved caller, which reaches no other door, and no " +
      "owner is named so", async () => {
@@ -163,7 +163,7 @@ describe("the owner's admission", () => {
       .toBe(PLATFORM_RESERVED);
     // Still admitted: nothing above set it.
     expect((await r.stub().policyRead(r.bind(null))).generation).toBeGreaterThan(0);
-  }, 30_000);
+  });
 
   it("holds the wakes lane's claims while the owner is not admitted", async () => {
     const r = await ledgerRig();
@@ -181,7 +181,7 @@ describe("the owner's admission", () => {
     });
     expect(out[0]).toEqual({ next: null, claim: "held" });
     expect(out[1]).toMatchObject({ claim: "claimed" });
-  }, 30_000);
+  });
 });
 
 describe("the owner's erasure", () => {
@@ -216,7 +216,7 @@ describe("the owner's erasure", () => {
       .toEqual([{ state: "erased", reasons: "[]" }]);
     expect((await failure(() => r.stub().collectionGet(r.bind(null), {
       collection: "board", row_id: "t" }))).message).toBe(OWNER_ERASED);
-  }, 30_000);
+  });
 
   it("holds its mark until the put grace is up, its job waking it then, never an in-memory " +
      "wait (review rvlim N5)", async () => {
@@ -234,7 +234,7 @@ describe("the owner's erasure", () => {
     const [job] = await sqlIn(r.stub(), "SELECT time FROM cf_agents_jobs WHERE id = " +
                                           "'owner-erasure/erase'");
     expect(job!["time"]).toBe(due);
-  }, 30_000);
+  });
 
   it("resumes after a crash at each step, at the object's next start", async () => {
     for (const step of [1, 2]) {
@@ -252,7 +252,7 @@ describe("the owner's erasure", () => {
       expect((await failure(() => r.stub().policyRead(r.bind(null)))).message)
         .toBe(OWNER_ERASED);
     }
-  }, 60_000);
+  });
 
   it("resumes at the object's start alone: no door, no job", async () => {
     for (const step of [1, 2]) {
@@ -265,7 +265,7 @@ describe("the owner's erasure", () => {
       await until(async () => JSON.stringify(await tables(r)) ===
                     '[{"name":"owner_admission"}]', `the start's wipe after step ${step}`);
     }
-  }, 60_000);
+  });
 
   it("resumes by its own job alone: no restart, no door", async () => {
     const r = await rig();
@@ -284,7 +284,7 @@ describe("the owner's erasure", () => {
     await runDurableObjectAlarm(r.stub());
     await until(async () => JSON.stringify(await tables(r)) === '[{"name":"owner_admission"}]',
                 "the job's wipe");
-  }, 30_000);
+  });
 
   it("is tried again later when its job fails through Lifecycle's attempts", async () => {
     const r = await rig();
@@ -303,7 +303,7 @@ describe("the owner's erasure", () => {
       return job !== undefined && Number(job["time"]) >= before + ERASE_RETRY_MS - 5_000;
     }, "the job rescheduled");
     await r.in(() => restore());
-  }, 60_000);
+  });
 
   it("resumes from a refused door, at most once a retry interval", async () => {
     const r = await rig();
@@ -318,7 +318,7 @@ describe("the owner's erasure", () => {
     await sleep(500);
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
     await until(() => r.in((instance) => instance.erasure.erased), "the door's resume");
-  }, 30_000);
+  });
 
   it("disables Lifecycle's alarm before it wipes the owner", async () => {
     const r = await rig();
@@ -337,7 +337,7 @@ describe("the owner's erasure", () => {
     });
     expect(seen).toBeNull();
     expect(await tables(r)).toEqual([{ name: "owner_admission" }]);
-  }, 30_000);
+  });
 
   it("resumes its wipe at the next start after a wipe that failed or hung, and never counts " +
      "itself erased before the wipe", async () => {
@@ -370,7 +370,7 @@ describe("the owner's erasure", () => {
       expect((await failure(() => r.stub().policyRead(r.bind(null)))).message)
         .toBe(OWNER_ERASED);
     }
-  }, 60_000);
+  });
 });
 
 describe("the erasure's tombstone", () => {
@@ -395,7 +395,7 @@ describe("the erasure's tombstone", () => {
       expect(await alarmOf(r.stub())).toBeNull();
       expect(await runDurableObjectAlarm(r.stub())).toBe(false);
     }
-  }, 60_000);
+  });
 
   it("is written in the same turn as the wipe, only into a wiped database, and once", async () => {
     const r = await rig();
@@ -412,7 +412,7 @@ describe("the erasure's tombstone", () => {
         "SELECT state FROM owner_admission").toArray() };
     });
     expect(out).toEqual({ before: false, sameTurn: true, rows: [{ state: "erased" }] });
-  }, 30_000);
+  });
 
   it("leaves another owner admitted, made fresh as ever", async () => {
     const r = await rig();
@@ -421,7 +421,7 @@ describe("the erasure's tombstone", () => {
     expect((await other.stub().policyRead(other.bind(null))).generation).toBeGreaterThan(0);
     expect(await sqlIn(other.stub(), "SELECT state FROM owner_admission"))
       .toEqual([{ state: "admitted" }]);
-  }, 30_000);
+  });
 });
 
 describe("the account-erase answer", () => {

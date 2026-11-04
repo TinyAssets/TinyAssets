@@ -24,5 +24,6 @@
               "gateway/*.ts", "hooks/src/**/*.ts", "hooks/test/**/*.ts",
               "hooks/guards/**/*.ts", "hooks/*.ts", "sandbox/src/**/*.ts",
               "sandbox/test/**/*.ts", "sandbox/guards/**/*.ts", "sandbox/runner/**/*.ts",
-              "sandbox/*.ts", "admin/src/**/*.ts", "deploy/**/*.ts"]
+              "sandbox/*.ts", "admin/src/**/*.ts", "deploy/**/*.ts",
+              "ci/**/*.ts"]
 }
