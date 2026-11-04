@@ -1,5 +1,7 @@
 # Target architecture: sealed command-center boxes behind an always-on control plane
 
+**Superseded by ADR-032 (2026-10-27).** Kept only for its evidence; do not build from it.
+
 ## Why
 
 Founder, 2026-10-02: "i would like to move towards the architecture and
