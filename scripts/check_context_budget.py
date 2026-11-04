@@ -81,8 +81,8 @@ class Budget:
 CONFIG: tuple[Budget, ...] = (
     Budget("AGENTS.md", "hard", 2800, 0,
            "The loop and the un-inferable facts. Direction lives in README.md."),
-    Budget("CLAUDE.md", "hard", 420, 0,
-           "Two harness quirks. Nothing else belongs here."),
+    Budget("CLAUDE.md", "hard", 215, 0,
+           "The import and one harness quirk. Nothing else belongs here."),
     Budget("docs/reference/executable-gates.md", "hard", 1154, 0,
            "Index of gates -> scripts. Add a row only by deleting one.",
            always_loaded=False),
@@ -99,7 +99,7 @@ FORBIDDEN: tuple[str, ...] = (
 
 # HARD ceiling for the combined always-loaded payload (AGENTS.md + CLAUDE.md +
 # anything they @import), pinned at the achieved post-recut total.
-COMBINED_HARD_BYTES = 3220
+COMBINED_HARD_BYTES = 3015
 
 
 @dataclass
@@ -123,10 +123,10 @@ class Aggregate:
 # endpoints and claims) and grow when the product does, which is not rulebook
 # growth. Every other docs/reference file is procedure, and procedure is capped.
 AGGREGATES: tuple[Aggregate, ...] = (
-    Aggregate("docs/reference/*.md", "docs/reference/*.md", 6741,
+    Aggregate("docs/reference/*.md", "docs/reference/*.md", 5299,
               exclude=("environment-variables.md", "workos-authkit-integration.md"),
               note="Procedure docs. A new gate here displaces an old one."),
-    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 51730,
+    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 23884,
               note="Skills are rulebook too -- a rule moved into a skill is still a rule."),
     Aggregate("docs/reviews/*", "docs/reviews/*", 0,
               note="Retired reviews cannot grow back outside the document homes."),

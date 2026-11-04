@@ -71,9 +71,9 @@ Required env:
 - `CLOUDFLARE_ZONE_ID` — from zone overview page (not secret; copy from dashboard).
 
 ### Worker deploy / rollback
-`cd deploy/cloudflare-worker && wrangler login && wrangler deploy`. No browser needed post-initial-auth.
+Platform Workers deploy only through the **Platform deploy** workflow (`platform/deploy/checklist.md`). The old proxy (`deploy/cloudflare-worker`) deploys only through `deploy-worker.yml`; after mode `routes`, a hand `wrangler deploy` of it would re-add its `.well-known/oauth-*` routes (`openspec/changes/clean-sheet-platform/tasks.md` §9 R1).
 
-Rollback: `wrangler rollback --version-id <previous>` or re-deploy old worker.js from git history.
+Rollback: `wrangler rollback --version-id <previous>` on the named Worker, or revert on `main` and let its workflow redeploy.
 
 ### Zone-level settings
 Cloudflare REST API v4 — `GET/PATCH /zones/{zone_id}/settings/{setting_name}`. Direct `requests` calls; no wrapper needed for one-off changes.

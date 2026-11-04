@@ -16,9 +16,7 @@ charge, irreversible destructive action, non-required material choice, or a pers
 fact that cannot be established from verified evidence. Computer-use actions that require
 action-time confirmation under product policy remain subject to that policy.
 
-> **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
-> first.** This file is the procedure; that one is where both platforms actually
-> stand. The short version for iOS: Apple Developer Program membership activated
+> This file is the procedure. The short version for iOS: Apple Developer Program membership activated
 > on 2026-09-03; the explicit App ID and App Store Connect record were created and
 > verified that day. Product metadata and the published privacy disclosure are saved,
 > and Build 3 is attached to the empty internal TestFlight group with its en-US
