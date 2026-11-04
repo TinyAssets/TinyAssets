@@ -186,6 +186,10 @@ import { type BilledEvent, billedEvent, METER_BATCH, meterRead, SandboxTime } fr
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal, utf8Bytes } from "./text";
+import { storageFull, storageFullMessage } from "./storage-full";
+import {
+  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
+} from "./sync-ignore";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
@@ -841,6 +845,11 @@ export interface SyncUploadChunksRequest extends LeaseRequest {
   readonly chunks: { readonly sha256: string; readonly bytes: Uint8Array }[];
 }
 
+/** The sync agent's own upload given up (`fileSyncUploadAbort`). */
+export interface SyncUploadAbortRequest extends LeaseRequest {
+  readonly intent_id: string;
+}
+
 /** A lost file compare-and-swap: answered with the entry as it stands. */
 export interface FileConflicted {
   readonly conflict: Entry | null;
@@ -929,7 +938,7 @@ interface Readable {
 }
 
 /** A sync token that is not the live lease's, or names another lease or epoch. */
-export const SYNC_FENCED = "the sync lease was lost; this sync is fenced";
+export const SYNC_FENCED = "sync_fenced: the sync lease was lost; this sync is fenced";
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -1159,6 +1168,27 @@ const PLACE_TRIES = 5;
 const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
+/**
+ * What a sync commit's write of the sync-ignore list says of the files it holds back, as its
+ * sync agent counted them (`sync.ts`): the kept files its lines name, and those with changes.
+ */
+function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
+  const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
+    ? value as number : null;
+  for (const op of Array.isArray(ops) ? ops as unknown[] : []) {
+    const fields = (typeof op === "object" && op !== null ? op : {}) as Record<string, unknown>;
+    const held = fields["held_back"] as Record<string, unknown> | undefined;
+    if (fields["path"] === SYNC_IGNORE && fields["op"] === "write" && typeof held === "object"
+        && held !== null) {
+      const kept = count(held["kept"]);
+      const changed = count(held["changed"]);
+      if (kept !== null && changed !== null && changed <= kept) {
+        return { kept, changed };
+      }
+    }
+  }
+  return null;
+}
 
 /** A run's own MCP door reaches no run door: work between agents is mail (ADR-034 d11). */
 export const RUN_STARTS_NONE = "run_starts_none: a run starts, reads and cancels no run";
@@ -1434,6 +1464,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #egress: Egress;
   /** The owner's runs: admission, grants, conversations, schedules (`runs.ts`). */
   readonly #runs: Runs;
+  /** The held-back count a sync commit in progress carries for the sync-ignore list. */
+  #heldBack: { kept: number; changed: number } | null = null;
   /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
   /** The vendor's own sign-ins in progress inside a sandbox (`signins.ts`). */
@@ -1497,9 +1529,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#files = new Files(storage, env.FILES, () => fileLimits(
       this.#policy.read().document,
       keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
+      // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
+      (stored, needed, held, limit) => storageFullMessage(storageFull(
+        stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
       (filer) => this.#collections.reclaim(filer) || this.#ledger.reclaim(filer),
       // Each agent's ledger identity follows its `agent.json`, in the file change's own unit.
-      (path, present, now) => {
+      (path, present, now, change) => {
         const agent = AGENT_FILE.exec(path)?.[1];
         if (agent !== undefined) {
           if (present) {
@@ -1507,6 +1542,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           } else {
             this.#ledger.retire(agent, now);
           }
+        }
+        // Every agent may edit the sync's ignore list (the founder's every-agent-full-power
+        // rule), but never unseen: each change is a receipt and one notice for the owner.
+        if (path === SYNC_IGNORE) {
+          this.#syncIgnoreChanged(present, now, change);
         }
       },
       // Garbage the newest finished generation names is never collected early, while it is
@@ -1653,6 +1693,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         },
       },
       stop: (runs) => this.#cancelInSandbox(runs),
+      notice: (type, detail) => this.#notices.add(type, detail, clock()),
       answer: (answer) => this.#answer(answer),
       mailSettled: (mail, agent) => this.#ledger.settled(mail, agent),
       ended: (run) => {
@@ -3802,6 +3843,81 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  /**
+   * A change to the sync's ignore list, in its own unit: a receipt and one notice naming
+   * who changed it (the owner, an agent's run, or an outside client), and, when a line it
+   * adds stops files the owner already keeps from syncing their changes, how many and which.
+   */
+  #syncIgnoreChanged(present: boolean, now: number,
+                     change: { writer: string; content_id: string | null; size: number }): void {
+    const outcome = present ? "changed" : "removed";
+    const who = this.#writerNamed(change.writer);
+    this.#policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
+    let held = "";
+    if (present && change.content_id !== null) {
+      // Whoever wrote it, its new lines are read (a set's work, the list at most an inline
+      // file), never matched against the owner's files here.
+      const lines = (bytes: Uint8Array | null) => bytes === null ? null
+        : ruleLines(new TextDecoder().decode(bytes).split("\n"));
+      const after = lines(this.#files.inlineOf(change.content_id));
+      const before = this.#files.contentBefore(SYNC_IGNORE, this.#files.lastVersion(SYNC_IGNORE));
+      const was = new Set(before === null ? [] : lines(this.#files.inlineOf(before.content_id))
+        ?? []);
+      const defaults = new Set(DEFAULT_IGNORES);
+      if (after === null || after.some((line) => !was.has(line) && !defaults.has(line))) {
+        held = " Its new lines may hold back files you keep from syncing their changes; " +
+          "each sandbox sync reports the files they hold back.";
+      }
+      // Lines past a ceiling are not applied: said here, never in silence.
+      const raw = this.#files.inlineOf(change.content_id);
+      const past = raw === null ? [] : unappliedLines(new TextDecoder().decode(raw).split("\n"));
+      const states = past.filter((each) => each.reason === "states");
+      if (states.length > 0) {
+        held += ` ${states.length} line${states.length === 1 ? " is" : "s are"} past the ${
+          AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
+          `may take together, so not applied: the files they name go on syncing (${
+            states.slice(0, 3).map((each) => each.line).join(", ")}${states.length > 3
+            ? ", …" : ""}).`;
+      }
+      if (change.size > LIST_BYTES) {
+        held += ` The list past its ${LIST_BYTES.toLocaleString("en")} bytes is not applied: ` +
+          "the files those lines name go on syncing.";
+      }
+      // The owner's own sandbox, whose mirror is the owner's whole tree, adds what its sync
+      // agent counted (`sync.ts`); an outside client's sees only its part, so its count is
+      // never given, and no count ever takes the sentence away.
+      const synced = this.#heldBack;
+      if (synced !== null && /^lease:[0-9]+$/.test(change.writer) && synced.kept > 0) {
+        held += ` In the sync that wrote it, its lines hold back ${synced.kept} file${
+          synced.kept === 1 ? "" : "s"} you keep (${synced.changed} with changes in the ` +
+          "sandbox): your files keep the version they have, and each sync reports them.";
+      }
+    }
+    this.#notices.add("sync_ignore_changed", `${SYNC_IGNORE} was ${outcome} by ${who}: what ` +
+                        `the sandbox keeps out of your files follows it.${held}`, now);
+  }
+
+  /**
+   * Who a file change's writer is, in words the owner reads: the owner; the agents whose
+   * runs hold the owner's sandbox lease it was synced under; or an outside client by name.
+   */
+  #writerNamed(writer: string): string {
+    const epoch = /^lease:([0-9]+)$/.exec(writer)?.[1];
+    if (epoch !== undefined) {
+      // The agents named at most three, so the receipt stays its size.
+      const agents = this.#runs.agentsAt(Number(epoch), 4);
+      return agents.length === 0 ? "a run in your sandbox"
+        : `a run of your agent${agents.length === 1 ? "" : "s"} ${agents.slice(0, 3).join(", ")}${
+          agents.length > 3 ? " and others" : ""}`;
+    }
+    const client = /^client:(.+)$/.exec(writer)?.[1];
+    if (client !== undefined) {
+      const name = this.#grants.name(client);
+      return `the outside client ${name !== "" ? `"${name}"` : client.slice(0, 12)}`;
+    }
+    return writer === "owner" ? "you" : writer;
+  }
+
   // -- FILES: the owner's file tree (plan §6) --------------------------------------
   //
   // These doors move at most two chunks a call. The HTTP and MCP doors (tasks 2) stream
@@ -5408,9 +5524,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#syncer(binding, "work", request);
       }
       const r = fileFields(request, ["lease_id", "epoch", "ops"]);
-      return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
-                                      ops: r["ops"] },
-                                    (authority) => this.#grants.full(authority));
+      this.#heldBack = heldBackOf(r["ops"]);
+      try {
+        return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
+                                        ops: r["ops"] },
+                                      (authority) => this.#grants.full(authority));
+      } finally {
+        this.#heldBack = null;
+      }
     });
   }
 
@@ -5424,8 +5545,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       this.#syncer(binding, "work", request);
       const r = fileFields(request, ["lease_id", "epoch", "size", "chunks"]);
-      return this.#files.begin(r["size"], r["chunks"],
-                               this.#files.syncWriter(r["lease_id"], r["epoch"]));
+      return this.#files.syncBegin(r["lease_id"], r["epoch"], r["size"], r["chunks"]);
     });
   }
 
@@ -5442,5 +5562,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return fields;
     });
     return this.#files.upload(r["intent_id"], r["chunks"]);
+  }
+
+  /**
+   * The sync agent's own upload given up (its file changed mid-sync, or was refused), let go
+   * now rather than holding the owner's storage until it expires; fenced by the live lease,
+   * and only the lease's own upload. One already gone is no error.
+   */
+  fileSyncUploadAbort(binding: Binding, request: SyncUploadAbortRequest):
+      Promise<{ aborted: boolean }> {
+    return this.#filing(() => {
+      this.#syncer(binding, "work", request);
+      const r = fileFields(request, ["lease_id", "epoch", "intent_id"]);
+      const writer = this.#files.syncWriter(r["lease_id"], r["epoch"]);
+      let owner: string | null;
+      try {
+        owner = this.#files.intentWriter(r["intent_id"]);
+      } catch (error) {
+        if (!(error instanceof Refused)) {
+          throw error;  // a malformed id: Invalid
+        }
+        owner = null;  // gone already: expired, committed or let go
+      }
+      if (owner !== null && owner !== writer) {
+        throw new Refused(SYNC_FENCED);
+      }
+      return owner === null ? { aborted: false } : this.#files.abort(r["intent_id"]);
+    });
   }
 }

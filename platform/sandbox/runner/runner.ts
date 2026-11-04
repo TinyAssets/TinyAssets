@@ -69,14 +69,20 @@ import { SIGNIN_PASTE_MAX } from "../../owner/src/run-rows";
 import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
          WORKSPACE } from "./engine";
 import { lineEvent, Outbox } from "./frames";
-import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
+import { remove, safeDirs, safeRead, safeWalk, safeWrite, walkFiles } from "./fsafe";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
 import { project } from "./project";
+import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
+         scratchNotice,
+         markUsed,
+         writeOrRelease } from "./scratch";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
-import { readMirror, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
+import { AUTOMATON_STATES, LIST_BYTES, stepNanos } from "../../owner/src/sync-ignore";
+import { openMirror, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport }
+  from "./sync";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
 /** Every path the runner touches is under this root: `/` in the sandbox, a temp dir in tests. */
@@ -88,9 +94,25 @@ const STORE = `${STATE}/store`;
 const SYNC_HOME = `${ROOT}/var/lib/ta-sync`;
 const CONVERSATIONS = `${ROOT}/var/lib/ta-conv`;
 const LOCAL_WORKSPACE = `${ROOT}${WORKSPACE}`;
+/** The agents' scratch (`scratch.ts`): kept between runs, never synced, never counted. */
+const LOCAL_SCRATCH = `${ROOT}${SCRATCH}`;
+/** Each agent's stamp of its scratch's last use (`scratch.ts`), and the runner's reserve. */
+const SCRATCH_INDEX = `${STATE}/scratch-used`;
+const RESERVE = `${STATE}/reserve`;
+/** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
+const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
+/** A change time the runner trusts: older than the coarsest filesystem tick (`sync.ts`). */
+const RACY_MS = 2_000;
+/** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
+const RESERVE_SIZE = ROOT === "" ? RESERVE_BYTES : 1024 * 1024;
 
-/** The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). */
-export const HEARTBEAT_MS = 20_000;
+/**
+ * The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). A
+ * test's root alone may shorten it (`TA_HEARTBEAT_MS`), so a test of a sync-out longer than
+ * a heartbeat is seconds long; the sandbox's root (`/`) never reads it.
+ */
+export const HEARTBEAT_MS = ROOT !== "" && process.env["TA_HEARTBEAT_MS"] !== undefined
+  ? Number(process.env["TA_HEARTBEAT_MS"]) : 20_000;
 /** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
 const FLUSH_MS = 250;
 /**
@@ -421,6 +443,13 @@ async function keepHome(home: string, rec: SourceRecord, signin = false): Promis
           continue;
         }
         renewed ||= signin;
+      } else {
+        // A session the store holds as it is is not written again, so its change time
+        // stands and it is not hashed again (`SESSIONS_SEEN`).
+        const stored = safeRead(store, join(store, rel));
+        if (stored !== null && digest(stored) === digest(bytes)) {
+          continue;
+        }
       }
       safeWrite(store, join(store, rel), bytes, 0o600);
     }
@@ -429,6 +458,24 @@ async function keepHome(home: string, rec: SourceRecord, signin = false): Promis
     }
   });
   remove(path);
+}
+
+/** A session in an engine's store as last hashed: its identity, and a secret refusal's. */
+interface SeenSession {
+  readonly size: number;
+  readonly mtime_ms: number;
+  readonly sha256: string;
+  /** The digest of the secrets it was refused against, when it held one's bytes. */
+  readonly refused?: string;
+}
+
+/** The engines' sessions as last hashed (`SESSIONS_SEEN`), or none. */
+function readSeen(): Record<string, SeenSession> {
+  try {
+    return existsSync(SESSIONS_SEEN) ? readJson<Record<string, SeenSession>>(SESSIONS_SEEN) : {};
+  } catch {
+    return {};  // unreadable: every session is hashed again, nothing skipped
+  }
 }
 
 /** The engines' sessions the sync agent took from the feed, into each store it lacks. */
@@ -532,6 +579,9 @@ function prepare(servers: readonly string[]): number {
   }
   lockDown();
   lockSudo();
+  // The runner's own room on the disk, kept while there is room for it (`scratch.ts`).
+  mkdirSync(STATE, { recursive: true, mode: 0o700 });
+  keepReserve(RESERVE, RESERVE_SIZE);
   // A pasted code is never left at rest (review L1): one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
   const inbox = `${STATE}/inbox`;
@@ -586,6 +636,9 @@ function lockSudo(): void {
 /**
  * What may stay writable by a user other than root, each for its reason:
  * - `/workspace`, group `ta`: the owner's files every run shares by design;
+ * - `/scratch`, group `ta` below its top: the agents' working files (`scratch.ts`), every
+ *   run of the sandbox's by design, as the founder's rule has every agent of a user full
+ *   power by default;
  * - each run's own home, each conversation's own cwd, the sync agent's directory: their
  *   own users', 0700, reached by no one else;
  * - `/proc` and `/sys`: the kernel's own;
@@ -594,7 +647,8 @@ function lockSudo(): void {
  * (a node is no file root runs or reads as code; a link's own mode means nothing).
  */
 const WRITABLE: readonly string[] = Object.freeze(["/proc", "/sys", WORKSPACE, HOMES,
-                                                   "/var/lib/ta-conv", "/var/lib/ta-sync"]);
+                                                   "/var/lib/ta-conv", "/var/lib/ta-sync",
+                                                   SCRATCH]);
 /**
  * Every path another user may write made root's alone, then checked: anything left fails
  * `prepare` loudly. E2B's base image boots with root's own programs world-writable
@@ -752,7 +806,8 @@ interface LeaseFile {
 }
 
 interface SyncJob {
-  readonly direction: "in" | "out";
+  /** In, out, or `known`: the mirror's hash of each of `paths`, read under the lock. */
+  readonly direction: "in" | "out" | "known";
   readonly origin: string;
   readonly token: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
@@ -761,10 +816,16 @@ interface SyncJob {
   readonly engine: string;
   readonly run: string;
   readonly atoms: readonly string[];
+  readonly paths?: readonly string[];
 }
 
-/** The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. */
-function syncAgent(job: SyncJob): { report: Record<string, unknown> | null; code: number } {
+/**
+ * The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. It runs
+ * as a child the runner waits on without blocking, so the run's heartbeat goes on posting
+ * (each post renews the lease) however long a sync takes.
+ */
+async function syncAgent(job: SyncJob):
+    Promise<{ report: Record<string, unknown> | null; code: number }> {
   const as = user(ROOT, "ta-sync");
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
                                        process.argv[1]!, "sync"]);
@@ -774,10 +835,22 @@ function syncAgent(job: SyncJob): { report: Record<string, unknown> | null; code
       env[name] = process.env[name]!;
     }
   }
-  const done = spawnSync(argv[0]!, argv.slice(1), { input: JSON.stringify(job), env,
-                                                     encoding: "utf8",
-                                                     // Its report whole, however many paths.
-                                                     maxBuffer: Number.POSITIVE_INFINITY });
+  const child = spawn(argv[0]!, argv.slice(1), { env, stdio: ["pipe", "pipe", "pipe"] });
+  const out: Buffer[] = [];
+  const err: Buffer[] = [];
+  child.stdout!.on("data", (chunk: Buffer) => { out.push(chunk); });
+  child.stderr!.on("data", (chunk: Buffer) => { err.push(chunk); });
+  // A child that dies before reading its whole job closes its stdin under the write: the
+  // write's EPIPE is let go here, and the child's exit status says what happened.
+  child.stdin!.on("error", () => undefined);
+  child.stdin!.end(JSON.stringify(job));
+  const status = await new Promise<number | null>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => { resolve(code); });
+  });
+  // Its report whole, however many paths.
+  const done = { status, stdout: Buffer.concat(out).toString("utf8"),
+                 stderr: Buffer.concat(err).toString("utf8") };
   let report: Record<string, unknown> | null = null;
   try {
     report = JSON.parse(done.stdout) as Record<string, unknown>;
@@ -822,25 +895,32 @@ async function syncCommand(): Promise<number> {
                     sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
                     records: RECORDS };
     safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
-    const mirrorPath = `${SYNC_HOME}/mirror.json`;
-    const mirror = readMirror(mirrorPath);
-    const save = () => safeWrite(SYNC_HOME, mirrorPath,
-                                 new TextEncoder().encode(JSON.stringify(mirror)), 0o600);
-    if (job.direction === "in") {
-      await syncIn(client, place, mirror);
-      save();
-      const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
-      const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
-      const made = project(LOCAL_WORKSPACE, job.agent, record(job.engine).cli!.skills_paths,
-                           previous);
-      safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
-      process.stdout.write(JSON.stringify({ ok: true }));
+    // The mirror is a database on disk, written as each change lands (`openMirror`): a sync
+    // cut short keeps what it sent. The one JSON file of before is taken in once.
+    const mirror = openMirror(`${SYNC_HOME}/mirror.db`, `${SYNC_HOME}/mirror.json`);
+    try {
+      if (job.direction === "known") {
+        // What the owner's files hold of each path, as this sandbox last synced it.
+        process.stdout.write(JSON.stringify({ known: Object.fromEntries((job.paths ?? [])
+          .map((path) => [path, mirror.get(path)?.sha256 ?? null])) }));
+        return OK;
+      }
+      if (job.direction === "in") {
+        await syncIn(client, place, mirror);
+        const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
+        const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
+        const made = project(LOCAL_WORKSPACE, job.agent, record(job.engine).cli!.skills_paths,
+                             previous);
+        safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
+        process.stdout.write(JSON.stringify({ ok: true }));
+        return OK;
+      }
+      const report = await syncOut(client, place, mirror, job.lease, job.atoms);
+      process.stdout.write(JSON.stringify(report));
       return OK;
+    } finally {
+      mirror.close();
     }
-    const report = await syncOut(client, place, mirror, job.lease, job.atoms);
-    save();
-    process.stdout.write(JSON.stringify(report));
-    return OK;
   } catch (error) {
     if (error instanceof SyncFenced) {
       process.stdout.write(JSON.stringify({ fenced: true }));
@@ -849,6 +929,83 @@ async function syncCommand(): Promise<number> {
     throw error;
   } finally {
     remove(lock);
+  }
+}
+
+/** How long matching the sync-ignore list may take before the run's report says so. */
+const SLOW_MATCH_MS = 5_000;
+
+/** The paths an event names at most: past them, its count says how many more. */
+const EVENT_PATHS = 100;
+
+/**
+ * What a sync-out reported, to the run's events: each refused file, a full storage's (and
+ * open uploads') by its code alone; the one `ta.storage_full` with the object's whole
+ * message, once a sync, the only place an upgrade is offered, what did not fit kept in the
+ * sandbox and sent again by the next run; `ta.uploads_open` likewise, never an upgrade; what
+ * was skipped (changed or gone while the sync ran) once; the conflicts.
+ */
+function reportSync(outbox: Outbox, report: SyncReport | null): void {
+  const refused = report?.refused ?? [];
+  const codeOf = (reason: string) => /^(storage_full|uploads_open):/.exec(reason)?.[1] ?? null;
+  for (const each of refused) {
+    outbox.push({ type: "ta.sync_refused", path: each.path,
+                  reason: codeOf(each.reason) ?? each.reason });
+  }
+  for (const code of ["storage_full", "uploads_open"] as const) {
+    const these = refused.filter((each) => codeOf(each.reason) === code);
+    if (these.length > 0) {
+      outbox.push({ type: `ta.${code}`, message: these[0]!.reason, files: these.length,
+                    kept_in_sandbox: these.slice(0, EVENT_PATHS).map((each) => each.path) });
+    }
+  }
+  const skipped = report?.skipped ?? [];
+  if (skipped.length > 0) {
+    outbox.push({ type: "ta.sync_skipped",
+                  files: skipped.length + (report?.skipped_unlisted ?? 0),
+                  skipped: skipped.slice(0, EVENT_PATHS) });
+  }
+  if ((report?.conflicts ?? []).length > 0) {
+    outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts });
+  }
+  // Lines past a ceiling are not applied, never in silence: which, how many, and why.
+  const unapplied = report?.unapplied ?? [];
+  const past = report?.list_bytes_past ?? 0;
+  if ((report?.unapplied_count ?? 0) > 0 || past > 0) {
+    const states = unapplied.filter((each) => each.reason === "states").length;
+    const said = [
+      states === 0 ? null : `${states} line${states === 1 ? "" : "s"} past the ${
+        AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
+        "may take together",
+      past === 0 && unapplied.every((each) => each.reason !== "bytes") ? null
+        : `the list past its ${LIST_BYTES.toLocaleString("en")} bytes (${
+          past.toLocaleString("en")} more bytes)`,
+    ].filter((each) => each !== null);
+    outbox.push({ type: "ta.sync_ignore_unapplied", lines: unapplied,
+                  count: report?.unapplied_count ?? 0, list_bytes_past: past,
+                  message: `In /workspace/.ta/sync-ignore, ${said.join(", and ")} ${
+                    said.length === 1 && states === 1 ? "is" : "are"} not applied, in file ` +
+                    "order: the files they name go on syncing." });
+  }
+  // Names that are not UTF-8 never sync (a path is text at the owner's files): said, with
+  // their bytes escaped, never silently missed; the object makes it the owner's notice.
+  if ((report?.unnamed_count ?? 0) > 0) {
+    const count = report!.unnamed_count;
+    outbox.push({ type: "ta.sync_unnamed", paths: report!.unnamed, count,
+                  message: `${count} file${count === 1 ? "" : "s"} or folder${
+                    count === 1 ? "" : "s"} in your sandbox ${count === 1 ? "has a name" :
+                    "have names"} that ${count === 1 ? "is" : "are"} not UTF-8, so ${
+                    count === 1 ? "it does" : "they do"} not sync to your files: ${
+                    report!.unnamed.slice(0, 5).join(", ")}${count > 5 ? ", …" : ""}. ` +
+                    "Rename them to sync them." });
+  }
+  // A slow list says so, so the owner sees why a sync took long: its pattern lines (`*`,
+  // `?`) cost the most. Said past `SLOW_MATCH_MS`, which refuses nothing.
+  if ((report?.match_ms ?? 0) >= SLOW_MATCH_MS) {
+    outbox.push({ type: "ta.sync_ignore_slow", match_ms: report!.match_ms,
+                  message: `Matching /workspace/.ta/sync-ignore took ${
+                    Math.round(report!.match_ms / 1000)} s of this sync; its lines with * or ? ` +
+                    "cost the most." });
   }
 }
 
@@ -1034,6 +1191,32 @@ function cleanScratch(uid: number): void {
   }
 }
 
+/**
+ * The run's agent's scratch (`scratch.ts`): made (root's at the top, group `ta`'s below), old
+ * scratch let go first (unused past the control record's retention, then least recently used
+ * while the disk is low, never a live run's agent), and the agent's marked used now. What
+ * went, in plain words for the agent and the user, or null.
+ */
+function scratchFor(start: StartDoc, run: string): { dir: string; notice: string | null } {
+  const dir = `${LOCAL_SCRATCH}/${start.agent}`;
+  safeDirs(TOP, LOCAL_SCRATCH, 0o755);
+  const live = new Set([start.agent, ...liveRuns().filter((each) => each.run !== run)
+    .flatMap((each) => {
+      try {
+        return [readJson<StartDoc>(`${runDir(each.run)}/start.json`).agent];
+      } catch {
+        return [];
+      }
+    })]);
+  const index = readIndex(SCRATCH_INDEX);
+  const pruned = pruneScratch(LOCAL_SCRATCH, index, Date.now(),
+                              start.scratch_retention_days ?? null, live);
+  safeDirs(LOCAL_SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
+  writeOrRelease(() => markUsed(index, start.agent, Date.now()), RESERVE);
+  keepReserve(RESERVE, RESERVE_SIZE);
+  return { dir, notice: scratchNotice(pruned) };
+}
+
 async function runCommand(run: string, recovering: boolean): Promise<number> {
   const dir = runDir(run);
   const start = readJson<StartDoc>(`${dir}/start.json`);
@@ -1044,7 +1227,14 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   const state: RunState = { pid: process.pid, cli_pid: null, seq: prior?.seq ?? 0,
                             session_id: prior?.session_id ?? start.session_id,
                             last_kind: null, ended: false, renewing: false };
-  const save = () => writeJson(`${dir}/state.json`, state);
+  // A full disk never stops the runner: its reserve goes first, and a write that still
+  // fails leaves the state in memory, the run going on and reporting its end.
+  const save = () => {
+    writeOrRelease(() => writeJson(`${dir}/state.json`, state), RESERVE);
+  };
+  const mark = (name: string) => {
+    writeOrRelease(() => writeFileSync(`${dir}/${name}`, ""), RESERVE);
+  };
   const outbox = new Outbox(state.seq);
   const cli_: { child: ChildProcess | null; kill: ReturnType<typeof setTimeout> | null;
                 stopped: boolean; renewed: boolean } =
@@ -1081,7 +1271,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       await poster.drain();
       state.renewing = true;
       save();
-      writeFileSync(`${dir}/renewing-ack`, "");
+      mark("renewing-ack");
     })();
   });
   process.on("SIGUSR2", () => {
@@ -1090,7 +1280,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     cli_.renewed = cli_.child !== null && cli_.child.exitCode === null;
     outbox.push({ type: "ta.renewed" });
     save();
-    writeFileSync(`${dir}/renewed-ack`, "");
+    mark("renewed-ack");
   });
   if (existsSync(`${dir}/cancel`)) {
     stop();  // cancelled before its runner was up
@@ -1105,7 +1295,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   let as: Identity | null = null;
   let home: string | null = null;
   const system = `${ROOT}${SYSTEM}/${run}`;
-  const job = (direction: "in" | "out", secrets: readonly string[] = []): SyncJob => ({
+  const job = (direction: SyncJob["direction"], secrets: readonly string[] = []): SyncJob => ({
     direction, origin: new URL(start.urls.events).origin, token: lease.tokens.sync_token,
     lease: lease.lease, authority: start.authority, agent: start.agent, engine: start.engine,
     run, atoms: secrets });
@@ -1115,7 +1305,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       outbox.push({ type: "ta.recovered" });
     }
     await reportSignins(start, lease);
-    if (syncAgent(job("in")).code === FENCED) {
+    if ((await syncAgent(job("in"))).code === FENCED) {
       throw new SyncFenced("the sync door fenced the lease");
     }
     synced = true;
@@ -1129,6 +1319,10 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     const agentDir = `${ROOT}${AGENTS_DIR}/${start.agent}`;
     if (!existsSync(`${agentDir}/agent.json`)) {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);
+    }
+    const scratch = scratchFor(start, run);
+    if (scratch.notice !== null) {
+      outbox.push({ type: "ta.scratch_cleared", text: scratch.notice });
     }
     let conversationDir: string | undefined;
     let continued = false;
@@ -1176,7 +1370,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         }
         process.umask(0o002);
         const child = spawn(argv[0]!, argv.slice(1), {
-          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp") }, detached: true,
+          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp"),
+                                ...scratchEnv(scratch.dir) }, detached: true,
           stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] });
         cli_.child = child;
         child.on("error", reject);
@@ -1240,8 +1435,14 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
     exitCode = exitCode === 0 ? 1 : exitCode;
   } finally {
-    clearInterval(pump);
     try {
+      // A full disk: ext4 keeps root's own blocks (probed: root still wrote at 0 free), but
+      // what follows copies the run's changed sessions back and stages the unsent ones, and
+      // the sync agent is its own user, so the runner's reserve goes first when the disk is
+      // short of it, and both have their room (`scratch.ts`).
+      if (diskOf(STATE).free_bytes < RESERVE_SIZE) {
+        rmSync(RESERVE, { force: true });
+      }
       if (as !== null) {
         // Every process the run's user left is gone before its home is read.
         killAll(as.uid);
@@ -1254,33 +1455,72 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         const secrets = atoms();
         const out = `${SYNC_HOME}/out/${run}`;
         remove(out);
-        for (const rel of home === null || as === null ? [] : safeWalk(home)) {
-          if (!isKept(keptPaths(rec).sessions, rel)) {
+        // Every engine's session the owner's files do not hold as it is now (the sync
+        // mirror's hash of its path, read under the sync agent's lock) is staged: this run's,
+        // and any an earlier sync-out left unsent (refused at a full storage, changed while
+        // sent, fenced, cut short), so each is offered again until it lands, whether or not
+        // a later run touches it. A session the files hold already is never copied.
+        // A session's hash is read again only when its size or change time moved since it
+        // was last hashed (or that time was too recent to trust, `RACY_MS`); one refused for
+        // a secret's bytes is said once, until it or the secrets change.
+        const seen = readSeen();
+        const next: Record<string, SeenSession> = {};
+        const against = digest(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
+        const sessions: { rec: SourceRecord; rel: string; path: string; digest: string }[] = [];
+        for (const each of RECORDS.values()) {
+          const store = `${STORE}/${each.id}`;
+          for (const rel of walkFiles(store)) {
+            if (!isKept(keptPaths(each).sessions, rel)) {
+              continue;
+            }
+            const path = `${SESSIONS}/${start.authority}/${each.id}/${rel}`;
+            const at = Date.now();
+            const stat = lstatSync(join(store, rel));
+            const was = seen[path];
+            let sha = was !== undefined && was.size === stat.size && was.mtime_ms === stat.mtimeMs
+              && stat.mtimeMs < at - RACY_MS ? was.sha256 : null;
+            if (sha === null) {
+              const bytes = safeRead(store, join(store, rel));
+              if (bytes === null) {
+                continue;
+              }
+              sha = digest(bytes);
+            }
+            next[path] = { size: stat.size, mtime_ms: stat.mtimeMs, sha256: sha,
+                           ...(was?.sha256 === sha && was.refused !== undefined
+                             ? { refused: was.refused } : {}) };
+            sessions.push({ rec: each, rel, digest: sha, path });
+          }
+        }
+        const held = sessions.length === 0 ? {}
+          : ((await syncAgent({ ...job("known"), paths: sessions.map((each) => each.path) }))
+            .report?.["known"] ?? {}) as Record<string, string | null>;
+        for (const session of sessions) {
+          if (held[session.path] === session.digest
+              || next[session.path]!.refused === against) {
             continue;
           }
-          const bytes = safeRead(home!, join(home!, rel));
+          const store = `${STORE}/${session.rec.id}`;
+          const bytes = safeRead(store, join(store, session.rel));
           if (bytes === null) {
             continue;
           }
           if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
-            outbox.push({ type: "ta.sync_refused", path: `{home}/${rel}`,
+            outbox.push({ type: "ta.sync_refused", path: `{home}/${session.rel}`,
                           reason: "holds a secret's bytes" });
+            next[session.path] = { ...next[session.path]!, refused: against };
             continue;
           }
-          safeWrite(SYNC_HOME, join(out, rec.id, rel), bytes, 0o644, undefined, 0o755);
+          safeWrite(SYNC_HOME, join(out, session.rec.id, session.rel), bytes, 0o644, undefined,
+                    0o755);
         }
-        const done = syncAgent(job("out", secrets));
+        safeWrite(STATE, SESSIONS_SEEN, new TextEncoder().encode(JSON.stringify(next)), 0o600);
+        const done = await syncAgent(job("out", secrets));
         remove(out);
         if (done.code === FENCED) {
           outbox.push({ type: "ta.sync_fenced" });
         } else {
-          const report = done.report as { refused?: unknown[]; conflicts?: string[] } | null;
-          for (const refused of report?.refused ?? []) {
-            outbox.push({ type: "ta.sync_refused", ...(refused as object) });
-          }
-          if ((report?.conflicts ?? []).length > 0) {
-            outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts! });
-          }
+          reportSync(outbox, done.report as SyncReport | null);
         }
       }
     } catch (error) {
@@ -1294,6 +1534,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       if (as !== null) {
         give(STATE, as);
       }
+      // The heartbeat went on through sync-out, so a long sync kept its lease.
+      clearInterval(pump);
       await poster.finish(exitCode);
       state.ended = true;
       state.seq = outbox.seq;
@@ -2077,6 +2319,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       return loginProbe(args[0] ?? "", args[1] ?? null);
     case "route-probe":
       return routeProbe(args);
+    case "matcher-probe":
+      // The sync-ignore automaton's step, timed here (the template build's standing check).
+      process.stdout.write(`${JSON.stringify({ step_ns: stepNanos() })}\n`);
+      return OK;
     case "signin-check":
       return await signedIn(record(args[0] ?? "")) ? OK : NO;
     case "launch":

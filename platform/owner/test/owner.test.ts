@@ -38,7 +38,8 @@ const RPC_METHODS = Object.freeze([
   "exportEnd", "fileChanges", "fileHistory",
   "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
-  "fileRestore", "fileStat", "fileSyncCommit", "fileSyncUploadBegin", "fileSyncUploadChunks",
+  "fileRestore", "fileStat", "fileSyncCommit", "fileSyncUploadAbort", "fileSyncUploadBegin",
+  "fileSyncUploadChunks",
   "fileUploadAbort", "fileUploadBegin",
   "fileUploadChunks", "fileUploadCommit", "fileUploadStored", "fileUploadTarget",
   "fileUsage", "fileWrite",
@@ -117,8 +118,9 @@ describe("schema migration on wake", () => {
     await stub.collectionPull(as(name), PULL);
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(state.storage.sql.exec("SELECT version, sha256 FROM schema_digests").toArray())
-        .toEqual([{ version: 1, sha256: migrationDigest(MIGRATIONS[0]!) }]);
-      const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_edit (n INTEGER)"]];
+        .toEqual(MIGRATIONS.map((each, i) => ({ version: i + 1, sha256: migrationDigest(each) })));
+      const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_edit (n INTEGER)"],
+                      ...MIGRATIONS.slice(1)];
       expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_CHANGED);
       // The code as applied still starts, and a new migration after it applies.
       expect(migrate(state.storage, [...MIGRATIONS, ["CREATE TABLE probe_next (n INTEGER)"]]))
@@ -133,7 +135,8 @@ describe("schema migration on wake", () => {
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       // The review's attack: the digest row deleted, then an edited migration.
       state.storage.sql.exec("DELETE FROM schema_digests");
-      const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_unpinned (n INTEGER)"]];
+      const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_unpinned (n INTEGER)"],
+                      ...MIGRATIONS.slice(1)];
       expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_UNPINNED);
       expect(() => migrate(state.storage)).toThrow(MIGRATION_UNPINNED);
       expect(state.storage.sql.exec(
@@ -277,9 +280,10 @@ describe("the object's RPC surface", () => {
       void Promise.resolve(prop).catch(() => {});
       return prop({ owner: name, caller: name, origin: null }, {});
     };
+    // Read off the class itself: an RPC call on a method the object lacks rejects in the
+    // pool's stub outside the call's own promise (round 6's unhandled rejection).
     for (const method of ["claimWake", "markWake", "settleWake", "dueWakes", "wakeSender"]) {
-      expect((await failure(() => call(method))).message)
-        .toBe(`The RPC receiver does not implement "${method}".`);
+      expect(Reflect.has(OwnerDO.prototype, method)).toBe(false);
     }
     expect((await failure(() => call("alarm"))).message).toMatch(/reserved method/);
   });

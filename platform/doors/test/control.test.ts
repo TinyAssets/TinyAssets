@@ -67,7 +67,8 @@ beforeEach(async () => {
 
 describe("the control record", () => {
   it("is read exactly", () => {
-    expect(parseControl(OPEN)).toEqual({ ...OPEN, sandbox: null, signins: null });
+    expect(parseControl(OPEN)).toEqual({ ...OPEN, sandbox: null, scratch_retention_days: null,
+                                         signins: null });
     // Each source's sign-in switch rides the same record (slice SIGNIN).
     expect(parseControl({ ...OPEN, signins: { codex: true, "claude-code": false } }))
       .toMatchObject({ signins: { codex: true, "claude-code": false } });
@@ -79,7 +80,11 @@ describe("the control record", () => {
                 sandbox_renewal_window_s: 600 };
     expect(parseControl({ ...OPEN, ...S })).toEqual({
       ...OPEN, sandbox: { runtime_ceiling_s: 3600, concurrency_ceiling: 20,
-                          renewal_window_s: 600 }, signins: null });
+                          renewal_window_s: 600 }, scratch_retention_days: null,
+      signins: null });
+    // The sandbox scratch's retention, a positive whole number of days, optional.
+    expect(parseControl({ ...OPEN, scratch_retention_days: 30 }))
+      .toMatchObject({ scratch_retention_days: 30 });
     // No bound of the platform's own: any plan's numbers, the window inside the ceiling.
     expect(parseControl({ ...OPEN, ...S, sandbox_runtime_ceiling_s: 30 * 24 * 3600,
                           sandbox_concurrency_ceiling: 1_000_000 })).not.toBeNull();
@@ -92,6 +97,9 @@ describe("the control record", () => {
                        { ...OPEN, ...S, sandbox_runtime_ceiling_s: 3600.5 },
                        { ...OPEN, ...S, sandbox_concurrency_ceiling: 0 },
                        { ...OPEN, ...S, sandbox_runtime_ceiling_s: "3600" },
+                       { ...OPEN, scratch_retention_days: 0 },
+                       { ...OPEN, scratch_retention_days: 1.5 },
+                       { ...OPEN, scratch_retention_days: "30" },
                        { ...OPEN, inbound: "true" }, { ...OPEN, canary: "alice" },
                        { ...OPEN, canary: [" alice"] }, { ...OPEN, extra: 1 },
                        { outside: "on", ordinary: "all", canary: [] },
@@ -101,8 +109,9 @@ describe("the control record", () => {
   });
 
   it("opens outside work only when read on; the owner's when missing or admitting", () => {
-    const read = (control: Omit<Control, "sandbox" | "signins">) =>
-      ({ kind: "read", control: { ...control, sandbox: null, signins: null } }) as const;
+    const read = (control: Omit<Control, "sandbox" | "scratch_retention_days" | "signins">) =>
+      ({ kind: "read", control: { ...control, sandbox: null, scratch_retention_days: null,
+                                  signins: null } }) as const;
     for (const kind of ["missing", "malformed", "unreadable"] as const) {
       expect(outsideOpen({ kind }, "a")).toBe(false);
     }

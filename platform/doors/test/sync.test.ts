@@ -105,6 +105,18 @@ describe("the sync doors", () => {
     const fenced = await door("upload_begin", { lease_id: "0".repeat(32), epoch: 1,
                                                 size: bytes.byteLength, chunks: [hash] }, as);
     expect(fenced.status).toBe(403);
+    // A fence says so by its code, and the object's whole message rides with it.
+    expect(await fenced.json()).toMatchObject({ error: {
+      code: "sync_fenced", message: "sync_fenced: the sync lease was lost; this sync is fenced" } });
+    // An upload the sync agent gives up is let go at once, never held for a day.
+    const aborted = await door("upload_abort", { lease_id: start.lease.lease_id,
+                                                 epoch: start.lease.epoch,
+                                                 intent_id: begun.intent_id }, as);
+    expect(await aborted.json()).toEqual({ aborted: true });
+    expect(await (await door("upload_abort", { lease_id: start.lease.lease_id,
+                                               epoch: start.lease.epoch,
+                                               intent_id: begun.intent_id }, as)).json())
+      .toEqual({ aborted: false });
   });
 
   it("refuse the sync token outside the sandbox: without its lease's egress token", async () => {

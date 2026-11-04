@@ -5,7 +5,9 @@
  * `EVENT_FRAMES_MAX` frames, each frame's JSON at most `FRAME_UNITS_MAX` UTF-16 units). An
  * event longer than a frame may be is cut, marked, before it is posted (`ta_cut`, its
  * type and its head), the engine's own transcript keeping it whole. A line that is not
- * JSON is the CLI's own text, posted as `{type: "ta.line", text}`.
+ * JSON is the CLI's own text, posted as `{type: "ta.line", text}`. A line shaped as the
+ * runner's own event (`runnerShaped`) is never posted as it: it is `{type: "ta.cli_refused",
+ * text}`, so every `ta.…` event the doors and the object read is the runner's.
  */
 import { EVENT_FRAMES_MAX, EVENTS_BODY_MAX, FRAME_UNITS_MAX } from "../../owner/src/run-events";
 
@@ -45,17 +47,35 @@ export function fitted(seq: number, at: number, event: unknown): PostedFrame {
   return frame;
 }
 
-/** A line of the CLI's stdout as its event: its JSON, or its text. */
-export function lineEvent(line: string): unknown {
-  try {
-    const parsed: unknown = JSON.parse(line);
-    if (typeof parsed === "object" && parsed !== null) {
-      return parsed;
-    }
-  } catch {
-    // not JSON: the CLI's own text
+/**
+ * Whether an event is shaped as the runner's own: its `type` the runner's (`ta.` and on) or
+ * its cut marker (`ta_cut`). The runner's alone: a CLI's line, which the run's agent and
+ * every tool it runs may write (round 8, R8-1), never is one.
+ */
+export function runnerShaped(event: object): boolean {
+  if (Array.isArray(event)) {
+    return false;
   }
-  return { type: "ta.line", text: line };
+  const type = (event as Record<string, unknown>)["type"];
+  return (typeof type === "string" && type.startsWith("ta.")) || Object.hasOwn(event, "ta_cut");
+}
+
+/**
+ * A line of the CLI's stdout as its event: its JSON, or its text; one shaped as the runner's
+ * own event refused, loudly, its text kept (`ta.cli_refused`).
+ */
+export function lineEvent(line: string): unknown {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return { type: "ta.line", text: line };  // not JSON: the CLI's own text
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return { type: "ta.line", text: line };
+  }
+  return runnerShaped(parsed) ? { type: "ta.cli_refused", text: line,
+    reason: "a CLI's line may not carry the runner's own event type (ta.…)" } : parsed;
 }
 
 /** The frames waiting to be posted, in order, each numbered once. */

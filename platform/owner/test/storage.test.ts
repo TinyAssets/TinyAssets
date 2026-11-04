@@ -7,8 +7,9 @@
 import { describe, expect, it } from "vitest";
 
 import { MANIFEST_PROTECT_S, manifestDay } from "../src/backup";
-import { FILE_QUOTA, GC_GRACE_S, INLINE_BYTES } from "../src/files";
+import { GC_GRACE_S, INLINE_BYTES } from "../src/files";
 import type { Binding } from "../src/owner-do";
+import { storageFullOf } from "../src/storage-full";
 import { MUSE, rig } from "./ledger-support";
 import { drainDue, failure, laneAt, sqlIn, TIERS } from "./support";
 
@@ -69,7 +70,7 @@ describe("the one storage number", () => {
     expect(kept[0]!["n"] as number).toBeLessThan(8);
     expect((await r.stub.storageUsage(small)).used_bytes).toBeLessThanOrEqual(8000);
     // New rows take the rest; once only live rows and their own entries are left, the next
-    // write is refused with the fixed code, and nothing of it is kept.
+    // write is refused at the one wall (`storage_full`), and nothing of it is kept.
     let refused: Error | null = null;
     for (let i = 0; i < 10 && refused === null; i++) {
       try {
@@ -78,7 +79,7 @@ describe("the one storage number", () => {
         refused = error as Error;
       }
     }
-    expect(refused?.message).toMatch(new RegExp(`^${FILE_QUOTA}: the owner's stored bytes`));
+    expect(storageFullOf(refused!.message)).toMatchObject({ limit_bytes: 8000, tier: "free" });
     const usage = await r.stub.storageUsage(small);
     expect(usage.used_bytes).toBeLessThanOrEqual(8000);
     expect(usage.limit_bytes).toBe(8000);
@@ -212,7 +213,7 @@ describe("the one storage number", () => {
       }
     }
     // Unacked mail is never let go: it is the recipient's still.
-    expect(refused?.message).toMatch(new RegExp(`^${FILE_QUOTA}: `));
+    expect(storageFullOf(refused!.message)).toMatchObject({ limit_bytes: 3000, tier: "free" });
     expect((await r.stub.storageUsage(small)).breakdown.messages).toBe(3000);
   });
 });

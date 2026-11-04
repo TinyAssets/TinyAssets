@@ -1,0 +1,236 @@
+name: Latency probe
+
+# The live latency probe that decides where the owner's item index lives
+# (openspec/changes/clean-sheet-platform/latency-probe.md): from inside an owner-shaped
+# Durable Object, option A (a call to a second named object, a shard, running a small SQLite
+# write and read; where it is placed) against option B (R2 get, create-only put and list,
+# through the files Worker's service hop as the owner reaches R2, at 1 KiB, 64 KiB and 1 MiB,
+# cold and warm, sequential and 6-parallel), p50, p95 and p99 over a few hundred samples each.
+#
+# The founder approved one run (2026-11-03). Manual: type latency-probe into `confirm`; or a
+# push to the branch probe-latency-run, which exists only to start an approved run and is
+# deleted after it. It deploys three throwaway Workers named ta-latencyprobe* (only the door
+# has a workers.dev URL, guarded by a per-run key) and one throwaway R2 bucket named
+# ta-latencyprobe-<run id> to the production Cloudflare account, drives every case, prints
+# the results into the log and the job summary, empties the bucket, and deletes every Worker,
+# its Durable Object namespaces and the bucket whatever happened, then proves through the API
+# that nothing named ta-latencyprobe* is left. No route, zone, DNS record or production Worker
+# or bucket is touched; no owner data exists there.
+#
+# Cost: about 3,300 Class A operations ($0.015), 4,200 Class B ($0.002), under 0.7 GB stored
+# for minutes, and a few thousand Durable Object requests and rows: about two cents.
+#
+# Token (the CLOUDFLARE_API_TOKEN repo secret the other probes use):
+#   Account -> Workers Scripts: Edit       upload, DO class migrations, delete, lists, the
+#                                          workers.dev route and subdomain
+#   Account -> Workers R2 Storage: Edit    the throwaway bucket; without it option B is not
+#                                          run and the summary says so
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type latency-probe to deploy throwaway Workers and a bucket to the production account and run the probe'
+        required: true
+        type: string
+  push:
+    branches: [probe-latency-run]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: latency-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      WRANGLER: ${{ github.workspace }}/platform/node_modules/.bin/wrangler
+      # The door first (it binds the owner's class), the files Worker last (the owner binds it).
+      SCRIPTS: ta-latencyprobe-door ta-latencyprobe ta-latencyprobe-files
+    steps:
+      - name: Check the input
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ "${EVENT}" = "push" ] && [ "${REF}" = "refs/heads/probe-latency-run" ]; then
+            echo "Started by a push to probe-latency-run (an approved run)."
+          elif [ "${EVENT}" = "workflow_dispatch" ] && [ "${CONFIRM}" = "latency-probe" ]; then
+            echo "Started by hand with the confirm."
+          else
+            echo "::error::Refusing to run: type latency-probe in the confirm input to proceed."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        timeout-minutes: 5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        timeout-minutes: 5
+        with:
+          node-version: '22'
+
+      - name: Install the pinned toolchain
+        working-directory: platform
+        timeout-minutes: 10
+        run: npm ci --no-audit --no-fund
+
+      - name: Harness check in miniflare (proves the harness, not a reading)
+        timeout-minutes: 10
+        run: node scripts/probes/latencyprobe/local.mjs
+
+      - name: Check the account
+        id: account
+        timeout-minutes: 3
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN secret is not set (needs Account: Workers Scripts: Edit)."
+            exit 1
+          fi
+          api() {
+            curl -sS --max-time 60 -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -o "${RUNNER_TEMP}/api.json" -w '%{http_code}' "https://api.cloudflare.com/client/v4$1"
+          }
+          account_id="${CLOUDFLARE_ACCOUNT_ID_SECRET}"
+          if [ -z "${account_id}" ]; then
+            api "/zones?name=tinyassets.io" > /dev/null
+            account_id="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])).get("result") or []; print(((r[0].get("account") or {}).get("id") or "") if r else "")' "${RUNNER_TEMP}/api.json")"
+          fi
+          if [ -z "${account_id}" ]; then
+            echo "::error::Could not resolve the Cloudflare account id."
+            exit 1
+          fi
+          echo "::add-mask::${account_id}"
+          echo "CLOUDFLARE_ACCOUNT_ID=${account_id}" >> "${GITHUB_ENV}"
+          status="$(api "/accounts/${account_id}/workers/subdomain")"
+          subdomain="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("result") or {}).get("subdomain") or "")' "${RUNNER_TEMP}/api.json" || true)"
+          if [ "${status}" != "200" ] || [ -z "${subdomain}" ]; then
+            echo "::error::No workers.dev subdomain on this account (HTTP ${status})."
+            exit 1
+          fi
+          echo "::add-mask::${subdomain}"
+          echo "PROBE_SUBDOMAIN=${subdomain}" >> "${GITHUB_ENV}"
+          key="$(openssl rand -hex 24)"
+          echo "::add-mask::${key}"
+          echo "PROBE_KEY=${key}" >> "${GITHUB_ENV}"
+          echo "PROBE_BUCKET=ta-latencyprobe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_ENV}"
+
+      - name: Make the bucket and deploy the Workers
+        id: deploy
+        timeout-minutes: 15
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          probe=scripts/probes/latencyprobe
+          # Clear anything an earlier run left.
+          # shellcheck disable=SC2086
+          bash "${probe}/delete.sh" ${SCRIPTS} || exit 1
+          status="$(curl -sS --max-time 60 -X POST -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'content-type: application/json' -d "{\"name\":\"${PROBE_BUCKET}\"}" \
+            -o "${RUNNER_TEMP}/bucket.json" -w '%{http_code}' \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets")" || status="curl failed"
+          config="${RUNNER_TEMP}/latencyprobe-config"
+          if [ "${status}" = "200" ]; then
+            location="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("result") or {}).get("location") or "unknown")' "${RUNNER_TEMP}/bucket.json" || echo unknown)"
+            echo "bucket made, location ${location}"
+            echo "r2=yes" >> "${GITHUB_OUTPUT}"
+            echo "${location}" > "${RUNNER_TEMP}/latencyprobe-bucket.txt"
+            node "${probe}/config.mjs" --out "${config}" --bucket "${PROBE_BUCKET}" || exit 1
+          else
+            echo "::warning title=R2::the token could not make a bucket (HTTP ${status}); option B is not run"
+            echo "r2=no" >> "${GITHUB_OUTPUT}"
+            echo "LATENCYPROBE_NO_R2=1" >> "${GITHUB_ENV}"
+            echo "not made (HTTP ${status})" > "${RUNNER_TEMP}/latencyprobe-bucket.txt"
+            node "${probe}/config.mjs" --out "${config}" || exit 1
+          fi
+          "${WRANGLER}" deploy --config "${config}/files.wrangler.json" || exit 1
+          "${WRANGLER}" deploy --config "${config}/owner.wrangler.json" || exit 1
+          secrets="${RUNNER_TEMP}/latencyprobe-door-key.json"
+          trap 'rm -f "${secrets}"' EXIT
+          python3 -c 'import json,os,sys; json.dump({"RUN_KEY": os.environ["PROBE_KEY"]}, open(sys.argv[1], "w"))' "${secrets}"
+          "${WRANGLER}" deploy --config "${config}/door.wrangler.json" --secrets-file "${secrets}" || exit 1
+          echo "deployed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Run every case
+        id: drive
+        if: steps.deploy.outputs.deployed == 'true'
+        timeout-minutes: 45
+        env:
+          R2: ${{ steps.deploy.outputs.r2 }}
+        run: |
+          set -euo pipefail
+          base="https://ta-latencyprobe-door.${PROBE_SUBDOMAIN}.workers.dev"
+          # A new workers.dev route can take a few seconds to answer.
+          for _ in $(seq 1 30); do
+            if curl -sS --max-time 10 -H "x-probe-key: ${PROBE_KEY}" -o /dev/null -w '%{http_code}' "${base}/health" | grep -q 200; then
+              break
+            fi
+            sleep 5
+          done
+          node scripts/probes/latencyprobe/drive.mjs --base "${base}" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --r2 "${R2}" --n 300 \
+            --bucket "${PROBE_BUCKET} ($(cat "${RUNNER_TEMP}/latencyprobe-bucket.txt"))" \
+            --out "${RUNNER_TEMP}/latencyprobe.json" --summary "${RUNNER_TEMP}/latencyprobe.md" \
+            --redact "${PROBE_SUBDOMAIN}"
+
+      - name: Delete every probe Worker, namespace and bucket
+        if: always()
+        timeout-minutes: 10
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "The account step never resolved an account, so nothing was deployed."
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          bash scripts/probes/latencyprobe/delete.sh ${SCRIPTS}
+          failed=$?
+          if [ "${failed}" = "0" ]; then
+            echo "- **cleanup:** every probe Worker, its Durable Object namespaces and the bucket deleted, and checked gone" | tee "${RUNNER_TEMP}/latencyprobe-cleanup.md"
+          else
+            echo "- **cleanup:** FAILED; something named ta-latencyprobe* is still there or unproven (see the step log)" | tee "${RUNNER_TEMP}/latencyprobe-cleanup.md"
+          fi
+          exit "${failed}"
+
+      - name: Results into the job summary
+        if: always()
+        run: |
+          {
+            echo "### Latency probe"
+            echo ""
+            echo "- **sha:** \`${GITHUB_SHA}\`"
+            if [ -f "${RUNNER_TEMP}/latencyprobe-cleanup.md" ]; then
+              cat "${RUNNER_TEMP}/latencyprobe-cleanup.md"
+            fi
+            echo ""
+            if [ -f "${RUNNER_TEMP}/latencyprobe.md" ]; then
+              cat "${RUNNER_TEMP}/latencyprobe.md"
+            else
+              echo "No results: the run stopped before the first case finished."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: latencyprobe-results
+          path: |
+            ${{ runner.temp }}/latencyprobe.json
+            ${{ runner.temp }}/latencyprobe.md
+          if-no-files-found: ignore

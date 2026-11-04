@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 
 import { bundledSources, signinsOn } from "../../doors/src/sources";
 import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
-import { type ChunkStore, type FileLimits, Files } from "../src/files";
+import { type ChunkStore, type FileLimits, Files, type Full } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
 import {
   CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
@@ -12,6 +12,7 @@ import {
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
+import { storageFull, storageFullMessage } from "../src/storage-full";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -92,8 +93,12 @@ export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore =
                         limits: Partial<FileLimits> = {}): Files {
   return new Files(storage, store, () => ({ ...FILE_DEFAULTS,
                                             max_bytes: TIERS.free.storage_bytes, ...limits }),
-                   write);
+                   write, TIERLESS_FULL);
 }
+
+/** The refusal at the storage figure with no tier named, as these files' tests make it. */
+export const TIERLESS_FULL: Full = (stored, needed, held, limit) =>
+  storageFullMessage(storageFull(stored, needed, held, limit, null, null));
 
 /**
  * The owner's files on `stub`'s own storage, with some settings changed, over the real

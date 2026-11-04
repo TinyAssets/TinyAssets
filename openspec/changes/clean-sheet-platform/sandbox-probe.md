@@ -174,6 +174,34 @@ CLI as its user from the record, posted frames and synced the sessions out
 - **pi** (on a key, its base URL a stand-in): a `session` event with `id`, `agent_start`,
   `turn_start`, `message_start`; exit 0.
 
+## Scratch and the disk (2026-11-03, template `sfbd5920361a47279`; one throwaway sandbox, about 4 sandbox-minutes)
+
+Measured by `scripts/probes/sandboxprobe/probe.mjs` (the sandbox Worker's own E2B client), the sandbox killed after and listed gone by its tag.
+
+- **The disk.** `/` is ext4 on `/dev/vda` (`relatime,discard`), 14,427,623,424 B, with 10,745,143,296 B free when made (the image takes 3.3 GB).
+  - 3,788,096 inodes, 4 KiB blocks: one inode for every 3.8 KB, so a tree of small files runs out of bytes before inodes.
+  - 78,150 blocks (320 MB) kept for root.
+  - 2 vCPU and 1 GiB of memory.
+- **Scratch written.** 6 GB of random bytes and 20,000 small files went to `/scratch` in 24 s; 4.3 GB was then free.
+- **Resume with that disk.**
+  - Pause with memory: 7.0 s.
+  - After 60 s paused, `connect`: 881 ms, then the first command 460 ms, for 1.34 s in all.
+  - The scratch was all there.
+- **A full disk.**
+  - A run user's write fails `No space left on device`, and `df` shows 0 free.
+  - Root still wrote: ext4 keeps root's 320 MB. So the runner's own state survives a full disk, but the sync agent, its own user, does not. Hence the runner lets its reserve go before sync-out on a full disk (`runner.ts`).
+  - envd answered at once while the disk was full (590 ms).
+  - Deleting the fill recovered the disk.
+- **Sync memory** (measured here, not in the sandbox: the same code):
+  - before streaming, a sync of a 489 MB tree (100 × 5 MB, 3,000 small files) grew the sync agent by 709 MB;
+  - streaming, the same tree grew it by 169 MB, and a 966 MB tree by 180 MB.
+
+  On the template's 1 GiB, the old sync would have died at about that size; the new one stays bounded.
+- **Owed:**
+  - the resume after hours paused with 5–10 GB of scratch;
+  - a clone of a 500 MB repository by a real CLI with its sync-out, in the sandbox;
+  - `scripts/linux_oracle.py` for the scratch modes and the reserve (it runs the Python suite in a container; the runner's own root tests here cover the modes: `/scratch/<agent>` root and group `ta`, 2775).
+
 ## Owed to the founder's live test (each needs a model; TinyAssets provides none)
 
 Every sign-in (`auth login` with a pasted code, `login --device-auth`, Gemini's `NO_BROWSER`,

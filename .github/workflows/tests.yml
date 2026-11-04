@@ -164,10 +164,37 @@ jobs:
 
   # The TypeScript platform workspace (ADR-032): typecheck, then its tests in the
   # real workerd runtime. Required through `required-tests`' needs; nothing here deploys.
+  # One leg a workspace, in parallel, each within the ten minutes: run whole, the suite
+  # passed ten (PR #5403). A matrix job's result is every leg's, so one red leg fails
+  # `required-tests`. Every workspace in `platform/package.json` has its leg, the
+  # sandbox's `test` split in two (workerd and guards; the runner as root), pinned by
+  # tests/test_tests_workflow.py. Measured on a dev box (2026-11-03): typecheck 8 s,
+  # owner 78 s, doors 39 s, files 2 s, gateway 9 s, hooks 1 s, sandbox 3 s, runner 207 s,
+  # each plus `npm ci` (6 s cached); the whole was 2m28s + 3m28s run serially.
   platform-tests:
     name: platform-tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: typecheck
+            command: npm run typecheck
+          - leg: owner
+            command: npm run test -w owner
+          - leg: doors
+            command: npm run test -w doors
+          - leg: files
+            command: npm run test -w files
+          - leg: gateway
+            command: npm run test -w gateway
+          - leg: hooks
+            command: npm run test -w hooks
+          - leg: sandbox
+            command: npm run test:workerd -w sandbox
+          - leg: runner
+            command: npm run test:root -w sandbox
     defaults:
       run:
         working-directory: platform
@@ -179,8 +206,7 @@ jobs:
           cache: npm
           cache-dependency-path: platform/package-lock.json
       - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npm test
+      - run: ${{ matrix.command }}
 
   # The owner app in a real browser (slice APP): Chromium at the Playwright version the
   # platform lockfile pins, against the doors in workerd. Required through

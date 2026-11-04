@@ -120,8 +120,9 @@ type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string
   | { state: "unknown" };
 
 /** A refusal in the gateway's own error shape, so a provider SDK shows its code. */
-function refused(code: string, status: number, receipt?: string | null): Response {
-  return Response.json({ error: { code, message: code },
+function refused(code: string, status: number, receipt?: string | null,
+                 message: string = code): Response {
+  return Response.json({ error: { code, message },
                          ...(receipt === undefined || receipt === null ? {} : { receipt }) },
                        { status, headers: { "Cache-Control": "no-store",
                                             ...(status === 429 || status === 503
@@ -352,15 +353,16 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
  * on every HTTPS call out of that sandbox (review M-5): the sync token alone, taken out of
  * the VM, reaches nothing. The doors: the change feed (`changes`), a listing for a feed
  * reset (`list`), a file's entry and bytes (`read`, `chunks`), the upload of a file past an
- * inline write (`upload_begin`, `upload_chunks`, the files plane's own upload) and the
- * fenced commit (`commit`). The object holds each to its live lease and, for an outside
- * client's sandbox, to the readable set the feed is filtered by (`#syncer`), so a content
- * door never shows a path the feed would not. Bytes cross as base64; a body is bounded
+ * inline write (`upload_begin`, `upload_chunks`, `upload_abort`: the files plane's own
+ * upload) and the fenced commit (`commit`). The object holds each to its live lease and,
+ * for an outside client's sandbox, to the readable set the feed is filtered by
+ * (`#syncer`), so a content door never shows a path the feed would not. Bytes cross as base64; a body is bounded
  * (`SYNC_BODY_MAX`), so the runner sends more calls, not bigger ones.
  */
-const SYNC_DOOR = /^\/sync\/(changes|list|read|chunks|commit|upload_begin|upload_chunks)$/;
+const SYNC_DOOR =
+  /^\/sync\/(changes|list|read|chunks|commit|upload_begin|upload_chunks|upload_abort)$/;
 type SyncDoor = "changes" | "list" | "read" | "chunks" | "commit" | "upload_begin"
-  | "upload_chunks";
+  | "upload_chunks" | "upload_abort";
 export const SYNC_HEADER = "x-ta-sync";
 /**
  * A sync door's body: two 4 MiB chunks' base64 (the files plane's most a call,
@@ -464,6 +466,8 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
       case "upload_chunks":
         return answer(await stub.fileSyncUploadChunks(binding, {
           ...body, chunks: decodedChunks(body["chunks"]) } as never));
+      case "upload_abort":
+        return answer(await stub.fileSyncUploadAbort(binding, body as never));
     }
   } catch (error) {
     if (error instanceof Error && error.name === "FileFault") {
@@ -474,7 +478,9 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
     if (refusedAs === null) {
       throw error;
     }
-    return refused(codeOf(refusedAs.message), refusedAs.status);
+    // The object's whole message, so the sync agent can say what was refused and why (the
+    // used and the total of a full storage among it); its code first, as every door's.
+    return refused(codeOf(refusedAs.message), refusedAs.status, null, refusedAs.message);
   }
 }
 

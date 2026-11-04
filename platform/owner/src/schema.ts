@@ -1833,6 +1833,15 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `engines TEXT NOT NULL CHECK (length(engines) <= ${SIGNIN_LIST_CHARS} ` +
       "AND engines NOT GLOB '*[^a-z0-9_,-]*'), read_at REAL NOT NULL)",
   ]),
+  // 2, after the baseline: a sandbox sync's own uploads name their lease (`files.ts`
+  // `#endUploads`), so a lease that ends lets go of its sync's open uploads alone, never its
+  // client's own writes. No index: the open uploads are at most `MAX_OPEN_INTENTS` rows.
+  // `file_intents` is kept out of the export (uploads in flight, `NOT_EXPORTED`), so the
+  // column needs no capture trigger.
+  Object.freeze([
+    "ALTER TABLE file_intents ADD COLUMN lease TEXT CHECK (lease IS NULL OR " +
+      "(length(lease) = 32 AND lease NOT GLOB '*[^0-9a-f]*'))",
+  ]),
 ]);
 
 /** A migration's digest: SHA-256 over its statements as JSON, as the code evaluates them. */

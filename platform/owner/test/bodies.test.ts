@@ -10,6 +10,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { storageFullOf } from "../src/storage-full";
+
 import { Bodies, PLACE_BYTES, READ_PAGE_BYTES } from "../src/bodies";
 import { LIMITS } from "../src/collections";
 import { GC_GRACE_S, INLINE_BYTES, PLACE_TTL_S } from "../src/files";
@@ -162,15 +164,15 @@ describe("the placement rule", () => {
     const tight = { free: { runs: 5, storage_bytes: 3 * PLACE_BYTES },
                     paid: TIERS.paid };
     await put("a", LARGE, { ...as(name), tiers: tight });
-    expect((await failure(() => put("b", LARGE.replace("é", "e"), { ...as(name),
-                                                                    tiers: tight }))).message)
-      .toBe("file_quota: the owner's stored bytes are at their quota");
+    expect(storageFullOf((await failure(() => put("b", LARGE.replace("é", "e"), {
+      ...as(name), tiers: tight }))).message)).toMatchObject({ limit_bytes: 3 * PLACE_BYTES,
+                                                               tier: "free" });
     // The same body again is the same chunk: it adds no byte.
     await put("c", LARGE, { ...as(name), tiers: tight });
     // A small body kept in its row counts too (the one storage number, slice P): its row
     // and its history entry would take the owner past the figure.
-    expect((await failure(() => put("d", SMALL, { ...as(name), tiers: tight }))).message)
-      .toBe("file_quota: the owner's stored bytes are at their quota");
+    expect(storageFullOf((await failure(() => put("d", SMALL, { ...as(name),
+      tiers: tight }))).message)).toMatchObject({ limit_bytes: 3 * PLACE_BYTES, tier: "free" });
     expect((await failure(() => put("e", `${LARGE}x`, { ...as(name), tiers: null }))).message)
       .toBe(TIER_UNREAD);
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);

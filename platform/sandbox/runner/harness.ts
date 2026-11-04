@@ -162,6 +162,7 @@ const me = process.argv[1];
 const root = me.split("/opt/ta/engines/")[0];
 const plan = JSON.parse(fs.readFileSync(me + ".plan.json", "utf8"));
 const where = (file) => file.startsWith("~/") ? path.join(process.env.HOME, file.slice(2))
+  : file.startsWith("$TA_SCRATCH/") ? path.join(process.env.TA_SCRATCH, file.slice(12))
   : path.resolve(file);
 let stdin = "";
 const fill = (text) => text
@@ -303,6 +304,8 @@ if (plan.login && !process.argv.includes("status")) {
 `;
 
 export interface Posted {
+  /** When it came, by the doors' clock. */
+  readonly at: number;
   readonly path: string;
   readonly headers: IncomingMessage["headers"];
   readonly body: Record<string, unknown>;
@@ -319,6 +322,17 @@ export class Doors {
   ended = false;
   /** Upload intents begun, and the chunks they received, by intent id. */
   readonly uploads = new Map<string, { size: number; chunks: string[]; got: string[] }>();
+  /** A commit op the object refuses, by its path: its reason, or null to commit it. */
+  refuse: (path: string) => string | null = () => null;
+  /**
+   * An upload's begin the object refuses, by its size: its status and the object's whole
+   * message (a full storage's 507 among them), or null to begin it.
+   */
+  refuseBegin: (size: number) => { status: number; message: string } | null = () => null;
+  /** How long the first sync commit waits before it is answered: a slow sync-out. */
+  commitDelayMs = 0;
+  /** Uploads the sync agent aborted, by intent id. */
+  readonly aborted: string[] = [];
   #server: Server | null = null;
   #version = 100;
   origin = "";
@@ -331,7 +345,7 @@ export class Doors {
         const raw = Buffer.concat(parts).toString("utf8");
         const body = raw === "" ? {} : JSON.parse(raw) as Record<string, unknown>;
         const path = request.url ?? "";
-        this.posts.push({ path, headers: request.headers, body });
+        this.posts.push({ at: Date.now(), path, headers: request.headers, body });
         const json = (status: number, value: unknown, headers: Record<string, string> = {}) => {
           response.writeHead(status, { "content-type": "application/json", ...headers });
           response.end(JSON.stringify(value));
@@ -373,6 +387,15 @@ export class Doors {
             && (typeof body["lease_id"] !== "string" || typeof body["epoch"] !== "number")) {
           return json(403, { error: { code: "sync_fenced" } });  // a sync upload is the lease's
         }
+        if (path === "/sync/upload_begin" && this.refuseBegin(body["size"] as number) !== null) {
+          const { status, message } = this.refuseBegin(body["size"] as number)!;
+          return json(status, { error: { code: /^[a-z_]+/.exec(message)?.[0] ?? "refused",
+                                         message } });
+        }
+        if (path === "/sync/upload_abort") {
+          this.aborted.push(body["intent_id"] as string);
+          return json(200, { aborted: true });
+        }
         if (path === "/sync/upload_begin") {
           const id = `${"0".repeat(31)}${this.uploads.size + 1}`;
           this.uploads.set(id, { size: body["size"] as number,
@@ -386,10 +409,23 @@ export class Doors {
           }
           return json(200, { created: (body["chunks"] as unknown[]).length });
         }
+        if (path === "/sync/commit" && this.commitDelayMs > 0) {
+          const wait = this.commitDelayMs;
+          this.commitDelayMs = 0;
+          const ops = body["ops"] as { path: string; op: string }[];
+          setTimeout(() => json(200, { outcomes: ops.map((op) => ({ path: op.path,
+            outcome: "committed",
+            entry: op.op === "remove" ? null : { version: this.#version += 1 } })) }), wait);
+          return;
+        }
         if (path === "/sync/commit") {
           const ops = body["ops"] as { path: string; op: string }[];
-          return json(200, { outcomes: ops.map((op) => ({ path: op.path, outcome: "committed",
-            entry: op.op === "remove" ? null : { version: this.#version += 1 } })) });
+          return json(200, { outcomes: ops.map((op) => {
+            const reason = this.refuse(op.path);
+            return reason !== null ? { path: op.path, outcome: "refused", reason }
+              : { path: op.path, outcome: "committed",
+                  entry: op.op === "remove" ? null : { version: this.#version += 1 } };
+          }) });
         }
         return json(404, { error: { code: "not_found" } });
       });

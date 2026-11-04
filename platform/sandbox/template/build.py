@@ -18,12 +18,13 @@ Worker's `E2B_TEMPLATE` names it (`sandbox/guards/template.test.ts` holds the tw
 
     python3 -m venv v && v/bin/pip install e2b==2.62.0
     E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py \
-        [--tag-only | --check-logins | --route-probe]
+        [--tag-only | --check-logins | --route-probe | --check-matcher]
 
-Every build ends with two standing checks on throwaway sandboxes of the template just built:
-every record's sign-in up to its prompt (`check_logins`), and every keyed engine's first model
+Every build ends with three standing checks on throwaway sandboxes of the template just built:
+every record's sign-in up to its prompt (`check_logins`), every keyed engine's first model
 request reaching the egress door's own path with nothing else leaving the VM
-(`route_probe`). Only once both pass is the template's tag printed, to be pinned, and its
+(`route_probe`), and the sync-ignore automaton's step within `STEP_NS` (`check_matcher`).
+Only once all pass is the template's tag printed, to be pinned, and its
 record written to `passed.json` beside this script (each tag that passed, with what its checks
 found), which the template guard holds the pinned tag to (`sandbox/guards/template.test.ts`).
 """
@@ -260,7 +261,40 @@ def route_probe(name):
     return results
 
 
-def record_pass(name, logins, routes):
+def step_ceiling() -> float:
+    """`STEP_NS`, the most one sync-ignore automaton step may take in the sandbox."""
+    import re
+    found = re.search(r"export const STEP_NS = ([0-9.]+);",
+                      (PLATFORM / "owner" / "src" / "sync-ignore.ts").read_text())
+    if found is None:
+        raise SystemExit("owner/src/sync-ignore.ts names no STEP_NS")
+    return float(found.group(1))
+
+
+def check_matcher(name):
+    """The sync-ignore automaton's step (`stepNanos`, a byte of text a 32-state word, at
+    `AUTOMATON_STATES` with every state alive), timed on a throwaway sandbox of the template
+    just built: past `STEP_NS`, the constant `AUTOMATON_STATES` is derived from, the build
+    fails loudly. The sandbox is killed whatever happens."""
+    from e2b import Sandbox
+
+    sandbox = Sandbox.create(template=name, timeout=300)
+    try:
+        done = sandbox.commands.run("/usr/local/bin/ta-runner matcher-probe", user="root",
+                                    timeout=120)
+    finally:
+        sandbox.kill()
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    result["ceiling_ns"] = step_ceiling()
+    result["ok"] = result["step_ns"] <= result["ceiling_ns"]
+    print(json.dumps({"matcher": result}), flush=True)
+    if not result["ok"]:
+        raise SystemExit(f"the sync-ignore automaton's step takes {result['step_ns']:.2f} ns "
+                         f"in the sandbox, past STEP_NS ({result['ceiling_ns']})")
+    return result
+
+
+def record_pass(name, logins, routes, matcher):
     """The tag that passed both checks, with what they found, kept in `passed.json` (one entry
     a tag, newest last): the record the template guard holds a pinned tag to."""
     import datetime
@@ -274,6 +308,8 @@ def record_pass(name, logins, routes):
                     "host": r.get("host")} for r in logins],
         "routes": [{"engine": r["engine"], "provider": r["provider"], "ok": r["ok"],
                     "turns": r.get("turns"), "compacted": r.get("compacted")} for r in routes],
+        "matcher": {"step_ns": round(matcher["step_ns"], 3), "ceiling_ns": matcher["ceiling_ns"],
+                    "ok": matcher["ok"]},
     })
     PASSED.write_text(json.dumps(passed, indent=2) + "\n")
 
@@ -292,13 +328,17 @@ def main():
         if "--route-probe" in sys.argv:
             route_probe(name)
             return
+        if "--check-matcher" in sys.argv:
+            check_matcher(name)
+            return
         from e2b import Template
         info = Template.build(template(stage), name, cpu_count=CPU, memory_mb=MEMORY_MB,
                               on_build_logs=lambda entry: print(str(entry)[:2000], flush=True))
         logins = check_logins(name)
         routes = route_probe(name)
-        # Both standing checks passed: only now the tag, to be pinned, and its record.
-        record_pass(name, logins, routes)
+        matcher = check_matcher(name)
+        # Every standing check passed: only now the tag, to be pinned, and its record.
+        record_pass(name, logins, routes, matcher)
         print(json.dumps({"template": name, "template_id": getattr(info, "template_id", None),
                           "build_id": getattr(info, "build_id", None)}))
 

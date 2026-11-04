@@ -16,6 +16,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../owner/guards/sources";
+import { STEP_NS } from "../../owner/src/sync-ignore";
 
 const TEMPLATE = join(PLATFORM, "sandbox", "template");
 const SOURCES = join(PLATFORM, "sources");
@@ -76,6 +77,8 @@ interface Passed {
                               turns: readonly { exit: number; answered: boolean;
                                                 resumed: boolean }[] | null;
                               compacted: boolean | null }[];
+  readonly matcher?: { readonly step_ns: number; readonly ceiling_ns: number;
+                       readonly ok: boolean };
 }
 
 describe("the template", () => {
@@ -101,6 +104,10 @@ describe("the template", () => {
     const routes = records.filter((rec) => rec.cli?.credential.includes("api_key") === true
       && rec.unwired === undefined).flatMap((rec) =>
       Object.keys(rec.cli!.api_key_env!).map((provider) => `${rec.id}:${provider}`)).sort();
+    // The sync-ignore automaton's step, timed in the sandbox, within `STEP_NS`.
+    expect(entry!.matcher, "the pinned tag's record has no matcher check").toBeDefined();
+    expect(entry!.matcher!.ok).toBe(true);
+    expect(entry!.matcher!.step_ns).toBeLessThanOrEqual(STEP_NS);
     expect(entry!.logins.filter((each) => each.ok)
       .map((each) => `${each.engine}:${each.region ?? ""}`).sort()).toEqual(logins);
     // A record that says how to compact it (`cli.compaction`) passed only once it compacted.

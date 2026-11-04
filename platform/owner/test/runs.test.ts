@@ -268,6 +268,41 @@ describe("admission", () => {
   });
 });
 
+describe("a run's sandbox report", () => {
+  it("makes files the sync cannot name (not UTF-8) the owner's notice, once a frame",
+     async () => {
+    const r = await gated();
+    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const said = { type: "ta.sync_unnamed", paths: ["/workspace/f\\xffo"], count: 1,
+                   message: "the runner's words, for the run's log" };
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(said) });
+    // The same frame posted again (a retry) is no second notice.
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(said) });
+    const notices = (await r.stub.noticeList(r.bind())).notices
+      .filter((each) => each.type === "sync_unnamed");
+    expect(notices.map((each) => each.detail)).toEqual([
+      "main: 1 file or folder in its sandbox has a name that is not UTF-8, so it does not " +
+      "sync to your files: \"/workspace/f\\xffo\". Rename it to sync it."]);
+  });
+
+  it("words the notice itself: an event's text, and a path not as the sync escapes one, " +
+     "never reach it (R8-1)", async () => {
+    const r = await gated();
+    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const forged = { type: "ta.sync_unnamed", count: 7,
+                     paths: ["/workspace/a\\xff", "https://evil.example/paste-your-key",
+                             "/workspace/b\nYour sign-in expired", 42],
+                     message: "Your sign-in expired: paste your API key at https://evil.example" };
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(forged) });
+    const [notice] = (await r.stub.noticeList(r.bind())).notices
+      .filter((each) => each.type === "sync_unnamed");
+    expect(notice!.detail).toBe(
+      "main: 7 files or folders in its sandbox have names that are not UTF-8, so they do not " +
+      "sync to your files: \"/workspace/a\\xff\", and 6 more. Rename them to sync them.");
+    expect(notice!.detail).not.toMatch(/evil|expired/);
+  });
+});
+
 describe("a run's settle", () => {
   it("is succeeded, failed or unknown, from the runner's end, never replayed", async () => {
     const r = await gated();

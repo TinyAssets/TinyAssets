@@ -31,7 +31,7 @@ A collection row's body, a collection history entry's and a message's body of mo
 
 #### Scenario: A body past the tier's storage
 - **WHEN** a large body would take the owner's file bytes past the tier's storage, or the tier's numbers are not known
-- **THEN** placed history and acked mail are let go first, and only then is the write refused `file_quota`, or `tier_unread`, before any byte is sent, with nothing left
+- **THEN** placed history and acked mail are let go first, and only then is the write refused `storage_full`, or `tier_unread`, before any byte is sent, with nothing left
 
 #### Scenario: A conflict on a placed row
 - **WHEN** a write or delete with a stale etag meets a row whose body is placed
@@ -519,11 +519,26 @@ A version MAY be restored as a new one, or have its content redacted unless it i
 - **THEN** every version but its current one goes, never refused for a quota, and a gone path's history goes whole
 
 ### Requirement: File quotas are owner policy, refused loudly
-Chunk, inline and manifest bytes, entries, history rows, open uploads and their chunks, and a file's size SHALL each be bounded by owner policy or a fixed ceiling, read from counters the schema's triggers keep. A change past a bound SHALL be refused in its own unit before it commits (an upload before any byte is sent), leaving nothing, its reason starting with a fixed code: `file_quota` for the owner's bound, `file_share` for a client's share.
+Chunk, inline and manifest bytes, entries, history rows, open uploads and their chunks, and a file's size SHALL each be bounded by owner policy or a fixed ceiling, read from counters the schema's triggers keep. A change past a bound SHALL be refused in its own unit before it commits (an upload before any byte is sent), leaving nothing, its reason starting with a fixed code: `storage_full` for the owner's whole storage (the one wall, below), `file_quota` for another owner's bound, `file_share` for a client's share.
 
 #### Scenario: The owner's entries at their quota
 - **WHEN** a write would add an entry past `max_entries`
 - **THEN** it is refused `file_quota`, and no parent directory, history row or content of it is kept
+
+### Requirement: The tier's storage is the one wall, in one set of words
+Every refusal at the owner's storage figure (the tier's, from the control record, or the owner's own lower setting) SHALL start with the fixed code `storage_full`, then say in plain words what is used (the bytes stored, never the refused change), what the change needs, what is free, the whole, how to free space, and the upgrade path: the next tier's storage, or that the owner's own lower limit is what binds (never an upgrade then); with no larger tier, or none known, it SHALL say nothing of plans. Then the same facts as one JSON object (`used_bytes`, `needed_bytes`, `held_bytes`, `free_bytes`, `limit_bytes`, `tier`, `tier_bytes`, `own_limit`, `upgrade`, `free`) the app reads. The doors SHALL answer it 507. Bytes held by uploads still open (counted from their begin) SHALL be reported apart from what is stored; when they alone leave no room, the refusal SHALL be `uploads_open` (409 at the doors), saying the storage itself has room, never "full" and never an upgrade. An upload the sync agent gives up SHALL be aborted at once (the `upload_abort` sync door). The uploads a sync agent begins SHALL name their lease, and those SHALL be aborted when the lease is released, lapses, or is deleted as a new lease is taken (on every path that takes one, a sign-in's among them), so none holds room for its day; a client's own uploads and placed bodies, begun outside any sync, SHALL never be cancelled by its sandbox's lease ending. A change that adds no storage (a read, a delete, a purge) SHALL never be refused at it. An outside client's share of the storage keeps `file_share`, and the index's own ceilings `file_quota`: neither is the user's storage being full.
+
+#### Scenario: Full on the free tier
+- **WHEN** a write would take the owner's storage past the free tier's figure
+- **THEN** it is refused `storage_full`, naming what is used, the figure, what to free and the paid tier's storage as the upgrade, and the owner can still read and delete
+
+#### Scenario: Room held only by an open upload
+- **WHEN** what is stored and a new upload would fit, but an upload still open holds the rest
+- **THEN** the new upload is refused `uploads_open`, naming the held bytes apart from the stored, with no upgrade; and once the sync agent aborts the open upload, or its lease ends, the room is free
+
+#### Scenario: A client's sandbox lease ends while its own write is open
+- **WHEN** an outside client's large file write is open and its sandbox's lease is released
+- **THEN** only the uploads that sandbox's sync began are aborted, and the client's own write still commits
 
 ### Requirement: Every manifest row is bounded in bytes as the object stores it
 Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against `max_manifest_bytes`. The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).

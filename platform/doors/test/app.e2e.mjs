@@ -173,6 +173,11 @@ before(async () => {
     .map((host) => `MAP ${host}:443 127.0.0.1:${port}`).join(", ");
   browser = await chromium.launch({ env, args: [
     "--no-proxy-server",
+    // workerd's self-signed certificate, accepted by the browser's network stack itself:
+    // the context's `ignoreHTTPSErrors` alone left each WebSocket's first TLS handshake
+    // refused (`CertificateUnknown`), and now and then the socket itself died before it
+    // opened (1006), so the sign-in panel never saw its end (the merge queue's red run).
+    "--ignore-certificate-errors",
     // Our hosts and the two hand-off hosts to the local workerd; nothing else resolves.
     `--host-resolver-rules=${local}, MAP * ~NOTFOUND`,
   ] });
@@ -362,6 +367,52 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await page.locator(".said.agent", { hasText: "Hello from pi" }).waitFor();
   assert.match(await page.locator("main").innerText(), /Run succeeded on pi/);
   await shot("agent");
+});
+
+test("the agent form offers a subscription signed in inside the sandbox, beside an API key " +
+     "(SIGNIN, kept through APP's merge)", { timeout: 60_000 }, async () => {
+  await page.goto(`${ORIGIN}/app#agents`);
+  await page.getByRole("heading", { name: "New agent" }).waitFor();
+  const form = page.locator("section", { hasText: "New agent" });
+  await form.getByLabel(/^Engine/).selectOption("claude-code");
+  const runsOn = form.getByLabel(/^Runs on/);
+  assert.deepEqual(await runsOn.locator("option").allInnerTexts(),
+                   ["Whichever the engine has", "Your subscription, signed in inside your sandbox",
+                    "An API key you connected"]);
+  await form.getByLabel(/^Name/).fill("subscribed");
+  await runsOn.selectOption("vendor_login_in_sandbox");
+  const written = [];
+  const onRequest = (request) => {
+    if (new URL(request.url()).pathname === "/app/api/files/write") {
+      written.push(request.postDataJSON());
+    }
+  };
+  page.on("request", onRequest);
+  await form.getByRole("button", { name: "Make the agent" }).click();
+  await page.waitForURL(`${ORIGIN}/app#agents/subscribed`);
+  page.off("request", onRequest);
+  const file = written.find((each) => each.path === "/workspace/agents/subscribed/agent.json");
+  assert.ok(file, "the form wrote the agent's agent.json");
+  assert.match(JSON.stringify(file), /vendor_login_in_sandbox/);
+  // Kimi signs in only: switched off (its terms unverified), the form says so and offers it
+  // not; switched on in the control record, it is an engine a Kimi agent is made on.
+  await page.goto(`${ORIGIN}/app#agents`);
+  await page.getByRole("heading", { name: "New agent" }).waitFor();
+  assert.match(await page.locator("section", { hasText: "New agent" }).innerText(),
+               /switched off for [^.]*Kimi/);
+  const control = await mf.getKVNamespace("CONTROL", "tinyassets-doors");
+  await control.put("c:control", JSON.stringify({ ...OPEN, signins: { kimi: true } }));
+  try {
+    await page.goto(`${ORIGIN}/app#home`);
+    await page.goto(`${ORIGIN}/app#agents`);
+    const again = page.locator("section", { hasText: "New agent" });
+    await again.getByLabel(/^Engine/).selectOption("kimi");
+    assert.deepEqual(await again.getByLabel(/^Runs on/).locator("option").allInnerTexts(),
+                     ["Whichever the engine has",
+                      "Your subscription, signed in inside your sandbox"]);
+  } finally {
+    await control.put("c:control", JSON.stringify(OPEN));
+  }
 });
 
 test("the owner signs in to a subscription inside its sandbox: the vendor's page, a code " +

@@ -90,10 +90,13 @@ import {
 } from "./paths";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 
+
 export { CHUNK_BYTES } from "./manifest";
 /**
- * The fixed codes a quota's refusal starts with: an owner-wide bound (`file_quota`), and an
- * outside client's share of one, or all clients' together (`file_share`).
+ * The fixed codes a quota's refusal starts with: the owner's whole storage, the tier's
+ * figure or the owner's own lower one (`storage_full`, `storage-full.ts`: the one wall a
+ * user meets); another owner-wide bound (`file_quota`); and an outside client's share of
+ * one, or all clients' together (`file_share`).
  */
 export const FILE_QUOTA = "file_quota";
 export const FILE_SHARE = "file_share";
@@ -259,6 +262,20 @@ export interface ChunkSpace {
  * is left. Run in the change's own unit, before its quota is checked.
  */
 export type Reclaim = (filer: string) => boolean;
+
+/**
+ * The refusal at the owner's storage figure: its message from what is stored (open uploads
+ * apart), what the change needs, what open uploads hold, and the figure (`storage-full.ts`).
+ */
+/**
+ * A workspace path a change made or took away, in that change's own unit: whether it is
+ * there now, and the change itself (its writer, and a file's content and size).
+ */
+export type Changed = (path: string, present: boolean, now: number,
+                       change: { writer: string; content_id: string | null; size: number })
+  => void;
+
+export type Full = (stored: number, needed: number, held: number, limit: number) => string;
 
 export type FileKind = "file" | "dir";
 
@@ -618,12 +635,20 @@ export class Files {
    * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
    * the change.
    */
-  readonly #changed: (path: string, present: boolean, now: number) => void;
+  readonly #changed: Changed;
+  /**
+   * The refusal at the storage figure (`storage-full.ts`): the one wall, its message naming
+   * what is stored, what the change needs, what open uploads hold apart, the whole, how to
+   * free space and the upgrade path. The object names the owner's tier: its caller's to give,
+   * never a default.
+   */
+  readonly #full: Full;
+  /** The chunk bytes the change in hand moved to `uploading` itself (`begin`), for `#bounds`. */
+  #moved = 0;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write, reclaim: Reclaim = () => false,
-              changed: (path: string, present: boolean, now: number) => void = () => {},
-              manifested: () => number | null = () => null) {
+              write: Write, full: Full, reclaim: Reclaim = () => false,
+              changed: Changed = () => {}, manifested: () => number | null = () => null) {
     this.#storage = storage;
     this.#manifested = manifested;
     this.#store = store;
@@ -631,6 +656,7 @@ export class Files {
     this.#write = write;
     this.#reclaim = reclaim;
     this.#changed = changed;
+    this.#full = full;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -695,15 +721,21 @@ export class Files {
    */
   #change<T>(writer: string | null, act: (now: number) => T,
              freeing = false): T {
-    return this.#storage.transactionSync(() => {
-      const before = this.#before(writer);
-      const value = act(Date.now() / 1000);
-      this.#fit(before, writer);
-      if (!freeing) {
-        this.#bounds(before, writer);
-      }
-      return value;
-    });
+    const outer = this.#moved;
+    this.#moved = 0;
+    try {
+      return this.#storage.transactionSync(() => {
+        const before = this.#before(writer);
+        const value = act(Date.now() / 1000);
+        this.#fit(before, writer);
+        if (!freeing) {
+          this.#bounds(before, writer);
+        }
+        return value;
+      });
+    } finally {
+      this.#moved = outer;
+    }
   }
 
   /** One share row's counters (`file_shares`, kept by the schema's triggers), or zeros. */
@@ -766,6 +798,20 @@ export class Files {
           throw new Refused(TIER_UNREAD);  // the tier's storage is not known: no guess
         }
         if (after[counter] > shareOf(bound, scope.percent)) {
+          // The owner's whole storage is the one wall a user meets: `storage_full`, or
+          // `uploads_open` when open uploads alone leave no room. A client's share of it, and
+          // the index's own ceilings, keep their codes.
+          if (setting === "max_bytes" && scope.filer === "*") {
+            const needed = after[counter] - scope.before[counter];
+            // What open uploads held before this change: what is uploading now, less the
+            // chunks this change itself moved to uploading (an upload's begin), summed as it
+            // moved them, so retention reclaimed in the same change never counts as held.
+            const held = Math.max(0, this.#sql.exec<{ bytes: number }>(
+              "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = " +
+                "'uploading'").one().bytes - this.#moved);
+            throw new Refused(this.#full(Math.max(0, scope.before[counter] - held), needed,
+                                         held, bound));
+          }
           throw new Refused(scope.refusal(what));
         }
       }
@@ -876,6 +922,31 @@ export class Files {
       ...this.#sql.exec<StoredEntry>(
         "SELECT * FROM file_entries WHERE parent >= ? AND parent < ?", `${dir}/`, `${dir}0`),
     ];
+  }
+
+  /**
+   * A small file's bytes, kept in the object, by its content id; null for content in
+   * chunks. A read, for what follows a change in its own unit.
+   */
+  inlineOf(contentId: string): Uint8Array | null {
+    const row = this.#sql.exec<{ inline: ArrayBuffer | null }>(
+      "SELECT inline FROM file_contents WHERE content_id = ?", contentId).toArray()[0];
+    return row?.inline === null || row === undefined ? null : new Uint8Array(row.inline);
+  }
+
+  /** The content a path's last change before `version` left, or null. A read. */
+  contentBefore(path: string, version: number): { content_id: string; size: number } | null {
+    const row = this.#sql.exec<{ content_id: string | null; size: number }>(
+      "SELECT content_id, size FROM file_history WHERE path = ? AND version < ? " +
+        "ORDER BY version DESC LIMIT 1", path, version).toArray()[0];
+    return row === undefined || row.content_id === null ? null
+      : { content_id: row.content_id, size: row.size };
+  }
+
+  /** The newest version of a path's history. A read. */
+  lastVersion(path: string): number {
+    return this.#sql.exec<{ version: number | null }>(
+      "SELECT MAX(version) AS version FROM file_history WHERE path = ?", path).one().version ?? 0;
   }
 
   #content(contentId: string, size: number): { inline?: Uint8Array; chunks?: ChunkRef[] } {
@@ -1057,7 +1128,7 @@ export class Files {
       version, path, op, kind, contentId, size, mode, writer, now,
     );
     this.#retain(path, kind !== null);
-    this.#changed(path, kind === "file", now);
+    this.#changed(path, kind === "file", now, { writer, content_id: contentId, size });
     return version;
   }
 
@@ -1411,7 +1482,8 @@ export class Files {
    * reserve leaves. Every bound is checked here, before any byte is sent.
    */
   begin(size: unknown, chunks: unknown, writer: string, readable: readonly string[] = [],
-        placing = false): { intent_id: string; missing: string[]; expires_at: number } {
+        placing = false, lease: string | null = null):
+      { intent_id: string; missing: string[]; expires_at: number } {
     refuseErasing(this.#storage);
     // A placed body (ADR-035) is no file: any size past its threshold, its own short life.
     const bytes = count(size, "size", placing ? 1 : INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
@@ -1455,11 +1527,13 @@ export class Files {
         if (row === undefined) {
           sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, holder) " +
                      "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, own);
+          this.#moved += chunkSize;
         } else if (row.state === "deleting") {
           throw new Refused(CHUNK_DELETING);
         } else if (row.state === "garbage") {
           sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
                      "WHERE sha256 = ?", sha256);
+          this.#moved += chunkSize;
         } else {
           sql.exec("UPDATE file_chunks SET holds = holds + 1 WHERE sha256 = ?", sha256);
         }
@@ -1470,8 +1544,8 @@ export class Files {
       }
       const expiresAt = now + (placing ? PLACE_TTL_S : INTENT_TTL_S);
       sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at, writer, " +
-                 "pending) VALUES (?, ?, ?, ?, ?, ?)", intentId, bytes,
-               (chunks as string[]).join(""), expiresAt, writer, missing.join(""));
+                 "pending, lease) VALUES (?, ?, ?, ?, ?, ?, ?)", intentId, bytes,
+               (chunks as string[]).join(""), expiresAt, writer, missing.join(""), lease);
       return { intent_id: intentId, missing, expires_at: expiresAt };
     });
   }
@@ -1909,8 +1983,13 @@ export class Files {
       if (this.sandboxLease(now, authority) !== null) {
         throw new Refused("the sync lease is held");
       }
-      this.#sql.exec("DELETE FROM sandbox_leases WHERE authority = ? OR NOT " +
-                       `(${LIVE_LEASE})`, authority, now);
+      // A lapsed lease, or this authority's own last one, goes here on every path that
+      // opens a lease (a run's or a sign-in's), and its sync's open uploads with it.
+      for (const gone of this.#sql.exec<{ lease_id: string }>(
+        "DELETE FROM sandbox_leases WHERE authority = ? OR NOT " +
+          `(${LIVE_LEASE}) RETURNING lease_id`, authority, now).toArray()) {
+        this.#endUploads(gone.lease_id);
+      }
       const row = this.#sql.exec<{ epoch: number; seq: number }>(
         "UPDATE file_space SET epoch = epoch + 1 RETURNING epoch, seq").one();
       const leaseId = randomBytes(16).toString("hex");
@@ -1969,7 +2048,7 @@ export class Files {
       `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now)
       .toArray()[0];
     if (row === undefined || row.epoch !== epoch) {
-      throw new Refused("the sync lease was lost; this sync is fenced");
+      throw new Refused("sync_fenced: the sync lease was lost; this sync is fenced");
     }
     return row;
   }
@@ -1993,6 +2072,7 @@ export class Files {
         return { released: false };
       }
       this.#sql.exec("DELETE FROM sandbox_leases WHERE lease_id = ?", leaseId);
+      this.#endUploads(leaseId as string);
       return { released: true };
     });
   }
@@ -2028,9 +2108,35 @@ export class Files {
   /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
   /** Each lapsed lease's row gone: the ids of those that went. */
   leasesLapsed(now: number): string[] {
-    return this.#sql.exec<{ lease_id: string }>(
-      `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id`, now)
-      .toArray().map((row) => row.lease_id);
+    const gone = this.#sql.exec<{ lease_id: string }>(
+      `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id`, now).toArray();
+    for (const lease of gone) {
+      this.#endUploads(lease.lease_id);
+    }
+    return gone.map((row) => row.lease_id);
+  }
+
+  /**
+   * In a unit: every upload a lease's sync agent left open, let go as its lease ends, so no
+   * sync strands bytes against the owner's storage for a day. Only the uploads begun under
+   * that lease (`syncBegin`) go: a client's own writes and placed bodies, begun as the same
+   * writer outside any sync, are never cancelled by its sandbox's lease ending.
+   */
+  #endUploads(leaseId: string): void {
+    for (const { intent_id: intentId } of this.#sql.exec<{ intent_id: string }>(
+      "SELECT intent_id FROM file_intents WHERE lease = ?", leaseId).toArray()) {
+      this.#release(intentId);
+    }
+  }
+
+  /**
+   * The sync agent's upload, begun as its live lease's writer and named by that lease, so
+   * the lease's end lets it go (`#endUploads`).
+   */
+  syncBegin(leaseId: unknown, epoch: unknown, size: unknown, chunks: unknown):
+      { intent_id: string; missing: string[]; expires_at: number } {
+    const writer = this.syncWriter(leaseId, epoch);
+    return this.begin(size, chunks, writer, [], false, leaseId as string);
   }
 
   /**

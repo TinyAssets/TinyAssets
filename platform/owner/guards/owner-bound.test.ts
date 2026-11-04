@@ -365,9 +365,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     file_space: { rows: 1, bytes: ROW + MAX_PATH_BYTES + 4 * KIB,
                   by: "one row; its retention cursor a path" },
     file_intents: { rows: MAX_OPEN_INTENTS,
-                    bytes: ROW + 2 * MAX_INTENT_CHUNKS * 64,
+                    bytes: ROW + 64 + 2 * MAX_INTENT_CHUNKS * 64,
                     by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
-                      "ids, and as many still to send",
+                      "ids, and as many still to send, and a sync's lease (slice STORE, 32 " +
+                      "hex characters, a column's 64 at most)",
                     indexes: { file_intents_due: key(NUMBER, 32) } },
     owner_policy: { rows: 1, bytes: ROW + P.maxDocument * 4,
                     by: "one document of maxDocument code points" },
@@ -929,7 +930,7 @@ describe("the owner's database bound", () => {
     expect([PLACE_BYTES, ROOM_CHARS, UNIVERSE_CHARS, CMID_CHARS, PROPOSAL_ID_CHARS])
       .toEqual([2048, 128, 512, 128, 128]);
     expect(TERMS["file_intents"]).toMatchObject({
-      rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * 640_000 });
+      rows: MAX_OPEN_INTENTS, bytes: 256 + 64 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
     expect(TERMS["model_spend"]!.rows).toBe(4300);
     expect(TERMS["wake_callbacks"]!.rows).toBe(LEDGER_LIMITS.maxAgents * 16);

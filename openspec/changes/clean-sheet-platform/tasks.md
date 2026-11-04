@@ -1881,12 +1881,46 @@ R, S, M and W.
   files scope), and the bound is `stored` = chunk bytes + small files + inline bodies against
   `max_bytes`; collection writes, posts and mail replies are held to it (`Files.held`),
   retention first (history no row still is, then acked mail, inline or placed), then
-  `file_quota`. `storageUsage` (the app's `POST /app/api/storage`) answers used, the limit and
+  `storage_full` (slice STORE's one wall). `storageUsage` (the app's `POST /app/api/storage`) answers used, the limit and
   where it is (files, messages, collections).
 - [x] The sandbox Worker's side of `meter` (slice P, after slice S merged): `SandboxControl`
   logs each create, resume, pause (its own, and one E2B made, as first seen) and kill (a
   sandbox gone while it ran) with its authority and time, and drops what a read's cursor
   passed.
+- [x] Slice STORE (founder, 2026-11-03: storage is the only wall):
+  - `storage_full`, one code and one set of words at the tier's figure, 507 at the doors;
+  - the agents' scratch on the sandbox disk (`/scratch/<agent>`), never synced or counted, kept as a cache, let go by `scratch_retention_days` and the least recently used under disk pressure;
+  - sync-out that streams, the sessions first, with the owner's `/workspace/.ta/sync-ignore`;
+  - a full disk that never loses the run.
+
+  Review round 1 (REQUEST_CHANGES), fixed: a refused upload is refused alone with the doors' whole message, the mirror saved after each committed batch, `ta.storage_full` reported once; `uploads_open` (409) apart from `storage_full`, an `upload_abort` door, a lease's open uploads aborted when it ends; "used" is what is stored; sync-in streams to a temporary file (a file past the VM's memory synced in a test); sync-out's memory independent of the path count (an on-disk mirror, a walk a directory at a time); a file's identity checked at commit; sync-ignore edits receipted and noticed once, the rule file never ignored, default patterns stopping new paths only; a linear-time matcher; the reserve let go before the sessions are staged, and only changed sessions staged; scratch stamps per agent; the superseded template tags deleted.
+
+  Verification round 2 (REQUEST_CHANGES), fixed: sessions staged by the sync mirror's hash, so one an earlier sync-out did not commit is sent again by the next run; a sync's uploads name their lease, and only those end with it, on every path that ends a lease (a new lease's taking among them), never a client's own write; each sync-ignore change's receipt and notice name who made it, and a new line that holds back kept files says how many and which, each sync-out reporting them too; a failed control read keeps the last scratch retention read, loudly; a change time within the filesystem's coarsest tick is never trusted, so the mirror's hash is of the bytes sent; the reserve's note says staging happens before the sync lock.
+
+  Verification round 3 (REQUEST_CHANGES), fixed: the sync-ignore notice never scans the owner's files in a write (a sync's write carries its sync agent's count; any other says files may be held back), the matcher a set lookup for literal lines; the agent form's subscription signed in inside the sandbox restored beside APP's filter, with `test:app` cases for both paths; a session hashed again only when its size or change time moved; a secret-refused session reported once; a client named by its display name whatever its id.
+
+  Verification round 4 (REQUEST_CHANGES), fixed: the run's heartbeat posts through sync-in and sync-out (the sync agent a child the runner waits on without blocking), so a sync longer than the lease keeps it; the matcher fast with no cap on lines (pattern lines behind a length and character check, each name and directory matched once), the reviewer's hostile lists 0.012 to 0.048 ms a path, a slow match said in the run's report; the notice's "may hold back" sentence on every added line, the sandbox's count only for the owner's own lease. Then main (slices L and SIGNIN) merged: the lease column is migration 17, and after slice P's baseline, migration 2.
+
+  Verification round 5 (REQUEST_CHANGES), fixed: pattern lines bounded together by their `?` pieces between stars, `QUESTION_PIECE_CHARS` (384, derived from the measured worst case, a name past the basic plane, at the highest `max_entries` against E2B Hobby's hour; round 6 moved it from all pattern characters, which turned off honest lines), text past the basic plane matched the same linear way, those past it not applied and said in the report and the notice; the matcher's memory bounded by its keys' bytes (16 MiB); the sync child's stdin errors handled, so a child that dies before reading its job ends the run loudly.
+
+  Verification round 7 (R6-1, research first, `matcher_research.md`): the matcher replaced by its compiled shape, indexes for lines whose cost does not grow with their count and one bit-parallel automaton for the rest, behind `AUTOMATON_STATES` (8,192) and `LIST_BYTES` (8 MiB, from the heap limit and the agent's peak measured in a sandbox); the lines read as git reads a `.gitignore` (the founder's ruling), `git check-ignore` the test oracle over GitHub's 310 templates and random lists; the automaton's step a standing check of the template build.
+
+  Verification round 8 (R7, APPROVE with fixes): the step measured on the automaton's slowest branch (`/**/` lines, `STEP_NS` 6) and the audit's arithmetic restated (both automata within the 8,192, the indexes' 184 s, the slack); a folder's Aho–Corasick depth in the cost bound, tested 2,000 folders deep; the worst memory class (heads diverging, 45.0 a list byte) recorded, so `LIST_BYTES` is 6 MiB; a file or folder whose name is not UTF-8 said in the run's report, its bytes escaped, and in the owner's notice, never synced in silence; the heartbeat test seconds long, so `platform-tests` keeps within its ten minutes.
+
+  Verification round 9 (R8): a CLI's line shaped as the runner's own event (`ta.…`, `ta_cut`) refused as `ta.cli_refused`, never posted as it, every runner event type tested forged; the unnamed-files notice in the object's own words; `platform-tests`' guard holds each leg's steps, keys and `defaults.run` exactly, the reviewer's mutations its test.
+
+  Verification round 10 (R9): no tracked `.npmrc` nor `package.json` `config` may set `script-shell`, `ignore-scripts`, `shell` or `node-options` (a guard, the reviewer's `.npmrc` its test); the wall's held bytes less the chunks the change itself moved to uploading, so a begin that reclaims history meets `storage_full`, never `uploads_open`.
+
+  Research: the STORE research and its cross-reviews. Probes:
+  - `latency-probe.md`: option A measured;
+  - `sandbox-probe.md`, "Scratch and the disk".
+- [ ] Owed by slice STORE:
+  - **Option B of the latency probe** (R2 get, put, list from an owner-shaped object) needs a token with Workers R2 Storage: Edit. The index decision (shards or R2 trees) waits on it, and the count caps stay until then. Its `probe-latency-run` branch is made again only for that run; afterwards the probe's workflow and scripts are removed.
+  - **Old versions, collection history and read mail moved to R2 segments** (mail never evicted silently), encrypted under slice P's per-owner key: after P lands. Its schema baseline and its key are the base.
+  - **Sync-in of the working set alone** (today it materializes the whole workspace), held for the scratch design.
+  - **The starter package's agent instructions** naming `$TA_SCRATCH`: slice STARTER carries the scratch guidance, in its `AGENTS.md` and its scratch skill (the run door's MCP instructions carry it today).
+  - **`linux_oracle.py`** for the scratch modes and the reserve: no Docker daemon in the build session. The runner's root tests cover the modes.
+  - **The resume after hours** with 5–10 GB of scratch.
 
 ## 7. Wakes and outside agents
 
