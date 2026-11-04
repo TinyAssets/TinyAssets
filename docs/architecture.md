@@ -2,10 +2,35 @@
 
 What the system is today, as a map for finding code. Intent and principles live
 in [README § Direction](../README.md#direction); why a choice stands lives in
-[`docs/decisions/`](decisions/INDEX.md); as-built behaviour lives in
-[`openspec/specs/`](../openspec/specs/). This file holds no rationale or
+[`docs/decisions/`](decisions/INDEX.md); the retiring stack's as-built behaviour
+lives in [`openspec/specs/`](../openspec/specs/). This file holds no rationale or
 history. The one status it holds is the [Shape registry](#shape-registry). Update
 it when a module boundary moves.
+
+## `platform/` (the build)
+
+TypeScript on Cloudflare Workers, one Durable Object per owner, R2 and E2B.
+Why: [ADR-032](decisions/ADR-032-clean-sheet-platform.md),
+[033](decisions/ADR-033-any-source-powers-any-agent.md),
+[034](decisions/ADR-034-agents-run-on-unmodified-engines.md),
+[035](decisions/ADR-035-large-bodies-live-in-r2.md),
+[036](decisions/ADR-036-mail-is-never-let-go.md),
+[037](decisions/ADR-037-memory-is-bounded-by-structure.md). Plan and specs:
+`openspec/changes/clean-sheet-platform/`. Deploy: `platform/deploy/checklist.md`.
+
+| Path | Owns |
+|---|---|
+| `platform/doors/` | The edge binder, our OAuth authorization server, the MCP door, `/api` keys, `/hooks/inbound` and the owner app. The only Worker with public routes (after the cutover's `routes` run). |
+| `platform/owner/` | `OwnerDO`, one per owner: ledger, collections, files manifest, runs, policy, schedule. |
+| `platform/files/` | The R2 bucket's only binder: owner file bytes as encrypted chunks. |
+| `platform/gateway/` | Sealed credentials, opened per call; the egress meter. |
+| `platform/sandbox/` | The E2B Worker and the in-VM runner; each engine runs there, unmodified. |
+| `platform/hooks/` | Code mode's VMs only (ADR-034 decision 12). |
+| `platform/sources/`, `platform/starter/` | Engine and source records as data; the bubble agent's files. |
+| `platform/plugins/`, `platform/deploy/`, `platform/admin/` | Directory plugins, the deploy kit, the admin caller. |
+
+Everything below is the **retiring stack** (`tinyassets/`, `deploy/`, the
+droplet): fixes only, no new feature, deleted at the cutover.
 
 ## Names
 
@@ -72,7 +97,7 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/universe_tools.py` | The agent's four tools: `read`, `write`, `edit`, `bash`. |
 | `tinyassets/ta_cli.py`, `tinyassets/ta_capabilities.py` | The `ta` client the agent runs inside its jail. |
 | `tinyassets/persona.py`, `tinyassets/universe_soul.py`, `tinyassets/universe_bundle.py` | Persona, soul and the OKF soul bundle a new command center is seeded with. |
-| `tinyassets/skills/`, `tinyassets/starter*` | Bundled skills and the starter package. |
+| `tinyassets/skills/`, `tinyassets/starter*` | Bundled skills; the retiring copy of the starter package (the build's is `platform/starter/`). |
 
 ### Graphs and runs
 
@@ -122,10 +147,8 @@ beside `cloudflared` and a log shipper.
 
 ### Domains
 
-`domains/<name>/` contains optional authoring packages discovered from files
-by `tinyassets/discovery.py`. The packaged `fantasy_daemon` and
-`research_probe` examples have no CLI entry points. `tinyassets/constraints/`
-is an ASP engine over `data/world_rules.lp`.
+`tinyassets/discovery.py` discovers optional authoring packages from files.
+`tinyassets/constraints/` is an ASP engine over `data/world_rules.lp`.
 
 ### Operations
 
@@ -174,9 +197,9 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills; outcome evidence and provenance in `outcomes/` and `attribution/` | none; bundled domains and market API deleted; app workflow goals remain in `api/goals.py` | converged | `domain-entry-points`, `check_shapes.py` S18 | C5, C10 |
 | S19 | Built artifacts are not committed | Hosted Claude Code plugin uses the repository folder; `.mcpb` stages its own runtime at pack time | none | converged | `check_mirror_parity.py` rejects tracked plugin runtime files | C4 |
 | S20 | One home per fact (ADR-005, Dir 6) | README Direction, AGENTS.md, this file, ADRs, `openspec/specs`, `openspec/changes`, `docs/concerns`, `docs/reference` | none; C1 removed retired document trees and root clutter, retaining cited incident repros | converged | `doc-homes`: no new file outside a home | C1 |
-| S21 | One queue (AGENTS.md) | `openspec/changes/`, reconciled into one tracking issue | none; C2 archived completed changes and folded superseded lanes | converged | `superseded-open`; `shape-reconcile.yml` | C2 |
+| S21 | One queue (AGENTS.md) | `openspec/changes/`, reconciled into one tracking issue | `target-architecture` and `owner-daemon-in-box`, marked superseded by ADR-032 until the cutover archives them | drifted | `superseded-open`; `shape-reconcile.yml` | C2 |
 | S22 | Command center naming | `command_center` in code and storage | 10 `universe_*` modules outside the two target homes, ~13k mentions | drifted | S22 ceiling on `universe_*` modules + no new `*Universe*` definitions; mentions renamed as each slice touches a file | each slice |
-| S23 | Accumulating state; fail loudly (Facts 5, 8) | `Annotated[list, operator.add]`; a missing dependency is an error | none; graph and provider mock fallbacks are removed | converged | `check_shapes.py` S23, `test_capability_health` | C3 |
+| S23 | Accumulating state; fail loudly (Fact 8) | `Annotated[list, operator.add]`; a missing dependency is an error | none; graph and provider mock fallbacks are removed | converged | `check_shapes.py` S23, `test_capability_health` | C3 |
 | S24 | One durable send (commit before publish) | `converse` → `owner_door.send` → committed owner row → serialized dispatch | removed browser steering, destructive claims, batch replay and experimental ingress; one browser transport and one box intake | verified | `send-path` (`tests/test_send_path.py`) | C11 |
 | S25 | Three public doors (Fact 11; founder 2026-10-11) | `https://tinyassets.io/mcp` for MCP clients, `/api` for keyed programmatic agents and `/hooks/inbound` for external events (N1), same handles and authority; `/app` for the app | duplicate REST PR #4589 closed; #4602 is the one REST PR; `/hooks/inbound` unbuilt | converged once #4602 lands; inbound door unbuilt | `public-routes`: `/mcp`, `/api`, `/hooks/inbound`, `/app`, root, and connector `/.well-known/*` discovery | — |
 | S26 | Exactly two account limits (seats, storage) | `usage_policy.py` | five open limit changes; cleanup #4134 (1/3), #4136 (2/3), no 3/3 | drifted | `limit-names` (planned) | C2 fold, C7 |

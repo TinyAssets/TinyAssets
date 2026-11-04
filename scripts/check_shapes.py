@@ -232,7 +232,7 @@ SHAPES: dict[str, Shape] = {
     "S21": Shape(
         ("openspec/changes/**",),
         (("openspec/changes/*/proposal.md", r"(?i)\bsuperseded by\b"),),
-        ceiling=3,
+        ceiling=2,
     ),
     "S22": Shape(
         (
@@ -466,6 +466,45 @@ def vendor_file_count(root: Path = ROOT) -> int:
 
 
 HISTORY_FILES = frozenset({".agents/activity.log"})
+# Archived changes are history: they cite what existed when they landed.
+HISTORY_DIRS = ("openspec/changes/archive/",)
+# Where an agent takes instructions from. Any path deleted in this diff that one
+# of them still cites fails, so a deletion carries its docs, skills and rules.
+INSTRUCTION_FILES = frozenset({
+    "AGENTS.md", "CLAUDE.md", "CODEX.md", "README.md", "CONTRIBUTING.md",
+    "openspec/config.yaml",
+})
+INSTRUCTION_DIRS = (".claude/", ".agents/skills/", "openspec/specs/", "docs/")
+PATH_TOKEN = re.compile(r"[\w.-]+(?:/[\w.*-]+)+/?")
+
+
+def instruction_text(rel: str, source: str) -> str | None:
+    """The part of ``rel`` that instructs an agent, or None when it is not an instruction file."""
+    if rel.startswith(".github/workflows/"):
+        return "\n".join(line for line in source.splitlines() if line.lstrip().startswith("#"))
+    if re.fullmatch(r"docs/decisions/ADR-\d+[\w.-]*\.md", rel):
+        return None  # an ADR body is a dated record (ADR-005); its Status line is checked apart
+    if (
+        rel in INSTRUCTION_FILES
+        or rel.startswith(INSTRUCTION_DIRS)
+        or (rel.startswith("platform/") and rel.endswith(".md"))
+    ):
+        return source
+    return None
+
+
+def cited_paths(rel: str, text: str) -> set[str]:
+    """Each repo path ``text`` names, read as written and relative to ``rel``'s folder."""
+    out: set[str] = set()
+    folder = PurePosixPath(rel).parent
+    for token in PATH_TOKEN.findall(text):
+        token = token.split("*", 1)[0].rstrip(".,;:)").rstrip("/")
+        token = token.removeprefix("./")
+        if "/" not in token:
+            continue
+        out.add(token)
+        out.add(os.path.normpath(str(folder / token)).replace(os.sep, "/"))
+    return out
 
 
 def deleted_doc_references(root: Path = ROOT) -> list[str]:
@@ -477,14 +516,22 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
             ["git", "diff", "--diff-filter=D", "--name-only", base], cwd=root, text=True
         ).splitlines()
     )
-    deleted = {path for path in deleted if path.startswith("docs/")}
     if not deleted:
         return []
+    deleted_docs = {path for path in deleted if path.startswith("docs/")}
+    # A folder counts as deleted when the diff emptied it.
+    deleted_dirs = {
+        str(parent)
+        for path in deleted
+        for parent in PurePosixPath(path).parents
+        if str(parent) != "." and not (root / parent).exists()
+    }
+    gone = deleted | deleted_dirs
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().split("\0")
-    problems = []
+    problems = set()
     for rel in tracked:
         # Append-only history no PR may edit (scripts/check_forbidden_pr_paths.py).
-        if rel in HISTORY_FILES:
+        if rel in HISTORY_FILES or rel.startswith(HISTORY_DIRS):
             continue
         path = root / rel
         if not path.is_file():
@@ -493,9 +540,49 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
             source = path.read_text(encoding="utf-8")
         except (UnicodeError, OSError):
             continue
-        for ref in {item.rstrip(".,;") for item in re.findall(r"docs/[\w./-]+", source)} & deleted:
-            problems.append(f"deleted-doc-reference: {rel} cites {ref}")
+        cited_docs = {item.rstrip(".,;") for item in re.findall(r"docs/[\w./-]+", source)}
+        for ref in cited_docs & deleted_docs:
+            problems.add(f"deleted-doc-reference: {rel} cites {ref}")
+        text = instruction_text(rel, source)
+        if text is None:
+            continue
+        for ref in cited_paths(rel, text) & gone:
+            if ref not in deleted_docs:
+                problems.add(f"deleted-path-reference: {rel} cites {ref}")
     return sorted(problems)
+
+
+def adr_superseded_open(root: Path = ROOT) -> list[str]:
+    """A change an accepted ADR supersedes is archived, or its proposal says so at its head."""
+    problems = []
+    for adr in files("docs/decisions/ADR-*.md", root):
+        number = re.match(r"ADR-(\d+)", adr.name)
+        source = adr.read_text(encoding="utf-8")
+        status = re.search(r"(?ms)^## Status\s*\n(.*?)(?:^\s*$|^## )", source)
+        if not number or not status or not status.group(1).lstrip().startswith("Accepted"):
+            continue
+        scope = [s for s in re.split(r"(?<=\.)\s+", status.group(1)) if "Supersedes" in s]
+        section = re.search(r"(?ms)^## What it supersedes\s*\n(.*?)(?=^## |\Z)", source)
+        if section:
+            scope.append(section.group(1))
+        marker = f"Superseded by ADR-{number.group(1)}"
+        named = re.findall(r"openspec/changes/([a-z0-9][a-z0-9-]*)", "\n".join(scope))
+        for name in sorted(set(named)):
+            change = root / "openspec/changes" / name
+            if name == "archive" or not change.is_dir():
+                continue
+            proposal = change / "proposal.md"
+            head = (
+                "\n".join(proposal.read_text(encoding="utf-8").splitlines()[:5])
+                if proposal.is_file()
+                else ""
+            )
+            if marker not in head:
+                problems.append(
+                    f"superseded-open: ADR-{number.group(1)} supersedes {name}; archive it "
+                    f"or put '{marker}' in its proposal's first lines"
+                )
+    return problems
 
 
 def recorded_shapes(
@@ -952,6 +1039,7 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
         for name in re.findall(r"(?i)\bsupersedes?\s*:?\s*[`'\"]?([a-z][a-z0-9-]+)", source):
             if (root / "openspec/changes" / name).exists():
                 problems.append(f"superseded-open: {proposal.parent.name} supersedes {name}")
+    problems.extend(adr_superseded_open(root))
     problems.extend(deleted_doc_references(root))
     return problems
 

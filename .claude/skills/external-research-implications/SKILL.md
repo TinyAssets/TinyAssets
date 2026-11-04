@@ -54,7 +54,7 @@ When importing outside ideas:
 - preserve community remix, lineage, attribution, and branch evolution;
 - preserve uptime with zero hosts online where applicable;
 - reject sidecars that bypass TinyAssets' control plane, privacy model,
-  evaluator evidence, host pool, or provenance chain.
+  evaluator evidence, or provenance chain.
 
 ## TinyAssets
 
@@ -217,19 +217,17 @@ Add a `Worktree Landing Packet` to the report and mirror its essentials into
 - first implementation slice small enough to commit independently;
 - expected verification gates before commit, before push, and before live
   acceptance;
-- fold-back path: PR/merge target, STATUS row retirement, and follow-up row or
+- fold-back path: PR/merge target, and follow-up row or
   `ideas/PIPELINE.md` update if work remains.
 
-Research does not gate build work. Land the implementation lane into the
-git/worktree discipline immediately, and let review scope follow `AGENTS.md`
-§ *Working Norms*: a review is owed for floor-class changes and gate-defining
-files, one round, dispatched once the PR is open. Record the `initial_provider`
+Research comes before building (Fact 14): the design is chosen from the
+research, then built. Review scope is ADR-015's. Record the `initial_provider`
 in the durable artifact so a later reader knows whose finding it was.
 
-### 8. Review Scope Lives In AGENTS.md
+### 8. Review Scope Lives In ADR-015
 
 A research finding needs no review of its own to be built. When one IS owed
-(floor-class change or gate file, per `AGENTS.md` § *The loop* item 4),
+(floor-class change or gate file, per ADR-015),
 dispatch an adversarial reviewer via `peer-agents` and keep the verdict artifact
 with the change: it is a real gate, not a rubber stamp, and the reviewer may
 change the plan.

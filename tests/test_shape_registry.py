@@ -531,4 +531,69 @@ def test_git_added_uses_the_pr_diff_not_untracked_files():
         assert check_shapes.git_added() == {"tinyassets/new.py"}
 
 
+def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, "tinyassets/attribution/core.py", "x\n", "code")
+    _commit_file(repo, "AGENTS.md", "10. Ship-time attribution: `tinyassets/attribution/`.\n", "a")
+    _commit_file(repo, ".agents/skills/s/references/gone.md", "x\n", "ref")
+    _commit_file(repo, ".agents/skills/s/SKILL.md", "See [it](references/gone.md).\n", "s")
+    _commit_file(repo, ".github/workflows/w.yml",
+                 "# deploys tinyassets/attribution/core.py\n"
+                 "run: echo tinyassets/attribution\n", "w")
+    _commit_file(repo, "tinyassets/other.py", "# tinyassets/attribution/core.py\n", "code2")
+    _commit_file(repo, "openspec/changes/archive/old/tasks.md", "docs/ops/gone.md\n", "arch")
+    base = _commit_file(repo, "docs/ops/gone.md", "x\n", "doc")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base)
+    _git(repo, "rm", "-q", "-r", "tinyassets/attribution", ".agents/skills/s/references",
+         "docs/ops/gone.md")
+
+    assert check_shapes.deleted_doc_references(repo) == [
+        "deleted-path-reference: .agents/skills/s/SKILL.md cites "
+        ".agents/skills/s/references/gone.md",
+        "deleted-path-reference: .github/workflows/w.yml cites tinyassets/attribution/core.py",
+        "deleted-path-reference: AGENTS.md cites tinyassets/attribution",
+    ]
+
+
+def _adr(root: Path, status: str, body: str) -> None:
+    path = root / "docs/decisions/ADR-099-test.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# ADR-099: Test\n\n## Status\n\n{status}\n\n## Decision\n\nx\n\n{body}",
+                    encoding="utf-8")
+
+
+def _proposal(root: Path, name: str, text: str) -> None:
+    path = root / "openspec/changes" / name / "proposal.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_a_change_an_adr_supersedes_must_be_archived_or_marked(tmp_path: Path):
+    _adr(tmp_path, "Accepted. Supersedes `openspec/changes/by-status`. Build order:\n"
+         "`openspec/changes/the-build/`.",
+         "## What it supersedes\n\n- `openspec/changes/by-section` D10.\n"
+         "- `openspec/changes/archived-already`.\n\n## Consequences\n\n"
+         "`openspec/changes/later-section`.\n")
+    for name in ("by-status", "by-section", "the-build", "later-section"):
+        _proposal(tmp_path, name, f"# {name}\n\n## Why\n")
+    assert check_shapes.adr_superseded_open(tmp_path) == [
+        "superseded-open: ADR-099 supersedes by-section; archive it or put "
+        "'Superseded by ADR-099' in its proposal's first lines",
+        "superseded-open: ADR-099 supersedes by-status; archive it or put "
+        "'Superseded by ADR-099' in its proposal's first lines",
+    ]
+    for name in ("by-status", "by-section"):
+        _proposal(tmp_path, name, f"# {name}\n\n**Superseded by ADR-099.**\n\n## Why\n")
+    assert check_shapes.adr_superseded_open(tmp_path) == []
+    _proposal(tmp_path, "by-status", "# by-status\n\n**Superseded by ADR-098.**\n")
+    assert len(check_shapes.adr_superseded_open(tmp_path)) == 1
+
+
+def test_a_proposed_adr_supersedes_nothing_yet(tmp_path: Path):
+    _adr(tmp_path, "Proposed.", "## What it supersedes\n\n- `openspec/changes/open-one`.\n")
+    _proposal(tmp_path, "open-one", "# open-one\n")
+    assert check_shapes.adr_superseded_open(tmp_path) == []
+
+
 pytestmark = pytest.mark.verifies('shape-convergence:C1')

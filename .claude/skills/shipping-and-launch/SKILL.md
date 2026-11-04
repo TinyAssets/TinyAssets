@@ -25,7 +25,7 @@ lint → type check → unit tests → build → integration → e2e (optional)
 ```
 
 Run on every PR and push to main; failures block merge (branch protection, no
-force-push to main). Review is NOT per-PR here — `AGENTS.md` § *The loop* item 4
+force-push to main). Review is NOT per-PR here — ADR-015
 scopes it to floor-class changes and gate files. Configure as parallel jobs (lint/typecheck/test
 separately) with dependency caching; if the pipeline exceeds ~10 min, optimize —
 cache deps, parallelize, path-filter unchanged areas, shard tests — don't skip.

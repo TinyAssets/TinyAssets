@@ -10,7 +10,7 @@ description: Drives the OpenSpec CLI lifecycle — explore, propose, apply, sync
 > This is the CLI-managed, multi-session spec system. Where the CLI is
 > unavailable, hand-write a change directory matching the OpenSpec layout
 > (`proposal.md`, `design.md`, delta specs, `tasks.md`) so it can be adopted
-> once the CLI is back — see `AGENTS.md` § *Spec-driven development*.
+> once the CLI is back.
 
 ## Lifecycle
 
@@ -61,10 +61,7 @@ checkboxes. Reference full-product vision in ADRs/design notes/audits; never
 bulk-convert it into active changes. Park incidental findings outside the
 active queue. After scaffolding the change and before claiming or building it,
 run `python scripts/openspec_flow.py check-change <name> --provider
-<exact-session-provider>`. Every matching claimed row counts conservatively.
-One active delivery change is allowed per exact STATUS identity; global WIP
-stays visible and minting provider suffixes to evade the limit is a review
-violation. Existing oversized changes remain diagnostic legacy state. The
+<exact-session-provider>`. Existing oversized changes remain diagnostic legacy state. The
 12-task ceiling is a 2026-07-28 calibration to review on 2026-08-11.
 
 ## apply — implement the tasks
