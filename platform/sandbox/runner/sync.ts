@@ -62,9 +62,11 @@ export const CHUNK_BYTES = 4 * 1024 * 1024;
 export const INLINE_BYTES = 4096;
 /** A sync door's body, the doors' own most (`SYNC_BODY_MAX`). */
 export const SYNC_BODY = 12 * 1024 * 1024;
+/** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
+export const INTENT_ID_CHARS = 32;
 /**
- * A commit's ops, each counted at its size: the door's body less the commit's own fields
- * (its lease id, epoch and the JSON around them, under 128 bytes).
+ * A commit's ops, each counted at its bytes in the body (`opBytes`): the door's body less the
+ * commit's own fields (its lease id, epoch and the JSON around them, under 128 bytes).
  */
 const BODY_MAX = SYNC_BODY - 128;
 /** The feed's page, at the object's own most (`MAX_LIST`). */
@@ -680,12 +682,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     const sent: Record<string, unknown>[] = [];
     const ops: Op[] = [];
     for (const op of taken) {
-      const fields = { op: op.op, path: op.path, base: op.base,
-                       ...(op.mode === undefined ? {} : { mode: op.mode }),
-                       // The list's own write carries what it holds back, for the owner's
-                       // notice (counted here, in the sandbox, never in the object's write).
-                       ...(op.path === SYNC_IGNORE && op.op === "write"
-                         ? { held_back: { kept, changed: held } } : {}) };
+      const fields = fieldsOf(op);
       if (op.op === "remove") {
         sent.push(fields);
       } else if (op.inline !== undefined) {
@@ -735,9 +732,17 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       }
     });
   };
+  /** What a commit says of `op`, but its bytes (inline) or its upload (intent id). */
+  const fieldsOf = (op: Op): Record<string, unknown> => ({
+    op: op.op, path: op.path, base: op.base,
+    ...(op.mode === undefined ? {} : { mode: op.mode }),
+    // The list's own write carries what it holds back, for the owner's notice (counted
+    // here, in the sandbox, never in the object's write). It is offered last, the counts
+    // final.
+    ...(op.path === SYNC_IGNORE && op.op === "write"
+      ? { held_back: { kept, changed: held } } : {}) });
   const add = async (op: Op) => {
-    const size = op.inline === undefined ? op.path.length + 128
-      : Math.ceil(op.inline.byteLength / 3) * 4 + op.path.length + 128;
+    const size = opBytes(op, fieldsOf(op));
     if (batch.length >= COMMIT_OPS || bytes + size > BODY_MAX) {
       await send();
     }
@@ -882,6 +887,18 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
            match_ms: Math.round(matchMs), unapplied: unapplied.slice(0, LISTED),
            unapplied_count: unapplied.length, list_bytes_past: list.past, unnamed,
            unnamed_count: unnamedCount };
+}
+
+/**
+ * An op's bytes in a commit's body, as the body carries them: its fields as JSON, as UTF-8
+ * (a path's non-ASCII characters 2 to 4 bytes, a control character escaped to 6, `"` and
+ * `\` to 2), its file's bytes as base64 or its intent id, and the comma after it.
+ */
+function opBytes(op: Op, fields: Record<string, unknown>): number {
+  const carried = op.op === "remove" ? 0
+    : op.inline !== undefined ? `,"inline":""`.length + Math.ceil(op.inline.byteLength / 3) * 4
+    : `,"intent_id":""`.length + INTENT_ID_CHARS;
+  return Buffer.byteLength(JSON.stringify(fields), "utf8") + carried + 1;
 }
 
 /** Whether a kept file's sandbox copy differs from what the owner's files hold. */

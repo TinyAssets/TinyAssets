@@ -27,8 +27,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { AUTOMATON_STATES, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP }
   from "../../owner/src/sync-ignore";
 import {
-  CHUNK_BYTES, COMMIT_OPS, ignoredBy, memoryMirror, openMirror, type Place, SYNC_BODY,
-  SyncClient, SyncFenced, syncIn, syncOut, wildcard,
+  CHUNK_BYTES, COMMIT_OPS, ignoredBy, INLINE_BYTES, memoryMirror, openMirror, type Place,
+  SYNC_BODY, SyncClient, SyncFenced, syncIn, syncOut, wildcard,
 } from "./sync";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -632,5 +632,41 @@ describe("a list larger than the sandbox's heap would hold whole", () => {
     const out = JSON.parse(run.stdout) as { committed: number; past: number };
     expect(out.committed).toBeGreaterThan(0);
     expect(out.past).toBeGreaterThan(10 * 1024 * 1024);
+  }, 300_000);
+});
+
+describe("a commit's body", () => {
+  it("stays within the door's limit whatever its paths' characters", async () => {
+    // A path's characters as the body carries them: a non-ASCII one 2 to 4 bytes, a control
+    // character escaped to 6. A folder chain near the path's most (4,096 bytes), each name of
+    // `é` and U+0001 (3 bytes on disk, 8 in the body), and `COMMIT_OPS` files of
+    // `INLINE_BYTES` under it: about 15 MB of ops, past the door's 12 MiB, though their
+    // paths count about 8 MB in UTF-16 units.
+    const { place: p, local } = place();
+    const name = "é\u0001".repeat(84);
+    let dir = local;
+    for (let level = 0; level < 14; level++) {
+      dir = join(dir, name);
+    }
+    mkdirSync(dir, { recursive: true });
+    for (let f = 0; f < COMMIT_OPS; f++) {
+      writeFileSync(join(dir, `file-${f}`), "x".repeat(INLINE_BYTES));
+    }
+    const bodies: number[] = [];
+    const sent: string[] = [];
+    const fetcher = (async (url: string, init: { body: string }) => {
+      const door = url.split("/sync/")[1]!;
+      if (door !== "commit") {
+        return new Response("{}", { status: 404 });
+      }
+      bodies.push(Buffer.byteLength(init.body, "utf8"));
+      return new Response(JSON.stringify(commitAll(JSON.parse(init.body) as
+        Record<string, unknown>, sent).body), { status: 200 });
+    }) as unknown as typeof fetch;
+    await syncOut(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p,
+                  memoryMirror(), LEASE, []);
+    expect(sent.filter((path) => path.includes("/file-"))).toHaveLength(COMMIT_OPS);
+    expect(bodies.reduce((sum, each) => sum + each, 0)).toBeGreaterThan(SYNC_BODY);
+    expect(Math.max(...bodies)).toBeLessThanOrEqual(SYNC_BODY);
   }, 300_000);
 });
