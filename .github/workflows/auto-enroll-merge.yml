@@ -10,7 +10,8 @@ name: Auto-enroll merge
 # checks go green GitHub merges it. No human step, no agent step.
 #
 # Safety is delegated to branch protection, which is the right place for it:
-#   - required checks `policy` and `Diff scope declared` must pass
+#   - every required check must pass, `review` among them: a PR review that
+#     approves this change (review.yml), so an unreviewed head never merges
 #   - `strict` means the branch must be current with main
 #   - a PR that fails ANY required check simply never merges; enrolment is not a
 #     bypass, it is a standing instruction to merge WHEN allowed
@@ -52,11 +53,6 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
-          # Full history of commits and trees, no file contents: enough for the
-          # merge base and `git diff --raw` that the PR's diff key reads, while
-          # still never checking out or executing PR code.
-          fetch-depth: 0
-          filter: blob:none
 
       - name: Require the merge-attribution token
         # Fail loudly (hard rule 8), never fall back to GITHUB_TOKEN. With the
@@ -108,79 +104,16 @@ jobs:
               --jq '.data.repository.pullRequest | (.autoMergeRequest.enabledBy // .mergeQueueEntry.enqueuer // (if .state == "MERGED" then .mergedBy else null end)) | if . == null then "none" else "\(.__typename):\(.login)" end'
           }
 
-          PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-            --json autoMergeRequest,body,headRefOid,baseRefOid)"
+          PR_JSON="$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest,headRefOid)"
           STATE="$(jq -r \
             'if .autoMergeRequest == null then "no" else "yes" end' \
             <<<"$PR_JSON")"
           HEAD_OID="$(jq -r '.headRefOid' <<<"$PR_JSON")"
-          # Base and head from the SAME read, never the event's base with the
-          # current head: a rebase between the two would key the wrong diff.
-          BASE_OID="$(jq -r '.baseRefOid' <<<"$PR_JSON")"
-          jq -r '.body // ""' <<<"$PR_JSON" > "$RUNNER_TEMP/pr-body.md"
 
-          # Same diff key as pr-scope-guard.yml; empty on any failure, which
-          # leaves an exact head receipt as the only match. An unchanged
-          # rebase still carries when the cited commit can be fetched.
-          DIFF_KEY=""
-          if git fetch --no-tags --filter=blob:none origin \
-                "+refs/pull/${PR}/head:refs/remotes/pr/head" \
-                "+refs/heads/main:refs/remotes/origin/main" \
-              && git cat-file -e "${HEAD_OID}^{commit}" \
-              && git cat-file -e "${BASE_OID}^{commit}"; then
-            DIFF_KEY="$(python scripts/drain_review_gate.py --print-diff-key \
-              "$BASE_OID" "$HEAD_OID")" || DIFF_KEY=""
-          fi
-
-          # Every PR needs a receipt for its head (2026-10-02): on 2026-10-01
-          # this step armed #4247 -- a superseded head with a known data-loss
-          # bug and no review receipt -- and the queue accepted it.
-          while IFS= read -r sha; do
-            [ -n "$sha" ] || continue
-            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
-              git fetch --no-tags --filter=blob:none origin "$sha" || true
-            fi
-          done < <(python scripts/drain_review_gate.py --list-carry-heads \
-              --head "$HEAD_OID" \
-              --body-file "$RUNNER_TEMP/pr-body.md" || true)
-          if python scripts/drain_review_gate.py \
-              --head "$HEAD_OID" \
-              --base "$BASE_OID" \
-              --diff-key "$DIFF_KEY" \
-              --body-file "$RUNNER_TEMP/pr-body.md"; then
-            REVIEW_GATE="allow"
-          else
-            REVIEW_GATE="deny"
-          fi
-
-          if [ "$REVIEW_GATE" = "deny" ]; then
-            if [ "$STATE" = "yes" ]; then
-              # Fetch/diff evaluation can outlive a new head or receipt. A
-              # stale denial must not disarm that newer enrollment. Compare
-              # the same fields, including the body and enrollment identity.
-              # This is not an atomic compare-and-disable; the final
-              # read-to-mutation gap remains.
-              CURRENT_PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-                --json autoMergeRequest,body,headRefOid,baseRefOid)"
-              if [ "$CURRENT_PR_JSON" != "$PR_JSON" ]; then
-                echo "PR state changed since receipt evaluation; leaving current enrollment alone."
-                exit 0
-              fi
-              gh pr merge "$PR" --repo "$REPO" --disable-auto
-              echo "Disabled auto-merge: no current review receipt for this head."
-            else
-              echo "PR remains unenrolled pending a review receipt for this head."
-            fi
-            {
-              echo "### Auto-merge"
-              echo ""
-              echo "Not enrolled: every PR needs exactly one current review receipt:"
-              echo "\`Drain-Review-Verdict: APPROVE\`"
-              echo "\`Drain-Review-Head: <40-character lowercase head SHA>\`"
-              echo "\`Drain-Review-Artifact: <docs path or GitHub URL>\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+          # No review gate here: enrolment is a standing instruction to merge WHEN
+          # allowed, and the required `review` check is what allows it. On
+          # 2026-10-01 this step armed #4247, an unreviewed superseded head, and the
+          # queue admitted it; a required check bound to the head is what stops that.
 
           # Queue-attempt cap: a head handed off by queue-handoff.yml (record
           # for this exact head + the queue-handoff label) is not re-armed.
@@ -233,8 +166,8 @@ jobs:
             {
               echo "### Auto-merge"
               echo ""
-              echo "Enrolled. This PR will merge itself once required checks pass:"
-              echo "\`policy\` and \`Diff scope declared\`."
+              echo "Enrolled. This PR will merge itself once every required check passes,"
+              echo "\`review\` among them."
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Could not enrol PR #${PR} — not fatal, leaving it to the humans:"

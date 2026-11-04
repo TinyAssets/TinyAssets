@@ -134,5 +134,16 @@ jobs:
             exit 1
           fi
           post "$RUNNER_TEMP/run.json"
+          mkdir -p "$RUNNER_TEMP/review-pr"
+          printf '%s\n' "$PR" > "$RUNNER_TEMP/review-pr/pr"
           jq -r '"review for #'"$PR"' at \(.head_sha): \(.status) \(.conclusion // "") \(.output.title)"' \
             "$RUNNER_TEMP/run.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Which PR this decided, for enqueue-merge.yml: a run started by a review is on
+      # the default branch, so its head names no PR.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-pr
+          path: ${{ runner.temp }}/review-pr/
+          retention-days: 1
+          if-no-files-found: error

@@ -169,27 +169,25 @@ def test_eligible_paths(path):
 
 
 @pytest.mark.parametrize("approved,head_matches", [(False, True), (True, False), (True, True)])
-def test_floor_receipt_bound_to_exact_head(monkeypatch, approved, head_matches):
+def test_floor_review_bound_to_exact_head(monkeypatch, approved, head_matches):
     head = "b" * 40
-    url = "https://github.com/org/repo/pull/12#issuecomment-123"
-    receipt = (
-        f"Drain-Review-Verdict: {'APPROVE' if approved else 'BLOCK'}\n"
-        f"Drain-Review-Head: {head if head_matches else 'c' * 40}\n"
-        f"Drain-Review-Artifact: {url}"
-    )
+    check = {"id": 1, "name": "review", "status": "completed", "app": {"id": 15368},
+             "conclusion": "success" if approved else "failure"}
 
     def fake_run(*args):
         if args[1:3] == ("pr", "view"):
-            return json.dumps({"number": 12, "body": receipt, "headRefOid": head}).encode()
+            return json.dumps({"number": 12,
+                               "headRefOid": head if head_matches else "c" * 40}).encode()
         if args[1:3] == ("repo", "view"):
             return b'{"nameWithOwner":"org/repo"}'
-        return json.dumps({"url": url, "association": "OWNER", "body": receipt}).encode()
+        assert args[2] == f"repos/org/repo/commits/{head}/check-runs?check_name=review&per_page=100"
+        return json.dumps({"check_runs": [check]}).encode()
 
     monkeypatch.setattr(hotfix, "run", fake_run)
     if approved and head_matches:
         hotfix.require_review("fix/signin", head, ["tinyassets/auth/provider.py"])
     else:
-        with pytest.raises(ValueError, match="APPROVE receipt"):
+        with pytest.raises(ValueError, match="passing `review` check"):
             hotfix.require_review("fix/signin", head, ["tinyassets/auth/provider.py"])
 
 
@@ -562,9 +560,10 @@ def test_canonical_gate_requires_receipt_without_private_path_exemptions(monkeyp
     monkeypatch.setattr(
         hotfix,
         "run",
-        lambda *a: b'{"number":1,"body":"","headRefOid":"wrong","nameWithOwner":"org/repo"}',
+        lambda *a: b'{"number":1,"headRefOid":"wrong","nameWithOwner":"org/repo",'
+                   b'"check_runs":[]}',
     )
-    with pytest.raises(ValueError, match="APPROVE receipt"):
+    with pytest.raises(ValueError, match="passing `review` check"):
         hotfix.require_review("fix", "b" * 40, [path])
 
 

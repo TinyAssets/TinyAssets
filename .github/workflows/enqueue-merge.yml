@@ -13,25 +13,29 @@ name: Enqueue merge
 # seconds after required-tests passed. #4649 was re-armed by cursor[bot] and
 # never entered the queue.
 #
-# This calls enqueuePullRequest once a Jonnyton comment opens with
-# Drain-Review-Verdict: APPROVE and Drain-Review-Head for this change, the
-# body cites that comment, required checks have passed, and a release-critical
-# diff carries the infra-change label. The actor is MERGE_ATTRIBUTION_TOKEN.
+# This calls enqueuePullRequest once every required check has passed at the
+# head, the `review` check among them (a PR review approving this change,
+# review.yml), and a release-critical diff carries the infra-change label. The
+# actor is MERGE_ATTRIBUTION_TOKEN.
 # If that token lacks Merge queues: Read and write, the job logs the owner
 # step and exits 0. It never uses GITHUB_TOKEN.
 #
-# A receipt or an infra-change label does not rerun Tests. pr-scope-guard
-# re-reads both, on pull_request_target. This job runs when that guard, Tests,
-# or invariants succeeds for a pull request. It does not listen to edited or
-# labeled itself: those events must not start another copy of the test jobs.
+# A review or an infra-change label does not rerun Tests: review.yml decides the
+# one and pr-scope-guard reads the other. This job runs when that guard, Tests,
+# invariants or a review decision succeeds for a pull request. It does not listen
+# to edited or labeled itself: those events must not start another copy of the
+# test jobs. A review decision made on a review runs on `workflow_run` itself, on
+# the default branch, so its PR comes from that run's `review-pr` artifact.
 
 on:
   workflow_run:
-    workflows: ["Tests", "invariants", "PR scope guard"]
+    workflows: ["Tests", "invariants", "PR scope guard", "review"]
     types: [completed]
 
 permissions:
   contents: read
+  # review.yml's `review-pr` artifact.
+  actions: read
 
 concurrency:
   group: enqueue-merge-${{ github.event.workflow_run.head_sha }}
@@ -49,7 +53,9 @@ jobs:
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       (github.event.workflow_run.event == 'pull_request' ||
-       github.event.workflow_run.event == 'pull_request_target')
+       github.event.workflow_run.event == 'pull_request_target' ||
+       (github.event.workflow_run.name == 'review' &&
+        github.event.workflow_run.event == 'workflow_run'))
     steps:
       - name: Check out trusted enqueue policy
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -69,12 +75,23 @@ jobs:
             exit 1
           fi
 
-      - name: Enqueue when the receipt and required checks have passed
+      - name: Read which PR a review decision was for
+        if: github.event.workflow_run.event == 'workflow_run'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: review-pr
+          path: ${{ runner.temp }}/review-pr
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Enqueue when the review and required checks have passed
         env:
           GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD: ${{ github.event.workflow_run.head_sha }}
           PR_LIST: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          REVIEW_PR: ${{ runner.temp }}/review-pr/pr
         shell: bash
         run: |
           set -euo pipefail
@@ -84,6 +101,15 @@ jobs:
             list='[]'
           fi
           numbers="$(jq -r '.[]?.number // empty' <<<"$list")"
+          if [ "$EVENT" = workflow_run ]; then
+            # review.yml's own run is on the default branch: its head names no PR.
+            numbers="$(head -c 16 "$REVIEW_PR" | tr -d '[:space:]')"
+            HEAD=""
+            if ! [[ "$numbers" =~ ^[1-9][0-9]{0,8}$ ]]; then
+              echo "::error::review.yml's artifact names no PR"
+              exit 1
+            fi
+          fi
           if [ -z "$numbers" ] && [ -n "${HEAD:-}" ]; then
             if ! numbers="$(gh api -H "Accept: application/vnd.github+json" \
                 "repos/${REPO}/commits/${HEAD}/pulls" --jq '.[].number')"; then

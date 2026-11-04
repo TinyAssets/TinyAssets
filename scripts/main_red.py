@@ -81,8 +81,8 @@ def render_body(*, sha: str, subject: str, run_url: str, failures: list[str],
         lines += [
             "Its parent was green and failing test IDs were reported; this merge is a "
             "candidate cause.",
-            "This PR reverts it. It is not armed: it needs a Drain-Review receipt like "
-            "every PR. Re-land the change with a fix once main is green.",
+            "This PR reverts it. It is not armed: it needs a review like every PR. "
+            "Re-land the change with a fix once main is green.",
         ]
     else:
         lines += [
