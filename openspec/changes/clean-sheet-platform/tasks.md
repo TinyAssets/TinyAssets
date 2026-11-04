@@ -2173,8 +2173,11 @@ R, S, M and W.
   - `platform/doors/apps.json`: Claude, ChatGPT (with dots and Codex), Grok Bot, Meta Muse,
     Gemini and Cursor, each with match data, `registration`, connect link, sentence, steps
     and copy text, its vendor page and the date read. ChatGPT's steps are the current
-    "Plugins, +, Add custom MCP server" (read 2026-11-04). The public `/connect` page is
-    built from it (`WebSite/site-react/app/connect`, its deploy triggered by the file).
+    "Plugins, +, Add custom MCP server" (read 2026-11-04). The public `/connect` page built
+    from it is on its own branch, `platform-brain-site`, which lands at the cutover (§9): a
+    merge of `WebSite/site-react/**` redeploys the live site, and live `/mcp` is the old
+    platform until then. Until it lands, `connect_url`'s anchors for Grok, Muse and Gemini
+    are not on the live page; the owner app's connected apps page links them meanwhile.
     Grok's and Muse's `say` sentence asks their agent to save the TinyAssets skill: it is the
     user's own request, sent in their own chat as the connect act. Nothing TinyAssets serves to
     an agent (the instructions, every tool's text, the plugins) asks it to save to its memory
@@ -2399,6 +2402,14 @@ R, S, M and W.
      - The same scripts run every five minutes and after every deploy, so the onboarding run
        happens once per fresh owner, not per probe: it is marked by the `Onboarded:` date,
        and every later probe starts from the onboarded, seeded owner.
+- [ ] **The public `/connect` page from `apps.json`** (slice BRAIN's website part, on branch
+  `platform-brain-site`), after the routes move above, so the live site never shows steps the
+  live `/mcp` does not serve: merge it to `main` (`deploy-site-react.yml` publishes it, its path
+  filter then including `platform/doors/apps.json`), and its sweep checks one section per app
+  `apps.json` names. It carries `WebSite/site-react/app/connect/page.tsx`,
+  `WebSite/site-react/scripts/sweep.py`, the workflow's path filter and the
+  `public-website-surface` spec's `/connect` line. Then `connect_url` reaches every app's
+  section, Grok's, Muse's and Gemini's among them.
 
 ## 10. The plan's later slices
 

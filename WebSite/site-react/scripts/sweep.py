@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import http.server
-import json
 import socketserver
 import sys
 import threading
@@ -28,9 +27,6 @@ from playwright.sync_api import sync_playwright
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE.parent / "out"
-# The apps the connect page lists, one section each (platform/doors/apps.json).
-APP_IDS = [app["id"] for app in json.loads(
-    (HERE.parent.parent.parent / "platform" / "doors" / "apps.json").read_text())["apps"]]
 PORT = 4323
 
 ROUTES = [
@@ -113,12 +109,8 @@ def main() -> int:
                     if h1s != 1:
                         failures.append(f"{label} {route}: expected one H1, got {h1s}")
                     if route == "/connect/":
-                        # Every app apps.json names has its place on the page (its connect_url).
-                        for app in APP_IDS:
-                            if not page.locator(f"#{app}").count():
-                                failures.append(f"{label} {route}: no #{app}")
                         if page.locator("main h1").inner_text() != (
-                            "One workspace for every assistant you use."
+                            "Talk to your agent from the tool you use."
                         ):
                             failures.append(f"{label} {route}: setup page missing")
                         canonical = page.locator('link[rel="canonical"]').get_attribute("href")

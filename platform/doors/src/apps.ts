@@ -17,7 +17,8 @@
  *   is that app's (review M3): an approval under a vendor's name sends codes only to that
  *   vendor. A `dcr` app with no redirects recorded has dynamic registration off.
  * - **Connect** (`connectUrl`): the public connect page's anchor for the app, which shows
- *   its current steps; agents hand the link, never copied steps.
+ *   its current steps; agents hand the link, never copied steps. The page built from this
+ *   file lands at the cutover (branch `platform-brain-site`, `tasks.md` §9).
  *
  * `checkedApps` holds the file to its shape, loudly, wherever it is read.
  */
