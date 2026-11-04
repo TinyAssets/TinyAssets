@@ -15,6 +15,8 @@ declare namespace Cloudflare {
     CACHED: DurableObjectNamespace<import("./worker").CachedOwnerDO>;
     SANDBOX: import("../src/sandbox").SandboxService;
     RUNG: DurableObjectNamespace<import("./worker").RungOwnerDO>;
+    /** The owner object exactly as production builds it, starter package and all. */
+    SEEDED: DurableObjectNamespace<import("./worker").SeededOwnerDO>;
     /** The gateway's connect entrypoint, test-only: a test seals a doorbell's token as the doors do. */
     CONNECT: import("../../doors/src/config").ConnectService;
     FILES: import("../src/files").ChunkStore;

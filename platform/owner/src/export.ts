@@ -113,6 +113,9 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     file_contents: t("content_id size inline refs", "content_id"),
     file_content_chunks: t("content_id idx sha256", "content_id idx"),
     file_chunks: t("sha256 size state stored refs holds gc_after holder", "sha256"),
+    // The starter package's receipts and the version reconciled (`starter.ts`).
+    starter_receipts: t("path version class state installed offered", "path"),
+    starter_state: t("only version retry_at noticed", "only"),
     // Collections.
     collection_rows: t("collection row_id revision seq etag writer private body updated_at " +
                        "creator change body_bytes content_id filer", "collection row_id"),

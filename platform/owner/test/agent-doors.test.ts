@@ -1,14 +1,15 @@
 /**
  * The agent's definitions (the run doors themselves are `runs.test.ts`'s): its files
  * under `/workspace/agents` and its skills under `/workspace/.agents`, `/workspace/skills`
- * and `/workspace/prompts`, which every engine reads, the owner's alone to change by any file door (review H1).
+ * and `/workspace/prompts`, which every engine reads, and its goals under `/workspace/goals`,
+ * the owner's alone to change by any file door (review H1).
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { type Origin } from "../src/ledger";
 import { type Binding, OwnerDO } from "../src/owner-do";
-import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, within } from "../src/paths";
+import { AGENTS_DIR, AGENTS_OWNER_ONLY, GOALS_DIR, OWNER_TREES, within } from "../src/paths";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { ALL_SCOPES } from "./runs-support";
 import { failure, TIERS } from "./support";
@@ -129,10 +130,56 @@ describe("the owner's agent definitions (review H1)", () => {
                                           content: bytes("mine") })).toHaveProperty("entry");
   }, 30_000);
 
-  it("name the agent trees: the agents, their skills and their prompts", () => {
+  it("name the agent trees: the agents, their skills, their prompts and the goals", () => {
     expect(OWNER_TREES).toEqual([AGENTS_DIR, "/workspace/.agents", "/workspace/skills",
-                                 "/workspace/prompts"]);
+                                 "/workspace/prompts", "/workspace/goals"]);
   });
+
+  it("hold the owner's goals as every other agent tree: a default (full) grant writes them, " +
+     "a narrowed one never", async () => {
+    const r = await ledgerRig();
+    await r.register(MUSE);  // a main agent the owner connected: its grant is full, the default
+    const client = r.bind(MUSE);
+    const refused = async (call: () => Promise<unknown>) => (await failure(call)).message;
+    const GOAL = `${GOALS_DIR}/a-goal.md`;
+    // The default grant makes the goals' directory, writes a goal, moves and removes one.
+    await r.stub.fileMkdir(client, { path: GOALS_DIR, expected_etag: null });
+    const made = await r.stub.fileWrite(client, { path: GOAL, expected_etag: "",
+      content: bytes("---\ntype: Goal\ngoal: active\nstatus: draft\n---\n## Done when\n") });
+    expect("entry" in made && made.entry.writer).toBe(`client:${MUSE.client}`);
+    expect(await r.stub.fileWrite(client, { path: `${GOALS_DIR}/b.md`, expected_etag: "",
+      content: bytes("# b") })).toHaveProperty("entry");
+    expect(await r.stub.fileRename(client, { from: `${GOALS_DIR}/b.md`,
+      to: `${GOALS_DIR}/c.md`, expected_etag: null, replace: false })).toHaveProperty("entry");
+    expect(await r.stub.fileRemove(client, { path: `${GOALS_DIR}/c.md`, expected_etag: null,
+                                             recursive: false })).toHaveProperty("removed");
+    // The owner narrows that agent's grant: it then changes no goal (whose Agreed section is
+    // what agents may do unasked), and still writes the rest of the workspace.
+    const [row] = (await r.stub.grantList(r.bind(null))).clients;
+    await r.stub.grantSet(r.session(null), { client: MUSE.client, source: "mcp", mode: "scoped",
+      scopes: [{ universe: "alpha", agent: "main", capability: "write_files" }],
+      expected_revision: row!.revision, name: "" });
+    const etag = (await r.stub.fileStat(r.bind(null), { path: GOAL })).entry!.etag;
+    expect(await r.stub.fileWrite(client, { path: "/workspace/mine.md", expected_etag: "",
+                                            content: bytes("mine") })).toHaveProperty("entry");
+    for (const call of [
+      () => r.stub.fileWrite(client, { path: GOAL, expected_etag: etag,
+                                       content: bytes("## Agreed\nanything") }),
+      () => r.stub.fileWrite(client, { path: `${GOALS_DIR}/new.md`, expected_etag: "",
+                                       content: bytes("# new") }),
+      () => r.stub.fileRemove(client, { path: GOAL, expected_etag: null, recursive: false }),
+      () => r.stub.fileRename(client, { from: GOAL, to: "/workspace/out.md",
+                                        expected_etag: null, replace: false }),
+      () => r.stub.fileRename(client, { from: "/workspace/mine.md", to: `${GOALS_DIR}/x.md`,
+                                        expected_etag: null, replace: false }),
+    ]) {
+      expect(await refused(call)).toBe(AGENTS_OWNER_ONLY);
+    }
+    expect((await r.stub.fileStat(r.bind(null), { path: GOAL })).entry!.etag).toBe(etag);
+    // The owner, in its session, still writes them.
+    expect(await r.stub.fileWrite(r.session(null), { path: GOAL, expected_etag: etag,
+      content: bytes("## Agreed\n") })).toHaveProperty("entry");
+  }, 30_000);
 
   it("hold only the tree and the roots themselves, never a name that merely starts alike " +
      "(review round 2)", async () => {

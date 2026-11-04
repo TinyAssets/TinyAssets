@@ -912,7 +912,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The version is the rowid: the feed reads a key range.
     "CREATE TABLE file_history (version INTEGER PRIMARY KEY, path TEXT NOT NULL, " +
       "op TEXT NOT NULL CHECK (op IN ('write', 'mkdir', 'delete', 'rename_from', " +
-      "'rename_to', 'restore', 'conflict')), " +
+      "'rename_to', 'restore', 'conflict', 'starter')), " +
       "kind TEXT CHECK (kind IS NULL OR kind IN ('file', 'dir')), content_id TEXT, " +
       "size INTEGER NOT NULL, mode INTEGER NOT NULL, writer TEXT NOT NULL, at REAL NOT NULL, " +
       // `released`: the path is gone, so retention has let the row go (it is always due);
@@ -1841,6 +1841,28 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "ALTER TABLE file_intents ADD COLUMN lease TEXT CHECK (lease IS NULL OR " +
       "(length(lease) = 32 AND lease NOT GLOB '*[^0-9a-f]*'))",
+  ]),
+  // 3, after STORE's 2: the starter package (starter.ts): a receipt for each path of the
+  // carried package (at most `STARTER_FILES_MAX`, its files and retired paths together; any
+  // other path loses its receipt at the next pass), and the one row of the version last
+  // reconciled whole, its retry and the version whose failure the owner was told of. Both
+  // are the owner's own state, exported (`export.ts`) and so captured into a generation as
+  // they change: a restored owner keeps its receipts, so its edited files stay its own.
+  Object.freeze([
+    "CREATE TABLE starter_receipts (path TEXT PRIMARY KEY CHECK (length(CAST(path AS BLOB)) " +
+      "<= 4096), version INTEGER NOT NULL CHECK (version >= 0), class TEXT NOT NULL CHECK " +
+      "(class IN ('managed', 'personal')), state TEXT NOT NULL CHECK (state IN ('installed', " +
+      "'edited', 'deleted', 'proposed')), installed TEXT CHECK (installed IS NULL OR " +
+      "length(installed) = 64), offered TEXT CHECK (offered IS NULL OR length(offered) = 64)) " +
+      "WITHOUT ROWID",
+    "CREATE TABLE starter_state (only INTEGER PRIMARY KEY CHECK (only = 1), version INTEGER " +
+      "NOT NULL CHECK (version >= 0), retry_at REAL, noticed INTEGER)",
+    `${LOGGED("starter_receipts", "path version class state installed offered", "path", "INSERT")}`,
+    `${LOGGED("starter_receipts", "path version class state installed offered", "path", "UPDATE")}`,
+    `${LOGGED("starter_receipts", "path version class state installed offered", "path", "DELETE")}`,
+    `${LOGGED("starter_state", "only version retry_at noticed", "only", "INSERT")}`,
+    `${LOGGED("starter_state", "only version retry_at noticed", "only", "UPDATE")}`,
+    `${LOGGED("starter_state", "only version retry_at noticed", "only", "DELETE")}`,
   ]),
 ]);
 

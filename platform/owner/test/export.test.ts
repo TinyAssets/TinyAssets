@@ -249,6 +249,46 @@ describe("a generation", () => {
     expect(digest(replay(made.lines))).toBe(made.atE);
   }, 120_000);
 
+  it("carries the starter's receipts as they change while it runs (slice STARTER)",
+     async () => {
+    const o = await owner();
+    await notices(o, 200);
+    const receipt = (i: number) => sqlIn(o.stub, "INSERT INTO starter_receipts (path, version, " +
+      "class, state, installed, offered) VALUES (?, 1, 'managed', 'installed', ?, NULL)",
+      `/workspace/.agents/skills/s${i}/SKILL.md`, "a".repeat(64));
+    for (let i = 0; i < 3; i++) {
+      await receipt(i);
+    }
+    await sqlIn(o.stub, "INSERT INTO starter_state (only, version, retry_at, noticed) " +
+                        "VALUES (1, 1, NULL, NULL)");
+    let after = 0;
+    const made = await generate(o.stub, {
+      afterUnit: async ({ gate }) => {
+        after++;
+        await gate.write(() => {
+          const sql = gate.storage.sql;
+          if (after === 1) {
+            sql.exec("UPDATE starter_receipts SET state = 'edited', offered = ? WHERE path = ?",
+                     "b".repeat(64), "/workspace/.agents/skills/s0/SKILL.md");
+          } else if (after === 2) {
+            sql.exec("DELETE FROM starter_receipts WHERE path = ?",
+                     "/workspace/.agents/skills/s1/SKILL.md");
+          } else if (after === 3) {
+            sql.exec("INSERT INTO starter_state (only, version, retry_at, noticed) VALUES " +
+                     "(1, 2, NULL, NULL) ON CONFLICT (only) DO UPDATE SET version = 2");
+          }
+        });
+      },
+    });
+    expect(made.notices).toEqual([]);
+    expect(after).toBeGreaterThan(3);
+    const rows = replay(made.lines);
+    expect(digest(rows)).toBe(made.atE);
+    expect(Object.keys(rows["starter_receipts"]!)).toHaveLength(2);
+    expect(Object.values(rows["starter_state"]!).map((row) => JSON.parse(row)["version"]))
+      .toEqual([2]);
+  }, 120_000);
+
   it("settles though a 5,000-file sync runs through its pass (review R4-3)", async () => {
     const o = await owner();
     await notices(o, 1_600);  // some twenty-five bursts: hundreds of units and calls

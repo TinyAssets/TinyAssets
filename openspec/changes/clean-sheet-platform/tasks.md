@@ -1715,6 +1715,174 @@ R, S, M and W.
   longest put in flight against `PUT_GRACE_MS`; slice L's isolate memory probe, with a
   16 MiB request body; a live check of `limits.subrequests` at
   10,000,000.
+- [x] STARTER The default agent every new owner gets (the research: `starter_research.md`,
+  `ai_storage_research.md`, `okf_update_research.md`, `scratch_storage_research.md`; the
+  founder's answers of 2026-11-03), in workerd, nothing deployed:
+  - The v1 starter, one package of data (`platform/starter/`, version 1): `main`'s
+    `AGENTS.md`, `agent.json` (`engine` `auto`, every run scope, `run_graph` among them),
+    `SOUL.md` and `USER.md` (personal: seeded once, never updated), and the shared skills
+    `knowledge` (OKF 0.2's core in our words, the spec vendored byte for byte at
+    `GoogleCloudPlatform/open-knowledge-format@ad30107`, a provenance line first),
+    `schedule`, `rooms-and-board`, `onboarding` and `scratch` (`$TA_SCRATCH`,
+    `/scratch/<agent>`). `bundle.mjs` makes `starter.json`, which the owner's object
+    carries; the starter guard holds it to its sources and every file to every engine's
+    rules (Agent Skills frontmatter, `AGENTS.md` plain and under Codex's 32 KiB).
+  - Seeding and updates (`owner/src/starter.ts`, migration 3, the `starter` lane): an
+    admitted owner with nothing reconciled is seeded as the owner's own writes (history op
+    `starter`), a receipt a path, `agent.json` last; a newer carried version replaces
+    unedited managed files, writes `<file>.ta-new` beside edited ones with one notice,
+    never restores a deleted one, never touches a personal one, and delivers a widening
+    (more scopes, a script, a marked version) as a proposal beside its file; undo is the
+    file's own history. A failed pass keeps what it wrote, tells the owner once a version
+    and is tried again; `starterReceipts` is the owner's read. The tests' objects carry no
+    package unless they test it (`internals.starter`; `SEEDED` is production's).
+  - Self-scheduling: a run's MCP door serves `run_graph`, `run_status` and `run_cancel`
+    (the `run` profile but `converse`), an owner-started or scheduled run as the owner held
+    to its agent's `run_graph`, a client's run to that client's grant; what a run launches
+    runs unattended. A scheduled run's result posts to the owner's room with its agent
+    (`dm:<the agent's id>`, main's for main), once; an empty one posts nothing.
+  - The MCP door reads files: `file_read` (`fileText`, UTF-8 windows at a character),
+    `head_chars` on `file_list` (small files), and lexical, bounded `search` and `fetch` in
+    ChatGPT's deep research shape (`file-search.ts`; whole words; paged by matches, every
+    match reachable; `SEARCH_SCAN`, `SEARCH_ANSWER_BYTES` and `SEARCH_QUERY_BYTES` each a
+    measured technical ceiling in `limits-audit.md`; `fetch` serves every id `search`
+    answers), held to `read_files`, in the directory, custom and run profiles. A run's
+    `file_list` is held to its grant (it went to the sync token's check).
+  - Review round 1 (rvsa, REQUEST_CHANGES), its attack tests now the fixed behaviour
+    (`owner/test/starter-review.test.ts`): a run's `run_status` and `run_cancel` held to its
+    agent's `run_graph` (H1); only the owner's own schedules post to `dm:<agent>`, a
+    client's result read through its `run_status` (M1), and `NO_REPLY` posts nothing; a
+    widening of an edited file is a proposal (M2); `search` split into words once and paged
+    by matches, its worst case measured (`guards/search-cpu.test.ts`: 766 ms of CPU at
+    5,000 matching 4 KiB files and a 1 MiB query) (M3); the rooms skill says how mail
+    between agents is answered (M4); the OKF watcher opens, readies and labels with
+    `MERGE_ATTRIBUTION_TOKEN` as `main-red.yml` does (fails loudly without it), asks the
+    founder's login, quotes upstream text escaped inside a fence, checks it for hidden
+    characters, and holds least permissions with pinned actions (M5, L6); a retired path's
+    deletion is kept (L1), an unadopted proposal stays one (L2), a door that needs an agent
+    awaits the seed (L3), the blank letters and separators are hidden characters (L5), and a
+    README- or tag-only upstream change ships no starter version (L7).
+  - The OKF watcher (`.github/workflows/okf-watch.yml`, `platform/starter/okf-watch.ts`):
+    daily, a content diff of the canonical spec's blob, its README for a relocation
+    banner, new tags and hidden Unicode; one draft pull request a change, a cooldown of 7
+    days, then ready for the automated review, or the founder asked when hidden text could
+    widen what agents do; nothing merges on a version number or by the workflow.
+  - Claude Code's auto memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its record), which
+    moved the template's tag: rebuilt and pinned live, `tinyassets-sandbox:sc0a20c7fb88fb4d1` (after the merge with STORE).
+  - Live, in three throwaway sandboxes from it (about 7 sandbox-minutes, each killed and
+    gone): each engine's CLI, from `main`'s directory with the starter projected, against a
+    local capture server as its base URL with a dummy key. Claude Code 2.1.309, Codex
+    0.166.0, Gemini CLI 0.66.0 and pi 1.4.0 each put `AGENTS.md` and all five skills in the
+    request they built, with no `CLAUDE.md` fallback needed; Kimi Code 2.4.1 (no key
+    credential) read `AGENTS.md` before stopping at its sign-in.
+- [ ] Owed by the starter slice:
+  - **Deviation, ruled 2026-11-03 (review M2, L10):** the research named `policy_propose`,
+    but it can't apply files (a held policy proposal applies only as a whole owner policy
+    document, `Policy.write`); `.ta-new` plus a notice is the proposal. Nothing widens until
+    the owner, or their agent at the owner's ask, adopts it; the `starter_proposal` notice
+    and the starter's `AGENTS.md` and `onboarding` say how (ask the agent, or replace the
+    file). No file-applying proposal kind is built.
+  - **ChatGPT reads the first page of a search only** (review L8): deep research and
+    company knowledge do not follow `next_cursor`, so past `SEARCH_SCAN` entries they see
+    the first page in path order. A known gap: scanning `/workspace/knowledge` first is one
+    answer.
+  - Review round 2 (rvsa): a widening at a path the owner already holds is a proposal,
+    a first seed over the owner's own `agent.json` included (R2-M1); a withdrawn widening's
+    unadopted `.ta-new` is removed with one `starter_withdrawn` notice (R2-L1);
+    `bundle.mjs` refuses a path dropped without being retired (R2-L4); `SEARCH_ANSWER_BYTES`
+    bounds the whole serialised answer (worst case measured at 14.2 of 16 MiB); the
+    watcher tells the founder by a bot comment and Pushover, never by a review request
+    (the token is the founder's own), never failing the run on a notification, with the
+    user token only in the steps that push or call `gh`, and its loops touching only its
+    own `okf-watch/` branches (R2-M2, R2-L3).
+  - Review round 3 (rvsa, APPROVE on the merge of main): merged slice L (its migration 15;
+    the starter's then after it; after P squashed the baseline, it is 3, after STORE's 2);
+    SEEDED test owners
+    admitted as L's sign-up admits them; a retired path's unadopted proposal withdrawn
+    (F3-retired-proposal); the race-free seed wait in the suite (F3-seed-wait); the bundle
+    guard says loudly when main's history is missing.
+  - **The shared brain** (`shared_brain_research.md` §6.2, items 1 to 5; starter version 2):
+    the owner's profile moved to the owner-wide `/workspace/USER.md` (`moved_from` the retired
+    `agents/main/USER.md`: an owner who filled the old one is seeded with a copy of it, the
+    old file left, and told once; an untouched one gets the new template); the workspace's
+    map `/workspace/index.md` seeded (OKF index lines, no frontmatter); a new
+    `shared-brain` skill (look here before asking, write answers here, claim before acting;
+    a newer TinyAssets entry wins over the agent's own memory); the `rooms-and-board` board
+    section's create-only claims, `until:` leases and takeover by compare and swap (review
+    R4-M1, R4-L3: claims are `private: false`, so a colliding agent reads who holds one; a
+    holder extends `until:` on the row's etag before it passes and stops on a conflict,
+    reads the row again right before the act, and a taker first checks whether the act's
+    result already exists); the
+    `knowledge` skill's scope the whole workspace, with the derived-map rule. A personal
+    file may now sit outside the owner's trees; a managed one may not. The doors' part
+    (client instructions, `file_write` and `file_edit`, descriptions, the connect page,
+    plugins) is the BRAIN slice's, after STARTER and STORE merge.
+  - **Goals and proactivity** (`goals_research.md` §6.1; starter version 3): a new `goals`
+    skill (one page a goal under `/workspace/goals`: Done when, Agreed, Not wanted, Now,
+    Links; the owner's own word alone sets the first three; its steward works on an active,
+    confirmed goal unasked, inside the workspace, an outward act only as Agreed names it, and
+    spending or anything irreversible always asks); the goals' index `/workspace/goals/index.md`
+    seeded (personal: `# Active`, `# Paused`, `# Ended`); `AGENTS.md` reads the index at the
+    start of a conversation, its Proactivity section is initiative per goal and interruption
+    per owner, and its Trust names the goal pages; `USER.md`'s off/low/high dial and quiet
+    hours become "Messaging me unasked", in the owner's words (more, less, none, and when
+    not), which come before the default rule; onboarding asks what the owner is working toward;
+    the schedule skill's brief is a pass over the goals at the owner's times, a dated step
+    may get its own `at` run; an app's own goal or loop command is pointed at the goal's
+    page; a board row names its goal on its second line; the
+    shared-brain skill reads the goals' index before acting. `/workspace/goals` joins
+    `OWNER_TREES` (a narrowed grant changes no goal; the default grant writes them; a client
+    sandbox's always-read set stays the abilities' trees, `ABILITY_TREES`). One link rule for
+    the whole workspace: root-absolute from `/workspace` (the knowledge skill and the map
+    changed to it; a guard holds every link in the package to it). No counts, default
+    schedules or fixed numbers in the text: the knowledge skill's page and index sizes
+    became "short". The goals clause in the client instructions and the plugins are BRAIN's.
+  - **Connect is the only step** (`autoconnect_research.md` §5.2 STARTER; starter version 4,
+    text only): onboarding gains "their other assistants" (ask, name the connected ones,
+    offer the rest each its connect step: `connect_url` from `agents_list`, which BRAIN
+    builds from `apps.json`, or the connect page) and the profile's `Onboarded:` marker, so
+    it runs once for all of the owner's agents whatever was answered (a profile with a time
+    zone counts as onboarded); the shared-brain skill's rule 5 offers an assistant not
+    connected once, records "Offered to connect" in `USER.md`, and after a no "Don't
+    suggest connecting", so no agent offers it again; connecting closes the gap. `USER.md`
+    gains "Assistants I use" and "Onboarded"; `AGENTS.md` tests the marker. No text asks an
+    agent to save to its own memory or install anything. `apps.json`, `agents_list.apps`,
+    the seed-awaiting reads and the instructions are BRAIN's.
+  - The OKF watcher's review has no consumer of its own: a readied proposal waits for an
+    agent review session's receipt, as every pull request does (founder item, if an
+    automatic reviewer is wanted).
+  - **Lands after `platform-store`**: the `scratch` skill describes STORE's runner
+    (`TA_SCRATCH`, scratch caches, the cleared notice).
+  - **Codex ignores `OPENAI_BASE_URL`** (0.166.0, live above): with only the record's
+    variable its request went to api.openai.com; `-c openai_base_url="..."` reached the
+    capture server. Codex's API-key runs need that argument in its record (slice E's
+    checker takes base URLs as variables only), before any Codex key run.
+  - Kimi's skills were not read before its sign-in stage: check with a signed-in Kimi in
+    the founder's live test.
+  - Slice L's explicit admit (pending owners) must re-sync the schedule, so a new owner's
+    `starter` lane is armed the moment it is admitted.
+  - Merged after STORE (main `9c0c7d038`: P's squashed baseline, STORE's migration 2): the
+    starter's migration is 3; `starter_receipts` and `starter_state` are exported, with
+    capture triggers (`LOGGED`) and their owner-bound terms (361,189 bytes, inside the
+    starter's quarter of the room under half; no `REPLACE`, upserts only); the seed writes
+    through the files plane as the owner, so its files count in the one storage number,
+    sit in every generation, and a seed refused `storage_full` stops, tells the owner once
+    and is tried again. The template is rebuilt and pinned once, after this merge.
+  - The owner app's browser test runs the files Worker as production binds it (the doors'
+    FILES its upload entrypoint, the owner object's its whole service), so a new owner's
+    seed really runs there, and asserts it landed: `main`, `/workspace/USER.md`,
+    `/workspace/index.md` and `agents/main/agent.json`, with no `starter_failed`. The
+    doors' unit suite asserts the same through its own bindings (shown to fail with the
+    files binding taken away), and the owner's that a seed unable to reach its store tells
+    the owner and keeps its retry. The browser test's own agent is `helper`: `main` is
+    seeded.
+  - The founder's live test (8): onboarding writes `SOUL.md` and `USER.md`; "remember X"
+    lands in knowledge and is recalled on another engine; the brief made by the agent
+    itself posts to `dm:main`; a main agent finds the knowledge with `search` and `fetch`
+    (ChatGPT deep research, `ui-test`).
+  - Later, by the research's order: the knowledge lint script; `sync-ignore` defaults; the
+    agent's own `mcp.json` merged into the run config, then a `browser` skill; the standing
+    comparison against the four main agents.
 
 ## 6. Files and sandbox
 
