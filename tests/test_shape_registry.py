@@ -215,6 +215,16 @@ def test_new_model_call_entry_symbol_is_detected_outside_registered_path():
     )
 
 
+def test_entry_symbols_scan_only_python():
+    source = "class Scheduler {}\nexport function model_call() {}\n"
+    assert check_shapes.second_path_problems("platform/owner/src/scheduler.ts", source) == []
+    assert check_shapes.second_path_problems("platform/x.js", source) == []
+    found = check_shapes.second_path_problems("tinyassets/new_scheduler.py", "class Scheduler:\n")
+    assert found == [
+        f"S9 second-path: tinyassets/new_scheduler.py matches {check_shapes.ENTRY_SYMBOLS['S9']}"
+    ]
+
+
 def test_owner_tick_and_account_limit_guards(tmp_path: Path):
     code = tmp_path / "tinyassets" / "legacy.py"
     code.parent.mkdir()
