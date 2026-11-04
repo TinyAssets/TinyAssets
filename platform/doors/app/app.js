@@ -42,8 +42,36 @@ function say(text, kind = "good", ...extra) {
   fill(notice, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra));
 }
 
+/**
+ * Each render's turn, and the place it is for. A screen starts in the turn of the render
+ * that drew it, and paints only while that turn is the latest and the owner is still at its
+ * place, its section and its argument: a slower earlier screen, one a late event redraws (a
+ * sign-in's end redrawing Model sources, a save re-listing its folder), or one still loading
+ * when the owner signs out never replaces what the owner now sees. A screen past its turn
+ * stops at its paint (`STALE`), said nowhere.
+ */
+const RENDER = { turn: 0 };
+const STALE = new Error("a screen past its turn");
+
+/** The turn a screen for `section` at `arg` starts in: the latest, while the owner is there. */
+function turnOf(section, arg = null) {
+  const at = place();
+  return at.section === section && at.arg === (arg ?? null) ? RENDER.turn : -1;
+}
+
+/** `children` as the main screen, in turn `turn` only. */
+function paint(turn, ...children) {
+  if (turn !== RENDER.turn) {
+    throw STALE;
+  }
+  fill(main, ...children);
+}
+
 /** A failure, in plain words; a change that needs a fresh sign-in offers one. */
 function report(error) {
+  if (error === STALE) {
+    return;
+  }
   if (error instanceof Refused && error.message === SESSION_NEEDED) {
     say("To change this, sign in again: changes need a sign-in from the last 8 hours.", "bad",
         h("button", { type: "button", onclick: () => signIn() }, "Sign in again"));
@@ -82,6 +110,10 @@ function signedOutView() {
 }
 
 async function render() {
+  // Every render takes a turn, the signed-out view's too: no screen still loading paints
+  // over it.
+  RENDER.turn += 1;
+  const turn = RENDER.turn;
   fill(notice);
   if (!signedIn()) {
     signedOutView();
@@ -98,6 +130,9 @@ async function render() {
   try {
     await SCREENS[section](arg);
   } catch (error) {
+    if (error === STALE || turn !== RENDER.turn) {
+      return;
+    }
     fill(main, h("h1", {}, SECTIONS.find(([id]) => id === section)[1]));
     report(error);
   }
@@ -110,12 +145,13 @@ function planLine(name, numbers) {
            h("td", {}, bytes(numbers.storage_bytes)));
 }
 
-async function home() {
+async function home(arg = null) {
+  const turn = turnOf("home", arg);
   const [account, { notices }] = await Promise.all([call("account"), call("notices")]);
   const used = account.usage.chunk_bytes + account.usage.inline_bytes;
   const mine = account.tiers?.[account.tier] ?? null;
   const upgrade = new URLSearchParams(location.search).get("upgrade") === "1";
-  fill(main,
+  paint(turn,
        h("h1", {}, "Home"),
        h("section", {},
          h("h2", {}, `Your plan: ${account.tier === "paid" ? "Paid" : "Free"}`),
@@ -161,6 +197,7 @@ async function writeNew(path, text) {
 }
 
 async function agents(arg) {
+  const turn = turnOf("agents", arg);
   if (arg !== null) {
     return agent(arg);
   }
@@ -219,7 +256,7 @@ async function agents(arg) {
     await writeNew(`${agentDir(chosen)}/agent.json`, `${JSON.stringify(file, null, 2)}\n`);
     location.hash = `#agents/${encodeURIComponent(chosen)}`;
   };
-  fill(main,
+  paint(turn,
        h("h1", {}, "Agents"),
        h("section", {},
          live.length === 0 ? h("p", { class: "muted" }, "You have no agents yet.")
@@ -262,6 +299,7 @@ function frameLine(frame) {
 }
 
 async function agent(name) {
+  const turn = turnOf("agents", name);
   const talk = talkOf(name);
   clearTimeout(talk.timer);
   const said = h("div", {});
@@ -357,7 +395,7 @@ async function agent(name) {
   };
   const newFile = h("input", { type: "text", placeholder: "skills/notes/SKILL.md" });
 
-  fill(main,
+  paint(turn,
        h("p", {}, h("a", { href: "#agents" }, "All agents")),
        h("h1", {}, name),
        h("section", {},
@@ -458,7 +496,8 @@ function heads(rows) {
       row.deleted ? null : h("small", {}, `by ${row.writer}`))));
 }
 
-async function rooms() {
+async function rooms(arg = null) {
+  const turn = turnOf("rooms", arg);
   const [inbox, board, { owner_agents: owned }] = await Promise.all([
     call("tools/inbox_digest", { limit: 100, after: 0 }),
     call("tools/board_digest", { limit: 100, after: 0 }), call("tools/agents_list")]);
@@ -466,7 +505,7 @@ async function rooms() {
     h("option", { value: `dm:${a.agent_id}` }, `You and ${a.agent}`)));
   const body = h("textarea", {});
   const mail = inbox.mail.messages;
-  fill(main,
+  paint(turn,
        h("h1", {}, "Rooms and board"),
        h("section", {},
          h("h2", {}, "Mail to you"),
@@ -636,7 +675,8 @@ function signinPanel(record, present, live) {
   return box;
 }
 
-async function sources() {
+async function sources(arg = null) {
+  const turn = turnOf("sources", arg);
   const [{ sources: records }, { connections }, { signins: live, engines }] = await Promise.all([
     call("sources"), call("connections/list"), call("signin/list")]);
   const presence = new Map(engines.map((engine) => [engine.engine, engine]));
@@ -673,7 +713,7 @@ async function sources() {
     }
     return ways;
   };
-  fill(main,
+  paint(turn,
        h("h1", {}, "Model sources"),
        h("section", {},
          h("h2", {}, "Connected"),
@@ -702,7 +742,8 @@ async function sources() {
 
 // -- Connected apps: code mode, each client's tools, revokes --------------------------
 
-async function apps() {
+async function apps(arg = null) {
+  const turn = turnOf("apps", arg);
   const [policy, { clients }, { tools }, { agents: mains, apps: known }, { kinds }] =
     await Promise.all([
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
@@ -735,7 +776,7 @@ async function apps() {
   const named = (c) => c.name || known.find((app) => app.id === c.vendor)?.name
     || c.client.slice(0, 12);
   const unconnected = known.filter((app) => app.id !== null && !app.connected);
-  fill(main,
+  paint(turn,
        h("h1", {}, "Connected apps"),
        h("section", {},
          h("h2", {}, "Code mode"),
@@ -802,7 +843,8 @@ async function apps() {
 
 // -- API keys -------------------------------------------------------------------------
 
-async function keys() {
+async function keys(arg = null) {
+  const turn = turnOf("keys", arg);
   const [{ clients }, { capabilities }] = await Promise.all([call("grants"),
                                                              call("capabilities")]);
   const listed = clients.filter((c) => c.source === "api_key" && c.mode !== "revoked");
@@ -812,7 +854,7 @@ async function keys() {
   const checks = capabilities.map((c) =>
     h("label", {}, h("input", { type: "checkbox", value: c.id }), c.words));
   const minted = h("div", {});
-  fill(main,
+  paint(turn,
        h("h1", {}, "API keys"),
        h("section", {},
          h("h2", {}, "Your keys"),
@@ -843,12 +885,13 @@ async function keys() {
 // -- Your data ------------------------------------------------------------------------
 
 async function data(arg) {
+  const turn = turnOf("data", arg);
   const dir = arg ?? "/workspace";
   const [{ entries }, account] = await Promise.all([
     call("tools/file_list", { dir, limit: 200 }), call("account")]);
   const editor = h("div", {});
   const parent = dir.slice(0, dir.lastIndexOf("/")) || null;
-  fill(main,
+  paint(turn,
        h("h1", {}, "Your data"),
        h("section", {},
          h("h2", {}, "Export"),
@@ -864,7 +907,7 @@ async function data(arg) {
              entry.kind === "file"
                ? h("a", { href: "#", onclick: (event) => {
                    event.preventDefault();
-                   edit(editor, entry.path, () => data(dir)).catch(report);
+                   edit(editor, entry.path, () => data(arg)).catch(report);
                  } }, entry.path.split("/").at(-1))
                : h("a", { href: `#data/${encodeURIComponent(entry.path)}` },
                    `${entry.path.split("/").at(-1)}/`),
@@ -875,9 +918,10 @@ async function data(arg) {
 // -- Past runs: newest first, a page at a time ---------------------------------------
 
 async function history(arg) {
+  const turn = turnOf("history", arg);
   const before = arg === null ? undefined : Number(arg);
   const { runs, next } = await call("runs", before === undefined ? {} : { before });
-  fill(main,
+  paint(turn,
        h("h1", {}, "Past runs"),
        h("section", {},
          runs.length === 0 ? h("p", { class: "muted" }, "No runs yet.")
