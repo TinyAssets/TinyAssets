@@ -16,8 +16,7 @@ The tag is the digest of what the template is made of (the runner's bundle, the 
 locks and this script), so a change to any of them is a new template version; the sandbox
 Worker's `E2B_TEMPLATE` names it (`sandbox/guards/template.test.ts` holds the two equal).
 
-    python3 -m venv v && v/bin/pip install --require-hashes --no-deps \
-        -r platform/sandbox/template/requirements.txt   # e2b==2.62.0, every package hashed
+    python3 -m venv v && v/bin/pip install e2b==2.62.0
     E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py \
         [--tag-only | --check-logins | --route-probe | --check-matcher]
 
