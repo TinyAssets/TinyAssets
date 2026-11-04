@@ -7,8 +7,8 @@ import { createHash } from "node:crypto";
 
 import { CHUNK_BYTES } from "../src/manifest";
 import {
-  type Content, joined, makeChunk, type Placement, type Plan, type Planned, recordParts,
-  type SegmentRecord, type Source, type Trailer,
+  type Content, joined, makeChunk, type Placement, type Plan, recordParts, type SegmentRecord,
+  type Source, type Trailer,
 } from "../src/segments";
 
 /** A stream's records encoded whole, as the format says (`segments.ts`'s header). */
@@ -52,8 +52,8 @@ export function storedContent(id: string, bytes: Uint8Array):
 }
 
 /** A plan's whole bytes, made a chunk at a time as a move makes them. */
-export async function streamed<T extends Planned>(
-    plan: Plan<T>, sources: (records: readonly T[]) => Promise<readonly (readonly Source[])[]>,
+export async function streamed(
+    plan: Plan, sources: (from: number, to: number) => Promise<readonly (readonly Source[])[]>,
     read: (content: Content, index: number) => Promise<Uint8Array>): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];
   for (let n = 0; n < plan.chunks; n++) {

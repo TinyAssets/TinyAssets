@@ -99,8 +99,8 @@ import { exported } from "./export";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import {
-  bloomHas, bloomOf, bytesOf, type Content, idKey, idOrder, ImageDigest, MOVE_BYTES, orderedId,
-  parseRecord, type Planned, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_MIN_BYTES,
+  bloomHas, bloomOf, bytesOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
+  parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
@@ -847,20 +847,6 @@ export function archivedMail(bytes: Uint8Array): ArchivedMail {
 }
 
 /**
- * A record an archive move places (planned from its length alone, `planSegment`), with its
- * room and when its message was posted: kept from a segment (a range of that segment's
- * content, placed as it is), or a hot message's (its rows read again for each chunk that
- * covers it, `archiveParts`, and its placed body's content by id, if it has one).
- */
-export interface MoveRecord extends Planned {
-  readonly room: string;
-  readonly at: number;
-  readonly kept?: { readonly content: Content; readonly offset: number };
-  readonly hot?: { readonly placed: string | null; readonly sha256: string;
-                   readonly bytes: number };
-}
-
-/**
  * A hot message's bytes as its segment record holds them, but its body: its row's line and
  * its body row's (the body raw after it, the row naming no content: the segment holds it),
  * its inline body's bytes if it has no placed one, and the newline after the body with its
@@ -889,19 +875,19 @@ function mailParts(message: Readonly<Record<string, unknown>>,
 }
 
 /**
- * A record a segment holds, kept as it is: its range of that segment's content, and its
- * first line (its message's row, the only part read) for its room, its chain and its time.
+ * A record a segment holds, kept as it is, appended to a move's table: its range of that
+ * segment's content (`ref`), and its first line (its message's row, the only part read) for
+ * its room, its chain and its time.
  */
-export function keptRecord(key: number, offset: number, length: number, content: Content,
-                           line: Uint8Array): MoveRecord {
+export function keptRecord(table: MoveTable, key: number, offset: number, length: number,
+                           ref: number, line: Uint8Array): number {
   const [row] = parseRecord(line);
   if (row === undefined || row[0] !== "ledger_messages") {
     throw new Error("an archived mail record lacks its message");
   }
   const message = row[1];
-  return { key, chain: message["chain_root"] as string, length,
-           room: message["room_id"] as string, at: message["created_at"] as number,
-           kept: { content, offset } };
+  return table.push(key, message["chain_root"] as string, message["room_id"] as string,
+                    message["created_at"] as number, length, MoveTable.KEPT, ref, offset);
 }
 
 /** A fence row's members bloom, as bytes. */
@@ -1849,18 +1835,17 @@ export class Ledger {
   }
 
   /**
-   * A batch planned (review N5: from its rows' lengths, never their bytes held): each
-   * message's record, its length, room, time, and its placed body by content id (checked
-   * against its hash as the move reads it) or its inline body checked here; the digest of
-   * its rows as held, and the agents its rooms name; null when it changed since it was
-   * picked. A read.
+   * A batch planned into a move's table (review N5: from its rows' lengths, never their
+   * bytes held; review N6: packed, never an object a record): each message's record, its
+   * length, room, time, and its placed body's content (`place` names it in the table, with
+   * the hash it must have as the move reads it) or its inline body, checked here; the digest
+   * of its rows as held; null when it changed since it was picked. A read.
    */
-  archiveBatch(seqs: readonly number[]):
-      { records: MoveRecord[]; digest: string; members: string[]; first_at: number;
-        last_at: number } | null {
+  archiveBatch(seqs: readonly number[], table: MoveTable,
+               place: (contentId: string, bytes: number, sha256: string) => number):
+      { digest: string } | null {
     const images = new ImageDigest();
-    const members = new Set<string>();
-    const records: MoveRecord[] = [];
+    let count = 0;
     const held = this.#images(seqs, (message, body, recipients) => {
       images.add({ message, body, recipients });
       const parts = mailParts(message, body, recipients);
@@ -1869,20 +1854,14 @@ export class Ledger {
           && createHash("sha256").update(parts.inline).digest("hex") !== message.body_sha256) {
         throw new Error("an archived body is not the body its message holds");
       }
-      for (const member of roomMembers(message.room_id)) {
-        members.add(member);
-      }
-      records.push({ key: message.seq, chain: message.chain_root, room: message.room_id,
-                     at: message.created_at,
-                     length: parts.head.byteLength + message.body_bytes + parts.tail.byteLength,
-                     hot: { placed, sha256: message.body_sha256,
-                            bytes: message.body_bytes } });
+      table.push(message.seq, message.chain_root, message.room_id, message.created_at,
+                 parts.head.byteLength + message.body_bytes + parts.tail.byteLength,
+                 placed === null ? MoveTable.INLINE : MoveTable.PLACED,
+                 placed === null ? -1 : place(placed, message.body_bytes, message.body_sha256),
+                 0);
+      count++;
     });
-    if (!held || records.length === 0) {
-      return null;
-    }
-    return { records, digest: images.digest(), members: [...members],
-             first_at: records[0]!.at, last_at: records.at(-1)!.at };
+    return !held || count === 0 ? null : { digest: images.digest() };
   }
 
   /**

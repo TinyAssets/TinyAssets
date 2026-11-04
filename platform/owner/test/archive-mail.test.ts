@@ -14,11 +14,12 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { BODY_BYTES_MAX } from "../src/bodies";
-import { LEDGER_LIMITS, type Ledger, mailRecord, type MoveRecord } from "../src/ledger";
+import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { parseTiers } from "../src/tier";
 import {
-  type Content, idKey, idOrder, makeChunk, MIN_RECORD_BYTES, orderedId, parseRecord,
+  type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MoveTable, orderedId,
+  parseRecord,
   parseTrailer, planSegment, recordBytes, recordParts, recordRows, type SegmentRecord,
   type Source,
   TIER_STORAGE_MAX,
@@ -138,13 +139,25 @@ async function exportArchived(r: Rig): Promise<{
   return { lines, archived };
 }
 
-/** A batch's sources as a move streams them, its bodies inline (no placed body read). */
-const hotSources = (ledger: Ledger) => async (records: readonly MoveRecord[]) => {
-  const parts = ledger.archiveParts(records.map((record) => record.key));
-  return records.map((record) => {
-    const own = parts.get(record.key)!;
+/**
+ * A batch's sources as a move streams them, its records the table's in order (a tail's
+ * batch), its bodies inline (no placed body read).
+ */
+const hotSources = (ledger: Ledger, table: MoveTable) => async (from: number, to: number) => {
+  const keys = Array.from({ length: to - from }, (_, k) => table.key(from + k));
+  const parts = ledger.archiveParts(keys);
+  return keys.map((key) => {
+    const own = parts.get(key)!;
     return [own.head, own.inline!, own.tail];
   });
+};
+/** A batch planned into a table of its own, no body placed. */
+const batchOf = (ledger: Ledger, seqs: readonly number[]) => {
+  const table = new MoveTable();
+  const batch = ledger.archiveBatch(seqs, table, () => {
+    throw new Error("no placed body in this batch");
+  });
+  return batch === null ? null : { ...batch, table };
 };
 const noRead = async (): Promise<Uint8Array> => {
   throw new Error("no stored content in this batch");
@@ -181,8 +194,9 @@ describe("segments", () => {
       expect(parseRecord(whole.subarray(offset, offset + length)))
         .toEqual([["t", { k: key, é: "\u0000" }]]);
     }
-    expect(() => planSegment("mail", [{ key: 2, chain: null, length: 1 },
-                                      { key: 1, chain: null, length: 1 }])).toThrow(/key order/);
+    expect(() => planSegment("mail", listed([{ key: 2, chain: null, length: 1 },
+                                             { key: 1, chain: null, length: 1 }])))
+      .toThrow(/key order/);
   });
 
   it("are streamed a chunk at a time to exactly the reference's bytes (review N5)", async () => {
@@ -203,11 +217,10 @@ describe("segments", () => {
                                           mail(11, new TextEncoder().encode("z".repeat(300)))]);
     const oldContent = storedContent("old", old.bytes);
     const records: SegmentRecord[] = [];
-    const planned: (MoveRecord & { parts: Source[] })[] = [];
+    const planned: { key: number; chain: string | null; length: number; parts: Source[] }[] = [];
     const push = (record: SegmentRecord, parts: Source[]) => {
       records.push(record);
-      planned.push({ key: record.key, chain: record.chain, length: recordBytes(record),
-                     room: "dm:x", at: record.key, parts });
+      planned.push({ key: record.key, chain: record.chain, length: recordBytes(record), parts });
     };
     for (let key = 1; key < 3; key++) {
       const record = mail(key, new TextEncoder().encode(`small ${key}`));
@@ -228,14 +241,14 @@ describe("segments", () => {
       const record = mail(key, new TextEncoder().encode("s"));
       push(record, recordParts(record));
     }
-    const plan = planSegment("mail", planned);
+    const plan = planSegment("mail", listed(planned));
     const reads: string[] = [];
     const read = async (content: Content, index: number) => {
       reads.push(`${content.id}:${index}`);
       return (content.id === "body" ? placed : oldContent).chunks.get(content.chunks[index]!)!;
     };
-    const bytes = await streamed(plan, async (part) => part.map((record) =>
-      (record as (typeof planned)[number]).parts), read);
+    const bytes = await streamed(plan, async (from, to) =>
+      planned.slice(from, to).map((record) => record.parts), read);
     const reference = referenceSegment("mail", records).bytes;
     expect(bytes.byteLength).toBe(reference.byteLength);
     expect(Buffer.compare(Buffer.from(bytes), Buffer.from(reference))).toBe(0);
@@ -245,7 +258,8 @@ describe("segments", () => {
     expect(reads.length).toBeLessThan(2 * (placed.content.chunks.length
                                            + oldContent.content.chunks.length) + 2);
     // A record that is not the length its plan placed fails loudly.
-    await expect(makeChunk(plan, 0, async (part) => part.map(() => [new Uint8Array(1)]), read))
+    await expect(makeChunk(plan, 0, async (from, to) =>
+      planned.slice(from, to).map(() => [new Uint8Array(1)]), read))
       .rejects.toThrow(/not the length its plan placed/);
   });
 
@@ -427,7 +441,7 @@ describe("the archive lane", () => {
       ledger.ack(MUSE, 2);
       ledger.post(null, room, "c4", "body 4", null);
       const pick = ledger.archivePick()!;
-      const batch = ledger.archiveBatch(pick.seqs)!;
+      const batch = batchOf(ledger, pick.seqs)!;
       // Between the units: the agent deleted, its mail with it.
       ledger.remove(muse);
       try {
@@ -680,12 +694,12 @@ describe("an export across a move (review H2)", () => {
       moved = true;
       const ledger = ledgerOn(gate.storage as unknown as DurableObjectStorage, LIMITS);
       const pick = await gate.write(() => ledger.archivePick())!;
-      const batch = await gate.write(() => ledger.archiveBatch(pick!.seqs))!;
+      const batch = await gate.write(() => batchOf(ledger, pick!.seqs))!;
       // Placed as a move places it: planned, then streamed a chunk at a time.
-      const plan = planSegment("mail", batch!.records);
+      const plan = planSegment("mail", batch!.table);
       const chunks: { sha256: string; bytes: Uint8Array }[] = [];
       for (let n = 0; n < plan.chunks; n++) {
-        const bytes = await makeChunk(plan, n, hotSources(ledger), noRead);
+        const bytes = await makeChunk(plan, n, hotSources(ledger, batch!.table), noRead);
         chunks.push({ sha256: createHash("sha256").update(bytes).digest("hex"), bytes });
       }
       const begun = await gate.write(() => files.begin(plan.size,
@@ -694,7 +708,7 @@ describe("an export across a move (review H2)", () => {
       await gate.write(() => files.adopt(begun.intent_id, "owner", (contentId) =>
         ledger.archiveCommit(pick!.seqs, batch!.digest, [], [{ content_id: contentId, fence: {
           first_key: plan.first, last_key: plan.last, first_at: 1, last_at: 1,
-          records: plan.records.length, bytes: plan.size,
+          records: plan.records.count, bytes: plan.size,
           trailer_offset: plan.trailer_offset, trailer_bytes: plan.trailer_bytes,
           members: "0".repeat(128) } }], 1)));
     }, sizes: { page: 256, part: 32 * 1024, gather: 64 * 1024 } });
@@ -891,6 +905,14 @@ describe("the archive lane's failures (review N3)", () => {
     // chunk, nothing moved, and the owner was told once, with the error as it was said.
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments"))
       .toEqual([{ n: 0 }]);
+    // Every message still hot and whole (its row, its body, its acked recipient), and no
+    // upload left begun: each failed pass aborted its intents.
+    expect(await sqlIn(r.stub, "SELECT b.body FROM ledger_messages m JOIN message_bodies b " +
+                               "ON b.message_id = m.message_id JOIN ledger_recipients t ON " +
+                               "t.message_id = m.message_id AND t.unacked = 0 ORDER BY m.seq"))
+      .toEqual(Array.from({ length: 6 }, (_, i) => ({ body: `body ${i}a` })));
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_moves")).toEqual([{ n: 0 }]);
     const [{ n }] = await sqlIn(r.stub, "SELECT archive_fails AS n FROM ledger_usage") as
       [{ n: number }];
     expect(n).toBeGreaterThanOrEqual(3);
@@ -939,7 +961,9 @@ describe("the tail's seal at the production limits (review N4)", () => {
      async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    const seen = await r.inLedger(LEDGER_LIMITS, async (ledger: Ledger) => {
+    const seen = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
+      const ledger = ledgerOn(state.storage, LEDGER_LIMITS);
+      const sql = state.storage.sql;
       const room = `dm:${muse}`;
       const post = (from: number, to: number) => {
         for (let n = from; n < to; n++) {
@@ -951,18 +975,36 @@ describe("the tail's seal at the production limits (review N4)", () => {
       // The reviewer's case: 11,999 small messages acked, then the real pick and batch.
       post(0, 11_999);
       const pick = ledger.archivePick()!;
-      const batch = ledger.archiveBatch(pick.seqs)!;
-      const plan = planSegment("mail", batch.records);
-      // Streamed as the move streams it: every record reads back as its message.
-      const bytes = await streamed(plan, hotSources(ledger), noRead);
+      const { table } = batchOf(ledger, pick.seqs)!;
+      const plan = planSegment("mail", table);
+      // Streamed as the move streams it (the production `mailParts`), byte for byte the
+      // reference encoder's of the same rows (`mailRecord`), every record its message.
+      const bytes = await streamed(plan, hotSources(ledger, table), noRead);
+      const reference = referenceSegment("mail", pick.seqs.map((seq) => {
+        const message = sql.exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM ledger_messages WHERE seq = ?", seq).one();
+        const body = sql.exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM message_bodies WHERE message_id = ?", message["message_id"]).one();
+        const recipients = sql.exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
+          message["message_id"]).toArray();
+        return mailRecord(message, { ...body, content_id: null }, recipients,
+                          [new TextEncoder().encode(body["body"] as string)]);
+      })).bytes;
+      const same = Buffer.compare(Buffer.from(bytes), Buffer.from(reference)) === 0;
       const trailer = parseTrailer(new TextDecoder().decode(bytes.subarray(
         plan.trailer_offset, plan.trailer_offset + plan.trailer_bytes)));
       const read = trailer.keys.filter(([key, offset, length]) =>
         recordRows(bytes.subarray(offset, offset + length))[0]![1]["seq"] === key).length;
-      const largest = Math.max(...batch.records.map((record) => record.length));
-      return { picked: pick.seqs.length, size: bytes.byteLength, largest, read,
-               records: batch.records.reduce((sum, record) => sum + record.length, 0) };
+      let largest = 0;
+      let records = 0;
+      for (let n = 0; n < table.count; n++) {
+        largest = Math.max(largest, table.length(n));
+        records += table.length(n);
+      }
+      return { picked: pick.seqs.length, size: bytes.byteLength, largest, read, records, same };
     });
+    expect(seen.same).toBe(true);
     expect(seen.read).toBe(seen.picked);
     expect(seen.picked).toBeLessThan(11_999);
     expect(seen.size).toBeGreaterThanOrEqual(LEDGER_LIMITS.archiveBytes);

@@ -139,20 +139,27 @@ describe("slice STORE's archive (item 2)", () => {
     expect(MOVE_BYTES).toBeGreaterThanOrEqual(2 * SEGMENT_LEAST_BYTES + 2 * BODY_BYTES_MAX);
   });
 
-  it("declares a streamed move's hold at its terms, past what workerd measured (review N5)",
+  it("derives a streamed move's hold from workerd's worst move and the most records one holds",
      () => {
-    // What a move holds whatever its records: the chunk being made, the source chunk kept
-    // and the one being read, the service binding's copy of the chunk sent; the plan at a
-    // segment's most records (about 200 bytes each), the trailer as text and as bytes
-    // (about 110 each), and a group of hot records' rows and lines.
-    const terms = 4 * CHUNK_BYTES + SEGMENT_MIN_RECORDS * (200 + 2 * 110) + 1024 * 1024;
-    expect(MOVE_HOLD_BYTES).toBeGreaterThanOrEqual(terms);
-    // Measured in workerd (`limits-audit.md`, round 4): the largest live heap growth of the
-    // worst merge, the worst rewrite and a tail seal of the smallest messages, sampled after
-    // two forced GCs; the service binding's copy of a chunk on top, which the heap may not
-    // show.
-    const MEASURED = 20.0 * 1024 * 1024;
-    expect(MOVE_HOLD_BYTES).toBeGreaterThanOrEqual(MEASURED + CHUNK_BYTES);
+    const MIB = 1024 * 1024;
+    // Measured in workerd (round 5, `limits-audit.md`): the move with the most records one
+    // merge took at the production limits (32,568: a piece of small records near twice the
+    // least, and small stragglers to MOVE_BYTES) grew the live heap by at most 32.2 MiB; a
+    // record costs about 192 bytes in its packed table (150, measured at the bound) and plan
+    // (42, measured in V8).
+    const PEAK = 32.2 * MIB;
+    const PEAK_RECORDS = 32_568;
+    const PER_RECORD = 192;
+    // The most records a move can hold: `pack`'s largest piece of records at their least,
+    // and the stragglers one pick takes at most (`LEDGER_LIMITS.archiveRecords`).
+    const most = Math.floor(2 * SEGMENT_LEAST_BYTES / MIN_RECORD_BYTES)
+      + LEDGER_LIMITS.archiveRecords;
+    expect(most).toBe(74_932);
+    // What the worst move held besides its records, the most records' cost, and the
+    // service binding's copy of the chunk it sends.
+    const hold = PEAK - PEAK_RECORDS * PER_RECORD + most * PER_RECORD + CHUNK_BYTES;
+    expect(MOVE_HOLD_BYTES).toBeGreaterThanOrEqual(hold);
+    expect(MOVE_HOLD_BYTES).toBe(Math.ceil(hold / CHUNK_BYTES) * CHUNK_BYTES);
   });
 
   it("lets a tier offer about 0.5 TB: the fence rows, each a sealed segment's least bytes",

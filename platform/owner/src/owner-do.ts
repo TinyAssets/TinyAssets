@@ -163,7 +163,6 @@ import {
 } from "./codemode";
 import {
   type Actor, type Agent, type ArchivedMail, archivedMail, keptRecord, type MailParts,
-  type MoveRecord,
   type ChainMail,
   checkMessage, clock,
   type Delivery, type Fence, Ledger, type LedgerLimits, STORAGE_BUSY,
@@ -173,8 +172,8 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import {
-  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_HOLD_BYTES, pack,
-  parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES, type Source as Run,
+  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_HOLD_BYTES, MoveTable,
+  pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES, type Source as Run,
 } from "./segments";
 import { Erasure } from "./erase";
 import {
@@ -1392,26 +1391,23 @@ const ARCHIVE_RETRY_S = 60;
 /**
  * An archive move's reads of stored contents (review N5): each chunk read whole through
  * `FILES` (which rechecks its hash), the last one kept for the next range in it; and each
- * placed body of the batch checked against its message's hash as its chunks are first read,
- * in order, in the move's first pass (`bodiesChecked`).
+ * content the move's table gives a hash for (a placed body, its message's) checked as its
+ * chunks are first read, in order, in the move's first pass (`bodiesChecked`), one hash at a
+ * time, so a move of many placed bodies holds none but the one being read.
  */
 class MoveReader {
   readonly #files: Files;
-  readonly #placed: ReadonlyMap<string, Stored>;
-  readonly #checks = new Map<string, { next: number; hash: ReturnType<typeof createHash>;
-                                       sha256: string }>();
+  readonly #table: MoveTable;
+  /** Each content's next chunk to hash; its count once checked. */
+  readonly #next: Uint32Array;
+  #hashing: { ref: number; hash: ReturnType<typeof createHash> } | null = null;
+  #checking = true;
   #last: { sha256: string; bytes: Uint8Array } | null = null;
 
-  constructor(files: Files, placed: ReadonlyMap<string, Stored>,
-              records: readonly MoveRecord[]) {
+  constructor(files: Files, table: MoveTable) {
     this.#files = files;
-    this.#placed = placed;
-    for (const record of records) {
-      if (record.hot?.placed != null) {
-        this.#checks.set(record.hot.placed, { next: 0, hash: createHash("sha256"),
-                                              sha256: record.hot.sha256 });
-      }
-    }
+    this.#table = table;
+    this.#next = new Uint32Array(Math.max(1, table.contents));
   }
 
   readonly read = async (content: Stored, index: number): Promise<Uint8Array> => {
@@ -1428,29 +1424,32 @@ class MoveReader {
       }
       this.#last = { sha256, bytes };
     }
-    const check = this.#checks.get(content.id);
-    if (check !== undefined && check.next === index) {
-      check.hash.update(bytes);
-      check.next++;
+    const ref = Number(content.id);
+    if (this.#checking && this.#table.expected(ref) !== null && this.#next[ref] === index) {
+      if (this.#hashing?.ref !== ref) {
+        this.#hashing = { ref, hash: createHash("sha256") };
+      }
+      this.#hashing.hash.update(bytes);
+      this.#next[ref]!++;
+      if (index + 1 === content.chunks.length) {
+        if (this.#hashing.hash.digest("hex") !== this.#table.expected(ref)) {
+          throw new Error("an archived body is not the body its message holds");
+        }
+        this.#hashing = null;
+      }
     }
     return bytes;
   };
 
-  /** A hot record's placed body, as its source: its content's whole range. */
-  placed(record: MoveRecord): Run {
-    const content = this.#placed.get(record.hot!.placed!)!;
-    return { content, offset: 0, length: content.size };
-  }
-
-  /** After the first pass: every placed body read whole and its message's, or loudly not. */
+  /** After the first pass: every content with a hash read whole and checked, or loudly not. */
   bodiesChecked(): void {
-    for (const [id, check] of this.#checks) {
-      if (check.next !== this.#placed.get(id)!.chunks.length
-          || check.hash.digest("hex") !== check.sha256) {
+    for (let ref = 0; ref < this.#table.contents; ref++) {
+      if (this.#table.expected(ref) !== null
+          && this.#next[ref] !== this.#table.contentOf(ref).chunks.length) {
         throw new Error("an archived body is not the body its message holds");
       }
     }
-    this.#checks.clear();
+    this.#checking = false;
   }
 }
 
@@ -3829,25 +3828,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (pick === null) {
       return;
     }
-    const batch = await this.#door(() => {
-      const planned = this.#ledger.archiveBatch(pick.seqs);
-      return planned === null ? null
-        : { ...planned, located: this.#bodies.locate(pick.contents) };
-    });
+    const table = new MoveTable();
+    const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, table,
+      (contentId, bytes, sha256) => table.addContent(
+        bytes, this.#bodies.locate([contentId]).get(contentId)!, sha256)));
     if (batch === null) {
       return;
     }
-    const placed = new Map<string, Stored>();
-    for (const record of batch.records) {
-      const id = record.hot?.placed ?? null;
-      if (id !== null) {
-        placed.set(id, { id, chunks: batch.located.get(id)!, size: record.hot!.bytes });
-      }
+    const reader = new MoveReader(this.#files, table);
+    if (pick.into !== null) {
+      await this.#scanSegment(pick.into, table, reader);
     }
-    const reader = new MoveReader(this.#files, placed, batch.records);
-    const kept = pick.into === null ? [] : await this.#scanSegment(pick.into, reader);
-    const records = [...kept, ...batch.records].sort((a, b) => a.key - b.key);
-    await this.#placePieces(records, pick.into === null ? [] : [pick.into], pick.seqs,
+    const all = Array.from({ length: table.count }, (_, n) => n);
+    await this.#placePieces(table, all, pick.into === null ? [] : [pick.into], pick.seqs,
                             batch.digest, "mail", reader);
   }
 
@@ -3863,11 +3856,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return false;
     }
     const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
-    const reader = new MoveReader(this.#files, new Map(), []);
+    const table = new MoveTable();
+    // A segment's records the purge keeps, by their indices in the table.
     const kept = async (fence: Fence) => {
-      const all = await this.#scanSegment(fence, reader);
-      return { all: all.length, kept: all.filter((record) =>
-        !roomMembers(record.room).some((member) => purged.has(member))) };
+      const [from, to] = await this.#scanSegment(fence, table, null);
+      const some: number[] = [];
+      for (let n = from; n < to; n++) {
+        if (!roomMembers(table.room(n)).some((member) => purged.has(member))) {
+          some.push(n);
+        }
+      }
+      return { all: to - from, kept: some };
     };
     const first = await kept(target.fence);
     if (first.kept.length === first.all) {
@@ -3876,7 +3875,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     const replaced = [target.fence];
     let records = first.kept;
-    let size = records.reduce((sum, record) => sum + record.length, 0);
+    let size = records.reduce((sum, n) => sum + table.length(n), 0);
     // Left small, it takes in its neighbours by key (a neighbour a purge also thinned may
     // not be enough alone), until it holds the least or none is left: never by id.
     while (size < SEGMENT_LEAST_BYTES) {
@@ -3890,54 +3889,59 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       replaced.push(beside);
       const more = (await kept(beside)).kept;
       records = [...records, ...more];
-      size += more.reduce((sum, record) => sum + record.length, 0);
+      size += more.reduce((sum, n) => sum + table.length(n), 0);
     }
-    records.sort((a, b) => a.key - b.key);
-    await this.#placePieces(records, replaced, [], "0".repeat(64), "rewrite", reader);
+    await this.#placePieces(table, records, replaced, [], "0".repeat(64), "rewrite",
+                            new MoveReader(this.#files, table));
     return true;
   }
 
   /**
-   * A segment's records as ranges of its content, never held (review N5): its trailer read,
-   * then each record's first line alone (its room, its chain, its time), the chunks read
-   * whole one at a time, in order.
+   * A segment's records appended to a move's table as ranges of its content, never held
+   * (review N5): its trailer read, then each record's first line alone (its room, its chain,
+   * its time), the chunks read whole one at a time, in order. Their indices, from and to.
    */
-  async #scanSegment(fence: Fence, reader: MoveReader): Promise<MoveRecord[]> {
+  async #scanSegment(fence: Fence, table: MoveTable, reader: MoveReader | null):
+      Promise<[number, number]> {
     const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
-    const content: Stored = { id: fence.content_id, chunks: located.get(fence.content_id)!,
-                               size: fence.bytes };
+    const ref = table.addContent(fence.bytes, located.get(fence.content_id)!, null);
+    const content = table.contentOf(ref);
+    const read = (reader ?? new MoveReader(this.#files, table)).read;
     const trailer = parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
-      .decode(await lineAt(content, fence.trailer_offset, fence.trailer_bytes,
-                           reader.read)));
-    const records: MoveRecord[] = [];
+      .decode(await lineAt(content, fence.trailer_offset, fence.trailer_bytes, read)));
+    const from = table.count;
     for (const [key, offset, length] of trailer.keys) {
-      records.push(keptRecord(key, offset, length, content,
-                              await lineAt(content, offset, length, reader.read)));
+      keptRecord(table, key, offset, length, ref, await lineAt(content, offset, length, read));
     }
-    return records;
+    return [from, table.count];
   }
 
   /**
-   * A move's records placed as one or two segments (`pack`), replacing `replaced` and the
-   * hot batch `seqs` in its second unit (ADR-035's order: the bytes to R2 first, held by
-   * uploads that may pass the storage figure, then named in one unit, which may not leave the
-   * stored figure above both the figure and where the move found it: `archive_full`).
-   * Streamed (review N5, the memory research's §2 A): each piece planned from its records'
-   * lengths; pass 1 makes each chunk from the source ranges it covers, hashes it and drops
-   * it (and checks each placed body against its message's hash), for `Files.begin`; pass 2
-   * makes each again and sends it, one a call. The sources do not change between the passes
-   * (contents are named by their hashes; the batch's rows are checked at the commit by their
-   * digest), and a chunk that did differ is refused by R2's check of its hash: loudly.
+   * A move's records (`indices` into its table) placed as one or two segments (`pack`),
+   * replacing `replaced` and the hot batch `seqs` in its second unit (ADR-035's order: the
+   * bytes to R2 first, held by uploads that may pass the storage figure, then named in one
+   * unit, which may not leave the stored figure above both the figure and where the move
+   * found it: `archive_full`). Streamed (review N5, the memory research's §2 A): each piece
+   * planned from its records' lengths; pass 1 makes each chunk from the source ranges it
+   * covers, hashes it and drops it (and checks each placed body against its message's hash),
+   * for `Files.begin`; pass 2 makes each again and sends it, one a call. The sources do not
+   * change between the passes (contents are named by their hashes; the batch's rows are
+   * checked at the commit by their digest), and a chunk that did differ is refused by R2's
+   * check of its hash: loudly.
    */
-  async #placePieces(records: readonly MoveRecord[], replaced: readonly Fence[],
+  async #placePieces(table: MoveTable, indices: readonly number[], replaced: readonly Fence[],
                      seqs: readonly number[], digest: string, stream: "mail" | "rewrite",
                      reader: MoveReader): Promise<void> {
-    const plans = records.length === 0 ? []
-      : pack(records, SEGMENT_LEAST_BYTES, (record) => record.length)
-        .map((part) => planSegment("mail", part));
-    const sources = (part: readonly MoveRecord[]) => this.#moveSources(part, reader);
+    const ordered = [...indices].sort((a, b) => table.key(a) - table.key(b));
+    const plans = ordered.length === 0 ? []
+      : pack(ordered, SEGMENT_LEAST_BYTES, (n) => table.length(n)).map((part) => {
+        const piece = table.piece(Uint32Array.from(part));
+        return { plan: planSegment("mail", piece), indices: piece.indices };
+      });
     const hashes: string[][] = [];
-    for (const plan of plans) {
+    for (const { plan, indices: at } of plans) {
+      const sources = (from: number, to: number) =>
+        this.#moveSources(table, at.subarray(from, to));
       const each: string[] = [];
       for (let n = 0; n < plan.chunks; n++) {
         each.push(createHash("sha256").update(await makeChunk(plan, n, sources, reader.read))
@@ -3950,13 +3954,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const between = this.#betweenPasses;
       await this.#door(() => between(this.#storage));
     }
-    const pieces = plans.map((plan) => {
-      const members = new Set(plan.records.flatMap((record) => roomMembers(record.room)));
-      const times = plan.records.map((record) => record.at);
-      return { plan, fence: {
-        first_key: plan.first, last_key: plan.last,
-        first_at: Math.min(...times), last_at: Math.max(...times),
-        records: plan.records.length, bytes: plan.size,
+    const pieces = plans.map(({ plan, indices: at }) => {
+      const members = new Set<string>();
+      let firstAt = Number.MAX_SAFE_INTEGER;
+      let lastAt = 0;
+      for (const n of at) {
+        for (const member of roomMembers(table.room(n))) {
+          members.add(member);
+        }
+        firstAt = Math.min(firstAt, table.at(n));
+        lastAt = Math.max(lastAt, table.at(n));
+      }
+      return { plan, at, fence: {
+        first_key: plan.first, last_key: plan.last, first_at: firstAt, last_at: lastAt,
+        records: plan.records.count, bytes: plan.size,
         trailer_offset: plan.trailer_offset, trailer_bytes: plan.trailer_bytes,
         members: Ledger.members(members) } };
     });
@@ -3970,6 +3981,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     try {
       for (const [n, piece] of pieces.entries()) {
+        const sources = (from: number, to: number) =>
+          this.#moveSources(table, piece.at.subarray(from, to));
         const wanted = new Set(begun.started[n]!.missing);
         for (const [k, sha256] of hashes[n]!.entries()) {
           if (wanted.delete(sha256)) {
@@ -4009,23 +4022,29 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * The sources of a group of a move's records, in their order: a kept one's range of its
-   * segment; a hot one's lines, read again in a unit, around its body (inline, or its
-   * placed content's whole range).
+   * The sources of a group of a move's records (`at`, their indices in its table), in their
+   * order: a kept one's range of its segment; a hot one's lines, read again in a unit,
+   * around its body (inline, or its placed content's whole range).
    */
-  async #moveSources(records: readonly MoveRecord[], reader: MoveReader):
-      Promise<(readonly Run[])[]> {
-    const hot = records.flatMap((record) => record.hot === undefined ? [] : [record.key]);
+  async #moveSources(table: MoveTable, at: Uint32Array): Promise<(readonly Run[])[]> {
+    const hot: number[] = [];
+    for (const n of at) {
+      if (table.kind(n) !== MoveTable.KEPT) {
+        hot.push(table.key(n));
+      }
+    }
     const parts = hot.length === 0 ? new Map<number, MailParts>()
       : await this.#door(() => this.#ledger.archiveParts(hot));
-    return records.map((record): Run[] => {
-      if (record.kept !== undefined) {
-        return [{ content: record.kept.content, offset: record.kept.offset,
-                  length: record.length }];
+    return Array.from(at, (n): Run[] => {
+      if (table.kind(n) === MoveTable.KEPT) {
+        return [{ content: table.content(n), offset: table.offset(n), length: table.length(n) }];
       }
-      const own = parts.get(record.key)!;
-      const body = own.inline ?? reader.placed(record);
-      return [own.head, body, own.tail];
+      const own = parts.get(table.key(n))!;
+      if (table.kind(n) === MoveTable.INLINE) {
+        return [own.head, own.inline!, own.tail];
+      }
+      const content = table.content(n);
+      return [own.head, { content, offset: 0, length: content.size }, own.tail];
     });
   }
 

@@ -74,14 +74,15 @@ export const TIER_STORAGE_MAX = (ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES
  */
 export const MOVE_BYTES = 32 * 1024 * 1024;
 /**
- * What one archive move holds in the isolate, whatever its records (review N5, the memory
- * research's §2 A): the output chunk being made, the source chunk it reads and the one
- * before it, the service binding's copy of the chunk it sends, a group of hot records' rows
- * and lines, the plan (each record's place, about 200 bytes a record) and the trailer's
- * text when its chunk is made. The grant a move takes from the isolate-wide guard; measured
- * in workerd at the worst mixes (`limits-audit.md`).
+ * What one archive move holds in the isolate (reviews N5 and N6), derived from workerd's
+ * measurement (`limits-audit.md`): the most records one move can hold (`pack`'s largest
+ * piece of records at `MIN_RECORD_BYTES` and the 25,000 stragglers a pick takes at most,
+ * 74,932) at a record's measured cost in its packed table and plan (about 192 bytes), beside
+ * what the measured worst move held besides its records (its chunks and the runtime's: 26.2
+ * MiB), and the service binding's copy of the chunk it sends (4 MiB); 43.9 MiB, rounded up
+ * to whole chunks. The grant a move takes from the isolate-wide guard.
  */
-export const MOVE_HOLD_BYTES = 32 * 1024 * 1024;
+export const MOVE_HOLD_BYTES = 44 * 1024 * 1024;
 /**
  * A record's share of its segment's trailer and suffix, counted with its lines in the one
  * number (a message's `line_bytes`): its key's and its chain's places (three numbers each,
@@ -221,16 +222,36 @@ export interface Planned {
   readonly length: number;
 }
 
+/** The records a plan places, in key order, by their index (`MoveTable`'s, or a list's). */
+export interface PlanRecords {
+  readonly count: number;
+  key(n: number): number;
+  chain(n: number): string | null;
+  length(n: number): number;
+}
+
+/** A list of records as `PlanRecords` (a test's, or a few). */
+export function listed(records: readonly Planned[]): PlanRecords {
+  return { count: records.length, key: (n) => records[n]!.key,
+           chain: (n) => records[n]!.chain, length: (n) => records[n]!.length };
+}
+
 /**
  * A segment planned from its records' lengths alone, before any of its bytes is read: each
- * record's offset, the trailer's place and size, and the chunks it is cut into. Its bytes
- * are the format above, exactly; each chunk is made from its sources when it is wanted
- * (`makeChunk`), so a segment is never held.
+ * record's offset, its chains grouped as the trailer lists them, the trailer's place and
+ * size, and the chunks it is cut into, all in typed arrays (review N6: a plan is about 40
+ * bytes a record beside its records, measured). Its bytes are the format above, exactly; each chunk
+ * is made from its sources when it is wanted (`makeChunk`), the trailer's text only in the
+ * chunks it reaches, so a segment is never held.
  */
-export interface Plan<T extends Planned> {
+export interface Plan {
   readonly stream: string;
-  readonly records: readonly T[];
-  readonly offsets: readonly number[];
+  readonly records: PlanRecords;
+  readonly offsets: Float64Array;
+  /** The records with a chain, grouped by chain in the order each first appears. */
+  readonly chained: Uint32Array;
+  /** Where each chain's group starts in `chained`, and its end after the last. */
+  readonly groups: Uint32Array;
   readonly first: number;
   readonly last: number;
   readonly trailer_offset: number;
@@ -239,41 +260,86 @@ export interface Plan<T extends Planned> {
   readonly chunks: number;
 }
 
-/** A plan's trailer line (with its newline) and its 16-digit suffix, made when wanted. */
-function trailerOf(stream: string, records: readonly Planned[], offsets: readonly number[],
-                   at: number): Uint8Array {
-  const keys: Placement[] = [];
-  const chains: Record<string, Placement[]> = {};
-  for (const [n, record] of records.entries()) {
-    const placement: Placement = [record.key, offsets[n]!, record.length];
-    keys.push(placement);
-    if (record.chain !== null) {
-      (chains[record.chain] ??= []).push(placement);
-    }
+/**
+ * A plan's trailer line (with its newline) and its 16-digit suffix, as small texts in order
+ * (`emit`): exactly `JSON.stringify({ t: "segment", stream, first, last, records, keys,
+ * chains })`, never built whole.
+ */
+function trailerText(plan: Omit<Plan, "trailer_bytes" | "size" | "chunks">,
+                     emit: (text: string) => void): void {
+  const { records, offsets } = plan;
+  const place = (n: number) => `[${records.key(n)},${offsets[n]},${records.length(n)}]`;
+  emit(`{"t":"segment","stream":${JSON.stringify(plan.stream)},"first":${plan.first},` +
+       `"last":${plan.last},"records":${records.count},"keys":[`);
+  for (let n = 0; n < records.count; n++) {
+    emit(n === 0 ? place(n) : `,${place(n)}`);
   }
-  const trailer: Trailer = { stream, first: keys[0]![0], last: keys.at(-1)![0],
-                             records: keys.length, keys, chains };
-  return new TextEncoder().encode(`${JSON.stringify({ t: "segment", ...trailer })}\n${
-    String(at).padStart(SUFFIX_BYTES, "0")}`);
+  emit('],"chains":{');
+  for (let g = 0; g + 1 < plan.groups.length; g++) {
+    const start = plan.groups[g]!;
+    emit(`${g === 0 ? "" : ","}${JSON.stringify(records.chain(plan.chained[start]!))}:[`);
+    for (let k = start; k < plan.groups[g + 1]!; k++) {
+      emit(k === start ? place(plan.chained[k]!) : `,${place(plan.chained[k]!)}`);
+    }
+    emit("]");
+  }
+  emit("}}\n");
+  emit(String(plan.trailer_offset).padStart(SUFFIX_BYTES, "0"));
 }
 
 /** A stream's records, in key order, planned as one segment. */
-export function planSegment<T extends Planned>(stream: string, records: readonly T[]): Plan<T> {
-  if (records.length === 0) {
+export function planSegment(stream: string, records: PlanRecords): Plan {
+  if (records.count === 0) {
     throw new Error("a segment holds at least one record");
   }
-  const offsets: number[] = [];
+  const offsets = new Float64Array(records.count);
   let at = 0;
-  for (const [n, record] of records.entries()) {
-    if (n > 0 && record.key <= records[n - 1]!.key) {
+  for (let n = 0; n < records.count; n++) {
+    if (n > 0 && records.key(n) <= records.key(n - 1)) {
       throw new Error("a segment's records are in key order, each key once");
     }
-    offsets.push(at);
-    at += record.length;
+    offsets[n] = at;
+    at += records.length(n);
   }
-  const tail = trailerOf(stream, records, offsets, at).byteLength;
-  return { stream, records, offsets, first: records[0]!.key, last: records.at(-1)!.key,
-           trailer_offset: at, trailer_bytes: tail - SUFFIX_BYTES, size: at + tail,
+  // The chains' groups, in the order each chain first appears (a plain object's order for
+  // keys that are no array index, as a chain root never is), each in key order.
+  const groupOf = new Int32Array(records.count).fill(-1);
+  const seen = new Map<string, number>();
+  for (let n = 0; n < records.count; n++) {
+    const chain = records.chain(n);
+    if (chain !== null) {
+      let group = seen.get(chain);
+      if (group === undefined) {
+        group = seen.size;
+        seen.set(chain, group);
+      }
+      groupOf[n] = group;
+    }
+  }
+  const groups = new Uint32Array(seen.size + 1);
+  seen.clear();
+  for (const group of groupOf) {
+    if (group >= 0) {
+      groups[group + 1]!++;
+    }
+  }
+  for (let g = 1; g < groups.length; g++) {
+    groups[g]! += groups[g - 1]!;
+  }
+  const chained = new Uint32Array(groups[groups.length - 1]!);
+  const fill = groups.slice(0, -1);
+  for (let n = 0; n < records.count; n++) {
+    if (groupOf[n]! >= 0) {
+      chained[fill[groupOf[n]!]!++] = n;
+    }
+  }
+  const head = { stream, records, offsets, chained, groups, first: records.key(0),
+                 last: records.key(records.count - 1), trailer_offset: at };
+  let tail = 0;
+  trailerText(head, (text) => {
+    tail += Buffer.byteLength(text);
+  });
+  return { ...head, trailer_bytes: tail - SUFFIX_BYTES, size: at + tail,
            chunks: Math.ceil((at + tail) / CHUNK_BYTES) };
 }
 
@@ -282,20 +348,22 @@ const SOURCE_GROUP = 512;
 
 /**
  * Chunk `n` of a plan's segment, made from just the source ranges it covers: each record's
- * sources (`sources`, asked a group of records at a time: held lines, or ranges of stored
- * contents, read a whole 4 MiB chunk at a time through `read`), and the trailer when it
- * reaches it. A record whose sources are not the length it was planned at fails loudly.
+ * sources (`sources`, asked for a group of records at a time by their indices: held lines,
+ * or ranges of stored contents, read a whole 4 MiB chunk at a time through `read`), and the
+ * trailer's texts that reach it. A record whose sources are not the length it was planned
+ * at fails loudly.
  */
-export async function makeChunk<T extends Planned>(
-    plan: Plan<T>, n: number,
-    sources: (records: readonly T[]) => Promise<readonly (readonly Source[])[]>,
+export async function makeChunk(
+    plan: Plan, n: number,
+    sources: (from: number, to: number) => Promise<readonly (readonly Source[])[]>,
     read: (content: Content, index: number) => Promise<Uint8Array>): Promise<Uint8Array> {
   const from = n * CHUNK_BYTES;
   const until = Math.min(from + CHUNK_BYTES, plan.size);
   const out = new Uint8Array(until - from);
+  const count = plan.records.count;
   // The records it covers: the last whose offset is at or before `from`, on to `until`.
   let lo = 0;
-  let hi = plan.records.length - 1;
+  let hi = count - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
     if (plan.offsets[mid]! <= from) {
@@ -305,13 +373,12 @@ export async function makeChunk<T extends Planned>(
     }
   }
   let end = lo;
-  while (end < plan.records.length && plan.offsets[end]! < until) {
+  while (end < count && plan.offsets[end]! < until) {
     end++;
   }
-  for (let group = lo; group < end && plan.offsets[group]! < plan.trailer_offset;
-       group += SOURCE_GROUP) {
-    const records = plan.records.slice(group, Math.min(end, group + SOURCE_GROUP));
-    const each = await sources(records);
+  for (let group = lo; group < end && from < plan.trailer_offset; group += SOURCE_GROUP) {
+    const to = Math.min(end, group + SOURCE_GROUP);
+    const each = await sources(group, to);
     for (const [k, runs] of each.entries()) {
       let at = plan.offsets[group + k]!;
       for (const run of runs) {
@@ -327,24 +394,216 @@ export async function makeChunk<T extends Planned>(
           for (let c = Math.floor((a - shift) / CHUNK_BYTES); c * CHUNK_BYTES < b - shift; c++) {
             const chunk = await read(run.content, c);
             const base = c * CHUNK_BYTES + shift;
-            const lo = Math.max(a, base);
-            const hi = Math.min(b, base + chunk.byteLength);
-            out.set(chunk.subarray(lo - base, hi - base), lo - from);
+            const lo2 = Math.max(a, base);
+            const hi2 = Math.min(b, base + chunk.byteLength);
+            out.set(chunk.subarray(lo2 - base, hi2 - base), lo2 - from);
           }
         }
         at += length;
       }
-      if (at !== plan.offsets[group + k]! + records[k]!.length) {
+      if (at !== plan.offsets[group + k]! + plan.records.length(group + k)) {
         throw new Error("an archive move's record is not the length its plan placed");
       }
     }
   }
   if (until > plan.trailer_offset) {
-    const tail = trailerOf(plan.stream, plan.records, plan.offsets, plan.trailer_offset);
-    const a = Math.max(from, plan.trailer_offset);
-    out.set(tail.subarray(a - plan.trailer_offset, until - plan.trailer_offset), a - from);
+    const encoder = new TextEncoder();
+    let at = plan.trailer_offset;
+    trailerText(plan, (text) => {
+      const length = Buffer.byteLength(text);
+      if (at + length > from && at < until) {
+        const bytes = encoder.encode(text);
+        const a = Math.max(from, at);
+        const b = Math.min(until, at + length);
+        out.set(bytes.subarray(a - at, b - at), a - from);
+      }
+      at += length;
+    });
   }
   return out;
+}
+
+/** The chunks a `MoveTable` names a content by: 32 bytes of hash each. */
+const HASH_BYTES = 32;
+
+/** A typed array grown to hold at least `need` entries (doubling). */
+function grown<T extends Float64Array | Uint32Array | Int32Array | Uint8Array>(
+    array: T, need: number, make: (size: number) => T): T {
+  if (need <= array.length) {
+    return array;
+  }
+  const next = make(Math.max(need, array.length * 2));
+  next.set(array);
+  return next;
+}
+
+/**
+ * A move's records, packed (review N6): each record's key, length, time, room (by index into
+ * the few rooms it names), chain (its name's UTF-8 in one pool of bytes: never a string a
+ * record, which may hold the row or line it came from), where its bytes are (kept: a stored
+ * content and an offset in it; hot: inline, or a placed body's content) in typed arrays,
+ * about 150 bytes a record (measured in workerd), never an object a record; and the contents
+ * they name, each its size and its chunks' hashes as bytes, with the hash its bytes must have
+ * when given.
+ */
+export class MoveTable implements PlanRecords {
+  #count = 0;
+  #keys = new Float64Array(64);
+  #lengths = new Float64Array(64);
+  #ats = new Float64Array(64);
+  #offsets = new Float64Array(64);
+  #rooms = new Uint32Array(64);
+  #refs = new Int32Array(64);
+  #kinds = new Uint8Array(64);
+  #chainAt = new Float64Array(64);
+  #chainBytes = new Int32Array(64);
+  #chainPool = new Uint8Array(4096);
+  #chainUsed = 0;
+  readonly #roomNames: string[] = [];
+  readonly #roomIds = new Map<string, number>();
+  #contents = 0;
+  #sizes = new Float64Array(8);
+  #firsts = new Uint32Array(8);
+  #counts = new Uint32Array(8);
+  #expected = new Uint8Array(8);
+  #hashes = new Uint8Array(8 * HASH_BYTES);
+  #hashCount = 0;
+  #expects = new Uint8Array(8 * HASH_BYTES);
+
+  /** A record kept in a segment (`kind` "kept") or a hot message's ("inline", "placed"). */
+  static readonly KEPT = 0;
+  static readonly INLINE = 1;
+  static readonly PLACED = 2;
+
+  get count(): number {
+    return this.#count;
+  }
+
+  /** A record appended; its index. `ref` names its content (kept, placed), else -1. */
+  push(key: number, chain: string | null, room: string, at: number, length: number,
+       kind: number, ref: number, offset: number): number {
+    const n = this.#count++;
+    const need = this.#count;
+    this.#keys = grown(this.#keys, need, (size) => new Float64Array(size));
+    this.#lengths = grown(this.#lengths, need, (size) => new Float64Array(size));
+    this.#ats = grown(this.#ats, need, (size) => new Float64Array(size));
+    this.#offsets = grown(this.#offsets, need, (size) => new Float64Array(size));
+    this.#rooms = grown(this.#rooms, need, (size) => new Uint32Array(size));
+    this.#refs = grown(this.#refs, need, (size) => new Int32Array(size));
+    this.#kinds = grown(this.#kinds, need, (size) => new Uint8Array(size));
+    this.#chainAt = grown(this.#chainAt, need, (size) => new Float64Array(size));
+    this.#chainBytes = grown(this.#chainBytes, need, (size) => new Int32Array(size));
+    let roomId = this.#roomIds.get(room);
+    if (roomId === undefined) {
+      // A copy of its own, so the few rooms held never hold what they were read from.
+      const own = Buffer.from(room, "utf8").toString("utf8");
+      roomId = this.#roomNames.push(own) - 1;
+      this.#roomIds.set(own, roomId);
+    }
+    if (chain === null) {
+      this.#chainBytes[n] = -1;
+    } else {
+      this.#chainPool = grown(this.#chainPool, this.#chainUsed + 3 * chain.length,
+                              (size) => new Uint8Array(size));
+      const { written } = new TextEncoder().encodeInto(
+        chain, this.#chainPool.subarray(this.#chainUsed));
+      this.#chainAt[n] = this.#chainUsed;
+      this.#chainBytes[n] = written;
+      this.#chainUsed += written;
+    }
+    this.#keys[n] = key;
+    this.#lengths[n] = length;
+    this.#ats[n] = at;
+    this.#offsets[n] = offset;
+    this.#rooms[n] = roomId;
+    this.#refs[n] = ref;
+    this.#kinds[n] = kind;
+    return n;
+  }
+
+  /** A content named, by its size and its chunks' hashes (hex), and the hash it must have. */
+  addContent(size: number, chunks: readonly string[], expected: string | null): number {
+    const ref = this.#contents++;
+    this.#sizes = grown(this.#sizes, this.#contents, (n) => new Float64Array(n));
+    this.#firsts = grown(this.#firsts, this.#contents, (n) => new Uint32Array(n));
+    this.#counts = grown(this.#counts, this.#contents, (n) => new Uint32Array(n));
+    this.#expected = grown(this.#expected, this.#contents, (n) => new Uint8Array(n));
+    this.#expects = grown(this.#expects, this.#contents * HASH_BYTES, (n) => new Uint8Array(n));
+    this.#hashes = grown(this.#hashes, (this.#hashCount + chunks.length) * HASH_BYTES,
+                         (n) => new Uint8Array(n));
+    this.#sizes[ref] = size;
+    this.#firsts[ref] = this.#hashCount;
+    this.#counts[ref] = chunks.length;
+    for (const chunk of chunks) {
+      this.#hashes.set(Buffer.from(chunk, "hex"), this.#hashCount++ * HASH_BYTES);
+    }
+    if (expected !== null) {
+      this.#expected[ref] = 1;
+      this.#expects.set(Buffer.from(expected, "hex"), ref * HASH_BYTES);
+    }
+    return ref;
+  }
+
+  key(n: number): number {
+    return this.#keys[n]!;
+  }
+
+  length(n: number): number {
+    return this.#lengths[n]!;
+  }
+
+  chain(n: number): string | null {
+    const bytes = this.#chainBytes[n]!;
+    return bytes < 0 ? null : new TextDecoder().decode(
+      this.#chainPool.subarray(this.#chainAt[n]!, this.#chainAt[n]! + bytes));
+  }
+
+  room(n: number): string {
+    return this.#roomNames[this.#rooms[n]!]!;
+  }
+
+  at(n: number): number {
+    return this.#ats[n]!;
+  }
+
+  kind(n: number): number {
+    return this.#kinds[n]!;
+  }
+
+  /** A kept record's offset in its content. */
+  offset(n: number): number {
+    return this.#offsets[n]!;
+  }
+
+  /** The content a record names (kept, placed), made when asked. */
+  content(n: number): Content {
+    return this.contentOf(this.#refs[n]!);
+  }
+
+  /** A content by its ref, made when asked: its id is its ref. */
+  contentOf(ref: number): Content {
+    const first = this.#firsts[ref]!;
+    const chunks = Array.from({ length: this.#counts[ref]! }, (_, c) =>
+      Buffer.from(this.#hashes.subarray((first + c) * HASH_BYTES, (first + c + 1) * HASH_BYTES))
+        .toString("hex"));
+    return { id: String(ref), chunks, size: this.#sizes[ref]! };
+  }
+
+  /** The contents named, and the hash each must have, if given (hex), by ref. */
+  get contents(): number {
+    return this.#contents;
+  }
+
+  expected(ref: number): string | null {
+    return this.#expected[ref] === 1 ? Buffer.from(this.#expects.subarray(
+      ref * HASH_BYTES, (ref + 1) * HASH_BYTES)).toString("hex") : null;
+  }
+
+  /** The records at `indices` (in key order), as a plan's records. */
+  piece(indices: Uint32Array): PlanRecords & { readonly indices: Uint32Array } {
+    return { count: indices.length, indices, key: (n) => this.#keys[indices[n]!]!,
+             chain: (n) => this.chain(indices[n]!), length: (n) => this.#lengths[indices[n]!]! };
+  }
 }
 
 /**
