@@ -144,6 +144,7 @@ class Graph:
             self.files[path.name] = path.read_text(encoding="utf-8", errors="replace")
         self.by_module = {_module_name(rel): rel for rel in self.files}
         self.edges = {rel: self._imports(rel, src) for rel, src in self.files.items()}
+        self._closures: dict[str, frozenset[str]] = {}
 
     def _resolve(self, dotted: str) -> list[str]:
         """Files executed by importing `dotted`: each package __init__ plus the leaf."""
@@ -199,7 +200,10 @@ class Graph:
         out.discard(rel)
         return out
 
-    def closure(self, rel: str) -> set[str]:
+    def closure(self, rel: str) -> frozenset[str]:
+        cached = self._closures.get(rel)
+        if cached is not None:
+            return cached
         seen: set[str] = set()
         stack = [rel]
         while stack:
@@ -207,7 +211,8 @@ class Graph:
                 if dep not in seen:
                     seen.add(dep)
                     stack.append(dep)
-        return seen
+        self._closures[rel] = frozenset(seen)
+        return self._closures[rel]
 
 
 def is_test_file(rel: str) -> bool:
@@ -398,10 +403,18 @@ def provable_shape(changed: list[str]) -> str | None:
     leans on the import graph being complete, which is the exact class of claim
     the deletion hole above breaks. Not worth 8% of merges.
 
-    Residual, stated rather than hidden: a child process that finds a tree by
-    itself (a script that walks the checkout) when no argument word of it lies
-    in the tree. The audit cannot see inside a child; a test running ``git``
-    is mapped to every tree for that reason, and the post-merge full run remains.
+    The diff lists a move's old path too (``changed_files`` passes
+    ``--no-renames``), so moving a file into a tree from anywhere else is not this
+    shape. The audit sees opens, listings, existence checks (``os.stat``,
+    ``lstat``, ``access``), ``sqlite3.connect`` and child processes; git run inside
+    the checkout reads every tree unless its subcommand reads nothing.
+
+    Residuals, stated rather than hidden: a native extension that opens a file
+    itself (lxml, pyarrow, lancedb) raises no event; a child process that finds a
+    tree by itself (a script that walks the checkout) when no argument word of it
+    lies in the tree; and a helper's import-time read is judged by the tests that
+    import it statically, not by one that reaches it only through a function-level
+    import in source. The post-merge full run remains for those.
     """
     if not changed:
         return None
@@ -487,14 +500,17 @@ def tree_reads(source: str, top_md: frozenset[str] = frozenset()) -> set[str]:
     return out
 
 
-def tree_readers(graph: Graph) -> tuple[dict[str, set[str]], set[str]]:
+def tree_readers(graph: Graph, extra_md: tuple[str, ...] = ()
+                 ) -> tuple[dict[str, set[str]], set[str]]:
     """(tree -> test files that may read it, trees a conftest's closure reads).
 
     A test reads what its own text or any module in its import closure reads,
     and every tree when its own text runs ``git`` (git sees the whole checkout).
     A tree a conftest reads is read by every test, so a diff touching it is ALL.
+    The top-level .md names are the checkout's plus `extra_md`: a diff's deleted
+    ones, so both sides of the diff count.
     """
-    top_md = frozenset(path.name for path in graph.root.glob("*.md"))
+    top_md = frozenset(path.name for path in graph.root.glob("*.md")) | frozenset(extra_md)
     own = {rel: tree_reads(src, top_md) for rel, src in graph.files.items()}
 
     def reach(rel: str) -> set[str]:
@@ -538,7 +554,8 @@ def gate_selection(
     selected, reasons = select(changed, root, graph, shared)
     if selected is None:
         return None, reasons
-    readers, conftest_reads = tree_readers(graph)
+    readers, conftest_reads = tree_readers(
+        graph, tuple(rel for rel in changed if tree_of(rel) == TOP_MD))
     touched = set(shape.split("+"))
     gone = sorted(tree for tree in touched if tree != TOP_MD and not (root / tree).is_dir())
     if gone:
@@ -585,10 +602,12 @@ def retiring_tests(graph: Graph) -> list[str]:
     return sorted(out)
 
 
-def changed_files(base: str) -> list[str]:
+def changed_files(base: str, root: Path = REPO_ROOT) -> list[str]:
+    # --no-renames: a move lists its old path too, so a file moved into a tree
+    # from anywhere else (or a .py moved to platform/*.ts) is not a tree-only diff.
     out = subprocess.run(
-        ["git", "diff", "--name-only", f"{base}...HEAD"],
-        cwd=REPO_ROOT, check=True, capture_output=True, text=True,
+        ["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"],
+        cwd=root, check=True, capture_output=True, text=True,
     ).stdout
     return out.splitlines()
 
