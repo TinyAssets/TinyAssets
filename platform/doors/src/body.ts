@@ -6,10 +6,37 @@
  */
 export const TOO_LARGE = "the request body is too large";
 
-/** The body as UTF-8 text, or null when it is over `max` bytes. */
+/**
+ * The body as UTF-8 text, or null when it is over `max` bytes: decoded as it is read, so no
+ * copy of its bytes is held beside the text.
+ */
 export async function boundedText(request: Request, max: number): Promise<string | null> {
-  const bytes = await boundedBytes(request, max);
-  return bytes === null ? null : new TextDecoder().decode(bytes);
+  const declared = request.headers.get("Content-Length");
+  if (declared !== null && !(/^\d+$/.test(declared) && Number(declared) <= max)) {
+    return null;
+  }
+  if (request.body === null) {
+    return "";
+  }
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  // Its parts joined once (a string built by `+=` is a rope its parse would copy again).
+  const parts: string[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    parts.push(decoder.decode(value, { stream: true }));
+  }
+  parts.push(decoder.decode());
+  return parts.join("");
 }
 
 /** The body's bytes, verbatim, or null when it is over `max` bytes. */

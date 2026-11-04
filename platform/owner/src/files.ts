@@ -1097,8 +1097,8 @@ export class Files {
   }
 
   /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
-  async fetch(reads: readonly { sha256: string; offset?: number; length?: number }[]):
-      Promise<Uint8Array[]> {
+  async fetch(reads: readonly { sha256: string; offset?: number; length?: number;
+                                 verify?: boolean }[]): Promise<Uint8Array[]> {
     if (reads.length === 0) {
       return [];
     }
@@ -1336,6 +1336,20 @@ export class Files {
                writer: string, parents: boolean, op: string): Entry {
     return this.#change(writer, (now) => this.#commit(
       path, expected, this.#inline(bytes), bytes.byteLength, mode, writer, op, parents, now));
+  }
+
+  /**
+   * Write small content (at most `INLINE_BYTES`) as `path` in the caller's own unit: one
+   * transaction, no `FILES` call and no await, so a door that read the file in the same unit
+   * writes exactly over what it read (`fileAppend`'s small case, which can never lose).
+   */
+  writeSmall(path: unknown, bytes: Uint8Array,
+             options: { expected: unknown; mode?: unknown; writer: string }): Entry {
+    if (bytes.byteLength > INLINE_BYTES) {
+      throw new Invalid(`a small write is at most ${INLINE_BYTES} bytes`);
+    }
+    return this.#writeInline(storedPath(path), bytes, expectedEtag(options.expected),
+                             modeOf(options.mode), options.writer, true, "write");
   }
 
   /**

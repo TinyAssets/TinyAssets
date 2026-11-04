@@ -301,7 +301,7 @@ describe("mail to an agent", () => {
       .toEqual([[ping.message_id, answer, "ok"]]);
     const chain = await r.stub.mailChain(r.bind(), { message_id: ping.message_id, limit: 10 });
     expect(chain.messages.map((m) => m.body)).toEqual([long, answer]);
-    expect(Object.keys(chain)).toEqual(["root", "messages", "more", "after"]);
+    expect(Object.keys(chain)).toEqual(["root", "messages", "more"]);
     // Placed before the settle's unit, posted by reference in it: no upload is left open.
     expect(await r.sql("SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
   });

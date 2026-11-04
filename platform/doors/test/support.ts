@@ -290,7 +290,19 @@ export async function rpcBody(response: Response): Promise<Record<string, unknow
 export interface ToolResult {
   readonly isError?: boolean;
   readonly content: { type: string; text: string }[];
-  readonly structuredContent?: Record<string, unknown>;
+}
+
+/**
+ * A tool result's answer: its one text block's JSON. Every result is sent once, as text,
+ * so a result that also carries `structuredContent` fails here.
+ */
+export function answerOf(result: unknown): Record<string, unknown> {
+  const { content, structuredContent } = result as {
+    content: { type: string; text: string }[]; structuredContent?: unknown };
+  if (structuredContent !== undefined || content.length !== 1 || content[0]!.type !== "text") {
+    throw new Error(`a result is one text block and nothing else: ${JSON.stringify(result)}`);
+  }
+  return JSON.parse(content[0]!.text) as Record<string, unknown>;
 }
 
 /** A POST to `/mcp` as a 2025-11-25 client on MCP SDK 1.x sends one. */

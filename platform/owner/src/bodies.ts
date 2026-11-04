@@ -23,7 +23,9 @@
  */
 import { createHash } from "node:crypto";
 
+import { RESULT_CHARS } from "./encoded";
 import { Invalid } from "./errors";
+import { windowEnd } from "./file-search";
 import type { Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { CHUNK_BYTES, PLACE_BYTES } from "./manifest";
@@ -39,11 +41,60 @@ export { PLACE_BYTES } from "./manifest";
 export const BODY_BYTES_MAX = 2 * CHUNK_BYTES;
 
 /**
- * The most body bytes one page of a read returns: a pull, a history or a mailbox read stops
- * before a body that would take it past, and returns at least one. A page, not a bound on
- * what is held: two chunks, a `FILES` call's own most (`BATCH_BYTES`).
+ * The most body bytes a digest's rows name past its first (heads show only each body's
+ * start, so their bodies' sizes are not the page's): the bucket reads one digest makes, a
+ * window of each placed body's first chunk, stay within two chunks (`BATCH_BYTES`).
  */
 export const READ_PAGE_BYTES = 2 * CHUNK_BYTES;
+
+/**
+ * The most bytes of placed bodies' windows one read holds: the rows past a page's first fit
+ * `RESULT_CHARS` whole, and a head's window is at most four bytes a character it shows, so
+ * a page never needs more; the windows past it are not read, and the page ends before them.
+ */
+export const WINDOWS_BYTES = 4 * RESULT_CHARS;
+
+/**
+ * A window of a body's text: its UTF-8 bytes from `offset` to `end`, cut at characters, of a
+ * body of `size` bytes. A whole body is the window from 0 to its size.
+ */
+export interface Window {
+  readonly text: string;
+  readonly offset: number;
+  readonly end: number;
+  readonly size: number;
+}
+
+export const BODY_OFFSET_INSIDE =
+  "body_offset is inside a character: start at a body_next_offset an answer gave";
+
+/** A body its row keeps, as the window from `offset` to its end. */
+export function inlineWindow(body: string, offset: number): Window {
+  const bytes = bodyBytes(body);
+  if (offset === 0) {
+    return { text: body, offset: 0, end: bytes.byteLength, size: bytes.byteLength };
+  }
+  if (offset > bytes.byteLength) {
+    throw new Invalid("body_offset is past the body's end");
+  }
+  if (offset < bytes.byteLength && (bytes[offset]! & 0xc0) === 0x80) {
+    throw new Invalid(BODY_OFFSET_INSIDE);
+  }
+  return { text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+             .decode(bytes.subarray(offset)),
+           offset, end: bytes.byteLength, size: bytes.byteLength };
+}
+
+/** A read's `body_offset`: a whole number of bytes, 0 when omitted. */
+export function bodyOffset(value: unknown): number {
+  if (value === undefined) {
+    return 0;
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Invalid("body_offset is a whole number of bytes");
+  }
+  return value;
+}
 
 /** A body placed in R2 for a write still to commit: its upload, and the chunks it holds. */
 export interface Placed {
@@ -59,8 +110,9 @@ export interface Placing extends Placed {
   readonly missing: readonly string[];
 }
 
-/** Placed contents' chunks in order, by content id (`Bodies.locate`). */
-export type Located = ReadonlyMap<string, readonly string[]>;
+/** Placed contents' chunks in order and their bytes, by content id (`Bodies.locate`). */
+export type Located = ReadonlyMap<string, { readonly chunks: readonly string[];
+                                            readonly size: number }>;
 
 /**
  * What a writing unit does with a placed body: its content adopted, and `name` run with the
@@ -174,40 +226,109 @@ export class Bodies {
   }
 
   /**
-   * The chunks each placed content in `contents` is cut into, by content id: a read, run in
-   * the same unit as the read of the rows that name them, so each is the content they named.
+   * The chunks each placed content in `contents` is cut into, and its bytes, by content id:
+   * a read, run in the same unit as the read of the rows that name them, so each is the
+   * content they named.
    */
   locate(contents: readonly string[]): Located {
-    const located = new Map<string, readonly string[]>();
+    const located = new Map<string, { chunks: readonly string[]; size: number }>();
     for (const contentId of new Set(contents)) {
       const found = this.#storage.sql.exec<{ sha256: string }>(
         "SELECT sha256 FROM file_content_chunks WHERE content_id = ? ORDER BY idx",
         contentId).toArray().map((row) => row.sha256);
-      if (found.length === 0) {
+      const size = this.#storage.sql.exec<{ size: number }>(
+        "SELECT size FROM file_contents WHERE content_id = ?", contentId).toArray()[0]?.size;
+      if (found.length === 0 || size === undefined) {
         throw new Error("a placed body's content is not one the object holds");
       }
-      located.set(contentId, found);
+      located.set(contentId, { chunks: found, size });
     }
     return located;
   }
 
   /**
-   * The located bodies, by content id: their chunks read from R2 (`FILES` rechecks each
-   * hash), joined and decoded as the UTF-8 they were written as. Outside any unit.
+   * The located bodies read whole, by content id (a run's mail input): their chunks read
+   * from R2 (`FILES` rechecks each hash) and decoded as the UTF-8 they were written as.
+   * Outside any unit.
    */
   async fetch(located: Located): Promise<Map<string, string>> {
     const bodies = new Map<string, string>();
-    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-    for (const [contentId, chunks] of located) {
+    for (const [contentId, { chunks }] of located) {
+      const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
       const parts = await this.#files.fetch(chunks.map((sha256) => ({ sha256 })));
-      const whole = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-      let at = 0;
+      let text = "";
       for (const part of parts) {
-        whole.set(part, at);
-        at += part.byteLength;
+        text += decoder.decode(part, { stream: true });
       }
-      bodies.set(contentId, decoder.decode(whole));
+      bodies.set(contentId, text + decoder.decode());
     }
     return bodies;
+  }
+
+  /**
+   * A window of each located body, by content id, in order: its text from `offsetOf(id)`,
+   * at most `maxOf(id)` bytes, cut back to a character, read by the verified ranges it spans
+   * (`FILES` rechecks each whole chunk's hash and answers the range: review L7). The windows
+   * stop once they hold `WINDOWS_BYTES`, always past the first: a body not read ends its
+   * page before it. Outside any unit.
+   */
+  async windows(located: Located, maxOf: (contentId: string) => number,
+                offsetOf: (contentId: string) => number = () => 0): Promise<Map<string, Window>> {
+    const windows = new Map<string, Window>();
+    let held = 0;
+    for (const [contentId, { chunks, size }] of located) {
+      if (windows.size > 0 && held >= WINDOWS_BYTES) {
+        break;
+      }
+      const window = await this.windowAt(chunks, 0, size, offsetOf(contentId),
+                                         maxOf(contentId));
+      held += window.end - window.offset;
+      windows.set(contentId, window);
+    }
+    return windows;
+  }
+
+  /**
+   * A window of a body of `size` bytes that starts `base` bytes into the content its
+   * chunks make (0 for a placed body; an archived one's place in its segment): its text from
+   * `offset`, at most `max` bytes, cut back to a character, read by the verified ranges it
+   * spans. Outside any unit.
+   */
+  async windowAt(chunks: readonly string[], base: number, size: number, offset: number,
+                 max: number): Promise<Window> {
+    if (offset > size) {
+      throw new Invalid("body_offset is past the body's end");
+    }
+    const end = Math.min(size, offset + max + 3);  // a character's tail past the window
+    if (end === offset) {
+      return { text: "", offset, end, size };
+    }
+    // Each chunk the window spans read by the range it needs, verified: `FILES` reads the
+    // whole chunk, rechecks its hash and answers the range alone (review L7), so a window
+    // holds only itself and its bytes are still the content's.
+    const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
+    for (const [index, sha256] of chunks.entries()) {
+      // The chunk's bytes as the body's: content byte `x` is body byte `x - base`.
+      const at = index * CHUNK_BYTES - base;
+      const from = Math.max(offset, at);
+      const to = Math.min(end, at + CHUNK_BYTES, size);
+      if (from < to) {
+        reads.push({ sha256, offset: from - at, length: to - from, verify: true });
+      }
+    }
+    const parts = await this.#files.fetch(reads);
+    const bytes = new Uint8Array(end - offset);
+    let put = 0;
+    for (const part of parts) {
+      bytes.set(part, put);
+      put += part.byteLength;
+    }
+    const cut = windowEnd(bytes, 0, end === size ? end - offset : max);
+    if (cut === null) {
+      throw new Invalid(BODY_OFFSET_INSIDE);
+    }
+    return { text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+               .decode(bytes.subarray(0, cut)),
+             offset, end: offset + cut, size };
   }
 }

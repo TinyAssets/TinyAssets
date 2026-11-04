@@ -98,6 +98,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
+import type { Vendor } from "../../doors/src/apps";
 import { APP_RESOURCE } from "../../doors/src/config";
 import { LEASE_LIVED, mintToken, sealRoute } from "../../doors/src/routing-mac";
 import {
@@ -138,8 +139,13 @@ import {
   keepTiers, keptTiers, PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers,
 } from "./tier";
 import {
-  Bodies, type Located, PLACE_BYTES, type Placed, placedAs, type Placing, READ_PAGE_BYTES,
+  Bodies, bodyOffset, inlineWindow, type Located, PLACE_BYTES, type Placed, placedAs,
+  type Placing, type Window, WINDOWS_BYTES,
 } from "./bodies";
+import { fitted, jsonBytes, utf8Length } from "./encoded";
+import {
+  bodied, type Cut, fitList, fitPage, PAGE_BYTES, RESULT_TOO_LARGE, whole as fits,
+} from "./pages";
 import {
   type Changed, type Changes, checkBody, Collections, Conflict, type History,
   type HistoryEntry, type Page, type Row,
@@ -152,17 +158,19 @@ import { Invalid, Refused } from "./errors";
 import {
   BATCH_BYTES, type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef,
   type ChunkStore, type Content, type Entry, FileConflict, FileFault, Files, GC_GRACE_S,
-  INLINE_BYTES, type Lease,
+  INLINE_BYTES, type Lease, MAX_OPEN_INTENTS, WHOLE_BYTES,
   OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
-import { type Capability, type Client, type Grant, Grants, holds, type Scope } from "./grants";
+import { type Capability, type Client, type ConnectedApp, type Grant, Grants, holds, type Scope }
+  from "./grants";
 import {
   CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
 } from "./codemode";
 import {
-  type Actor, type Agent, type ArchivedMail, archivedMail, keptRecord, type MailParts,
+  type Actor, type Agent, type ArchivedMail, archivedHead, archivedMail, archivedRecipients,
+  keptRecord, type MailParts,
   recordHead,
   type ChainMail,
   checkMessage, clock,
@@ -188,7 +196,8 @@ import {
 import { type Card, Registrations } from "./registrations";
 import { type Lane, Schedule } from "./schedule";
 import {
-  ABILITY_TREES, AGENTS_DIR, AGENTS_OWNER_ONLY, nameOf, ownersOnly, parentOf, storedPath, within,
+  ABILITY_TREES, AGENTS_DIR, AGENTS_OWNER_ONLY, MAX_NAME_BYTES, nameOf, ownersOnly, parentOf,
+  storedPath, within,
 } from "./paths";
 import { MIGRATIONS, migrate } from "./schema";
 import { decodeExportCursor, encodeExportCursor } from "./export";
@@ -293,6 +302,11 @@ export interface Binding {
    * it; every other door refuses it.
    */
   readonly inbound?: { readonly binding: string; readonly revision: number };
+  /**
+   * Which of `apps.json`'s vendors an MCP client is, as its sign-in knew it (the grant's
+   * props, `doors/src/apps.ts`): recorded on its grant's row, never a request field.
+   */
+  readonly vendor?: Vendor | null;
 }
 
 export type { Origin, Source, WakeSender };
@@ -454,10 +468,19 @@ export interface PostRequest {
   readonly parent_id: string | null;
 }
 
+/** An agents list's page: from the `after`th on, a `next` an answer gave (`outsideAgents`). */
+export interface AgentsRequest {
+  readonly after?: number;
+}
+
 export interface ReadRequest {
   readonly limit: number;
   readonly max_bytes?: number;
   readonly pad_bytes?: number;
+  /** The first message's body from this byte: a `body_next_offset` an answer gave. */
+  readonly body_offset?: number;
+  /** With `body_offset`, the message it reads on: refused when the first is another. */
+  readonly message_id?: string;
 }
 
 /** A mail chain the owner reads, from one of its messages (`mailChain`). */
@@ -465,6 +488,8 @@ export interface ChainRequest {
   readonly message_id: string;
   readonly limit: number;
   readonly after?: number;
+  readonly body_offset?: number;
+  readonly body_message_id?: string;
 }
 
 export interface AckRequest {
@@ -486,10 +511,13 @@ export interface BoardDigestRequest {
   readonly head_chars?: number;
 }
 
-/** A row as a digest shows it, the head of its body and how long the body is; or its deletion. */
+/**
+ * A row as a digest shows it, the head of its body and the body's UTF-8 bytes (`body_bytes`,
+ * as a cut body's); or its deletion.
+ */
 export type RowHead =
   | (Omit<Extract<Changed, { deleted: false }>, "body">
-     & { readonly head: string; readonly body_chars: number })
+     & { readonly head: string; readonly body_bytes: number })
   | Extract<Changed, { deleted: true }>;
 
 /** Rows changed past a digest's cursor, and the next cursor; `reset` as `Changes`'. */
@@ -508,14 +536,25 @@ export interface CodeRequest {
  * A script's end, as pi-codemode reports it: its value or its error, its output, how many
  * tool calls ended each way, and which calls of tools that change something landed
  * (`landed`, in order, a run of the same tool and outcome as one entry with its count), so
- * an agent knows what a stopped script did. An answer past `CODE_ANSWER_MAX` is refused
- * `answer_too_large`, its value and output dropped, its calls kept.
+ * an agent knows what a stopped script did. Its output past what one tool answer holds
+ * (`PAGE_BYTES`, `pages.ts`) is cut, said so (`output_cut`); a value past it alone is
+ * refused `answer_too_large`, its calls kept (`fittedCode`).
  */
 export type CodeResult =
   | { readonly ok: true; readonly value: JsonValue; readonly output: CodeOutput[];
-      readonly calls: CodeCalls; readonly landed: Landed[] }
+      readonly calls: CodeCalls; readonly landed: Landed[]; readonly output_cut?: OutputCut }
   | { readonly ok: false; readonly error: { readonly kind: string; readonly message: string };
-      readonly output: CodeOutput[]; readonly calls: CodeCalls; readonly landed: Landed[] };
+      readonly output: CodeOutput[]; readonly calls: CodeCalls; readonly landed: Landed[];
+      readonly output_cut?: OutputCut };
+
+/**
+ * A script's output cut to fit one answer (review M6), said so: how many items it had, and
+ * how many the answer keeps whole (the next one, a text, cut at a character after them).
+ */
+export interface OutputCut {
+  readonly items: number;
+  readonly kept: number;
+}
 
 /** A run of one tool's calls with one outcome, in a script's order. */
 export interface Landed {
@@ -755,12 +794,17 @@ export interface SearchResult {
 
 /** What `fetch` says of a file beside its text. */
 export interface FetchMetadata {
-  readonly path: string;
+  /** Its path, its id's; left out when its fields were cut to fit one answer (`fields_cut`). */
+  readonly path?: string;
+  /** Whether its frontmatter's fields were cut to fit one answer (review L5). */
+  readonly fields_cut?: true;
   readonly size: number;
   readonly version: number;
   /** When it last changed, ISO 8601. */
   readonly modified: string;
   readonly writer: string;
+  /** Its etag, which `file_edit` and `file_write` take. */
+  readonly etag: string;
   readonly type?: string;
   readonly description?: string;
   readonly tags?: readonly string[];
@@ -802,8 +846,23 @@ export interface FileChunksRequest {
 export interface FileWriteRequest {
   readonly path: string;
   readonly expected_etag: string | null;
-  readonly content: Uint8Array;
+  /** The file's bytes, or its text, written as UTF-8 (`file_write`, slice BRAIN). */
+  readonly content: Uint8Array | string;
   readonly mode?: number;
+}
+
+/** Text added at the end of a file, which is made when absent (`file_append`). */
+export interface FileAppendRequest {
+  readonly path: string;
+  readonly content: string;
+}
+
+/** One exact occurrence of `old_text` in a file's text replaced, at its etag (`file_edit`). */
+export interface FileEditRequest {
+  readonly path: string;
+  readonly old_text: string;
+  readonly new_text: string;
+  readonly expected_etag: string;
 }
 
 export interface UploadBeginRequest {
@@ -955,9 +1014,22 @@ export interface KeyRequest {
   readonly row_id: string;
 }
 
-/** A history read: a row's key, and the revision to read before for older entries. */
+/**
+ * A row read: its key; with `body_offset`, its body from that byte (a `body_next_offset` an
+ * answer gave), and with `etag`, refused when the row changed since that answer.
+ */
+export interface GetRequest extends KeyRequest {
+  readonly body_offset?: number;
+  readonly etag?: string;
+}
+
+/**
+ * A history read: a row's key, and the revision to read before for older entries; with
+ * `body_offset`, the page's newest entry's body from that byte.
+ */
 export interface HistoryRequest extends KeyRequest {
   readonly before_revision?: number;
+  readonly body_offset?: number;
 }
 
 export interface DeleteRequest {
@@ -1055,36 +1127,44 @@ export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode of
 export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
 const CODE_TIMED_OUT = "the script is past its time";
 /**
- * The most a script's answer may take as V8 serializes it (`serializedBytes`): Workers RPC's
- * 32 MiB of serialized arguments or return value (its own error: "Serialized RPC arguments
- * or return values are limited to 32MiB"), less 1 MiB for the RPC's own envelope.
+ * A script's answer fitted to one tool answer (`pages.ts`, review M6): its value and calls
+ * whole, its output's items while they fit and the next text cut at a character, said so
+ * (`output_cut`). A value that alone passes one answer is refused `answer_too_large`, its
+ * calls and what landed kept, so nothing is lost silently.
  */
-export const CODE_ANSWER_MAX = 31 * 1024 * 1024;
-export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value and output are " +
-  "past the 31 MiB an answer across the RPC carries; return less, or write it with a tool";
-/** A string V8 keeps one byte a unit: every unit Latin-1. */
-const ONE_BYTE = /^[\u0000-\u00ff]*$/;
-/** A value's per-item framing in V8's serialization, at most: a tag and a length or a number. */
-const FRAME_BYTES = 10;
-
-/**
- * At least what V8's serializer takes for a JSON value: a string one byte a unit when every
- * unit is Latin-1, else two bytes a unit (the whole string, however few units are wide), and
- * each item's framing; an object's keys as strings.
- */
-export function serializedBytes(value: unknown): number {
-  if (typeof value === "string") {
-    return FRAME_BYTES + (ONE_BYTE.test(value) ? 1 : 2) * value.length;
+function fittedCode(answer: CodeResult): CodeResult {
+  if (jsonBytes(answer) <= PAGE_BYTES) {
+    return answer;
   }
-  if (Array.isArray(value)) {
-    return value.reduce<number>((bytes, item) => bytes + serializedBytes(item), FRAME_BYTES);
+  const cut: OutputCut = { items: answer.output.length, kept: answer.output.length };
+  const bare = { ...answer, output: [], output_cut: cut };
+  if (jsonBytes(bare) > PAGE_BYTES) {
+    return { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
+             output: [], calls: answer.calls, landed: answer.landed };
   }
-  if (typeof value === "object" && value !== null) {
-    return Object.entries(value).reduce<number>(
-      (bytes, [key, item]) => bytes + serializedBytes(key) + serializedBytes(item), FRAME_BYTES);
+  const output: CodeOutput[] = [];
+  let used = jsonBytes(bare);
+  for (const item of answer.output) {
+    const bytes = jsonBytes(item) + (output.length > 0 ? 1 : 0);
+    if (used + bytes > PAGE_BYTES) {
+      const meta = jsonBytes({ ...item, text: "" }) + (output.length > 0 ? 1 : 0);
+      if (item.type === "text" && used + meta + 8 <= PAGE_BYTES) {
+        output.push({ ...item, text: fitted(item.text, PAGE_BYTES - used - meta + 2).text });
+      }
+      break;
+    }
+    used += bytes;
+    output.push(item);
   }
-  return FRAME_BYTES;
+  const kept = output.length > 0 && output.at(-1) !== answer.output[output.length - 1]
+    ? output.length - 1 : output.length;
+  return { ...answer, output, output_cut: { items: answer.output.length, kept } };
 }
+
+/** A script's value past what one tool answer holds (`pages.ts`), refused whole. */
+export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is past the " +
+  `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
+  "it back";
 /** A digest's head of each body, in characters, unless the caller names another. */
 const HEAD_CHARS = 512;
 
@@ -1099,25 +1179,161 @@ function headChars(value: unknown): number {
   return value;
 }
 
-/** Changed rows with their placed bodies (ADR-035) read from R2 set in them. */
-function filledChanges(changes: Changes, bodies: ReadonlyMap<string, string>): Changes {
-  return { ...changes, rows: changes.rows.map((row) => row.deleted ? row
-    : filled(row as Extract<Changed, { deleted: false }> & { content_id?: string }, bodies)) };
+/**
+ * What a page's unit names to read from R2: the placed bodies' content ids, and, by content
+ * id, the most bytes of each window (one answer's when omitted) and the byte it starts at
+ * (0 when omitted: the page's first item's `body_offset`).
+ */
+interface Wants {
+  readonly contents: readonly string[];
+  readonly maxOf?: (contentId: string) => number;
+  readonly offsetOf?: (contentId: string) => number;
 }
 
-/** Changed rows as a digest shows them: each body cut to its first `chars` characters. */
-function heads(changes: Changes, chars: number): Heads {
-  return {
-    ...(changes.reset === true ? { reset: true } : {}),
-    cursor: changes.cursor,
-    rows: changes.rows.map((row): RowHead => {
-      if (row.deleted) {
-        return row;
-      }
-      const { body, ...rest } = row;
-      return { ...rest, head: [...body].slice(0, chars).join(""), body_chars: codePoints(body) };
-    }),
-  };
+/** What each of an inbox digest's two parts, its mail and its rooms, fits: half an answer. */
+const INBOX_PART = (PAGE_BYTES - 32) / 2;
+
+/** A head's window of a placed body: at most four bytes a character, within one answer. */
+function headWindow(chars: number): number {
+  return Math.min(4 * chars, PAGE_BYTES);
+}
+
+/**
+ * Changed rows as a digest shows them, fitted to one answer (`pages.ts`): each body cut to
+ * its first `chars` characters, read from its row or its placed body's window; the rows in
+ * order while they fit, at least one, the first's head cut further when it does not; the
+ * page ends before a placed body not read, and when rows are left the cursor is the last
+ * row's change.
+ */
+function heads(changes: Changes, chars: number, windows: ReadonlyMap<string, Window>,
+               bytes: number = PAGE_BYTES): Heads {
+  const rows: { row: RowHead }[] = [];
+  for (const row of changes.rows) {
+    if (row.deleted) {
+      rows.push({ row });
+      continue;
+    }
+    const { body, content_id: contentId, ...rest } =
+      row as Extract<Changed, { deleted: false }> & { content_id?: string };
+    const window = contentId === undefined ? inlineWindow(body, 0) : windows.get(contentId);
+    if (window === undefined) {
+      break;
+    }
+    const head = [...window.text.slice(0, 2 * chars)].slice(0, chars).join("");
+    rows.push({ row: { ...rest, head, body_bytes: window.size } });
+  }
+  const reset = changes.reset === true ? { reset: true as const } : {};
+  const fixed = jsonBytes({ ...reset, cursor: changes.cursor, rows: [] });
+  const kept = rows.length === 0 ? [] : fitPage(fixed, rows, ({ row }, room, first) => {
+    const fit = fits(row, room);
+    if (fit !== null || !first || row.deleted) {
+      return fit;
+    }
+    const meta = jsonBytes({ ...row, head: "" });
+    if (room - meta + 2 < 2) {
+      throw new Refused(RESULT_TOO_LARGE);
+    }
+    return fits({ ...row, head: fitted(row.head, room - meta + 2).text }, room);
+  }, bytes);
+  if (kept.length === 0 && changes.rows.length > 0) {
+    throw new Error("a digest's first row is always read");
+  }
+  return { ...reset,
+           cursor: kept.length === changes.rows.length ? changes.cursor : kept.at(-1)!.change,
+           rows: kept };
+}
+
+/**
+ * A row or entry, its body taken from its row or its placed body's window (`body_offset`
+ * from `offset`), as a page fits it; null for a placed body not read.
+ */
+function windowed<T extends { readonly body: string; readonly content_id?: string }>(
+    row: T, windows: ReadonlyMap<string, Window>, offset = 0):
+    { item: Omit<T, "content_id">; window: Window } | null {
+  const { content_id: contentId, ...item } = row;
+  const window = contentId === undefined ? inlineWindow(row.body, offset)
+    : windows.get(contentId);
+  return window === undefined ? null : { item, window };
+}
+
+/** Rows or entries with their windows, in order, up to the first placed body not read. */
+function windowedAll<T extends { readonly body: string; readonly content_id?: string }>(
+    rows: readonly T[], windows: ReadonlyMap<string, Window>, offset = 0):
+    { item: Omit<T, "content_id">; window: Window }[] {
+  const out: { item: Omit<T, "content_id">; window: Window }[] = [];
+  for (const [index, row] of rows.entries()) {
+    const read = windowed(row, windows, index === 0 ? offset : 0);
+    if (read === null) {
+      break;
+    }
+    out.push(read);
+  }
+  return out;
+}
+
+/**
+ * One row as an answer shows it, fitted (`pages.ts`), beside the answer's other fields
+ * (`fixed` bytes).
+ */
+function fittedRow<T extends { readonly body: string }>(
+    read: { item: T; window: Window } | null, fixed: number): T & Partial<Cut> {
+  if (read === null) {
+    throw new Error("a placed body its row names was not read");
+  }
+  return bodied(read.item, read.window, PAGE_BYTES - fixed, true)!.item;
+}
+
+/**
+ * A search's `next_cursor`: the stored path it resumes after, as base64url (review L5), an
+ * opaque token at most 5,462 characters with nothing to escape, so a path of escaped
+ * characters never makes an answer too wide to go on.
+ */
+function pathCursor(path: string): string {
+  return Buffer.from(path, "utf8").toString("base64url");
+}
+
+function cursorPath(cursor: unknown): string {
+  if (typeof cursor !== "string" || !/^[A-Za-z0-9_-]{1,5462}$/.test(cursor)) {
+    throw new Invalid("a cursor is a next_cursor a search answered");
+  }
+  return Buffer.from(cursor, "base64url").toString("utf8");
+}
+
+/**
+ * The agents a caller sees, fitted to one answer from the `after`th on (`outsideAgents`):
+ * the three lists read as one sequence, each kept in its own list; `next` when some are left.
+ */
+function agentsPage(all: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] },
+                    after: number):
+    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: number } {
+  const items = [...all.agents.map((item) => ({ list: "agents" as const, item })),
+                 ...all.owner_agents.map((item) => ({ list: "owner_agents" as const, item })),
+                 ...all.apps.map((item) => ({ list: "apps" as const, item }))].slice(after);
+  const empty = { agents: [], owner_agents: [], apps: [] };
+  if (items.length === 0) {
+    return empty;
+  }
+  const kept = fitPage(jsonBytes({ ...empty, next: Number.MAX_SAFE_INTEGER }), items,
+                       (entry, room) => fits(entry.item, room));
+  const page: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] } =
+    { agents: [], owner_agents: [], apps: [] };
+  for (const [index, entry] of kept.entries()) {
+    (page[items[index]!.list] as unknown[]).push(entry);
+  }
+  return kept.length === items.length ? page : { ...page, next: after + kept.length };
+}
+
+/** A run as an answer shows it: its result cut further to fit one, `result_cut` then. */
+function fittedRun<T extends { readonly result: string | null; readonly result_cut: boolean }>(
+    view: T): T {
+  if (view.result === null || jsonBytes(view) <= PAGE_BYTES) {
+    return view;
+  }
+  const meta = jsonBytes({ ...view, result: "", result_cut: true });
+  if (meta + 2 > PAGE_BYTES) {
+    throw new Refused(RESULT_TOO_LARGE);
+  }
+  return { ...view, result: fitted(view.result, PAGE_BYTES - meta + 2).text, result_cut: true };
 }
 
 function policyFields(request: unknown, required: readonly string[],
@@ -1135,6 +1351,38 @@ function conflicted<T>(act: () => T): T | Conflicted {
     throw error;
   }
 }
+
+/** Files an append never changes: text put after their end breaks what they mean. */
+const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
+/**
+ * The tries a large append makes before it is refused `file_busy` (a small one is one unit
+ * and never retries). A try is lost only when another write to the same file commits while
+ * this one's chunks are out at `FILES`. Another chunked write holds one of the owner's open
+ * uploads while its chunks are out, and the owner has at most `MAX_OPEN_INTENTS` open, this
+ * one's among them, so those in flight when it starts can beat it at most
+ * `MAX_OPEN_INTENTS - 1` times before every one has landed: `MAX_OPEN_INTENTS` tries outlast
+ * them. A small whole write holds no upload; one landing in each of that many windows in a
+ * row is a flood, refused loudly rather than retried without end. Measured (review rvbr):
+ * 80 and then 300 concurrent appends to one small file all landed, none refused.
+ */
+export const APPEND_TRIES = MAX_OPEN_INTENTS;
+/**
+ * An outside agent's or a run's remove, rename or restore with no etag: it never removes,
+ * moves or overwrites an entry it did not read (review R2-L3, as `UNREAD_WRITE`).
+ */
+export const UNREAD_CHANGE = "expected_etag is the entry's current etag, or \"\" where there " +
+  "is none: read it first (file_stat, fetch or file_read)";
+
+/** A change by an outside client or a run names the etag it read; the owner's app need not. */
+function heldToRead(account: Account, asked: unknown): void {
+  if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
+    throw new Invalid(UNREAD_CHANGE);
+  }
+}
+
+/** An outside agent's or a run's whole write with no etag: it never replaces a file unread. */
+export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
+  "only when absent: read the file first (fetch, file_read or file_stat)";
 
 function fileFields(request: unknown, required: readonly string[],
                     optional: readonly string[] = []): Record<string, unknown> {
@@ -1177,36 +1425,31 @@ function contentsOf(rows: readonly object[]): string[] {
   });
 }
 
-/** A row or entry with its placed body read in, as a caller sees it. */
-function filled<T extends { readonly body: string; readonly content_id?: string }>(
-    row: T, bodies: ReadonlyMap<string, string>): T {
-  if (row.content_id === undefined) {
-    return row;
-  }
-  const { content_id: contentId, ...rest } = row;
-  const body = bodies.get(contentId);
-  if (body === undefined) {
-    throw new Error("a placed body its row names was not read");
-  }
-  return { ...rest, body } as T;
-}
-
 /**
  * What a writing door's answer shows of placed bodies (ADR-035): the content ids it names,
- * located in its unit, and the answer with them read in.
+ * located in its unit, and the answer with their windows read in.
  */
 interface Shown<T> {
   readonly contents: (value: T) => readonly string[];
-  readonly fill: (value: T, bodies: ReadonlyMap<string, string>) => T;
+  readonly fill: (value: T, windows: ReadonlyMap<string, Window>) => T;
 }
 
-/** A conflict's current row, read back whole, as `get` and `pull` show it. */
+/** A written row as its write answers it: everything but its body, and the body's bytes. */
+export type WrittenRow = Omit<Row, "body" | "content_id"> & { readonly body_bytes: number };
+
+function writtenRow(row: Row): WrittenRow {
+  const { body, content_id: _placed, ...rest } = row;
+  return { ...rest, body_bytes: utf8Length(body) };
+}
+
+/** A conflict's current row, read back as `get` shows it: fitted to one answer. */
 function conflictShown<T extends object>(): Shown<T> {
   return {
     contents: (value) => "conflict" in value && value.conflict !== null
       ? contentsOf([value.conflict as Row]) : [],
-    fill: (value, bodies) => "conflict" in value && value.conflict !== null
-      ? { ...value, conflict: filled(value.conflict as Row, bodies) } : value,
+    fill: (value, windows) => "conflict" in value && value.conflict !== null
+      ? { ...value, conflict: fittedRow(windowed(value.conflict as Row, windows),
+                                        jsonBytes({ ...value, conflict: null }) - 4) } : value,
   };
 }
 
@@ -1384,6 +1627,11 @@ function eventsRequest(request: unknown): {
   }
   return { frames: frames as PostedFrame[], end };
 }
+
+/** An archived record read whole in one read when no larger (a chain page's own share). */
+const ARCHIVED_WHOLE_BYTES = 64 * 1024;
+/** The bytes first read of a larger record for its first two lines (more when they pass it). */
+const ARCHIVED_HEAD_BYTES = 16 * 1024;
 
 /** The `archive` lane's failed passes in a row at which the owner is told, once. */
 const ARCHIVE_FAILS_TOLD = 3;
@@ -2134,7 +2382,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (binding.session !== undefined && source.kind !== "api_key") {
       throw new Refused(MCP_REGISTERS_BY_CARD);
     }
-    const grant = this.#grants.admit(origin.client, source.kind, signedIn, clock());
+    const vendor = binding.vendor ?? null;
+    if (vendor !== null && (source.kind !== "mcp" || typeof vendor !== "object"
+        || typeof vendor.id !== "string" || typeof vendor.verified !== "boolean")) {
+      throw new Invalid("invalid outside client vendor");
+    }
+    const grant = this.#grants.admit(origin.client, source.kind, signedIn, clock(), vendor);
     if (source.kind === "api_key") {
       this.#keys.used(source.ref, Math.floor(clock()));  // the key store's last use, coarse
     }
@@ -3010,9 +3263,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * them, the owner's own agents, each a ledger identity while its `agent.json` exists:
    * every one for the owner; for anyone else, the live ones its grant covers (a scoped
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
-   * it may mail).
+   * it may mail). One answer holds a page (`pages.ts`, review M3): its agents, the owner's
+   * agents and the apps, in that order, while they fit; when some are left, `next` is how
+   * many were answered so far, for `after` on the next read.
    */
-  outsideAgents(binding: Binding): Promise<{ agents: Agent[]; owner_agents: NativeAgent[] }> {
+  async outsideAgents(binding: Binding, request: AgentsRequest = {}):
+      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
+                next?: number }> {
+    await this.#seededFor(() => {
+      this.#account(binding, "read");
+    });
     return this.#door(() => {
       const account = this.#account(binding, "read");
       const own = account.origin === null && account.run === null;
@@ -3028,7 +3288,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         natives = natives.filter((native) => universe !== null && holds(grant, {
           universe, agent: native.agent, capability: "converse" }));
       }
-      return { agents: this.#ledger.agents(account.origin), owner_agents: natives };
+      // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
+      // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
+      // app that is not connected yet.
+      const r = fields(request ?? {}, [], ["after"]);
+      const after = whole(r["after"], "after", 0, Number.MAX_SAFE_INTEGER);
+      return agentsPage({ agents: this.#ledger.agents(account.origin), owner_agents: natives,
+                          apps: this.#grants.apps() }, after);
     });
   }
 
@@ -3407,19 +3673,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the bodies picks up.
    */
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
-    return this.#rereading(() => {
+    return this.#rereadingPage(() => {
       const account = this.#account(binding, "read");
-      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
+      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes", "body_offset",
+                                                  "message_id"]);
       this.#noMailbox(account);
       this.#scope(account, "read_graph");
-      return this.#ledger.placedNext(account.origin, r["limit"]);
-    }, (bodies) => {
+      const offset = bodyOffset(r["body_offset"]);
+      const next = this.#ledger.placedNext(account.origin, r["limit"]);
+      return { contents: next.contents,
+               offsetOf: (contentId) => contentId === next.first ? offset : 0 };
+    }, (windows) => {
       const account = this.#account(binding, "read");
-      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
+      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes", "body_offset",
+                                                  "message_id"]);
       this.#noMailbox(account);
       this.#scope(account, "read_graph");
       return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
-                               r["pad_bytes"] ?? 0, clock(), bodies);
+                               r["pad_bytes"] ?? 0, clock(), windows,
+                               bodyOffset(r["body_offset"]), PAGE_BYTES, r["message_id"] ?? null);
     }, (page) => page.messages.length === 0 && page.more);
   }
 
@@ -3446,16 +3718,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async inboxDigest(binding: Binding, request: InboxDigestRequest):
       Promise<{ mail: MailPage; rooms: Heads }> {
     // Its placed bodies (ADR-035), mail and rows, are read from R2 between its units, as a
-    // mailbox read's; the read's unit marks only the mail it returns.
-    const { mail, rooms, bodies, head } = await this.#rereading(() => {
+    // mailbox read's; the read's unit marks only the mail it returns. One answer holds
+    // both: each part fits half of it (`INBOX_PART`, `pages.ts`), so neither starves.
+    const { mail, rooms, windows, chars } = await this.#rereadingPage(() => {
       const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit", "after"], ["max_bytes", "head_chars"]);
       this.#noMailbox(account);
       this.#scope(account, "read_graph");
-      return [...this.#ledger.placedNext(account.origin, r["limit"]),
-              ...contentsOf(this.#collections.changed(account.caller, { prefix: ROOM_PREFIX },
-                                                      r["after"], r["limit"]).rows)];
-    }, (bodies) => {
+      const chars = headChars(r["head_chars"]);
+      const mail = new Set(this.#ledger.placedNext(account.origin, r["limit"], INBOX_PART)
+        .contents);
+      return { contents: [...mail, ...contentsOf(this.#collections.changed(
+        account.caller, { prefix: ROOM_PREFIX }, r["after"], r["limit"]).rows)],
+               maxOf: (contentId) => mail.has(contentId) ? INBOX_PART : headWindow(chars) };
+    }, (windows) => {
       const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit", "after"], ["max_bytes", "head_chars"]);
       this.#noMailbox(account);
@@ -3464,25 +3740,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                                 r["after"], r["limit"]);
       return {
         mail: this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null, 0, clock(),
-                                bodies),
-        rooms: changes, bodies, head: headChars(r["head_chars"]),
+                                windows, 0, INBOX_PART),
+        rooms: changes, windows, chars: headChars(r["head_chars"]),
       };
-    }, ({ mail: page, rooms: changes, bodies }) => (page.messages.length === 0 && page.more)
-      || contentsOf(changes.rows).some((id) => !bodies.has(id)));
-    return { mail, rooms: heads(filledChanges(rooms, bodies), head) };
+    }, ({ mail: page }) => page.messages.length === 0 && page.more);
+    return { mail, rooms: heads(rooms, chars, windows, INBOX_PART) };
   }
 
   /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
-  async boardDigest(binding: Binding, request: BoardDigestRequest): Promise<Heads> {
-    const { changes, head } = await this.#reading(() => {
+  boardDigest(binding: Binding, request: BoardDigestRequest): Promise<Heads> {
+    return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["limit", "after"], ["head_chars"]);
+      const chars = headChars(r["head_chars"]);
       const changes = this.#collections.changed(caller, { collection: BOARD }, r["after"],
                                                 r["limit"]);
-      return { value: { changes, head: headChars(r["head_chars"]) },
-               contents: contentsOf(changes.rows) };
-    }, (value, bodies) => ({ ...value, changes: filledChanges(value.changes, bodies) }));
-    return heads(changes, head);
+      return { value: { changes, chars }, contents: contentsOf(changes.rows),
+               maxOf: () => headWindow(chars) };
+    }, ({ changes, chars }, windows) => heads(changes, chars, windows));
   }
 
   /**
@@ -3588,11 +3863,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         ? { ok: true, value: (result as { value: JsonValue }).value, output: result.output,
             calls, landed }
         : { ok: false, error, output: result.output, calls, landed };
-      // The answer crosses an RPC to the doors: past what one carries it is refused whole,
-      // its calls kept, so the caller learns what landed.
-      return serializedBytes(answer) <= CODE_ANSWER_MAX ? answer
-        : { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
-            output: [], calls, landed };
+      return fittedCode(answer);
     } finally {
       await sandbox.close();
     }
@@ -3643,15 +3914,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * messages, such as the mail a run's receipt names: oldest first, after `after`.
    */
   async mailChain(binding: Binding, request: ChainRequest):
-      Promise<{ root: string; messages: ChainMail[]; more: boolean; after: number }> {
+      Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
     const r = await this.#door(() => {
       this.#owner(binding, "read", CHAINS);
-      return ledgerFields(request, ["message_id", "limit"], ["after"]);
+      return ledgerFields(request, ["message_id", "limit"], ["after", "body_offset",
+                                                             "body_message_id"]);
     });
     const after = r["after"] ?? 0;
     if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
       throw new Invalid("a chain read's after is a seq");
     }
+    const offset = bodyOffset(r["body_offset"]);
     // Its root: the hot message's, or the archived one's, read from its segment.
     const start = await this.#door(() => this.#ledger.chainStart(r["message_id"]));
     let root: string;
@@ -3666,64 +3939,113 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } else {
       ({ root, root_seq: rootSeq } = start);
     }
-    // Its archived messages past `after`: the next segments' chain maps, then their records,
-    // in key order, a page's worth (the first always, then each while the records fit
-    // `READ_PAGE_BYTES`, as a mailbox read pages its bodies); the first left unread is the
-    // frontier, so the page stops below it and its cursor goes on from there.
-    const fenced = await this.#door(() => this.#ledger.chainFences(rootSeq, after));
+    // Its archived messages past `after`, as a page reads placed bodies (`pages.ts`, PR 1):
+    // the next segments' chain maps, then each record by range, its body only as the window
+    // a page may show (from `body_offset` when it is the page's first message), the windows
+    // stopping at `WINDOWS_BYTES` past the first; the first left unread is the frontier, so
+    // the page stops below it and the next goes on from there.
+    const { fenced, firstHot } = await this.#door(() => ({
+      fenced: this.#ledger.chainFences(rootSeq, after),
+      firstHot: this.#ledger.chainNext(root, after) }));
     let frontier = fenced.frontier;
     const most = typeof r["limit"] === "number" ? r["limit"] : 1;
     const mail: ArchivedMail[] = [];
-    let bytes = 0;
+    let held = 0;
     read: for (const fence of fenced.fences) {
-      const trailer = await this.#trailer(fence);
-      for (const [key, offset, length] of trailer.chains[root] ?? []) {
+      const chunks = await this.#segmentChunks(fence);
+      const trailer = await this.#trailer(fence, chunks);
+      for (const [key, at, length] of trailer.chains[root] ?? []) {
         if (key <= after) {
           continue;
         }
-        if (mail.length >= most || (mail.length > 0 && bytes + length > READ_PAGE_BYTES)) {
+        if (mail.length >= most || (mail.length > 0 && held >= WINDOWS_BYTES)) {
           frontier = key;
           break read;
         }
-        mail.push(archivedMail(await this.#segmentBytes(fence.content_id, offset, length)));
-        bytes += length;
+        const first = mail.length === 0 && (firstHot === null || key < firstHot);
+        const found = await this.#archivedRecord(chunks, at, length, first ? offset : 0);
+        held += found.body === null ? 0 : found.body.end - found.body.offset;
+        mail.push(found);
       }
     }
-    // Its hot messages' placed bodies (ADR-035) are read from R2 between its units.
-    const page = await this.#rereading(
-      () => this.#ledger.chain(root, after, r["limit"], new Map(), { mail, frontier }).placed,
-      (bodies) => {
-        this.#owner(binding, "read", CHAINS);
-        return this.#ledger.chain(root, after, r["limit"], bodies, { mail, frontier });
-      },
-      (read) => read.placed.length > 0);
-    return { root: page.root, messages: page.messages, more: page.more, after: page.after };
+    // Its hot messages' placed bodies (ADR-035) are read from R2 between its units, and the
+    // page, hot and archived together, fits one answer.
+    const archived = { root, mail, frontier };
+    const page = (windows: ReadonlyMap<string, Window>) => this.#ledger.chain(
+      r["message_id"], after, r["limit"], windows, offset, r["body_message_id"] ?? null,
+      archived);
+    const { messages, more } = await this.#rereadingPage(() => {
+      this.#owner(binding, "read", CHAINS);
+      const read = page(new Map());
+      return { contents: read.placed,
+               offsetOf: (contentId) => contentId === read.first ? offset : 0 };
+    }, (windows) => {
+      this.#owner(binding, "read", CHAINS);
+      return page(windows);
+    }, (read) => read.messages.length === 0 && read.placed.length > 0);
+    return { root, messages, more };
   }
 
   // -- THE ARCHIVE (slice STORE item 2, `segments.ts`) --------------------------------------
 
-  /** A byte range of a segment's content, read from R2 outside any unit. */
-  async #segmentBytes(contentId: string, offset: number, length: number): Promise<Uint8Array> {
-    const located = await this.#door(() => this.#bodies.locate([contentId]));
-    return joined(await this.#files.fetch(chunkReads(located.get(contentId)!, offset, length)));
+  /** A segment's chunks, located in a unit of their own. */
+  async #segmentChunks(fence: Fence): Promise<readonly string[]> {
+    const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
+    return located.get(fence.content_id)!.chunks;
+  }
+
+  /**
+   * A byte range of a segment's content, read from R2 outside any unit by the verified
+   * ranges it spans (`FILES` reads each whole chunk, rechecks its hash and answers the range).
+   */
+  async #segmentBytes(chunks: readonly string[], offset: number, length: number):
+      Promise<Uint8Array> {
+    return joined(await this.#files.fetch(chunkReads(chunks, offset, length)));
   }
 
   /** A segment's trailer, read alone by its fence's range. */
-  async #trailer(fence: Fence): Promise<ReturnType<typeof parseTrailer>> {
+  async #trailer(fence: Fence, chunks: readonly string[]):
+      Promise<ReturnType<typeof parseTrailer>> {
     return parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-      await this.#segmentBytes(fence.content_id, fence.trailer_offset, fence.trailer_bytes)));
+      await this.#segmentBytes(chunks, fence.trailer_offset, fence.trailer_bytes)));
+  }
+
+  /**
+   * An archived record read by range, never its body whole (PR 1): a small one in one read;
+   * a larger one its head (its message's row and its body's), its recipients' lines, and
+   * its body's window from `offset` (at most `PAGE_BYTES`, cut back to a character), or no
+   * body at all (`offset` null: a reply's parent needs only its row).
+   */
+  async #archivedRecord(chunks: readonly string[], at: number, length: number,
+                        offset: number | null): Promise<ArchivedMail> {
+    if (length <= ARCHIVED_WHOLE_BYTES) {
+      return archivedMail(await this.#segmentBytes(chunks, at, length), offset);
+    }
+    let head = null;
+    for (let read = ARCHIVED_HEAD_BYTES; head === null; read *= 4) {
+      head = archivedHead(await this.#segmentBytes(chunks, at, Math.min(length, read)));
+      if (head === null && read >= length) {
+        throw new Error("an archived mail record lacks its message or its body");
+      }
+    }
+    const bodyAt = at + head.bodyAt;
+    const tail = bodyAt + head.bodyBytes + 1;
+    const recipients = archivedRecipients(await this.#segmentBytes(chunks, tail,
+                                                                   at + length - tail));
+    return { message: head.message, recipients, body: offset === null ? null
+      : await this.#bodies.windowAt(chunks, bodyAt, head.bodyBytes, offset, PAGE_BYTES) };
   }
 
   /** An archived message by the seq its id carries, from its segment; null when none. */
   async #archived(seq: number, messageId: string): Promise<ArchivedMail | null> {
     const fences = await this.#door(() => this.#ledger.archiveFences(seq));
     for (const fence of fences) {
-      const placement = (await this.#trailer(fence)).keys.find(([key]) => key === seq);
+      const chunks = await this.#segmentChunks(fence);
+      const placement = (await this.#trailer(fence, chunks)).keys.find(([key]) => key === seq);
       if (placement === undefined) {
         continue;
       }
-      const mail = archivedMail(await this.#segmentBytes(fence.content_id, placement[1],
-                                                         placement[2]));
+      const mail = await this.#archivedRecord(chunks, placement[1], placement[2], null);
       const purged = await this.#door(() => this.#ledger.purgedAgents());
       return mail.message.message_id === messageId
         && !roomMembers(mail.message.room_id).some((member) => purged.includes(member))
@@ -3864,7 +4186,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const table = new MoveTable();
     const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, table,
       (contentId, bytes, sha256) => table.addContent(
-        bytes, this.#bodies.locate([contentId]).get(contentId)!, sha256)));
+        bytes, this.#bodies.locate([contentId]).get(contentId)!.chunks, sha256)));
     if (batch === null) {
       return;
     }
@@ -3955,7 +4277,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                      keep: (room: string) => boolean = () => true):
       Promise<{ all: number; kept: number }> {
     const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
-    const ref = table.addContent(fence.bytes, located.get(fence.content_id)!, null);
+    const ref = table.addContent(fence.bytes, located.get(fence.content_id)!.chunks, null);
     const content = table.contentOf(ref);
     const read = (reader ?? new MoveReader(this.#files, table)).read;
     const trailer = parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
@@ -4416,29 +4738,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (options.synced === true) {
       await this.#schedule.sync();
     }
-    // A conflict's current row, placed, is read back whole, as a read door reads it.
+    // A conflict's current row, placed, is read back as a read door reads it.
     return shown === undefined || done.located.size === 0 ? done.value
-      : shown.fill(done.value, await this.#bodies.fetch(done.located));
+      : shown.fill(done.value, await this.#bodies.windows(done.located, () => PAGE_BYTES));
   }
 
   /**
-   * A read door's unit, then the placed bodies its rows name read from R2 and set in them
-   * (ADR-035): `unit` returns its result and the content ids it names, located in the
-   * same unit, so each is the content its row named.
-   */
-  /**
    * A read door whose unit marks what it returns (a mailbox read, ADR-035): the placed
    * bodies it would return located in a unit of their own (`locate`, its caller checked),
-   * read from R2, then its unit (`read`, the caller checked again) handed them; it reads
-   * again, a few times at most, while `again` says mail between put an unread placed body
-   * first.
+   * read from R2 (`fetch`: windows for a page, or whole for a run's input), then its unit (`read`, the caller checked again) handed them; it reads again, a
+   * few times at most, while `again` says mail between put an unread placed body first.
    */
-  async #rereading<T>(locate: () => readonly string[],
-                      read: (bodies: ReadonlyMap<string, string>) => T,
-                      again: (value: T) => boolean): Promise<T> {
+  async #rereading<T, B>(locate: () => readonly string[], read: (bodies: B) => T,
+                         again: (value: T) => boolean,
+                         fetch: (located: Located) => Promise<B>): Promise<T> {
     for (let tries = 0; ; tries++) {
       const located = await this.#door(() => this.#bodies.locate(locate()));
-      const bodies = await this.#bodies.fetch(located);
+      const bodies = await fetch(located);
       const value = await this.#door(() => read(bodies));
       if (!again(value) || tries >= READ_TRIES) {
         return value;
@@ -4446,17 +4762,38 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
-  async #reading<T>(unit: () => { value: T; contents: readonly string[] },
-                    fill: (value: T, bodies: ReadonlyMap<string, string>) => T,
-                    synced = false): Promise<T> {
-    const { value, located } = await this.#door(() => {
+  /**
+   * `#rereading` for a page: its bodies' windows (`Wants`: each at most `maxOf` bytes, from
+   * `offsetOf`).
+   */
+  #rereadingPage<T>(locate: () => Wants, read: (windows: ReadonlyMap<string, Window>) => T,
+                    again: (value: T) => boolean): Promise<T> {
+    let wants: Wants = { contents: [] };
+    return this.#rereading(() => {
+      wants = locate();
+      return wants.contents;
+    }, read, again, (located) => this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES),
+                                                      wants.offsetOf));
+  }
+
+  /**
+   * A read door's unit, then the windows of the placed bodies its rows name read from R2
+   * (ADR-035), and handed to `fill`, which fits the page to
+   * one answer: `unit` returns its result and the content ids it names, located in the same
+   * unit, so each is the content its row named.
+   */
+  async #reading<T, U = T>(unit: () => { value: T } & Wants,
+                           fill: (value: T, windows: ReadonlyMap<string, Window>) => U,
+                           synced = false): Promise<U> {
+    const { value, located, wants } = await this.#door(() => {
       const read = unit();
-      return { value: read.value, located: this.#bodies.locate(read.contents) };
+      return { value: read.value, located: this.#bodies.locate(read.contents), wants: read };
     });
     if (synced) {
       await this.#schedule.sync();  // a delete that rang an agent's doorbell (`#ring`)
     }
-    return fill(value, located.size === 0 ? new Map() : await this.#bodies.fetch(located));
+    return fill(value, located.size === 0 ? new Map()
+      : await this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES), wants.offsetOf));
   }
 
   /**
@@ -4482,8 +4819,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
-  /** A row written by compare-and-swap; the owner's own board or room write rings (`#ring`). */
-  collectionWrite(binding: Binding, request: WriteRequest): Promise<{ row: Row } | Conflicted> {
+  /**
+   * A row written by compare-and-swap; the owner's own board or room write rings (`#ring`).
+   * Answered without its body (review H3): its etag, revision, seq and `body_bytes`, so a
+   * body past one answer is never echoed back.
+   */
+  collectionWrite(binding: Binding, request: WriteRequest):
+      Promise<{ row: WrittenRow } | Conflicted> {
     return this.#placing(() => {
       const account = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
@@ -4496,16 +4838,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const collection = r["collection"] as string;
       const before = this.#collections.clock();
       const written = conflicted(() => ({
-        row: this.#collections.write(account.owner, account.caller, collection,
-                                     r["row_id"] as string, r["body"], r["expected_etag"],
-                                     r["private"], "history_op" in r ? r["history_op"] : "write",
-                                     placed, filerOf(account)),
+        row: writtenRow(this.#collections.write(account.owner, account.caller, collection,
+                                                r["row_id"] as string, r["body"],
+                                                r["expected_etag"], r["private"],
+                                                "history_op" in r ? r["history_op"] : "write",
+                                                placed, filerOf(account))),
       }));
       this.#ring(account, collection, before);
       return written;
     }, { shown: conflictShown(), synced: true });
   }
 
+  /**
+   * A collection's rows past `after`, fitted to one answer (`pages.ts`): when rows are left
+   * the cursor is the last one's seq, and a first row cut to fit is read on with
+   * `collection_get`'s `body_offset`.
+   */
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
     return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
@@ -4513,26 +4861,63 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const page = this.#collections.pull(caller, r["collection"] as string, r["after"],
                                           r["limit"]);
       return { value: page, contents: contentsOf(page.rows) };
-    }, (page, bodies) => ({ ...page, rows: page.rows.map((row) => filled(row, bodies)) }));
+    }, (page, windows) => {
+      const rows = page.rows.length === 0 ? [] : fitPage(
+        jsonBytes({ cursor: page.cursor, rows: [] }), windowedAll(page.rows, windows),
+        ({ item, window }, room, first) => bodied(item, window, room, first));
+      return { cursor: rows.length === page.rows.length ? page.cursor : rows.at(-1)!.seq,
+               rows: rows as Row[] };
+    });
   }
 
-  collectionGet(binding: Binding, request: KeyRequest): Promise<{ row: Row | null }> {
+  /**
+   * One row, fitted to one answer: with `body_offset`, its body from that byte, and with
+   * `etag`, refused when the row is no longer the one that answer read.
+   */
+  collectionGet(binding: Binding, request: GetRequest): Promise<{ row: Row | null }> {
     return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
-      const r = fields(request, ["collection", "row_id"]);
+      const r = fields(request, ["collection", "row_id"], ["body_offset", "etag"]);
+      const offset = bodyOffset(r["body_offset"]);
+      // A read on names the revision it reads (review L3), so two are never spliced.
+      if (offset > 0 && r["etag"] === undefined) {
+        throw new Invalid("body_offset reads on a row's body: name its etag");
+      }
       const got = this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
-      return { value: got, contents: contentsOf(got.row === null ? [] : [got.row]) };
-    }, (got, bodies) => ({ row: got.row === null ? null : filled(got.row, bodies) }));
+      if (r["etag"] !== undefined && got.row?.etag !== r["etag"]) {
+        throw new Refused("row_changed: the row is no longer the one at that etag: read it " +
+                          "again from its start");
+      }
+      return { value: { got, offset }, contents: contentsOf(got.row === null ? [] : [got.row]),
+               offsetOf: () => offset };
+    }, ({ got, offset }, windows) => ({ row: got.row === null ? null
+      : fittedRow(windowed(got.row, windows, offset), jsonBytes({ row: null }) - 4) as Row }));
   }
 
+  /**
+   * A row's kept history, fitted to one answer, newest first: when entries are left `more`
+   * and `before_revision` name the older ones; `body_offset` reads the page's newest
+   * entry's body from that byte.
+   */
   collectionHistory(binding: Binding, request: HistoryRequest): Promise<History> {
     return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
-      const r = fields(request, ["collection", "row_id"], ["before_revision"]);
+      const r = fields(request, ["collection", "row_id"], ["before_revision", "body_offset"]);
+      const offset = bodyOffset(r["body_offset"]);
       const kept = this.#collections.history(caller, r["collection"] as string,
                                              r["row_id"] as string, r["before_revision"] ?? null);
-      return { value: kept, contents: contentsOf(kept.entries) };
-    }, (kept, bodies) => ({ ...kept, entries: kept.entries.map((entry) => filled(entry, bodies)) }));
+      const newest = kept.entries.at(-1)?.content_id;
+      return { value: { kept, offset }, contents: contentsOf(kept.entries),
+               offsetOf: (contentId) => contentId === newest ? offset : 0 };
+    }, ({ kept, offset }, windows) => {
+      const fitted = kept.entries.length === 0 ? [] : fitPage(
+        jsonBytes({ entries: [], more: true, before_revision: kept.before_revision }),
+        windowedAll([...kept.entries].reverse(), windows, offset),
+        ({ item, window }, room, first) => bodied(item, window, room, first));
+      const entries = (fitted as HistoryEntry[]).reverse();
+      return entries.length === kept.entries.length ? { ...kept, entries }
+        : { entries, more: true, before_revision: entries[0]!.revision };
+    });
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest):
@@ -4739,25 +5124,31 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A directory's entries by name; with `head_chars`, each small file's (inline, so no
    * bucket is read) first characters of its text, enough for its frontmatter.
    */
-  fileList(binding: Binding, request: FileListRequest):
+  async fileList(binding: Binding, request: FileListRequest):
       Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
+    await this.#seededFor(() => {
+      this.#reader(binding, "read", "read_files");
+    });
     return this.#door(() => {
       const visible = this.#reader(binding, "read", "read_files");
       const r = fileFields(request, ["dir", "limit"], ["after", "head_chars"]);
       const listed = this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
       const entries = listed.entries.filter((entry) => visible(entry.path));
-      if (r["head_chars"] === undefined) {
-        return { ...listed, entries };
-      }
-      const chars = whole(r["head_chars"], "head_chars", 0, Number.MAX_SAFE_INTEGER);
-      return { ...listed, entries: entries.map((entry) => {
+      const chars = r["head_chars"] === undefined ? null
+        : whole(r["head_chars"], "head_chars", 0, Number.MAX_SAFE_INTEGER);
+      // One answer holds the page (`pages.ts`): when entries are left, `next` is the last
+      // one's name, so the next page starts after it.
+      const shown = chars === null ? entries : entries.map((entry) => {
         if (entry.kind !== "file" || entry.size > INLINE_BYTES) {
           return entry;
         }
         const inline = this.#files.open(entry.path).inline;
         const text = inline === undefined ? null : textOf(inline);
         return text === null ? entry : { ...entry, head: [...text].slice(0, chars).join("") };
-      }) };
+      });
+      return fitList({ ...listed, entries: shown }, shown,
+                     { entries: [], next: String.fromCharCode(1).repeat(MAX_NAME_BYTES) },
+                     (kept) => ({ entries: kept, next: nameOf(kept.at(-1)!.path) }));
     });
   }
 
@@ -4769,6 +5160,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileText(binding: Binding, request: FileTextRequest):
       Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
+    await this.#seededFor(() => {
+      this.#filer(binding, "read", "read_files");
+    });
     const asked = await this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path"], ["offset", "max_bytes"]);
@@ -4781,11 +5175,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { content, offset, max };
     });
     const { content, offset, max } = asked;
-    const read = await this.#window(content, offset, max);
+    // One answer holds the window (`pages.ts`): its text cut to what the entry leaves.
+    const room = PAGE_BYTES - jsonBytes({ entry: content.entry, offset, text: "",
+                                          next_offset: content.entry.size }) + 2;
+    if (room < 8) {
+      throw new Refused(RESULT_TOO_LARGE);
+    }
+    const read = await this.#window(content, offset, Math.min(max, room));
     if (read.text === null) {
       throw new Invalid(`${content.entry.path} is not UTF-8 text`);
     }
-    return { entry: content.entry, offset, text: read.text, next_offset: read.next };
+    const part = fitted(read.text, room);
+    const end = offset + part.bytes;
+    return { entry: content.entry, offset, text: part.text,
+             next_offset: end < content.entry.size ? end : null };
   }
 
   /**
@@ -4834,8 +5237,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * one answered or the last entry read, null at the end; a query of at most
    * `SEARCH_QUERY_BYTES`.
    */
-  fileSearch(binding: Binding, request: FileSearchRequest):
+  async fileSearch(binding: Binding, request: FileSearchRequest):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
+    await this.#seededFor(() => {
+      this.#filer(binding, "read", "read_files");
+    });
     return this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["query"], ["cursor"]);
@@ -4847,12 +5253,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (terms.size === 0) {
         throw new Invalid("a query has at least one word");
       }
-      const cursor = r["cursor"] === undefined ? null : storedPath(r["cursor"]);
+      const cursor = r["cursor"] === undefined ? null : storedPath(cursorPath(r["cursor"]));
       const scanned = this.#files.scan(cursor, SEARCH_SCAN);
       const page = searchPage(scanned.entries, scanned.next !== null, terms, fileUrl);
-      return page.resume === null ? { results: [...page.results], next_cursor: null }
-        : { results: [...page.results], next_cursor: page.resume,
+      const answer = page.resume === null ? { results: [...page.results], next_cursor: null }
+        : { results: [...page.results], next_cursor: pathCursor(page.resume),
             note: "more of the files are still to search: search again with next_cursor" };
+      // Only paths of thousands of escaped characters pass one answer: told, never cut.
+      if (jsonBytes(answer) > PAGE_BYTES) {
+        throw new Refused(RESULT_TOO_LARGE);
+      }
+      return answer;
     });
   }
 
@@ -4864,28 +5275,57 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileFetch(binding: Binding, request: FileFetchRequest):
       Promise<{ id: string; title: string; text: string; url: string;
                 metadata: FetchMetadata }> {
+    await this.#seededFor(() => {
+      this.#filer(binding, "read", "read_files");
+    });
     const content = await this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["id"]);
       return this.#files.open(r["id"]);
     });
-    const read = await this.#window(content, 0, CHUNK_BYTES);
+    // One answer holds it (`pages.ts`): its text cut to what its other fields leave, and
+    // `truncated` with `next_offset` for file_read to go on from.
+    const read = await this.#window(content, 0, PAGE_BYTES);
     // A file search found that is not text (a scan, an image) is answered with its metadata
     // and no text, never refused: every id a search answers is fetchable (review L4).
-    const front = frontmatter(read.text ?? "");
+    const found = frontmatter(read.text ?? "");
     const path = content.entry.path;
-    return {
-      id: path, title: titleOf(path, front), text: read.text ?? "", url: fileUrl(path),
-      metadata: { path, size: content.entry.size, version: content.entry.version,
+    // A frontmatter too wide for one answer beside its path is cut, said so (review L5):
+    // every id a search answers is fetchable, whatever its fields hold.
+    let front = found;
+    let cut = false;
+    const answer = (text: string, next: number | null) => ({
+      id: path, title: titleOf(path, front), text, url: fileUrl(path),
+      metadata: { ...(cut ? { fields_cut: true as const } : { path }),
+                  size: content.entry.size, version: content.entry.version,
                   modified: new Date(content.entry.mtime_ms).toISOString(),
-                  writer: content.entry.writer,
+                  writer: content.entry.writer, etag: content.entry.etag,
                   ...(front.type === undefined ? {} : { type: front.type }),
                   ...(front.description === undefined ? {} : { description: front.description }),
                   ...(front.tags.length === 0 ? {} : { tags: front.tags }),
-                  ...(read.text === null ? { binary: true } : {}),
-                  truncated: read.text !== null && read.next !== null,
-                  ...(read.text === null || read.next === null ? {} : { next_offset: read.next }) },
-    };
+                  ...(read.text === null ? { binary: true as const } : {}),
+                  truncated: read.text !== null && next !== null,
+                  ...(read.text === null || next === null ? {} : { next_offset: next }) },
+    });
+    let room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
+    if (room < 8) {
+      // Its metadata's path is its id's; its frontmatter's fields, a few KiB each at most.
+      cut = true;
+      const { title, description, type } = found;
+      front = { ...(title === undefined ? {} : { title: fitted(title, 1024).text }),
+                ...(description === undefined ? {}
+                  : { description: fitted(description, 4096).text }),
+                ...(type === undefined ? {} : { type: fitted(type, 256).text }),
+                tags: found.tags.filter((_, index) => index < 16)
+                  .map((tag) => fitted(tag, 256).text) };
+      room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
+      if (room < 8) {
+        throw new Refused(RESULT_TOO_LARGE);
+      }
+    }
+    const part = fitted(read.text ?? "", room);
+    return answer(part.text, read.text === null || part.bytes >= content.entry.size ? null
+      : part.bytes);
   }
 
   /**
@@ -4927,16 +5367,31 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return { chunks: await this.#files.fetch(reads) };
   }
 
-  /** Write a whole file of at most one chunk (4 MiB); larger ones go by upload. */
+  /**
+   * Write a whole file of at most one chunk (4 MiB); larger ones go by upload. Its content is
+   * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement). An
+   * outside client or a run writes at the etag it read, or `""` to create a file only when it
+   * is absent, never with no etag at all (review H1): a replacement never lands over a file
+   * the agent did not read. The owner's own app may still write with none.
+   */
   async fileWrite(binding: Binding, request: FileWriteRequest):
       Promise<{ entry: Entry } | FileConflicted> {
+    await this.#seededFor(() => {
+      this.#filer(binding, "work", "write_files");
+    });
     const { account, r, content } = await this.#door(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
       this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
-      const content = r["content"];
+      const asked = r["expected_etag"];
+      if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
+        throw new Invalid(UNREAD_WRITE);
+      }
+      const given = r["content"];
+      const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
-        throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
+        throw new Invalid("a written file is bytes or text, at most 4 MiB; larger ones are " +
+                          "uploaded");
       }
       return { account, r, content };
     });
@@ -4950,6 +5405,208 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } finally {
       await this.#schedule.sync();
     }
+  }
+
+  /**
+   * Text added at the end of a file (`file_append`, slice BRAIN: an outside agent's everyday
+   * write-back), the file made when absent. It never changes a byte already there, so it is
+   * additive (OpenAI's `destructiveHint: false`): the file is read, the text put after it, and
+   * the whole written at the etag it was read at, so two appends never lose each other; one
+   * that meets another's write reads the file again and puts its text after that. A file of
+   * whole chunks keeps them as they are (`Files.write`'s `prefix`), so only its last chunk
+   * and the text are written again, at any size. The text is at most one chunk (4 MiB).
+   * A structured file (`STRUCTURED`: JSON, TOML, YAML) is refused: text put after its end
+   * breaks what it means however whole its bytes stay, so it is edited (the founder,
+   * 2026-11-04). A file that stays small (at most `INLINE_BYTES` with the text) is read and
+   * written in one unit (`Files.writeSmall`), so its append never meets another write and
+   * never tries twice. A larger one is written around its chunks' `FILES` calls, so another
+   * write to it can land between its read and its commit: it then reads again, checking the
+   * caller's authority and the agent trees each try, at most `APPEND_TRIES` times, past which
+   * it is refused `file_busy`.
+   */
+  async fileAppend(binding: Binding, request: FileAppendRequest): Promise<{ entry: Entry }> {
+    await this.#seededFor(() => {
+      this.#filer(binding, "work", "write_files");
+    });
+    const { account, path, added } = await this.#door(() => {
+      const account = this.#filer(binding, "work", "write_files");
+      const r = fileFields(request, ["path", "content"]);
+      this.#ownersTree(binding, account, "FILES.append", request, r["path"]);
+      if (STRUCTURED.test(storedPath(r["path"]))) {
+        throw new Invalid("a structured file (JSON, TOML or YAML) is never appended to: read " +
+                          "it and change it with file_edit");
+      }
+      const content = r["content"];
+      if (typeof content !== "string" || content === "") {
+        throw new Invalid("appended content is text of at least one character");
+      }
+      const added = new TextEncoder().encode(content);
+      if (added.byteLength > CHUNK_BYTES) {
+        throw new Invalid("appended text is at most 4 MiB at once");
+      }
+      return { account, path: storedPath(r["path"]), added };
+    });
+    const authorize = () => {
+      this.#ownersTree(binding, this.#filer(binding, "work", "write_files"), "FILES.append",
+                       request, path);
+    };
+    try {
+      for (let tries = 0; ; tries += 1) {
+        if (tries === APPEND_TRIES) {
+          throw new Refused(`file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
+                            "append again");
+        }
+        const read = await this.#door((): { done: Entry } | { now: Content | null } => {
+          authorize();
+          const entry = this.#files.stat(path);
+          if (entry !== null && entry.kind !== "file") {
+            throw new Invalid(`${path} is a directory`);
+          }
+          const content = entry === null ? null : this.#files.open(path);
+          const before = content === null ? new Uint8Array(0) : content.inline;
+          if (before !== undefined && before.byteLength + added.byteLength <= INLINE_BYTES) {
+            // Small: read and written in this one unit, so nothing lands between.
+            const whole = new Uint8Array(before.byteLength + added.byteLength);
+            whole.set(before, 0);
+            whole.set(added, before.byteLength);
+            return { done: this.#files.writeSmall(path, whole, {
+              expected: entry?.etag ?? "", mode: entry?.mode, writer: fileWriter(account) }) };
+          }
+          return { now: content };
+        });
+        if ("done" in read) {
+          return { entry: read.done };
+        }
+        const now = read.now;
+        let bytes = added;
+        let prefix: ChunkRef[] = [];
+        if (now !== null) {
+          let tail: Uint8Array;
+          if (now.inline !== undefined) {
+            tail = now.inline;
+          } else {
+            const chunks = now.chunks ?? [];
+            const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
+              ? chunks.length : chunks.length - 1;
+            prefix = chunks.slice(0, whole);
+            const rest = chunks.slice(whole);
+            tail = rest.length === 0 ? new Uint8Array(0)
+              : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
+          }
+          bytes = new Uint8Array(tail.byteLength + added.byteLength);
+          bytes.set(tail, 0);
+          bytes.set(added, tail.byteLength);
+        }
+        const wrote = await fileConflictedAfter(async () => ({
+          entry: await this.#files.write(path, bytes, {
+            expected: now?.entry.etag ?? "",
+            ...(now === null ? {} : { mode: now.entry.mode }), prefix,
+            writer: fileWriter(account), authorize }),
+        }));
+        if (!("conflict" in wrote)) {
+          return wrote;
+        }
+        // Another write landed between the read and this one: read it again.
+      }
+    } finally {
+      await this.#schedule.sync();
+    }
+  }
+
+  /**
+   * One exact occurrence of `old_text` in a file's text replaced by `new_text`, at the etag
+   * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
+   * place). Text that occurs nowhere, or more than once, is refused with how many times, so
+   * the caller gives more of the text around it. The file is read and written whole, so it
+   * is at most one whole write (`WHOLE_BYTES`, 16 MiB, the files plane's ceiling for a write
+   * through the object).
+   */
+  async fileEdit(binding: Binding, request: FileEditRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    await this.#seededFor(() => {
+      this.#filer(binding, "work", "write_files");
+    });
+    const asked = await this.#door(() => {
+      const account = this.#filer(binding, "work", "write_files");
+      const r = fileFields(request, ["path", "old_text", "new_text", "expected_etag"]);
+      this.#ownersTree(binding, account, "FILES.edit", request, r["path"]);
+      const [old, replacement, etag] = [r["old_text"], r["new_text"], r["expected_etag"]];
+      if (typeof old !== "string" || old === "" || typeof replacement !== "string") {
+        throw new Invalid("old_text is text of at least one character, and new_text is text");
+      }
+      if (typeof etag !== "string" || etag === "") {
+        throw new Invalid("expected_etag is the file's etag, as file_stat or fetch answers it");
+      }
+      const path = storedPath(r["path"]);
+      const entry = this.#files.stat(path);
+      if (entry === null || entry.kind !== "file") {
+        throw new FileFault("not_found", "no such file");
+      }
+      if (entry.etag !== etag) {
+        return { conflict: entry };
+      }
+      if (entry.size > WHOLE_BYTES) {
+        throw new Invalid(`file_edit edits a file of at most ${WHOLE_BYTES} bytes; write a ` +
+                          "larger one by upload");
+      }
+      return { account, path, old, replacement, content: this.#files.open(path) };
+    });
+    if (asked.conflict !== undefined) {
+      return { conflict: asked.conflict };
+    }
+    const { account, path, old, replacement, content } = asked;
+    let bytes = content.inline;
+    if (bytes === undefined) {
+      const parts = await this.#files.fetch((content.chunks ?? []).map(({ sha256 }) =>
+        ({ sha256 })));
+      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+      let at = 0;
+      for (const part of parts) {
+        bytes.set(part, at);
+        at += part.byteLength;
+      }
+    }
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new Invalid(`${path} is not UTF-8 text`);
+    }
+    const first = text.indexOf(old);
+    if (first < 0) {
+      throw new Invalid("old_text is not in the file: read it again and give its exact text");
+    }
+    let times = 0;
+    for (let at = first; at >= 0; at = text.indexOf(old, at + 1)) {
+      times += 1;
+    }
+    if (times > 1) {
+      throw new Invalid(`old_text occurs ${times} times: give more of the text around the one ` +
+                        "to change");
+    }
+    const edited = new TextEncoder().encode(
+      text.slice(0, first) + replacement + text.slice(first + old.length));
+    try {
+      return await fileConflictedAfter(async () => ({
+        entry: await this.#files.write(path, edited, {
+          expected: content.entry.etag, mode: content.entry.mode, writer: fileWriter(account),
+          authorize: () => this.#filer(binding, "work", "write_files") }),
+      }));
+    } finally {
+      await this.#schedule.sync();
+    }
+  }
+
+  /**
+   * A new owner's starter seed, awaited before a door touches the files or lists the agents,
+   * after the caller's authority is checked in a unit (`check`): an outside agent's first
+   * `fetch` of `/workspace/USER.md` or `agents_list` finds the seeded profile and `main`
+   * however soon after sign-up it comes, and its first write lands beside the seeded files,
+   * never before them (autoconnect_research.md §2.1).
+   */
+  async #seededFor(check: () => void): Promise<void> {
+    await this.#door(check);
+    await this.#seeded();
   }
 
   /**
@@ -5017,6 +5674,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const account = this.#filer(binding, "reduce", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "recursive"]);
       this.#ownersTree(binding, account, "FILES.remove", request, r["path"]);
+      heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => this.#files.remove(r["path"], {
         expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
         writer: fileWriter(account) }));
@@ -5029,6 +5687,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
       this.#ownersTree(binding, account, "FILES.rename", request, r["from"], r["to"]);
+      heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => ({
         entry: this.#files.rename(r["from"], r["to"], {
           expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
@@ -5042,7 +5701,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path", "limit"], ["before"]);
-      return this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
+      // One answer holds the page (`pages.ts`): when versions are left, `next` the last's.
+      const kept = this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
+      return fitList(kept, kept.changes, { changes: [], next: Number.MAX_SAFE_INTEGER },
+                     (changes) => ({ changes, next: changes.at(-1)!.version }));
     });
   }
 
@@ -5052,6 +5714,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "version", "expected_etag"]);
       this.#ownersTree(binding, account, "FILES.restore", request, r["path"]);
+      heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => ({
         entry: this.#files.restore(r["path"], r["version"], {
           expected: r["expected_etag"], writer: fileWriter(account) }),
@@ -5151,7 +5814,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                tiers: tierNumbers(this.#storage, binding.tiers, clock()), unattended: false,
                prompt: asked.prompt, mail: null };
     });
-    return this.#settledWithin(run, asked.waitMs, asked.client);
+    return fittedRun(await this.#settledWithin(run, asked.waitMs, asked.client));
   }
 
   /**
@@ -5201,7 +5864,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                tiers: tierNumbers(this.#storage, binding.tiers, clock()),
                unattended: account.run !== null, prompt: asked.input, mail: null };
     });
-    return this.#settledWithin(run, 0, asked.client);
+    return fittedRun(await this.#settledWithin(run, 0, asked.client));
   }
 
   /** A run of the caller's, from its receipt; or a schedule of the caller's. */
@@ -5214,7 +5877,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (("run_id" in r) === ("schedule_id" in r)) {
         throw new Invalid("a status names a run_id or a schedule_id");
       }
-      return "run_id" in r ? this.#runs.receipt(r["run_id"], client)
+      return "run_id" in r ? fittedRun(this.#runs.receipt(r["run_id"], client))
         : this.#runs.scheduleView(r["schedule_id"], client);
     });
   }
@@ -5249,7 +5912,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (found.live !== null) {
       await this.#sandboxCancel(found.live);
     }
-    return this.#door(() => this.#runs.receipt(found.run, found.client));
+    return this.#door(() => fittedRun(this.#runs.receipt(found.run, found.client)));
   }
 
   /**
@@ -5991,7 +6654,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const mail = await this.#rereading(() => {
         const found = next(new Map());
         return found?.content_id == null ? [] : [found.content_id];
-      }, next, (found) => found?.content_id != null);
+      }, next, (found) => found?.content_id != null, (located) => this.#bodies.fetch(located));
       if (mail === null) {
         break;
       }
@@ -6033,8 +6696,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const mail = await this.#rereading(() => {
       const found = this.#ledger.mailFor(messageId, nativeId(agent));
       return found?.content_id == null ? [] : [found.content_id];
-    }, (bodies) => this.#ledger.mailFor(messageId, nativeId(agent), bodies),
-    (found) => found?.content_id != null);
+    }, (bodies: ReadonlyMap<string, string>) =>
+      this.#ledger.mailFor(messageId, nativeId(agent), bodies),
+    (found) => found?.content_id != null, (located) => this.#bodies.fetch(located));
     if (mail === null) {
       throw new Refused("mail_missing: the mail this run answers is no longer held");
     }

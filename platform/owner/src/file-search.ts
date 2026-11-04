@@ -23,7 +23,8 @@
  *   after the last entry it read, so no match is ever out of reach. It stops at whichever
  *   comes first of `SEARCH_SCAN` entries read and `SEARCH_ANSWER_BYTES` of results.
  */
-import { EGRESS_BODY_MAX } from "./network";
+import { escapedBytes, fitted, jsonBytes } from "./encoded";
+import { PAGE_BYTES } from "./pages";
 import { nameOf } from "./paths";
 
 /**
@@ -35,23 +36,17 @@ import { nameOf } from "./paths";
  */
 export const SEARCH_SCAN = 5000;
 /**
- * What one answer holds beside its results, with room to spare: the JSON-RPC envelope, the
- * MCP result's keys, the server-sent event's framing, `note`, and `next_cursor` (a stored
- * path of at most 4,096 bytes, at most 6 bytes a byte as JSON, in both copies, the text
- * copy's escaping doubling it: about 74 KiB at worst).
+ * What one answer holds beside its results, at its widest: `next_cursor` (a stored path of
+ * at most `MAX_PATH_BYTES`, as base64url: four characters each three bytes, 5,462, which a
+ * test holds to `MAX_PATH_BYTES`), `note`, and the keys.
  */
-export const SEARCH_ENVELOPE_BYTES = 128 * 1024;
+export const SEARCH_ENVELOPE_BYTES = 5_462 + 2 + 1024;
 /**
- * The most bytes of results, as JSON, one answer holds, a technical ceiling: the whole
- * answer stays within the platform's one body ceiling (`EGRESS_BODY_MAX`, 16 MiB). The MCP
- * door answers the results twice, as structured content (their JSON, once) and as a text
- * copy of that JSON escaped into a string, which at worst doubles it (each `"` and `\`
- * becomes two bytes; nothing else grows); so the answer is at most three times the results'
- * JSON plus `SEARCH_ENVELOPE_BYTES`. A search counts each result's JSON in UTF-8 bytes as it
- * adds it. Past it, `next_cursor` continues.
+ * The most bytes of results, as JSON, one answer holds: one tool answer (`PAGE_BYTES`,
+ * `pages.ts`, answered once as text) less `SEARCH_ENVELOPE_BYTES`. A search counts each
+ * result's JSON in UTF-8 bytes as it adds it. Past it, `next_cursor` continues.
  */
-/** `(EGRESS_BODY_MAX - SEARCH_ENVELOPE_BYTES) / 3`, rounded down (a test holds the two equal). */
-export const SEARCH_ANSWER_BYTES = 5_548_714;
+export const SEARCH_ANSWER_BYTES = PAGE_BYTES - SEARCH_ENVELOPE_BYTES;
 /**
  * The most UTF-8 bytes a query holds, a technical ceiling of the isolate's 128 MB (Workers
  * limits): a query's set of words takes about 15 bytes of heap a query byte (measured,
@@ -225,7 +220,8 @@ export interface Scanned {
 
 /** One page of a search: its results, best first, and where the next page resumes. */
 export interface SearchPage {
-  readonly results: readonly { id: string; title: string; url: string }[];
+  /** Each match; one whose title was cut to fit one answer says so (`title_cut`). */
+  readonly results: readonly { id: string; title: string; url: string; title_cut?: true }[];
   /** The path the next page resumes after, or null when the entries read were all. */
   readonly resume: string | null;
 }
@@ -285,6 +281,7 @@ export function searchPage(entries: readonly Scanned[], more: boolean, query: Re
   const hits: { path: string; title: string; score: [number, number] }[] = [];
   let bytes = 2;
   let resume: string | null = null;
+  let cutTitle: string | null = null;
   for (const entry of entries) {
     if (entry.kind !== "file") {
       continue;
@@ -304,12 +301,18 @@ export function searchPage(entries: readonly Scanned[], more: boolean, query: Re
     if (found[0] === 0) {
       continue;
     }
-    const title = titleOf(entry.path, front);
-    const size = new TextEncoder().encode(JSON.stringify({ id: entry.path, title,
-                                                           url: url(entry.path) })).byteLength + 1;
-    if (bytes + size > answerBytes && hits.length > 0) {
-      resume = hits.at(-1)!.path;  // the last match answered: the next page starts after it
-      break;
+    let title = titleOf(entry.path, front);
+    let size = jsonBytes({ id: entry.path, title, url: url(entry.path) }) + 1;
+    if (bytes + size > answerBytes) {
+      if (hits.length > 0) {
+        resume = hits.at(-1)!.path;  // the last match answered: the next page starts after it
+        break;
+      }
+      // The first match is always answered: its title, display text, cut to fit and said so.
+      title = fitted(title, Math.max(2, answerBytes - bytes - size + escapedBytes(title)
+                                          - jsonBytes({ title_cut: true }) + 1)).text;
+      cutTitle = entry.path;
+      size = jsonBytes({ id: entry.path, title, url: url(entry.path), title_cut: true }) + 1;
     }
     bytes += size;
     hits.push({ path: entry.path, title, score: found });
@@ -319,7 +322,9 @@ export function searchPage(entries: readonly Scanned[], more: boolean, query: Re
   }
   hits.sort((a, b) => b.score[0] - a.score[0] || b.score[1] - a.score[1]
                       || (a.path < b.path ? -1 : 1));
-  return { results: hits.map((hit) => ({ id: hit.path, title: hit.title, url: url(hit.path) })),
+  return { results: hits.map((hit) => ({ id: hit.path, title: hit.title, url: url(hit.path),
+                                         ...(hit.path === cutTitle ? { title_cut: true as const }
+                                           : {}) })),
            resume };
 }
 

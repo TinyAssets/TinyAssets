@@ -26,6 +26,7 @@ import type { OwnerDO } from "./entry";
 import {
   appPost, call, connect, OPEN, reached, registerClient, rpcBody, serveFirstPartyDocument,
   setControl, signInApp, sqlIn, type Tokens, url,
+  answerOf,
 } from "./support";
 
 /** The run doors' tools: what a run's own MCP door never serves. */
@@ -130,7 +131,7 @@ function report(start: SandboxStart, body: unknown): Promise<Response> {
 }
 
 function structured(result: unknown): Record<string, unknown> {
-  return (result as { structuredContent: Record<string, unknown> }).structuredContent;
+  return answerOf(result);
 }
 
 describe("the run tools", () => {

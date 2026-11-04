@@ -10,6 +10,7 @@ import { sessionOf, withoutCookie } from "../src/session";
 import {
   appPost, authorizeUrl, call, connect, doorsEnv, legacyPost, OPEN, pkce, reached,
   registerClient, rpcBody, serveFirstPartyDocument, setControl, signInApp, tokenCall, url,
+  answerOf,
 } from "./support";
 
 const COOKIE = "c".repeat(43);
@@ -121,8 +122,7 @@ describe("the Cookie header", () => {
         params: { name: "agents_list", arguments: {} } },
         { Cookie: `__Host-ta-owner=${app.session}` });
       expect(listed.status).toBe(200);
-      expect(await rpcBody(listed)).toMatchObject({ result: {
-        structuredContent: { agents: [] } } });
+      expect(answerOf((await rpcBody(listed))["result"])).toMatchObject({ agents: [] });
     } finally {
       restore();
     }

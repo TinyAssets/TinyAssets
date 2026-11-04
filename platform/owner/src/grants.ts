@@ -85,6 +85,7 @@
  */
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
+import { appList, connectUrl, type Vendor } from "../../doors/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../doors/src/tools";
 import { canonical, plain, type Policy, policyDigest } from "./policy";
 import { codePoints, utf8Bytes } from "./text";
@@ -156,6 +157,12 @@ export type Client = {
   readonly name: string;
   readonly first_seen: number;
   readonly last_seen: number;
+  /**
+   * Which of `apps.json`'s vendors the client is, as its sign-in knew it (migration 4,
+   * slice BRAIN), or null; `vendor_verified` 1 when its CIMD host verified it.
+   */
+  readonly vendor: string | null;
+  readonly vendor_verified: number;
   /** Whether the owner has set or revoked this grant; kept while it fences. */
   readonly owner_set: number;
   /** The agents registered from this client, which hold its row. */
@@ -165,6 +172,30 @@ export type Client = {
 };
 
 type Stored = Omit<Client, "scopes"> & { scopes: string };
+
+/** Whole seconds as ISO 8601. */
+const iso = (seconds: number): string => new Date(seconds * 1000).toISOString();
+
+/**
+ * One of the owner's AI apps as any of its agents sees it (`agents_list`): an `apps.json`
+ * app, whether a live MCP grant names it (`connections` of them, the latest used at
+ * `last_used`), whether a CIMD host verified one, and where its connect step is; or
+ * (`id` null) the connected clients no app matched.
+ */
+export interface ConnectedApp {
+  readonly id: string | null;
+  readonly name: string;
+  readonly connected: boolean;
+  readonly connections: number;
+  readonly verified: boolean;
+  /**
+   * When one of its clients last called, ISO 8601 (to `GRANT_LIMITS.seenIntervalS`), or null:
+   * an app long unused may have been disconnected in its own app, which TinyAssets is not
+   * told, so an agent asks before taking it as connected.
+   */
+  readonly last_used: string | null;
+  readonly connect_url: string | null;
+}
 
 export interface GrantChange {
   readonly client: unknown;
@@ -269,8 +300,12 @@ export class Grants {
    * seen free row; an API key's row is written with the key. `authenticatedAt` is when
    * the client's credential was signed in, if the binder knows.
    */
-  admit(client: string, source: string, authenticatedAt: number | null, now: number): Grant {
+  admit(client: string, source: string, authenticatedAt: number | null, now: number,
+        vendor: Vendor | null = null): Grant {
     outsideClient(client, source);
+    if (vendor !== null && !appList().some((app) => app.id === vendor.id)) {
+      throw new Invalid("a client's vendor is one of apps.json's");
+    }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       let row = this.#row(client);
@@ -290,13 +325,19 @@ export class Grants {
                      "ORDER BY last_seen LIMIT ?)", over);
         }
         sql.exec("INSERT INTO outside_clients (client, source, mode, scopes, generation, " +
-                   "revoked_at, name, first_seen, last_seen) " +
-                   "VALUES (?, ?, 'full', '[]', 1, NULL, '', ?, ?)", client, source, now, now);
+                   "revoked_at, name, first_seen, last_seen, vendor, vendor_verified) " +
+                   "VALUES (?, ?, 'full', '[]', 1, NULL, '', ?, ?, ?, ?)", client, source, now,
+                 now, vendor?.id ?? null, vendor?.verified === true ? 1 : 0);
         row = this.#row(client);
       } else if (row !== undefined && row.source !== source) {
         throw new Refused("outside client source changed");
       } else if (row !== undefined && now - row.last_seen >= this.#limits.seenIntervalS) {
         sql.exec("UPDATE outside_clients SET last_seen = ? WHERE client = ?", now, client);
+      }
+      if (row !== undefined && row.vendor === null && vendor !== null) {
+        // A row recorded before its sign-in named its vendor (an API key's never does).
+        sql.exec("UPDATE outside_clients SET vendor = ?, vendor_verified = ? WHERE client = ?",
+                 vendor.id, vendor.verified ? 1 : 0, client);
       }
       return this.#grant(row, authenticatedAt);
     });
@@ -340,6 +381,37 @@ export class Grants {
     return row !== undefined && row.mode !== "revoked"
       && holds({ mode: row.mode as Grant["mode"], scopes: JSON.parse(row.scopes) as Scope[],
                  generation: row.generation, profile: row.profile as ProfileName }, scope);
+  }
+
+  /**
+   * The owner's connected AI apps, by vendor (`agents_list`'s `apps`): each of `apps.json`'s
+   * apps, connected when a live MCP grant names it, with how many and when last seen; and,
+   * when there are any, the live MCP grants no app matched, as one line. Bounded by the
+   * apps, not the grants. A read.
+   */
+  apps(): ConnectedApp[] {
+    const rows = this.#sql.exec<{ vendor: string | null; n: number; verified: number;
+                                  seen: number }>(
+      "SELECT vendor, count(*) AS n, max(vendor_verified) AS verified, max(last_seen) AS seen " +
+      "FROM outside_clients WHERE source = 'mcp' AND mode != 'revoked' GROUP BY vendor")
+      .toArray();
+    const by = new Map(rows.map((row) => [row.vendor, row]));
+    const listed: ConnectedApp[] = appList().map((app) => {
+      const row = by.get(app.id);
+      return { id: app.id, name: app.name, connected: row !== undefined,
+               connections: row?.n ?? 0, verified: row !== undefined && row.verified === 1,
+               last_used: row === undefined ? null : iso(row.seen),
+               connect_url: connectUrl(app.id) };
+    });
+    const other = rows.filter((row) => row.vendor === null
+                                       || !appList().some((app) => app.id === row.vendor));
+    const others = other.reduce((sum, row) => sum + row.n, 0);
+    if (others > 0) {
+      listed.push({ id: null, name: "Other apps", connected: true, connections: others,
+                    verified: false, last_used: iso(Math.max(...other.map((row) => row.seen))),
+                    connect_url: null });
+    }
+    return listed;
   }
 
   /** The name the owner gave a client's grant ("" when none, or no row). A read. */

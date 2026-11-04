@@ -12,7 +12,8 @@ import { describe, expect, it } from "vitest";
 
 import { storageFullOf } from "../src/storage-full";
 
-import { Bodies, PLACE_BYTES, READ_PAGE_BYTES } from "../src/bodies";
+import { Bodies, PLACE_BYTES } from "../src/bodies";
+import { jsonBytes, RESULT_CHARS } from "../src/encoded";
 import { LIMITS } from "../src/collections";
 import { GC_GRACE_S, INLINE_BYTES, PLACE_TTL_S } from "../src/files";
 import { WriteGate } from "../src/gate";
@@ -21,6 +22,7 @@ import { MAX_BODY_BYTES } from "../src/ledger";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { TIER_UNREAD } from "../src/tier";
 import { MUSE, rig } from "./ledger-support";
+import { at, readOn } from "./pages-support";
 import { failure, filesOn, ownerObject, sqlIn, text, TIERS } from "./support";
 import type { FauxOwnerDO } from "./worker";
 
@@ -56,8 +58,10 @@ describe("the placement rule", () => {
       collection: "board", row_id: rowId, body, expected_etag: etag, private: false });
     const small = await put("small", SMALL);
     const large = await put("large", LARGE);
-    expect(large).toMatchObject({ row: { body: LARGE, revision: 1 } });
+    // A write answers its row without its body (review H3).
+    expect(large).toMatchObject({ row: { body_bytes: 2 * PLACE_BYTES, revision: 1 } });
     expect(Object.keys((large as { row: object }).row)).not.toContain("content_id");
+    expect(Object.keys((large as { row: object }).row)).not.toContain("body");
     const stored = await sqlIn(stub, "SELECT row_id, length(body) AS kept, body_bytes, " +
                                        "content_id FROM collection_rows ORDER BY row_id");
     expect(stored).toEqual([
@@ -69,8 +73,9 @@ describe("the placement rule", () => {
                                "ON r.content_id = c.content_id")).toEqual([{ refs: 2 }]);
     expect(await inR2(await namespace(stub), LARGE)).toBe(LARGE);
     // Every read reads it back whole: get, pull and history.
+    const { body_bytes: _bytes, ...written } = (large as { row: { body_bytes: number } }).row;
     expect((await stub.collectionGet(as("bob"), { collection: "board", row_id: "large" })).row)
-      .toEqual((large as { row: object }).row);
+      .toEqual({ ...written, body: LARGE });
     expect((await stub.collectionPull(as("bob"), { collection: "board", after: 0, limit: 10 }))
       .rows.map((row) => [row.row_id, row.body])).toEqual([["small", SMALL], ["large", LARGE]]);
     expect((await stub.collectionHistory(as("bob"), { collection: "board", row_id: "large" }))
@@ -86,7 +91,7 @@ describe("the placement rule", () => {
     await stub.collectionDelete(as(name), { collection: "board", row_id: "large",
                                             expected_etag: current.etag });
     expect(await sqlIn(stub, "SELECT state FROM file_chunks")).toEqual([{ state: "garbage" }]);
-    expect(small).toMatchObject({ row: { body: SMALL } });
+    expect(small).toMatchObject({ row: { body_bytes: PLACE_BYTES } });
   });
 
   it("places a large message body, and the reader reads it back whole", async () => {
@@ -106,20 +111,32 @@ describe("the placement rule", () => {
     expect(await r.sql("SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
   });
 
-  it("ends a mailbox page before more placed bodies than a page holds", async () => {
+  it("ends a mailbox page at one answer: whole messages while they fit, the first cut",
+     async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    // Three bodies of 3 MiB each (four bytes a character): two fit a page.
-    const big = "𝄞".repeat(768 * 1024);
+    // Three bodies of 20,000 bytes: two fit one answer, the third goes to the next page.
     for (const cmid of ["a", "b", "c"]) {
-      await r.post(null, `dm:${muse}`, { body: `${cmid}${big}`, cmid });
+      await r.post(null, `dm:${muse}`, { body: `${cmid}${"x".repeat(19_999)}`, cmid });
     }
     const first = await r.read(MUSE);
-    expect(2 * 3 * 1024 * 1024).toBeLessThanOrEqual(READ_PAGE_BYTES);
-    expect(3 * 3 * 1024 * 1024).toBeGreaterThan(READ_PAGE_BYTES);
     expect([first.messages.length, first.more]).toEqual([2, true]);
+    expect(first.messages.every((m) => !("truncated" in m))).toBe(true);
+    expect(jsonBytes(first)).toBeLessThanOrEqual(RESULT_CHARS);
     await r.ack(MUSE, first.messages.at(-1)!.seq);
     expect((await r.read(MUSE)).messages.map((m) => m.body![0])).toEqual(["c"]);
+    // A body past one answer is the page's one message, cut, and read on by range.
+    await r.post(null, `dm:${muse}`, { body: "d".repeat(120_000), cmid: "d" });
+    const cut = await r.read(MUSE, 50, { max_bytes: 1 });
+    expect(cut.messages.map((m) => m.body![0])).toEqual(["c"]);
+    await r.ack(MUSE, cut.messages[0]!.seq);
+    const big = await r.read(MUSE);
+    expect(big.messages[0]).toMatchObject({ body_bytes: 120_000, truncated: true });
+    expect(big.messages).toHaveLength(1);
+    expect(await readOn((offset) => r.stub.mailboxRead(r.bind(MUSE), {
+      limit: 1, ...at(offset, { message_id: big.messages[0]!.message_id }) })
+      .then((page) => page.messages[0]!)))
+      .toBe("d".repeat(120_000));
   });
 
   it("leaves no reference to a body whose commit never came, and the sweep removes it",
@@ -203,18 +220,22 @@ describe("the placement rule", () => {
     // A row of `maxRowBytes`, placed across two chunks: half a request's 16 MiB ceiling.
     expect(LIMITS.maxRowBytes).toBe(8 * 1024 * 1024);
     const most = "x".repeat(LIMITS.maxRowBytes);
-    expect((await put("most", most)) as { row: { body: string } })
+    expect((await put("most", most)) as { row: { revision: number } })
       .toMatchObject({ row: { revision: 1 } });
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_content_chunks"))
       .toEqual([{ n: 2 }]);
-    expect((await stub.collectionGet(as("bob"), { collection: "board", row_id: "most" }))
-      .row!.body === most).toBe(true);
+    const etag = (await stub.collectionGet(as("bob"), { collection: "board",
+                                                        row_id: "most" })).row!.etag;
+    expect(await readOn((offset) => stub.collectionGet(as("bob"), {
+      collection: "board", row_id: "most", ...at(offset, { etag }) }).then((got) => got.row!))
+      === most).toBe(true);
     expect((await failure(() => put("past", "x".repeat(LIMITS.maxRowBytes + 1)))).message)
       .toBe(`a row body is text of at most ${LIMITS.maxRowBytes} bytes`);
     const r = await rig();
     const muse = await r.register(MUSE);
     await r.post(null, `dm:${muse}`, { body: "m".repeat(MAX_BODY_BYTES) });
-    expect((await r.read(MUSE)).messages[0]!.body).toHaveLength(MAX_BODY_BYTES);
+    expect((await r.read(MUSE)).messages[0]).toMatchObject({ body_bytes: MAX_BODY_BYTES,
+                                                             truncated: true });
     // A grant's scopes: as many as their JSON's bytes hold, counted to the byte.
     const scope = (n: number) => ({ universe: `u${n}`, agent: "main", capability: "read_graph" });
     expect(scopes(Array.from({ length: 1000 }, (_, n) => scope(n)))).toHaveLength(1000);
@@ -351,7 +372,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
   it("A6: a history read past one page says so, and its cursor reads the older entries",
      async () => {
     const { stub, as, name } = ownerObject();
-    const big = "𝄞".repeat(768 * 1024);  // 3 MiB
+    const big = "𝄞".repeat(5000);  // 20,000 bytes: two entries fit one answer
     let etag = "";
     for (const n of ["a", "b", "c", "d"]) {
       const done = await stub.collectionWrite(as(name), { collection: "board", row_id: "r",

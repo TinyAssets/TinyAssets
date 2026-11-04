@@ -114,7 +114,9 @@ export function starterPackage(value: unknown): StarterPackage {
   const files = pkg.files.map((file: Partial<StarterFile>): StarterFile => {
     const path = storedPath(file.path);
     // A managed file is instructions, in the owner's trees; a personal one (the profile, the
-    // workspace's map) is data, anywhere in the workspace, for every agent to write.
+    // workspace's map) is data, anywhere in the workspace, the owner's to change. Who else
+    // may write it is the agent trees' rule: the profile is in `OWNER_TREES`, so a grant the
+    // owner narrowed never writes it, and the map is not.
     if (!within(path, WORKSPACE) || path === WORKSPACE || path.endsWith(NEWER)
         || paths.has(path) || (file.class !== "managed" && file.class !== "personal")
         || (file.class === "managed" && !ownersOnly(path)) || typeof file.text !== "string") {

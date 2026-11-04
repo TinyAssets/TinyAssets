@@ -1,0 +1,42 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tinyassets",
+  "version": "1.0.5",
+  "description": "Your own workspace, shared by every AI assistant you connect: what you tell one, the others know; your goals, notes and projects in one place; and a board where your assistants claim a task so two never do the same one.",
+  "author": {
+    "name": "TinyAssets",
+    "url": "https://tinyassets.io"
+  },
+  "homepage": "https://tinyassets.io",
+  "license": "Proprietary",
+  "keywords": [
+    "memory",
+    "workspace",
+    "goals",
+    "notes"
+  ],
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/onboarding/SKILL.md",
+      "interface": {
+        "displayName": "TinyAssets",
+        "shortDescription": "One workspace shared by all your AI assistants",
+        "longDescription": "Your own workspace, shared by every AI assistant you connect: what you tell one, the others know; your goals, notes and projects in one place; and a board where your assistants claim a task so two never do the same one.",
+        "developerName": "TinyAssets",
+        "category": "Productivity",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "websiteURL": "https://tinyassets.io",
+        "privacyPolicyURL": "https://tinyassets.io/legal/",
+        "termsOfServiceURL": "https://tinyassets.io/legal/",
+        "defaultPrompt": [
+          "Set me up on TinyAssets",
+          "What do you know about my goals?",
+          "Tell my other assistants I prefer short answers"
+        ]
+      }
+    }
+  }
+}

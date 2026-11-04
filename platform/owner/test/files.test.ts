@@ -236,13 +236,20 @@ describe("a file write", () => {
       .toBe("is_directory: a root is a directory");
   });
 
-  it("refuses content that is not bytes, or past one chunk at the write door", async () => {
+  it("refuses content that is neither bytes nor text, or past one chunk at the write door",
+     async () => {
     const r = await rig();
-    for (const content of ["text", [1, 2], new Uint8Array(4 * 1024 * 1024 + 1)]) {
+    for (const content of [[1, 2], 7, new Uint8Array(4 * 1024 * 1024 + 1),
+                           "x".repeat(4 * 1024 * 1024 + 1)]) {
       expect((await failure(() => r.stub.fileWrite(r.bind(null), {
         path: `${W}/x`, expected_etag: null, content: content as Uint8Array }))).message)
-        .toBe("a written file is bytes, at most 4 MiB; larger ones are uploaded");
+        .toBe("a written file is bytes or text, at most 4 MiB; larger ones are uploaded");
     }
+    // Text is written as its UTF-8 (`file_write`).
+    await r.stub.fileWrite(r.bind(null), { path: `${W}/t.md`, expected_etag: null,
+                                           content: "caf\u00e9\n" });
+    const read = await r.stub.fileRead(r.bind(null), { path: `${W}/t.md` });
+    expect(read.inline).toEqual(new TextEncoder().encode("caf\u00e9\n"));
   });
 });
 
@@ -386,7 +393,7 @@ describe("every file door", () => {
   it("writes an outside client's changes as that client's", async () => {
     const r = await rig();
     await r.register(MUSE);
-    expect(entryOf(await write(r, `${W}/a.txt`, "x", null, r.bind(MUSE))).writer)
+    expect(entryOf(await write(r, `${W}/a.txt`, "x", "", r.bind(MUSE))).writer)
       .toBe(`client:${MUSE.client}`);
   });
 
@@ -461,7 +468,7 @@ describe("every file door", () => {
     const [row] = (await r.stub.grantList(r.bind(null))).clients;
     const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
       const writing = instance.fileWrite(r.bind(MUSE), {
-        path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
+        path: `${W}/big.bin`, expected_etag: "", content: new Uint8Array(INLINE_BYTES + 1) })
         .then(() => "written", (error: Error) => error.message);
       // Its intent is made in a few microtasks; its put to FILES needs I/O, so it is
       // still out while the queue is held and the grant narrowed ahead of the commit.

@@ -6,6 +6,7 @@
  * own storage with that bound lowered (`inObject`). Where it went through the router's
  * owner channel, this one goes through the object's RPC door with a binding.
  */
+import type { WrittenRow } from "../src/owner-do";
 import { describe, expect, it } from "vitest";
 
 import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
@@ -18,7 +19,7 @@ const ROOM = "room:chess:main";
 async function write(o: Owner, caller: string, fields: {
   collection?: string; row_id: string; body: string; expected_etag?: string;
   private?: boolean; history_op?: string;
-}): Promise<Row> {
+}): Promise<WrittenRow> {
   const answer = await o.stub.collectionWrite(o.as(caller), {
     collection: fields.collection ?? "board", row_id: fields.row_id, body: fields.body,
     expected_etag: fields.expected_etag ?? "", private: fields.private ?? false,
@@ -28,6 +29,13 @@ async function write(o: Owner, caller: string, fields: {
     throw new Error(`unexpected conflict: ${JSON.stringify(answer)}`);
   }
   return answer.row;
+}
+
+/** A written row as a read shows it: its body in place of its size. */
+function shownAs(row: WrittenRow, body: string): Row {
+  const { body_bytes: bytes, ...rest } = row;
+  expect(bytes).toBe(new TextEncoder().encode(body).byteLength);
+  return { ...rest, body } as Row;
 }
 
 describe("the revision primitive", () => {
@@ -43,10 +51,12 @@ describe("the revision primitive", () => {
     const [winner] = outcomes.flatMap((o) => ("row" in o ? [o.row] : []));
     const [lost] = outcomes.flatMap((o) => ("conflict" in o ? [o.conflict] : []));
     expect(winner).toBeDefined();
-    expect(lost).toEqual(winner);
+    // The write answers its row without its body (review H3); the conflict, the row whole.
+    const { body, ...rest } = lost as Row;
+    expect({ ...rest, body_bytes: body.length }).toEqual(winner);
+    expect(winner).not.toHaveProperty("body");
     expect([winner!.revision, winner!.seq]).toEqual([2, 2]);
-    expect(await rows(stub)).toEqual([["board", "task-1", 2, 2, winner!.writer, 0,
-                                       winner!.body]]);
+    expect(await rows(stub)).toEqual([["board", "task-1", 2, 2, winner!.writer, 0, body]]);
   });
 
   it("payloads are verbatim and pull follows the sequence", async () => {
@@ -58,13 +68,12 @@ describe("the revision primitive", () => {
     const two = await write(o, alice, { row_id: "t2", body: "[]" });
     const pull = (after: number, limit: number) =>
       stub.collectionPull(as("bob"), { collection: "board", after, limit });
-    expect(await pull(0, 1)).toEqual({ cursor: 1, rows: [one] });
-    expect(one.body).toBe(body);
-    expect(await pull(1, 10)).toEqual({ cursor: 2, rows: [two] });
+    expect(await pull(0, 1)).toEqual({ cursor: 1, rows: [shownAs(one, body)] });
+    expect(await pull(1, 10)).toEqual({ cursor: 2, rows: [shownAs(two, "[]")] });
     expect(await pull(2, 10)).toEqual({ cursor: 2, rows: [] });
     expect(await stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t1", body: "{}", expected_etag: "", private: false,
-    })).toEqual({ conflict: one });
+    })).toEqual({ conflict: shownAs(one, body) });
   });
 
   it("a private row is its writer's own", async () => {
@@ -75,7 +84,7 @@ describe("the revision primitive", () => {
     expect(await stub.collectionPull(as("cara"), { collection: ROOM, after: 0, limit: 10 }))
       .toEqual({ cursor: 1, rows: [] });
     expect((await stub.collectionPull(as("bob"), { collection: ROOM, after: 0, limit: 10 }))
-      .rows).toEqual([mine]);
+      .rows).toEqual([shownAs(mine, "secret")]);
     const taken = await failure(() => write(o, "cara", {
       collection: ROOM, row_id: "p", body: "x", expected_etag: mine.etag, private: true }));
     expect([taken.name, taken.message]).toEqual(["Refused", "a private row is its writer's own"]);
@@ -93,9 +102,9 @@ describe("the revision primitive", () => {
     const shared = await write(o, "bob", { collection: ROOM, row_id: "s", body: "turn" });
     const get = (caller: string, collection: string, row_id: string) =>
       stub.collectionGet(as(caller), { collection, row_id });
-    expect(await get("bob", ROOM, "p")).toEqual({ row: mine });
+    expect(await get("bob", ROOM, "p")).toEqual({ row: shownAs(mine, "secret") });
     expect(await get("cara", ROOM, "p")).toEqual({ row: null });
-    expect(await get("cara", ROOM, "s")).toEqual({ row: shared });
+    expect(await get("cara", ROOM, "s")).toEqual({ row: shownAs(shared, "turn") });
     expect(await get("bob", ROOM, "none")).toEqual({ row: null });
     expect(await get("bob", "board", "s")).toEqual({ row: null });
     // The caller is the binding's, never a request field.
@@ -146,7 +155,7 @@ describe("the revision primitive", () => {
     expect((await rows(stub))[0]?.[4]).toBe("bob");
     expect(await stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t", body: "2", expected_etag: "", private: false,
-    })).toEqual({ conflict: row });
+    })).toEqual({ conflict: shownAs(row, "1") });
     const forged = await failure(() => stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t", body: "2", expected_etag: "", private: false,
       writer: alice } as never));
@@ -508,7 +517,8 @@ describe("the RPC door's owner-only erases", () => {
     expect([refused.name, refused.message])
       .toEqual(["Refused", "only the owner may delete collection rows"]);
     expect(await stub.collectionDelete(as(alice), {
-      collection: "board", row_id: "t", expected_etag: "stale" })).toEqual({ conflict: row });
+      collection: "board", row_id: "t", expected_etag: "stale" }))
+      .toEqual({ conflict: shownAs(row, "1") });
     expect(await stub.collectionDelete(as(alice), {
       collection: "board", row_id: "gone", expected_etag: "" })).toEqual({ conflict: null });
     expect(await stub.collectionDelete(as(alice), {

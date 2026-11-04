@@ -69,20 +69,16 @@ describe("dynamic client registration", () => {
     expect((await registration()).status).toBe(404);
   });
 
-  it("is on with the flag; a client it registers for our own origin is refused at consent",
-     async () => {
+  it("is on with the flag, taking only a vendor's own redirects (`brain.test.ts`); a client " +
+     "registered for our own origin is refused at consent", async () => {
     const on = { ...doorsEnv, DCR_ENABLED: "true" };
-    const response = await registration(on);
-    expect(response.status).toBe(201);
+    // Grok's redirects are not recorded yet, so its registration is refused, with our own
+    // origin as with any other.
+    expect((await registration(on)).status).toBe(400);
     const metadata = await (await call(new Request(
       url("/.well-known/oauth-authorization-server")), on)).json<Record<string, unknown>>();
     expect(metadata["registration_endpoint"]).toBe("https://tinyassets.io/oauth/register");
-    const ours = await call(new Request(url("/oauth/register"), {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_name: "TinyAssets", redirect_uris: [WEB_REDIRECT],
-                             token_endpoint_auth_method: "none" }),
-    }), on);
-    const { client_id } = await ours.json<{ client_id: string }>();
+    const { clientId: client_id } = await registerClient("Grok", WEB_REDIRECT);
     const { challenge } = await pkce();
     const page = await call(new Request(authorizeUrl(
       { clientId: client_id, redirectUri: WEB_REDIRECT }, challenge), { headers: { ...NAVIGATE } }),

@@ -43,6 +43,7 @@ import { createHash } from "node:crypto";
 import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
+import { PAGE_BYTES } from "./pages";
 import { codePoints, name, utf8Bytes } from "./text";
 
 export interface Limits {
@@ -196,13 +197,18 @@ type StoredRow = {
   change: number;
 };
 
-/** A page's rows: the first always, then each while the bodies fit `READ_PAGE_BYTES`. */
-function paged<T extends { body_bytes: number }>(rows: readonly T[]): T[] {
+/**
+ * A page's rows: the first always, then each while the bodies fit `bytes`: `PAGE_BYTES` for
+ * a read that answers them whole (a body is at least its bytes as JSON, so no more could
+ * fit the answer; the door fits it exactly, `pages.ts`), `READ_PAGE_BYTES` for a digest's
+ * heads (the bucket reads it makes).
+ */
+function paged<T extends { body_bytes: number }>(rows: readonly T[], most: number): T[] {
   const page: T[] = [];
   let bytes = 0;
   for (const row of rows) {
     bytes += row.body_bytes;
-    if (page.length > 0 && bytes > READ_PAGE_BYTES) {
+    if (page.length > 0 && bytes > most) {
       break;
     }
     page.push(row);
@@ -467,8 +473,8 @@ export class Collections {
    *
    * The cursor is the collection's top when the page holds everything, so a reader
    * never rescans; otherwise it is the page's last `seq`. A page holds at most `limit`
-   * rows and, past its first, no more than `READ_PAGE_BYTES` of bodies (a placed body is
-   * read by the door into its row).
+   * rows and, past its first, no more than `PAGE_BYTES` of bodies (a placed body is read by
+   * the door into its row, and the door fits the page to one answer, `pages.ts`).
    */
   pull(caller: string, collection: string, after: unknown, limit: unknown): Page {
     name(collection, "collection");
@@ -485,7 +491,7 @@ export class Collections {
         "AND (private = 0 OR writer = ?) ORDER BY seq LIMIT ?",
       collection, after, top, caller, limit,
     ).toArray();
-    const rows = paged(found);
+    const rows = paged(found, PAGE_BYTES);
     const last = rows.at(-1);
     return {
       cursor: (rows.length === limit || rows.length < found.length) && last !== undefined
@@ -528,7 +534,7 @@ export class Collections {
       changedSql("collection" in where ? "collection" : "prefix"),
       after, ...keys, caller, after, ...keys, caller, limit,
     ).toArray();
-    const rows = paged(found);
+    const rows = paged(found, READ_PAGE_BYTES);
     const top = this.#sql.exec<{ change: number }>(
       "SELECT change FROM collection_clock").one().change;
     const last = rows.at(-1);
@@ -582,7 +588,7 @@ export class Collections {
   /**
    * A row's kept history, oldest first, before `before_revision` when it is given; none for
    * a row `get` would not show. A page holds the newest entries, at most `maxPull`, whose
-   * bodies fit `READ_PAGE_BYTES`, at least one; `more` and the cursor name the older ones it
+   * bodies fit `PAGE_BYTES`, at least one (the door fits it to one answer); `more` and the cursor name the older ones it
    * left.
    */
   history(caller: string, collection: string, rowId: string, before: unknown = null):
@@ -602,7 +608,7 @@ export class Collections {
         "ORDER BY revision DESC LIMIT ?", collection, rowId, before ?? Number.MAX_SAFE_INTEGER,
       this.#limits.maxPull + 1,
     ).toArray();
-    const page = paged(found.slice(0, this.#limits.maxPull));
+    const page = paged(found.slice(0, this.#limits.maxPull), PAGE_BYTES);
     const more = page.length < found.length;
     return {
       entries: page.reverse().map((e) => ({

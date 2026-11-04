@@ -12,6 +12,7 @@ import { profileNames, toolTable } from "../src/tools";
 import {
   call, connect, legacyPost, legacyTool, OPEN, reached, registerClient, rpcBody, setControl,
   sqlIn, type Tokens, url,
+  answerOf,
 } from "./support";
 
 function owner(): string {
@@ -68,8 +69,8 @@ describe.each([
     const listed = await client.callTool({ name: "agents_list", arguments: {} });
     expect(listed.isError).toBeFalsy();
     // No outside agent; of the owner's own, at most main, the starter's, as its seed lands.
-    expect(listed.structuredContent).toMatchObject({ agents: [] });
-    expect((listed.structuredContent as { owner_agents: { agent: string }[] }).owner_agents
+    expect(answerOf(listed)).toMatchObject({ agents: [] });
+    expect((answerOf(listed) as unknown as { owner_agents: { agent: string }[] }).owner_agents
       .map((agent) => agent.agent).filter((agent) => agent !== "main")).toEqual([]);
     const filed = await client.callTool({ name: "agent_register", arguments: {
       command_center_id: "cc", display_name: "Muse", delivery_method: "pull", recipe_id: null } });

@@ -1958,6 +1958,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     `${LOGGED("starter_state", "only version retry_at noticed", "only", "UPDATE")}`,
     `${LOGGED("starter_state", "only version retry_at noticed", "only", "DELETE")}`,
   ]),
+  // 4, after the starter's 3 (slice BRAIN): which of `apps.json`'s vendors an MCP client is,
+  // as its sign-in knew it (`doors/src/apps.ts`): an app's id, verified (1) by its CIMD
+  // host or named (0) by its self-declared name; null when none matched, and for an API
+  // key. `agents_list` answers the owner's connected apps from it. The table is exported,
+  // so its capture triggers that write rows are made again with the two columns.
+  Object.freeze([
+    "ALTER TABLE outside_clients ADD COLUMN vendor TEXT CHECK (vendor IS NULL OR " +
+      "(length(vendor) BETWEEN 1 AND 32 AND vendor NOT GLOB '*[^a-z0-9-]*'))",
+    "ALTER TABLE outside_clients ADD COLUMN vendor_verified INTEGER NOT NULL DEFAULT 0 " +
+      "CHECK (vendor_verified IN (0, 1) AND (vendor IS NOT NULL OR vendor_verified = 0))",
+    "DROP TRIGGER outside_clients_logged_insert",
+    "DROP TRIGGER outside_clients_logged_update",
+    `${LOGGED("outside_clients", "client source mode scopes generation revoked_at name first_seen last_seen owner_set agents held profile revision vendor vendor_verified", "client", "INSERT")}`,
+    `${LOGGED("outside_clients", "client source mode scopes generation revoked_at name first_seen last_seen owner_set agents held profile revision vendor vendor_verified", "client", "UPDATE")}`,
+  ]),
 ]);
 
 /** A migration's digest: SHA-256 over its statements as JSON, as the code evaluates them. */

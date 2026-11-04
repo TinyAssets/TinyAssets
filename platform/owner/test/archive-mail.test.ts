@@ -164,19 +164,53 @@ const noRead = async (): Promise<Uint8Array> => {
   throw new Error("no stored content in this batch");
 };
 
-/** A chain read, paged by its `after` cursor until `id` shows or it ends: its body, or null. */
+/** Every archived message's body by its id, as the export's reading rule reads it. */
+async function archivedBodies(r: Rig): Promise<Map<string, string>> {
+  const { archived } = await exportArchived(r);
+  return new Map(archived.map((rows) => [rows["ledger_messages"]!["message_id"] as string,
+                                         rows["message_bodies"]!["body"] as string]));
+}
+
+/** The most JSON one answer holds (`encoded.ts`). */
+const RESULT_CHARS = 50_000;
+
+/**
+ * A chain read, paged by the last message's seq until `id` shows or it ends: its body read
+ * whole (a page cuts its first body to fit one answer; the rest reads on by `body_offset`,
+ * naming the message), or null. Every page held to one answer.
+ */
 async function chained(r: Rig, id: string): Promise<string | null> {
+  const read = async (request: Record<string, unknown>) => {
+    const page = await r.stub.mailChain(r.bind(null), { message_id: id, limit: 10,
+                                                        ...request } as never);
+    expect(JSON.stringify(page).length).toBeLessThanOrEqual(RESULT_CHARS);
+    return page;
+  };
   let after = 0;
-  for (let page = 0; page < 20; page++) {
-    const chain = await r.stub.mailChain(r.bind(null), { message_id: id, limit: 10, after });
-    const found = chain.messages.find((m) => m.message_id === id);
+  for (let n = 0; n < 40; n++) {
+    const page = await read({ after });
+    const found = page.messages.find((m) => m.message_id === id) as
+      ({ seq: number; message_id: string; body: string | null;
+         body_next_offset?: number | null }) | undefined;
     if (found !== undefined) {
-      return found.body;
+      if (found.body === null) {
+        return null;
+      }
+      let text = found.body;
+      for (let next = found.body_next_offset ?? null; next !== null;) {
+        const on = (await read({ after: found.seq - 1, limit: 1, body_offset: next,
+                                 body_message_id: found.message_id })).messages[0] as
+          { body: string; body_next_offset?: number | null };
+        text += on.body;
+        next = on.body_next_offset ?? null;
+      }
+      return text;
     }
-    if (!chain.more || chain.after <= after) {
+    const last = page.messages.at(-1);
+    if (!page.more || last === undefined) {
       return null;
     }
-    after = chain.after;
+    after = last.seq;
   }
   return null;
 }
@@ -409,7 +443,7 @@ describe("the archive lane", () => {
       .message).toBe("parent is not a message to this sender in this room");
   });
 
-  it("pages a chain of large bodies by their bytes, archived and hot, never all at once",
+  it("pages a chain of large bodies to one answer each, archived and hot, read on by offset",
      async () => {
     const r = await rig(ARCHIVING);
     const muse = await r.register(MUSE);
@@ -427,17 +461,27 @@ describe("the archive lane", () => {
     await settle(r);
     expect(await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
                        root.message_id)).toEqual([]);  // archived
-    // Each page one 5 MiB body (two pass `READ_PAGE_BYTES`), its cursor going on.
+    // Each page one answer: its first 5 MiB body cut to fit, the rest read on by its id
+    // and offset, archived or hot alike; the next page goes on after it.
     const pages: string[][] = [];
     for (let after = 0, more = true; more && pages.length < 10;) {
       const page = await r.stub.mailChain(r.bind(null), { message_id: third.message_id,
                                                           limit: 10, after });
+      expect(JSON.stringify(page).length).toBeLessThanOrEqual(RESULT_CHARS);
       pages.push(page.messages.map((m) => m.message_id));
-      expect(page.messages.length).toBeLessThanOrEqual(1);
-      expect(page.messages.every((m) => m.body?.length === 5 * 1024 * 1024)).toBe(true);
-      ({ after, more } = page);
+      expect(page.messages).toHaveLength(1);
+      expect(page.messages[0]).toMatchObject({ truncated: true, body_bytes: 5 * 1024 * 1024 });
+      more = page.more;
+      after = page.messages[0]!.seq;
     }
     expect(pages.flat()).toEqual([root.message_id, second.message_id, third.message_id]);
+    for (const [message, letter] of [[root, "a"], [second, "b"], [third, "c"]] as const) {
+      expect((await chained(r, message.message_id)) === big(letter)).toBe(true);
+    }
+    // A read on names its message: another's offset is refused, never spliced.
+    expect((await failure(() => r.stub.mailChain(r.bind(null), {
+      message_id: third.message_id, limit: 1, after: 0, body_offset: 100,
+      body_message_id: second.message_id } as never))).message).toMatch(/^message_changed/);
   }, 120_000);
 
   it("aborts a move whose batch changed between its units, the mail kept hot", async () => {
@@ -674,9 +718,12 @@ describe("a merge's byte budget (reviews N1 and N3)", () => {
                                "(SELECT value FROM json_each(?))", JSON.stringify(large)))
       .toEqual([]);
     expect(await overlaps(r)).toEqual([]);
+    // Every one whole in its segment (read by the export's rule: the chain read pages a
+    // 7 MiB body a hundred and fifty answers at a time, which the tests above cover).
+    const bodies = await archivedBodies(r);
     for (const [n, id] of large.entries()) {
-      expect((await chained(r, id))?.length).toBe(7 * 1024 * 1024);
-      expect((await chained(r, id))?.[0]).toBe(`${n}`);
+      expect(bodies.get(id)?.length).toBe(7 * 1024 * 1024);
+      expect(bodies.get(id)?.[0]).toBe(`${n}`);
     }
   }, 180_000);
 });
@@ -862,10 +909,16 @@ describe("the worst merge (review N3)", () => {
     expect(after).toHaveLength(2);
     expect(after.every((fence) => (fence["bytes"] as number) >= 8 * MIB)).toBe(true);
     expect(await overlaps(r)).toEqual([]);
+    // Each byte-exact in its segment, by the export's rule (a chain read of a body of
+    // control characters, a thousand answers of it, is the test above's).
+    const bodies = await archivedBodies(r);
     for (const [id, body] of [[k1.message_id, near], [k2.message_id, cap],
                               [k2b.message_id, cap], [k3.message_id, near]] as const) {
-      expect((await chained(r, id)) === body).toBe(true);
+      expect(bodies.get(id) === body).toBe(true);
     }
+    // And the chain read answers each, its first answer cut to fit.
+    const page = await r.stub.mailChain(r.bind(null), { message_id: k1.message_id, limit: 10 });
+    expect(page.messages[0]).toMatchObject({ message_id: k1.message_id, truncated: true });
   }, 300_000);
 });
 

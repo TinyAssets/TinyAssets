@@ -9,6 +9,7 @@
  * A key that does not verify is `401` and no object is reached; then the kill switch,
  * fail-closed. The request's `Cookie` header is gone before this sees it (`index.ts`).
  */
+import { answerJson } from "./answers";
 import { bearer } from "./app";
 import { verifyKey } from "./api-keys";
 import { jsonObject } from "./body";
@@ -57,7 +58,7 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
     return args;
   }
   try {
-    return Response.json(await callDoor(held.stub, held.binding, tool, args));
+    return answerJson(tool.name, await callDoor(held.stub, held.binding, tool, args));
   } catch (error) {
     const refused = refusal(error);
     if (refused === null) {
