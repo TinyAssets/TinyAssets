@@ -5,7 +5,12 @@ Define the repository's cross-provider orientation, claim, worktree, context, dr
 ## Requirements
 ### Requirement: Session Orientation Reports Repository Freshness Without Mutating Work
 
-The session sync gate SHALL fetch the configured remote with pruning unless invoked with `--no-fetch`, identify the primary checkout, and report whether that checkout is on `main` and how many commits it trails the configured base reference. Its default mode MUST be advisory and MUST NOT switch branches, pull, reset, clean, or otherwise modify tracked work. In strict mode it SHALL return non-zero when the primary checkout is off `main` or behind the base reference.
+The session sync gate SHALL fetch the configured remote with pruning unless invoked with `--no-fetch`, identify the primary checkout, and report whether that checkout is on `main` and how many commits it trails the configured base reference. Its default mode MUST be advisory and MUST NOT switch branches, pull, reset, clean, or otherwise modify tracked work. In strict mode it SHALL return non-zero when the primary checkout is off `main` or behind the base reference. Off Windows the primary checkout is a session's own branch, so the gate MUST NOT report it as off `main`, and `--heal` MUST do nothing there.
+
+#### Scenario: A Linux session's branch survives every session start
+
+- **WHEN** the hook runs off Windows, with any `source`, on a dirty non-`main` branch of the primary checkout
+- **THEN** the branch, its uncommitted edits and the branch list are unchanged
 
 #### Scenario: Dirty checkout is behind main
 
