@@ -4,12 +4,17 @@
  * and always its first, the first's body cut at a character and saying so, and a read by
  * range (`body_offset`) returns the rest, byte-exact.
  */
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+
+import type { Window } from "../src/bodies";
+import { bodied } from "../src/pages";
 
 import {
   escapedBytes, fitted, jsonBytes, RESULT_CHARS, unitAt, utf8Length,
 } from "../src/encoded";
 import type { Row } from "../src/collections";
+import type { WrittenRow } from "../src/owner-do";
 import { MUSE, rig } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import { failure, ownerObject } from "./support";
@@ -67,7 +72,8 @@ describe("a read's pages", () => {
     let pages = 0;
     const whole = await readOn(async (offset) => {
       pages += 1;
-      const page = await r.stub.mailboxRead(r.bind(MUSE), { limit: 5, ...at(offset) });
+      const page = await r.stub.mailboxRead(r.bind(MUSE), {
+        limit: 5, ...at(offset, { message_id: first.messages[0]!.message_id }) });
       expect(bytes(page)).toBeLessThanOrEqual(RESULT_CHARS);
       return page.messages[0]!;
     });
@@ -82,10 +88,11 @@ describe("a read's pages", () => {
     const { stub, as, name } = ownerObject();
     for (const [shape, ch] of Object.entries(SHAPES)) {
       const body = ch.repeat(Math.floor(MIB / 2 / utf8Length(ch)));
-      await stub.collectionWrite(as(name), { collection: "board", row_id: shape, body,
-                                             expected_etag: "", private: false });
+      const { row: { etag } } = await stub.collectionWrite(as(name), {
+        collection: "board", row_id: shape, body, expected_etag: "", private: false }) as
+        { row: WrittenRow };
       const got = await readOn((offset) => stub.collectionGet(as(name), {
-        collection: "board", row_id: shape, ...at(offset) }).then((answer) => {
+        collection: "board", row_id: shape, ...at(offset, { etag }) }).then((answer) => {
         expect(bytes(answer)).toBeLessThanOrEqual(RESULT_CHARS);
         return answer.row!;
       }));
@@ -95,7 +102,7 @@ describe("a read's pages", () => {
     const cut = await stub.collectionGet(as(name), { collection: "board", row_id: "pair" });
     expect((cut.row as Row & { body_next_offset: number }).body_next_offset % 4).toBe(0);
     expect((await failure(() => stub.collectionGet(as(name), {
-      collection: "board", row_id: "pair", body_offset: 6 }))).message)
+      collection: "board", row_id: "pair", body_offset: 6, etag: cut.row!.etag }))).message)
       .toMatch(/^body_offset is inside a character/);
   }, 300_000);
 
@@ -103,7 +110,7 @@ describe("a read's pages", () => {
     const { stub, as, name } = ownerObject();
     const put = (body: string, etag: string) => stub.collectionWrite(as(name), {
       collection: "board", row_id: "r", body, expected_etag: etag, private: false }) as
-      Promise<{ row: Row }>;
+      Promise<{ row: WrittenRow }>;
     const first = await put("a".repeat(200_000), "");
     const read = await stub.collectionGet(as(name), { collection: "board", row_id: "r" });
     const next = (read.row as Row & { body_next_offset: number }).body_next_offset;
@@ -119,7 +126,7 @@ describe("a read's pages", () => {
     let etag = "";
     for (const n of [1, 2, 3]) {
       const done = await stub.collectionWrite(as(name), { collection: "notes", row_id: `r${n}`,
-        body: `${n}`.repeat(30_000), expected_etag: "", private: false }) as { row: Row };
+        body: `${n}`.repeat(30_000), expected_etag: "", private: false }) as { row: WrittenRow };
       etag = done.row.etag;
     }
     void etag;
@@ -165,4 +172,67 @@ describe("a read's pages", () => {
     expect(bytes(fetched)).toBeLessThanOrEqual(RESULT_CHARS);
     expect(fetched.metadata).toMatchObject({ truncated: true });
   }, 120_000);
+
+  it("counts a cut body's fields at their widest, so its last part never passes (L1)", () => {
+    // A body of four-digit size whose rest fills the room exactly.
+    const size = 5000;
+    const window: Window = { text: "y".repeat(size), offset: 0, end: size, size };
+    const item = { id: 1, body: null as string | null };
+    for (let room = 200; room < 5100; room += 37) {
+      const fit = bodied(item, { ...window, text: window.text.slice(0, 4000), offset: 1000 },
+                         room, true);
+      expect(fit!.bytes).toBeLessThanOrEqual(room);
+    }
+  });
+
+  it("reads a message on only by its message_id, and a row only by its etag (L2, L3)",
+     async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    await r.post(null, `dm:${muse}`, { body: "a".repeat(80_000) });
+    await r.post(null, `dm:${muse}`, { body: "b".repeat(80_000), cmid: "c2" });
+    const first = (await r.read(MUSE)).messages[0]!;
+    const next = first.body_next_offset!;
+    expect((await failure(() => r.stub.mailboxRead(r.bind(MUSE), {
+      limit: 1, body_offset: next }))).message).toMatch(/name it by message_id/);
+    await r.ack(MUSE, first.seq);
+    // After the ack the page's first is the next message: the offset is not spliced into it.
+    expect((await failure(() => r.stub.mailboxRead(r.bind(MUSE), {
+      limit: 1, body_offset: next, message_id: first.message_id }))).message)
+      .toMatch(/^message_changed: /);
+    const { stub, as, name } = ownerObject();
+    await stub.collectionWrite(as(name), { collection: "board", row_id: "r",
+      body: "c".repeat(80_000), expected_etag: "", private: false });
+    expect((await failure(() => stub.collectionGet(as(name), {
+      collection: "board", row_id: "r", body_offset: 100 }))).message)
+      .toMatch(/name its etag/);
+  });
+
+  it("pages agents_list: a thousand agents in answers under the cap, none lost (M3)",
+     async () => {
+    const { stub, as, name } = ownerObject();
+    await stub.outsideAgents(as(name));
+    await runInDurableObject(stub, (_instance, state) => {
+      for (let n = 0; n < 1000; n++) {
+        state.storage.sql.exec(
+          "INSERT INTO outside_agents (agent_id, command_center_id, outside_client, " +
+            "outside_family, source, source_ref, display_name, delivery_method, recipe_id, " +
+            "revision, created_at) VALUES (?, ?, ?, ?, 'mcp', ?, ?, 'pull', NULL, 1, ?)",
+          `agt_${n.toString().padStart(32, "0")}`, "cc_home", `client_${n}`, "family",
+          `ref_${n}`, `Research helper number ${n}`, 1_800_000_000_000 + n);
+      }
+    });
+    const seen: string[] = [];
+    for (let after = 0, pages = 0; ; pages++) {
+      const page = await stub.outsideAgents(as(name), after === 0 ? {} : { after });
+      expect(bytes(page)).toBeLessThanOrEqual(RESULT_CHARS);
+      seen.push(...page.agents.map((agent) => agent.agent_id));
+      if (page.next === undefined) {
+        expect(pages).toBeGreaterThan(1);
+        break;
+      }
+      after = page.next;
+    }
+    expect(new Set(seen).size).toBe(1000);
+  });
 });

@@ -167,9 +167,8 @@ jobs:
   # One leg a workspace, in parallel, each within the ten minutes: run whole, the suite
   # passed ten (PR #5403). A matrix job's result is every leg's, so one red leg fails
   # `required-tests`. Every workspace in `platform/package.json` has its leg, the
-  # sandbox's `test` split in two (workerd and guards; the runner as root) and the owner's
-  # (its suite, and the workerd memory leg: each path's live peak held to its grant,
-  # `owner/test/memory-peaks.mjs`), pinned by tests/test_tests_workflow.py. Measured on a dev box (2026-11-03): typecheck 8 s,
+  # sandbox's `test` split in two (workerd and guards; the runner as root), pinned by
+  # tests/test_tests_workflow.py. Measured on a dev box (2026-11-03): typecheck 8 s,
   # owner 78 s, doors 39 s, files 2 s, gateway 9 s, hooks 1 s, sandbox 3 s, runner 207 s,
   # each plus `npm ci` (6 s cached); the whole was 2m28s + 3m28s run serially.
   platform-tests:
@@ -183,9 +182,7 @@ jobs:
           - leg: typecheck
             command: npm run typecheck
           - leg: owner
-            command: npm run test:workerd -w owner
-          - leg: memory
-            command: npm run test:memory -w owner
+            command: npm run test -w owner
           - leg: doors
             command: npm run test -w doors
           - leg: files

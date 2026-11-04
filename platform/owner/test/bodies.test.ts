@@ -58,8 +58,10 @@ describe("the placement rule", () => {
       collection: "board", row_id: rowId, body, expected_etag: etag, private: false });
     const small = await put("small", SMALL);
     const large = await put("large", LARGE);
-    expect(large).toMatchObject({ row: { body: LARGE, revision: 1 } });
+    // A write answers its row without its body (review H3).
+    expect(large).toMatchObject({ row: { body_bytes: 2 * PLACE_BYTES, revision: 1 } });
     expect(Object.keys((large as { row: object }).row)).not.toContain("content_id");
+    expect(Object.keys((large as { row: object }).row)).not.toContain("body");
     const stored = await sqlIn(stub, "SELECT row_id, length(body) AS kept, body_bytes, " +
                                        "content_id FROM collection_rows ORDER BY row_id");
     expect(stored).toEqual([
@@ -71,8 +73,9 @@ describe("the placement rule", () => {
                                "ON r.content_id = c.content_id")).toEqual([{ refs: 2 }]);
     expect(await inR2(await namespace(stub), LARGE)).toBe(LARGE);
     // Every read reads it back whole: get, pull and history.
+    const { body_bytes: _bytes, ...written } = (large as { row: { body_bytes: number } }).row;
     expect((await stub.collectionGet(as("bob"), { collection: "board", row_id: "large" })).row)
-      .toEqual((large as { row: object }).row);
+      .toEqual({ ...written, body: LARGE });
     expect((await stub.collectionPull(as("bob"), { collection: "board", after: 0, limit: 10 }))
       .rows.map((row) => [row.row_id, row.body])).toEqual([["small", SMALL], ["large", LARGE]]);
     expect((await stub.collectionHistory(as("bob"), { collection: "board", row_id: "large" }))
@@ -88,7 +91,7 @@ describe("the placement rule", () => {
     await stub.collectionDelete(as(name), { collection: "board", row_id: "large",
                                             expected_etag: current.etag });
     expect(await sqlIn(stub, "SELECT state FROM file_chunks")).toEqual([{ state: "garbage" }]);
-    expect(small).toMatchObject({ row: { body: SMALL } });
+    expect(small).toMatchObject({ row: { body_bytes: PLACE_BYTES } });
   });
 
   it("places a large message body, and the reader reads it back whole", async () => {
@@ -131,7 +134,8 @@ describe("the placement rule", () => {
     expect(big.messages[0]).toMatchObject({ body_bytes: 120_000, truncated: true });
     expect(big.messages).toHaveLength(1);
     expect(await readOn((offset) => r.stub.mailboxRead(r.bind(MUSE), {
-      limit: 1, ...at(offset) }).then((page) => page.messages[0]!)))
+      limit: 1, ...at(offset, { message_id: big.messages[0]!.message_id }) })
+      .then((page) => page.messages[0]!)))
       .toBe("d".repeat(120_000));
   });
 
@@ -216,12 +220,14 @@ describe("the placement rule", () => {
     // A row of `maxRowBytes`, placed across two chunks: half a request's 16 MiB ceiling.
     expect(LIMITS.maxRowBytes).toBe(8 * 1024 * 1024);
     const most = "x".repeat(LIMITS.maxRowBytes);
-    expect((await put("most", most)) as { row: { body: string } })
+    expect((await put("most", most)) as { row: { revision: number } })
       .toMatchObject({ row: { revision: 1 } });
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_content_chunks"))
       .toEqual([{ n: 2 }]);
+    const etag = (await stub.collectionGet(as("bob"), { collection: "board",
+                                                        row_id: "most" })).row!.etag;
     expect(await readOn((offset) => stub.collectionGet(as("bob"), {
-      collection: "board", row_id: "most", ...at(offset) }).then((got) => got.row!))
+      collection: "board", row_id: "most", ...at(offset, { etag }) }).then((got) => got.row!))
       === most).toBe(true);
     expect((await failure(() => put("past", "x".repeat(LIMITS.maxRowBytes + 1)))).message)
       .toBe(`a row body is text of at most ${LIMITS.maxRowBytes} bytes`);

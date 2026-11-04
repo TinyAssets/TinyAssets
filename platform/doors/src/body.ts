@@ -8,7 +8,7 @@ export const TOO_LARGE = "the request body is too large";
 
 /**
  * The body as UTF-8 text, or null when it is over `max` bytes: decoded as it is read, so no
- * copy of its bytes is held beside the text (`answers.ts`' `REQUEST_FACTOR`).
+ * copy of its bytes is held beside the text.
  */
 export async function boundedText(request: Request, max: number): Promise<string | null> {
   const declared = request.headers.get("Content-Length");

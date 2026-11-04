@@ -64,7 +64,7 @@ The owner's revoke of an MCP client SHALL be made in the owner's object first, t
 
 
 ### Requirement: Each tool result is sent once, as text, within one answer
-A tool's result SHALL be one `text` content block holding its JSON, with no `structuredContent` (no tool declares an `outputSchema`, so none is required, and every client reads text), on `/mcp` and as `/api`'s body alike. Its JSON SHALL be measured before it is built; past `RESULT_CHARS` it is a bug, logged and failed as `internal error`, never cut. Each tool call on `/mcp`, `/api` and the owner app's tool routes SHALL be served under one grant of the isolate's memory, taken before its body is read (its door's ceiling, or its declared `Content-Length`, times `REQUEST_FACTOR`, and `ANSWER_GRANT`), and answered `503` with `Retry-After: 1`, unread, when it does not fit now.
+A tool's result SHALL be one `text` content block holding its JSON, with no `structuredContent` (no tool declares an `outputSchema`, so none is required, and every client reads text), on `/mcp` and as `/api`'s body alike. Its JSON SHALL be measured before it is built; past `RESULT_CHARS` it is a bug, logged and failed as `internal error`, never cut.
 
 #### Scenario: A result past one answer
 - **WHEN** a door answers a result whose JSON passes `RESULT_CHARS`

@@ -497,7 +497,9 @@ describe("the MCP door's file readers", () => {
     expect([all.results.length, all.next_cursor]).toEqual([3, null]);
     // From a cursor, only what comes after it; the manifest's own pages, in path order.
     const after = await r.stub.fileSearch(r.bind(null), { query: "needle",
-                                                          cursor: "/workspace/d/b.md" });
+                                                          cursor: Buffer.from(
+                                                            "/workspace/d/b.md")
+                                                            .toString("base64url") });
     expect(after.results.map((hit) => hit.id)).toEqual(["/workspace/d/e/c.md"]);
     const pages = await inGate(r.stub, (_instance, _state, gate) => {
       const files = filesOn(gate.storage, gate.write);

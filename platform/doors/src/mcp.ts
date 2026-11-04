@@ -24,14 +24,13 @@
  * spec asks for no structured copy (its SHOULD is text beside structured content, for older
  * clients), and both ChatGPT and Claude read text; a second copy doubled what the isolate
  * held and what ChatGPT's model read. The owner pages every read to `RESULT_CHARS`
- * (`owner/src/pages.ts`); a result past it here is a bug, failed loudly, never cut. Each
- * request is served under one grant of the isolate's memory (`answers.ts`).
+ * (`owner/src/pages.ts`); a result past it here is a bug, failed loudly, never cut.
  */
 import {
   type CallToolResult, createMcpHandler, fromJsonSchema, McpServer,
 } from "@modelcontextprotocol/server";
 
-import { answered, resultText } from "./answers";
+import { resultText } from "./answers";
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
 import { serveEvents } from "./events";
@@ -116,14 +115,15 @@ export async function serveMcp(request: Request, bound: Bound, env: DoorsEnv):
     return got;
   }
   const instructions = got.profile === "run" ? RUN_INSTRUCTIONS : CLIENT_INSTRUCTIONS;
-  return answered(request, MCP_BODY_MAX, () =>
-    createMcpHandler(() => server(bound, got.tools, env, instructions), {
-      legacy: "stateless", responseMode: "auto", maxRequestBodySize: MCP_BODY_MAX,
-    }).fetch(request));
+  return createMcpHandler(() => server(bound, got.tools, env, instructions), {
+    legacy: "stateless", responseMode: "auto", maxRequestBodySize: MCP_BODY_MAX,
+  }).fetch(request);
 }
 
 /**
- * A request's body on the MCP door: the MCP SDK's own default (`maxRequestBodySize`, 4 MiB),
- * named so the memory grant (`answers.ts`) and the SDK's `413` hold the same figure.
+ * A request's body on the MCP door, a technical ceiling: the MCP SDK's own default
+ * (`maxRequestBodySize`, 4 MiB), kept because the SDK materializes a JSON-RPC message whole,
+ * so its ceiling is what the doors' isolate holds a few at a time; bodies up to
+ * `BODY_BYTES_MAX` (8 MiB) go by `/api` (memshape_research.md §4).
  */
 export const MCP_BODY_MAX = 4 * 1024 * 1024;

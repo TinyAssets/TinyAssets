@@ -8,7 +8,7 @@
  * grant; a revoked client and another owner's binding refused; a script past its wall time
  * or its compute stopped (`BoundedOwnerDO`, its bounds small; production's are
  * `CODEMODE_TIMEOUT_MS` and the hooks Worker's interrupt budget), saying which calls
- * landed; an answer past what one tool answer holds refused `answer_too_large`.
+ * landed; output past one answer cut and said so, a value past it refused `answer_too_large`.
  */
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -227,8 +227,9 @@ describe("the code door", () => {
     expect(await env.CACHED.getByName(r.owner).controlReads()).toBe(1);
   });
 
-  it("refuses an answer past what one tool answer holds, keeping what landed", async () => {
+  it("cuts output past one answer, saying so, and refuses only a value past it", async () => {
     const r = await rig();
+    // A value past one answer alone: refused, its calls and what landed kept.
     const value = await r.stub.codeRun(r.bind(null), { script: lines(
       "await tools.collection_write({ collection: 'board', row_id: 'big', body: 'b',",
       "  expected_etag: '', private: false });",
@@ -237,13 +238,16 @@ describe("the code door", () => {
                                                 message: CODE_ANSWER_TOO_LARGE },
                             output: [], calls: { ok: 1, error: 0, cancelled: 0 },
                             landed: [{ name: "collection_write", status: "ok", count: 1 }] });
-    // Output counts as the value does; within it, an answer crosses whole.
+    // Output past it: the value whole, the output's first item cut at a character, said so.
     const output = await r.stub.codeRun(r.bind(null), { script: lines(
-      `text('x'.repeat(${PAGE_BYTES}));`, "return 1;") });
-    expect(output).toMatchObject({ ok: false, error: { kind: "answer_too_large" } });
+      `text('x'.repeat(${PAGE_BYTES}));`, "text('after');", "return 1;") });
+    expect(output).toMatchObject({ ok: true, value: 1, output_cut: { items: 2, kept: 0 } });
+    expect(jsonBytes(output)).toBeLessThanOrEqual(PAGE_BYTES);
+    expect((output as { output: { text: string }[] }).output[0]!.text.length)
+      .toBeGreaterThan(PAGE_BYTES - 1000);
     const within = await r.stub.codeRun(r.bind(null), { script:
       `return 'x'.repeat(${PAGE_BYTES - 1000}).length;` });
     expect(within).toMatchObject({ ok: true, value: PAGE_BYTES - 1000 });
-    expect(jsonBytes(within)).toBeLessThanOrEqual(PAGE_BYTES);
+    expect(within).not.toHaveProperty("output_cut");
   }, 120_000);
 });

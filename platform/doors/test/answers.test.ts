@@ -1,13 +1,19 @@
 /**
- * The doors' answers (`answers.ts`): a tool's result is its JSON once, held to
- * `RESULT_CHARS` (past it a bug, failed loudly), and a tool call is served under one grant
- * of the isolate's memory, `503` with `Retry-After` when there is no room now.
+ * The doors' answers (`answers.ts`): a tool's result is its JSON once, and a result past one
+ * answer is a bug failed loudly, never cut. A write past one answer is answered whole, its
+ * row without its body (review H3).
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RESULT_CHARS } from "../../owner/src/encoded";
-import { BUSY, grant, GUARD_BYTES, memoryHeld } from "../../owner/src/memory";
-import { ANSWER_GRANT, answered, REQUEST_FACTOR, requestGrant, resultText } from "../src/answers";
+import { resultText } from "../src/answers";
+import {
+  answerOf, connect, legacyTool, OPEN, registerClient, setControl, sqlIn,
+} from "./support";
+
+beforeEach(async () => {
+  await setControl(OPEN);
+});
 
 describe("a tool's answer", () => {
   it("is its result's JSON once, and past one answer a loud bug, never cut", () => {
@@ -23,30 +29,18 @@ describe("a tool's answer", () => {
     }
   });
 
-  it("is served under its request's grant, and refused 503 while the isolate is full",
+  it("answers a collection_write longer than one answer with its row, not its body (H3)",
      async () => {
-    const request = (length: number) => new Request("https://doors/api", {
-      method: "POST", headers: { "Content-Length": `${length}` }, body: "x".repeat(length) });
-    expect(requestGrant(request(1000), 16)).toBe(ANSWER_GRANT);  // refused 413 unread
-    expect(requestGrant(request(1000), 4096)).toBe(REQUEST_FACTOR * 1000 + ANSWER_GRANT);
-    let held = 0;
-    const ok = await answered(request(10), 4096, async () => {
-      held = memoryHeld().held;
-      return new Response("ok");
-    });
-    expect([ok.status, held >= REQUEST_FACTOR * 10 + ANSWER_GRANT, memoryHeld().held])
-      .toEqual([200, true, 0]);
-    const full = grant(Math.floor((GUARD_BYTES - memoryHeld().reserved) / 2), "a full isolate");
-    try {
-      let served = false;
-      const busy = await answered(request(10), 4096, async () => {
-        served = true;
-        return new Response("ok");
-      });
-      expect([busy.status, busy.headers.get("Retry-After"), served]).toEqual([503, "1", false]);
-      expect(await busy.json()).toEqual({ error: BUSY });
-    } finally {
-      full.release();
-    }
+    const who = `user_${crypto.randomUUID().replace(/-/g, "")}`;
+    const tokens = await connect(await registerClient(), { owner: who });
+    const body = "x".repeat(60_000);
+    const result = await legacyTool(tokens.access_token, "collection_write", {
+      collection: "board", row_id: "big", body, expected_etag: "", private: false });
+    expect(result.isError).toBeUndefined();
+    const answer = answerOf(result) as { row: Record<string, unknown> };
+    expect(answer.row).toMatchObject({ row_id: "big", revision: 1, body_bytes: 60_000 });
+    expect(answer.row).not.toHaveProperty("body");
+    expect(await sqlIn(who, "SELECT row_id, body_bytes FROM collection_rows WHERE " +
+                            "row_id = 'big'")).toEqual([{ row_id: "big", body_bytes: 60_000 }]);
   });
 });

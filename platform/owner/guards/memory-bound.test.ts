@@ -1,23 +1,10 @@
 /**
- * The isolate's memory ledger (`memory.ts`): the one budget every Worker's requests share,
- * each path's declared grant, the relay's reservation, and the recorded baseline, read from
- * the sources and held together here; beside the owner-bound guard's database bound
- * (`owner-bound.test.ts`) and the storage audit (`limits-audit.test.ts`), which keep their
- * own domains. Each grant is measured in workerd by `test/memory-peaks.mjs`.
+ * The runs' live output stays well inside the isolate's memory (slice R, `relay.ts`; A6's
+ * guard, salvaged), beside the owner-bound guard's database bound.
  *
- * **The budget.** `GUARD_BYTES` is the isolate's 128 MB less `BASELINE_BYTES` (recorded,
- * to be replaced by production's figure). A grant is admitted while the grants in flight,
- * the reservations and the largest grant once more (the collector's room for its garbage)
- * fit it, so each path's grant must fit alone: twice it, with its Worker's reservations,
- * within `GUARD_BYTES`. In the owner's isolate that is every read's page (`READ_GRANT`), a
- * placed body's write at its most (`writeGrant(BODY_BYTES_MAX)`), and a placed body read
- * whole for a run's input (`wholeGrant`), beside the relay's reservation; in the doors',
- * every tool call's request at its door's ceiling with its answer (`requestGrant`).
- *
- * **The relay's reservation.** An owner's object runs in an isolate of 128 MB that objects
- * of one class may share, so what its live output keeps in memory is bounded by the code and
- * counted here, each term at its worst, against `RELAY_RESERVED` (an eighth of the
- * isolate), which the first object an isolate runs reserves out of the budget:
+ * An owner's object runs in an isolate of 128 MB that objects of one class may share, so
+ * what its live output keeps in memory is bounded by the code and counted here, each term
+ * at its worst, against `RELAY_MEMORY_BUDGET` (an eighth of the isolate):
  * - the runs' tails: every live run's kept frames together, at most `TAIL_BYTES` UTF-16 code
  *   units (two bytes each);
  * - the runners' events posts the object holds while it reads and relays them (slice R's
@@ -32,26 +19,13 @@
  * - the told sign-outs held (`SIGNED_OUT_KEPT`).
  * A frame longer than `TAIL_FRAME_MAX` is relayed but never kept. What the runtime buffers of
  * frames sent and not yet read is the runtime's, not the isolate's heap. Frames are never a
- * SQL row: the relay names no storage. Its terms are one object's: objects sharing an
- * isolate each keep their own, and the reservation is one share, so a second object with
- * live runs in the same isolate is beyond what the guard reserves (owed: the relay's tails
- * held under request-scoped grants, with slice R's next change).
+ * SQL row: the relay names no storage.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { ANSWER_GRANT, REQUEST_FACTOR, requestGrant } from "../../doors/src/answers";
-import { API_BODY_MAX, APP_BODY_MAX } from "../../doors/src/config";
-import {
-  BODY_BYTES_MAX, READ_GRANT, WINDOWS_BYTES, wholeGrant, writeGrant,
-} from "../src/bodies";
-import { RESULT_CHARS } from "../src/encoded";
-import { MAX_BODY_BYTES } from "../src/ledger";
-import {
-  BASELINE_BYTES, GUARD_BYTES, ISOLATE_BYTES, RELAY_RESERVED, SMALL_BYTES,
-} from "../src/memory";
 import { PLATFORM } from "./sources";
 
 const SRC = join(PLATFORM, "owner", "src");
@@ -68,8 +42,9 @@ function constant(module: string, name: string): number {
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
-/** The share an owner's live output may take of the isolate: the relay's reservation. */
-export const RELAY_MEMORY_BUDGET = RELAY_RESERVED;
+/** The isolate's memory, and the share an owner's live output may take of it. */
+export const ISOLATE_BYTES = 128 * 1000 * 1000;
+export const RELAY_MEMORY_BUDGET = ISOLATE_BYTES / 8;
 /** The platform's limit on a socket's serialized attachment. */
 const ATTACHMENT_BYTES = 2 * KIB;
 /** A tail's own objects beside its text: its array, its entry, its counters. */
@@ -106,61 +81,8 @@ export function memoryWorstCase(m: typeof MEMORY = MEMORY): number {
   return Object.values(memoryTerms(m)).reduce((sum, bytes) => sum + bytes, 0);
 }
 
-/** A doors' request at `max` bytes, as its grant counts it. */
-function doorsGrant(max: number): number {
-  return requestGrant(new Request("https://doors/", { method: "POST",
-                                                      headers: { "Content-Length": `${max}` } }),
-                      max);
-}
-
-/** The MCP door's body ceiling, read from its source (it imports the MCP SDK). */
-const MCP_BODY_MAX = Number(/export const MCP_BODY_MAX = ([0-9* ]+);/
-  .exec(readFileSync(join(PLATFORM, "doors", "src", "mcp.ts"), "utf8"))![1]!
-  .split("*").reduce((product, term) => product * Number(term.trim()), 1));
-
-/** Each Worker's declared grants, and what its isolate reserves. */
-export function ledger(): Record<string, { reserved: number; grants: Record<string, number> }> {
-  return {
-    owner: { reserved: RELAY_RESERVED, grants: {
-      read: READ_GRANT, placed_write: writeGrant(BODY_BYTES_MAX),
-      whole_read: wholeGrant(MAX_BODY_BYTES) } },
-    doors: { reserved: 0, grants: {
-      api: doorsGrant(API_BODY_MAX), app: doorsGrant(APP_BODY_MAX),
-      mcp: doorsGrant(MCP_BODY_MAX) } },
-  };
-}
-
-describe("the isolate's memory ledger", () => {
-  it("holds the budget to the isolate less its recorded baseline", () => {
-    expect(ISOLATE_BYTES).toBe(128_000_000);
-    // Recorded from workerd (`test/memory-peaks.mjs` fails past it), to be replaced by each
-    // Worker's production figure once deployed.
-    expect(BASELINE_BYTES).toBe(32 * MIB);
-    expect(GUARD_BYTES).toBe(ISOLATE_BYTES - BASELINE_BYTES);
-    expect(SMALL_BYTES).toBe(64 * KIB);
-    expect([REQUEST_FACTOR, ANSWER_GRANT, WINDOWS_BYTES])
-      .toEqual([2, 16 * RESULT_CHARS, 4 * RESULT_CHARS]);
-    expect(MCP_BODY_MAX).toBe(4 * MIB);
-  });
-
-  it("fits every path's grant alone, twice over, beside its Worker's reservations", () => {
-    for (const [worker, { reserved, grants }] of Object.entries(ledger())) {
-      for (const [path, bytes] of Object.entries(grants)) {
-        expect(`${worker} ${path}: ${2 * bytes + reserved <= GUARD_BYTES}`)
-          .toBe(`${worker} ${path}: true`);
-      }
-    }
-    console.log(`the memory ledger, of ${GUARD_BYTES} bytes: ${JSON.stringify(ledger())}`);
-  });
-
-  it("sees a grant that would not fit", () => {
-    expect(2 * writeGrant(16 * MIB) + RELAY_RESERVED).toBeGreaterThan(GUARD_BYTES);
-    expect(2 * doorsGrant(32 * MIB)).toBeGreaterThan(GUARD_BYTES);
-  });
-});
-
 describe("the runs' live output's memory bound", () => {
-  it("keeps the relay's worst case within its reservation, an eighth of the isolate", () => {
+  it("keeps the relay's worst case under an eighth of the isolate", () => {
     const bytes = memoryWorstCase();
     expect(bytes).toBeLessThan(RELAY_MEMORY_BUDGET);
     console.log(`the relay's memory worst case: ${bytes} bytes (${(bytes / MIB).toFixed(2)} ` +

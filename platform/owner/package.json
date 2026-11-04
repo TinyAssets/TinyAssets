@@ -3,9 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "npm run test:workerd && npm run test:memory",
-    "test:workerd": "vitest run --project workerd --project guards",
-    "test:memory": "node test/memory-peaks.mjs"
+    "test": "vitest run"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.9",

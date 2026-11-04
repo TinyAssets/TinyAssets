@@ -140,10 +140,9 @@ import {
 } from "./tier";
 import {
   Bodies, bodyOffset, inlineWindow, type Located, PLACE_BYTES, type Placed, placedAs,
-  type Placing, READ_GRANT, type Window, writeGrant,
+  type Placing, type Window,
 } from "./bodies";
 import { fitted, jsonBytes, utf8Length } from "./encoded";
-import { grant, granted, RELAY_RESERVED, reserve } from "./memory";
 import {
   bodied, type Cut, fitList, fitPage, PAGE_BYTES, RESULT_TOO_LARGE, whole as fits,
 } from "./pages";
@@ -459,12 +458,19 @@ export interface PostRequest {
   readonly parent_id: string | null;
 }
 
+/** An agents list's page: from the `after`th on, a `next` an answer gave (`outsideAgents`). */
+export interface AgentsRequest {
+  readonly after?: number;
+}
+
 export interface ReadRequest {
   readonly limit: number;
   readonly max_bytes?: number;
   readonly pad_bytes?: number;
   /** The first message's body from this byte: a `body_next_offset` an answer gave. */
   readonly body_offset?: number;
+  /** With `body_offset`, the message it reads on: refused when the first is another. */
+  readonly message_id?: string;
 }
 
 /** A mail chain the owner reads, from one of its messages (`mailChain`). */
@@ -473,6 +479,7 @@ export interface ChainRequest {
   readonly limit: number;
   readonly after?: number;
   readonly body_offset?: number;
+  readonly body_message_id?: string;
 }
 
 export interface AckRequest {
@@ -519,15 +526,25 @@ export interface CodeRequest {
  * A script's end, as pi-codemode reports it: its value or its error, its output, how many
  * tool calls ended each way, and which calls of tools that change something landed
  * (`landed`, in order, a run of the same tool and outcome as one entry with its count), so
- * an agent knows what a stopped script did. An answer past what one tool answer holds
- * (`PAGE_BYTES`, `pages.ts`) is refused `answer_too_large`, its value and output dropped,
- * its calls kept.
+ * an agent knows what a stopped script did. Its output past what one tool answer holds
+ * (`PAGE_BYTES`, `pages.ts`) is cut, said so (`output_cut`); a value past it alone is
+ * refused `answer_too_large`, its calls kept (`fittedCode`).
  */
 export type CodeResult =
   | { readonly ok: true; readonly value: JsonValue; readonly output: CodeOutput[];
-      readonly calls: CodeCalls; readonly landed: Landed[] }
+      readonly calls: CodeCalls; readonly landed: Landed[]; readonly output_cut?: OutputCut }
   | { readonly ok: false; readonly error: { readonly kind: string; readonly message: string };
-      readonly output: CodeOutput[]; readonly calls: CodeCalls; readonly landed: Landed[] };
+      readonly output: CodeOutput[]; readonly calls: CodeCalls; readonly landed: Landed[];
+      readonly output_cut?: OutputCut };
+
+/**
+ * A script's output cut to fit one answer (review M6), said so: how many items it had, and
+ * how many the answer keeps whole (the next one, a text, cut at a character after them).
+ */
+export interface OutputCut {
+  readonly items: number;
+  readonly kept: number;
+}
 
 /** A run of one tool's calls with one outcome, in a script's order. */
 export interface Landed {
@@ -767,7 +784,10 @@ export interface SearchResult {
 
 /** What `fetch` says of a file beside its text. */
 export interface FetchMetadata {
-  readonly path: string;
+  /** Its path, its id's; left out when its fields were cut to fit one answer (`fields_cut`). */
+  readonly path?: string;
+  /** Whether its frontmatter's fields were cut to fit one answer (review L5). */
+  readonly fields_cut?: true;
   readonly size: number;
   readonly version: number;
   /** When it last changed, ISO 8601. */
@@ -1096,9 +1116,45 @@ const CODE = "code";
 export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode off";
 export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
 const CODE_TIMED_OUT = "the script is past its time";
-/** A script's answer past what one tool answer holds (`pages.ts`), refused whole. */
-export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value and output are " +
-  `past the ${PAGE_BYTES} characters one answer holds; return less, or write it with a tool`;
+/**
+ * A script's answer fitted to one tool answer (`pages.ts`, review M6): its value and calls
+ * whole, its output's items while they fit and the next text cut at a character, said so
+ * (`output_cut`). A value that alone passes one answer is refused `answer_too_large`, its
+ * calls and what landed kept, so nothing is lost silently.
+ */
+function fittedCode(answer: CodeResult): CodeResult {
+  if (jsonBytes(answer) <= PAGE_BYTES) {
+    return answer;
+  }
+  const cut: OutputCut = { items: answer.output.length, kept: answer.output.length };
+  const bare = { ...answer, output: [], output_cut: cut };
+  if (jsonBytes(bare) > PAGE_BYTES) {
+    return { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
+             output: [], calls: answer.calls, landed: answer.landed };
+  }
+  const output: CodeOutput[] = [];
+  let used = jsonBytes(bare);
+  for (const item of answer.output) {
+    const bytes = jsonBytes(item) + (output.length > 0 ? 1 : 0);
+    if (used + bytes > PAGE_BYTES) {
+      const meta = jsonBytes({ ...item, text: "" }) + (output.length > 0 ? 1 : 0);
+      if (item.type === "text" && used + meta + 8 <= PAGE_BYTES) {
+        output.push({ ...item, text: fitted(item.text, PAGE_BYTES - used - meta + 2).text });
+      }
+      break;
+    }
+    used += bytes;
+    output.push(item);
+  }
+  const kept = output.length > 0 && output.at(-1) !== answer.output[output.length - 1]
+    ? output.length - 1 : output.length;
+  return { ...answer, output, output_cut: { items: answer.output.length, kept } };
+}
+
+/** A script's value past what one tool answer holds (`pages.ts`), refused whole. */
+export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is past the " +
+  `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
+  "it back";
 /** A digest's head of each body, in characters, unless the caller names another. */
 const HEAD_CHARS = 512;
 
@@ -1217,6 +1273,46 @@ function fittedRow<T extends { readonly body: string }>(
   return bodied(read.item, read.window, PAGE_BYTES - fixed, true)!.item;
 }
 
+/**
+ * A search's `next_cursor`: the stored path it resumes after, as base64url (review L5), an
+ * opaque token at most 5,462 characters with nothing to escape, so a path of escaped
+ * characters never makes an answer too wide to go on.
+ */
+function pathCursor(path: string): string {
+  return Buffer.from(path, "utf8").toString("base64url");
+}
+
+function cursorPath(cursor: unknown): string {
+  if (typeof cursor !== "string" || !/^[A-Za-z0-9_-]{1,5462}$/.test(cursor)) {
+    throw new Invalid("a cursor is a next_cursor a search answered");
+  }
+  return Buffer.from(cursor, "base64url").toString("utf8");
+}
+
+/**
+ * The agents a caller sees, fitted to one answer from the `after`th on (`outsideAgents`):
+ * the three lists read as one sequence, each kept in its own list; `next` when some are left.
+ */
+function agentsPage(all: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] },
+                    after: number):
+    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: number } {
+  const items = [...all.agents.map((item) => ({ list: "agents" as const, item })),
+                 ...all.owner_agents.map((item) => ({ list: "owner_agents" as const, item })),
+                 ...all.apps.map((item) => ({ list: "apps" as const, item }))].slice(after);
+  const empty = { agents: [], owner_agents: [], apps: [] };
+  if (items.length === 0) {
+    return empty;
+  }
+  const kept = fitPage(jsonBytes({ ...empty, next: Number.MAX_SAFE_INTEGER }), items,
+                       (entry, room) => fits(entry.item, room));
+  const page: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] } =
+    { agents: [], owner_agents: [], apps: [] };
+  for (const [index, entry] of kept.entries()) {
+    (page[items[index]!.list] as unknown[]).push(entry);
+  }
+  return kept.length === items.length ? page : { ...page, next: after + kept.length };
+}
+
 /** A run as an answer shows it: its result cut further to fit one, `result_cut` then. */
 function fittedRun<T extends { readonly result: string | null; readonly result_cut: boolean }>(
     view: T): T {
@@ -1326,6 +1422,14 @@ function contentsOf(rows: readonly object[]): string[] {
 interface Shown<T> {
   readonly contents: (value: T) => readonly string[];
   readonly fill: (value: T, windows: ReadonlyMap<string, Window>) => T;
+}
+
+/** A written row as its write answers it: everything but its body, and the body's bytes. */
+export type WrittenRow = Omit<Row, "body" | "content_id"> & { readonly body_bytes: number };
+
+function writtenRow(row: Row): WrittenRow {
+  const { body, content_id: _placed, ...rest } = row;
+  return { ...rest, body_bytes: utf8Length(body) };
 }
 
 /** A conflict's current row, read back as `get` shows it: fitted to one answer. */
@@ -1746,7 +1850,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   constructor(ctx: DurableObjectState, env: OwnerEnv, internals: Internals = {}) {
     super(ctx, env);
-    reserve("relay", RELAY_RESERVED);  // the isolate's memory: the relay's share (`memory.ts`)
     this.#gate = new WriteGate(ctx.storage);
     const storage = this.#gate.storage;
     const write = this.#gate.write;
@@ -3028,10 +3131,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * them, the owner's own agents, each a ledger identity while its `agent.json` exists:
    * every one for the owner; for anyone else, the live ones its grant covers (a scoped
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
-   * it may mail).
+   * it may mail). One answer holds a page (`pages.ts`, review M3): its agents, the owner's
+   * agents and the apps, in that order, while they fit; when some are left, `next` is how
+   * many were answered so far, for `after` on the next read.
    */
-  async outsideAgents(binding: Binding):
-      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] }> {
+  async outsideAgents(binding: Binding, request: AgentsRequest = {}):
+      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
+                next?: number }> {
     await this.#seededFor(() => {
       this.#account(binding, "read");
     });
@@ -3053,8 +3159,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
       // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
       // app that is not connected yet.
-      return { agents: this.#ledger.agents(account.origin), owner_agents: natives,
-               apps: this.#grants.apps() };
+      const r = fields(request ?? {}, [], ["after"]);
+      const after = whole(r["after"], "after", 0, Number.MAX_SAFE_INTEGER);
+      return agentsPage({ agents: this.#ledger.agents(account.origin), owner_agents: natives,
+                          apps: this.#grants.apps() }, after);
     });
   }
 
@@ -3405,7 +3513,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
     return this.#rereadingPage(() => {
       const account = this.#account(binding, "read");
-      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes", "body_offset"]);
+      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes", "body_offset",
+                                                  "message_id"]);
       this.#noMailbox(account);
       this.#scope(account, "read_graph");
       const offset = bodyOffset(r["body_offset"]);
@@ -3414,12 +3523,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                offsetOf: (contentId) => contentId === next.first ? offset : 0 };
     }, (windows) => {
       const account = this.#account(binding, "read");
-      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes", "body_offset"]);
+      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes", "body_offset",
+                                                  "message_id"]);
       this.#noMailbox(account);
       this.#scope(account, "read_graph");
       return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
                                r["pad_bytes"] ?? 0, clock(), windows,
-                               bodyOffset(r["body_offset"]));
+                               bodyOffset(r["body_offset"]), PAGE_BYTES, r["message_id"] ?? null);
     }, (page) => page.messages.length === 0 && page.more);
   }
 
@@ -3591,11 +3701,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         ? { ok: true, value: (result as { value: JsonValue }).value, output: result.output,
             calls, landed }
         : { ok: false, error, output: result.output, calls, landed };
-      // The answer is one tool answer: past what one holds (`pages.ts`) it is refused whole,
-      // its calls kept, so the caller learns what landed.
-      return jsonBytes(answer) <= PAGE_BYTES ? answer
-        : { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
-            output: [], calls, landed };
+      return fittedCode(answer);
     } finally {
       await sandbox.close();
     }
@@ -3660,10 +3766,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A chain page as the owner reads it, handed the placed bodies' windows read so far. */
   #chain(_owner: Account, request: ChainRequest, windows: ReadonlyMap<string, Window>) {
-    const r = ledgerFields(request, ["message_id", "limit"], ["after", "body_offset"]);
+    const r = ledgerFields(request, ["message_id", "limit"], ["after", "body_offset",
+                                                             "body_message_id"]);
     const offset = bodyOffset(r["body_offset"]);
     return { ...this.#ledger.chain(r["message_id"], r["after"] ?? 0, r["limit"], windows,
-                                   offset), offset };
+                                   offset, r["body_message_id"] ?? null), offset };
   }
 
   /**
@@ -3943,13 +4050,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // Whose files scope the write's bodies count in: the tier's one storage number holds
     // them, inline or placed, retention making room first (`Files.held`).
     let writer = "owner";
-    // A placed body's bytes are held under a grant of the isolate's memory (`memory.ts`),
-    // taken in the unit before they are made: refused `busy`, the write changes nothing.
-    let held: { release(): void } | null = null;
-    const release = () => {
-      held?.release();
-      held = null;
-    };
     for (let tries = 1; first === undefined; tries++) {
       try {
         first = await this.#door(():
@@ -3959,18 +4059,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             return { done: located(prepared.done) };
           }
           writer = prepared.writer;
-          const bytes = typeof prepared.body === "string" ? utf8Length(prepared.body) : 0;
-          if (bytes > PLACE_BYTES) {
-            held = grant(writeGrant(bytes), "a placed body's write");
-          }
-          try {
-            const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
-            return placing === null
-              ? { done: located(this.#files.held(writer, () => act(null))) } : { placing };
-          } catch (error) {
-            release();
-            throw error;
-          }
+          const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
+          return placing === null ? { done: located(this.#files.held(writer, () => act(null))) }
+            : { placing };
         });
       } catch (error) {
         if (!(error instanceof Refused) || error.message !== CHUNK_DELETING
@@ -3981,34 +4072,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
     }
     let done: { value: T; located: Located };
-    try {
-      if ("done" in first) {
-        done = first.done;
-      } else {
-        const placed = await this.#bodies.send(first.placing);
-        try {
-          done = await this.#door(() => located(this.#files.held(writer, () => act(placed))));
-        } finally {
-          await this.#bodies.release(placed);
-        }
+    if ("done" in first) {
+      done = first.done;
+    } else {
+      const placed = await this.#bodies.send(first.placing);
+      try {
+        done = await this.#door(() => located(this.#files.held(writer, () => act(placed))));
+      } finally {
+        await this.#bodies.release(placed);
       }
-    } finally {
-      release();
     }
     if (options.synced === true) {
       await this.#schedule.sync();
     }
     // A conflict's current row, placed, is read back as a read door reads it.
     return shown === undefined || done.located.size === 0 ? done.value
-      : granted(READ_GRANT, "a conflict's current row", async () =>
-        shown.fill(done.value, await this.#bodies.windows(done.located, () => PAGE_BYTES)));
+      : shown.fill(done.value, await this.#bodies.windows(done.located, () => PAGE_BYTES));
   }
 
   /**
    * A read door whose unit marks what it returns (a mailbox read, ADR-035): the placed
    * bodies it would return located in a unit of their own (`locate`, its caller checked),
-   * read from R2 (`fetch`: windows for a page, under `READ_GRANT`, or whole for a run's
-   * input), then its unit (`read`, the caller checked again) handed them; it reads again, a
+   * read from R2 (`fetch`: windows for a page, or whole for a run's input), then its unit (`read`, the caller checked again) handed them; it reads again, a
    * few times at most, while `again` says mail between put an unread placed body first.
    */
   async #rereading<T, B>(locate: () => readonly string[], read: (bodies: B) => T,
@@ -4026,39 +4111,36 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * `#rereading` for a page: its bodies' windows (`Wants`: each at most `maxOf` bytes, from
-   * `offsetOf`) read under one grant (`READ_GRANT`).
+   * `offsetOf`).
    */
   #rereadingPage<T>(locate: () => Wants, read: (windows: ReadonlyMap<string, Window>) => T,
                     again: (value: T) => boolean): Promise<T> {
     let wants: Wants = { contents: [] };
-    return granted(READ_GRANT, "a read's page", () => this.#rereading(() => {
+    return this.#rereading(() => {
       wants = locate();
       return wants.contents;
     }, read, again, (located) => this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES),
-                                                      wants.offsetOf)));
+                                                      wants.offsetOf));
   }
 
   /**
    * A read door's unit, then the windows of the placed bodies its rows name read from R2
-   * (ADR-035), under one grant (`READ_GRANT`), and handed to `fill`, which fits the page to
+   * (ADR-035), and handed to `fill`, which fits the page to
    * one answer: `unit` returns its result and the content ids it names, located in the same
    * unit, so each is the content its row named.
    */
   async #reading<T, U = T>(unit: () => { value: T } & Wants,
                            fill: (value: T, windows: ReadonlyMap<string, Window>) => U,
                            synced = false): Promise<U> {
-    return granted(READ_GRANT, "a read's page", async () => {
-      const { value, located, wants } = await this.#door(() => {
-        const read = unit();
-        return { value: read.value, located: this.#bodies.locate(read.contents), wants: read };
-      });
-      if (synced) {
-        await this.#schedule.sync();  // a delete that rang an agent's doorbell (`#ring`)
-      }
-      return fill(value, located.size === 0 ? new Map()
-        : await this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES),
-                                     wants.offsetOf));
+    const { value, located, wants } = await this.#door(() => {
+      const read = unit();
+      return { value: read.value, located: this.#bodies.locate(read.contents), wants: read };
     });
+    if (synced) {
+      await this.#schedule.sync();  // a delete that rang an agent's doorbell (`#ring`)
+    }
+    return fill(value, located.size === 0 ? new Map()
+      : await this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES), wants.offsetOf));
   }
 
   /**
@@ -4084,8 +4166,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
-  /** A row written by compare-and-swap; the owner's own board or room write rings (`#ring`). */
-  collectionWrite(binding: Binding, request: WriteRequest): Promise<{ row: Row } | Conflicted> {
+  /**
+   * A row written by compare-and-swap; the owner's own board or room write rings (`#ring`).
+   * Answered without its body (review H3): its etag, revision, seq and `body_bytes`, so a
+   * body past one answer is never echoed back.
+   */
+  collectionWrite(binding: Binding, request: WriteRequest):
+      Promise<{ row: WrittenRow } | Conflicted> {
     return this.#placing(() => {
       const account = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
@@ -4098,10 +4185,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const collection = r["collection"] as string;
       const before = this.#collections.clock();
       const written = conflicted(() => ({
-        row: this.#collections.write(account.owner, account.caller, collection,
-                                     r["row_id"] as string, r["body"], r["expected_etag"],
-                                     r["private"], "history_op" in r ? r["history_op"] : "write",
-                                     placed, filerOf(account)),
+        row: writtenRow(this.#collections.write(account.owner, account.caller, collection,
+                                                r["row_id"] as string, r["body"],
+                                                r["expected_etag"], r["private"],
+                                                "history_op" in r ? r["history_op"] : "write",
+                                                placed, filerOf(account))),
       }));
       this.#ring(account, collection, before);
       return written;
@@ -4138,6 +4226,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "row_id"], ["body_offset", "etag"]);
       const offset = bodyOffset(r["body_offset"]);
+      // A read on names the revision it reads (review L3), so two are never spliced.
+      if (offset > 0 && r["etag"] === undefined) {
+        throw new Invalid("body_offset reads on a row's body: name its etag");
+      }
       const got = this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
       if (r["etag"] !== undefined && got.row?.etag !== r["etag"]) {
         throw new Refused("row_changed: the row is no longer the one at that etag: read it " +
@@ -4436,8 +4528,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (room < 8) {
       throw new Refused(RESULT_TOO_LARGE);
     }
-    const read = await granted(READ_GRANT, "a file's window", () =>
-      this.#window(content, offset, Math.min(max, room)));
+    const read = await this.#window(content, offset, Math.min(max, room));
     if (read.text === null) {
       throw new Invalid(`${content.entry.path} is not UTF-8 text`);
     }
@@ -4509,11 +4600,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (terms.size === 0) {
         throw new Invalid("a query has at least one word");
       }
-      const cursor = r["cursor"] === undefined ? null : storedPath(r["cursor"]);
+      const cursor = r["cursor"] === undefined ? null : storedPath(cursorPath(r["cursor"]));
       const scanned = this.#files.scan(cursor, SEARCH_SCAN);
       const page = searchPage(scanned.entries, scanned.next !== null, terms, fileUrl);
       const answer = page.resume === null ? { results: [...page.results], next_cursor: null }
-        : { results: [...page.results], next_cursor: page.resume,
+        : { results: [...page.results], next_cursor: pathCursor(page.resume),
             note: "more of the files are still to search: search again with next_cursor" };
       // Only paths of thousands of escaped characters pass one answer: told, never cut.
       if (jsonBytes(answer) > PAGE_BYTES) {
@@ -4541,15 +4632,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     // One answer holds it (`pages.ts`): its text cut to what its other fields leave, and
     // `truncated` with `next_offset` for file_read to go on from.
-    const read = await granted(READ_GRANT, "a fetched file's window", () =>
-      this.#window(content, 0, PAGE_BYTES));
+    const read = await this.#window(content, 0, PAGE_BYTES);
     // A file search found that is not text (a scan, an image) is answered with its metadata
     // and no text, never refused: every id a search answers is fetchable (review L4).
-    const front = frontmatter(read.text ?? "");
+    const found = frontmatter(read.text ?? "");
     const path = content.entry.path;
+    // A frontmatter too wide for one answer beside its path is cut, said so (review L5):
+    // every id a search answers is fetchable, whatever its fields hold.
+    let front = found;
+    let cut = false;
     const answer = (text: string, next: number | null) => ({
       id: path, title: titleOf(path, front), text, url: fileUrl(path),
-      metadata: { path, size: content.entry.size, version: content.entry.version,
+      metadata: { ...(cut ? { fields_cut: true as const } : { path }),
+                  size: content.entry.size, version: content.entry.version,
                   modified: new Date(content.entry.mtime_ms).toISOString(),
                   writer: content.entry.writer, etag: content.entry.etag,
                   ...(front.type === undefined ? {} : { type: front.type }),
@@ -4559,9 +4654,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                   truncated: read.text !== null && next !== null,
                   ...(read.text === null || next === null ? {} : { next_offset: next }) },
     });
-    const room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
+    let room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
     if (room < 8) {
-      throw new Refused(RESULT_TOO_LARGE);
+      // Its metadata's path is its id's; its frontmatter's fields, a few KiB each at most.
+      cut = true;
+      const { title, description, type } = found;
+      front = { ...(title === undefined ? {} : { title: fitted(title, 1024).text }),
+                ...(description === undefined ? {}
+                  : { description: fitted(description, 4096).text }),
+                ...(type === undefined ? {} : { type: fitted(type, 256).text }),
+                tags: found.tags.filter((_, index) => index < 16)
+                  .map((tag) => fitted(tag, 256).text) };
+      room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
+      if (room < 8) {
+        throw new Refused(RESULT_TOO_LARGE);
+      }
     }
     const part = fitted(read.text ?? "", room);
     return answer(part.text, read.text === null || part.bytes >= content.entry.size ? null

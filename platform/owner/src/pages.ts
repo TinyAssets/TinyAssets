@@ -54,8 +54,11 @@ export function bodied<T extends { readonly body: string | null }>(
   if (!first) {
     return null;
   }
+  // Its fields at their widest (review L1): `false` over `true`, and the wider of `null`
+  // and the size's digits for where the rest starts.
   const meta = jsonBytes({ ...item, body: "", body_bytes: window.size,
-                           body_next_offset: window.size, truncated: true });
+                           body_next_offset: String(window.size).length >= 4 ? window.size
+                             : null, truncated: false });
   const part = fitted(window.text, room - meta + 2);
   if (room - meta + 2 < 2 || (part.bytes === 0 && window.offset < window.size)) {
     throw new Refused(RESULT_TOO_LARGE);

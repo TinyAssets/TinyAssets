@@ -105,8 +105,9 @@ describe("the search's worst case", () => {
     expect(bytes).toBeLessThanOrEqual(RESULT_CHARS);
     expect(encoder.encode(JSON.stringify(page.results)).byteLength)
       .toBeLessThanOrEqual(SEARCH_ANSWER_BYTES);
-    // The first match's title is cut to fit; its path and url are whole.
-    expect(page.results[0]!.title.length).toBeLessThan(title.length);
+    // Each title is whole, or cut to fit and said so; every path and url is whole.
+    expect(page.results.every((hit) => hit.title === title || hit.title_cut === true))
+      .toBe(true);
     expect(page.results.every((hit) => hit.id.startsWith(dir))).toBe(true);
   }, 60_000);
 

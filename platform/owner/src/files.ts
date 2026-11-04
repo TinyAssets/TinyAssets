@@ -1071,8 +1071,8 @@ export class Files {
   }
 
   /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
-  async fetch(reads: readonly { sha256: string; offset?: number; length?: number }[]):
-      Promise<Uint8Array[]> {
+  async fetch(reads: readonly { sha256: string; offset?: number; length?: number;
+                                 verify?: boolean }[]): Promise<Uint8Array[]> {
     if (reads.length === 0) {
       return [];
     }

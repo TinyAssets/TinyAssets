@@ -558,7 +558,8 @@ describe("the MCP door's search (review M3, L4)", () => {
     // The scan's own end says more is left, past the last entry read.
     expect(searchPage(entries.slice(0, 2), true, query, () => "u").resume)
       .toBe("/workspace/p01.md");
-    expect(SEARCH_ANSWER_BYTES).toBe(50_000 - 64 - (6 * 4096 + 2 + 1024));
+    expect(SEARCH_ANSWER_BYTES).toBe(50_000 - 64 - (Math.ceil(4096 * 4 / 3) + 2 + 1024));
+    expect(Buffer.from("\u0001".repeat(4096)).toString("base64url")).toHaveLength(5_462);
   });
 
   it("fetches every id a search answers, a file that is not text as its metadata", async () => {

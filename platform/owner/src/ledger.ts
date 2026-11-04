@@ -738,6 +738,24 @@ export interface GrantReader {
 }
 
 /**
+ * A read on from `offset` into its page's first message's body names that message (review
+ * L2): the `message_id` the earlier part came with; another first message is refused, so a
+ * body is never spliced from two messages.
+ */
+function readsOn(first: string, offset: number, named: unknown): void {
+  if (offset === 0) {
+    return;
+  }
+  if (typeof named !== "string") {
+    throw new Invalid("body_offset reads on a message's body: name it by message_id");
+  }
+  if (named !== first) {
+    throw new Refused("message_changed: the page's first message is no longer the one named: " +
+                      "read again from its start");
+  }
+}
+
+/**
  * A message's body as a read shows it, and its integrity: a body its row keeps is checked
  * whole against the message's hash; a placed one read whole likewise, and a placed one read
  * by window is its chunks, each rechecked against its hash as `FILES` read it.
@@ -1374,7 +1392,8 @@ export class Ledger {
    * messages by their sequence (at most the ledger's `maxMessages`).
    */
   chain(messageId: unknown, after: unknown, limit: unknown,
-        placed: ReadonlyMap<string, Window> = new Map(), offset = 0): {
+        placed: ReadonlyMap<string, Window> = new Map(), offset = 0,
+        bodyMessage: unknown = null): {
       root: string; messages: ChainMail[]; more: boolean; placed: string[]; first: string | null;
     } {
     const maxRead = this.#limits.maxRead;
@@ -1393,6 +1412,9 @@ export class Ledger {
       after, root.chain_root, (limit as number) + 1).toArray();
     const unread: string[] = [];
     let first: string | null = null;
+    if (rows[0] !== undefined) {
+      readsOn(rows[0].message_id, offset, bodyMessage);
+    }
     const shown = rows.slice(0, limit as number).map((row, index) => {
       const stored = sql.exec<{ body: string; content_id: string | null; body_bytes: number }>(
         "SELECT body, content_id, body_bytes FROM message_bodies WHERE message_id = ?",
@@ -1647,7 +1669,7 @@ export class Ledger {
    */
   read(origin: Actor, limit: unknown, maxBytes: unknown = null, padBytes: unknown = 0,
        now: number = clock(), placed: ReadonlyMap<string, Window> = new Map(),
-       bodyOffset = 0, pageBytes: number = PAGE_BYTES): MailPage {
+       bodyOffset = 0, pageBytes: number = PAGE_BYTES, bodyMessage: unknown = null): MailPage {
     const maxRead = this.#limits.maxRead;
     if (!count(limit, 1, maxRead)) {
       throw new Invalid(`limit is 1 to ${maxRead}`);
@@ -1684,6 +1706,9 @@ export class Ledger {
       let bodyBytes = 0;
       let cut = false;
       for (const row of rows) {
+        if (messages.length === 0) {
+          readsOn(row.message_id, bodyOffset, bodyMessage);
+        }
         const kept = stored.get(row.message_id);
         const window = kept === undefined ? undefined : kept.content_id === null
           ? inlineWindow(kept.body, messages.length === 0 ? bodyOffset : 0)

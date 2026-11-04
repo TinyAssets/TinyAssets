@@ -29,7 +29,6 @@ import { windowEnd } from "./file-search";
 import type { Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { CHUNK_BYTES, PLACE_BYTES } from "./manifest";
-import { granted, SMALL_BYTES } from "./memory";
 
 export { PLACE_BYTES } from "./manifest";
 
@@ -54,37 +53,6 @@ export const READ_PAGE_BYTES = 2 * CHUNK_BYTES;
  * a page never needs more; the windows past it are not read, and the page ends before them.
  */
 export const WINDOWS_BYTES = 4 * RESULT_CHARS;
-
-/**
- * What one read holds at its worst, granted before its bodies are read (`memory.ts`): the
- * windows, each as `FILES` answered it, as its bytes and as its text (`WINDOWS_BYTES`, four
- * bytes a byte: no window is read past what a page could show, so no chunk is held whole
- * but a body that fits one), and the page built from them, its JSON and its RPC copy
- * (`RESULT_CHARS`, eight bytes a byte: UTF-16 text, the JSON, the serialized answer), and
- * its units' own rows and objects (`SMALL_BYTES`, `memory.ts`). Measured in workerd
- * (`test/memory-peaks.mjs`, `limits-audit.md`).
- */
-export const READ_GRANT = 4 * WINDOWS_BYTES + 8 * RESULT_CHARS + 16 * SMALL_BYTES;
-
-/**
- * What a placed body's write holds at its worst: its text as the call's argument (at most
- * a byte a UTF-8 byte: a one-byte character is one byte of text, a two-byte one two, and
- * wider ones less), its UTF-8 bytes once as it is sent and once as its placement is checked
- * in its write's unit, the two chunks one `FILES` call sends (`BATCH_BYTES`), and its
- * unit's own rows and objects (`SMALL_BYTES`, `memory.ts`). Measured in workerd
- * (`test/memory-peaks.mjs`).
- */
-export function writeGrant(bytes: number): number {
-  return 3 * bytes + 2 * CHUNK_BYTES + 16 * SMALL_BYTES;
-}
-
-/**
- * What a placed body read whole holds (a run's mail input): its chunks, and its text, at
- * most two bytes a byte.
- */
-export function wholeGrant(bytes: number): number {
-  return 3 * bytes;
-}
 
 /**
  * A window of a body's text: its UTF-8 bytes from `offset` to `end`, cut at characters, of a
@@ -280,35 +248,29 @@ export class Bodies {
 
   /**
    * The located bodies read whole, by content id (a run's mail input): their chunks read
-   * from R2 (`FILES` rechecks each hash) and decoded as the UTF-8 they were written as, under
-   * a grant of what they hold. Outside any unit.
+   * from R2 (`FILES` rechecks each hash) and decoded as the UTF-8 they were written as.
+   * Outside any unit.
    */
   async fetch(located: Located): Promise<Map<string, string>> {
-    let bytes = 0;
-    for (const { size } of located.values()) {
-      bytes += size;
-    }
-    return granted(wholeGrant(bytes), "a placed body read whole", async () => {
-      const bodies = new Map<string, string>();
-      for (const [contentId, { chunks }] of located) {
-        const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-        const parts = await this.#files.fetch(chunks.map((sha256) => ({ sha256 })));
-        let text = "";
-        for (const part of parts) {
-          text += decoder.decode(part, { stream: true });
-        }
-        bodies.set(contentId, text + decoder.decode());
+    const bodies = new Map<string, string>();
+    for (const [contentId, { chunks }] of located) {
+      const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+      const parts = await this.#files.fetch(chunks.map((sha256) => ({ sha256 })));
+      let text = "";
+      for (const part of parts) {
+        text += decoder.decode(part, { stream: true });
       }
-      return bodies;
-    });
+      bodies.set(contentId, text + decoder.decode());
+    }
+    return bodies;
   }
 
   /**
    * A window of each located body, by content id, in order: its text from `offsetOf(id)`,
-   * at most `maxOf(id)` bytes, cut back to a character, read from the one or two whole chunks it
-   * spans (`FILES` rechecks each hash). The windows stop once they hold `WINDOWS_BYTES`,
-   * always past the first: a body not read ends its page before it. Its caller holds
-   * `READ_GRANT`. Outside any unit.
+   * at most `maxOf(id)` bytes, cut back to a character, read by the verified ranges it spans
+   * (`FILES` rechecks each whole chunk's hash and answers the range: review L7). The windows
+   * stop once they hold `WINDOWS_BYTES`, always past the first: a body not read ends its
+   * page before it. Outside any unit.
    */
   async windows(located: Located, maxOf: (contentId: string) => number,
                 offsetOf: (contentId: string) => number = () => 0): Promise<Map<string, Window>> {
@@ -334,19 +296,24 @@ export class Bodies {
     if (end === offset) {
       return { text: "", offset, end, size };
     }
-    const first = Math.floor(offset / CHUNK_BYTES);
-    const last = Math.floor((end - 1) / CHUNK_BYTES);
-    const parts = await this.#files.fetch(chunks.slice(first, last + 1)
-      .map((sha256) => ({ sha256 })));
-    const bytes = new Uint8Array(end - offset);
-    let at = first * CHUNK_BYTES;
-    for (const part of parts) {
+    // Each chunk the window spans read by the range it needs, verified: `FILES` reads the
+    // whole chunk, rechecks its hash and answers the range alone (review L7), so a window
+    // holds only itself and its bytes are still the content's.
+    const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
+    for (const [index, sha256] of chunks.entries()) {
+      const at = index * CHUNK_BYTES;
       const from = Math.max(offset, at);
-      const to = Math.min(end, at + part.byteLength);
+      const to = Math.min(end, at + CHUNK_BYTES, size);
       if (from < to) {
-        bytes.set(part.subarray(from - at, to - at), from - offset);
+        reads.push({ sha256, offset: from - at, length: to - from, verify: true });
       }
-      at += part.byteLength;
+    }
+    const parts = await this.#files.fetch(reads);
+    const bytes = new Uint8Array(end - offset);
+    let put = 0;
+    for (const part of parts) {
+      bytes.set(part, put);
+      put += part.byteLength;
     }
     const cut = windowEnd(bytes, 0, end === size ? end - offset : max);
     if (cut === null) {

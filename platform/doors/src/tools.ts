@@ -114,8 +114,9 @@ export function toolTable(): readonly Tool[] {
       title: "Inbox digest", ...READ,
       description: "Read what is new for this agent in one call: its unacknowledged mail, " +
         "oldest first, and the rows of the owner's rooms changed after a cursor, each " +
-        "with the head of its body. Acknowledge mail with mailbox_ack; read a whole row " +
-        "with collection_get. An answer with reset true means a deletion past the cursor " +
+        "with the head of its body. Acknowledge mail with mailbox_ack; a mail body cut to " +
+        "fit (truncated true) is read on with mailbox_read's body_offset and message_id; " +
+        "read a whole row with collection_get. An answer with reset true means a deletion past the cursor " +
         "is no longer kept: read the rooms again whole, then go on from the cursor given.",
       input: args({ limit: int("At most this many messages, and this many room rows"),
                     after },
@@ -134,11 +135,12 @@ export function toolTable(): readonly Tool[] {
       description: "Read this agent's unacknowledged mailbox messages, oldest first. One " +
         "answer holds at most 50000 characters: a message whose body does not fit is cut, " +
         "with truncated true and body_next_offset; read the rest by calling again with " +
-        "body_offset set to it, before acknowledging the message.",
+        "body_offset set to it and message_id set to that message's, before acknowledging it.",
       input: args({ limit: int("At most this many messages") },
                   { max_bytes: int("At most this many body bytes in all"),
                     pad_bytes: int("Pad the page to this many bytes"),
-                    body_offset: bodyFrom }) },
+                    body_offset: bodyFrom,
+                    message_id: str("With body_offset, the message whose body is read on") }) },
     { name: "mailbox_ack", door: "mailboxAck", capability: "write_graph",
       title: "Acknowledge mailbox", readOnlyHint: false, destructiveHint: false,
       idempotentHint: true, openWorldHint: false,
@@ -158,8 +160,9 @@ export function toolTable(): readonly Tool[] {
       description: "List the agents registered for this connection, the owner's own " +
         "agents, each with the id its rooms name, and which of the owner's AI apps are " +
         "connected to TinyAssets, each one not connected with its connect_url, the page " +
-        "with its connect step.",
-      input: args({}) },
+        "with its connect step. One answer holds as many as fit; when it carries next, read " +
+        "again with after set to it for the rest.",
+      input: args({}, { after: int("Read on after this many: a next an answer gave") }) },
     { name: "agent_register", door: "registerPropose", capability: null,
       title: "Request agent registration", readOnlyHint: false, destructiveHint: false,
       idempotentHint: false, openWorldHint: false,
@@ -412,8 +415,8 @@ export function callDoor(stub: DurableObjectStub<OwnerDO>, binding: Binding, too
  * owner's storage figure (`storage_full`, `owner/src/storage-full.ts`) is 507 Insufficient
  * Storage, so a client tells the one wall from a permission; one only open uploads cause
  * (`uploads_open`), or an append that lost to other writes every try (`file_busy`), is 409,
- * since it clears as they finish. The isolate's memory in use (`busy`, `owner/src/memory.ts`)
- * is 503, retried after a second.
+ * since it clears as they finish. The isolate's chunk slots in use (`busy`) is 503, retried
+ * after a second.
  */
 export function refusal(error: unknown):
     { status: 400 | 403 | 409 | 503 | 507; message: string } | null {

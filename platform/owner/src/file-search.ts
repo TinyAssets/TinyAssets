@@ -25,7 +25,7 @@
  */
 import { escapedBytes, fitted, jsonBytes } from "./encoded";
 import { PAGE_BYTES } from "./pages";
-import { MAX_PATH_BYTES, nameOf } from "./paths";
+import { nameOf } from "./paths";
 
 /**
  * The most manifest entries one search reads, a technical ceiling: the object runs one call
@@ -37,9 +37,10 @@ import { MAX_PATH_BYTES, nameOf } from "./paths";
 export const SEARCH_SCAN = 5000;
 /**
  * What one answer holds beside its results, at its widest: `next_cursor` (a stored path of
- * at most `MAX_PATH_BYTES`, at most 6 bytes a byte as JSON), `note`, and the keys.
+ * at most `MAX_PATH_BYTES`, as base64url: four characters each three bytes, 5,462, which a
+ * test holds to `MAX_PATH_BYTES`), `note`, and the keys.
  */
-export const SEARCH_ENVELOPE_BYTES = 6 * MAX_PATH_BYTES + 2 + 1024;
+export const SEARCH_ENVELOPE_BYTES = 5_462 + 2 + 1024;
 /**
  * The most bytes of results, as JSON, one answer holds: one tool answer (`PAGE_BYTES`,
  * `pages.ts`, answered once as text) less `SEARCH_ENVELOPE_BYTES`. A search counts each
@@ -219,7 +220,8 @@ export interface Scanned {
 
 /** One page of a search: its results, best first, and where the next page resumes. */
 export interface SearchPage {
-  readonly results: readonly { id: string; title: string; url: string }[];
+  /** Each match; one whose title was cut to fit one answer says so (`title_cut`). */
+  readonly results: readonly { id: string; title: string; url: string; title_cut?: true }[];
   /** The path the next page resumes after, or null when the entries read were all. */
   readonly resume: string | null;
 }
@@ -279,6 +281,7 @@ export function searchPage(entries: readonly Scanned[], more: boolean, query: Re
   const hits: { path: string; title: string; score: [number, number] }[] = [];
   let bytes = 2;
   let resume: string | null = null;
+  let cutTitle: string | null = null;
   for (const entry of entries) {
     if (entry.kind !== "file") {
       continue;
@@ -305,9 +308,11 @@ export function searchPage(entries: readonly Scanned[], more: boolean, query: Re
         resume = hits.at(-1)!.path;  // the last match answered: the next page starts after it
         break;
       }
-      // The first match is always answered: its title, display text, cut to fit.
-      title = fitted(title, Math.max(2, answerBytes - bytes - size + escapedBytes(title))).text;
-      size = jsonBytes({ id: entry.path, title, url: url(entry.path) }) + 1;
+      // The first match is always answered: its title, display text, cut to fit and said so.
+      title = fitted(title, Math.max(2, answerBytes - bytes - size + escapedBytes(title)
+                                          - jsonBytes({ title_cut: true }) + 1)).text;
+      cutTitle = entry.path;
+      size = jsonBytes({ id: entry.path, title, url: url(entry.path), title_cut: true }) + 1;
     }
     bytes += size;
     hits.push({ path: entry.path, title, score: found });
@@ -317,7 +322,9 @@ export function searchPage(entries: readonly Scanned[], more: boolean, query: Re
   }
   hits.sort((a, b) => b.score[0] - a.score[0] || b.score[1] - a.score[1]
                       || (a.path < b.path ? -1 : 1));
-  return { results: hits.map((hit) => ({ id: hit.path, title: hit.title, url: url(hit.path) })),
+  return { results: hits.map((hit) => ({ id: hit.path, title: hit.title, url: url(hit.path),
+                                         ...(hit.path === cutTitle ? { title_cut: true as const }
+                                           : {}) })),
            resume };
 }
 

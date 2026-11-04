@@ -184,33 +184,6 @@ const FILES_RING = JSON.stringify({
   keys: { k1: randomBytes(32).toString("base64"), k2: randomBytes(32).toString("base64") },
 });
 
-/** The workerd runtime both workerd projects run in: the Worker, its objects and its peers. */
-const WORKERD = {
-    main: "./test/worker.ts",
-    wrangler: { configPath: "./wrangler.jsonc" },
-    miniflare: {
-      durableObjects: {
-        OWNER: { className: "OwnerDO", useSQLite: true },
-        AGENT: { className: "FauxOwnerDO", useSQLite: true },
-        GATED: { className: "GatedOwnerDO", useSQLite: true },
-        BARE: { className: "UnboundOwnerDO", useSQLite: true },
-        BOUNDED: { className: "BoundedOwnerDO", useSQLite: true },
-        RUNG: { className: "RungOwnerDO", useSQLite: true },
-        SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
-        CACHED: { className: "CachedOwnerDO", useSQLite: true },
-        SEEDED: { className: "SeededOwnerDO", useSQLite: true },
-      },
-      bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
-                  ROUTING_MAC_KEY: ROUTING_KEY },
-      serviceBindings: { CONNECT: { name: "tinyassets-gateway",
-                                    entrypoint: "ConnectGateway" } },
-      outboundService: "fake-upstream",
-      workers: [filesWorker(FILES_RING), gatewayWorker(KEYRING), hooksWorker(),
-                sandboxWorker(),
-                fakeUpstream()],
-    },
-  };
-
 export default defineConfig({
   test: {
     projects: [
@@ -224,16 +197,35 @@ export default defineConfig({
         // keyring, so a test can seal under an older kid, and FILES_TEST_RING the files
         // Worker's, so a test can wrap a data key under its older kid; the tests' own fetches reach the
         // fake. ROUTING_MAC_KEY is the config's one secret, the sandbox tokens' routing key.
-        plugins: [cloudflareTest(WORKERD)],
+        plugins: [
+          cloudflareTest({
+            main: "./test/worker.ts",
+            wrangler: { configPath: "./wrangler.jsonc" },
+            miniflare: {
+              durableObjects: {
+                OWNER: { className: "OwnerDO", useSQLite: true },
+                AGENT: { className: "FauxOwnerDO", useSQLite: true },
+                GATED: { className: "GatedOwnerDO", useSQLite: true },
+                BARE: { className: "UnboundOwnerDO", useSQLite: true },
+                BOUNDED: { className: "BoundedOwnerDO", useSQLite: true },
+                RUNG: { className: "RungOwnerDO", useSQLite: true },
+                SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
+                CACHED: { className: "CachedOwnerDO", useSQLite: true },
+                SEEDED: { className: "SeededOwnerDO", useSQLite: true },
+              },
+              bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
+                          ROUTING_MAC_KEY: ROUTING_KEY },
+              serviceBindings: { CONNECT: { name: "tinyassets-gateway",
+                                            entrypoint: "ConnectGateway" } },
+              outboundService: "fake-upstream",
+              workers: [filesWorker(FILES_RING), gatewayWorker(KEYRING), hooksWorker(),
+                        sandboxWorker(),
+                        fakeUpstream()],
+            },
+          }),
+        ],
         // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
         test: { name: "workerd", include: ["test/**/*.test.ts"],
-                exclude: ["test/memory/**"], setupFiles: ["./test/admitted.ts"] },
-      },
-      {
-        // The workerd memory leg's paths (`test/memory-peaks.mjs`, `npm run test:memory`):
-        // the same runtime, its heap sampled through the inspector the leg attaches.
-        plugins: [cloudflareTest(WORKERD)],
-        test: { name: "memory", include: ["test/memory/**/*.test.ts"],
                 setupFiles: ["./test/admitted.ts"] },
       },
       {
