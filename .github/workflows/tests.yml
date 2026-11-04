@@ -31,7 +31,12 @@ on:
     # (cancel-in-progress is on for pull_request) and spent another ~15 minutes
     # on the same code: 140 of 331 PR runs in the 2026-10-12 sample. Receipt
     # and label gating is pr-scope-guard.yml, a separate small job.
-    types: [opened, reopened, synchronize, ready_for_review]
+    #
+    # Not `ready_for_review` either, for the same reason: marking a draft ready
+    # leaves the SHA alone, and the new run cancelled the draft's run of that
+    # SHA, so the aggregate's `always()` failed it as `structural=cancelled`
+    # (every PR of 2026-11-04, #5407-#5416). One run per SHA.
+    types: [opened, reopened, synchronize]
   # The merge queue. `required-tests` and `slow-tests` are required checks, and
   # a queue waits for every required check to report on the merge-group commit;
   # without this trigger nothing reports and every queued PR times out.
