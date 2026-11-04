@@ -99,7 +99,7 @@ import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import { APP_RESOURCE } from "../../doors/src/config";
-import { LEASE_LIVED, mintToken } from "../../doors/src/routing-mac";
+import { LEASE_LIVED, mintToken, sealRoute } from "../../doors/src/routing-mac";
 import {
   type ProfileName, profileNames, refusal, takesRequest, type Tool, toolsNamed,
 } from "../../doors/src/tools";
@@ -120,8 +120,12 @@ import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type MailAn
          type PostedFrame, QUEUE_FULL, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
          scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
-import { EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
-import { SANDBOX_ABSENT, SANDBOX_WAITING, type SandboxService, started } from "./sandbox";
+import {
+  EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, FRAME_VERSION, PostGate,
+} from "./run-events";
+import {
+  SANDBOX_ABSENT, SANDBOX_WAITING, type SandboxService, type Started, started,
+} from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
 import { type ApiKey, keyId, keyName, Keys } from "./keys";
@@ -144,10 +148,10 @@ import {
 } from "./connections";
 import { Invalid, Refused } from "./errors";
 import {
-  type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef, type ChunkStore,
-  type Content, type Entry, FileConflict, FileFault, Files, INLINE_BYTES, type Lease,
-  OWNER_AUTHORITY,
-  type SandboxLease, type SyncOp,
+  BATCH_BYTES, type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef,
+  type ChunkStore, type Content, type Entry, FileConflict, FileFault, Files, GC_GRACE_S,
+  INLINE_BYTES, type Lease,
+  OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
@@ -175,7 +179,12 @@ import { type Lane, Schedule } from "./schedule";
 import {
   ABILITY_TREES, AGENTS_DIR, AGENTS_OWNER_ONLY, nameOf, ownersOnly, parentOf, storedPath, within,
 } from "./paths";
-import { migrate } from "./schema";
+import { MIGRATIONS, migrate } from "./schema";
+import { decodeExportCursor, encodeExportCursor } from "./export";
+import { Backups, MANIFEST_PROTECT_S } from "./backup";
+import { OpenExports } from "./open-exports";
+import { ChangeLog } from "./changelog";
+import { type BilledEvent, billedEvent, METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
 import { Sessions } from "./sessions";
 import {
   frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
@@ -185,14 +194,22 @@ import { carried, type Receipt as StarterReceipt, Starter, type StarterPackage }
   from "./starter";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal, utf8Bytes } from "./text";
+import { storageFull, storageFullMessage } from "./storage-full";
+import {
+  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
+} from "./sync-ignore";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
   type SandboxBinding, sandboxBinding, settleRequest,
 } from "./egress";
 import {
-  type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
+  EGRESS_ORIGIN, type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
 } from "./network";
+import {
+  pastedCode, SIGNIN_ID, SIGNIN_OFF, signinAuthority, type SigninMode, type SigninView,
+  Signins, signinView, switchedOn,
+} from "./signins";
 import {
   CLOSED, Doorbell, type RingAnswer, runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender,
   WAKES_PER_ALARM,
@@ -247,6 +264,12 @@ export interface Binding {
    */
   readonly tiers?: unknown;
   /**
+   * The served records whose vendor sign-in the platform's control record switches on, as
+   * the binder read it for this call (`signins.ts`, `switches`): never a request field. The
+   * object keeps the last list it was handed for the runs its own lane starts.
+   */
+  readonly signins?: unknown;
+  /**
    * The first-party grant the owner's token was issued under, and that token's expiry
    * (whole seconds), from the provider's own unwrap: a socket ticket's binding, and a
    * sign-out's (`bindOwnerGrant`, `bindSignOut`).
@@ -298,6 +321,38 @@ export interface EventsRequest {
 export interface ConversationRequest {
   readonly conversation_id: string;
 }
+
+/** The owner's ask to sign in to an engine inside a sandbox (`signinStart`). */
+export interface SigninStartRequest {
+  readonly engine: string;
+  /** `owner` (the default), or one client's id: that client's own sandbox. */
+  readonly authority?: string;
+  /** The owner's choice among the record's `cli.regions`, when it has any. */
+  readonly region?: string;
+  readonly mode?: SigninMode;
+}
+
+export interface SigninRequestById {
+  readonly id: string;
+}
+
+export interface SigninCodeRequest extends SigninRequestById {
+  readonly code: string;
+}
+
+/** A sign-in's runner's post: its frames, and its end. */
+export interface SigninEventsRequest extends SigninRequestById {
+  readonly frames: unknown;
+  readonly end?: unknown;
+}
+
+export interface RunListRequest {
+  readonly before?: number;
+  readonly limit?: number;
+}
+
+/** A past run in the caller's list: its receipt without its result (its own door's). */
+export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
 
 /**
  * The runner's report of the sandbox's engines' sign-ins (`signinReport`): for each engine
@@ -859,6 +914,11 @@ export interface SyncUploadChunksRequest extends LeaseRequest {
   readonly chunks: { readonly sha256: string; readonly bytes: Uint8Array }[];
 }
 
+/** The sync agent's own upload given up (`fileSyncUploadAbort`). */
+export interface SyncUploadAbortRequest extends LeaseRequest {
+  readonly intent_id: string;
+}
+
 /** A lost file compare-and-swap: answered with the entry as it stands. */
 export interface FileConflicted {
   readonly conflict: Entry | null;
@@ -947,7 +1007,7 @@ interface Readable {
 }
 
 /** A sync token that is not the live lease's, or names another lease or epoch. */
-export const SYNC_FENCED = "the sync lease was lost; this sync is fenced";
+export const SYNC_FENCED = "sync_fenced: the sync lease was lost; this sync is fenced";
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -1177,6 +1237,27 @@ const PLACE_TRIES = 5;
 const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
+/**
+ * What a sync commit's write of the sync-ignore list says of the files it holds back, as its
+ * sync agent counted them (`sync.ts`): the kept files its lines name, and those with changes.
+ */
+function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
+  const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
+    ? value as number : null;
+  for (const op of Array.isArray(ops) ? ops as unknown[] : []) {
+    const fields = (typeof op === "object" && op !== null ? op : {}) as Record<string, unknown>;
+    const held = fields["held_back"] as Record<string, unknown> | undefined;
+    if (fields["path"] === SYNC_IGNORE && fields["op"] === "write" && typeof held === "object"
+        && held !== null) {
+      const kept = count(held["kept"]);
+      const changed = count(held["changed"]);
+      if (kept !== null && changed !== null && changed <= kept) {
+        return { kept, changed };
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * A run's own MCP door never converses: work between agents is mail (ADR-034 decision 11).
@@ -1309,6 +1390,16 @@ export interface LaneDeps {
     next(now: number): number | null;
     run(now: number, until: number): Promise<void>;
   };
+  /** The `manifest` lane: the nightly manifest (`backup.ts`). */
+  readonly manifest: {
+    next(now: number): number | null;
+    run(now: number, until: number): Promise<void>;
+  };
+  /** The `sandbox` lane: the sandbox Worker's log read into the meter (`sandbox-time.ts`). */
+  readonly sandbox: {
+    next(now: number): number | null;
+    run(now: number, until: number): Promise<void>;
+  };
   /** The starter package (`starter.ts`): seeded, then kept current, as its rows say. */
   readonly starter: {
     next(now: number): number | null;
@@ -1332,7 +1423,8 @@ export interface LaneDeps {
  * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
  */
 export function ownerLanes(deps: LaneDeps):
-    Readonly<Record<"wakes" | "files" | "connections" | "runs" | "starter", Lane>> {
+    Readonly<Record<"wakes" | "files" | "connections" | "runs" | "manifest" | "sandbox"
+      | "starter", Lane>> {
   return {
     // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell, and
     // only while the owner is admitted (`require_work`): a suspended owner's wait.
@@ -1352,6 +1444,12 @@ export function ownerLanes(deps: LaneDeps):
     // Runs: a schedule due, or a live run's lease expiry; never a poll for work.
     runs: { next: (now) => deps.runs.next(now),
             run: (now, until) => deps.runs.run(now, until) },
+    // The nightly manifest: once a night, at the owner's own hour; never a poll.
+    manifest: { next: (now) => deps.manifest.next(now),
+                run: (now, until) => deps.manifest.run(now, until) },
+    // Sandbox time: a settled run not yet metered, or an open span's next look.
+    sandbox: { next: (now) => deps.sandbox.next(now),
+               run: (now, until) => deps.sandbox.run(now, until) },
     // The starter package: an admitted owner's seed, then each newer version once.
     starter: { next: (now) => deps.starter.next(now), run: (now) => deps.starter.run(now) },
   };
@@ -1436,6 +1534,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
+  /** The nightly manifest (`backup.ts`). */
+  readonly #backups: Backups;
+  /** The exports open, each named for a week (`open-exports.ts`). */
+  readonly #exports: OpenExports;
+  /** The change log a generation captures (`changelog.ts`). */
+  readonly #log: ChangeLog;
+  /** Sandbox time, per run and per day (`sandbox-time.ts`). */
+  readonly #sandboxTime: SandboxTime;
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
   readonly #bodies: Bodies;
   readonly #registrations: Registrations;
@@ -1448,8 +1554,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #egress: Egress;
   /** The owner's runs: admission, grants, conversations, schedules (`runs.ts`). */
   readonly #runs: Runs;
+  /** The held-back count a sync commit in progress carries for the sync-ignore list. */
+  #heldBack: { kept: number; changed: number } | null = null;
   /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
+  /** The vendor's own sign-ins in progress inside a sandbox (`signins.ts`). */
+  readonly #signins: Signins;
   readonly #tickets: Tickets;
   /** The owner's API keys (`keys.ts`): the key store. */
   readonly #keys: Keys;
@@ -1509,9 +1619,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#files = new Files(storage, env.FILES, () => fileLimits(
       this.#policy.read().document,
       keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
+      // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
+      (stored, needed, held, limit) => storageFullMessage(storageFull(
+        stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
       (filer) => this.#collections.reclaim(filer) || this.#ledger.reclaim(filer),
       // Each agent's ledger identity follows its `agent.json`, in the file change's own unit.
-      (path, present, now) => {
+      (path, present, now, change) => {
         const agent = AGENT_FILE.exec(path)?.[1];
         if (agent !== undefined) {
           if (present) {
@@ -1520,7 +1633,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             this.#ledger.retire(agent, now);
           }
         }
+        // Every agent may edit the sync's ignore list (the founder's every-agent-full-power
+        // rule), but never unseen: each change is a receipt and one notice for the owner.
+        if (path === SYNC_IGNORE) {
+          this.#syncIgnoreChanged(present, now, change);
+        }
+      },
+      // Garbage the newest finished generation names is never collected early, while it is
+      // a recovery point (finished within MANIFEST_PROTECT_S).
+      () => {
+        const newest = this.#backups.manifests().at(-1);
+        return newest === undefined || newest.finished_at < clock() - MANIFEST_PROTECT_S
+          ? null : newest.started_at;
       });
+    this.#exports = new OpenExports(storage);
+    this.#log = new ChangeLog(storage);
     this.#bodies = new Bodies(this.#files, storage, write);
     // An outside writer's share of the collections is the owner's own `client_share`.
     this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
@@ -1529,6 +1656,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#sessions = new Sessions(storage);
     this.#ledger = new Ledger(storage, this.#grants, undefined, admitted,
                               () => this.#collections.clock(), this.#bodies.adopt);
+    this.#backups = new Backups({
+      storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
+      log: this.#log,
+      owner: () => this.ctx.id.name ?? "", schema: MIGRATIONS.length,
+      serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
+      halted: () => wiped(storage.sql) || erasing(storage),
+      notice: (type, detail) => this.#notices.add(type, detail, clock()),
+    });
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
     this.#starter = new Starter({
@@ -1607,12 +1742,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { generation, settings: modelSettings(document) };
     });
     this.#tickets = new Tickets(storage);
+    this.#signins = new Signins(storage);
     this.#keys = new Keys(storage);
     this.#inbound = new Inbound(storage);
     this.#runs = new Runs(storage, {
       unadmitted: () => workRefusal(admission(storage)),
       sandboxBound: () => env.SANDBOX !== undefined,
       sources: () => bundledSources(),
+      // Each source's vendor sign-in behind its own switch, as the binder last handed them.
+      signinOn: (engine) => switchedOn(storage, undefined, clock()).has(engine),
       usable: () => this.#connections.usable(),
       egressible: () => this.#connections.egressible(),
       standing: (stamp) => {
@@ -1638,7 +1776,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         live: (now, authority) => this.#files.sandboxLease(now, authority),
         all: (now) => this.#files.liveLeases(now),
         open: (now, authority) => this.#openLease(owner, now, authority),
-        release: (leaseId, epoch) => this.#files.leaseRelease(leaseId, epoch).released,
+        // A lease a sign-in holds stays: its sandbox is in use with no run (slice SIGNIN).
+        release: (leaseId, epoch) => !this.#signins.holds(leaseId)
+          && this.#files.leaseRelease(leaseId, epoch).released,
         renew: (leaseId, epoch) => {
           this.#files.leaseRenew(leaseId, epoch);
         },
@@ -1650,6 +1790,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         },
       },
       stop: (runs) => this.#cancelInSandbox(runs),
+      notice: (type, detail) => this.#notices.add(type, detail, clock()),
       answer: (answer) => this.#answer(answer),
       mailSettled: (mail, agent) => this.#ledger.settled(mail, agent),
       ended: (run) => {
@@ -1663,11 +1804,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         queueMicrotask(() => void this.#sandboxRelease(leaseId));
       },
     });
+    this.#sandboxTime = new SandboxTime(storage, this.#runs.meter());
     this.#relay = new Relay({
       admit: (binding, conversation, ticket) =>
         this.#door(() => this.#socketAdmit(binding, conversation, ticket)),
       check: (state) => this.#door(() => this.#socketCheck(state)),
-      live: (conversation) => this.#door(() => this.#runs.liveIn(conversation)),
+      // A sign-in's socket gets its own tail on attach, as a conversation's gets its runs'.
+      live: (conversation) => this.#door(() => this.#signinOwned(conversation) ? [conversation]
+        : this.#runs.liveIn(conversation)),
       now: clock,
     });
     // The lanes of the one schedule. There is no global tick; each owner's object
@@ -1679,6 +1823,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       runs: { next: (now) => admitted() && this.#ledger.mailDue(
                 this.#runs.queueRoom(MAIL_INPUT_BYTES)) ? now : this.#runs.next(now, admitted()),
               run: (now, until) => this.#runsPass(now, until) },
+      manifest: { next: (now) => this.#backups.next(now),
+                  run: (now, until) => this.#backups.run(now, until) },
+      sandbox: { next: (now) => this.#sandboxTime.next(now),
+                 run: (now, until) => this.#meterPass(until) },
       starter: this.#starter, sender: () => this.#sender, admitted, clock, write, runWakes,
     }), clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
@@ -1742,6 +1890,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return;  // an erased owner: nothing is made here again
       }
       await write(() => migrate(storage));
+      // From here on, a unit that writes (not a quiet one) marks the owner changed for the
+      // nightly manifest.
+      this.#gate.onChange((sql) => {
+        if (this.#backups.mark(sql)) {
+          // The first change since the last manifest: its job set again, once the unit is done.
+          queueMicrotask(() => {
+            this.#schedule.sync().catch(() => console.error("the schedule's sync failed"));
+          });
+        }
+      });
       if (erasing(storage)) {
         // An erasure a crash cut short, from its recorded step: its alarm may be gone.
         this.#erasure.resume();
@@ -1791,6 +1949,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#gate.write(act);
   }
 
+  /**
+   * A door's synchronous body as a quiet unit: it writes only what no export reads (an
+   * export's own row, a session's renewal), so it marks nothing changed (`gate.ts`).
+   */
+  #quiet<T>(act: () => T): Promise<T> {
+    return this.#gate.quiet(act);
+  }
+
   /** A door's unit, then the one schedule synced from the rows it changed. */
   async #synced<T>(act: () => T): Promise<T> {
     const done = await this.#door(act);
@@ -1813,6 +1979,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // files byte quota and the lane's runs (written only when they changed).
     const unread = keptTiers(this.#storage) === null;
     keepTiers(this.#storage, binding.tiers, clock());
+    // The switched-on sign-ins, likewise: kept for the lane's runs (written only when changed).
+    switchedOn(this.#storage, binding.signins, clock());
     if (unread && keptTiers(this.#storage) !== null && this.#starter.version() === 0) {
       // The first numbers a new owner's door hands: its seed, which waited for them, is due.
       queueMicrotask(() => void this.#schedule.sync());
@@ -1976,7 +2144,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   sessionExtend(binding: Binding): Promise<{ expires_at: number }> {
-    return this.#door(() => {
+    // Quiet: a renewal changes nothing an export reads, so an export open across it stands.
+    return this.#quiet(() => {
       this.#owner(binding, "read", "renew its session");
       return this.#sessions.extend(binding.session, clock());
     });
@@ -2007,6 +2176,208 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     this.#relay.closeAll("signedOut");  // account revocation: every device's sockets
     return closed;
+  }
+
+  // -- SANDBOX TIME: the sandbox Worker's log, metered (`sandbox-time.ts`) -----------
+
+  /**
+   * The `sandbox` lane's pass: the sandbox Worker's log read after the cursor, a batch at a
+   * time until the pass's end, each applied in a unit. Without a sandox bound there is no
+   * log, and runs that never started are metered at none. A read that fails backs the lane
+   * off in its row; the pass completes.
+   */
+  async #meterPass(until: number): Promise<void> {
+    const sandbox = this.env.SANDBOX;
+    const owner = this.ctx.id.name;
+    do {
+      const { after } = this.#sandboxTime.cursor();
+      let read: { events: ReturnType<typeof meterRead>["events"]; next: number };
+      const readAt = Date.now();
+      try {
+        read = sandbox === undefined || owner === undefined ? { events: [], next: after }
+          : meterRead(await sandbox.meter(owner, { after }), after);
+      } catch {
+        console.error("the sandbox meter's read failed; it is tried again later");
+        await this.#gate.write(() => this.#sandboxTime.failed(clock()));
+        return;
+      }
+      await this.#gate.write(() => this.#storage.transactionSync(
+        () => this.#sandboxTime.apply(read.events, read.next, readAt)));
+      if (read.events.length < METER_BATCH) {
+        return;
+      }
+    } while (Date.now() < until);
+  }
+
+  /**
+   * One execution E2B billed, from its signed lifecycle event, which the doors verified and
+   * routed here by its sealed route (`doors/src/e2b-hooks.ts`). It carries no binding, as the
+   * line's ring does not (`sandboxRung`): it grants nothing, and only adds to the meter, once
+   * an execution, inside the window its event's time allows. An erased or erasing owner
+   * counts nothing.
+   */
+  async sandboxBilled(event: BilledEvent): Promise<{ counted: boolean }> {
+    if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
+      return { counted: false };
+    }
+    const checked = billedEvent(event);
+    return this.#door(() => ({ counted: this.#sandboxTime.billed(checked, Date.now()) }));
+  }
+
+  /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
+  sandboxDays(binding: Binding, request: { days?: number }): Promise<{
+      days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
+              gb_seconds: number; unverified_executions: number }[] }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its sandbox time");
+      const days = request?.days ?? 31;
+      if (typeof days !== "number" || !Number.isSafeInteger(days) || days < 1 || days > 400) {
+        throw new Invalid("days is 1 to 400");
+      }
+      return { days: this.#sandboxTime.days(days) };
+    });
+  }
+
+  // -- STORAGE: the tier's one storage number, used and left -------------------
+
+  /**
+   * What the owner stores against its one storage number (founder, 2026-11-03): every byte
+   * of user content wherever it lives (`used_bytes`: chunks in R2, small files and inline
+   * bodies in the object), the bound (`limit_bytes`: the tier's storage, or the owner's own
+   * lower setting; null until the binder has handed the tier numbers), and where it is:
+   * mail (`messages`), collection rows and their history (`collections`), and files, the
+   * rest. Platform bookkeeping (indexes, receipts, counters) is not user content.
+   */
+  storageUsage(binding: Binding): Promise<{
+      used_bytes: number; limit_bytes: number | null;
+      breakdown: { files: number; messages: number; collections: number };
+      deleted_content: { kept_bytes: number; kept_up_to_days: number } }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its storage");
+      const usage = this.#files.usage();
+      const used = usage.stored;
+      // Each kind's bodies, inline or placed (a placed content counted once); files are the
+      // rest, so the parts always sum to what is used.
+      const messages = Math.min(used, this.#ledger.storedBytes());
+      const collections = Math.min(used - messages, this.#collections.storedBytes());
+      // Deleted files kept for recovery: up to 30 days, within the same figure (the oldest go
+      // first past it), so a lower setting shortens recovery; counted in nothing used.
+      return { used_bytes: used, limit_bytes: usage.limits.max_bytes,
+               breakdown: { files: used - messages - collections, messages, collections },
+               deleted_content: { kept_bytes: this.#files.garbageBytes(),
+                                  kept_up_to_days: GC_GRACE_S / 86_400 } };
+    });
+  }
+
+  // -- OWNER_EXPORT: everything the owner holds (`export.ts`) --------------------
+
+  /**
+   * One object of the owner's export from `cursor` (null: the start, which opens the export
+   * on a generation, `backup.ts`: the one running, the newest finished while nothing changed
+   * since, or a new one, begun at once): its lines, and the next object's cursor, or null
+   * after its end line. Every object is immutable once R2 holds it, so any cursor resumes;
+   * one not yet written answers `pending`, its cursor the same, to ask again. The owner's
+   * alone, in its live session: no outside client, no run, and no request without the
+   * session cookie reaches it. A `read` door, so a billing suspension still lets the owner
+   * take its data; its writes (the export's own rows) are quiet: they mark nothing changed.
+   */
+  async ownerExport(binding: Binding,
+                    request: { cursor?: string | null; export_id?: string }):
+      Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
+    const asked = await this.#quiet(() => {
+      this.#owner(binding, "read", "export everything it holds");
+      this.#sessions.live(binding.session, clock());
+      if (typeof request !== "object" || request === null || Array.isArray(request)
+          || Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
+        throw new Invalid("an export request is at most its cursor and its export_id");
+      }
+      const now = clock();
+      const first = request.cursor === null || request.cursor === undefined;
+      const open = first ? this.#exports.open(now, this.#backups.forExport(now))
+        : this.#exports.named(request.export_id, now);
+      const at = first ? { gen: open.gen, index: 0 } : decodeExportCursor(request.cursor);
+      if (at.gen !== open.gen) {
+        throw new Invalid("an export cursor is one a page handed out");
+      }
+      return { open, index: at.index, first };
+    });
+    const { open, index } = asked;
+    if (asked.first) {
+      await this.#schedule.sync();  // a generation begun or joined goes on at once
+    }
+    const { ns, key } = await this.#files.space();
+    const root = this.#backups.finished(open.gen)
+      ? await this.env.FILES.getManifestRoot(ns, open.gen) : null;
+    const object = this.#backups.object(open.gen, index, root);
+    const answer = (lines: string[], next: string | null, pending = false) =>
+      ({ export_id: open.export_id, lines, next, pending });
+    if (object === null) {
+      throw new Invalid("this export is not open: begin it again");
+    }
+    if (object.kind === "pending") {
+      return answer([], encodeExportCursor(open.gen, index), true);
+    }
+    if (object.kind === "end") {
+      return answer([object.line], null);
+    }
+    const bytes = object.kind === "part"
+      ? await this.env.FILES.getManifestPart(ns, root?.key ?? key, open.gen, object.part,
+                                             object.sha256)
+      : await this.env.FILES.getManifestSegment(ns, root?.key ?? key, open.gen, object.a,
+                                                object.b, object.sha256);
+    return answer(new TextDecoder().decode(bytes).trimEnd().split("\n"),
+                  encodeExportCursor(open.gen, index + 1));
+  }
+
+  /**
+   * Chunks an open export's pages named, by hash: their bytes, at most two chunks a call
+   * (`BATCH_BYTES`), each checked against its hash by the files Worker. Any chunk the owner
+   * still stores is served (live, or garbage in its grace), however the owner changed since;
+   * one gone from the bucket is refused (`CHUNK_GONE`). The owner's alone.
+   */
+  async exportChunks(binding: Binding, request: { export_id: string; sha256s: string[] }):
+      Promise<{ chunks: { sha256: string; data: string }[] }> {
+    const wanted = await this.#door(() => {
+      this.#owner(binding, "read", "export everything it holds");
+      this.#sessions.live(binding.session, clock());
+      if (typeof request !== "object" || request === null
+          || Object.keys(request).sort().join() !== "export_id,sha256s"
+          || !Array.isArray(request.sha256s) || request.sha256s.length < 1
+          || request.sha256s.length > 2) {
+        throw new Invalid("an export's chunks are its export_id and one or two sha256s");
+      }
+      this.#exports.named(request.export_id, clock());
+      return this.#files.storedChunks(request.sha256s);
+    });
+    const bytes = await this.#files.fetch(wanted.map((sha256) => ({ sha256 })));
+    return { chunks: wanted.map((sha256, at) => ({
+      sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
+  }
+
+  /** An export ended: its id names it no longer. */
+  exportEnd(binding: Binding, request: { export_id: string }): Promise<{ ended: boolean }> {
+    return this.#quiet(() => {
+      this.#owner(binding, "reduce", "end its export");
+      return { ended: this.#exports.end(request?.export_id) };
+    });
+  }
+
+  /**
+   * A key rotation's sweep for this owner (`files/src/datakey.ts`, tasks.md): its wrapped
+   * data key, and every nightly manifest root it keeps, wrapped again under the files
+   * keyring's active kid; an idle owner's too, since nothing else rewrites its root. The
+   * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is.
+   */
+  async dataKeyRewrap(binding: Binding): Promise<{ rewrapped: boolean; roots: number }> {
+    const days = await this.#door(() => {
+      const { caller } = this.#bind(binding, "admission");
+      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
+          || binding.session !== undefined || binding.source !== undefined) {
+        throw new Refused(PLATFORM_ONLY);
+      }
+      return this.#backups.manifests().map((manifest) => manifest.gen);
+    });
+    return this.#files.rewrap(days);
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------
@@ -2462,14 +2833,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * owner's namespace weakens no isolation.
    */
   async fileUploadTarget(binding: Binding, request: IntentRequest):
-      Promise<{ namespace: string; chunks: { sha256: string; size: number }[];
+      Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
                 pending: string[] }> {
     const plan = await this.#door(() => {
       this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["intent_id"]);
       return this.#files.uploadPlan(r["intent_id"]);
     });
-    return { namespace: await this.#files.namespace(), ...plan };
+    // The namespace and its wrapped data key, which only `FILES` opens (slice P, M4).
+    const { ns, key } = await this.#files.space();
+    return { namespace: ns, key, ...plan };
   }
 
   /**
@@ -3401,6 +3774,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // A body whose chunk the sweep is deleting this moment begins again once the delete
     // lands (review rvlim L5), a few times, then the refusal stands.
     let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
+    // Whose files scope the write's bodies count in: the tier's one storage number holds
+    // them, inline or placed, retention making room first (`Files.held`).
+    let writer = "owner";
     for (let tries = 1; first === undefined; tries++) {
       try {
         first = await this.#door(():
@@ -3409,8 +3785,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           if ("done" in prepared) {
             return { done: located(prepared.done) };
           }
+          writer = prepared.writer;
           const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
-          return placing === null ? { done: located(act(null)) } : { placing };
+          return placing === null ? { done: located(this.#files.held(writer, () => act(null))) }
+            : { placing };
         });
       } catch (error) {
         if (!(error instanceof Refused) || error.message !== CHUNK_DELETING
@@ -3426,7 +3804,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } else {
       const placed = await this.#bodies.send(first.placing);
       try {
-        done = await this.#door(() => located(act(placed)));
+        done = await this.#door(() => located(this.#files.held(writer, () => act(placed))));
       } finally {
         await this.#bodies.release(placed);
       }
@@ -3579,6 +3957,81 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#ring(account, r["collection"] as string, before);
       return cleared;
     });
+  }
+
+  /**
+   * A change to the sync's ignore list, in its own unit: a receipt and one notice naming
+   * who changed it (the owner, an agent's run, or an outside client), and, when a line it
+   * adds stops files the owner already keeps from syncing their changes, how many and which.
+   */
+  #syncIgnoreChanged(present: boolean, now: number,
+                     change: { writer: string; content_id: string | null; size: number }): void {
+    const outcome = present ? "changed" : "removed";
+    const who = this.#writerNamed(change.writer);
+    this.#policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
+    let held = "";
+    if (present && change.content_id !== null) {
+      // Whoever wrote it, its new lines are read (a set's work, the list at most an inline
+      // file), never matched against the owner's files here.
+      const lines = (bytes: Uint8Array | null) => bytes === null ? null
+        : ruleLines(new TextDecoder().decode(bytes).split("\n"));
+      const after = lines(this.#files.inlineOf(change.content_id));
+      const before = this.#files.contentBefore(SYNC_IGNORE, this.#files.lastVersion(SYNC_IGNORE));
+      const was = new Set(before === null ? [] : lines(this.#files.inlineOf(before.content_id))
+        ?? []);
+      const defaults = new Set(DEFAULT_IGNORES);
+      if (after === null || after.some((line) => !was.has(line) && !defaults.has(line))) {
+        held = " Its new lines may hold back files you keep from syncing their changes; " +
+          "each sandbox sync reports the files they hold back.";
+      }
+      // Lines past a ceiling are not applied: said here, never in silence.
+      const raw = this.#files.inlineOf(change.content_id);
+      const past = raw === null ? [] : unappliedLines(new TextDecoder().decode(raw).split("\n"));
+      const states = past.filter((each) => each.reason === "states");
+      if (states.length > 0) {
+        held += ` ${states.length} line${states.length === 1 ? " is" : "s are"} past the ${
+          AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
+          `may take together, so not applied: the files they name go on syncing (${
+            states.slice(0, 3).map((each) => each.line).join(", ")}${states.length > 3
+            ? ", …" : ""}).`;
+      }
+      if (change.size > LIST_BYTES) {
+        held += ` The list past its ${LIST_BYTES.toLocaleString("en")} bytes is not applied: ` +
+          "the files those lines name go on syncing.";
+      }
+      // The owner's own sandbox, whose mirror is the owner's whole tree, adds what its sync
+      // agent counted (`sync.ts`); an outside client's sees only its part, so its count is
+      // never given, and no count ever takes the sentence away.
+      const synced = this.#heldBack;
+      if (synced !== null && /^lease:[0-9]+$/.test(change.writer) && synced.kept > 0) {
+        held += ` In the sync that wrote it, its lines hold back ${synced.kept} file${
+          synced.kept === 1 ? "" : "s"} you keep (${synced.changed} with changes in the ` +
+          "sandbox): your files keep the version they have, and each sync reports them.";
+      }
+    }
+    this.#notices.add("sync_ignore_changed", `${SYNC_IGNORE} was ${outcome} by ${who}: what ` +
+                        `the sandbox keeps out of your files follows it.${held}`, now);
+  }
+
+  /**
+   * Who a file change's writer is, in words the owner reads: the owner; the agents whose
+   * runs hold the owner's sandbox lease it was synced under; or an outside client by name.
+   */
+  #writerNamed(writer: string): string {
+    const epoch = /^lease:([0-9]+)$/.exec(writer)?.[1];
+    if (epoch !== undefined) {
+      // The agents named at most three, so the receipt stays its size.
+      const agents = this.#runs.agentsAt(Number(epoch), 4);
+      return agents.length === 0 ? "a run in your sandbox"
+        : `a run of your agent${agents.length === 1 ? "" : "s"} ${agents.slice(0, 3).join(", ")}${
+          agents.length > 3 ? " and others" : ""}`;
+    }
+    const client = /^client:(.+)$/.exec(writer)?.[1];
+    if (client !== undefined) {
+      const name = this.#grants.name(client);
+      return `the outside client ${name !== "" ? `"${name}"` : client.slice(0, 12)}`;
+    }
+    return writer === "owner" ? "you" : writer;
   }
 
   // -- FILES: the owner's file tree (plan §6) --------------------------------------
@@ -4309,14 +4762,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
     try {
-      if (answer.mail === null) {
-        this.#ledger.post({ native: answer.agent }, `dm:${nativeId(answer.agent)}`, answer.run,
-                          answer.result, null, clock(), authority, placed,
-                          authority === null ? "owner" : `client:${authority.client}`);
-      } else {
-        this.#ledger.answer({ native: answer.agent }, answer.mail, answer.run, answer.result,
-                            clock(), authority, placed);
-      }
+      // The reply is the owner's agents' content: held to the tier's storage too.
+      this.#files.held("owner", () => {
+        if (answer.mail === null) {
+          this.#ledger.post({ native: answer.agent }, `dm:${nativeId(answer.agent)}`,
+                            answer.run, answer.result, null, clock(), authority, placed,
+                            authority === null ? "owner" : `client:${authority.client}`);
+        } else {
+          this.#ledger.answer({ native: answer.agent }, answer.mail, answer.run,
+                              answer.result, clock(), authority, placed);
+        }
+      });
     } catch (error) {
       if (!(error instanceof Refused || error instanceof Invalid)) {
         console.error("a mail's reply failed in the ledger; the run's settle stands");
@@ -4324,6 +4780,222 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#notices.add("mail_reply_refused", `${answer.agent}: ${
         error instanceof Error ? error.message : "the ledger failed"}`, clock());
     }
+  }
+
+
+  // -- THE VENDOR'S OWN SIGN-IN, inside a sandbox (slice SIGNIN; `signins.ts`) -----------
+
+  /** Whether `id` is a live sign-in's: an app socket may watch it (the owner's own). A read. */
+  #signinOwned(id: unknown): boolean {
+    if (typeof id !== "string" || !SIGNIN_ID.test(id)) {
+      return false;
+    }
+    try {
+      this.#signins.get(id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** In a unit: a lease no run and no sign-in holds now given back, as a settle gives it. */
+  #leaseFreed(leaseId: string, epoch: number): void {
+    if (this.#runs.liveRuns().some((run) => run.lease_id === leaseId)
+        || this.#signins.holds(leaseId)) {
+      return;
+    }
+    if (this.#files.leaseRelease(leaseId, epoch).released) {
+      this.#egress.end("lease", (live) => live.lease === leaseId);
+      queueMicrotask(() => void this.#sandboxRelease(leaseId));
+    }
+  }
+
+  /**
+   * Begin the vendor's own sign-in to `engine` (`mode: "in"`), or its sign-out (`"out"`),
+   * inside the owner's own sandbox or one client's (`authority`, that client's id: a login is
+   * never copied between sandboxes). The owner's own door, on its own account: the object
+   * opens that sandbox's lease with no run (or joins the live one), and the sandbox Worker
+   * starts the record's `cli.login` there (`SandboxService.signin`). The answer is the
+   * sign-in's id, which the owner's app watches on its socket (`ta.signin` frames: the
+   * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
+   * a pasted code), or the code the Worker answered (`sandbox_waiting`, ...).
+   */
+  async signinStart(binding: Binding, request: SigninStartRequest):
+      Promise<SigninView | { started: false; code: string }> {
+    const begun = await this.#door(() => {
+      this.#owner(binding, "work", "sign in inside a sandbox");
+      if (this.env.SANDBOX === undefined) {
+        throw new Refused(SANDBOX_ABSENT);
+      }
+      const r = runFields(request, ["engine"], ["authority", "region", "mode"]);
+      const rec = typeof r["engine"] === "string" ? bundledSources().get(r["engine"]) : undefined;
+      const cli = rec?.cli;
+      if (rec === undefined || cli === undefined || rec.unwired !== undefined
+          || cli.login === undefined || !cli.credential.includes("vendor_login_in_sandbox")) {
+        throw new Invalid("a sign-in names an engine that signs in with the vendor's own login");
+      }
+      const mode = (r["mode"] ?? "in") as SigninMode;
+      if (mode !== "in" && mode !== "out") {
+        throw new Invalid("a sign-in's mode is in or out");
+      }
+      // A sign-in sits behind its source's switch; a sign-out never does, so a login is
+      // always removable (review H1).
+      if (mode === "in" && !switchedOn(this.#storage, binding.signins, clock()).has(rec.id)) {
+        throw new Refused(SIGNIN_OFF);
+      }
+      const regions = cli.regions === undefined ? [] : Object.keys(cli.regions);
+      const region = r["region"] ?? null;
+      if (mode === "in" ? (regions.length === 0 ? region !== null
+                                                : !regions.includes(region as string))
+          : region !== null) {
+        throw new Invalid(regions.length === 0 ? "this sign-in takes no region"
+          : `this sign-in takes the owner's choice of region: ${regions.join(", ")}`);
+      }
+      const authority = signinAuthority(r["authority"]);
+      if (authority !== OWNER_AUTHORITY && !this.#grants.live(authority)) {
+        throw new Refused("no such client: a client's own sandbox is signed in for a client " +
+                          "the owner has connected");
+      }
+      const now = clock();
+      this.#signins.lost(now, new Set(this.#files.liveLeases(now).map((each) => each.lease_id)));
+      const live = this.#files.sandboxLease(now, authority);
+      const opened = live === null ? this.#openLease(this.#ownerName, now, authority) : null;
+      const lease = live ?? opened!.lease;
+      const row = this.#signins.begin(authority, rec.id, mode, region as string | null,
+                                      { lease_id: lease.lease_id, epoch: lease.epoch }, now);
+      return { row, opened, region: region as string | null,
+               lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
+    });
+    let answer: Started | null = null;
+    try {
+      answer = started(await this.env.SANDBOX!.signin(this.#ownerName(), {
+        id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
+        authority: begun.row.authority, lease: begun.lease,
+        tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
+        urls: { events: `${EGRESS_ORIGIN}/signin/${begun.row.id}/events`,
+                signin: runUrls(`run_${"0".repeat(32)}`, "0".repeat(64)).signin } }));
+    } catch {
+      console.error("a sign-in's start had no answer");
+      answer = null;
+    }
+    if (answer?.started === true) {
+      return signinView(begun.row);
+    }
+    await this.#door(() => {
+      this.#signins.end(begun.row.id);
+      this.#leaseFreed(begun.lease.lease_id, begun.lease.epoch);
+    });
+    return { started: false, code: answer === null ? "start_lost" : answer.code };
+  }
+
+  /**
+   * The runner's frames of a sign-in (`ta.signin`: its state, the vendor's URL and code),
+   * on the egress host by the egress token and the runner's secret of the live lease that
+   * holds it: the latest prompt kept, the lease renewed (its beat), each frame relayed to the
+   * owner's app sockets on the sign-in's id; its end ends it, and the lease goes once nothing
+   * holds it.
+   */
+  async signinEvents(binding: Binding, request: SigninEventsRequest):
+      Promise<{ accepted: number; ended: boolean }> {
+    const { row, ended, stopped, events, frames } = await this.#door(() => {
+      this.#bind(binding, "reduce", "egress");
+      const lease = this.#runner(binding);
+      if (lease === null) {
+        throw new Refused(RUN_ENDED);
+      }
+      const r = eventsRequest({ frames: request.frames, ...(request.end === undefined ? {}
+        : { end: request.end }) });
+      const now = clock();
+      const done = this.#signins.frames(request.id, lease, r.frames.map((frame) => frame.event),
+                                        r.end !== null, now);
+      this.#files.leaseRenew(lease.lease_id, lease.epoch);
+      if (done.ended) {
+        this.#leaseFreed(lease.lease_id, lease.epoch);
+      }
+      return { ...done, frames: r.frames };
+    });
+    // Only what the trusted side kept: each frame's own, checked event.
+    const last = frames.at(-1);
+    this.#relay.relay(row.id, events.map((event, i) => ({
+      v: FRAME_VERSION, run: row.id, seq: (last?.seq ?? 0) - events.length + i + 1,
+      at: last?.at ?? clock(), kind: "event" as const, event })));
+    if (ended) {
+      this.#relay.settled(row.id);  // its tail goes with it
+    }
+    if (stopped) {
+      // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
+      await this.env.SANDBOX?.signinCancel(this.#ownerName(), { authority: row.authority,
+                                                                id: row.id })
+        .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
+    }
+    return { accepted: frames.length, ended };
+  }
+
+  /**
+   * The code the vendor's page showed the owner, pasted back: to the sign-in's CLI's stdin
+   * (`SandboxService.signinInput`). The owner's own door.
+   */
+  async signinCode(binding: Binding, request: SigninCodeRequest):
+      Promise<{ delivered: boolean }> {
+    const { row, code } = await this.#door(() => {
+      this.#owner(binding, "work", "sign in inside a sandbox");
+      const r = runFields(request, ["id", "code"]);
+      const code = pastedCode(r["code"]);
+      const row = this.#signins.wantsCode(r["id"], clock());
+      if (!switchedOn(this.#storage, binding.signins, clock()).has(row.engine)) {
+        throw new Refused(SIGNIN_OFF);
+      }
+      return { row, code };
+    });
+    const sandbox = this.env.SANDBOX;
+    if (sandbox === undefined) {
+      throw new Refused(SANDBOX_ABSENT);
+    }
+    return sandbox.signinInput(this.#ownerName(), { authority: row.authority, id: row.id,
+                                                    code });
+  }
+
+  /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
+  async signinCancel(binding: Binding, request: SigninRequestById):
+      Promise<{ cancelled: boolean }> {
+    const row = await this.#door(() => {
+      this.#owner(binding, "reduce", "stop a sign-in");
+      return this.#signins.get(runFields(request, ["id"])["id"]);
+    });
+    const sandbox = this.env.SANDBOX;
+    if (sandbox === undefined) {
+      throw new Refused(SANDBOX_ABSENT);
+    }
+    return sandbox.signinCancel(this.#ownerName(), { authority: row.authority, id: row.id });
+  }
+
+  /**
+   * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its
+   * runner last reported it (never a credential). The owner's own door.
+   */
+  signinList(binding: Binding): Promise<{ signins: SigninView[];
+                                           engines: ReturnType<Runs["signins"]> }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "see its sign-ins");
+      const now = clock();
+      this.#signins.lost(now, new Set(this.#files.liveLeases(now).map((each) => each.lease_id)));
+      return { signins: this.#signins.list().map(signinView), engines: this.#runs.signins() };
+    });
+  }
+
+  /**
+   * The caller's past runs, newest first, a page at a time (`before`, the last page's
+   * `next`): the owner's every run, an outside client's its own alone, as their receipts show
+   * them (the result is the run's own door's, `agentStatus`).
+   */
+  runList(binding: Binding, request: RunListRequest):
+      Promise<{ runs: RunListed[]; next: number | null }> {
+    return this.#door(() => {
+      const account = this.#account(binding, "read");
+      this.#runDoor(account, null, null);
+      const r = runFields(request, [], ["before", "limit"]);
+      return this.#runs.list(account.origin?.client ?? null, r["before"], r["limit"]);
+    });
   }
 
   /**
@@ -4523,6 +5195,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         session_id: admitted.session_id, prompt: admitted.prompt, unattended,
         authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
         network: admitted.network, config: admitted.config,
+        route: sealRoute(this.env.ROUTING_MAC_KEY, { owner: this.#ownerName(),
+                                                     authority: admitted.authority }),
         urls: runUrls(admitted.run, admitted.secret) }));
     } catch {
       console.error("a run's start had no answer; it is settled unknown");
@@ -4647,6 +5321,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
+   * The switched-on sign-ins, read by the lane itself from the control record the object
+   * binds (`CONTROL`), and kept (review N1): so a source switched off stops powering the
+   * lane's runs (a schedule's, a mail's, a waiting one's) at its next pass, though the owner
+   * makes no door call (`ControlGate.signins`, fail-closed).
+   */
+  async #laneSignins(): Promise<void> {
+    const on = await this.#control().signins();
+    await this.#door(() => switchedOn(this.#storage, on, clock()));
+  }
+
+  /**
    * The `runs` lane's pass: runs whose runner was lost settled `unknown`; then each waiting
    * run whose turn came started, oldest first, through the same admission as a door's (one
    * its turn refuses settles `failed`, the refusal in the owner's notices); then each mail
@@ -4655,6 +5340,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * on its row and in the owner's notices, never thrown.
    */
   async #runsPass(_now: number, until: number): Promise<void> {
+    await this.#laneSignins();
     await this.#door(() => this.#runs.lost(clock()));
     while (clock() < until) {
       const waiting = await this.#door(() => {
@@ -4825,7 +5511,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#owner(binding, "read", "open an app socket");
       const r = runFields(request, ["conversation_id"]);
       const conversation = r["conversation_id"];
-      if (!this.#runs.owns(conversation, null)) {
+      if (!this.#runs.owns(conversation, null) && !this.#signinOwned(conversation)) {
         throw new Refused(TICKET_REFUSED);
       }
       const grant = binding.grant;
@@ -4878,7 +5564,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       throw new Invalid("an app socket carries no session");
     }
     const ticket = this.#tickets.consume(hash, conversation, clock());
-    if (!this.#runs.owns(conversation, null)) {
+    if (!this.#runs.owns(conversation, null) && !this.#signinOwned(conversation)) {
       throw new Refused(TICKET_REFUSED);
     }
     return { v: 1, owner: account.owner, conversation, grant: ticket.grant,
@@ -5151,9 +5837,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#syncer(binding, "work", request);
       }
       const r = fileFields(request, ["lease_id", "epoch", "ops"]);
-      return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
-                                      ops: r["ops"] },
-                                    (authority) => this.#grants.full(authority));
+      this.#heldBack = heldBackOf(r["ops"]);
+      try {
+        return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
+                                        ops: r["ops"] },
+                                      (authority) => this.#grants.full(authority));
+      } finally {
+        this.#heldBack = null;
+      }
     });
   }
 
@@ -5167,8 +5858,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       this.#syncer(binding, "work", request);
       const r = fileFields(request, ["lease_id", "epoch", "size", "chunks"]);
-      return this.#files.begin(r["size"], r["chunks"],
-                               this.#files.syncWriter(r["lease_id"], r["epoch"]));
+      return this.#files.syncBegin(r["lease_id"], r["epoch"], r["size"], r["chunks"]);
     });
   }
 
@@ -5185,5 +5875,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return fields;
     });
     return this.#files.upload(r["intent_id"], r["chunks"]);
+  }
+
+  /**
+   * The sync agent's own upload given up (its file changed mid-sync, or was refused), let go
+   * now rather than holding the owner's storage until it expires; fenced by the live lease,
+   * and only the lease's own upload. One already gone is no error.
+   */
+  fileSyncUploadAbort(binding: Binding, request: SyncUploadAbortRequest):
+      Promise<{ aborted: boolean }> {
+    return this.#filing(() => {
+      this.#syncer(binding, "work", request);
+      const r = fileFields(request, ["lease_id", "epoch", "intent_id"]);
+      const writer = this.#files.syncWriter(r["lease_id"], r["epoch"]);
+      let owner: string | null;
+      try {
+        owner = this.#files.intentWriter(r["intent_id"]);
+      } catch (error) {
+        if (!(error instanceof Refused)) {
+          throw error;  // a malformed id: Invalid
+        }
+        owner = null;  // gone already: expired, committed or let go
+      }
+      if (owner !== null && owner !== writer) {
+        throw new Refused(SYNC_FENCED);
+      }
+      return owner === null ? { aborted: false } : this.#files.abort(r["intent_id"]);
+    });
   }
 }

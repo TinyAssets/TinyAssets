@@ -22,7 +22,9 @@
  * usable one fails loudly on its first token. The kind is in the MAC, so an egress token
  * is never a sync token, nor the reverse. One module, so the two Workers cannot disagree.
  */
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual,
+} from "node:crypto";
 
 import { principal } from "../../owner/src/text";
 
@@ -118,4 +120,58 @@ export function verifyToken(key: unknown, kind: TokenKind, token: unknown):
 /** Whether `token` has a token's form, MAC unchecked: what a placeholder check reads. */
 export function tokenShaped(token: unknown): boolean {
   return typeof token === "string" && TOKEN.test(token);
+}
+
+/** Whose sandbox an E2B event is: the owner and the authority (`owner`, or a client's id). */
+export interface SandboxRoute {
+  readonly owner: string;
+  readonly authority: string;
+}
+
+const ROUTE_DOMAIN = "ta-e2b-route-v1";
+const AUTHORITY = /^[A-Za-z0-9._:-]{1,64}$/;
+
+/** The route key: the routing key's own, apart from every token's by its domain. */
+function routeKey(key: unknown): Buffer {
+  return createHmac("sha256", keyBytes(key)).update(ROUTE_DOMAIN).digest();
+}
+
+/**
+ * The sandbox's route, sealed (AES-256-GCM, a fresh nonce) for E2B's metadata (slice P): the
+ * owner object seals it on each start (`SandboxStart.route`), the sandbox Worker sets it on
+ * the sandbox it creates (`ta_route`), and E2B echoes it on every lifecycle event, which the
+ * doors open to reach that owner's object. E2B learns no owner id from it.
+ */
+export function sealRoute(key: unknown, route: SandboxRoute): string {
+  principal(route.owner);
+  if (!AUTHORITY.test(route.authority)) {
+    throw new Error("a sandbox's authority is owner or a client's id");
+  }
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", routeKey(key), nonce);
+  const body = Buffer.concat([cipher.update(JSON.stringify([route.owner, route.authority]),
+                                            "utf8"), cipher.final()]);
+  return Buffer.concat([nonce, body, cipher.getAuthTag()]).toString("base64url");
+}
+
+/** A sealed route opened, or null for anything another key or a changed byte made. */
+export function openRoute(key: unknown, sealed: unknown): SandboxRoute | null {
+  const bytes = typeof sealed === "string" && /^[A-Za-z0-9_-]{40,2048}$/.test(sealed)
+    ? Buffer.from(sealed, "base64url") : null;
+  if (bytes === null || bytes.byteLength < 12 + 16 + 2) {
+    return null;
+  }
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", routeKey(key), bytes.subarray(0, 12));
+    decipher.setAuthTag(bytes.subarray(bytes.byteLength - 16));
+    const plain = Buffer.concat([decipher.update(bytes.subarray(12, bytes.byteLength - 16)),
+                                 decipher.final()]).toString("utf8");
+    const [owner, authority] = JSON.parse(plain) as [unknown, unknown];
+    if (typeof owner !== "string" || typeof authority !== "string" || !AUTHORITY.test(authority)) {
+      return null;
+    }
+    return { owner: principal(owner), authority };
+  } catch {
+    return null;
+  }
 }

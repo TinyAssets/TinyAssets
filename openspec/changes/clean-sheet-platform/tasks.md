@@ -521,6 +521,69 @@ account and no deploy.
   (`doors/src/pages.ts`). `/app/signed-in` clears its code the same way. Proved in Chromium
   (`doors/test/app.e2e.mjs`): the instrumented `replaceState` saw the fragment while the
   page held only that script, the finish carried no referrer, the connect committed.
+- [x] Slice SIGNIN: subscription sign-in inside the sandbox, and the past runs.
+  - The flow, as data from each record's `cli.login`, no vendor's name in code: the owner's
+    `signin/start` (its own door; the owner's own sandbox or one client's, for that client)
+    opens the sandbox's lease with no run (or joins the live one) and the sandbox Worker
+    starts the record's login there (`ta-runner login-launch`) as a pool user, on a terminal
+    of its own (util-linux `script` in the VM, so the raw terminal never leaves it), its home
+    from the engine's store. Only the record's shapes leave the VM: the record's pinned page
+    (`cli.login.url`: its hosts among the login hosts and the chosen region's, its path, its
+    fixed parameters exactly, its free ones unreserved values, no other parameter, so no other
+    OAuth client's page and no redirect chain), a device code of at most 16 letters, digits
+    and hyphens; a credential-shaped value is refused as a second line, in the VM (with the
+    stores' secrets) and on the trusted side. The owner's object checks each prompt again
+    outside the VM (`signinShape`) before it keeps or relays it, and stops a sign-in whose
+    prompt is not the vendor's (a hijacked engine shows no look-alike page). Frames carry a
+    sign-in's fixed states only (`SIGNIN_STATES`, a schema CHECK too), the URL and code, and a
+    refusal's fixed reason (`SIGNIN_REFUSALS`), which the app says in plain words: no text
+    the VM chose leaves it. Frames go to the app's socket by the sign-in's id (`ta.signin`),
+    the app showing the vendor's page's host in words; a pasted code (one line, at most a
+    Linux terminal line, 4095) goes on a door held to the owner's session, only to a sign-in
+    whose record takes one and that is showing its prompt, through the Worker's upload, read
+    and deleted at once (dropped if the hand-over fails, and any left by a pause deleted by
+    `prepare` at the resume), over a socket to that login's stdin alone, never logged or
+    stored, and refused once the login ended. The end: the secrets kept in the engine's
+    store, presence reported (`status_argv`, or `state_checks` for a record with none). A
+    sign-out runs the record's `logout_argv` first, then deletes its `secret_paths`.
+  - An open sign-in's bound is each record's `cli.login.expires`, cited: Codex 900 s (its
+    CLI's own text), Gemini 300 s and Kimi 900 s (their pinned CLIs' own timers): the
+    vendors' own. Claude's 600 s is the platform's own bound on an open sign-in (from its
+    start, so the owner's password and 2FA too), since an open sign-in keeps a metered
+    sandbox up: Anthropic documents none and the CLI sets no timer, and RFC 6749's 10-minute
+    code lifetime is context only (`limits-audit.md`); the time a real sign-in with 2FA takes
+    is owed to the founder's live test, and sets it if too tight. The runner stops the login there,
+    and the owner's object ends the sign-in `expired` one lease TTL past it however its
+    runner beats, stopping its CLI and freeing its lease; the app then offers to start again.
+  - A secret goes back to the store by compare-and-swap under a per-engine store generation:
+    only one the run changed, only while the store still holds the copy the run started
+    from, and only in the generation its home was made in. A completed sign-in that writes
+    new secrets, and a sign-out, each move the generation on, so a run live across one never
+    undoes it; one that only began, failed or was stopped moves nothing, so it never discards
+    a live run's refresh. A sign-out also stops that engine's live runs in the sandbox. Every
+    home's snapshot goes with the home. The store's lock names its holder with its boot (a
+    pid repeats after a reboot), is waited on without blocking the runner's heartbeats, and
+    for at most a command's bound, then the call fails loudly.
+  - Each source's sign-in sits behind its own switch in the control record (`signins`),
+    defaulting to its record's verdict on the vendor's terms for hosted use
+    (`cli.login.hosted_use`, cited): Claude Code `allowed` (on); Codex, Gemini and Kimi
+    `unclear` (off). Turning one on is the founder's call. The doors hand the switched-on
+    records with every binding, as they hand the tier numbers, and the owner's object holds
+    to them on every path: a sign-in (never a sign-out: a login is always removable), a
+    pasted code, and a run's choice of source (a named engine refused `signin_off`, never a
+    silent key; `auto` passes over a switched-off plan). The runs lane reads the control
+    record itself (`ControlGate.signins`, fail-closed) at each pass, so a source switched
+    off stops powering a schedule's or a mail's run though the owner makes no door call.
+  - A standing check: every template build ends by running each record's login up to its
+    prompt on a throwaway sandbox under the production egress allowlist (the egress door
+    alone, widened by that engine's own hosts), `ta-runner login-probe`, `build.py
+    --check-logins`, checking its pinned page and that it never sends the browser to
+    localhost.
+  - The past runs: `runs` (owner app) and `runList` (the object's door, held to the
+    caller's grant: an outside client sees its own), newest first, a page at a time.
+  - Owed: a completed sign-in on each vendor (the founder's account, his live test); the
+    region a Kimi run's provider hosts need, kept from the sign-in for its runs; "last used"
+    on the source card; an MCP tool for the past runs; resume after 14 and 30 days paused.
 - [x] The owner app, first version (slice APP), in workerd, nothing deployed. **Where it
   lives (decided):** the doors Worker serves `/app` from its own files (`doors/app/`, Workers
   Static Assets bound as `ASSETS`, the Worker first on every request, `doors/src/pages.ts`),
@@ -638,9 +701,36 @@ account and no deploy.
   are allowed. Slice L: a record may be marked
   `curated: false`, and `catalogOf` refuses any catalog serving one with OAuth beside a key
   exchange, naming the mix-up (`guards/registrations.test.ts`).
-- [ ] Append-only migrations from the first deploy: once a migration has run on a live
+- [x] Append-only migrations from the first deploy: once a migration has run on a live
   object it is never edited (G3 edited migration 6 in place only because nothing is
-  deployed), held by a guard that pins each deployed migration's text by digest.
+  deployed), held by a guard that pins each deployed migration's text by digest. Slice P:
+  `platform/owner/migrations.json` (`first_deploy`, `deployed` SHA-256s over each
+  migration's statements as the code evaluates them) and `owner/guards/migrations.test.ts`,
+  which fails a pinned migration changed or gone and anything pinned before the marker;
+  today's migrations (slice S's column folded in) squashed into one baseline, checked equal
+  to the old chain by a one-off workerd comparison. Each object's start also refuses to run
+  when a migration it applied reads differently now (`schema_digests`, Flyway's
+  `validate`), which catches what the repo's guard cannot (a hotfix branch, a revert), and
+  refuses a migration it applied whose digest row is gone (it never passes by default).
+  The lock itself only grows: the structural guard `tests/test_migration_lock_append_only.py`
+  holds `migrations.json` against `origin/main` (the base's first-deploy marker never
+  changes; the base's pins stay the head's first pins, in order), so a change that edits a
+  deployed migration and its pin together fails in review. Until the marker is set, slices
+  still edit in place.
+- [x] The deploy kit holds the migration lock (slice P, review M5-2): mark the first deploy and pin each deploy's migrations,
+  `PIN_MIGRATIONS=<commit> npx vitest run --project guards guards/migrations.test.ts` in
+  `platform/owner` (it refuses to pin a changed one), committing the lock with the deployed
+  code; and refuse to deploy the owner Worker unless the lock pins every migration it
+  ships. The exact check, run on the commit being deployed before `wrangler deploy`:
+  `node -e` reading `platform/owner/migrations.json` and the code's `MIGRATIONS` (the
+  guards project's import of `owner/src/schema.ts`), and failing unless `first_deploy` is
+  set and `deployed` equals `MIGRATIONS.map(migrationDigest)` element for element (same
+  length, same order); that is, the guard test passes and
+  `lock.deployed.length === MIGRATIONS.length`. Done: `platform/deploy/deploy.ts`
+  `lockRefusal`, checked in every mode before any change, its digests from the guards
+  project (`MIGRATION_DIGESTS`), refusing an unmarked lock, a migration unpinned, gone,
+  changed or reordered (`doors/guards/deploy.test.ts`). Today's lock is unmarked, so the
+  kit refuses until the founder pins at the first deploy's commit (the checklist).
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
   browser (RFC 8252), whose cookies are not the WebView's, so a binding cookie set in the
   WebView never comes back with the callback. **Decided (app slice, 2026-11-03, corrected
@@ -1283,9 +1373,7 @@ R, S, M and W.
     the egress door's HTTPS). `sandbox_wait` is in migration 12 itself, as slice ID's columns
     are in theirs: no workflow deploys platform/, so no object holds an older schema.
 - [ ] Owed by slice S:
-  - The vendor sign-in flow (`cli.login`): a door in the object that opens the sandbox's
-    lease with no run, the app's terminal to the CLI's prompt, and the end-of-sign-in report.
-    Needs a vendor account to verify; `signin-check` and the report at each start are built.
+  - [x] The vendor sign-in flow (`cli.login`): built by slice SIGNIN, below.
   - E2B's lifecycle webhooks as a second doorbell, so a free outside the platform rings at
     once rather than at the line's back-off: their payload and signature were not readable
     from this session (`e2b.dev` is outside its network), and registering one is a deploy act.
@@ -1416,9 +1504,40 @@ R, S, M and W.
     `baseUrl` per provider; the pi-ai key variables; `.pi/skills` loaded under `--approve`;
     `--tools`; the user-level `mcp.json` reaching the run's door over streamable HTTP; the
     prompt on stdin.
-  - **Codex:** whether `OPENAI_BASE_URL` still sets the built-in provider's base URL in
-    0.166.0, or only the `openai_base_url` config key does: the package's own README says
-    nothing, and the review found the variable only in its network-proxy table.
+  - [x] **Codex:** whether `OPENAI_BASE_URL` still sets the built-in provider's base URL in
+    0.166.0: no, removed in 0.119.0 (`codexurl_research.md`). Built (on `platform-signin`):
+    Codex's key run reaches the door through a custom model provider in its API-key argv
+    (`-c model_provider="tinyassets"`, `model_providers.tinyassets.{name,base_url,env_key,
+    wire_api}`, `env_key` `CODEX_API_KEY`, `wire_api` `responses`), its `api_key_env`
+    base-URL variable null. The checker holds four rules: a null base-URL variable needs a
+    declared channel (a file template or the API-key argv); `{base_url}` only where only a
+    key run reads it; joined to its key, never bare; and no argument a signed-in run gets is
+    endpoint- or provider-shaped. An API-key run's home carries the store's sessions and
+    never its secrets (a vendor sign-in's `auth.json` stays out of a key run's reach). The
+    route probe (`ta-runner route-probe`, `build.py` after every build, on a sandbox whose
+    network denies all but the pinned resolver): every keyed engine on every provider it
+    keys, run as a run runs it with its door on a loopback capture server at the real path
+    and a fake sign-in seeded in the store, passes only if the first model request reached
+    the door's path with the run's key and secret, nothing connected outside (`strace`), and
+    no request carried the fake sign-in; the tag is printed only then. Review round 3: the
+    capture server answers each model request with a minimal valid reply in its sealed
+    API's wire format (Messages, Responses, Chat Completions, Generative Language), so each
+    CLI completes a turn; the probe then resumes it (its home made again from the store) and,
+    where the record says how (`cli.compaction`: Codex's `model_auto_compact_token_limit=1`,
+    its compact prompt's marker), compacts first, and judges every request of both turns,
+    not only the first. A passing tag is recorded with its checks' results in
+    `sandbox/template/passed.json`; the template guard fails CI when the pinned tag has no
+    passing record covering every record's login and route. The endpoint rules name
+    `provider` and `proxy` too (a signed-in run's files and argvs; every run's variables:
+    `HTTPS_PROXY`, `ALL_PROXY`), and Codex's `--oss`. Review round 4: no record sets a
+    variable that loads code into a CLI's process (`NODE_OPTIONS`, `LD_*`, `DYLD_*`, `BUN_*`,
+    `PYTHON*`, Perl's, Ruby's, the JVM's, `BASH_ENV`); the pass record must show a record's
+    compaction where it has `cli.compaction`; a resume passes only if its requests carry the
+    first turn's own word. Left for later: the run secret into a header
+    (`env_http_headers`).
+  - Known gap (review round 3, L-c): the route probe traces `connect()` alone. An unconnected
+    UDP `sendto` or an io_uring connect would not show; none of the pinned CLIs uses either
+    today, and the probe's sandbox denies every outbound address but the resolver anyway.
 - [x] Code mode's VM in the hooks Worker (H0, narrowed by D): `Hooks.codemodeExecute(name,
   request, exchange)` runs one execution in its `CodemodeSandbox` (a
   `CodemodeSandboxDurableObject` subclass with its interrupt budget and memory), handing
@@ -1608,7 +1727,7 @@ R, S, M and W.
     `/scratch/<agent>`). `bundle.mjs` makes `starter.json`, which the owner's object
     carries; the starter guard holds it to its sources and every file to every engine's
     rules (Agent Skills frontmatter, `AGENTS.md` plain and under Codex's 32 KiB).
-  - Seeding and updates (`owner/src/starter.ts`, migration 15, the `starter` lane): an
+  - Seeding and updates (`owner/src/starter.ts`, migration 3, the `starter` lane): an
     admitted owner with nothing reconciled is seeded as the owner's own writes (history op
     `starter`), a receipt a path, `agent.json` last; a newer carried version replaces
     unedited managed files, writes `<file>.ta-new` beside edited ones with one notice,
@@ -1649,7 +1768,7 @@ R, S, M and W.
     days, then ready for the automated review, or the founder asked when hidden text could
     widen what agents do; nothing merges on a version number or by the workflow.
   - Claude Code's auto memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its record), which
-    moved the template's tag: rebuilt and pinned live, `tinyassets-sandbox:s86a98bb4c52cd951`.
+    moved the template's tag: rebuilt and pinned live, `tinyassets-sandbox:sc0a20c7fb88fb4d1` (after the merge with STORE).
   - Live, in three throwaway sandboxes from it (about 7 sandbox-minutes, each killed and
     gone): each engine's CLI, from `main`'s directory with the starter projected, against a
     local capture server as its base URL with a dummy key. Claude Code 2.1.309, Codex
@@ -1677,7 +1796,8 @@ R, S, M and W.
     user token only in the steps that push or call `gh`, and its loops touching only its
     own `okf-watch/` branches (R2-M2, R2-L3).
   - Review round 3 (rvsa, APPROVE on the merge of main): merged slice L (its migration 15;
-    the starter's is 16 here, 18 once SIGNIN's 16 and STORE's 17 land before it); SEEDED test owners
+    the starter's then after it; after P squashed the baseline, it is 3, after STORE's 2);
+    SEEDED test owners
     admitted as L's sign-up admits them; a retired path's unadopted proposal withdrawn
     (F3-retired-proposal); the race-free seed wait in the suite (F3-seed-wait); the bundle
     guard says loudly when main's history is missing.
@@ -1741,10 +1861,13 @@ R, S, M and W.
     the founder's live test.
   - Slice L's explicit admit (pending owners) must re-sync the schedule, so a new owner's
     `starter` lane is armed the moment it is admitted.
-  - Merges: migration 15 here and slices P, L, SIGNIN and STORE's own new migrations are
-    numbered in landing order; `claude-code.json` and the other records changed on
-    SIGNIN/STORE move the template's tag again, so whichever lands last rebuilds and
-    pins it.
+  - Merged after STORE (main `9c0c7d038`: P's squashed baseline, STORE's migration 2): the
+    starter's migration is 3; `starter_receipts` and `starter_state` are exported, with
+    capture triggers (`LOGGED`) and their owner-bound terms (361,189 bytes, inside the
+    starter's quarter of the room under half; no `REPLACE`, upserts only); the seed writes
+    through the files plane as the owner, so its files count in the one storage number,
+    sit in every generation, and a seed refused `storage_full` stops, tells the owner once
+    and is tried again. The template is rebuilt and pinned once, after this merge.
   - The founder's live test (8): onboarding writes `SOUL.md` and `USER.md`; "remember X"
     lands in knowledge and is recalled on another engine; the brief made by the agent
     itself posts to `dm:main`; a main agent finds the knowledge with `search` and `fetch`
@@ -1808,14 +1931,156 @@ R, S, M and W.
   awaited `deleteAll`). The design was: top-level `ThreadStore` objects hosted by
   `ThreadHost`, which slice D deleted with the in-object loop; Q1's ceiling and Q8's
   window still hold for the owner's object.
-- [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
-  probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
-  does not emulate it); a live probe of the files Worker's create-once put, which
-  miniflare passed but the live bucket must also: `onlyIf: { etagDoesNotMatch: "*" }`
-  as a wildcard, and which R2 checks first when a key exists and the bytes miss the
-  `sha256` (the precondition or the digest), since the Worker's recheck of an existing
-  key reads either answer; the manifest tables in the nightly export; each droplet volume
+- [x] Per-owner SSE-C data keys on every chunk get and put (slice P, in workerd): Cloudflare
+  documents `ssecKey` on the Workers binding's `get`, `put` and `createMultipartUpload`
+  (r2/examples/ssec, the Workers API reference, read 2026-11-03), so it is SSE-C, not
+  client-side encryption. Each owner's data key is 32 random bytes the files Worker mints
+  for its namespace and the object keeps only wrapped (`file_space.data_key`: AES-256-GCM
+  under HKDF-SHA256 of the files Worker's own `FILES_KEYRING`, bound to the namespace and
+  kid; `files/src/datakey.ts`); every put and get presents it, a keyless or foreign one is
+  refused before R2; an existing key is checked by a get under the key, never a keyless
+  `head`. Erasure deletes the nightly manifests (each carries the wrapped key) before the
+  wipe, so a stray chunk is unreadable. Miniflare ignores `ssecKey`, so the files tests
+  hold the Worker to R2's documented answers (`files/test/ssec.ts`). A chunk's R2 name is
+  HMAC-SHA256 of its hash under a key derived from the data key (`chunkName`), so a listing
+  of the bucket confirms no known file; a manifest's root keeps the wrapped key in the clear
+  and its part list sealed under the data key (review L5).
+- [ ] Owed live (slice L): a probe of `ssecKey` with `onlyIf` and `sha256` on a put, of a get
+  with another key and with none on an SSE-C object, and of a ranged SSE-C get. Should SSE-C
+  not combine with the create-once put or R2's `sha256`, set `FILES_CIPHER` to `aes-gcm`: the
+  fallback (AES-256-GCM per object in the files Worker, `files/src/cipher.ts`) is built and
+  tested, and the config guards take either; the files
+  Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }` as a
+  wildcard, and which R2 checks first when a key exists and the bytes miss the `sha256`);
+  `FILES_KEYRING` generated and set at the files Worker's deploy. Each droplet volume
   imported into the manifest and bucket in the cutover window (9).
+- [x] Key rotation's re-wrap (review M4): the files Worker's `rewrapKey` (the same data key
+  wrapped again under the active kid) and `rewrapManifestRoot` (a root's wrapped key
+  re-wrapped in place, only if the root did not change meanwhile); `putManifestRoot` always
+  writes the active kid. The owner's `dataKeyRewrap` (the platform's door, as
+  `admissionSet`) re-wraps `file_space.data_key` and then every finished manifest root, an
+  idle owner's too, so no copy under a retiring kid outlives the sweep.
+- [ ] Owed by slice L's admin path, at the first rotation: add the new kid as active, call
+  `dataKeyRewrap` for every owner, and remove a kid from `FILES_KEYRING` only after every
+  owner's call has answered (the object's key and each manifest root under the new kid).
+- [x] The owner export and the nightly manifest (slice P), one artifact: a generation
+  (`backup_shape_research.md` (d); `owner/src/backup.ts`, `changelog.ts`), format
+  `tinyassets-export` version 2 (`export.ts`). A fuzzy base copy of every row of every
+  exported table, read in bursts and put as whole-line parts, and a change log of full row
+  images captured from S while the base is read (one trigger an exported table and event,
+  `LOGGED`, in the writing unit's own transaction), shipped to R2 after every part as
+  segments (`o/<ns>/m/<gen>/l/<a>-<b>`), each recorded pending, put, then acknowledged and
+  deleted; the unit that reads the base's last page fixes E, the unit that records it turns
+  capture off, and the root names the parts, the segments through E, S and E. Read last line
+  per key wins, it is exactly the owner at E, however the owner writes meanwhile, and a crash
+  anywhere repeats only what was not acknowledged (reviews M1, N1, R4-1 to R4-3). The export
+  is a generation (the one running, the newest while nothing changed, or a new one), read by
+  a cursor of the generation and an object's index, so any cursor resumes and any number of
+  exports read at once; `owner_exports` pins its generation for the export's 7 days. Every
+  table is exported (each column decided) or kept out with its reason; credentials, hashes (a
+  policy receipt's session hash too, review M2), secrets and the wrapped key never. The one
+  bound is `LOG_BYTES` (68 MiB, a quarter of the room under the database's half): past it, or an image past
+  `IMAGE_MAX` (1.5 MiB, the widest real row's image, review L5-1), capture stops and the
+  generation fails with one notice; the write lands. A migration while a generation runs
+  gives it up with one notice (`manifest_schema`) and begins a fresh one under the new
+  schema, never mixing two; and no `REPLACE` meets an exported table (a guard), since its
+  delete fires no trigger (review L5-2). A
+  generation a pass did not finish goes on `MANIFEST_CONTINUE_S` (5 s) later. Deleted bytes
+  leave the owner's number at once, and garbage past the owner's storage figure is collected
+  early, oldest first, never a chunk the newest finished generation names while it is under
+  `MANIFEST_PROTECT_S` (2 days) old, and garbage waiting on a failed delete's retry never
+  re-arms the files lane at once (reviews H1, N2, N3). The owner alone, in its live session:
+  the owner surface's `export`, `export/chunks`, `export/end`. Nightly, only when something
+  changed (the first change sets the lane's job), so an idle owner's object is never woken
+  for it; past `MANIFEST_PARTS` objects it is given up once and the owner told.
+- [ ] Owed by slice L: a live probe of the owner's sustained write rate against the change
+  log's ship rate (R2 puts of 4 MiB segments), against `LOG_BYTES`.
+- [ ] Owed (founder's cost decision): capture always on (`backup_shape_research.md` (c)): the
+  same code with the log never off, giving a recovery point of minutes instead of a night.
+  Each exported-row change then costs an image insert and a delete always: about $2 per
+  million changes (Durable Objects bill rows written at $1 a million, deletes count); a heavy
+  owner (about 12 changes a second) about $62 a month, a light one (an hour a day at one a
+  second) about $0.20; R2 at most about $1.17 a month for a put every 10 s. Today, capture only
+  during a generation costs the same heavy owner about $0.70 a month.
+- [ ] Owed by the app slice: the storage view's line "Deleted files are kept up to 30 days,
+  within your storage; past that the oldest go first.", labelled "deleted content", from
+  `storageUsage`'s `deleted_content` (`kept_bytes`, `kept_up_to_days`), and the storage
+  setting showing that a lower figure shortens recovery.
+- [ ] Owed (founder's spending decision): a manifest copy outside this account and bucket
+  (3-2-1); today's recovery point lives in the same bucket.
+- [x] Sandbox time metered per owner (slice P, `owner/src/sandbox-time.ts`). The truth is
+  E2B's: its signed lifecycle webhook (`POST /hooks/e2b/lifecycle`, `doors/src/e2b-hooks.ts`)
+  is verified by E2B's signature scheme against `E2B_WEBHOOK_SECRET`, parsed strictly and
+  routed by a sealed route the sandbox carries in its metadata (`ta_route`, `sealRoute`),
+  and each paused or killed execution's billed ms, vCPU-ms and MB-ms is counted once by its
+  `sandbox_execution_id` (a pause and a later kill may both carry it, review L1; each live
+  sandbox's last execution kept until its kill, review N4), and only while the event's own
+  signed `timestamp` is inside a day (`BILLED_WINDOW_S`), every execution counted kept that
+  long by 8 bytes of its id's digest (100,000 of them), so a replay is refused by its time
+  or its id (review L2); past that, an execution is counted anyway and tallied
+  `unverified_executions` on its day, which `sandboxDays` shows (review N5); the body is read through a byte count that stops at its bound (review L3); split
+  across UTC days. The estimate, and the fallback: the sandbox Worker
+  logs each create, resume, pause and kill (`SandboxControl`, `meter`), which the object
+  reads on its `sandbox` lane onto each run's receipt (`sandbox_s`) and each day.
+  `sandboxDays` shows both. It limits nothing.
+- [ ] Owed by slice L's deploy kit: register E2B's lifecycle webhook
+  (`POST https://api.e2b.app/events/webhooks`, events `sandbox.lifecycle.paused` and
+  `.killed`, the URL `https://tinyassets.io/hooks/e2b/lifecycle`) with a generated
+  signature secret, set as the doors' `E2B_WEBHOOK_SECRET`; and one platform-wide pull of
+  `/events/sandboxes` to catch deliveries E2B gave up on. Probe live: whether a kill of a
+  paused sandbox carries the pause's `execution` (and the same `sandbox_execution_id`), and
+  E2B's retry timing against `BILLED_WINDOW_S`.
+- [ ] Owed by slice L's erasure door (`account/erase`, which marks first and answers at the
+  mark): answer `erasureAnswer(markedAt, wipedAt)` (`owner/src/erasure.ts`, review L6):
+  `erased` once the wipe ran, and `complete_at` = `max(mark + PUT_GRACE_MS, wipe)` +
+  `RECOVERY_WINDOW_S` (30 days), so the answer at the mark already names the earliest
+  completion and a retry that wiped later names its own.
+- [x] One storage number (founder, 2026-11-03; slice P): every byte of user content counts
+  toward the tier's storage wherever it lives. The inline bodies of collection rows, their
+  history and mail are counted by triggers (`body_bytes`, owner-wide and in each writer's
+  files scope), and the bound is `stored` = chunk bytes + small files + inline bodies against
+  `max_bytes`; collection writes, posts and mail replies are held to it (`Files.held`),
+  retention first (history no row still is, then acked mail, inline or placed), then
+  `storage_full` (slice STORE's one wall). `storageUsage` (the app's `POST /app/api/storage`) answers used, the limit and
+  where it is (files, messages, collections).
+- [x] The sandbox Worker's side of `meter` (slice P, after slice S merged): `SandboxControl`
+  logs each create, resume, pause (its own, and one E2B made, as first seen) and kill (a
+  sandbox gone while it ran) with its authority and time, and drops what a read's cursor
+  passed.
+- [x] Slice STORE (founder, 2026-11-03: storage is the only wall):
+  - `storage_full`, one code and one set of words at the tier's figure, 507 at the doors;
+  - the agents' scratch on the sandbox disk (`/scratch/<agent>`), never synced or counted, kept as a cache, let go by `scratch_retention_days` and the least recently used under disk pressure;
+  - sync-out that streams, the sessions first, with the owner's `/workspace/.ta/sync-ignore`;
+  - a full disk that never loses the run.
+
+  Review round 1 (REQUEST_CHANGES), fixed: a refused upload is refused alone with the doors' whole message, the mirror saved after each committed batch, `ta.storage_full` reported once; `uploads_open` (409) apart from `storage_full`, an `upload_abort` door, a lease's open uploads aborted when it ends; "used" is what is stored; sync-in streams to a temporary file (a file past the VM's memory synced in a test); sync-out's memory independent of the path count (an on-disk mirror, a walk a directory at a time); a file's identity checked at commit; sync-ignore edits receipted and noticed once, the rule file never ignored, default patterns stopping new paths only; a linear-time matcher; the reserve let go before the sessions are staged, and only changed sessions staged; scratch stamps per agent; the superseded template tags deleted.
+
+  Verification round 2 (REQUEST_CHANGES), fixed: sessions staged by the sync mirror's hash, so one an earlier sync-out did not commit is sent again by the next run; a sync's uploads name their lease, and only those end with it, on every path that ends a lease (a new lease's taking among them), never a client's own write; each sync-ignore change's receipt and notice name who made it, and a new line that holds back kept files says how many and which, each sync-out reporting them too; a failed control read keeps the last scratch retention read, loudly; a change time within the filesystem's coarsest tick is never trusted, so the mirror's hash is of the bytes sent; the reserve's note says staging happens before the sync lock.
+
+  Verification round 3 (REQUEST_CHANGES), fixed: the sync-ignore notice never scans the owner's files in a write (a sync's write carries its sync agent's count; any other says files may be held back), the matcher a set lookup for literal lines; the agent form's subscription signed in inside the sandbox restored beside APP's filter, with `test:app` cases for both paths; a session hashed again only when its size or change time moved; a secret-refused session reported once; a client named by its display name whatever its id.
+
+  Verification round 4 (REQUEST_CHANGES), fixed: the run's heartbeat posts through sync-in and sync-out (the sync agent a child the runner waits on without blocking), so a sync longer than the lease keeps it; the matcher fast with no cap on lines (pattern lines behind a length and character check, each name and directory matched once), the reviewer's hostile lists 0.012 to 0.048 ms a path, a slow match said in the run's report; the notice's "may hold back" sentence on every added line, the sandbox's count only for the owner's own lease. Then main (slices L and SIGNIN) merged: the lease column is migration 17, and after slice P's baseline, migration 2.
+
+  Verification round 5 (REQUEST_CHANGES), fixed: pattern lines bounded together by their `?` pieces between stars, `QUESTION_PIECE_CHARS` (384, derived from the measured worst case, a name past the basic plane, at the highest `max_entries` against E2B Hobby's hour; round 6 moved it from all pattern characters, which turned off honest lines), text past the basic plane matched the same linear way, those past it not applied and said in the report and the notice; the matcher's memory bounded by its keys' bytes (16 MiB); the sync child's stdin errors handled, so a child that dies before reading its job ends the run loudly.
+
+  Verification round 7 (R6-1, research first, `matcher_research.md`): the matcher replaced by its compiled shape, indexes for lines whose cost does not grow with their count and one bit-parallel automaton for the rest, behind `AUTOMATON_STATES` (8,192) and `LIST_BYTES` (8 MiB, from the heap limit and the agent's peak measured in a sandbox); the lines read as git reads a `.gitignore` (the founder's ruling), `git check-ignore` the test oracle over GitHub's 310 templates and random lists; the automaton's step a standing check of the template build.
+
+  Verification round 8 (R7, APPROVE with fixes): the step measured on the automaton's slowest branch (`/**/` lines, `STEP_NS` 6) and the audit's arithmetic restated (both automata within the 8,192, the indexes' 184 s, the slack); a folder's Aho–Corasick depth in the cost bound, tested 2,000 folders deep; the worst memory class (heads diverging, 45.0 a list byte) recorded, so `LIST_BYTES` is 6 MiB; a file or folder whose name is not UTF-8 said in the run's report, its bytes escaped, and in the owner's notice, never synced in silence; the heartbeat test seconds long, so `platform-tests` keeps within its ten minutes.
+
+  Verification round 9 (R8): a CLI's line shaped as the runner's own event (`ta.…`, `ta_cut`) refused as `ta.cli_refused`, never posted as it, every runner event type tested forged; the unnamed-files notice in the object's own words; `platform-tests`' guard holds each leg's steps, keys and `defaults.run` exactly, the reviewer's mutations its test.
+
+  Verification round 10 (R9): no tracked `.npmrc` nor `package.json` `config` may set `script-shell`, `ignore-scripts`, `shell` or `node-options` (a guard, the reviewer's `.npmrc` its test); the wall's held bytes less the chunks the change itself moved to uploading, so a begin that reclaims history meets `storage_full`, never `uploads_open`.
+
+  Research: the STORE research and its cross-reviews. Probes:
+  - `latency-probe.md`: option A measured;
+  - `sandbox-probe.md`, "Scratch and the disk".
+- [ ] Owed by slice STORE:
+  - **Option B of the latency probe** (R2 get, put, list from an owner-shaped object) needs a token with Workers R2 Storage: Edit. The index decision (shards or R2 trees) waits on it, and the count caps stay until then. Its `probe-latency-run` branch is made again only for that run; afterwards the probe's workflow and scripts are removed.
+  - **Old versions, collection history and read mail moved to R2 segments** (mail never evicted silently), encrypted under slice P's per-owner key: after P lands. Its schema baseline and its key are the base.
+  - **Sync-in of the working set alone** (today it materializes the whole workspace), held for the scratch design.
+  - **The starter package's agent instructions** naming `$TA_SCRATCH`: slice STARTER carries the scratch guidance, in its `AGENTS.md` and its scratch skill (the run door's MCP instructions carry it today).
+  - **`linux_oracle.py`** for the scratch modes and the reserve: no Docker daemon in the build session. The runner's root tests cover the modes.
+  - **The resume after hours** with 5–10 GB of scratch.
 
 ## 7. Wakes and outside agents
 

@@ -6,6 +6,8 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { storageFull, storageFullMessage, storageFullOf } from "../src/storage-full";
+
 import {
   CHUNK_BYTES, type FileLimits, INLINE_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS,
 } from "../src/files";
@@ -13,7 +15,7 @@ import { canonical, DEFAULT_POLICY_JSON, FILE_DEFAULTS, FILE_SETTINGS } from "..
 import type { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/tier";
-import { failure, fileCounters, inFiles, sqlIn, text, TIERS } from "./support";
+import { failure, fileCounters, inFiles, laneAt, sqlIn, text, TIERS } from "./support";
 
 const W = "/workspace";
 
@@ -86,7 +88,8 @@ describe("a file quota", () => {
     await refusedWithNothingLeft(r, { max_bytes: INLINE_BYTES + 1 }, (files) =>
       files.write(`${W}/b`, new Uint8Array(INLINE_BYTES + 1).fill(2),
                   { expected: null, writer: "owner" }),
-    "file_quota: the owner's file bytes are at their quota");
+    storageFullMessage(storageFull(INLINE_BYTES + 1, INLINE_BYTES + 1, 0, INLINE_BYTES + 1,
+                                   null, null)));
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 1 }]);
   });
 
@@ -362,8 +365,9 @@ describe("a full history", () => {
   it("is armed at once by a policy write that changes retention", async () => {
     const r = await rig();
     await write(r, `${W}/a`, "1");
+    // Only the nightly manifest's job: nothing of the files' is due.
     expect(await runInDurableObject(r.stub, (_instance: OwnerDO, state) =>
-      state.storage.getAlarm())).toBe(null);
+      state.storage.getAlarm())).toBe((await laneAt(r.stub, "manifest"))! * 1000);
     await setPolicy(r, { keep_recent: 5 });
     // Due at once, the alarm runs by itself and re-marks the rows under the new policy.
     const retained = async () => (await sqlIn(r.stub, "SELECT retained_recent FROM file_space"))[0];
@@ -479,8 +483,9 @@ describe("the files policy", () => {
     await put(`${W}/a`, 1, small);
     expect((await r.stub.fileUsage(r.bind(null, { tiers: small }))).limits.max_bytes)
       .toBe(INLINE_BYTES + 1);
-    expect((await failure(() => put(`${W}/b`, 2, small))).message)
-      .toBe("file_quota: the owner's file bytes are at their quota");
+    expect(storageFullOf((await failure(() => put(`${W}/b`, 2, small))).message))
+      .toMatchObject({ limit_bytes: INLINE_BYTES + 1, tier: "free",
+                       upgrade: { tier: "paid", limit_bytes: 250_000_000_000 } });
     // The owner's own figure binds only below the tier's.
     await setPolicy(r, { max_bytes: 10 * INLINE_BYTES });
     expect((await r.stub.fileUsage(r.bind(null))).limits.max_bytes).toBe(10 * INLINE_BYTES);

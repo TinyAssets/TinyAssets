@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run --project workerd --project guards && node root-tests.mjs"
+    "test": "npm run test:workerd && npm run test:root",
+    "test:workerd": "vitest run --project workerd --project guards",
+    "test:root": "node root-tests.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.9",

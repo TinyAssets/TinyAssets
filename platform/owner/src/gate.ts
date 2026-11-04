@@ -18,6 +18,10 @@
  * refuses, loudly, any statement but a single `SELECT` (nothing after it) and any
  * `transactionSync` outside a unit (Fact 8: a write outside a unit is a crash, not a hope).
  * A unit inside another, and a unit that returns a promise, are refused the same way.
+ * A unit that wrote anything is followed, in its own transaction, by `changed`: the owner is
+ * marked changed for the nightly manifest (`backup.ts` `mark`). A `quiet` unit is one that
+ * changes nothing a manifest holds: the export's and the manifest's own bookkeeping, and a
+ * session's renewal; it marks nothing.
  */
 
 /** What the object's modules use of its storage: SQL, and `transactionSync`. */
@@ -47,15 +51,24 @@ export class WriteGate {
   readonly #raw: DurableObjectStorage;
   /** True only while a unit runs: units are synchronous, so nothing else runs meanwhile. */
   #holding = false;
+  /** Whether the unit running has written: only a unit that did is marked `changed`. */
+  #wrote = false;
+  /** Whether the unit running is `quiet`: it writes nothing a manifest holds. */
+  #quiet = false;
+  /** Run, in the unit's own transaction, after a unit that wrote. */
+  #changed: (sql: Pick<SqlStorage, "exec">) => void = () => {};
+  readonly #sql: SqlStorage;
   /** The storage as the object's modules see it: writes only inside a unit. */
   readonly storage: OwnerStorage;
 
   constructor(storage: DurableObjectStorage) {
     this.#raw = storage;
     const sql = storage.sql;
+    this.#sql = sql;
     const exec = ((query: string, ...bindings: SqlStorageValue[]) => {
       if (!READ.test(query)) {
         this.#held();
+        this.#wrote = true;
       }
       return sql.exec(query, ...bindings);
     }) as SqlStorage["exec"];
@@ -66,6 +79,11 @@ export class WriteGate {
         return storage.transactionSync(closure);
       },
     });
+  }
+
+  /** What a unit that wrote is followed by (set once, by the object). */
+  onChange(changed: (sql: Pick<SqlStorage, "exec">) => void): void {
+    this.#changed = changed;
   }
 
   #held(): void {
@@ -103,10 +121,12 @@ export class WriteGate {
     if (this.#holding) {
       throw new Error(NESTED_UNIT);
     }
+    const sql = this.#sql;
     let outcome: Outcome<T>;
     try {
       outcome = this.#raw.transactionSync((): Outcome<T> => {
         this.#holding = true;
+        this.#wrote = false;
         let value: T;
         try {
           value = unit();
@@ -114,6 +134,9 @@ export class WriteGate {
           return { error };  // committed as far as the unit wrote, then thrown below
         } finally {
           this.#holding = false;
+          if (this.#wrote && !this.#quiet) {
+            this.#changed(sql);
+          }
         }
         if (thenable(value)) {
           throw new Error(ASYNC_UNIT);  // rolls the unit back
@@ -124,5 +147,21 @@ export class WriteGate {
       return Promise.reject(error);
     }
     return "error" in outcome ? Promise.reject(outcome.error) : Promise.resolve(outcome.value);
+  };
+
+  /**
+   * A unit, as `write` runs it, that marks nothing changed: it writes only the export's or
+   * the manifest's own bookkeeping, or a session's renewal, none of which a manifest holds.
+   */
+  readonly quiet: Write = <T>(unit: () => T): Promise<T> => {
+    if (this.#holding) {
+      throw new Error(NESTED_UNIT);
+    }
+    this.#quiet = true;
+    try {
+      return this.write(unit);
+    } finally {
+      this.#quiet = false;
+    }
   };
 }

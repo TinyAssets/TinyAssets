@@ -1010,7 +1010,8 @@ describe("the owner's erasure", () => {
     const owner = `owner-${crypto.randomUUID()}`;
     const stub: DurableObjectStub<FauxOwnerDO> = env.AGENT.getByName(owner);
     const bind = (extra: Partial<Binding> = {}): Binding =>
-      ({ owner, caller: owner, origin: null, ...extra });
+      ({ owner, caller: owner, origin: null,
+         ...("sandbox" in extra ? {} : { tiers: TIERS }), ...extra });
     const { session: cookie } = await stub.sessionOpen(bind({ authenticated_at: signedIn() }));
     const session = bind({ session: cookie });
     const prepared = await stub.connectionPrepare(session, {

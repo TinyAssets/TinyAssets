@@ -57,11 +57,23 @@
  *   The rest (collections, other files, digests, runs, `code`, whose script calls are held
  *   the same way) change no agent's authority, so the owner's token suffices, as it does for
  *   a full-mode API key.
+ * - `signin/start`, `signin/code`, `signin/cancel`, `signin/list` (slice SIGNIN): the
+ *   vendor's own sign-in (or sign-out) inside the owner's own sandbox or one client's, its
+ *   prompt watched on the app socket by the sign-in's id (`agent/socket-ticket` takes it as
+ *   its `conversation_id`), a pasted code handed back, a sign-in stopped, and the sign-ins in
+ *   progress with each engine's presence.
+ * - `runs` (slice SIGNIN): the owner's past runs, newest first, a page at a time.
  *
  * Every answer but a socket's upgrade carries `SURFACE_HEADERS` (nosniff, a CSP of none).
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
+ * - `storage`: the owner's one storage number, used and left (`storageUsage`).
+ * - `export`: the owner's export manifest (`owner/src/export.ts`), streamed as
+ *   newline-delimited JSON (`exportStream`), resumable from any cursor line (it names the
+ *   export's id), ending as the owner at one moment however the owner writes meanwhile (a
+ *   generation, `owner/src/backup.ts`); `export/chunks` its chunks' bytes by hash;
+ *   `export/end` its id let go.
  * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
  *   (A6, salvaged), behind every check above, bound to the token's grant and expiry
  *   (`bindOwnerGrant`).
@@ -239,7 +251,7 @@ const fileWrite: Route = async (_env, { binding, stub }, request) => {
 };
 
 /** `sources`: what the app shows of each record; nothing sealed, no endpoint, no argv. */
-function sourceList(sources: Sources): unknown {
+function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
   return {
     sources: sources.ids().map((id) => {
       const record = sources.get(id)!;
@@ -247,6 +259,15 @@ function sourceList(sources: Sources): unknown {
         id, display_name: record.display_name, help_url: record.help_url ?? null,
         suggested: record.suggested, connect: record.connect, unwired: record.unwired ?? null,
         engines: record.engines ?? [], credentials: record.cli?.credential ?? [],
+        // The vendor's own sign-in, as the app offers it: whether there is one, and the
+        // regions the owner chooses among (their names alone).
+        signin: record.cli?.login === undefined ? null : {
+          regions: Object.entries(record.cli.regions ?? {}).map(([region, { display_name }]) =>
+            ({ id: region, display_name })),
+          // Whether the platform offers it (the control record's switch, or the verdict), and
+          // the verdict on the vendor's terms for hosted use, cited.
+          enabled: switchedOn.includes(id),
+          hosted_use: (record.cli.login as { hosted_use: unknown }).hosted_use },
       };
     }),
   };
@@ -262,6 +283,54 @@ async function ownerTool(name: string, { binding, stub }: Bound,
     return failure(404, "no such tool");
   }
   return json(200, await callDoor(stub, binding, tool, request));
+}
+
+/**
+ * The pages one export response carries before it ends with its cursor line, so one
+ * request's work in this Worker stays bounded (a technical ceiling: a request's CPU; about
+ * 4 MiB an object, 256 MiB a response). The client asks again with the last cursor line it
+ * read, which names its export_id.
+ */
+export const EXPORT_PAGES = 64;
+
+/**
+ * The owner's export, as newline-delimited JSON (`application/x-ndjson`): its generation's
+ * objects one after another, each but the last followed by its cursor line
+ * (`{"t":"cursor","cursor":...,"export_id":...}`), until the stream's `end` line,
+ * `EXPORT_PAGES`, or an object not yet written (the client asks again later). The
+ * first page is read before the response begins, so a refusal is the door's status; a
+ * page that fails after it cuts the stream short of its `end` line, and the client resumes
+ * from the last cursor it read.
+ */
+async function exportStream(_env: DoorsEnv, { binding, stub }: Bound,
+                            request: Record<string, unknown>): Promise<Response> {
+  if (Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
+    return failure(400, "an export request is at most its cursor and its export_id");
+  }
+  let page = await stub.ownerExport(binding, request as { cursor?: string | null;
+                                                          export_id?: string });
+  const exportId = page.export_id;
+  let pages = 0;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      pages++;
+      const lines = [...page.lines];
+      const next = page.next;
+      if (next !== null) {
+        lines.push(JSON.stringify({ t: "cursor", cursor: next, export_id: exportId }));
+      }
+      controller.enqueue(encoder.encode(lines.join("\n") + "\n"));
+      // An object not yet written: the response ends at its cursor, to ask again.
+      if (next === null || pages >= EXPORT_PAGES || page.pending) {
+        controller.close();
+        return;
+      }
+      page = await stub.ownerExport(binding, { cursor: next, export_id: exportId });
+    },
+  });
+  return new Response(body, { status: 200, headers: {
+    "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
 }
 
 /**
@@ -306,6 +375,12 @@ function doorbellKinds(): unknown {
 }
 
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
+  "export": exportStream,
+  "export/chunks": async (_env, { binding, stub }, request) =>
+    json(200, await stub.exportChunks(binding, request as never)),
+  "export/end": async (_env, { binding, stub }, request) =>
+    json(200, await stub.exportEnd(binding, request as never)),
+  "storage": async (_env, { binding, stub }) => json(200, await stub.storageUsage(binding)),
   "agent/doorbell": doorbell,
   "agent/doorbell/end": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentDoorbellEnd(binding, request as never)),
@@ -362,6 +437,16 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     json(200, await stub.agentStatus(binding, request as never)),
   "agent/cancel": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentCancel(binding, request as never)),
+  "runs": async (_env, { binding, stub }, request) =>
+    json(200, await stub.runList(binding, request as never)),
+  "signin/start": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinStart(binding, request as never)),
+  "signin/code": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinCode(binding, request as never)),
+  "signin/cancel": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinCancel(binding, request as never)),
+  "signin/list": (_env, { binding, stub }, request) =>
+    read(request, () => stub.signinList(binding)),
 });
 
 /** The owner app's socket door's path, and its ticket door's, under the owner surface. */
@@ -488,7 +573,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   if (gated instanceof Response) {
     return gated;
   }
-  const owner = withTiers(unread, gated.tiers);
+  const owner = withTiers(unread, gated);
   try {
     if (registering) {
       const { key_id: id, ...register } = parsed;
@@ -503,7 +588,8 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
       return await connect({ env, bound: owner, body: parsed, request, sources });
     }
     if (listing) {
-      return shaped(parsed, []) ? json(200, sourceList(sources)) : failure(400, NO_FIELDS);
+      return shaped(parsed, []) ? json(200, sourceList(sources, gated.signins))
+        : failure(400, NO_FIELDS);
     }
     if (tool !== null) {
       return await ownerTool(tool, owner, parsed);

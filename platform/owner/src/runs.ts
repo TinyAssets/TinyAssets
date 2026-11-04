@@ -69,7 +69,7 @@ import type { CredentialKind, EngineEvents, Sources } from "../../doors/src/sour
 import { AGENT_DISABLED, type AgentFile, AUTO, RUN_CAPABILITIES, type RunCapability }
   from "./agent-file";
 import { AUTHORITY_CHANGED, type StandingGrant, type Stamped } from "./authority";
-import { LEASE_TTL_S, OWNER_AUTHORITY } from "./files";
+import { LEASE_TTL_S, MAX_LIST, OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
 import { nextOccurrence, parseCron } from "./cron";
 import { Invalid, Refused } from "./errors";
@@ -82,6 +82,8 @@ import {
 import { type Frame, FRAME_VERSION, readEvent } from "./run-events";
 import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
+import type { RunMeter } from "./sandbox-time";
+import { SIGNIN_OFF } from "./signins";
 import { TIER_RUNS, type TierName, type Tiers } from "./tier";
 import { utf8Bytes } from "./text";
 
@@ -159,6 +161,11 @@ export interface RunDeps {
   readonly unadmitted: () => string | null;
   readonly sandboxBound: () => boolean;
   readonly sources: () => Sources;
+  /**
+   * Whether `engine`'s vendor sign-in is switched on (the control record, as the binder last
+   * handed it): a run never uses a switched-off source's vendor login.
+   */
+  readonly signinOn: (engine: string) => boolean;
   /** The owner's active connections and their models. */
   readonly usable: () => readonly UsableSource[];
   /** The connections the sandbox may reach (a stored egress scope). */
@@ -191,6 +198,11 @@ export interface RunDeps {
   readonly answer: (answer: MailAnswer) => void;
   /** In the unit, once a mail's run settled, however: its mail no longer held for it. */
   readonly mailSettled: (mail: string, agent: string) => void;
+  /**
+   * In the unit: what a run's sandbox said the owner must hear (its sync's files whose names
+   * are not UTF-8, `ta.sync_unnamed`), as the owner's notice.
+   */
+  readonly notice?: (type: string, detail: string) => void;
   /** In the unit, once the lease was given back: every stream under it ended. */
   readonly leaseEnded: (leaseId: string) => void;
   /** In the unit: a run settled lost or revoked, whose CLI the sandbox stops, once over. */
@@ -299,6 +311,12 @@ export interface RunReceipt {
   readonly settled_at: number | null;
   /** The mail it answers, when mail started it: the owner reads its chain (`mailChain`). */
   readonly mail: string | null;
+  /**
+   * How long its sandbox ran between its start and its settle, in seconds, from the
+   * sandbox Worker's own log (`sandbox-time.ts`); null until that log is read past its
+   * settle. The founder's cost view: it limits nothing.
+   */
+  readonly sandbox_s: number | null;
 }
 
 /** A run grant, as the run-scoped door and egress read it. */
@@ -356,6 +374,7 @@ type RunRow = {
   requests: number; tokens: number; cost: number; last_seq: number; result: string | null;
   result_cut: number; error: string | null; code: string | null; exit_code: number | null;
   created_at: number; started_at: number | null; settled_at: number | null;
+  sandbox_ms: number | null;
 };
 
 type GrantRow = {
@@ -461,6 +480,38 @@ function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]
   return { last, result, resultCut, error, session, relayed };
 }
 
+/** A path as the sync agent escapes one it cannot name: `/workspace/`, then printable ASCII. */
+const UNNAMED_PATH = /^\/workspace\/[\x20-\x7e]{1,4096}$/;
+
+/** The most of a sync's unnamed paths a notice names. */
+const UNNAMED_SHOWN = 5;
+
+/**
+ * The owner's notice for a sync's files whose names are not UTF-8 (`ta.sync_unnamed`), in
+ * the object's own words: only the count and the escaped paths come from the event, never
+ * its text (round 8, R8-1); null for any other event, or one not of that shape.
+ */
+export function unnamedNotice(event: unknown): string | null {
+  if (typeof event !== "object" || event === null
+      || (event as Record<string, unknown>)["type"] !== "ta.sync_unnamed") {
+    return null;
+  }
+  const { count, paths } = event as { count?: unknown; paths?: unknown };
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1) {
+    return null;
+  }
+  const named = (Array.isArray(paths) ? paths : [])
+    .filter((path): path is string => typeof path === "string" && UNNAMED_PATH.test(path))
+    .slice(0, Math.min(UNNAMED_SHOWN, count));
+  const one = count === 1;
+  return `${count} file${one ? "" : "s"} or folder${one ? "" : "s"} in its sandbox ${
+    one ? "has a name" : "have names"} that ${one ? "is" : "are"} not UTF-8, so ${
+    one ? "it does" : "they do"} not sync to your files${named.length === 0 ? ""
+    : `: ${named.map((path) => `"${path}"`).join(", ")}${count > named.length
+      ? `, and ${count - named.length} more` : ""}`}. Rename ${one ? "it" : "them"} to sync ${
+    one ? "it" : "them"}.`;
+}
+
 /** `text` cut to at most `bytes` UTF-8 bytes on a character boundary, and whether it was. */
 export function cut(text: string, bytes: number): { text: string; cut: boolean } {
   const encoded = new TextEncoder().encode(text);
@@ -474,6 +525,27 @@ export function cut(text: string, bytes: number): { text: string; cut: boolean }
   return { text: new TextDecoder().decode(encoded.subarray(0, end)), cut: true };
 }
 
+/** The runs' side of the sandbox meter (`sandbox-time.ts`), over the object's storage. */
+export function runMeter(sql: OwnerStorage["sql"]): RunMeter {
+  return {
+    unmetered: () => sql.exec("SELECT 1 FROM runs WHERE settled_at IS NOT NULL AND " +
+                                "sandbox_ms IS NULL LIMIT 1").toArray().length > 0,
+    settledBy: (readAt) => sql.exec<{ id: string; client: string | null;
+                                      started_at: number | null; settled_at: number }>(
+      "SELECT id, client, started_at, settled_at FROM runs WHERE settled_at IS NOT NULL " +
+        "AND sandbox_ms IS NULL AND settled_at * 1000 <= ?", readAt).toArray()
+      .map((run) => ({ id: run.id, authority: authorityOf(run.client === null ? null
+                                                            : { client: run.client }),
+                       started_at: run.started_at, settled_at: run.settled_at })),
+    metered: (id, ms) => {
+      sql.exec("UPDATE runs SET sandbox_ms = ? WHERE id = ? AND sandbox_ms IS NULL", ms, id);
+    },
+    oldestUnmetered: () => sql.exec<{ at: number | null }>(
+      "SELECT MIN(started_at) AS at FROM runs WHERE sandbox_ms IS NULL AND " +
+        "started_at IS NOT NULL").one().at,
+  };
+}
+
 function receipt(row: RunRow): RunReceipt {
   return {
     run_id: row.id, conversation_id: row.conversation, agent: row.agent, engine: row.source,
@@ -481,7 +553,7 @@ function receipt(row: RunRow): RunReceipt {
     code: row.code, result: row.result, result_cut: row.result_cut === 1, error: row.error,
     exit_code: row.exit_code, requests: row.requests, tokens: row.tokens, cost: row.cost,
     created_at: row.created_at, started_at: row.started_at, settled_at: row.settled_at,
-    mail: row.mail,
+    mail: row.mail, sandbox_s: row.sandbox_ms === null ? null : row.sandbox_ms / 1000,
   };
 }
 
@@ -510,6 +582,13 @@ export class Runs {
 
   get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
+  }
+
+  /** The agents of the runs under the lease taken at `epoch`, at most `most`, by name. A read. */
+  agentsAt(epoch: number, most: number): string[] {
+    return this.#sql.exec<{ agent: string }>(
+      "SELECT DISTINCT agent FROM runs WHERE epoch = ? ORDER BY agent LIMIT ?", epoch, most)
+      .toArray().map((row) => row.agent);
   }
 
   #run(runId: string): RunRow | undefined {
@@ -923,8 +1002,12 @@ export class Runs {
           continue;
         }
         if (credential === "vendor_login_in_sandbox") {
-          // Never a silent fall back to a key. A sign-in not known signed out is admitted:
-          // the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
+          // Never a silent fall back to a key. A switched-off source's login is never used,
+          // even where it is signed in (review H1). A sign-in not known signed out is
+          // admitted: the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
+          if (!this.#deps.signinOn(file.engine)) {
+            throw new Refused(`${SIGNIN_OFF} (${file.engine})`);
+          }
           if (!client && signins.get(file.engine)?.signed_in === false) {
             throw lapsed(file.engine);
           }
@@ -945,8 +1028,10 @@ export class Runs {
       const planned: UsableSource[] = [];
       for (const signin of signins.values()) {
         const record = sources.get(signin.engine);
+        // A switched-off source's plan is no candidate (review H1).
         if (record?.cli === undefined || record.unwired !== undefined
-            || !record.cli.credential.includes("vendor_login_in_sandbox")) {
+            || !record.cli.credential.includes("vendor_login_in_sandbox")
+            || !this.#deps.signinOn(signin.engine)) {
           continue;
         }
         const provider = providerOf(record.cli.api_key_env, signin.engine);
@@ -1044,6 +1129,13 @@ export class Runs {
     this.#sql.exec("DELETE FROM runs WHERE settled_at IS NOT NULL AND seq NOT IN (SELECT seq " +
                      "FROM runs WHERE settled_at IS NOT NULL ORDER BY settled_at DESC, seq DESC " +
                      "LIMIT ?)", RUNS_KEPT);
+  }
+
+  // -- SANDBOX TIME: the meter's side of the runs (`sandbox-time.ts`) -----------------
+
+  /** The runs' side of the sandbox meter: its reads and its one write, here alone. */
+  meter(): RunMeter {
+    return runMeter(this.#sql);
   }
 
   // -- A RUN'S LIFE ------------------------------------------------------------------
@@ -1188,6 +1280,12 @@ export class Runs {
       throw new Error(`run ${runId}'s engine ${row.source} has no record`);
     }
     const { last, result, resultCut, error, session, relayed } = batch(row, events, frames);
+    for (const frame of frames) {
+      const notice = frame.seq > row.last_seq ? unnamedNotice(frame.event) : null;
+      if (notice !== null) {
+        this.#deps.notice?.("sync_unnamed", `${row.agent}: ${notice}`);
+      }
+    }
     // The batch is this run's own heartbeat, as it renews the lease.
     this.#sql.exec("UPDATE runs SET last_seq = ?, result = ?, result_cut = ?, error = ?, " +
                      "state = CASE WHEN state = 'queued' THEN 'running' ELSE state END, " +
@@ -1276,6 +1374,34 @@ export class Runs {
       throw new Refused(NO_RUN);
     }
     return receipt(row);
+  }
+
+  /**
+   * The caller's runs, newest first (by `seq`), `limit` a page (at most `MAX_LIST`, the
+   * object's own most a listing pages), from before `before`: the owner's every run
+   * (`client` null), an outside client's its own. Each its receipt without its result. A
+   * read.
+   */
+  list(client: string | null, before: unknown, limit: unknown):
+      { runs: (Omit<RunReceipt, "result"> & { seq: number })[]; next: number | null } {
+    const most = limit === undefined ? MAX_LIST : limit;
+    if (typeof most !== "number" || !Number.isSafeInteger(most) || most < 1 || most > MAX_LIST
+        || (before !== undefined && (typeof before !== "number" || !Number.isSafeInteger(before)
+                                     || before < 1))) {
+      throw new Invalid(`a run list's limit is 1 to ${MAX_LIST}, its before a run's seq`);
+    }
+    const rows = this.#sql.exec<RunRow & { seq: number }>(
+      "SELECT * FROM runs WHERE (? IS NULL OR client = ?) AND (? IS NULL OR seq < ?) " +
+        "ORDER BY seq DESC LIMIT ?", client, client, before ?? null, before ?? null, most + 1)
+      .toArray();
+    const page = rows.slice(0, most);
+    return {
+      runs: page.map((row) => {
+        const { result: _result, ...rest } = receipt(row);
+        return { ...rest, seq: row.seq };
+      }),
+      next: rows.length > most ? page.at(-1)!.seq : null,
+    };
   }
 
   /** The agents of an outside client's live runs: what its sandbox always reads. A read. */

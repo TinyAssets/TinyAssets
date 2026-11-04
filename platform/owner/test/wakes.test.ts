@@ -739,9 +739,10 @@ describe("the wakes lane of the object's one schedule", () => {
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => state.storage.deleteAlarm());
     await evictDurableObject(r.stub);
     await r.stub.outsideAgents(r.bind(null));  // any call wakes it
-    expect(await laneJobs(r.stub))
-      .toEqual({ wakes: { time: Math.ceil(lease * 1000),
-                          payload: { due: Math.ceil(lease * 1000) } } });
+    const jobs = await laneJobs(r.stub);
+    expect(Object.keys(jobs)).toEqual(["manifest", "wakes"]);
+    expect(jobs["wakes"]).toEqual({ time: Math.ceil(lease * 1000),
+                                    payload: { due: Math.ceil(lease * 1000) } });
     expect(await r.alarmAt()).toBe(Math.ceil(lease * 1000) / 1000);
   });
 });

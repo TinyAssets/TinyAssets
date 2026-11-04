@@ -17,6 +17,7 @@
  * The owner object's `wakes` lane reads it too, once a pass, before it claims a wake (slice W).
  */
 import type { DoorsEnv } from "./config";
+import { bundledSources, signinsOn } from "./sources";
 import { type Control, type ControlRead, readControl } from "./directory";
 
 export const OUTSIDE_OFF = "outside access is switched off";
@@ -57,18 +58,33 @@ function tiersOf(read: ControlRead): unknown {
   return read.kind === "read" && read.control.tiers !== null ? read.control.tiers : null;
 }
 
-/** The outside gate, read once: its refusal, or the record's tier numbers. */
-export async function outsideRead(env: DoorsEnv, owner: string):
-    Promise<Response | { readonly tiers: unknown }> {
-  const read = await readControl(env.CONTROL);
-  return outsideOpen(read, owner) ? { tiers: tiersOf(read) } : refusal(OUTSIDE_OFF);
+/**
+ * The served records whose vendor sign-in is switched on (the record's `signins`, else each
+ * record's cited verdict), as the binder hands them to the object with every call: the
+ * object refuses a sign-in, a pasted code and a run on a vendor's login for any other.
+ */
+function signinsOf(read: ControlRead): string[] {
+  return signinsOn(bundledSources(), read.kind === "read" ? read.control.signins : null);
 }
 
-/** The maintenance gate, read once: its refusal, or the record's tier numbers. */
-export async function ownerRead(env: DoorsEnv, owner: string):
-    Promise<Response | { readonly tiers: unknown }> {
+/** What a gate admitted: the record's tier numbers and the switched-on sign-ins. */
+export interface Gated {
+  readonly tiers: unknown;
+  readonly signins: readonly string[];
+}
+
+/** The outside gate, read once: its refusal, or what the binding carries. */
+export async function outsideRead(env: DoorsEnv, owner: string): Promise<Response | Gated> {
   const read = await readControl(env.CONTROL);
-  return ownerOpen(read, owner) ? { tiers: tiersOf(read) } : refusal(MAINTENANCE);
+  return outsideOpen(read, owner) ? { tiers: tiersOf(read), signins: signinsOf(read) }
+    : refusal(OUTSIDE_OFF);
+}
+
+/** The maintenance gate, read once: its refusal, or what the binding carries. */
+export async function ownerRead(env: DoorsEnv, owner: string): Promise<Response | Gated> {
+  const read = await readControl(env.CONTROL);
+  return ownerOpen(read, owner) ? { tiers: tiersOf(read), signins: signinsOf(read) }
+    : refusal(MAINTENANCE);
 }
 
 function refusal(message: string): Response {

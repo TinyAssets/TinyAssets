@@ -13,7 +13,7 @@ const who = document.getElementById("who");
 const notice = document.getElementById("notice");
 
 const SECTIONS = Object.freeze([
-  ["home", "Home"], ["agents", "Agents"], ["rooms", "Rooms and board"],
+  ["home", "Home"], ["agents", "Agents"], ["history", "Past runs"], ["rooms", "Rooms and board"],
   ["sources", "Model sources"], ["apps", "Connected apps"], ["keys", "API keys"],
   ["data", "Your data"],
 ]);
@@ -25,12 +25,13 @@ const SECTIONS = Object.freeze([
  */
 const MISSING = Object.freeze({
   export: "Exporting everything you hold is not here yet: its door is being built.",
-  runs: "Only this tab's conversation is shown, and it is not kept across reloads: a list " +
-    "of past runs is not here yet. Each engine's own transcript is kept in your files.",
-  signin: "Signing in with a subscription inside your sandbox is not here yet.",
 });
 
-/** The credential a record's engine runs on that needs a door not here yet. */
+/** What the Talk section holds: this tab's conversation; the rest is under Past runs. */
+const TALK_NOTE = "Only this tab's conversation is shown, and it is not kept across reloads: " +
+  "your past runs are under Past runs. Each engine's own transcript is kept in your files.";
+
+/** The credential of a subscription signed in inside the sandbox (its record's switch). */
 const SIGNIN_CREDENTIAL = "vendor_login_in_sandbox";
 
 const SESSION_NEEDED = "interactive owner session required";
@@ -167,8 +168,10 @@ async function agents(arg) {
     await Promise.all([call("tools/agents_list"), call("sources"), call("connections/list"),
                        call("capabilities")]);
   const live = owned.filter((a) => a.retired_at === null);
-  // Each engine's credentials are its record's; the sandbox sign-in's door is not here yet.
-  const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL);
+  // Each engine's credentials are its record's; a subscription's only while its sign-in is
+  // switched on.
+  const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL
+                                                       || record.signin?.enabled === true);
   const engines = sources.filter((s) => s.unwired === null && usable(s).length > 0);
   const signinOnly = sources.filter((s) => s.unwired === null && s.credentials.length > 0
                                            && usable(s).length === 0);
@@ -177,7 +180,8 @@ async function agents(arg) {
     "Your strongest connected source"), engines.map((s) => h("option", { value: s.id },
     s.display_name)));
   const credential = h("select", {});
-  const words = { api_key: "An API key you connected" };
+  const words = { api_key: "An API key you connected",
+                  [SIGNIN_CREDENTIAL]: "Your subscription, signed in inside your sandbox" };
   const credentials = () => {
     const record = engines.find((s) => s.id === engine.value);
     fill(credential, h("option", { value: "" }, "Whichever the engine has"),
@@ -228,8 +232,10 @@ async function agents(arg) {
            "AGENTS.md. This writes both; you change them later as files."),
          field("Name", name),
          field("Engine", engine, "What runs the agent: a provider's own app in your sandbox."),
-         signinOnly.length === 0 ? null : h("p", { class: "muted" }, `${MISSING.signin} ` +
-           `So ${signinOnly.map((s) => s.display_name).join(", ")} cannot run an agent yet.`),
+         signinOnly.length === 0 ? null : h("p", { class: "muted" }, "Signing in with a " +
+           `subscription is switched off for ${signinOnly.map((s) => s.display_name)
+             .join(", ")}, so ${signinOnly.length === 1 ? "it" : "they"} cannot run an ` +
+           "agent yet (Model sources says why)."),
          field("Runs on", credential),
          field("API key connection", connection, "Only for an agent that runs on an API key."),
          h("div", { class: "field" }, h("span", {}, "What its runs may do"),
@@ -354,7 +360,7 @@ async function agent(name) {
        h("h1", {}, name),
        h("section", {},
          h("h2", {}, "Talk"),
-         h("p", { class: "muted" }, MISSING.runs),
+         h("p", { class: "muted" }, TALK_NOTE),
          said, field("Message", message),
          h("div", { class: "row" }, action("Send", send, report), cancel),
          state,
@@ -486,9 +492,147 @@ async function rooms() {
 
 // -- Model sources --------------------------------------------------------------------
 
+// The vendor's own sign-in inside your sandbox (slice SIGNIN): TinyAssets starts the
+// vendor's own CLI's login there and shows only what it prints for you to do: a link to the
+// vendor's own sign-in page, which opens in your browser (TinyAssets never sees your
+// password), a code to type there, and a box for the code the vendor's page gives back.
+
+/** The live socket of the sign-in in progress, if any (one at a time in your sandbox). */
+let signinSocket = null;
+
+/** Why a sign-in was refused, in the words the platform's records give (`SIGNIN_REFUSALS`). */
+const SIGNIN_REFUSED = Object.freeze({
+  url: "it showed a link that is not the vendor's own sign-in page",
+  code: "it showed a code that is not the vendor's kind of code",
+  credential: "it showed something that looked like a credential",
+  state: "it reported something a sign-in never reports",
+});
+
+/** The states that end a sign-in. */
+const SIGNIN_ENDS = Object.freeze(["signed_in", "signed_out", "failed", "cancelled", "refused",
+                                   "expired"]);
+
+/** What the owner is told at a sign-in's end. */
+function signinEnded(record, event) {
+  switch (event.state) {
+    case "signed_in": return `Signed in to ${record.display_name}.`;
+    case "signed_out": return `Signed out of ${record.display_name}.`;
+    case "cancelled": return "The sign-in was stopped.";
+    case "expired": return "The code expired; start again.";
+    case "refused": return `The sign-in was stopped: ${SIGNIN_REFUSED[event.reason]
+      ?? "it showed something TinyAssets does not pass on"}. TinyAssets never passes such ` +
+      "a thing on.";
+    default: return "The sign-in did not finish. Try again.";
+  }
+}
+
+function signinPanel(record, present, live) {
+  const box = h("div", { class: "signin" });
+  const regionPick = record.signin.regions.length === 0 ? null
+    : h("select", {}, record.signin.regions.map((region) =>
+      h("option", { value: region.id }, region.display_name)));
+  const show = (view) => {
+    if (view === null && !record.signin.enabled) {
+      // Off: no sign-in is offered, but a login already here can always be removed.
+      fill(box, h("p", { class: "muted" },
+                  `Signing in with your ${record.display_name} subscription is off for now: ` +
+                  `the vendor's terms for a platform hosting its sign-in are ` +
+                  `${record.signin.hosted_use.verdict}. `,
+                  h("small", {}, record.signin.hosted_use.citation)),
+           present?.signed_in ? h("div", { class: "row" }, action("Sign out",
+             () => begin("out"), report, { class: "danger" })) : null);
+      return;
+    }
+    if (view === null) {
+      fill(box,
+           h("p", { class: "muted" }, present?.signed_in
+             ? `Signed in with your ${record.display_name} subscription inside your sandbox.`
+             : `Use your ${record.display_name} subscription: sign in inside your sandbox, ` +
+               "on the vendor's own page."),
+           regionPick === null ? null : field("Region", regionPick),
+           h("div", { class: "row" },
+             action(present?.signed_in ? "Sign in again" : `Sign in to ${record.display_name}`,
+                    () => begin("in"), report),
+             present?.signed_in ? action("Sign out", () => begin("out"), report,
+                                         { class: "danger" }) : null));
+      return;
+    }
+    const code = h("input", { type: "text", autocomplete: "off", placeholder: "Code" });
+    fill(box,
+         h("p", {}, view.state === "starting" ? "Starting the sign-in in your sandbox…"
+           : view.state === "code_sent" ? "Code sent. Finishing the sign-in…"
+             : `Finish signing in on ${record.display_name}'s own page.`),
+         view.url === null ? null : h("p", {}, h("a", {
+           href: view.url, target: "_blank", rel: "noopener noreferrer" },
+           `Open ${record.display_name}'s sign-in page`),
+           ` You'll sign in on ${view.host ?? new URL(view.url).hostname}.`),
+         view.code === null ? null : h("p", {}, "Type this code there: ",
+                                       h("code", { class: "signin-code" }, view.code)),
+         view.accepts_code ? h("div", { class: "row" }, code, action("Send code", async () => {
+           await call("signin/code", { id: view.id, code: code.value.trim() });
+           code.value = "";
+         }, report)) : null,
+         action("Stop", () => call("signin/cancel", { id: view.id }), report, { class: "quiet" }));
+  };
+  const watch = async (view) => {
+    show(view);
+    signinSocket?.close();
+    let current = view;
+    signinSocket = await follow(view.id, (frame) => {
+      const event = frame.event ?? {};
+      if (event.type !== "ta.signin") {
+        return;
+      }
+      if (SIGNIN_ENDS.includes(event.state)) {
+        say(signinEnded(record, event), event.state.startsWith("signed") ? "good" : "bad");
+        signinSocket?.close();
+        signinSocket = null;
+        sources().catch(report);
+        return;
+      }
+      current = event.state === "open"
+        ? { ...current, state: "open", url: event.url, code: event.code,
+            accepts_code: event.accepts_code }
+        : { ...current, state: event.state };
+      show(current);
+    }, () => undefined);
+    // What came before the socket attached: the sign-in's row as it stands; none, it ended
+    // before the socket attached, and the panel offers a new one.
+    const { signins } = await call("signin/list");
+    const now = signins.find((each) => each.id === view.id);
+    if (now !== undefined) {
+      current = now;
+      show(now);
+    } else if (signinSocket !== null) {
+      signinSocket.close();
+      signinSocket = null;
+      say("The sign-in ended before it could be shown. Start it again.", "bad");
+      sources().catch(report);
+    }
+  };
+  const begin = async (mode) => {
+    const view = await call("signin/start", {
+      engine: record.id, ...(mode === "out" ? { mode } : {}),
+      ...(mode === "in" && regionPick !== null ? { region: regionPick.value } : {}) });
+    if (view.started === false) {
+      say(view.code === "sandbox_waiting" ? "Your sandbox is waiting for room. Try again in a " +
+          "moment." : `The sign-in could not start (${view.code}).`, "bad");
+      return;
+    }
+    await watch(view);
+  };
+  if (live === null) {
+    show(null);
+  } else {
+    watch(live).catch(report);
+  }
+  return box;
+}
+
 async function sources() {
-  const [{ sources: records }, { connections }] = await Promise.all([
-    call("sources"), call("connections/list")]);
+  const [{ sources: records }, { connections }, { signins: live, engines }] = await Promise.all([
+    call("sources"), call("connections/list"), call("signin/list")]);
+  const presence = new Map(engines.map((engine) => [engine.engine, engine]));
   const shown = connections.filter((c) => c.status !== "revoked");
   const connect = (record) => {
     if (record.unwired !== null) {
@@ -510,10 +654,15 @@ async function sources() {
         location.assign(url);
       }, report));
     }
-    if (record.connect.includes("cli")) {
-      ways.push(h("p", { class: "muted" }, record.credentials.includes("api_key")
-        ? "An engine for your agents: it runs on an API key you connect here." : null,
-        record.credentials.includes(SIGNIN_CREDENTIAL) ? ` ${MISSING.signin}` : null));
+    if (record.connect.includes("cli") && record.credentials.includes(SIGNIN_CREDENTIAL)
+        && record.signin !== null) {
+      ways.push(signinPanel(record, presence.get(record.id) ?? null,
+                            live.find((each) => each.engine === record.id
+                                      && each.authority === "owner") ?? null));
+    }
+    if (record.connect.includes("cli") && record.credentials.includes("api_key")) {
+      ways.push(h("p", { class: "muted" }, "An engine for your agents: it runs on an API key " +
+        "you connect here."));
     }
     return ways;
   };
@@ -700,7 +849,30 @@ async function data(arg) {
          editor));
 }
 
-const SCREENS = Object.freeze({ home, agents, rooms, sources, apps, keys, data });
+// -- Past runs: newest first, a page at a time ---------------------------------------
+
+async function history(arg) {
+  const before = arg === null ? undefined : Number(arg);
+  const { runs, next } = await call("runs", before === undefined ? {} : { before });
+  fill(main,
+       h("h1", {}, "Past runs"),
+       h("section", {},
+         runs.length === 0 ? h("p", { class: "muted" }, "No runs yet.")
+           : h("div", { class: "scroll" }, h("table", {},
+             h("thead", {}, h("tr", {}, ["Agent", "State", "Engine", "Started", "Ended",
+                                         "Conversation"].map((t) => h("th", {}, t)))),
+             h("tbody", {}, runs.map((run) => h("tr", {},
+               h("td", {}, h("a", { href: `#agents/${encodeURIComponent(run.agent)}` },
+                             run.agent)),
+               h("td", {}, run.code === null ? run.state : `${run.state} (${run.code})`),
+               h("td", {}, run.engine),
+               h("td", {}, run.started_at === null ? "—" : when(run.started_at)),
+               h("td", {}, run.settled_at === null ? "—" : when(run.settled_at)),
+               h("td", {}, h("code", {}, run.conversation_id))))))),
+         next === null ? null : h("p", {}, h("a", { href: `#history/${next}` }, "Older runs"))));
+}
+
+const SCREENS = Object.freeze({ home, agents, history, rooms, sources, apps, keys, data });
 
 whenSignedOut(() => render());
 window.addEventListener("hashchange", () => render());

@@ -33,6 +33,10 @@
  * A start may answer `sandbox_waiting` (`SANDBOX_WAITING`): E2B runs as many sandboxes as
  * its plan allows, and the run waits (`waiting`), never refused, until the platform's line
  * rings the owner (`sandboxRung`, through the doors Worker's ring consumer).
+ * - `meter` (slice P): the Worker's own log of the owner's sandboxes started, paused,
+ *   resumed and killed, each with its authority and time, after a cursor; the object reads
+ *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
+ *   passed. It limits nothing: the founder's cost view.
  *
  * Absent, nothing reaches `running`: admission refuses before it writes anything
  * (`SANDBOX_ABSENT`). Tests put a recording fake behind the interface, in tests only.
@@ -40,6 +44,7 @@
 import type { CredentialKind } from "../../doors/src/sources";
 
 import type { NetworkPlan } from "./network";
+import type { MeterEvent } from "./sandbox-time";
 
 export const SANDBOX_ABSENT = "sandbox_absent: no sandbox is bound, so no run can start";
 
@@ -89,6 +94,11 @@ export interface SandboxStart {
    * template carries `{run_secret}` (a header, `x-ta-run`) takes `mcp_bare` as its
    * `{mcp_url}`, the secret in the header and out of the URL.
    */
+  /**
+   * Whose sandbox this is, sealed for E2B's metadata (`sealRoute`, slice P): E2B echoes it on
+   * its signed lifecycle events, which the doors open to reach this owner's object.
+   */
+  readonly route: string;
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
 }
@@ -110,8 +120,37 @@ export type Started = { readonly started: true } | { readonly started: false; re
  */
 export const SANDBOX_WAITING = "sandbox_waiting";
 
+/**
+ * The vendor's own sign-in started in a sandbox (slice SIGNIN; `signins.ts`), or its sign-out:
+ * the record's `cli.login` run there by the runner as a user of its own (`ta-runner
+ * login-launch`), under the sandbox's lease, which a start that opened it configures
+ * (`tokens`, `network`) as a run's would. `region` is the owner's choice among the record's
+ * `cli.regions` (its hosts let out), `urls.events` the sign-in's own event door and
+ * `urls.signin` the presence report's.
+ */
+export interface SandboxSignin {
+  readonly id: string;
+  readonly engine: string;
+  readonly region: string | null;
+  readonly mode: "in" | "out";
+  readonly authority: string;
+  readonly lease: { readonly lease_id: string; readonly epoch: number };
+  readonly tokens: SandboxStart["tokens"];
+  readonly network: NetworkPlan | null;
+  readonly urls: { readonly events: string; readonly signin: string };
+}
+
 /** The sandbox Worker, as the owner's object binds it (`SANDBOX`). */
 export interface SandboxService {
+  /** A sign-in started in the authority's sandbox (`SandboxSignin`); the start's answer. */
+  signin(owner: string, signin: SandboxSignin): Promise<Started>;
+  /** A pasted code to the live sign-in's CLI's stdin; whether it was live to take it. */
+  signinInput(owner: string, request: { readonly authority: string; readonly id: string;
+                                        readonly code: string }):
+    Promise<{ readonly delivered: boolean }>;
+  /** A live sign-in stopped. */
+  signinCancel(owner: string, request: { readonly authority: string; readonly id: string }):
+    Promise<{ readonly cancelled: boolean }>;
   start(owner: string, start: SandboxStart): Promise<Started>;
   cancel(owner: string, request: { readonly run: string; readonly lease_id: string }):
     Promise<{ readonly cancelled: boolean }>;
@@ -130,6 +169,9 @@ export interface SandboxService {
   unwait(owner: string): Promise<void>;
   /** The owner erased: each of their sandboxes killed, the Worker's state of them deleted. */
   erase(owner: string): Promise<{ readonly killed: number }>;
+  /** The log after `after`: at most `METER_BATCH` entries, and the cursor past them. */
+  meter(owner: string, request: { readonly after: number }):
+    Promise<{ readonly events: readonly MeterEvent[]; readonly next: number }>;
 }
 
 /** A start's answer, checked: a refusal's code is a fixed code, never prose. */

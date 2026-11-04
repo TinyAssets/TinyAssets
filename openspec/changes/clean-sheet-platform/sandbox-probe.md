@@ -63,6 +63,94 @@ was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or t
 | Owed to the founder's live test | A Gemini run loading its `{system}` settings with no "Parent directory is not owned by root" warning, yolo kept (needs a run past the sign-in; the runner test checks every ancestor is root's as the CLI sees it). |
 | Clean-up | Each sandbox killed; the account listed **0 running or paused** after. |
 
+## Sign-in up to its prompt (slice SIGNIN, 2026-11-03, templates `se0d866e5d827bf05` and `s6dec61a38e839d37`; 4 throwaway sandboxes, under 10 sandbox-minutes)
+
+The template build's standing check (`build.py`, `check_logins`): each record's login run by
+`ta-runner login-probe` as a pool user on a terminal (`script`), stopped at its prompt, no
+account used.
+
+| Record (region) | Result on `s6dec61a38e839d37` |
+|---|---|
+| claude-code | ok: a URL on `claude.com`, no code; its redirect is not localhost. |
+| codex | ok: a URL on `auth.openai.com` and a device code. On `se0d866e5d827bf05` it failed: Codex refuses a `CODEX_HOME` that does not exist ("CODEX_HOME points to ... but that path does not exist"), so a first sign-in (an empty store) showed nothing. The runner now makes each directory the record's `home_env` names in every home. |
+| gemini | ok: a URL on `accounts.google.com` (`NO_BROWSER`), no code. |
+| kimi (global) | ok: a URL on `www.kimi.ai` and a device code. |
+| kimi (mainland-cn) | ok: a URL on `www.kimi.com` and a device code. |
+
+Every sandbox killed; the account listed **0 running** after. A completed sign-in on each
+vendor needs the founder's accounts (owed below).
+
+**The review round (template `s7a0747eb6136d488`; 2 throwaway sandboxes, under 6
+sandbox-minutes).** Each record's whole sign-in URL was read off its pinned CLI as a pool user
+under `script` (Claude, Codex, both Kimi regions), and Gemini's from its pinned CLI's own code
+(`authWithUserCode`, its URL shown only with its settings file in the home), to pin each page
+as data (`cli.login.url`: hosts, path, fixed and free parameters). Claude's:
+`claude.com/cai/oauth/authorize`, `client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e`,
+`redirect_uri=https://platform.claude.com/oauth/code/callback`, its scope fixed, the PKCE
+challenge and state free. Codex's: `auth.openai.com/codex/device`, no parameter. Kimi's:
+`www.kimi.ai` or `www.kimi.com` by region, `/code/authorize_device?user_code=...`. Then the
+build's standing check ran each login under the production egress allowlist (the egress door
+alone, widened by that engine's own hosts, all else denied, the resolver pinned): all five ok
+against the pinned pages (claude.com, auth.openai.com with a code, accounts.google.com,
+www.kimi.ai and www.kimi.com with a code). Every sandbox killed; 0 running after.
+
+The verification round's fixes (the runner's store lock and generation) changed the runner, so
+the template was built again as `s354d7998f07439db`: its standing check passed all five the same
+way (1 throwaway sandbox, under 3 sandbox-minutes, 0 running after).
+
+## The route probe (Codex's base URL build, 2026-11-03, templates `sb3da938719c968b4` and `s97c42c9c1b38e998`)
+
+`build.py`'s `route_probe` after every build: a throwaway sandbox of the template, `strace`
+installed while its network is open, then every outbound address denied but the pinned
+resolver; `ta-runner route-probe` runs every keyed engine on every provider it keys as a run
+runs it (the real `invocation`, `runEnv` and `sandboxEnv`, an API-key run's home, a pool
+user), its door on a loopback capture server at the real path
+(`/r/<run>/<secret>/c/<connection>/...`, `/r/<run>/c/...` with `x-ta-run` for Claude Code),
+a fake sign-in seeded in each of the engine store's `secret_paths`.
+
+- On `sb3da938719c968b4` every engine passed but Claude Code: its first non-MCP requests
+  were its MCP client's OAuth discovery (`/.well-known/oauth-protected-resource`, `/register`)
+  of the MCP door, which the capture server had answered 401. Its model calls
+  (`POST .../c/<connection>/v1/messages`) were on the door. The capture server now answers
+  the MCP door 404 (no server: no discovery), and the template was built again.
+- On `s97c42c9c1b38e998` all eleven pass: Claude Code (anthropic), **Codex (openai, the
+  dotted `-c model_providers.tinyassets.*` form: `POST .../c/<connection>/v1/responses`, no
+  WebSocket GET)**, Gemini CLI (google, `.../c/<connection>/v1beta/models/...`) and pi on
+  anthropic, cerebras, google, groq, mistral, openai, openrouter and xai, each first model
+  request under the door's path with the run's placeholder key and secret, **no connect
+  outside** loopback and the resolver, and no request carrying the fake sign-in. The sign-in
+  check passed all five logins on both templates.
+- 4 throwaway sandboxes in all (2 builds' sign-in checks and route probes), under 20
+  sandbox-minutes; every sandbox killed, the account listing 0 running after.
+
+### Real turns (review round 3, template `sad436b51fe608258`)
+
+The capture server now answers each model request with a minimal valid reply in its sealed
+API's wire format, and the probe runs two turns per engine and provider: a new conversation,
+then its resume from a home made again from the store; Codex compacting first
+(`model_auto_compact_token_limit=1`, its record's `cli.compaction`). Every request of both
+turns is judged.
+
+- Two development runs on the earlier template with the new runner bundle put in place
+  (2 sandboxes, about 4 sandbox-minutes): all routes passed but Gemini CLI, whose model
+  router asks `gemini-3.5-flash-lite` for JSON by a schema and failed on plain text (exit 1,
+  four retries); the reply now gives a schema's smallest object. Then all eleven passed.
+- The build of `sad436b51fe608258`: all five logins ok; all eleven routes ok, each with both
+  turns exiting 0 with their final text, the second resumed; **Codex compacted** (its compact
+  prompt's request on the door), every request under the door's path with the run's key and
+  secret, no connect outside, no fake sign-in bytes. Its record is in
+  `sandbox/template/passed.json`, which the template guard holds the pin to.
+- Every sandbox killed; the account listed 0 running after.
+
+### A resume proven by its history (review round 4, template `sf26c8eb4a2f657bf`)
+
+The first turn's prompt carries a word of its own (`probe<hex>`); the resumed turn passes only
+if its requests carry that word, so a CLI that silently starts a fresh conversation fails. A
+development run on `sad436b51fe608258` with the new runner (1 sandbox, 2 sandbox-minutes),
+then the build of `sf26c8eb4a2f657bf`: all five logins and all eleven routes pass, each
+resume carrying the first turn's word, Codex compacting. Recorded in `passed.json`, pinned.
+Every sandbox killed; 0 running after.
+
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)
 
 The runner posted its sign-ins (`claude-code`, `codex`: `signed_in: false`), synced in, ran the
@@ -85,6 +173,34 @@ CLI as its user from the record, posted frames and synced the sessions out
   configured" on stderr, exit 1.
 - **pi** (on a key, its base URL a stand-in): a `session` event with `id`, `agent_start`,
   `turn_start`, `message_start`; exit 0.
+
+## Scratch and the disk (2026-11-03, template `sfbd5920361a47279`; one throwaway sandbox, about 4 sandbox-minutes)
+
+Measured by `scripts/probes/sandboxprobe/probe.mjs` (the sandbox Worker's own E2B client), the sandbox killed after and listed gone by its tag.
+
+- **The disk.** `/` is ext4 on `/dev/vda` (`relatime,discard`), 14,427,623,424 B, with 10,745,143,296 B free when made (the image takes 3.3 GB).
+  - 3,788,096 inodes, 4 KiB blocks: one inode for every 3.8 KB, so a tree of small files runs out of bytes before inodes.
+  - 78,150 blocks (320 MB) kept for root.
+  - 2 vCPU and 1 GiB of memory.
+- **Scratch written.** 6 GB of random bytes and 20,000 small files went to `/scratch` in 24 s; 4.3 GB was then free.
+- **Resume with that disk.**
+  - Pause with memory: 7.0 s.
+  - After 60 s paused, `connect`: 881 ms, then the first command 460 ms, for 1.34 s in all.
+  - The scratch was all there.
+- **A full disk.**
+  - A run user's write fails `No space left on device`, and `df` shows 0 free.
+  - Root still wrote: ext4 keeps root's 320 MB. So the runner's own state survives a full disk, but the sync agent, its own user, does not. Hence the runner lets its reserve go before sync-out on a full disk (`runner.ts`).
+  - envd answered at once while the disk was full (590 ms).
+  - Deleting the fill recovered the disk.
+- **Sync memory** (measured here, not in the sandbox: the same code):
+  - before streaming, a sync of a 489 MB tree (100 × 5 MB, 3,000 small files) grew the sync agent by 709 MB;
+  - streaming, the same tree grew it by 169 MB, and a 966 MB tree by 180 MB.
+
+  On the template's 1 GiB, the old sync would have died at about that size; the new one stays bounded.
+- **Owed:**
+  - the resume after hours paused with 5–10 GB of scratch;
+  - a clone of a 500 MB repository by a real CLI with its sync-out, in the sandbox;
+  - `scripts/linux_oracle.py` for the scratch modes and the reserve (it runs the Python suite in a container; the runner's own root tests here cover the modes: `/scratch/<agent>` root and group `ta`, 2775).
 
 ## Owed to the founder's live test (each needs a model; TinyAssets provides none)
 

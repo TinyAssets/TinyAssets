@@ -1,0 +1,1674 @@
+[
+  {
+    "tag": "sad436b51fe608258",
+    "passed_at": "2026-11-03T17:46:48Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "region": null,
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "region": null,
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "region": null,
+        "ok": true,
+        "host": "accounts.google.com"
+      },
+      {
+        "engine": "kimi",
+        "region": "global",
+        "ok": true,
+        "host": "www.kimi.ai"
+      },
+      {
+        "engine": "kimi",
+        "region": "mainland-cn",
+        "ok": true,
+        "host": "www.kimi.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ]
+  },
+  {
+    "tag": "sf26c8eb4a2f657bf",
+    "passed_at": "2026-11-03T18:28:16Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "region": null,
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "region": null,
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "region": null,
+        "ok": true,
+        "host": "accounts.google.com"
+      },
+      {
+        "engine": "kimi",
+        "region": "global",
+        "ok": true,
+        "host": "www.kimi.ai"
+      },
+      {
+        "engine": "kimi",
+        "region": "mainland-cn",
+        "ok": true,
+        "host": "www.kimi.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ]
+  },
+  {
+    "tag": "s0b5c76c98a722fbf",
+    "passed_at": "2026-11-03T19:43:05Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "region": null,
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "region": null,
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "region": null,
+        "ok": true,
+        "host": "accounts.google.com"
+      },
+      {
+        "engine": "kimi",
+        "region": "global",
+        "ok": true,
+        "host": "www.kimi.ai"
+      },
+      {
+        "engine": "kimi",
+        "region": "mainland-cn",
+        "ok": true,
+        "host": "www.kimi.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ]
+  },
+  {
+    "tag": "s16cf39b6a97bd31a",
+    "passed_at": "2026-11-03T21:54:57Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "region": null,
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "region": null,
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "region": null,
+        "ok": true,
+        "host": "accounts.google.com"
+      },
+      {
+        "engine": "kimi",
+        "region": "global",
+        "ok": true,
+        "host": "www.kimi.ai"
+      },
+      {
+        "engine": "kimi",
+        "region": "mainland-cn",
+        "ok": true,
+        "host": "www.kimi.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ],
+    "matcher": {
+      "step_ns": 2.414,
+      "ceiling_ns": 3.5,
+      "ok": true
+    }
+  },
+  {
+    "tag": "s359872eaa7f7218c",
+    "passed_at": "2026-11-03T23:15:15Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "region": null,
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "region": null,
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "region": null,
+        "ok": true,
+        "host": "accounts.google.com"
+      },
+      {
+        "engine": "kimi",
+        "region": "global",
+        "ok": true,
+        "host": "www.kimi.ai"
+      },
+      {
+        "engine": "kimi",
+        "region": "mainland-cn",
+        "ok": true,
+        "host": "www.kimi.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ],
+    "matcher": {
+      "step_ns": 4.4,
+      "ceiling_ns": 6.0,
+      "ok": true
+    }
+  },
+  {
+    "tag": "s0aa7bf9b9736ddba",
+    "passed_at": "2026-11-03T23:46:57Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "region": null,
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "region": null,
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "region": null,
+        "ok": true,
+        "host": "accounts.google.com"
+      },
+      {
+        "engine": "kimi",
+        "region": "global",
+        "ok": true,
+        "host": "www.kimi.ai"
+      },
+      {
+        "engine": "kimi",
+        "region": "mainland-cn",
+        "ok": true,
+        "host": "www.kimi.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ],
+    "matcher": {
+      "step_ns": 4.539,
+      "ceiling_ns": 6.0,
+      "ok": true
+    }
+  },
+  {
+    "tag": "sc0a20c7fb88fb4d1",
+    "passed_at": "2026-11-04T02:57:50Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "region": null,
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "region": null,
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "region": null,
+        "ok": true,
+        "host": "accounts.google.com"
+      },
+      {
+        "engine": "kimi",
+        "region": "global",
+        "ok": true,
+        "host": "www.kimi.ai"
+      },
+      {
+        "engine": "kimi",
+        "region": "mainland-cn",
+        "ok": true,
+        "host": "www.kimi.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ],
+    "matcher": {
+      "step_ns": 4.08,
+      "ceiling_ns": 6.0,
+      "ok": true
+    }
+  }
+]

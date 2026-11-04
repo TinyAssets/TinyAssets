@@ -432,12 +432,29 @@ export class Collections {
    * of the writers `filer` names (`FILERS`) whose placed body no live row
    * also names, let go, so its bytes can go; false when none is left.
    */
+  /**
+   * The bytes of every collection body the owner stores, its rows' and their history's,
+   * inline or placed (once a content). A read.
+   */
+  storedBytes(): number {
+    return this.#sql.exec<{ bytes: number }>(
+      "SELECT coalesce((SELECT SUM(body_bytes) FROM collection_rows WHERE content_id IS NULL), " +
+        "0) + coalesce((SELECT SUM(body_bytes) FROM collection_history WHERE content_id IS " +
+        "NULL), 0) + coalesce((SELECT SUM(size) FROM file_contents WHERE content_id IN " +
+        "(SELECT content_id FROM collection_rows WHERE content_id IS NOT NULL UNION SELECT " +
+        "content_id FROM collection_history WHERE content_id IS NOT NULL)), 0) AS bytes")
+      .one().bytes;
+  }
+
   readonly reclaim = (filer: string): boolean => {
+    // The oldest history entry that holds bytes no live row holds: an inline body (never
+    // the row's own revision), or placed content the row no longer names.
     const entry = this.#sql.exec<{ collection: string; key: string; revision: number }>(
-      "SELECT collection, key, revision FROM collection_history h WHERE content_id IS NOT " +
-        `NULL AND ${FILERS} AND NOT EXISTS (SELECT 1 FROM collection_rows r WHERE ` +
-        "r.collection = h.collection AND r.row_id = h.key AND r.content_id = h.content_id) " +
-        "ORDER BY at, rowid LIMIT 1", filer, filer, filer).toArray()[0];
+      "SELECT collection, key, revision FROM collection_history h WHERE body_bytes > 0 AND " +
+        `${FILERS} AND NOT EXISTS (SELECT 1 FROM collection_rows r WHERE ` +
+        "r.collection = h.collection AND r.row_id = h.key AND (r.revision = h.revision OR " +
+        "r.content_id = h.content_id)) ORDER BY at, rowid LIMIT 1", filer, filer, filer)
+      .toArray()[0];
     if (entry === undefined) {
       return false;
     }

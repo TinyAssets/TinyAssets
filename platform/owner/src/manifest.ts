@@ -143,10 +143,10 @@ export const SCOPE_REF_BYTES = (row: string): string =>
 /** An outside client's writer in the manifest, `client:` and its 64 hex characters. */
 export const CLIENT_WRITER = "client:*";
 /**
- * A share row's own charge: `recordBytes` of its `client:<id>` key (71 bytes), five
+ * A share row's own charge: `recordBytes` of its `client:<id>` key (71 bytes), six
  * counters (9 bytes each at most) and `RECORD_FIXED` (a test ties the two).
  */
-export const SHARE_BYTES = 227;
+export const SHARE_BYTES = 240;
 /** The share row every outside client's together is counted in. */
 export const CLIENTS = "*";
 /** The scope of the owner's own writers (the owner, its agent, the sync lease, the system). */

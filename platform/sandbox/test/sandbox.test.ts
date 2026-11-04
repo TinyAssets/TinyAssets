@@ -72,7 +72,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
-    unattended: false, authority: "owner", lease: LEASE,
+    unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
     tokens: { egress_token: "egress", sync_token: "sync", runner_token: hex(64, "d") },
     network: NETWORK as never,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
@@ -169,6 +169,35 @@ describe("a start", () => {
     expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com",
                                                           "egress.tinyassets.io"]);
     expect(state.commands.map((command) => command.argv[1])).toEqual(["prepare", "launch"]);
+    // No scratch retention in the record: the runner deletes no agent's scratch by age.
+    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${RUN}.json`]!;
+    expect(JSON.parse(doc).scratch_retention_days).toBeNull();
+  });
+
+  it("hands the control record's scratch retention to the runner", async () => {
+    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
+    const who = owner();
+    expect(await stub(who).start(who, start({ credential: "api_key" })))
+      .toEqual({ started: true });
+    const state = await seen();
+    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${RUN}.json`]!;
+    expect(JSON.parse(doc).scratch_retention_days).toBe(30);
+  });
+
+  it("keeps the last scratch retention read when the record cannot be read, never none",
+     async () => {
+    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
+    const who = owner();
+    expect(await stub(who).start(who, start({ credential: "api_key" })))
+      .toEqual({ started: true });
+    await env.CONTROL.put("c:control", "not json");
+    const second = `run_${hex(32, "2")}`;
+    expect(await stub(who).start(who, start({ run: second, credential: "api_key",
+                                             tokens: null, network: null })))
+      .toEqual({ started: true });
+    const state = await seen();
+    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${second}.json`]!;
+    expect(JSON.parse(doc).scratch_retention_days).toBe(30);
   });
 
   it("joins the live sandbox with no create and no lease secrets; another engine's hosts added",
@@ -645,6 +674,106 @@ describe("the look before the runtime ceiling", () => {
     await stub(who).start(who, start());
     await stub(who).release(who, { lease_id: LEASE.lease_id });
     expect(await alarmOf(who)).toBeNull();
+  });
+});
+
+describe("the meter's log (slice P)", () => {
+  it("logs the create, the pause and the resume, and drops what a read's cursor passed",
+     async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    const who = owner();
+    const before = Date.now();
+    await stub(who).start(who, start());
+    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    await stub(who).start(who, start({ run: `run_${hex(32, "3")}`,
+                                       lease: { lease_id: hex(32, "f"), epoch: 2 } }));
+    const read = await stub(who).meter(who, { after: 0 });
+    expect(read.events.map((event) => [event.authority, event.kind]))
+      .toEqual([["owner", "start"], ["owner", "pause"], ["owner", "resume"]]);
+    expect(read.events.every((event) => event.at >= before && event.at <= Date.now()))
+      .toBe(true);
+    expect(read.next).toBe(read.events.at(-1)!.seq);
+    // Read past: dropped, and nothing new.
+    expect(await stub(who).meter(who, { after: read.next }))
+      .toEqual({ events: [], next: read.next });
+  });
+});
+
+describe("a sign-in", () => {
+  const SI = `si_${"5".repeat(32)}`;
+  function signin(over: Record<string, unknown> = {}) {
+    return { id: SI, engine: "kimi", region: "global", mode: "in" as const, authority: "owner",
+             lease: LEASE, tokens: start().tokens, network: NETWORK as never,
+             urls: { events: `https://egress.tinyassets.io/signin/${SI}/events`,
+                     signin: "https://egress.tinyassets.io/signin" }, ...over };
+  }
+
+  it("starts the record's login in the authority's sandbox, its region's hosts let out",
+     async () => {
+    const who = owner();
+    expect(await stub(who).signin(who, signin() as never)).toEqual({ started: true });
+    const state = await seen();
+    const box = state.sandboxes[0]!;
+    expect(box.network.allowOut).toEqual(expect.arrayContaining(["auth.kimi.ai", "api.kimi.ai"]));
+    expect(box.network.allowOut).not.toContain("auth.kimi.com");
+    expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
+      ["prepare", "1.1.1.1"], ["login-launch", SI]]);
+    const doc = JSON.parse(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.json`]!);
+    expect(doc).toEqual({ id: SI, engine: "kimi", region: "global", mode: "in",
+                          authority: "owner", urls: signin().urls });
+    expect(JSON.parse(state.files[`${box.id}:/var/lib/ta/lease.json`]!).tokens.runner_token)
+      .toBe("d".repeat(64));
+    // A sign-in in progress keeps the sandbox leased: its look is the idle one, not a reap.
+    expect(await alarmOf(who)).not.toBeNull();
+  });
+
+  it("hands a pasted code to the live sign-in, and stops it", async () => {
+    const who = owner();
+    await stub(who).signin(who, signin({ engine: "claude-code", region: null }) as never);
+    expect(await stub(who).signinInput(who, { authority: "owner", id: SI, code: "abc#d" }))
+      .toEqual({ delivered: true });
+    const state = await seen();
+    const box = state.sandboxes[0]!;
+    expect(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.code`]).toBe("abc#d");
+    expect(state.commands.at(-1)!.argv.slice(1)).toEqual(["login-input", SI]);
+    expect(await stub(who).signinCancel(who, { authority: "owner", id: SI }))
+      .toEqual({ cancelled: true });
+    expect((await seen()).commands.at(-1)!.argv.slice(1)).toEqual(["login-cancel", SI]);
+    // No sandbox running in a client's name: nothing to hand a code to.
+    expect(await stub(who).signinInput(who, { authority: "c".repeat(64), id: SI, code: "x" }))
+      .toEqual({ delivered: false });
+  });
+
+  it("drops a pasted code whose hand-over failed: it never rests on disk (review L1)",
+     async () => {
+    const who = owner();
+    await stub(who).signin(who, signin({ engine: "claude-code", region: null }) as never);
+    await e2b("/script", { broken: "login-input" });
+    const failed = await stub(who).signinInput(who, { authority: "owner", id: SI, code: "abc#d" })
+      .then(() => null, (error: unknown) => error);
+    expect(failed).toBeInstanceOf(Error);
+    expect((await seen()).commands.slice(-2).map((command) => command.argv.slice(1)))
+      .toEqual([["login-input", SI], ["login-drop", SI]]);
+  });
+
+  it("waits its turn in the line as a start does", async () => {
+    await e2b("/script", { full: true });
+    const who = owner();
+    expect(await stub(who).signin(who, signin() as never)).toEqual({ started: false,
+                                                                     code: CODES.waiting });
+    expect(await line()).toEqual([who]);
+  });
+
+  it("refuses a sign-in that is not one: its id, a region the record lacks, plain HTTP", async () => {
+    const who = owner();
+    for (const bad of [signin({ id: "run_x" }), signin({ region: "moon" }),
+                       signin({ urls: { events: "http://egress.tinyassets.io/x",
+                                        signin: "https://egress.tinyassets.io/signin" } })]) {
+      const refused = await stub(who).signin(who, bad as never)
+        .then(() => null, (error: unknown) => error);
+      expect(refused).not.toBeNull();
+    }
+    expect((await seen()).sandboxes).toEqual([]);
   });
 });
 

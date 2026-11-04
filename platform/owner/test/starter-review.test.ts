@@ -13,8 +13,9 @@ import { AGENT_UNDEFINED } from "../src/agent-file";
 import { SEARCH_ANSWER_BYTES, searchPage, type Scanned } from "../src/file-search";
 import { Notices } from "../src/notices";
 import type { OwnerDO } from "../src/owner-do";
-import { carried, NEWER, Starter, type StarterFile, starterPackage, type StarterPackage }
-  from "../src/starter";
+import {
+  carried, NEWER, Starter, STARTER_RETRY_S, type StarterFile, starterPackage, type StarterPackage,
+} from "../src/starter";
 import { gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import {
@@ -354,6 +355,44 @@ describe("the goals (starter version 3)", () => {
     expect(await readText(theirs, `${GOALS}/index.md`)).toBe("# Active");
     expect(await readText(theirs, `${GOALS}/index.md${NEWER}`))
       .toBe(textOf(`${GOALS}/index.md`));
+  });
+});
+
+describe("the seed and the one storage wall (after slice STORE)", () => {
+  it("counts the starter's files in the owner's one storage number; a seed refused " +
+     "storage_full writes nothing whole, tells the owner once, and lands once there is room",
+     async () => {
+    const r = await rig();
+    const pkg = starterPackage({ version: 1, files: [
+      file(`${SKILLS}/big/SKILL.md`, "x".repeat(6_000)), file(`${AGENTS}/agent.json`,
+                                                              agentJson(["read_files"]))] });
+    const seed = (now: number, maxBytes: number) =>
+      inGate(r.stub, async (_instance, _state, gate) => {
+        const notices = new Notices(gate.storage);
+        await new Starter({
+          storage: gate.storage, write: gate.write, admitted: () => true, clock: () => now,
+          files: filesOn(gate.storage, gate.write, env.FILES, { max_bytes: maxBytes }),
+          notice: (type, detail) => notices.add(type, detail, now),
+        }, pkg).run(now);
+      });
+    // The owner's own bytes leave no room for the starter's under a 10 KB figure.
+    await r.stub.fileWrite(r.bind(null), { path: "/workspace/mine.bin", expected_etag: "",
+                                           content: text("m".repeat(6_000)) });
+    const before = (await r.stub.storageUsage(r.bind(null))).used_bytes;
+    const now = Date.now() / 1000;
+    await seed(now, 10_000);
+    await seed(now + STARTER_RETRY_S, 10_000);
+    const failed = await notices(r, "starter_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain("storage_full");
+    expect((await r.stub.starterReceipts(r.bind(null))).version).toBe(0);
+    expect(await readText(r, `${AGENTS}/agent.json`)).toBeNull();
+    // With room (a larger figure: the owner upgraded), the next pass lands it all, counted.
+    await seed(now + 2 * STARTER_RETRY_S, 100_000);
+    expect((await r.stub.starterReceipts(r.bind(null))).version).toBe(1);
+    expect(await readText(r, `${AGENTS}/agent.json`)).toBe(agentJson(["read_files"]));
+    expect((await r.stub.storageUsage(r.bind(null))).used_bytes)
+      .toBeGreaterThanOrEqual(before + 6_000);
   });
 });
 

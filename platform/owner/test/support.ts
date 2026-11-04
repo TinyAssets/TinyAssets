@@ -1,8 +1,9 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { bundledSources, signinsOn } from "../../doors/src/sources";
 import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
-import { type ChunkStore, type FileLimits, Files } from "../src/files";
+import { type ChunkStore, type FileLimits, Files, type Full } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
 import {
   CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
@@ -11,8 +12,16 @@ import {
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
+import { storageFull, storageFullMessage } from "../src/storage-full";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
+
+/**
+ * Every served sign-in switched on, as the doors hand them when the control record turns
+ * each on: what a test's binding carries unless it names fewer (`Binding.signins`).
+ */
+export const EVERY_SIGNIN: readonly string[] = Object.freeze(signinsOn(
+  bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
 
 /** The founder's numbers (ADR-034 decision 8), as the tests' control record holds them. */
 export const TIERS = Object.freeze({
@@ -50,12 +59,46 @@ export function faulty(write: Write, fails: (n: number) => boolean): Write {
  * over its gate's view; a test that calls their synchronous changes directly passes the
  * storage itself.
  */
+/**
+ * The files Worker as the `FILES` binding reaches it, with `overrides` in place of some of
+ * its methods: a store that fails or records one call and passes the rest through.
+ */
+export function through(overrides: Partial<ChunkStore>): ChunkStore {
+  const files = env.FILES;
+  return {
+    mintKey: (ns) => files.mintKey(ns),
+    putChunks: (ns, key, chunks) => files.putChunks(ns, key, chunks),
+    getChunks: (ns, key, reads) => files.getChunks(ns, key, reads),
+    deleteChunks: (ns, key, sha256s) => files.deleteChunks(ns, key, sha256s),
+    rewrapKey: (ns, key) => files.rewrapKey(ns, key),
+    rewrapManifestRoot: (ns, day) => files.rewrapManifestRoot(ns, day),
+    deleteNamespace: (ns) => files.deleteNamespace(ns),
+    putManifestPart: (ns, key, day, part, bytes) =>
+      files.putManifestPart(ns, key, day, part, bytes),
+    putManifestSegment: (ns, key, gen, a, b, bytes) =>
+      files.putManifestSegment(ns, key, gen, a, b, bytes),
+    putManifestRoot: (ns, key, gen, parts, segments, span) =>
+      files.putManifestRoot(ns, key, gen, parts, segments, span),
+    getManifestRoot: (ns, gen) => files.getManifestRoot(ns, gen),
+    getManifestPart: (ns, key, gen, part, sha256) =>
+      files.getManifestPart(ns, key, gen, part, sha256),
+    getManifestSegment: (ns, key, gen, a, b, sha256) =>
+      files.getManifestSegment(ns, key, gen, a, b, sha256),
+    deleteManifest: (ns, gen, parts, segments) => files.deleteManifest(ns, gen, parts, segments),
+    ...overrides,
+  };
+}
+
 export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore = env.FILES,
                         limits: Partial<FileLimits> = {}): Files {
   return new Files(storage, store, () => ({ ...FILE_DEFAULTS,
                                             max_bytes: TIERS.free.storage_bytes, ...limits }),
-                   write);
+                   write, TIERLESS_FULL);
 }
+
+/** The refusal at the storage figure with no tier named, as these files' tests make it. */
+export const TIERLESS_FULL: Full = (stored, needed, held, limit) =>
+  storageFullMessage(storageFull(stored, needed, held, limit, null, null));
 
 /**
  * The owner's files on `stub`'s own storage, with some settings changed, over the real

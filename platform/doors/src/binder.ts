@@ -253,6 +253,15 @@ export function ringOwner(env: DoorsEnv, owner: string): DurableObjectStub<Owner
 }
 
 /**
+ * A verified E2B lifecycle event's owner (`e2b-hooks.ts`, slice P), by the route E2B echoed
+ * and the doors opened: that owner's object, whose one door here (`sandboxBilled`) records
+ * the sandbox time E2B billed. It carries no binding: the event grants nothing.
+ */
+export function sandboxHookOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDO> {
+  return env.OWNER.getByName(principal(owner));
+}
+
+/**
  * What a sandbox's call presents beside its egress token: a run's own secret (its path's,
  * on its model calls and MCP door), or the runner's (`x-ta-runner`, on its event door and
  * sign-in report). The binding carries only each one's SHA-256, which the object checks.
@@ -278,11 +287,15 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
 }
 
 /**
- * The binding with the platform control record's tier numbers, as the doors read the record
- * for this call (`control.ts`): the run doors' admission reads them; no request names them.
+ * The binding with what the platform control record holds for this call, as the doors read
+ * it (`control.ts`): its tier numbers, which the run doors' admission reads, and the served
+ * records whose vendor sign-in is switched on, which the object's sign-in doors and its
+ * runs' admission hold to. No request names either.
  */
-export function withTiers({ binding, stub }: Bound, tiers: unknown): Bound {
-  return { binding: { ...binding, tiers }, stub };
+export function withTiers({ binding, stub }: Bound,
+                          gated: { readonly tiers: unknown; readonly signins: readonly string[] }):
+    Bound {
+  return { binding: { ...binding, tiers: gated.tiers, signins: gated.signins }, stub };
 }
 
 /**

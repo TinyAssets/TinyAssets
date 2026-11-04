@@ -3,8 +3,11 @@
  *
  * The bytes are immutable chunks of at most 4 MiB in one R2 bucket shared by every
  * owner, each named by its SHA-256 under this owner's random 128-bit namespace `ns`,
- * which is made on first use and held only here. The files Worker (`FILES`) moves them
- * and never sees a path. Everything that says what a file is lives in this object's
+ * which is made on first use and held only here, and each put and read under this owner's
+ * own data key (SSE-C), which this object holds only wrapped (`data_key`, made with the
+ * namespace by `FILES.mintKey`): opened by the files Worker's keyring for one call at a
+ * time, never here, and gone with the object at erasure (crypto-erasure, `datakey.ts`).
+ * The files Worker (`FILES`) moves them and never sees a path. Everything that says what a file is lives in this object's
  * SQLite: paths, versions and history, which chunks make which content, the chunks'
  * reference counts, upload intents, quotas, the change feed and the sync lease. Files of
  * 4 KiB or less are kept inline, so reading `AGENTS.md` or a skill touches no bucket.
@@ -87,10 +90,13 @@ import {
 } from "./paths";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 
+
 export { CHUNK_BYTES } from "./manifest";
 /**
- * The fixed codes a quota's refusal starts with: an owner-wide bound (`file_quota`), and an
- * outside client's share of one, or all clients' together (`file_share`).
+ * The fixed codes a quota's refusal starts with: the owner's whole storage, the tier's
+ * figure or the owner's own lower one (`storage_full`, `storage-full.ts`: the one wall a
+ * user meets); another owner-wide bound (`file_quota`); and an outside client's share of
+ * one, or all clients' together (`file_share`).
  */
 export const FILE_QUOTA = "file_quota";
 export const FILE_SHARE = "file_share";
@@ -117,8 +123,17 @@ export const INTENT_TTL_S = 86_400;
  * door call, so a crashed placement holds its quota and its upload slot for minutes only.
  */
 export const PLACE_TTL_S = 600;
-/** How long a garbage chunk waits before it is deleted (the schema's trigger sets it). */
-export const GC_GRACE_S = 86_400;
+/**
+ * How long a garbage chunk waits before it is deleted (the schema's trigger sets it): 30
+ * days, the object's own point-in-time recovery window (Durable Objects restore "to any point
+ * in the past 30 days"), so a restored object, or a manifest, never names a chunk the sweep
+ * took. A garbage chunk counts in no owner's storage; once an owner's garbage in its grace
+ * passes the owner's storage figure, the oldest is collected early (`collect`), never one the
+ * newest manifest names, so what the platform keeps uncounted for an owner is bounded by what
+ * it counts. What the owner is told: "Deleted files are kept up to 30 days, within your
+ * storage; past that the oldest go first."
+ */
+export const GC_GRACE_S = 30 * 86_400;
 /** When a failed chunk delete is tried again. */
 export const GC_RETRY_S = 300;
 /** A sandbox lease's life without a renewal; a run's heartbeat lapses as soon. */
@@ -194,15 +209,49 @@ export function scopesOf(writer: string): readonly string[] {
   return isClient(writer) ? [CLIENTS, writer] : [OWNER_SCOPE];
 }
 
-/** What the files Worker does for the object; the `FILES` binding. */
+/**
+ * What the files Worker does for the object; the `FILES` binding. `key` is always this
+ * owner's wrapped data key, which only the files Worker can open.
+ */
 export interface ChunkStore {
-  putChunks(ns: string, chunks: { sha256: string; bytes: Uint8Array }[]):
+  mintKey(ns: string): Promise<{ key: string }>;
+  putChunks(ns: string, key: string, chunks: { sha256: string; bytes: Uint8Array }[]):
     Promise<{ created: number }>;
-  getChunks(ns: string, reads: { sha256: string; offset?: number; length?: number }[]):
+  getChunks(ns: string, key: string,
+            reads: { sha256: string; offset?: number; length?: number }[]):
     Promise<Uint8Array[]>;
-  deleteChunks(ns: string, sha256s: string[]): Promise<{ deleted: number }>;
+  deleteChunks(ns: string, key: string, sha256s: string[]): Promise<{ deleted: number }>;
+  /** The wrapped key wrapped again under the ring's active kid (a rotation's sweep). */
+  rewrapKey(ns: string, key: string): Promise<{ key: string }>;
+  /** A generation root's wrapped key wrapped again in place; null when there is no root. */
+  rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string } | null>;
   /** Every object under the namespace's prefix deleted: the erasure's alone. */
   deleteNamespace(ns: string): Promise<{ deleted: number }>;
+  putManifestPart(ns: string, key: string, gen: string, part: number, bytes: Uint8Array):
+    Promise<{ sha256: string; size: number }>;
+  putManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
+                     bytes: Uint8Array): Promise<{ sha256: string; size: number }>;
+  putManifestRoot(ns: string, key: string, gen: string,
+                  parts: readonly { sha256: string; size: number }[],
+                  segments: readonly { a: number; b: number; sha256: string; size: number }[],
+                  span: { s: number; e: number }): Promise<void>;
+  /** A generation's root, its lists opened; null for none. */
+  getManifestRoot(ns: string, gen: string): Promise<{
+    parts: readonly { sha256: string; size: number }[];
+    segments: readonly { a: number; b: number; sha256: string; size: number }[];
+    s: number; e: number; key: string } | null>;
+  getManifestPart(ns: string, key: string, gen: string, part: number, sha256: string):
+    Promise<Uint8Array>;
+  getManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
+                     sha256: string): Promise<Uint8Array>;
+  deleteManifest(ns: string, gen: string, parts: number,
+                 segments: readonly { a: number; b: number }[]): Promise<void>;
+}
+
+/** The owner's place in the bucket: its namespace and its wrapped data key. */
+export interface ChunkSpace {
+  readonly ns: string;
+  readonly key: string;
 }
 
 /**
@@ -213,6 +262,20 @@ export interface ChunkStore {
  * is left. Run in the change's own unit, before its quota is checked.
  */
 export type Reclaim = (filer: string) => boolean;
+
+/**
+ * The refusal at the owner's storage figure: its message from what is stored (open uploads
+ * apart), what the change needs, what open uploads hold, and the figure (`storage-full.ts`).
+ */
+/**
+ * A workspace path a change made or took away, in that change's own unit: whether it is
+ * there now, and the change itself (its writer, and a file's content and size).
+ */
+export type Changed = (path: string, present: boolean, now: number,
+                       change: { writer: string; content_id: string | null; size: number })
+  => void;
+
+export type Full = (stored: number, needed: number, held: number, limit: number) => string;
 
 export type FileKind = "file" | "dir";
 
@@ -263,6 +326,10 @@ export interface Usage {
   readonly chunk_bytes: number;
   readonly inline_bytes: number;
   readonly manifest_bytes: number;
+  /** Inline bodies of collection rows, their history and mail. */
+  readonly body_bytes: number;
+  /** All the user content the tier's storage counts: chunks, small files, inline bodies. */
+  readonly stored: number;
   readonly intents: number;
   readonly intent_chunks: number;
   readonly limits: FileLimits;
@@ -271,7 +338,7 @@ export interface Usage {
    * each quota, or the owner's own writers'.
    */
   readonly share: Pick<Usage, "entries" | "history" | "chunk_bytes" | "inline_bytes" |
-                              "manifest_bytes">;
+                              "manifest_bytes" | "body_bytes" | "stored">;
 }
 
 export interface Lease {
@@ -372,6 +439,7 @@ type StoredEntry = {
 
 type Space = {
   ns: string | null;
+  data_key: string | null;
   seq: number;
   feed_floor: number;
   entries: number;
@@ -379,6 +447,14 @@ type Space = {
   chunk_bytes: number;
   inline_bytes: number;
   manifest_bytes: number;
+  /** Inline bodies of collection rows, their history and mail (the schema's triggers). */
+  body_bytes: number;
+  /**
+   * Everything the owner's writers store, wherever it lives: chunk bytes in R2 (files and
+   * placed bodies), small files and inline bodies in the object. The tier's one storage
+   * number (`max_bytes`) bounds it. Computed by the reads, never stored.
+   */
+  stored: number;
   intents: number;
   intent_chunks: number;
   epoch: number;
@@ -389,7 +465,7 @@ type Space = {
 };
 
 type Counters = Pick<Space, "entries" | "history" | "chunk_bytes" | "inline_bytes" |
-                             "manifest_bytes">;
+                             "manifest_bytes" | "body_bytes" | "stored">;
 
 /** What a change is checked against: the owner's counters, its writer's share and all clients'. */
 interface Before {
@@ -399,12 +475,15 @@ interface Before {
 }
 
 const NO_SHARE: Counters = Object.freeze({ entries: 0, history: 0, chunk_bytes: 0,
-                                           inline_bytes: 0, manifest_bytes: 0 });
+                                           inline_bytes: 0, manifest_bytes: 0, body_bytes: 0,
+                                           stored: 0 });
+/** What the tier's storage counts, as a column expression over a counters row. */
+const STORED = "chunk_bytes + inline_bytes + body_bytes";
 
 /** Each counter a quota bounds: its setting, and what it is called in a refusal. */
 const QUOTAS: readonly (readonly [keyof Counters, keyof FileLimits, string])[] = Object.freeze([
-  Object.freeze(["chunk_bytes", "max_bytes", "file bytes"] as const),
   Object.freeze(["inline_bytes", "max_inline_bytes", "small-file bytes"] as const),
+  Object.freeze(["stored", "max_bytes", "stored bytes"] as const),
   Object.freeze(["manifest_bytes", "max_manifest_bytes", "file manifest bytes"] as const),
   Object.freeze(["entries", "max_entries", "file entries"] as const),
   Object.freeze(["history", "max_history", "file history rows"] as const),
@@ -527,6 +606,8 @@ export function batches<T extends { size: number }>(items: readonly T[]): T[][] 
  * writer begins again once the delete lands (a placed body's door does so itself).
  */
 export const CHUNK_DELETING = "a chunk of this upload is being deleted; begin again";
+/** A chunk an export names that the owner no longer stores (or never did). */
+export const CHUNK_GONE = "no such chunk: it is gone from the bucket; begin the export again";
 
 export function conflictName(name: string, epoch: number, n: number): string {
   const suffix = `.ta-conflict-${epoch}${n > 1 ? `-${n}` : ""}`;
@@ -541,6 +622,8 @@ export class Files {
   readonly #storage: OwnerStorage;
   readonly #store: ChunkStore;
   readonly #limits: () => FileLimits;
+  /** When (s) the newest finished nightly manifest began, or null: what it names is kept. */
+  readonly #manifested: () => number | null;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
   /** What retention frees at the byte quota (the collections' history, acked mail). */
@@ -552,17 +635,28 @@ export class Files {
    * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
    * the change.
    */
-  readonly #changed: (path: string, present: boolean, now: number) => void;
+  readonly #changed: Changed;
+  /**
+   * The refusal at the storage figure (`storage-full.ts`): the one wall, its message naming
+   * what is stored, what the change needs, what open uploads hold apart, the whole, how to
+   * free space and the upgrade path. The object names the owner's tier: its caller's to give,
+   * never a default.
+   */
+  readonly #full: Full;
+  /** The chunk bytes the change in hand moved to `uploading` itself (`begin`), for `#bounds`. */
+  #moved = 0;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write, reclaim: Reclaim = () => false,
-              changed: (path: string, present: boolean, now: number) => void = () => {}) {
+              write: Write, full: Full, reclaim: Reclaim = () => false,
+              changed: Changed = () => {}, manifested: () => number | null = () => null) {
     this.#storage = storage;
+    this.#manifested = manifested;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
     this.#reclaim = reclaim;
     this.#changed = changed;
+    this.#full = full;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -570,7 +664,7 @@ export class Files {
   }
 
   #space(): Space {
-    return this.#sql.exec<Space>("SELECT * FROM file_space").one();
+    return this.#sql.exec<Space>(`SELECT *, ${STORED} AS stored FROM file_space`).one();
   }
 
   /**
@@ -587,9 +681,32 @@ export class Files {
     return made;
   }
 
-  /** The namespace from outside a unit: made through the gate on first use. */
-  async namespace(): Promise<string> {
-    return this.#space().ns ?? await this.#write(() => this.ns());
+  /**
+   * In a unit: `act`, a change made outside the files plane that may store user content (a
+   * collection write, a post, a mail's reply, their inline bodies counted by the schema's
+   * triggers), held to the tier's storage as a file change is, in `filer`'s scopes: retention
+   * makes room first, then a change past the bound is refused (`file_quota`, `file_share`).
+   */
+  held<T>(filer: string, act: () => T): T {
+    return this.#change(filer, () => act());
+  }
+
+  /**
+   * The namespace and its wrapped data key, from outside a unit: the namespace made through
+   * the gate on first use, then its key minted by `FILES` and kept in a unit of its own
+   * unless one was kept meanwhile (a lost race's key opens nothing anyone stored under).
+   */
+  async space(): Promise<ChunkSpace> {
+    const held = this.#space();
+    if (held.ns !== null && held.data_key !== null) {
+      return { ns: held.ns, key: held.data_key };
+    }
+    const ns = held.ns ?? await this.#write(() => this.ns());
+    const { key } = await this.#store.mintKey(ns);
+    return this.#write(() => {
+      this.#sql.exec("UPDATE file_space SET data_key = ? WHERE data_key IS NULL", key);
+      return { ns, key: this.#space().data_key! };
+    });
   }
 
   /**
@@ -604,22 +721,28 @@ export class Files {
    */
   #change<T>(writer: string | null, act: (now: number) => T,
              freeing = false): T {
-    return this.#storage.transactionSync(() => {
-      const before = this.#before(writer);
-      const value = act(Date.now() / 1000);
-      this.#fit(before, writer);
-      if (!freeing) {
-        this.#bounds(before, writer);
-      }
-      return value;
-    });
+    const outer = this.#moved;
+    this.#moved = 0;
+    try {
+      return this.#storage.transactionSync(() => {
+        const before = this.#before(writer);
+        const value = act(Date.now() / 1000);
+        this.#fit(before, writer);
+        if (!freeing) {
+          this.#bounds(before, writer);
+        }
+        return value;
+      });
+    } finally {
+      this.#moved = outer;
+    }
   }
 
   /** One share row's counters (`file_shares`, kept by the schema's triggers), or zeros. */
   #share(who: string): Counters {
     return this.#sql.exec<Counters>(
-      "SELECT entries, history, chunk_bytes, inline_bytes, manifest_bytes FROM file_shares " +
-        "WHERE who = ?", who).toArray()[0] ?? NO_SHARE;
+      "SELECT entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes, " +
+        `${STORED} AS stored FROM file_shares WHERE who = ?`, who).toArray()[0] ?? NO_SHARE;
   }
 
   #before(writer: string | null): Before {
@@ -675,6 +798,20 @@ export class Files {
           throw new Refused(TIER_UNREAD);  // the tier's storage is not known: no guess
         }
         if (after[counter] > shareOf(bound, scope.percent)) {
+          // The owner's whole storage is the one wall a user meets: `storage_full`, or
+          // `uploads_open` when open uploads alone leave no room. A client's share of it, and
+          // the index's own ceilings, keep their codes.
+          if (setting === "max_bytes" && scope.filer === "*") {
+            const needed = after[counter] - scope.before[counter];
+            // What open uploads held before this change: what is uploading now, less the
+            // chunks this change itself moved to uploading (an upload's begin), summed as it
+            // moved them, so retention reclaimed in the same change never counts as held.
+            const held = Math.max(0, this.#sql.exec<{ bytes: number }>(
+              "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = " +
+                "'uploading'").one().bytes - this.#moved);
+            throw new Refused(this.#full(Math.max(0, scope.before[counter] - held), needed,
+                                         held, bound));
+          }
           throw new Refused(scope.refusal(what));
         }
       }
@@ -700,8 +837,8 @@ export class Files {
       // Retention kept in R2 makes room first (ADR-035): past the byte quota, the scope's
       // oldest placed history and acked mail go before the change is held to it.
       const bytes = limits.max_bytes;
-      while (bytes !== null && scope.now().chunk_bytes > Math.max(
-               shareOf(bytes, scope.percent), scope.before.chunk_bytes)
+      while (bytes !== null && scope.now().stored > Math.max(
+               shareOf(bytes, scope.percent), scope.before.stored)
              && this.#reclaim(scope.filer)) {
         // one entry or message a step, until the scope fits or nothing is left
       }
@@ -809,6 +946,31 @@ export class Files {
     ];
   }
 
+  /**
+   * A small file's bytes, kept in the object, by its content id; null for content in
+   * chunks. A read, for what follows a change in its own unit.
+   */
+  inlineOf(contentId: string): Uint8Array | null {
+    const row = this.#sql.exec<{ inline: ArrayBuffer | null }>(
+      "SELECT inline FROM file_contents WHERE content_id = ?", contentId).toArray()[0];
+    return row?.inline === null || row === undefined ? null : new Uint8Array(row.inline);
+  }
+
+  /** The content a path's last change before `version` left, or null. A read. */
+  contentBefore(path: string, version: number): { content_id: string; size: number } | null {
+    const row = this.#sql.exec<{ content_id: string | null; size: number }>(
+      "SELECT content_id, size FROM file_history WHERE path = ? AND version < ? " +
+        "ORDER BY version DESC LIMIT 1", path, version).toArray()[0];
+    return row === undefined || row.content_id === null ? null
+      : { content_id: row.content_id, size: row.size };
+  }
+
+  /** The newest version of a path's history. A read. */
+  lastVersion(path: string): number {
+    return this.#sql.exec<{ version: number | null }>(
+      "SELECT MAX(version) AS version FROM file_history WHERE path = ?", path).one().version ?? 0;
+  }
+
   #content(contentId: string, size: number): { inline?: Uint8Array; chunks?: ChunkRef[] } {
     if (size <= INLINE_BYTES) {
       const row = this.#sql.exec<{ inline: ArrayBuffer | null }>(
@@ -866,17 +1028,59 @@ export class Files {
     return row;
   }
 
+  /**
+   * Of `sha256s`, each a chunk this owner stores (put, and not being deleted: live, or
+   * garbage still in its grace), in order: what an export fetches by the hashes its pages
+   * named. Any other, never stored or gone since, is refused (`CHUNK_GONE`). A read.
+   */
+  storedChunks(sha256s: readonly unknown[]): string[] {
+    return sha256s.map((sha256) => {
+      if (typeof sha256 !== "string" || !HEX64.test(sha256)) {
+        throw new Invalid("a chunk is named by its sha256");
+      }
+      const found = this.#sql.exec("SELECT 1 FROM file_chunks WHERE sha256 = ? AND stored = 1 " +
+                                     "AND state != 'deleting'", sha256).toArray().length > 0;
+      if (!found) {
+        throw new FileFault("not_found", CHUNK_GONE);
+      }
+      return sha256;
+    });
+  }
+
+  /**
+   * A key rotation's sweep for this owner (`files/src/datakey.ts`): its wrapped data key
+   * wrapped again under the ring's active kid and kept, then each manifest root of `days`
+   * wrapped again in place, so no copy of the key under a retiring kid outlives the sweep,
+   * an idle owner's included. Whether the object's copy changed, and the roots found.
+   */
+  async rewrap(days: readonly string[]): Promise<{ rewrapped: boolean; roots: number }> {
+    const { ns, data_key: held } = this.#space();
+    if (ns === null || held === null) {
+      return { rewrapped: false, roots: 0 };  // nothing was ever stored under a key
+    }
+    const { key } = await this.#store.rewrapKey(ns, held);
+    if (key !== held) {
+      await this.#write(() => this.#sql.exec(
+        "UPDATE file_space SET data_key = ? WHERE data_key = ?", key, held));
+    }
+    let roots = 0;
+    for (const day of days) {
+      roots += await this.#store.rewrapManifestRoot(ns, day) === null ? 0 : 1;
+    }
+    return { rewrapped: key !== held, roots };
+  }
+
   /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
   async fetch(reads: readonly { sha256: string; offset?: number; length?: number }[]):
       Promise<Uint8Array[]> {
     if (reads.length === 0) {
       return [];
     }
-    const ns = await this.namespace();
+    const { ns, key } = await this.space();
     const groups = batches(reads.map((read) => ({ read, size: read.length ?? CHUNK_BYTES })));
     const out: Uint8Array[] = [];
     for (const group of groups) {
-      out.push(...await this.#store.getChunks(ns, group.map((item) => item.read)));
+      out.push(...await this.#store.getChunks(ns, key, group.map((item) => item.read)));
     }
     return out;
   }
@@ -920,10 +1124,11 @@ export class Files {
    * scope's: an outside client's share, or the owner's own writers'.
    */
   usage(writer = "owner"): Usage {
-    const { entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents,
-            intent_chunks } = this.#space();
-    return { entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents,
-             intent_chunks, limits: this.#limits(), share: this.#share(scopesOf(writer).at(-1)!) };
+    const { entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes, stored,
+            intents, intent_chunks } = this.#space();
+    return { entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes, stored,
+             intents, intent_chunks, limits: this.#limits(),
+             share: this.#share(scopesOf(writer).at(-1)!) };
   }
 
   // -- WRITING ------------------------------------------------------------------
@@ -945,7 +1150,7 @@ export class Files {
       version, path, op, kind, contentId, size, mode, writer, now,
     );
     this.#retain(path, kind !== null);
-    this.#changed(path, kind === "file", now);
+    this.#changed(path, kind === "file", now, { writer, content_id: contentId, size });
     return version;
   }
 
@@ -1185,7 +1390,9 @@ export class Files {
       refuseErasing(this.#storage);
       return this.ns();
     });
-    const put = this.#store.putChunks(ns, chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    const { key } = await this.space();
+    const put = this.#store.putChunks(ns, key,
+                                      chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
     this.#puts.add(put);
     try {
       await put;
@@ -1299,7 +1506,8 @@ export class Files {
    * reserve leaves. Every bound is checked here, before any byte is sent.
    */
   begin(size: unknown, chunks: unknown, writer: string, readable: readonly string[] = [],
-        placing = false): { intent_id: string; missing: string[]; expires_at: number } {
+        placing = false, lease: string | null = null):
+      { intent_id: string; missing: string[]; expires_at: number } {
     refuseErasing(this.#storage);
     // A placed body (ADR-035) is no file: any size past its threshold, its own short life.
     const bytes = count(size, "size", placing ? 1 : INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
@@ -1343,11 +1551,13 @@ export class Files {
         if (row === undefined) {
           sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, holder) " +
                      "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, own);
+          this.#moved += chunkSize;
         } else if (row.state === "deleting") {
           throw new Refused(CHUNK_DELETING);
         } else if (row.state === "garbage") {
           sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
                      "WHERE sha256 = ?", sha256);
+          this.#moved += chunkSize;
         } else {
           sql.exec("UPDATE file_chunks SET holds = holds + 1 WHERE sha256 = ?", sha256);
         }
@@ -1358,8 +1568,8 @@ export class Files {
       }
       const expiresAt = now + (placing ? PLACE_TTL_S : INTENT_TTL_S);
       sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at, writer, " +
-                 "pending) VALUES (?, ?, ?, ?, ?, ?)", intentId, bytes,
-               (chunks as string[]).join(""), expiresAt, writer, missing.join(""));
+                 "pending, lease) VALUES (?, ?, ?, ?, ?, ?, ?)", intentId, bytes,
+               (chunks as string[]).join(""), expiresAt, writer, missing.join(""), lease);
       return { intent_id: intentId, missing, expires_at: expiresAt };
     });
   }
@@ -1797,8 +2007,13 @@ export class Files {
       if (this.sandboxLease(now, authority) !== null) {
         throw new Refused("the sync lease is held");
       }
-      this.#sql.exec("DELETE FROM sandbox_leases WHERE authority = ? OR NOT " +
-                       `(${LIVE_LEASE})`, authority, now);
+      // A lapsed lease, or this authority's own last one, goes here on every path that
+      // opens a lease (a run's or a sign-in's), and its sync's open uploads with it.
+      for (const gone of this.#sql.exec<{ lease_id: string }>(
+        "DELETE FROM sandbox_leases WHERE authority = ? OR NOT " +
+          `(${LIVE_LEASE}) RETURNING lease_id`, authority, now).toArray()) {
+        this.#endUploads(gone.lease_id);
+      }
       const row = this.#sql.exec<{ epoch: number; seq: number }>(
         "UPDATE file_space SET epoch = epoch + 1 RETURNING epoch, seq").one();
       const leaseId = randomBytes(16).toString("hex");
@@ -1857,7 +2072,7 @@ export class Files {
       `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now)
       .toArray()[0];
     if (row === undefined || row.epoch !== epoch) {
-      throw new Refused("the sync lease was lost; this sync is fenced");
+      throw new Refused("sync_fenced: the sync lease was lost; this sync is fenced");
     }
     return row;
   }
@@ -1881,6 +2096,7 @@ export class Files {
         return { released: false };
       }
       this.#sql.exec("DELETE FROM sandbox_leases WHERE lease_id = ?", leaseId);
+      this.#endUploads(leaseId as string);
       return { released: true };
     });
   }
@@ -1916,9 +2132,35 @@ export class Files {
   /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
   /** Each lapsed lease's row gone: the ids of those that went. */
   leasesLapsed(now: number): string[] {
-    return this.#sql.exec<{ lease_id: string }>(
-      `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id`, now)
-      .toArray().map((row) => row.lease_id);
+    const gone = this.#sql.exec<{ lease_id: string }>(
+      `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id`, now).toArray();
+    for (const lease of gone) {
+      this.#endUploads(lease.lease_id);
+    }
+    return gone.map((row) => row.lease_id);
+  }
+
+  /**
+   * In a unit: every upload a lease's sync agent left open, let go as its lease ends, so no
+   * sync strands bytes against the owner's storage for a day. Only the uploads begun under
+   * that lease (`syncBegin`) go: a client's own writes and placed bodies, begun as the same
+   * writer outside any sync, are never cancelled by its sandbox's lease ending.
+   */
+  #endUploads(leaseId: string): void {
+    for (const { intent_id: intentId } of this.#sql.exec<{ intent_id: string }>(
+      "SELECT intent_id FROM file_intents WHERE lease = ?", leaseId).toArray()) {
+      this.#release(intentId);
+    }
+  }
+
+  /**
+   * The sync agent's upload, begun as its live lease's writer and named by that lease, so
+   * the lease's end lets it go (`#endUploads`).
+   */
+  syncBegin(leaseId: unknown, epoch: unknown, size: unknown, chunks: unknown):
+      { intent_id: string; missing: string[]; expires_at: number } {
+    const writer = this.syncWriter(leaseId, epoch);
+    return this.begin(size, chunks, writer, [], false, leaseId as string);
   }
 
   /**
@@ -2099,13 +2341,53 @@ export class Files {
   }
 
   /**
+   * The garbage bytes in their grace past the owner's storage figure (`max_bytes`, the
+   * lower of its own setting and its tier's), to collect early; 0 for none. A chunk being
+   * deleted is the delete's already and counts no more (`garbage_bytes`).
+   */
+  #garbageOver(): number {
+    const max = this.#limits().max_bytes;
+    const garbage = this.#sql.exec<{ garbage_bytes: number }>(
+      "SELECT garbage_bytes FROM file_space").one().garbage_bytes;
+    return max === null ? 0 : Math.max(0, garbage - max);
+  }
+
+  /**
+   * The latest `gc_after` (exclusive) a garbage chunk may have to be collected early: let go
+   * before the newest finished manifest began, so that manifest never named it (a chunk
+   * live when it began is named by it). Infinity with no manifest kept.
+   */
+  #earlyBefore(): number {
+    const began = this.#manifested();
+    return began === null ? Infinity : began + GC_GRACE_S;
+  }
+
+  /** The bytes of deleted files kept for recovery, in no owner's number. A read. */
+  garbageBytes(): number {
+    return this.#sql.exec<{ garbage_bytes: number }>("SELECT garbage_bytes FROM file_space")
+      .one().garbage_bytes;
+  }
+
+  /** Whether some garbage, not yet due, may be collected early. A read. */
+  #earlyCollectable(now: number): boolean {
+    const before = this.#earlyBefore();
+    return this.#sql.exec("SELECT 1 FROM file_chunks WHERE state = 'garbage' AND gc_after > ? " +
+                            "AND gc_after < ? LIMIT 1", now,
+                          Number.isFinite(before) ? before : Number.MAX_VALUE)
+      .toArray().length > 0;
+  }
+
+  /**
    * When housekeeping is next due, never before `now`, or null: expired intents and
    * temporary directories, due history prunes, and due chunk deletes, each with
    * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
-   * change still to apply.
+   * change still to apply, or garbage past the owner's storage figure that it may collect
+   * early. Garbage waiting on a failed delete's retry is due at that retry, never at once,
+   * and garbage the newest manifest names is never collected early.
    */
   nextAlarm(now: number): number | null {
-    if (this.#reretaining(this.#space(), this.#limits())) {
+    if (this.#reretaining(this.#space(), this.#limits())
+        || (this.#garbageOver() > 0 && this.#earlyCollectable(now))) {
       return now;
     }
     const times = [
@@ -2121,7 +2403,9 @@ export class Files {
   /**
    * One housekeeping pass, the system's own and never refused for a quota: apply a
    * retention change to kept rows, expire intents and temporary directories, prune due
-   * history, then delete due garbage chunks. A delete marks its chunks `deleting` (never
+   * history, then delete due garbage chunks, and, while the garbage in its grace is past the
+   * tier's storage figure, the oldest of it too (a technical ceiling: recovery against
+   * cost, `limits-audit.md`). A delete marks its chunks `deleting` (never
    * held again) before it asks `FILES`, and removes their rows only after; one that fails
    * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
    * lane's contract: an outside call's failure is its rows', a throw is a bug). No delete
@@ -2150,9 +2434,28 @@ export class Files {
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.
     const due = await this.#write(() => this.#storage.transactionSync(() => {
-      const found = sql.exec<{ sha256: string }>(
-        "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
-          "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
+      const rows = sql.exec<{ sha256: string; size: number; state: string }>(
+        "SELECT sha256, size, state FROM file_chunks WHERE gc_after IS NOT NULL AND " +
+          "gc_after <= ? ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray();
+      const found = rows.map((row) => row.sha256);
+      // Garbage past the owner's figure, oldest first, as far as covers it: due now; none the
+      // newest manifest names.
+      let over = this.#garbageOver() - rows.filter((row) => row.state === "garbage")
+        .reduce((sum, row) => sum + row.size, 0);
+      const before = this.#earlyBefore();
+      if (over > 0 && found.length < DELETE_BATCH) {
+        for (const row of sql.exec<{ sha256: string; size: number }>(
+               "SELECT sha256, size FROM file_chunks WHERE state = 'garbage' AND gc_after > ? " +
+                 "AND gc_after < ? ORDER BY gc_after LIMIT ?", now,
+               Number.isFinite(before) ? before : Number.MAX_VALUE,
+               DELETE_BATCH - found.length).toArray()) {
+          if (over <= 0) {
+            break;
+          }
+          found.push(row.sha256);
+          over -= row.size;
+        }
+      }
       for (const sha256 of found) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",
                  now + GC_RETRY_S, sha256);
@@ -2164,7 +2467,8 @@ export class Files {
     }
     try {
       // Bounded by the pass's budget: a late delete is tried again, as a failed one is.
-      if (await inTime(this.#store.deleteChunks(await this.namespace(), due),
+      const { ns, key } = await this.space();
+      if (await inTime(this.#store.deleteChunks(ns, key, due),
                        until - Date.now()) === "late") {
         throw new Error("the chunk delete ran past its pass");
       }

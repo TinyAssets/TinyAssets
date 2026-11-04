@@ -85,7 +85,7 @@ describe("the manifest charge", () => {
       expect([payload, row!["b"]]).toEqual([payload, recordBytes(payload, kept)]);
     }
     expect(recordBytes(1003, 1002)).toBeGreaterThan(PAGE_BYTES);
-    expect(SHARE_BYTES).toBe(recordBytes(7 + 64 + 5 * 9 + RECORD_FIXED, 1002));
+    expect(SHARE_BYTES).toBe(recordBytes(7 + 64 + 6 * 9 + RECORD_FIXED, 1002));
     const [list] = await sqlIn(r.stub, `SELECT ${CHUNK_LIST_ROW_BYTES()} AS b`);
     expect(list!["b"]).toBe(recordBytes(64 + 64 + 9 + RECORD_FIXED, 1002));
   });
@@ -169,7 +169,8 @@ describe("an outside client's share", () => {
     const usage = await r.stub.fileUsage(r.bind(MUSE));
     expect(usage.share?.manifest_bytes).toBe(mine!["manifest_bytes"]);
     expect((await r.stub.fileUsage(r.bind(null))).share)
-      .toEqual((await share(r, "owner")) && { ...(await share(r, "owner")), who: undefined });
+      .toEqual((await share(r, "owner")) && { ...(await share(r, "owner")), who: undefined,
+                                               stored: 0 });
     // The owner's room is its own.
     for (let i = 0; i < 20; i++) {
       await write(r, null, longPath(dir, MAX_PATH_BYTES, 2000 + i));
@@ -808,11 +809,3 @@ describe("the files policy's bounds inside the manifest's", () => {
   });
 });
 
-describe("migration 7", () => {
-  it("fails loudly on a file row from before it", async () => {
-    const r = await rig();
-    await write(r, null, `${W}/a`);
-    const guard = MIGRATIONS[6]!.find((statement) => statement.includes("from before"))!;
-    expect((await failure(() => sqlIn(r.stub, guard))).message).toMatch(/CHECK constraint/);
-  });
-});

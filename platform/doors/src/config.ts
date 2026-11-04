@@ -94,7 +94,7 @@ export const INBOUND_BODY_MAX = API_BODY_MAX;
 
 /** The files Worker's chunk entrypoint, as the file door's bytes reach it (`file-bytes.ts`). */
 export interface FilesService {
-  putChunks(ns: string, chunks: ChunkPut[]): Promise<{ created: number }>;
+  putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }>;
 }
 
 /**
@@ -132,6 +132,11 @@ export interface DoorsEnv {
    * owner Worker holds too: the egress door verifies a token by it before any stub call.
    */
   readonly ROUTING_MAC_KEY: string;
+  /**
+   * E2B's lifecycle webhook's signature secret (`e2b-hooks.ts`), a Worker secret slice L's
+   * deploy kit sets and registers with E2B; unset, every delivery is refused `503`.
+   */
+  readonly E2B_WEBHOOK_SECRET?: string;
   /** The OAuth provider's own store (its schema; never ours). */
   readonly OAUTH_KV: KVNamespace;
   /** The owner directory: routing hints (`directory.ts`). */

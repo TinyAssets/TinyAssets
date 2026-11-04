@@ -38,6 +38,12 @@ export interface StartDoc {
                      readonly inherit: readonly string[] };
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
+  /**
+   * How long an agent's scratch may go unused before it is deleted (`scratch.ts`): the
+   * control record's `scratch_retention_days`, handed by the sandbox Worker; absent or null
+   * when the record names none, and then only the disk's own pressure lets scratch go.
+   */
+  readonly scratch_retention_days?: number | null;
 }
 
 export const WORKSPACE = "/workspace";

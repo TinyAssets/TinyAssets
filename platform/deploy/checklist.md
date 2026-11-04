@@ -20,8 +20,9 @@ Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and
   `plan` is the approval.
 - **The secrets and variables.** The kit reads nothing from a host.
   - The `production` environment's secrets: `WORKOS_API_KEY`, `E2B_API_KEY`,
-    `ROUTING_MAC_KEY`, `GATEWAY_KEYRING`, `TINYASSETS_WIKI_CANARY_TOKEN` (the handles
-    canary's), and, if you want Slack events, `INBOUND_SLACK_SIGNING_SECRET`.
+    `ROUTING_MAC_KEY`, `GATEWAY_KEYRING`, `FILES_KEYRING`, `E2B_WEBHOOK_SECRET`,
+    `TINYASSETS_WIKI_CANARY_TOKEN` (the handles canary's), and, if you want Slack events,
+    `INBOUND_SLACK_SIGNING_SECRET`.
   - `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets, where
     `deploy-worker.yml` already reads them. The plan job reads them too; the repo's
     workflow guard counts neither as a production secret.
@@ -30,9 +31,28 @@ Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and
   - `WORKOS_API_KEY` lives on the production host today. Move it once, the way
     `copy-secrets-to-production.yml` moved the others.
   - `ROUTING_MAC_KEY` is one random 32-byte value you make and store. The kit never makes it.
-  - `GATEWAY_KEYRING`: make the first one locally with
+  - `GATEWAY_KEYRING` and `FILES_KEYRING` (the files Worker's data keys' ring), each its own:
+    make the first one locally with
     `node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>`, store the
     file's contents, then delete the file.
+  - `E2B_WEBHOOK_SECRET`: the signature secret you register with E2B's sandbox lifecycle
+    webhook (`/hooks/e2b/lifecycle`). Its registration at E2B is owed (tasks.md).
+- **The migration lock, pinned at the commit you deploy.** The kit refuses to run unless
+  `platform/owner/migrations.json` marks the first deploy and pins every migration the code
+  ships, in order. To pin it:
+  1. **Who and when.** You, or a session you ask, do it once, in the same sitting as the
+     first deploy. The deploy itself is yours to approve.
+  2. **Pin.** On a branch made from the current `main`, run this in `platform/owner`:
+     `PIN_MIGRATIONS=$(git rev-parse HEAD) npx vitest run --project guards guards/migrations.test.ts`.
+     It writes `platform/owner/migrations.json`: the first-deploy marker (time and commit)
+     and a digest for every migration.
+  3. **Land it.** Commit only that file and merge it to `main` by pull request. The workflow
+     runs only from `main`, and the kit reads the lock there.
+  4. **Deploy.** Run the Platform deploy workflow from `main`: `plan`, then `dark`.
+  5. **Every later deploy that adds a migration** repeats steps 2 and 3 first. The pin only
+     appends, and the kit refuses until it is done.
+  6. **Pin only when you deploy.** Pinning freezes the baseline for good: from then on a
+     schema change is a new migration, even if no deploy follows.
 - **`auth_time`, settled before anything changes.** Every sign-in needs AuthKit's tokens to
   carry `auth_time`. Store one real AuthKit token's `iss` and `auth_time`, copied from it, as
   the variable `OWNER_TOKEN_CLAIMS`, a JSON object (the `fetch-prod-logs` workflow shows a
@@ -63,17 +83,18 @@ It never counts as "absent".
 3. **Secrets, set only when the Worker's secret listing answered and lacks them** (or the API
    says the Worker does not exist yet). Values come from the environment's secrets:
    - `ROUTING_MAC_KEY` on the doors and the owner, both or neither;
-   - `GATEWAY_KEYRING` on the gateway;
-   - `WORKOS_API_KEY` and, if set, `INBOUND_SLACK_SIGNING_SECRET` on the doors;
+   - `GATEWAY_KEYRING` on the gateway, `FILES_KEYRING` on the files Worker;
+   - `WORKOS_API_KEY`, `E2B_WEBHOOK_SECRET` and, if set, `INBOUND_SLACK_SIGNING_SECRET` on
+     the doors;
    - `E2B_API_KEY` on the sandbox.
 
-   A held secret is never replaced unless `rotate` names it. A held `GATEWAY_KEYRING` is
-   never generated or replaced. It is rotated only by adding a key: run `keyring-add` on your
-   copy of the stored keyring, store the result, then run with `rotate: GATEWAY_KEYRING`. The
+   A held secret is never replaced unless `rotate` names it. A held keyring is never
+   generated or replaced. It is rotated only by adding a key: run `keyring-add` on your copy
+   of the stored keyring, store the result, then run with `rotate` naming it. The
    kit refuses a rotated keyring with fewer than two keys, or whose active key is not among
    them. **Residual:** Cloudflare never shows a held secret, so the kit cannot read the
    deployed keyring back. A two-key ring that dropped the deployed key would pass its check
-   and make every sealed credential unreadable. `keyring-add` keeps every old key by
+   and make every sealed credential (or, for `FILES_KEYRING`, every chunk) unreadable. `keyring-add` keeps every old key by
    construction, so rotate only with it, on your copy of the stored keyring.
 4. **Six Workers deployed with no public route:** files, gateway, hooks, sandbox, owner,
    doors. None has a `workers.dev` or preview URL. A Worker's first deploy is

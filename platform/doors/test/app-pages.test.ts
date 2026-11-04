@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import { CSP } from "../src/pages";
+import { SIGNIN_REFUSALS, SIGNIN_STATES } from "../src/sources";
 import { call, url } from "./support";
 
 const PAGES = ["/app", "/app/signed-in", "/app/connected"];
@@ -47,6 +48,17 @@ describe("the owner app's pages", () => {
     const head = await get("/app", { method: "HEAD" });
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");
+  });
+
+  it("tell each sign-in refusal's own reason in the records' words, and know every end " +
+     "(review L6, M4)", async () => {
+    const app = await (await get("/app/static/app.js")).text();
+    for (const [reason, words] of Object.entries(SIGNIN_REFUSALS)) {
+      expect(app, reason).toContain(`${reason}: ${JSON.stringify(words)}`);
+    }
+    const ends = /const SIGNIN_ENDS = Object\.freeze\(\[([^\]]*)\]\)/.exec(app)![1]!;
+    expect(JSON.parse(`[${ends}]`)).toEqual(SIGNIN_STATES.filter((state) =>
+      !["starting", "open", "code_sent"].includes(state)));
   });
 
   it("allow this origin's own scripts, style and socket, and nothing inline or framed", () => {

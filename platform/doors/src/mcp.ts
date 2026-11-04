@@ -22,7 +22,7 @@ import {
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
 import { serveEvents } from "./events";
-import { callDoor, refusal, type Tool, toolsNamed } from "./tools";
+import { callDoor, type ProfileName, refusal, type Tool, toolsNamed } from "./tools";
 
 export const SERVER_INFO = Object.freeze({ name: "tinyassets", version: "1.0.0" });
 
@@ -48,8 +48,10 @@ async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallTool
  * The server one request is served by: the tools of its caller's profile, bound to it, and
  * MCP Events (`events.ts`, slice W2), whose callbacks reach the gateway through `env`.
  */
-export function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv): McpServer {
-  const mcp = new McpServer({ ...SERVER_INFO }, { capabilities: { tools: {} } });
+export function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv,
+                       instructions?: string): McpServer {
+  const mcp = new McpServer({ ...SERVER_INFO }, {
+    capabilities: { tools: {} }, ...(instructions === undefined ? {} : { instructions }) });
   for (const tool of tools) {
     mcp.registerTool(tool.name, {
       title: tool.title,
@@ -73,8 +75,29 @@ export function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv): Mcp
  * the object's refusal as the answer, with its reason.
  */
 export async function profiled(bound: Bound): Promise<readonly Tool[] | Response> {
+  const got = await profileOf(bound);
+  return got instanceof Response ? got : got.tools;
+}
+
+/**
+ * What a run's engine is told when it connects (the MCP `instructions` every engine reads
+ * from its servers, so one text reaches every engine through the one door): where its
+ * working files go. Clones, builds and caches go to its scratch area (`$TA_SCRATCH`, on the
+ * sandbox's own disk, never synced and never counted in the owner's storage); what the user
+ * keeps goes to `/workspace`, or leaves by `git push`.
+ */
+export const RUN_INSTRUCTIONS = "Working files: clone repositories, install dependencies and " +
+  "build in your scratch area ($TA_SCRATCH, on this sandbox's own disk). Scratch is kept " +
+  "between runs as a cache, is never synced and never counts toward the user's storage; it " +
+  "may be cleared when the disk runs low. Clone a repository there once and refresh it with " +
+  "`git fetch`. Work the user keeps goes in /workspace (it syncs and counts toward their " +
+  "storage) or leaves by `git push`; a patch of a cloned repository goes in /workspace.";
+
+async function profileOf(bound: Bound):
+    Promise<{ profile: ProfileName; tools: readonly Tool[] } | Response> {
   try {
-    return toolsNamed((await bound.stub.toolProfile(bound.binding)).tools);
+    const { profile, tools } = await bound.stub.toolProfile(bound.binding);
+    return { profile, tools: toolsNamed(tools) };
   } catch (error) {
     const refused = refusal(error);
     if (refused === null) {
@@ -87,11 +110,12 @@ export async function profiled(bound: Bound): Promise<readonly Tool[] | Response
 
 export async function serveMcp(request: Request, bound: Bound, env: DoorsEnv):
     Promise<Response> {
-  const tools = await profiled(bound);
-  if (tools instanceof Response) {
-    return tools;
+  const got = await profileOf(bound);
+  if (got instanceof Response) {
+    return got;
   }
-  return createMcpHandler(() => server(bound, tools, env), { legacy: "stateless",
+  const instructions = got.profile === "run" ? RUN_INSTRUCTIONS : undefined;
+  return createMcpHandler(() => server(bound, got.tools, env, instructions), { legacy: "stateless",
                                                       responseMode: "auto" })
     .fetch(request);
 }

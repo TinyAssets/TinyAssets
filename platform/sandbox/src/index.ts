@@ -19,7 +19,10 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { principal } from "../../owner/src/text";
-import type { SandboxService, SandboxStart, Started } from "../../owner/src/sandbox";
+import type {
+  SandboxService, SandboxSignin, SandboxStart, Started,
+} from "../../owner/src/sandbox";
+import type { MeterEvent } from "../../owner/src/sandbox-time";
 
 import type { SandboxControl, SandboxEnv } from "./control";
 import { SLOTS } from "./slots";
@@ -54,12 +57,31 @@ export class Sandbox extends WorkerEntrypoint<Env> implements SandboxService {
     return this.#owner(owner).release(owner, request);
   }
 
+  async signin(owner: string, signin: SandboxSignin): Promise<Started> {
+    return this.#owner(owner).signin(owner, signin);
+  }
+
+  async signinInput(owner: string, request: { authority: string; id: string; code: string }):
+      Promise<{ delivered: boolean }> {
+    return this.#owner(owner).signinInput(owner, request);
+  }
+
+  async signinCancel(owner: string, request: { authority: string; id: string }):
+      Promise<{ cancelled: boolean }> {
+    return this.#owner(owner).signinCancel(owner, request);
+  }
+
   async unwait(owner: string): Promise<void> {
     await this.env.SLOTS.getByName(SLOTS).leave(principal(owner));
   }
 
   async erase(owner: string): Promise<{ killed: number }> {
     return this.#owner(owner).erase(principal(owner));
+  }
+
+  async meter(owner: string, request: { after: number }):
+      Promise<{ events: MeterEvent[]; next: number }> {
+    return this.#owner(owner).meter(owner, request);
   }
 }
 

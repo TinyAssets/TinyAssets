@@ -1155,6 +1155,218 @@ def test_every_event_requires_both_platform_jobs_to_succeed(tmp_path):
         assert run.returncode == expected, (platform, app, run.returncode)
 
 
+def _check_platform_legs(job: dict) -> None:
+    """Raise AssertionError unless `platform-tests` runs every workspace's tests, for real.
+
+    Run whole, the platform's suite passed the job's ten minutes (PR #5403), so it runs
+    as parallel legs, each held to the same ten. A matrix job's result is every leg's,
+    so `required-tests` (which reads `needs.platform-tests.result`) still fails on any
+    red leg. Held here: every workspace `platform/package.json` lists has its tests run
+    by a leg, its `test` script whole (`npm run test -w <ws>`) or, when that script is
+    only `npm run a && npm run b`, each part by a leg; the typecheck has its leg; no leg
+    is excluded, conditional or allowed to fail; and each leg runs exactly its command.
+    Nothing may change how a command runs (round 8, R8-2): the job and its steps carry
+    only the keys listed below, no `shell` (`shell: true {0}` makes every leg a no-op
+    that succeeds), no `env` (`npm_config_script_shell` does the same through npm), no
+    `working-directory` of a step's own; `defaults.run` is exactly the platform folder.
+    """
+    import json
+
+    assert set(job) == {"name", "runs-on", "timeout-minutes", "strategy", "defaults",
+                        "steps"}, f"platform-tests carries a key that may change its legs: {set(job)}"
+    assert job["name"] == "platform-tests"
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["timeout-minutes"] <= 10, "each leg keeps the ten-minute limit"
+    assert job["defaults"] == {"run": {"working-directory": "platform"}}, (
+        f"defaults.run must be the platform folder alone (no shell): {job['defaults']}")
+    strategy = job["strategy"]
+    assert set(strategy) <= {"fail-fast", "matrix"}, strategy
+    assert set(strategy["matrix"]) == {"include"}, (
+        "legs are listed whole in `include`: no axes, no `exclude` to drop one")
+    legs = strategy["matrix"]["include"]
+    assert all(set(leg) == {"leg", "command"} for leg in legs), legs
+    names = [leg["leg"] for leg in legs]
+    assert len(names) == len(set(names)), names
+    commands = {leg["command"] for leg in legs}
+    assert len(commands) == len(legs), "two legs run the same command"
+    steps = job["steps"]
+    assert steps[:2] == [{"uses": "actions/checkout@v4"},
+                         {"uses": "actions/setup-node@v4",
+                          "with": {"node-version": "22", "cache": "npm",
+                                   "cache-dependency-path": "platform/package-lock.json"}}], (
+        steps[:2])
+    assert steps[2:] == [{"run": "npm ci"}, {"run": "${{ matrix.command }}"}], (
+        f"the legs' steps are `npm ci` and the leg's command, each `run` alone: {steps[2:]}")
+
+    platform = _REPO / "platform"
+    manifest = json.loads((platform / "package.json").read_text(encoding="utf-8"))
+    assert "npm run typecheck" in commands
+    assert manifest["scripts"]["typecheck"] == "tsc --noEmit"
+    workspaces = manifest["workspaces"]
+    assert manifest["scripts"]["test"] == "npm run test --workspaces"
+    covered = set()
+    for ws in workspaces:
+        scripts = json.loads((platform / ws / "package.json").read_text(
+            encoding="utf-8"))["scripts"]
+        if f"npm run test -w {ws}" in commands:
+            covered.add(f"npm run test -w {ws}")
+            continue
+        parts = [part.strip() for part in scripts["test"].split("&&")]
+        assert all(re.fullmatch(r"npm run [\w:-]+", part) for part in parts), (
+            f"{ws}'s tests have no leg: its `test` script is not run by a leg, nor is it "
+            f"only `npm run` parts each a leg could run: {scripts['test']!r}")
+        for part in parts:
+            command = f"{part} -w {ws}"
+            assert command in commands, f"{ws}'s `{part}` has no leg"
+            covered.add(command)
+    assert commands - covered == {"npm run typecheck"}, (
+        f"a leg runs what no workspace's tests are: {commands - covered}")
+
+
+def test_platform_tests_has_a_leg_for_every_workspace():
+    """`platform-tests` is a matrix, one leg a workspace, none dropped nor made a no-op."""
+    _check_platform_legs(_load()["jobs"]["platform-tests"])
+
+
+# npm settings that change how, or whether, `npm run` runs a script: `script-shell=true`
+# makes every leg run `true` and pass (round 9, R9-1), `ignore-scripts` skips them, and
+# `shell` and `node-options` change what runs. A tracked file may set none of them.
+_NPM_FORBIDDEN = frozenset({"script-shell", "ignore-scripts", "shell", "node-options"})
+
+
+def _npm_key(key: str) -> str:
+    """An npm config key as npm reads it: case and `_` / `-` alike, any scope prefix off."""
+    return key.strip().rsplit(":", 1)[-1].strip().lower().replace("_", "-")
+
+
+def _npm_config_problems(files: dict[str, str]) -> list[str]:
+    """Each forbidden npm setting in `files` (tracked path: text): `.npmrc` lines, and a
+    `package.json`'s `config` keys."""
+    import json
+
+    problems = []
+    for path, text in sorted(files.items()):
+        name = path.rsplit("/", 1)[-1]
+        if name == ".npmrc":
+            for number, line in enumerate(text.splitlines(), 1):
+                line = line.strip()
+                if not line or line[0] in "#;[":
+                    continue
+                if _npm_key(line.split("=", 1)[0]) in _NPM_FORBIDDEN:
+                    problems.append(f"{path}:{number}: {line}")
+        elif name == "package.json":
+            config = json.loads(text).get("config") or {}
+            for key in config if isinstance(config, dict) else []:
+                if _npm_key(key) in _NPM_FORBIDDEN:
+                    problems.append(f"{path}: config.{key}")
+    return problems
+
+
+def _tracked_npm_files() -> dict[str, str]:
+    listed = subprocess.run(["git", "-C", str(_REPO), "ls-files", "-z", "--", ".npmrc",
+                             "*/.npmrc", "package.json", "*/package.json"],
+                            capture_output=True, check=True).stdout.decode().split("\0")
+    return {path: (_REPO / path).read_text(encoding="utf-8")
+            for path in listed if path and (_REPO / path).is_file()}
+
+
+def test_no_tracked_npm_setting_makes_the_platform_legs_no_ops():
+    """No tracked `.npmrc` and no `package.json` `config` sets a key that changes how `npm
+    run` runs a script (round 9, R9-1): with `script-shell=true` in `platform/.npmrc`,
+    every `platform-tests` leg ran nothing and passed, and so did a local `npm test`."""
+    files = _tracked_npm_files()
+    assert "platform/package.json" in files, "the tracked package files were not listed"
+    assert _npm_config_problems(files) == []
+
+
+@pytest.mark.parametrize("path,text", [
+    ("platform/.npmrc", "script-shell=true\n"),             # the reviewer's mutation
+    ("platform/.npmrc", "registry=https://r.example\nSCRIPT_SHELL = true\n"),
+    ("platform/sandbox/.npmrc", "ignore-scripts\n"),
+    (".npmrc", "shell=/bin/true\n"),
+    ("platform/.npmrc", "node-options=--require=/tmp/x.js\n"),
+    ("platform/.npmrc", "@tinyassets:script-shell=true\n"),
+    ("platform/package.json", '{"name": "p", "config": {"script-shell": "true"}}'),
+    ("platform/owner/package.json", '{"name": "o", "config": {"ignore_scripts": true}}'),
+])
+def test_npm_settings_guard_catches_each_mutation(path, text):
+    """Each forbidden setting, in a `.npmrc` or a `package.json`'s `config`, fails it."""
+    files = _tracked_npm_files()
+    assert _npm_config_problems(files) == []
+    files[path] = text
+    assert _npm_config_problems(files) != [], (path, text)
+
+
+def _leg_mutations() -> dict:
+    """The reviewer's mutations of `platform-tests` (round 8), each a job that must fail."""
+    def step(index: int, **extra):
+        def mutate(job):
+            job["steps"][index].update(extra)
+        return mutate
+
+    def job_key(**extra):
+        def mutate(job):
+            job.update(extra)
+        return mutate
+
+    def default(**extra):
+        def mutate(job):
+            job["defaults"]["run"].update(extra)
+        return mutate
+
+    def drop(leg):
+        def mutate(job):
+            job["strategy"]["matrix"]["include"] = [
+                each for each in job["strategy"]["matrix"]["include"] if each["leg"] != leg]
+        return mutate
+
+    def command(leg, text):
+        def mutate(job):
+            for each in job["strategy"]["matrix"]["include"]:
+                if each["leg"] == leg:
+                    each["command"] = text
+        return mutate
+
+    return {
+        "job continue-on-error": job_key(**{"continue-on-error": True}),
+        "job continue-on-error per leg": job_key(
+            **{"continue-on-error": "${{ matrix.leg == 'runner' }}"}),
+        "job if": job_key(**{"if": "github.event_name != 'pull_request'"}),
+        "job env makes npm scripts no-ops": job_key(env={"npm_config_script_shell": "true"}),
+        "step if skips runner": step(3, **{"if": "matrix.leg != 'runner'"}),
+        "step continue-on-error": step(3, **{"continue-on-error": True}),
+        "step shell that swallows failure": step(3, shell="bash {0}"),
+        "step shell that runs nothing (true {0})": step(3, shell="true {0}"),
+        "npm ci step shell that runs nothing": step(2, shell="true {0}"),
+        "step env makes npm scripts no-ops": step(3, env={"npm_config_script_shell": "true"}),
+        "step working-directory elsewhere": step(3, **{"working-directory": "platform/owner"}),
+        "job default shell that runs nothing": default(shell="true {0}"),
+        "job default working-directory elsewhere": default(**{"working-directory": "."}),
+        "an extra step after the command": lambda job: job["steps"].append({"run": "true"}),
+        "drop hooks leg": drop("hooks"),
+        "drop runner leg": drop("runner"),
+        "drop typecheck leg": drop("typecheck"),
+        "runner leg runs workerd twice": command(
+            "runner", "npm run test:workerd -w sandbox --silent"),
+        "a leg's command swallowed": command("owner", "npm run test -w owner || true"),
+        "timeout raised": job_key(**{"timeout-minutes": 60}),
+        "an exclude": lambda job: job["strategy"]["matrix"].update(
+            exclude=[{"leg": "runner"}]),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_leg_mutations()))
+def test_platform_tests_guard_catches_every_mutation(name):
+    """Each of the reviewer's mutations (round 8, R8-2) fails `_check_platform_legs`."""
+    import copy
+
+    job = copy.deepcopy(_load()["jobs"]["platform-tests"])
+    _check_platform_legs(copy.deepcopy(job))  # the job as it stands passes
+    _leg_mutations()[name](job)
+    with pytest.raises(AssertionError):
+        _check_platform_legs(job)
+
+
 # Events that do not change the head. A workflow that listens to them must be
 # the receipt/label gate or auto-enroll, never the build or the test jobs.
 _NON_CODE_TYPES = frozenset({"edited", "labeled", "unlabeled"})

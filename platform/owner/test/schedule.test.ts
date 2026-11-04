@@ -402,6 +402,18 @@ describe("the object's lanes", () => {
       }, run: async (now: number, until: number) => {
         seen.push(["runs.run", now, until]);
       } },
+      manifest: { next: (now: number) => {
+        seen.push(["manifest.next", now]);
+        return now + 86_400;
+      }, run: async (now: number, until: number) => {
+        seen.push(["manifest.run", now, until]);
+      } },
+      sandbox: { next: (now: number) => {
+        seen.push(["sandbox.next", now]);
+        return null;
+      }, run: async (now: number, until: number) => {
+        seen.push(["sandbox.run", now, until]);
+      } },
       runWakes: async (...args) => {
         seen.push(["runWakes", ...args]);
         return 0;
@@ -413,7 +425,8 @@ describe("the object's lanes", () => {
   it("hand each pass its until (slice 5 N1)", async () => {
     const { seen, deps, ledger, clock, write } = recorded(() => null, () => true);
     const lanes = ownerLanes(deps);
-    expect(Object.keys(lanes)).toEqual(["wakes", "files", "connections", "runs", "starter"]);
+    expect(Object.keys(lanes)).toEqual(["wakes", "files", "connections", "runs", "manifest",
+                                        "sandbox", "starter"]);
     for (const lane of Object.values(lanes)) {
       await lane.run(100, 123_456);
     }
@@ -422,6 +435,8 @@ describe("the object's lanes", () => {
       ["files.collect", 100, 123_456],
       ["connections.run", 100, 123_456],
       ["runs.run", 100, 123_456],
+      ["manifest.run", 100, 123_456],
+      ["sandbox.run", 100, 123_456],
       ["starter.run", 100],
     ]);
   });
@@ -435,12 +450,15 @@ describe("the object's lanes", () => {
     for (const [ringing, ask] of [[false, true], [true, true], [false, false]] as const) {
       admitted = ask;
       expect([lanes.wakes.next(7), lanes.files.next(7), lanes.connections.next(7),
-              lanes.runs.next(7), lanes.starter.next(7)]).toEqual([8, 10, 11, null, null]);
+              lanes.runs.next(7), lanes.manifest.next(7), lanes.sandbox.next(7),
+              lanes.starter.next(7)])
+        .toEqual([8, 10, 11, null, 86_407, null, null]);
       expect(seen).toEqual([["ledger.nextDue", 7, ringing], ["files.nextAlarm", 7],
-                            ["connections.nextDue", 7], ["runs.next", 7], ["starter.next", 7]]);
+                            ["connections.nextDue", 7], ["runs.next", 7],
+                            ["manifest.next", 7], ["sandbox.next", 7], ["starter.next", 7]]);
       seen.length = 0;
       void Promise.all(Object.values(lanes).map((lane) => lane.run(1, 2)));
-      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2, 2, undefined]);
+      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2, 2, 2, 2, undefined]);
       seen.length = 0;
       // The object gains its doorbell after the lanes were made.
       sender = {} as WakeSender;
@@ -461,9 +479,9 @@ describe("the object's schedule", () => {
     });
     await r.stub.grantRevoke(r.bind(null), { client: "f".repeat(64) });  // any change syncs
     const jobs = await laneJobs(r.stub);
-    expect(Object.keys(jobs)).toEqual(["files", "wakes"]);
+    expect(Object.keys(jobs)).toEqual(["files", "manifest", "wakes"]);
     expect(await sqlIn(r.stub, "SELECT capability, COUNT(*) AS n FROM cf_agents_jobs " +
-                                 "GROUP BY capability")).toEqual([{ capability: SCHEDULE, n: 2 }]);
+                                 "GROUP BY capability")).toEqual([{ capability: SCHEDULE, n: 3 }]);
     const earliest = Math.min(jobs["files"]!.time, jobs["wakes"]!.time);
     expect(earliest).toBe(jobs["wakes"]!.time);  // the claim's lease, before the upload's expiry
     expect(await alarmOf(r.stub)).toBe(earliest / 1000);

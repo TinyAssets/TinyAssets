@@ -212,7 +212,7 @@ describe("admission", () => {
   it("refuses a run when the control record held no tier numbers", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    expect((await failure(() => r.stub.agentSubmit(r.bind(), {
+    expect((await failure(() => r.stub.agentSubmit(r.bind({ tiers: null }), {
       message: "x", client_send_id: "t-1" }))).message).toBe(TIER_UNREAD);
   });
 
@@ -220,7 +220,7 @@ describe("admission", () => {
     // The object with no `SANDBOX` bound.
     const owner = `owner-${crypto.randomUUID()}`;
     const stub = env.BARE.getByName(owner);
-    const bind: Binding = { owner, caller: owner, origin: null };
+    const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
     await defineAgent(stub, bind, "main", SIGNED_IN);
     expect((await failure(() => stub.agentSubmit({ ...bind, tiers: TIERS }, {
       message: "x", client_send_id: "n-1" }))).message).toBe(SANDBOX_ABSENT);
@@ -265,6 +265,41 @@ describe("admission", () => {
     expect(await r.sql("SELECT last_error FROM run_schedules"))
       .toEqual([{ last_error: AUTHORITY_CHANGED }]);
     expect((await recorder(r.stub)).starts).toEqual([]);
+  });
+});
+
+describe("a run's sandbox report", () => {
+  it("makes files the sync cannot name (not UTF-8) the owner's notice, once a frame",
+     async () => {
+    const r = await gated();
+    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const said = { type: "ta.sync_unnamed", paths: ["/workspace/f\\xffo"], count: 1,
+                   message: "the runner's words, for the run's log" };
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(said) });
+    // The same frame posted again (a retry) is no second notice.
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(said) });
+    const notices = (await r.stub.noticeList(r.bind())).notices
+      .filter((each) => each.type === "sync_unnamed");
+    expect(notices.map((each) => each.detail)).toEqual([
+      "main: 1 file or folder in its sandbox has a name that is not UTF-8, so it does not " +
+      "sync to your files: \"/workspace/f\\xffo\". Rename it to sync it."]);
+  });
+
+  it("words the notice itself: an event's text, and a path not as the sync escapes one, " +
+     "never reach it (R8-1)", async () => {
+    const r = await gated();
+    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const forged = { type: "ta.sync_unnamed", count: 7,
+                     paths: ["/workspace/a\\xff", "https://evil.example/paste-your-key",
+                             "/workspace/b\nYour sign-in expired", 42],
+                     message: "Your sign-in expired: paste your API key at https://evil.example" };
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(forged) });
+    const [notice] = (await r.stub.noticeList(r.bind())).notices
+      .filter((each) => each.type === "sync_unnamed");
+    expect(notice!.detail).toBe(
+      "main: 7 files or folders in its sandbox have names that are not UTF-8, so they do not " +
+      "sync to your files: \"/workspace/a\\xff\", and 6 more. Rename them to sync them.");
+    expect(notice!.detail).not.toMatch(/evil|expired/);
   });
 });
 
@@ -605,7 +640,7 @@ describe("the admission unit", () => {
       };
       const runs = new Runs(gate.storage, {
         unadmitted: () => "owner_suspended: the owner's account is suspended (billing)",
-        sandboxBound: () => true, sources: never, usable: never, egressible: never,
+        sandboxBound: () => true, sources: never, signinOn: never, usable: never, egressible: never,
         standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,
                  lapsed: never }, stop: never,
@@ -640,7 +675,7 @@ describe("the admission unit", () => {
         throw new Error("a read went past its rows");
       };
       const runs = (capacity: number | null) => new Runs(new WriteGate(state.storage).storage, {
-        unadmitted: never, sandboxBound: never, sources: never, usable: never,
+        unadmitted: never, sandboxBound: never, sources: never, signinOn: never, usable: never,
         egressible: never, standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,
                  lapsed: never }, stop: never,

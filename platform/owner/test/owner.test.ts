@@ -6,7 +6,9 @@ import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/collections";
 import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
 import { OwnerDO } from "../src/owner-do";
-import { MIGRATIONS, migrate } from "../src/schema";
+import {
+  MIGRATION_CHANGED, MIGRATION_UNPINNED, MIGRATIONS, migrate, migrationDigest,
+} from "../src/schema";
 import { failure, ownerObject } from "./support";
 
 function version(state: DurableObjectState): number {
@@ -31,26 +33,27 @@ const RPC_METHODS = Object.freeze([
   "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
-  "connectionRevoke", "deleteAgent", "disableAgent", "egressBeat", "egressOpen",
-  "egressReceipts", "egressSettle", "erasureOutside", "erasureOutsideDone", "fileChanges",
-  "fileFetch", "fileHistory", "fileHistoryPurge", "fileList",
+  "connectionRevoke", "dataKeyRewrap", "deleteAgent", "disableAgent", "egressBeat", "egressOpen",
+  "egressReceipts", "egressSettle", "erasureOutside", "erasureOutsideDone", "exportChunks",
+  "exportEnd", "fileChanges", "fileFetch", "fileHistory",
+  "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
-  "fileRestore", "fileSearch", "fileStat", "fileSyncCommit", "fileSyncUploadBegin",
-  "fileSyncUploadChunks", "fileText",
+  "fileRestore", "fileSearch", "fileStat", "fileSyncCommit", "fileSyncUploadAbort",
+  "fileSyncUploadBegin", "fileSyncUploadChunks", "fileText",
   "fileUploadAbort", "fileUploadBegin",
   "fileUploadChunks", "fileUploadCommit", "fileUploadStored", "fileUploadTarget",
   "fileUsage", "fileWrite",
   "flowFinish", "grantForget",
-  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboundAccept",
-  "inboundCreate", "inboundList", "inboundRevoke", "inboundSet", "inboxDigest", "keyList",
-  "keyMint", "mailChain", "mailboxAck", "mailboxRead",
-  "noticeList", "outsideAgents", "ownerErase", "policyProposal", "policyPropose",
+  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboundAccept", "inboundCreate",
+  "inboundList", "inboundRevoke", "inboundSet", "inboxDigest", "keyList", "keyMint", "mailChain",
+  "mailboxAck", "mailboxRead", "noticeList", "outsideAgents", "ownerErase", "ownerExport",
+  "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
-  "registerProposal", "registerPropose", "roomPost", "runEvents", "sandboxRung",
-  "sessionClose",
-  "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
-  "socketsEnd", "starterReceipts", "tierRead", "tierSet", "toolProfile", "usageReceipts",
-  "wakeEvents", "wakeSubscribe", "wakeUnsubscribe",
+  "registerProposal", "registerPropose", "roomPost", "runEvents", "runList", "sandboxBilled",
+  "sandboxDays", "sandboxRung", "sessionClose", "sessionCloseAll", "sessionExtend", "sessionOpen",
+  "signinCancel", "signinCode", "signinEvents", "signinList", "signinReport", "signinStart",
+  "socketTicket", "socketsEnd", "starterReceipts", "storageUsage", "tierRead", "tierSet",
+  "toolProfile", "usageReceipts", "wakeEvents", "wakeSubscribe", "wakeUnsubscribe",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */
@@ -106,6 +109,38 @@ describe("schema migration on wake", () => {
       expect(version(state)).toBe(MIGRATIONS.length);
       expect(state.storage.sql.exec(
         "SELECT name FROM sqlite_master WHERE name = 'probe_b'").toArray()).toEqual([]);
+    });
+  });
+
+  it("refuses to start once a migration it applied reads differently (Flyway's validate)",
+     async () => {
+    const { stub, as, name } = ownerObject();
+    await stub.collectionPull(as(name), PULL);
+    await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+      expect(state.storage.sql.exec("SELECT version, sha256 FROM schema_digests").toArray())
+        .toEqual(MIGRATIONS.map((each, i) => ({ version: i + 1, sha256: migrationDigest(each) })));
+      const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_edit (n INTEGER)"],
+                      ...MIGRATIONS.slice(1)];
+      expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_CHANGED);
+      // The code as applied still starts, and a new migration after it applies.
+      expect(migrate(state.storage, [...MIGRATIONS, ["CREATE TABLE probe_next (n INTEGER)"]]))
+        .toBe(MIGRATIONS.length + 1);
+    });
+  });
+
+  it("refuses to start once an applied migration's digest is gone, never passing by default " +
+     "(review M3)", async () => {
+    const { stub, as, name } = ownerObject();
+    await stub.collectionPull(as(name), PULL);
+    await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+      // The review's attack: the digest row deleted, then an edited migration.
+      state.storage.sql.exec("DELETE FROM schema_digests");
+      const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_unpinned (n INTEGER)"],
+                      ...MIGRATIONS.slice(1)];
+      expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_UNPINNED);
+      expect(() => migrate(state.storage)).toThrow(MIGRATION_UNPINNED);
+      expect(state.storage.sql.exec(
+        "SELECT name FROM sqlite_master WHERE name = 'probe_unpinned'").toArray()).toEqual([]);
     });
   });
 
@@ -245,9 +280,10 @@ describe("the object's RPC surface", () => {
       void Promise.resolve(prop).catch(() => {});
       return prop({ owner: name, caller: name, origin: null }, {});
     };
+    // Read off the class itself: an RPC call on a method the object lacks rejects in the
+    // pool's stub outside the call's own promise (round 6's unhandled rejection).
     for (const method of ["claimWake", "markWake", "settleWake", "dueWakes", "wakeSender"]) {
-      expect((await failure(() => call(method))).message)
-        .toBe(`The RPC receiver does not implement "${method}".`);
+      expect(Reflect.has(OwnerDO.prototype, method)).toBe(false);
     }
     expect((await failure(() => call("alarm"))).message).toMatch(/reserved method/);
   });

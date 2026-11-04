@@ -173,6 +173,11 @@ before(async () => {
     .map((host) => `MAP ${host}:443 127.0.0.1:${port}`).join(", ");
   browser = await chromium.launch({ env, args: [
     "--no-proxy-server",
+    // workerd's self-signed certificate, accepted by the browser's network stack itself:
+    // the context's `ignoreHTTPSErrors` alone left each WebSocket's first TLS handshake
+    // refused (`CertificateUnknown`), and now and then the socket itself died before it
+    // opened (1006), so the sign-in panel never saw its end (the merge queue's red run).
+    "--ignore-certificate-errors",
     // Our hosts and the two hand-off hosts to the local workerd; nothing else resolves.
     `--host-resolver-rules=${local}, MAP * ~NOTFOUND`,
   ] });
@@ -364,9 +369,138 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await shot("agent");
 });
 
+test("the agent form offers a subscription signed in inside the sandbox, beside an API key " +
+     "(SIGNIN, kept through APP's merge)", { timeout: 60_000 }, async () => {
+  await page.goto(`${ORIGIN}/app#agents`);
+  await page.getByRole("heading", { name: "New agent" }).waitFor();
+  const form = page.locator("section", { hasText: "New agent" });
+  await form.getByLabel(/^Engine/).selectOption("claude-code");
+  const runsOn = form.getByLabel(/^Runs on/);
+  assert.deepEqual(await runsOn.locator("option").allInnerTexts(),
+                   ["Whichever the engine has", "Your subscription, signed in inside your sandbox",
+                    "An API key you connected"]);
+  await form.getByLabel(/^Name/).fill("subscribed");
+  await runsOn.selectOption("vendor_login_in_sandbox");
+  const written = [];
+  const onRequest = (request) => {
+    if (new URL(request.url()).pathname === "/app/api/files/write") {
+      written.push(request.postDataJSON());
+    }
+  };
+  page.on("request", onRequest);
+  await form.getByRole("button", { name: "Make the agent" }).click();
+  await page.waitForURL(`${ORIGIN}/app#agents/subscribed`);
+  page.off("request", onRequest);
+  const file = written.find((each) => each.path === "/workspace/agents/subscribed/agent.json");
+  assert.ok(file, "the form wrote the agent's agent.json");
+  assert.match(JSON.stringify(file), /vendor_login_in_sandbox/);
+  // Kimi signs in only: switched off (its terms unverified), the form says so and offers it
+  // not; switched on in the control record, it is an engine a Kimi agent is made on.
+  await page.goto(`${ORIGIN}/app#agents`);
+  await page.getByRole("heading", { name: "New agent" }).waitFor();
+  assert.match(await page.locator("section", { hasText: "New agent" }).innerText(),
+               /switched off for [^.]*Kimi/);
+  const control = await mf.getKVNamespace("CONTROL", "tinyassets-doors");
+  await control.put("c:control", JSON.stringify({ ...OPEN, signins: { kimi: true } }));
+  try {
+    await page.goto(`${ORIGIN}/app#home`);
+    await page.goto(`${ORIGIN}/app#agents`);
+    const again = page.locator("section", { hasText: "New agent" });
+    await again.getByLabel(/^Engine/).selectOption("kimi");
+    assert.deepEqual(await again.getByLabel(/^Runs on/).locator("option").allInnerTexts(),
+                     ["Whichever the engine has",
+                      "Your subscription, signed in inside your sandbox"]);
+  } finally {
+    await control.put("c:control", JSON.stringify(OPEN));
+  }
+});
+
+test("the owner signs in to a subscription inside its sandbox: the vendor's page, a code " +
+     "pasted back, the end", { timeout: 120_000 }, async () => {
+  await page.goto(`${ORIGIN}/app#sources`);
+  const card = page.locator(".card", { hasText: "Claude" }).filter({ has: page.locator(".signin") })
+    .first();
+  /** The `n`th sign-in the app asked the sandbox to start, once it has. */
+  const asked = async (n) => {
+    for (let i = 0; i < 100; i++) {
+      const { signins } = await (await mf.dispatchFetch(`https://e2e.internal/signins/${WHO}`))
+        .json();
+      if (signins.length > n) {
+        return signins[n];
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error("the app did not ask the sandbox to start the sign-in");
+  };
+  await card.getByRole("button", { name: "Sign in to Claude" }).click();
+  await card.getByText("Starting the sign-in in your sandbox").waitFor();
+  let signin = await asked(0);
+  assert.equal(signin.engine, "claude-code");
+  const post = async (body) => {
+    const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
+      method: "POST", body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json",
+                 "x-ta-sandbox": signin.tokens.egress_token,
+                 "x-ta-network-generation": String(signin.network.generation),
+                 "x-ta-runner": signin.tokens.runner_token } });
+    assert.equal(answer.status, 200, await answer.clone().text());
+  };
+  // Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live).
+  const vendor = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +
+    "9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2F" +
+    "platform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+" +
+    "user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+" +
+    "user%3Aplugins&code_challenge=yfhUky71rorbPUGR_0kuaJoQPT0k39HLxYDNc-gUtt8&" +
+    "code_challenge_method=S256&state=Lq7TdjukIEmxyMX2EKf2hY4xChr1sfIJOV3krpnv6iE";
+  await post({ frames: [{ seq: 1, at: 1, event: { type: "ta.signin", state: "open",
+                                                   url: vendor, code: null,
+                                                   accepts_code: true } }] });
+  const link = card.getByRole("link", { name: "Open Claude's sign-in page" });
+  await link.waitFor();
+  assert.equal(await link.getAttribute("href"), vendor);
+  assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+  await card.getByText("You'll sign in on claude.com.").waitFor();
+  await card.getByPlaceholder("Code").fill("pasted-code#state");
+  await card.getByRole("button", { name: "Send code" }).click();
+  for (let i = 0; i < 100; i++) {
+    const { codes } = await (await mf.dispatchFetch(`https://e2e.internal/signins/${WHO}`)).json();
+    if (codes.length > 0) {
+      assert.deepEqual(codes.map((each) => each.code), ["pasted-code#state"]);
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await post({ frames: [{ seq: 2, at: 2, event: { type: "ta.signin", state: "signed_in" } }],
+               end: { exit_code: 0 } });
+  await page.locator(".message.good", { hasText: "Signed in to Claude." }).waitFor();
+  await shot("signin");
+  // A look-alike page is refused in plain words (review L6), and the panel offers a new one.
+  /** A new sign-in started from the panel, its page shown (so the app is watching it). */
+  const again = async (n) => {
+    await card.getByRole("button", { name: /^Sign in/ }).click();
+    signin = await asked(n);
+    await post({ frames: [{ seq: 1, at: 1, event: { type: "ta.signin", state: "open",
+                                                     url: vendor, code: null } }] });
+    await card.getByRole("link", { name: "Open Claude's sign-in page" }).waitFor();
+  };
+  await again(1);
+  await post({ frames: [{ seq: 2, at: 2, event: { type: "ta.signin", state: "open",
+                                                   url: vendor.replace("client_id=9d1c",
+                                                                       "client_id=evil"),
+                                                   code: null } }] });
+  await page.locator(".message.bad", {
+    hasText: "it showed a link that is not the vendor's own sign-in page" }).waitFor();
+  // A code past its lifetime ends the sign-in, and the app offers to start again (review M4).
+  await again(2);
+  await post({ frames: [{ seq: 2, at: 2, event: { type: "ta.signin", state: "expired" } }] });
+  await page.locator(".message.bad", { hasText: "The code expired; start again." }).waitFor();
+  await card.getByRole("button", { name: /^Sign in/ }).waitFor();
+});
+
 test("every screen opens on the doors' answers, and says plainly what is not here yet",
      { timeout: 60_000 }, async () => {
   for (const [hash, heading] of [["home", "Home"], ["agents", "Agents"],
+                                 ["history", "Past runs"],
                                  ["rooms", "Rooms and board"], ["sources", "Model sources"],
                                  ["apps", "Connected apps"], ["keys", "API keys"],
                                  ["data", "Your data"]]) {
