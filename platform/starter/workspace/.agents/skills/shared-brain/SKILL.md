@@ -2,7 +2,7 @@
 name: shared-brain
 description: Use whenever a request depends on what the owner or their other agents already know, decided or did, or before an act another of their agents might also take.
 metadata:
-  ta-starter: "shared-brain@1"
+  ta-starter: "shared-brain@2"
 ---
 
 # The shared brain
@@ -28,6 +28,9 @@ When your owner tells you something worth keeping, write it down before you fini
   that stopped being true is rewritten in place, never left contradicting;
 - anything else goes in the knowledge base (the `knowledge` skill), with its source and date;
 - a new directory you make gets an `index.md`, and a line in its parent's index.
+Over MCP, `file_append` adds a directive or a note without touching what is there, and
+`file_edit` corrects one in place; where you can, write what you learned in one append near
+the end of the conversation, so your owner approves few writes.
 
 ## 3. Claim before acting
 Before an act another of your owner's agents could also take (a send, a submission, a

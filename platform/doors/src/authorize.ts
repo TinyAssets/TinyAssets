@@ -41,6 +41,7 @@ import {
 import {
   type AppProps, bindPlatform, bindSignIn, type McpProps, mcpOrigin, ownerOf,
 } from "./binder";
+import { type Vendor, vendorOf } from "./apps";
 import { boundedText, TOO_LARGE } from "./body";
 import {
   APP_RESOURCE, AUTHORIZE_BODY_MAX, CLOCK_MARGIN_S, type DoorsEnv, FIRST_PARTY_CLIENTS,
@@ -278,6 +279,19 @@ async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn)
   }
 }
 
+/**
+ * Which vendor a signing-in client is (`apps.ts`): a CIMD client by its document's host,
+ * which the provider fetched (verified); any other by the name it registered, which only it
+ * vouches for. Recorded in the grant's props, and by the owner's object at the client's
+ * first call, so every agent can tell which of the owner's apps are connected.
+ */
+async function signedInVendor(oauth: OAuthHelpers, clientId: string): Promise<Vendor | null> {
+  if (clientId.startsWith("https://")) {
+    return vendorOf(clientId, null);
+  }
+  return vendorOf(clientId, (await oauth.lookupClient(clientId))?.clientName ?? null);
+}
+
 /** `GET /oauth/upstream/callback`: the verified sign-in becomes the grant. */
 export async function callback(request: Request, env: DoorsEnv,
                                source: Upstream | (() => Upstream)): Promise<Response> {
@@ -324,6 +338,7 @@ export async function callback(request: Request, env: DoorsEnv,
     const props: McpProps = {
       kind: "mcp", owner, ...await mcpOrigin(original.clientId, original.redirectUri),
       source_ref: original.clientId, authenticated_at: signedIn.authenticated_at,
+      vendor: await signedInVendor(oauth, original.clientId),
     };
     // A re-authorization replaces the client's earlier grant from the same installation,
     // so one installation's sign-in never revokes another's and stale grants never pile

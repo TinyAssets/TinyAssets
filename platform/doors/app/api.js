@@ -137,21 +137,68 @@ export async function signOut() {
 }
 
 /**
- * A live socket on one of the owner's conversations: a single-use ticket first (behind the
- * token), then the socket with the ticket as its one credential. `onFrame` gets each frame,
- * `onClose` the close code and reason.
+ * The doors' closes that end a socket for good (`owner/src/relay.ts` `CLOSE`): the owner
+ * suspended or erased, signed out, or a frame refused. Any other close (the connection
+ * dropped, the token's time up, the object restarted) is followed by a new socket.
  */
-export async function follow(conversation, onFrame, onClose) {
-  const { ticket } = await call("agent/socket-ticket", { conversation_id: conversation });
-  const query = new URLSearchParams({ conversation_id: conversation, ticket });
-  const socket = new WebSocket(`wss://${location.host}/app/api/agent/socket?${query}`);
-  socket.addEventListener("message", (event) => {
-    try {
-      onFrame(JSON.parse(event.data));
-    } catch {
-      onFrame({ kind: "unreadable", event: String(event.data) });
-    }
-  });
-  socket.addEventListener("close", (event) => onClose(event.code, event.reason));
-  return socket;
+const FINAL_CLOSES = [4400, 4403, 4410, 4440];
+
+/**
+ * A live socket on one of the owner's conversations: a single-use ticket first (behind the
+ * token), then the socket with the ticket as its one credential. `onFrame` gets each frame.
+ * A socket that drops is followed by a new one (a new ticket), and `onAttach` is called
+ * again so the caller reads the state as it now stands: the frames sent while it was down
+ * are not sent again. `onClose` gets the close code and reason when it ends for good: closed
+ * here, a final close from the doors, or no new ticket to be had. Answers a handle with
+ * `close()` and the current socket's `readyState`.
+ */
+export async function follow(conversation, onFrame, onClose, onAttach = () => undefined) {
+  let socket = null;
+  let closed = false;
+  const handle = {
+    close() {
+      closed = true;
+      socket?.close();
+    },
+    get readyState() {
+      return closed ? WebSocket.CLOSED : socket?.readyState ?? WebSocket.CONNECTING;
+    },
+  };
+  const attach = async () => {
+    const { ticket } = await call("agent/socket-ticket", { conversation_id: conversation });
+    const query = new URLSearchParams({ conversation_id: conversation, ticket });
+    const opened = new WebSocket(`wss://${location.host}/app/api/agent/socket?${query}`);
+    socket = opened;
+    let open = false;
+    opened.addEventListener("open", () => {
+      open = true;
+    });
+    opened.addEventListener("message", (event) => {
+      try {
+        onFrame(JSON.parse(event.data));
+      } catch {
+        onFrame({ kind: "unreadable", event: String(event.data) });
+      }
+    });
+    opened.addEventListener("close", (event) => {
+      if (closed || FINAL_CLOSES.includes(event.code)) {
+        closed = true;
+        onClose(event.code, event.reason);
+        return;
+      }
+      // Dropped: a new socket, then the state read again. One that never opened waits a
+      // moment first, so a refused socket is not asked for again at once.
+      setTimeout(() => {
+        if (closed) {
+          return;
+        }
+        attach().then(() => onAttach(), (error) => {
+          closed = true;
+          onClose(event.code, error instanceof Error ? error.message : String(error));
+        });
+      }, open ? 0 : 1000);
+    });
+  };
+  await attach();
+  return handle;
 }

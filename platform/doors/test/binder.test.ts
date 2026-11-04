@@ -33,7 +33,7 @@ async function mcpToken(clientId: string, redirectUri: string, props: Record<str
   const origin = await mcpOrigin(clientId, redirectUri);
   return {
     props: { kind: "mcp", owner: "alice", ...origin, source_ref: clientId,
-             authenticated_at: 1_700_000_000, ...props },
+             authenticated_at: 1_700_000_000, vendor: null, ...props },
     audience: MCP_RESOURCE, expiresAt: 2_000_000_000, scope: [], userId: "alice", clientId,
   };
 }
@@ -55,7 +55,16 @@ describe("an MCP binding", () => {
       owner: "alice", caller: "alice",
       origin: await mcpOrigin("muse-client", "https://muse.test/cb"),
       source: { kind: "mcp", ref: "muse-client" }, authenticated_at: 1_700_000_000,
+      vendor: null,
     });
+    // The vendor its sign-in named rides every binding; props without one are a bug.
+    const named = await bindMcp(doorsEnv, await mcpToken("muse-client", "https://muse.test/cb",
+      { vendor: { id: "muse", verified: false } }));
+    expect(named.binding.vendor).toEqual({ id: "muse", verified: false });
+    for (const vendor of [undefined, "muse", { id: "muse" }]) {
+      await expect(bindMcp(doorsEnv, await mcpToken("muse-client", "https://muse.test/cb",
+        { vendor }))).rejects.toThrow("an MCP grant's props name its vendor, or null");
+    }
   });
 
   it.each([

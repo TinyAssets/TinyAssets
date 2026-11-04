@@ -35,7 +35,7 @@ const RPC_METHODS = Object.freeze([
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
   "connectionRevoke", "dataKeyRewrap", "deleteAgent", "disableAgent", "egressBeat", "egressOpen",
   "egressReceipts", "egressSettle", "erasureOutside", "erasureOutsideDone", "exportChunks",
-  "exportEnd", "fileChanges", "fileFetch", "fileHistory",
+  "exportEnd", "fileAppend", "fileChanges", "fileEdit", "fileFetch", "fileHistory",
   "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
   "fileRestore", "fileSearch", "fileStat", "fileSyncCommit", "fileSyncUploadAbort",

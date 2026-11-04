@@ -234,8 +234,8 @@ describe("the owner app's file routes", () => {
     const app = await signInApp({ owner: owner() });
     const { access_token: token, session } = app;
     await answered(await appPost("tools/file_mkdir", token, session,
-                                 { path: "/workspace/agents/main", expected_etag: null }));
-    const path = "/workspace/agents/main/agent.json";
+                                 { path: "/workspace/agents/helper", expected_etag: null }));
+    const path = "/workspace/agents/helper/agent.json";
     const made = await answered(await appPost("files/write", token, session, {
       path, expected_etag: "", text: JSON.stringify({ engine: "auto", scopes: ["read_files"] }) }));
     const etag = (made["entry"] as { etag: string }).etag;
@@ -245,7 +245,7 @@ describe("the owner app's file routes", () => {
       text: JSON.stringify({ engine: "auto", scopes: ["read_files", "run_graph", "converse"] }) }),
                           403)).toEqual(SESSION);
     expect(await answered(await appPost("files/write", token, null, {
-      path: "/workspace/agents/main/AGENTS.md", expected_etag: "", text: "planted" }), 403))
+      path: "/workspace/agents/helper/AGENTS.md", expected_etag: "", text: "planted" }), 403))
       .toEqual(SESSION);
     expect(await answered(await appPost("tools/file_remove", token, null,
       { path, expected_etag: null, recursive: false }), 403)).toEqual(SESSION);
@@ -304,7 +304,7 @@ describe("the owner app's sources and tools routes", () => {
   it("call a table tool as the owner itself, and no name the table lacks", async () => {
     const app = await signInApp({ owner: owner() });
     expect(await answered(await appPost("tools/agents_list", app.access_token, null, {})))
-      .toEqual({ agents: [], owner_agents: [] });
+      .toEqual({ agents: [], owner_agents: [], apps: expect.any(Array) });
     expect(await answered(await appPost("tools/inbox_digest", app.access_token, null,
                                         { limit: 10, after: 0 })))
       .toMatchObject({ mail: { messages: [] }, rooms: { rows: [] } });

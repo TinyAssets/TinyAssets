@@ -98,6 +98,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
+import type { Vendor } from "../../doors/src/apps";
 import { APP_RESOURCE } from "../../doors/src/config";
 import { LEASE_LIVED, mintToken, sealRoute } from "../../doors/src/routing-mac";
 import {
@@ -150,12 +151,13 @@ import { Invalid, Refused } from "./errors";
 import {
   BATCH_BYTES, type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef,
   type ChunkStore, type Content, type Entry, FileConflict, FileFault, Files, GC_GRACE_S,
-  INLINE_BYTES, type Lease,
+  INLINE_BYTES, type Lease, WHOLE_BYTES,
   OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
-import { type Capability, type Client, type Grant, Grants, holds, type Scope } from "./grants";
+import { type Capability, type Client, type ConnectedApp, type Grant, Grants, holds, type Scope }
+  from "./grants";
 import {
   CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
 } from "./codemode";
@@ -282,6 +284,11 @@ export interface Binding {
    * it; every other door refuses it.
    */
   readonly inbound?: { readonly binding: string; readonly revision: number };
+  /**
+   * Which of `apps.json`'s vendors an MCP client is, as its sign-in knew it (the grant's
+   * props, `doors/src/apps.ts`): recorded on its grant's row, never a request field.
+   */
+  readonly vendor?: Vendor | null;
 }
 
 export type { Origin, Source, WakeSender };
@@ -750,6 +757,8 @@ export interface FetchMetadata {
   /** When it last changed, ISO 8601. */
   readonly modified: string;
   readonly writer: string;
+  /** Its etag, which `file_edit` and `file_write` take. */
+  readonly etag: string;
   readonly type?: string;
   readonly description?: string;
   readonly tags?: readonly string[];
@@ -791,8 +800,23 @@ export interface FileChunksRequest {
 export interface FileWriteRequest {
   readonly path: string;
   readonly expected_etag: string | null;
-  readonly content: Uint8Array;
+  /** The file's bytes, or its text, written as UTF-8 (`file_write`, slice BRAIN). */
+  readonly content: Uint8Array | string;
   readonly mode?: number;
+}
+
+/** Text added at the end of a file, which is made when absent (`file_append`). */
+export interface FileAppendRequest {
+  readonly path: string;
+  readonly content: string;
+}
+
+/** One exact occurrence of `old_text` in a file's text replaced, at its etag (`file_edit`). */
+export interface FileEditRequest {
+  readonly path: string;
+  readonly old_text: string;
+  readonly new_text: string;
+  readonly expected_etag: string;
 }
 
 export interface UploadBeginRequest {
@@ -2011,7 +2035,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (binding.session !== undefined && source.kind !== "api_key") {
       throw new Refused(MCP_REGISTERS_BY_CARD);
     }
-    const grant = this.#grants.admit(origin.client, source.kind, signedIn, clock());
+    const vendor = binding.vendor ?? null;
+    if (vendor !== null && (source.kind !== "mcp" || typeof vendor !== "object"
+        || typeof vendor.id !== "string" || typeof vendor.verified !== "boolean")) {
+      throw new Invalid("invalid outside client vendor");
+    }
+    const grant = this.#grants.admit(origin.client, source.kind, signedIn, clock(), vendor);
     if (source.kind === "api_key") {
       this.#keys.used(source.ref, Math.floor(clock()));  // the key store's last use, coarse
     }
@@ -2884,7 +2913,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
    * it may mail).
    */
-  outsideAgents(binding: Binding): Promise<{ agents: Agent[]; owner_agents: NativeAgent[] }> {
+  outsideAgents(binding: Binding):
+      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] }> {
     return this.#door(() => {
       const account = this.#account(binding, "read");
       const own = account.origin === null && account.run === null;
@@ -2900,7 +2930,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         natives = natives.filter((native) => universe !== null && holds(grant, {
           universe, agent: native.agent, capability: "converse" }));
       }
-      return { agents: this.#ledger.agents(account.origin), owner_agents: natives };
+      // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
+      // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
+      // app that is not connected yet.
+      return { agents: this.#ledger.agents(account.origin), owner_agents: natives,
+               apps: this.#grants.apps() };
     });
   }
 
@@ -4165,6 +4199,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileText(binding: Binding, request: FileTextRequest):
       Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
+    await this.#seededFor(binding, "read", "read_files");
     const asked = await this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path"], ["offset", "max_bytes"]);
@@ -4230,8 +4265,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * one answered or the last entry read, null at the end; a query of at most
    * `SEARCH_QUERY_BYTES`.
    */
-  fileSearch(binding: Binding, request: FileSearchRequest):
+  async fileSearch(binding: Binding, request: FileSearchRequest):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
+    await this.#seededFor(binding, "read", "read_files");
     return this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["query"], ["cursor"]);
@@ -4260,6 +4296,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileFetch(binding: Binding, request: FileFetchRequest):
       Promise<{ id: string; title: string; text: string; url: string;
                 metadata: FetchMetadata }> {
+    await this.#seededFor(binding, "read", "read_files");
     const content = await this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["id"]);
@@ -4274,7 +4311,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       id: path, title: titleOf(path, front), text: read.text ?? "", url: fileUrl(path),
       metadata: { path, size: content.entry.size, version: content.entry.version,
                   modified: new Date(content.entry.mtime_ms).toISOString(),
-                  writer: content.entry.writer,
+                  writer: content.entry.writer, etag: content.entry.etag,
                   ...(front.type === undefined ? {} : { type: front.type }),
                   ...(front.description === undefined ? {} : { description: front.description }),
                   ...(front.tags.length === 0 ? {} : { tags: front.tags }),
@@ -4323,16 +4360,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return { chunks: await this.#files.fetch(reads) };
   }
 
-  /** Write a whole file of at most one chunk (4 MiB); larger ones go by upload. */
+  /**
+   * Write a whole file of at most one chunk (4 MiB); larger ones go by upload. Its content is
+   * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement).
+   */
   async fileWrite(binding: Binding, request: FileWriteRequest):
       Promise<{ entry: Entry } | FileConflicted> {
+    await this.#seededFor(binding, "work", "write_files");
     const { account, r, content } = await this.#door(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
       this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
-      const content = r["content"];
+      const given = r["content"];
+      const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
-        throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
+        throw new Invalid("a written file is bytes or text, at most 4 MiB; larger ones are " +
+                          "uploaded");
       }
       return { account, r, content };
     });
@@ -4346,6 +4389,175 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } finally {
       await this.#schedule.sync();
     }
+  }
+
+  /**
+   * Text added at the end of a file (`file_append`, slice BRAIN: an outside agent's everyday
+   * write-back), the file made when absent. It never changes a byte already there, so it is
+   * additive (OpenAI's `destructiveHint: false`): the file is read, the text put after it, and
+   * the whole written at the etag it was read at, so two appends never lose each other; one
+   * that meets another's write reads the file again and puts its text after that. A file of
+   * whole chunks keeps them as they are (`Files.write`'s `prefix`), so only its last chunk
+   * and the text are written again, at any size. The text is at most one chunk (4 MiB).
+   */
+  async fileAppend(binding: Binding, request: FileAppendRequest): Promise<{ entry: Entry }> {
+    await this.#seededFor(binding, "work", "write_files");
+    const { account, path, added } = await this.#door(() => {
+      const account = this.#filer(binding, "work", "write_files");
+      const r = fileFields(request, ["path", "content"]);
+      this.#ownersTree(binding, account, "FILES.append", request, r["path"]);
+      const content = r["content"];
+      if (typeof content !== "string" || content === "") {
+        throw new Invalid("appended content is text of at least one character");
+      }
+      const added = new TextEncoder().encode(content);
+      if (added.byteLength > CHUNK_BYTES) {
+        throw new Invalid("appended text is at most 4 MiB at once");
+      }
+      return { account, path: storedPath(r["path"]), added };
+    });
+    const authorize = () => {
+      this.#filer(binding, "work", "write_files");
+    };
+    try {
+      for (;;) {
+        const now = await this.#door(() => {
+          authorize();
+          const entry = this.#files.stat(path);
+          if (entry !== null && entry.kind !== "file") {
+            throw new Invalid(`${path} is a directory`);
+          }
+          return entry === null ? null : this.#files.open(path);
+        });
+        let bytes = added;
+        let prefix: ChunkRef[] = [];
+        if (now !== null) {
+          let tail: Uint8Array;
+          if (now.inline !== undefined) {
+            tail = now.inline;
+          } else {
+            const chunks = now.chunks ?? [];
+            const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
+              ? chunks.length : chunks.length - 1;
+            prefix = chunks.slice(0, whole);
+            const rest = chunks.slice(whole);
+            tail = rest.length === 0 ? new Uint8Array(0)
+              : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
+          }
+          bytes = new Uint8Array(tail.byteLength + added.byteLength);
+          bytes.set(tail, 0);
+          bytes.set(added, tail.byteLength);
+        }
+        const wrote = await fileConflictedAfter(async () => ({
+          entry: await this.#files.write(path, bytes, {
+            expected: now?.entry.etag ?? "",
+            ...(now === null ? {} : { mode: now.entry.mode }), prefix,
+            writer: fileWriter(account), authorize }),
+        }));
+        if (!("conflict" in wrote)) {
+          return wrote;
+        }
+        // Another write landed between the read and this one: read it again.
+      }
+    } finally {
+      await this.#schedule.sync();
+    }
+  }
+
+  /**
+   * One exact occurrence of `old_text` in a file's text replaced by `new_text`, at the etag
+   * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
+   * place). Text that occurs nowhere, or more than once, is refused with how many times, so
+   * the caller gives more of the text around it. The file is read and written whole, so it
+   * is at most one whole write (`WHOLE_BYTES`, 16 MiB, the files plane's ceiling for a write
+   * through the object).
+   */
+  async fileEdit(binding: Binding, request: FileEditRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    await this.#seededFor(binding, "work", "write_files");
+    const asked = await this.#door(() => {
+      const account = this.#filer(binding, "work", "write_files");
+      const r = fileFields(request, ["path", "old_text", "new_text", "expected_etag"]);
+      this.#ownersTree(binding, account, "FILES.edit", request, r["path"]);
+      const [old, replacement, etag] = [r["old_text"], r["new_text"], r["expected_etag"]];
+      if (typeof old !== "string" || old === "" || typeof replacement !== "string") {
+        throw new Invalid("old_text is text of at least one character, and new_text is text");
+      }
+      if (typeof etag !== "string" || etag === "") {
+        throw new Invalid("expected_etag is the file's etag, as file_stat or fetch answers it");
+      }
+      const path = storedPath(r["path"]);
+      const entry = this.#files.stat(path);
+      if (entry === null || entry.kind !== "file") {
+        throw new FileFault("not_found", "no such file");
+      }
+      if (entry.etag !== etag) {
+        return { conflict: entry };
+      }
+      if (entry.size > WHOLE_BYTES) {
+        throw new Invalid(`file_edit edits a file of at most ${WHOLE_BYTES} bytes; write a ` +
+                          "larger one by upload");
+      }
+      return { account, path, old, replacement, content: this.#files.open(path) };
+    });
+    if (asked.conflict !== undefined) {
+      return { conflict: asked.conflict };
+    }
+    const { account, path, old, replacement, content } = asked;
+    let bytes = content.inline;
+    if (bytes === undefined) {
+      const parts = await this.#files.fetch((content.chunks ?? []).map(({ sha256 }) =>
+        ({ sha256 })));
+      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+      let at = 0;
+      for (const part of parts) {
+        bytes.set(part, at);
+        at += part.byteLength;
+      }
+    }
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new Invalid(`${path} is not UTF-8 text`);
+    }
+    const first = text.indexOf(old);
+    if (first < 0) {
+      throw new Invalid("old_text is not in the file: read it again and give its exact text");
+    }
+    let times = 0;
+    for (let at = first; at >= 0; at = text.indexOf(old, at + 1)) {
+      times += 1;
+    }
+    if (times > 1) {
+      throw new Invalid(`old_text occurs ${times} times: give more of the text around the one ` +
+                        "to change");
+    }
+    const edited = new TextEncoder().encode(
+      text.slice(0, first) + replacement + text.slice(first + old.length));
+    try {
+      return await fileConflictedAfter(async () => ({
+        entry: await this.#files.write(path, edited, {
+          expected: content.entry.etag, mode: content.entry.mode, writer: fileWriter(account),
+          authorize: () => this.#filer(binding, "work", "write_files") }),
+      }));
+    } finally {
+      await this.#schedule.sync();
+    }
+  }
+
+  /**
+   * A new owner's starter seed, awaited before a file door touches the files, after the
+   * caller's authority is checked: an outside agent's first `fetch` of `/workspace/USER.md`
+   * finds the seeded profile however soon after sign-up it comes, and its first write lands
+   * beside the seeded files, never before them (autoconnect_research.md §2.1).
+   */
+  async #seededFor(binding: Binding, door: "read" | "work",
+                   capability: "read_files" | "write_files"): Promise<void> {
+    await this.#door(() => {
+      this.#filer(binding, door, capability);
+    });
+    await this.#seeded();
   }
 
   /**

@@ -79,7 +79,7 @@ describe("dynamic client registration", () => {
     expect(metadata["registration_endpoint"]).toBe("https://tinyassets.io/oauth/register");
     const ours = await call(new Request(url("/oauth/register"), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_name: "TinyAssets", redirect_uris: [WEB_REDIRECT],
+      body: JSON.stringify({ client_name: "Grok", redirect_uris: [WEB_REDIRECT],
                              token_endpoint_auth_method: "none" }),
     }), on);
     const { client_id } = await ours.json<{ client_id: string }>();

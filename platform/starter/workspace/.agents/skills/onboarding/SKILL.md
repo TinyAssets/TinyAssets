@@ -2,7 +2,7 @@
 name: onboarding
 description: Get to know a new owner in one short exchange - what to call them and you, their time zone, what they want help with and are working toward, how much to message them unasked, which other AI assistants they use - and offer a regular pass and brief. Use when the profile in USER.md has no Onboarded date, after doing what was asked.
 metadata:
-  ta-starter: "onboarding@1"
+  ta-starter: "onboarding@2"
 ---
 
 # Onboarding
@@ -22,8 +22,10 @@ it. Mark the claim done once you write the `Onboarded:` date.
      skill);
    - how much agents should message them unasked, and any times not to.
 2. Write the answers: their name, time zone, wants and their words on messaging them
-   unasked in `/workspace/USER.md`'s profile, which all their agents share; your name (and a
-   vibe, if they gave one) on `SOUL.md`'s `Name:` and `Vibe:` lines. Read both back briefly.
+   unasked in `/workspace/USER.md`'s profile, which all their agents share. If you are one of
+   their TinyAssets agents, write your name (and a vibe, if they gave one) on your own
+   `SOUL.md`'s `Name:` and `Vibe:` lines; an assistant of another app has no `SOUL.md` there
+   and writes none. Read them back briefly.
 3. Their other assistants: ask which other AI assistants they use, and write them on the
    profile's `Assistants I use:` line. Name the ones `agents_list` shows already connected
    to TinyAssets; if `agents_list` lists no apps, ask which are already connected. For each

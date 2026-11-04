@@ -1,0 +1,110 @@
+{
+  "about": "The AI apps an owner may connect to TinyAssets, as data (autoconnect_research.md section 2.3): one entry per vendor, so no code names one. match names how a signed-in client is known: hosts, the host of a Client ID Metadata Document's URL (verified: the authorization server fetched the document from there), or names, a word of the client's self-declared name (unverified). registration is how its client registers with our sign-in: cimd, or dcr for a vendor that offers no CIMD (the founder's ruling, 2026-11-04: the one pre-login exception to no anonymous traffic, on only while DCR_ENABLED is true, and then only for a client whose name names a dcr vendor). connect is what the user does in that app: a link, a sentence to send (say), steps, and text to copy (code). Each entry names the vendor page its steps were read from and when. One source for the public connect page (WebSite/site-react/app/connect), the owner app's connected apps page and agents_list's apps (each app's connect_url).",
+  "server": "https://tinyassets.io/mcp",
+  "page": "https://tinyassets.io/connect/",
+  "apps": [
+    {
+      "id": "claude",
+      "name": "Claude",
+      "surfaces": ["Claude.ai", "Claude Desktop and mobile", "Cowork", "Claude Code", "Claude Duet"],
+      "registration": "cimd",
+      "match": { "hosts": ["claude.ai", "claude.com"], "names": ["Claude"] },
+      "connect": {
+        "link": "https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=TinyAssets&connectorUrl=https%3A%2F%2Ftinyassets.io%2Fmcp",
+        "steps": [
+          "Open the link while signed in to Claude: it opens the custom connector dialog with TinyAssets filled in.",
+          "Select Add, then Connect, and sign in to TinyAssets.",
+          "Claude Duet, Cowork and the Claude apps share your account's connectors, so this connects them too."
+        ]
+      },
+      "source": "https://claude.com/docs/connectors/building/directory-vs-custom.md; https://claude.com/docs/connectors/building/authentication.md",
+      "checked": "2026-11-04"
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "surfaces": ["ChatGPT", "ChatGPT dots", "Codex"],
+      "registration": "cimd",
+      "match": { "hosts": ["chatgpt.com", "openai.com"], "names": ["ChatGPT", "Codex", "OpenAI"] },
+      "connect": {
+        "link": "https://chatgpt.com/plugins",
+        "steps": [
+          "On chatgpt.com in a browser, open Plugins and select the plus button, then Add custom MCP server.",
+          "Name it TinyAssets and enter the server address https://tinyassets.io/mcp, with OAuth.",
+          "Review the warning, select I understand and want to continue, then Create as a plugin.",
+          "Install the plugin and sign in to TinyAssets. Dots use the plugins installed for your account.",
+          "For Codex in a terminal, run the two commands below instead."
+        ],
+        "code": "codex mcp add TinyAssets --url https://tinyassets.io/mcp\ncodex mcp login TinyAssets"
+      },
+      "source": "https://developers.openai.com/api/docs/guides/custom-mcp-server.md; https://developers.openai.com/apps-sdk/build/auth.md",
+      "checked": "2026-11-04"
+    },
+    {
+      "id": "grok",
+      "name": "Grok Bot",
+      "surfaces": ["Grok Bot"],
+      "registration": "dcr",
+      "match": { "hosts": [], "names": ["Grok"] },
+      "connect": {
+        "say": "Add the MCP server https://tinyassets.io/mcp as TinyAssets: it's the shared workspace I use with my other assistants.",
+        "steps": [
+          "In a chat with your Bot, send the sentence below.",
+          "Sign in to TinyAssets on the Connect card it shows. A connected app is available to every Bot you run."
+        ]
+      },
+      "source": "https://docs.x.ai/grok-bot/computer-and-apps.md",
+      "checked": "2026-11-03"
+    },
+    {
+      "id": "muse",
+      "name": "Meta Muse",
+      "surfaces": ["Muse"],
+      "registration": "dcr",
+      "match": { "hosts": [], "names": ["Muse"] },
+      "connect": {
+        "say": "Connect to the MCP server at https://tinyassets.io/mcp as a custom integration named TinyAssets: it's the shared workspace I use with my other assistants.",
+        "steps": [
+          "In a chat with Muse, send the sentence below.",
+          "Sign in to TinyAssets when Muse asks you to."
+        ]
+      },
+      "source": "https://platform.muse.ai/docs; https://parallel.ai/articles/meta-muse-custom-integrations (a third party's first-hand test, 2026-10-29)",
+      "checked": "2026-11-03"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini",
+      "surfaces": ["Gemini on the web and mobile"],
+      "registration": "dcr",
+      "match": { "hosts": [], "names": ["Gemini"] },
+      "connect": {
+        "link": "https://gemini.google.com",
+        "steps": [
+          "On gemini.google.com in a browser, open Settings, then Connected Apps, then Add a custom app.",
+          "Enter the server address https://tinyassets.io/mcp and sign in to TinyAssets.",
+          "Gemini offers custom apps on a personal Google account, to people 18 or older in the US, with Keep Activity on.",
+          "To make sure Gemini uses it in a chat, type @ and pick TinyAssets."
+        ]
+      },
+      "source": "https://support.google.com/gemini/answer/17209137",
+      "checked": "2026-11-03"
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "surfaces": ["Cursor"],
+      "registration": "dcr",
+      "match": { "hosts": [], "names": ["Cursor"] },
+      "connect": {
+        "steps": [
+          "In Cursor, add a remote MCP server with the address https://tinyassets.io/mcp, or put the text below in .cursor/mcp.json.",
+          "Sign in to TinyAssets when Cursor asks."
+        ],
+        "code": "{\n  \"mcpServers\": {\n    \"TinyAssets\": { \"url\": \"https://tinyassets.io/mcp\" }\n  }\n}"
+      },
+      "source": "https://cursor.com/docs/mcp.md",
+      "checked": "2026-11-03"
+    }
+  ]
+}

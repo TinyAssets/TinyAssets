@@ -23,6 +23,14 @@
  * `file_list`, and `search` and `fetch` in the shape ChatGPT's deep research and company
  * knowledge require, lexical and bounded (`owner/src/file-search.ts`).
  *
+ * The file writers (slice BRAIN, shared_brain_research.md §6.2), so an outside agent writes
+ * back what it learns: `file_append`, the everyday write-back, additive (it never changes a
+ * byte already there, so `destructiveHint: false`, which OpenAI allows only for additive
+ * writes and which spares the owner an approval per remembered fact); `file_write` (a whole
+ * replacement) and `file_edit` (one exact occurrence replaced), both destructive. Their
+ * descriptions, and the readers', say what each does and when to use it, never "always",
+ * and name no other vendor's tool: both directories' rules.
+ *
  * Slice M's tools, so a main agent spends few calls: `inbox_digest` and `board_digest`
  * (what changed for the caller since its cursor, in one read) and `code` (code mode: one
  * script calls the caller's other tools, each held to its grant, its VM in the hooks
@@ -141,8 +149,10 @@ export function toolTable(): readonly Tool[] {
                     parent_id: orNull("The message replied to, or null") }) },
     { name: "agents_list", door: "outsideAgents", capability: null,
       title: "List agents", ...READ,
-      description: "List the agents registered for this connection, and the owner's own " +
-        "agents, each with the id its rooms name.",
+      description: "List the agents registered for this connection, the owner's own " +
+        "agents, each with the id its rooms name, and which of the owner's AI apps are " +
+        "connected to TinyAssets, each one not connected with its connect_url, the page " +
+        "with its connect step.",
       input: args({}) },
     { name: "agent_register", door: "registerPropose", capability: null,
       title: "Request agent registration", readOnlyHint: false, destructiveHint: false,
@@ -175,7 +185,10 @@ export function toolTable(): readonly Tool[] {
                   { before_revision: int("Entries before this revision") }) },
     { name: "collection_write", door: "collectionWrite", capability: "write_graph",
       title: "Write collection row", ...CHANGE,
-      description: "Write one collection row against its current etag.",
+      description: "Write one collection row against its current etag. A new row " +
+        "(expected_etag \"\") is refused when the row exists, so creating one claims an " +
+        "act: on the board, the first agent to create the row named for an act holds it, " +
+        "and a conflict means another agent has it.",
       input: args({ collection, row_id: row, body: str("The row's new body"),
                     expected_etag: str("The row's current etag, or \"\" to create it"),
                     private: bool("Whether only the owner may read the row") },
@@ -200,24 +213,60 @@ export function toolTable(): readonly Tool[] {
                     head_chars: int("At most this many characters of each small file's text") }) },
     { name: "file_read", door: "fileText", capability: "read_files",
       title: "Read file", ...READ,
-      description: "Read a file's text: its UTF-8 bytes from offset (0 when omitted), at most " +
-        "max_bytes (65536 when omitted, up to 4194304), cut at a character. next_offset is " +
-        "where the next part starts, or null at the end.",
+      description: "Use this to read a file of the user's TinyAssets workspace by its " +
+        "path, such as their profile /workspace/USER.md: its UTF-8 text from offset (0 when " +
+        "omitted), at most max_bytes (65536 when omitted, up to 4194304), cut at a " +
+        "character. next_offset is where the next part starts, or null at the end. Its " +
+        "entry carries the etag file_edit and file_write take.",
       input: args({ path }, { offset: int("The byte to start at: 0, or a next_offset"),
                               max_bytes: int("At most this many bytes of text") }) },
     { name: "search", door: "fileSearch", capability: "read_files",
       title: "Search files", ...READ,
-      description: "Search the owner's files by words: their paths, their titles, " +
-        "descriptions and tags, small files' text, and knowledge index lines. Answers the " +
-        "best results, each an id for fetch, a title and a url. When next_cursor is set, " +
-        "only part of the files were searched: search again with it for the rest.",
+      description: "Use this when the user's request may depend on what they or their " +
+        "other agents already saved: their details, preferences, goals, decisions, notes " +
+        "and projects. Searches the user's TinyAssets workspace by words: file paths, " +
+        "titles, descriptions and tags, small files' text, and index lines " +
+        "(/workspace/index.md maps the workspace). Answers the best results, each an id for " +
+        "fetch, a title and a url. When next_cursor is set, only part of the files were " +
+        "searched: search again with it for the rest.",
       input: args({ query: str("The words to look for") },
                   { cursor: str("A next_cursor a search answered") }) },
     { name: "fetch", door: "fileFetch", capability: "read_files",
       title: "Fetch file", ...READ,
-      description: "Fetch one of the owner's files by the id a search answered: its title, " +
-        "text, url and metadata.",
+      description: "Use this to read one of the user's TinyAssets files a search found, " +
+        "by its id, the file's path: its title, its text (file_read reads past 4 MiB), its " +
+        "url and its metadata, the etag file_edit takes among them.",
       input: args({ id: str("The id a search answered: the file's path") }) },
+    { name: "file_append", door: "fileAppend", capability: "write_files",
+      title: "Append to file", readOnlyHint: false, destructiveHint: false,
+      idempotentHint: false, openWorldHint: false,
+      description: "Use this to save what the user tells you that is worth keeping, so " +
+        "their other agents know it too: adds text at the end of a file in their TinyAssets " +
+        "workspace, such as a directive at the end of /workspace/USER.md or a note in their " +
+        "knowledge, and makes the file when it is absent. It never changes what is already " +
+        "there. The text goes in exactly as given: begin it with a newline where the file " +
+        "needs one.",
+      input: args({ path, content: str("The text to add at the end, as UTF-8: at most " +
+                                           "4 MiB") }) },
+    { name: "file_write", door: "fileWrite", capability: "write_files",
+      title: "Write file", ...CHANGE,
+      description: "Write a whole file of the user's TinyAssets workspace: its text " +
+        "replaces what is there, at the file's current etag (null to create it). A conflict " +
+        "answers the file as it now stands. At most 4 MiB of text.",
+      input: args({ path, expected_etag: etag,
+                    content: str("The file's whole text, as UTF-8: at most 4 MiB") },
+                  { mode: int("1 to make the file executable, 0 not; kept when omitted") }) },
+    { name: "file_edit", door: "fileEdit", capability: "write_files",
+      title: "Edit file", ...CHANGE,
+      description: "Use this to correct a file of the user's TinyAssets workspace in " +
+        "place, such as a directive in /workspace/USER.md that stopped being true: replaces " +
+        "the one exact occurrence of old_text with new_text, at the file's current etag " +
+        "(from fetch, file_read or file_stat). Text found nowhere, or more than once, is " +
+        "refused: give enough of it to be unique. A conflict answers the file as it now " +
+        "stands.",
+      input: args({ path, old_text: str("The exact text to replace: it occurs once"),
+                    new_text: str("What replaces it"),
+                    expected_etag: str("The file's current etag") }) },
     { name: "file_history", door: "fileHistory", capability: "read_files",
       title: "File history", ...READ, description: "List a path's kept versions, newest first.",
       input: args({ path, limit: int("At most this many versions") },

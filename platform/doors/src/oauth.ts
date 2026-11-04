@@ -9,9 +9,12 @@
  *   app (`FIRST_PARTY_CLIENTS`); each grant and token is bound to exactly one, and a new
  *   authorization must name it (no default resource is guessed).
  * - Client ID Metadata Documents are on, which needs the `global_fetch_strictly_public`
- *   compatibility flag (the config guard). Dynamic registration is the deprecated
- *   fallback, on only with `DCR_ENABLED`. An outside client naming a redirect on our own
- *   origin is refused at `/authorize`, however it registered (`authorize.ts`).
+ *   compatibility flag (the config guard). Dynamic registration is for the vendors that
+ *   offer no CIMD (the founder's ruling, 2026-11-04; `apps.json`'s `registration: "dcr"`),
+ *   the one pre-login exception to no anonymous traffic: served only with `DCR_ENABLED`, and
+ *   then a registration is taken only when its `client_name` names such a vendor
+ *   (`apps.ts`). An outside client naming a redirect on our own origin is refused at
+ *   `/authorize`, however it registered (`authorize.ts`).
  * - `authenticated_at` is in the grant's encrypted props from the authorization on. No
  *   token exchange callback is installed, so a refresh carries the props unchanged and
  *   never moves it; token exchange (RFC 8693) is off, so no other client can take them.
@@ -32,6 +35,7 @@ import {
   type ValidatedAccessToken,
 } from "@cloudflare/workers-oauth-provider";
 
+import { registrationRefusal } from "./apps";
 import {
   ACCESS_TOKEN_TTL_S, APP_RESOURCE, dcrEnabled, type DoorsEnv, ISSUER, MCP_RESOURCE,
   REFRESH_TOKEN_TTL_S, SCOPES,
@@ -45,7 +49,13 @@ export function authorizationServer(env: DoorsEnv): OAuthAuthorizationServer<Doo
     resources: [MCP_RESOURCE, APP_RESOURCE],
     scopesSupported: [...SCOPES],
     clientIdMetadataDocumentEnabled: true,
-    ...(dcrEnabled(env) ? { clientRegistrationEndpoint: REGISTRATION_ENDPOINT } : {}),
+    ...(dcrEnabled(env) ? {
+      clientRegistrationEndpoint: REGISTRATION_ENDPOINT,
+      clientRegistrationCallback: ({ clientMetadata }) => {
+        const refused = registrationRefusal(clientMetadata);
+        return refused === null ? undefined : { description: refused };
+      },
+    } : {}),
     accessTokenTTL: ACCESS_TOKEN_TTL_S,
     refreshTokenTTL: REFRESH_TOKEN_TTL_S,
     refreshTokenIdleTTL: REFRESH_TOKEN_TTL_S,

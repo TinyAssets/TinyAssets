@@ -530,6 +530,75 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
   await card.getByRole("button", { name: /^Sign in/ }).waitFor();
 });
 
+test("a sign-in whose socket drops is followed on a new socket, and ends as it ends " +
+     "(task 68)", { timeout: 120_000 }, async () => {
+  // The app's sockets, kept so the test can drop one as a network would.
+  await context.addInitScript(() => {
+    const Real = window.WebSocket;
+    window.__sockets = [];
+    window.WebSocket = class extends Real {
+      constructor(...args) {
+        super(...args);
+        window.__sockets.push(this);
+      }
+    };
+  });
+  await page.goto(`${ORIGIN}/app#sources`);
+  await page.reload();  // a new document, so the script above runs in it
+  const card = page.locator(".card", { hasText: "Claude" }).filter({ has: page.locator(".signin") })
+    .first();
+  const list = async () => (await (await mf.dispatchFetch(`https://e2e.internal/signins/${WHO}`))
+    .json()).signins;
+  const before = (await list()).length;
+  await card.getByRole("button", { name: /^Sign in/ }).click();
+  let signin;
+  for (let i = 0; i < 100 && signin === undefined; i++) {
+    signin = (await list())[before];
+    if (signin === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(signin, "the app did not ask the sandbox to start the sign-in");
+  const post = async (body) => {
+    const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
+      method: "POST", body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json",
+                 "x-ta-sandbox": signin.tokens.egress_token,
+                 "x-ta-network-generation": String(signin.network.generation),
+                 "x-ta-runner": signin.tokens.runner_token } });
+    assert.equal(answer.status, 200, await answer.clone().text());
+  };
+  const vendor = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +
+    "9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2F" +
+    "platform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+" +
+    "user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+" +
+    "user%3Aplugins&code_challenge=yfhUky71rorbPUGR_0kuaJoQPT0k39HLxYDNc-gUtt8&" +
+    "code_challenge_method=S256&state=Lq7TdjukIEmxyMX2EKf2hY4xChr1sfIJOV3krpnv6iE";
+  await post({ frames: [{ seq: 1, at: 1, event: { type: "ta.signin", state: "open", url: vendor,
+                                                   code: null, accepts_code: false } }] });
+  await card.getByRole("link", { name: "Open Claude's sign-in page" }).waitFor();
+  const open = () => page.evaluate(() => window.__sockets
+    .filter((socket) => socket.url.includes("/app/api/agent/socket")
+                        && socket.readyState === WebSocket.OPEN).length);
+  assert.equal(await open(), 1);
+  const made = await page.evaluate(() => window.__sockets.length);
+  // The connection drops, as a network drops it: the app never closed it.
+  await page.evaluate(() => window.__sockets.filter((socket) =>
+    socket.url.includes("/app/api/agent/socket")).at(-1).close(4000, "dropped"));
+  for (let i = 0; i < 100; i++) {
+    if (await page.evaluate(() => window.__sockets.length) > made && await open() === 1) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(await open(), 1, "no new socket after the drop");
+  // The state read again on the new socket: the sign-in is still shown, then ends.
+  await card.getByRole("link", { name: "Open Claude's sign-in page" }).waitFor();
+  await post({ frames: [{ seq: 2, at: 2, event: { type: "ta.signin", state: "signed_in" } }],
+               end: { exit_code: 0 } });
+  await page.locator(".message.good", { hasText: "Signed in to Claude." }).last().waitFor();
+});
+
 test("every screen opens on the doors' answers, and says plainly what is not here yet",
      { timeout: 60_000 }, async () => {
   for (const [hash, heading] of [["home", "Home"], ["agents", "Agents"],

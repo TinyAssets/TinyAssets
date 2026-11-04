@@ -50,6 +50,8 @@ deploy/cloudflare-worker/.wrangler/
 .provider_keys.json
 # Local MCP client config is machine-specific. Keep the tracked example instead.
 .mcp.json
+# ...except the Claude plugin's, which names only the public server (platform/plugins/build.mjs).
+!platform/plugins/claude/.mcp.json
 .env
 *git-credentials*
 *.key
