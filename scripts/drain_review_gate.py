@@ -526,14 +526,24 @@ def declared_lane(body: str) -> list[str] | None:
     return [g for g in globs if g] or None
 
 
-def outside_lane(paths: list[str], globs: list[str]) -> list[str]:
-    def inside(path: str) -> bool:
-        return any(
-            path.startswith(g) if g.endswith("/") else fnmatch.fnmatchcase(path, g)
-            for g in globs
-        )
+def _in_glob(path: str, glob: str) -> bool:
+    return path.startswith(glob) if glob.endswith("/") else fnmatch.fnmatchcase(path, glob)
 
-    return [p for p in paths if p and not inside(p)]
+
+def outside_lane(paths: list[str], globs: list[str]) -> list[str]:
+    return [p for p in paths if p and not any(_in_glob(p, g) for g in globs)]
+
+
+# Paths no honest lane holds all of: every depth, a dotfile, a deploy script, a workflow,
+# product code and platform code. A glob matching each of them (`*`, `**`, `?*`, `[!x]*`
+# and the like; fnmatch's `*` crosses `/`) declares no lane at all.
+_EVERY_PATH = ("a", ".a", "A/b.c", "deploy/x.sh", ".github/workflows/deploy-prod.yml",
+               "tinyassets/a/b/c.py", "platform/owner/src/x.ts", "z/y/x/w/v")
+
+
+def universal_globs(globs: list[str]) -> list[str]:
+    """The globs of a lane that match every path: each one declares nothing."""
+    return [g for g in globs if all(_in_glob(path, g) for path in _EVERY_PATH)]
 
 
 def _lane_scope(argv: list[str]) -> int:
@@ -550,6 +560,11 @@ def _lane_scope(argv: list[str]) -> int:
                   "(a prose-only PR: `Lane: docs/`)", file=sys.stderr)
             return 2
         return 0
+    everything = universal_globs(globs)
+    if everything:
+        print("a Lane names the files a PR owns; these match every path, so they name none: "
+              + " ".join(everything), file=sys.stderr)
+        return 2
     stray = outside_lane(sys.stdin.read().splitlines(), globs)
     if stray:
         print("files outside the declared Lane (branch from origin/main, or "
