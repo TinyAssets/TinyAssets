@@ -100,7 +100,9 @@ describe("the runs' live output's memory bound", () => {
     const relay = readFileSync(join(SRC, "relay.ts"), "utf8");
     expect(relay).not.toMatch(/\.sql\b|storage\./);
     // The tail is trimmed to its bound as each frame is kept, the longest tail's oldest first.
-    expect(relay).toContain("while (this.#tailBytes > TAIL_BYTES) {");
+    // Every object's tails in the isolate share one budget (`slots.ts`, review M5).
+    expect(relay).toContain("const tails = isolateTails(TAIL_BYTES);");
+    expect(relay).toContain("tails.trim();");
     expect(relay).toContain("if (text.length <= TAIL_FRAME_MAX) {");
   });
 

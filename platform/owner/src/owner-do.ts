@@ -93,6 +93,9 @@
  * `wakes` lane's claim). Only the platform, as the reserved `PLATFORM_CALLER`, sets it, at
  * `admissionSet`, the one door that caller reaches.
  */
+import { type Edited, planEdit, type Refusal } from "./edit";
+import { ownerSlots } from "./holds";
+import { slotted } from "./slots";
 import { createHash, randomBytes } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -1422,6 +1425,28 @@ function contentsOf(rows: readonly object[]): string[] {
 interface Shown<T> {
   readonly contents: (value: T) => readonly string[];
   readonly fill: (value: T, windows: ReadonlyMap<string, Window>) => T;
+}
+
+/**
+ * The most bytes one `file_edit` edits (ADR-037's ruling 2): no longer `WHOLE_BYTES`, since a
+ * chunk-wise edit's memory does not depend on the file; the reads and the time one call
+ * holds. An edit reads each source chunk up to three times (scan, hash, make) and puts each
+ * changed one, so a file of n chunks makes at most 4n subrequests of the 10,000 an invocation
+ * has (Workers limits, internal services included); and its CPU, measured in workerd
+ * (`memory/leg.mjs`), stays well inside the 30 s a request has at this size.
+ */
+export const EDIT_BYTES_MAX = 2000 * CHUNK_BYTES;
+
+/** An edit's output small enough to keep inline, made whole (at most `INLINE_BYTES`). */
+async function inlineOf(plan: Edited): Promise<Uint8Array> {
+  const parts = await Promise.all(plan.sizes.map((_, index) => plan.make(index)));
+  const out = new Uint8Array(plan.size);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.byteLength;
+  }
+  return out;
 }
 
 /** A written row as its write answers it: everything but its body, and the body's bytes. */
@@ -4825,31 +4850,35 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           return { entry: read.done };
         }
         const now = read.now;
-        let bytes = added;
-        let prefix: ChunkRef[] = [];
-        if (now !== null) {
-          let tail: Uint8Array;
-          if (now.inline !== undefined) {
-            tail = now.inline;
-          } else {
-            const chunks = now.chunks ?? [];
-            const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
-              ? chunks.length : chunks.length - 1;
-            prefix = chunks.slice(0, whole);
-            const rest = chunks.slice(whole);
-            tail = rest.length === 0 ? new Uint8Array(0)
-              : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
+        // The file's last chunk and the text, joined and written, held under one slot
+        // (`holds.ts`, ADR-037): at most two chunks, whatever the file's size.
+        const wrote = await slotted(ownerSlots(), 1, async () => {
+          let bytes = added;
+          let prefix: ChunkRef[] = [];
+          if (now !== null) {
+            let tail: Uint8Array;
+            if (now.inline !== undefined) {
+              tail = now.inline;
+            } else {
+              const chunks = now.chunks ?? [];
+              const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
+                ? chunks.length : chunks.length - 1;
+              prefix = chunks.slice(0, whole);
+              const rest = chunks.slice(whole);
+              tail = rest.length === 0 ? new Uint8Array(0)
+                : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
+            }
+            bytes = new Uint8Array(tail.byteLength + added.byteLength);
+            bytes.set(tail, 0);
+            bytes.set(added, tail.byteLength);
           }
-          bytes = new Uint8Array(tail.byteLength + added.byteLength);
-          bytes.set(tail, 0);
-          bytes.set(added, tail.byteLength);
-        }
-        const wrote = await fileConflictedAfter(async () => ({
-          entry: await this.#files.write(path, bytes, {
-            expected: now?.entry.etag ?? "",
-            ...(now === null ? {} : { mode: now.entry.mode }), prefix,
-            writer: fileWriter(account), authorize }),
-        }));
+          return fileConflictedAfter(async () => ({
+            entry: await this.#files.write(path, bytes, {
+              expected: now?.entry.etag ?? "",
+              ...(now === null ? {} : { mode: now.entry.mode }), prefix,
+              writer: fileWriter(account), authorize }),
+          }));
+        });
         if (!("conflict" in wrote)) {
           return wrote;
         }
@@ -4864,9 +4893,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * One exact occurrence of `old_text` in a file's text replaced by `new_text`, at the etag
    * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
    * place). Text that occurs nowhere, or more than once, is refused with how many times, so
-   * the caller gives more of the text around it. The file is read and written whole, so it
-   * is at most one whole write (`WHOLE_BYTES`, 16 MiB, the files plane's ceiling for a write
-   * through the object).
+   * the caller gives more of the text around it. A chunked file is edited chunk by chunk
+   * under one slot (`edit.ts`, ADR-037), at most `EDIT_BYTES_MAX`; a small one, whole.
    */
   async fileEdit(binding: Binding, request: FileEditRequest):
       Promise<{ entry: Entry } | FileConflicted> {
@@ -4892,9 +4920,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (entry.etag !== etag) {
         return { conflict: entry };
       }
-      if (entry.size > WHOLE_BYTES) {
-        throw new Invalid(`file_edit edits a file of at most ${WHOLE_BYTES} bytes; write a ` +
-                          "larger one by upload");
+      if (entry.size > EDIT_BYTES_MAX) {
+        throw new Invalid(`file_edit edits a file of at most ${EDIT_BYTES_MAX} bytes, the ` +
+                          "reads and time one call holds; write a larger one by upload");
       }
       return { account, path, old, replacement, content: this.#files.open(path) };
     });
@@ -4902,43 +4930,65 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { conflict: asked.conflict };
     }
     const { account, path, old, replacement, content } = asked;
-    let bytes = content.inline;
-    if (bytes === undefined) {
-      const parts = await this.#files.fetch((content.chunks ?? []).map(({ sha256 }) =>
-        ({ sha256 })));
-      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-      let at = 0;
-      for (const part of parts) {
-        bytes.set(part, at);
-        at += part.byteLength;
+    const authorize = () => this.#filer(binding, "work", "write_files");
+    const refused = (refusal: Refusal): never => {
+      throw new Invalid(refusal === "ill_formed" ? "old_text and new_text are well-formed text"
+        : refusal === "not_utf8" ? `${path} is not UTF-8 text`
+        : refusal === "absent" ? "old_text is not in the file: read it again and give its " +
+          "exact text"
+        : `old_text occurs ${refusal.times} times: give more of the text around the one to ` +
+          "change");
+    };
+    try {
+      if (content.inline !== undefined) {
+        // A small file, kept inline: edited whole, its bytes at most `INLINE_BYTES`.
+        let text: string;
+        try {
+          text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content.inline);
+        } catch {
+          return refused("not_utf8");
+        }
+        const first = text.indexOf(old);
+        if (first < 0) {
+          return refused("absent");
+        }
+        let times = 0;
+        for (let at = first; at >= 0; at = text.indexOf(old, at + 1)) {
+          times += 1;
+        }
+        if (times > 1) {
+          return refused({ times });
+        }
+        const edited = new TextEncoder().encode(
+          text.slice(0, first) + replacement + text.slice(first + old.length));
+        return await fileConflictedAfter(async () => ({
+          entry: await this.#files.write(path, edited, {
+            expected: content.entry.etag, mode: content.entry.mode, writer: fileWriter(account),
+            authorize }),
+        }));
       }
-    }
-    let text: string;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-    } catch {
-      throw new Invalid(`${path} is not UTF-8 text`);
-    }
-    const first = text.indexOf(old);
-    if (first < 0) {
-      throw new Invalid("old_text is not in the file: read it again and give its exact text");
-    }
-    let times = 0;
-    for (let at = first; at >= 0; at = text.indexOf(old, at + 1)) {
-      times += 1;
-    }
-    if (times > 1) {
-      throw new Invalid(`old_text occurs ${times} times: give more of the text around the one ` +
-                        "to change");
-    }
-    const edited = new TextEncoder().encode(
-      text.slice(0, first) + replacement + text.slice(first + old.length));
-    try {
-      return await fileConflictedAfter(async () => ({
-        entry: await this.#files.write(path, edited, {
-          expected: content.entry.etag, mode: content.entry.mode, writer: fileWriter(account),
-          authorize: () => this.#filer(binding, "work", "write_files") }),
-      }));
+      // A chunked file, edited chunk by chunk under one slot (`edit.ts`, ADR-037): its
+      // memory does not depend on its size.
+      const chunks = content.chunks ?? [];
+      return await slotted(ownerSlots(), 1, async () => {
+        const plan = await planEdit({
+          size: content.entry.size, chunks,
+          read: async (index) => (await this.#files.fetch([{ sha256: chunks[index]!.sha256 }]))[0]!,
+        }, old, replacement, CHUNK_BYTES);
+        if ("refused" in plan) {
+          return refused(plan.refused);
+        }
+        return fileConflictedAfter(async () => ({
+          entry: plan.size <= INLINE_BYTES
+            ? await this.#files.write(path, await inlineOf(plan), {
+              expected: content.entry.etag, mode: content.entry.mode,
+              writer: fileWriter(account), authorize })
+            : await this.#files.writeChunks(path, plan.size, plan.hashes, plan.make, {
+              expected: content.entry.etag, mode: content.entry.mode,
+              writer: fileWriter(account), readable: chunks.map(({ sha256 }) => sha256),
+              authorize }),
+        }));
+      });
     } finally {
       await this.#schedule.sync();
     }

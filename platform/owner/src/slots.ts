@@ -4,7 +4,7 @@
  *
  * Large data moves only as streams or 4 MiB chunks, never whole. A path that holds chunks
  * (at most two in hand, and the files plane's copy of what it sends or reads: three
- * `CHUNK_BYTES`, `CHUNK_SLOT_BYTES`) takes one slot while it holds them, and only then: when
+ * `UNIT_BYTES`, `CHUNK_SLOT_BYTES`) takes one slot while it holds them, and only then: when
  * the bytes are in hand, never across a wait on another service (review M2). A pool counts
  * slots, never bytes: what a slot holds is the code's own construction, so nothing is
  * estimated at run time. Its capacity is its Worker's own, a parameter (the owner object's
@@ -19,16 +19,19 @@
  * **Release** holds whatever happens: `slotted` releases in `finally`, and a slot released
  * twice is released once.
  *
+ * **Retained data** (the relay's tails) is one exact budget an isolate (`SharedBudget`),
+ * split across the objects holding any, the largest dropping its oldest past it.
+ *
  * It imports nothing, so any Worker uses it (the owner object, the gateway). Its one
- * module-scope pool (`isolatePool`) is the platform's pinned exemption from the no-module-
- * state rule (`module-state.test.ts`): it holds a count of slots in use and the calls
- * waiting for one, never an owner's data.
+ * module-scope holder (`isolatePool`, `isolateTails`) is the platform's pinned exemption from
+ * the no-module-state rule (`module-state.test.ts`): it holds a count of slots in use, the
+ * calls waiting for one, and which objects' tails share the budget, never an owner's data.
  */
 
 /** A slot's unit: one 4 MiB chunk, the files plane's own. */
-export const CHUNK_BYTES = 4 * 1024 * 1024;
+export const UNIT_BYTES = 4 * 1024 * 1024;
 /** What one slot holds at most: two chunks in hand, and the files plane's copy of one. */
-export const CHUNK_SLOT_BYTES = 3 * CHUNK_BYTES;
+export const CHUNK_SLOT_BYTES = 3 * UNIT_BYTES;
 /** How long a call waits for a slot before it is refused `busy`. */
 export const SLOT_WAIT_MS = 10_000;
 /** The refusal: retryable, never a loss (the doors answer it `503` with `Retry-After`). */
@@ -157,7 +160,81 @@ export async function slotted<T>(pool: SlotPool, units: number, work: () => Prom
   }
 }
 
-const ISOLATE: { pool: SlotPool | null } = { pool: null };
+/**
+ * One of a shared budget's members (a relay's tails): what it holds, in the budget's unit,
+ * and its oldest unit dropped, answering how much that freed (0 when it holds nothing).
+ */
+export interface Sharer {
+  held(): number;
+  drop(): number;
+}
+
+/**
+ * An exact budget of retained data the isolate's objects share (the relay's tails, M5):
+ * each member counts what it holds in the budget's own unit, and past the budget the member
+ * holding the most drops its oldest unit, then the next, until the total fits. A member that
+ * is gone (an evicted object's instance, collected) leaves on its own: members are held
+ * weakly.
+ */
+export class SharedBudget {
+  readonly budget: number;
+  readonly #members = new Set<WeakRef<Sharer>>();
+  readonly #refs = new WeakMap<Sharer, WeakRef<Sharer>>();
+
+  constructor(budget: number) {
+    this.budget = budget;
+  }
+
+  join(member: Sharer): void {
+    if (!this.#refs.has(member)) {
+      const ref = new WeakRef(member);
+      this.#refs.set(member, ref);
+      this.#members.add(ref);
+    }
+  }
+
+  leave(member: Sharer): void {
+    const ref = this.#refs.get(member);
+    if (ref !== undefined) {
+      this.#members.delete(ref);
+      this.#refs.delete(member);
+    }
+  }
+
+  #live(): Sharer[] {
+    const live: Sharer[] = [];
+    for (const ref of this.#members) {
+      const member = ref.deref();
+      if (member === undefined) {
+        this.#members.delete(ref);
+      } else {
+        live.push(member);
+      }
+    }
+    return live;
+  }
+
+  /** What every member holds together. */
+  total(): number {
+    return this.#live().reduce((sum, member) => sum + member.held(), 0);
+  }
+
+  /** A member grew: the largest drop their oldest until the total fits the budget. */
+  trim(): void {
+    for (let total = this.total(); total > this.budget;) {
+      const largest = this.#live().reduce<Sharer | null>((most, member) =>
+        most === null || member.held() > most.held() ? member : most, null);
+      const freed = largest === null ? 0 : largest.drop();
+      if (freed === 0) {
+        return;
+      }
+      total -= freed;
+    }
+  }
+}
+
+const ISOLATE: { pool: SlotPool | null; tails: SharedBudget | null } = { pool: null,
+                                                                          tails: null };
 
 /**
  * The isolate's one pool, made on first use with its Worker's `capacity`; every object and
@@ -171,4 +248,14 @@ export function isolatePool(capacity: number): SlotPool {
     throw new Error(`the isolate's pool holds ${ISOLATE.pool.capacity} slots, not ${capacity}`);
   }
   return ISOLATE.pool;
+}
+
+/** The isolate's one budget of the relay's tails, of `budget` units, made on first use. */
+export function isolateTails(budget: number): SharedBudget {
+  if (ISOLATE.tails === null) {
+    ISOLATE.tails = new SharedBudget(budget);
+  } else if (ISOLATE.tails.budget !== budget) {
+    throw new Error(`the isolate's tails hold ${ISOLATE.tails.budget} units, not ${budget}`);
+  }
+  return ISOLATE.tails;
 }
