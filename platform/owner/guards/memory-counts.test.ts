@@ -5,7 +5,7 @@
  * - its pool's units (`OWNER_POOL_UNITS` x `UNIT_BYTES`): every path that holds chunks takes
  *   them while its bytes are in hand, each path's cost its declared units, which the workerd
  *   memory leg holds each path's measured peak within (`memory/leg.mjs`);
- * - the relay's tails (`TAIL_BYTES` UTF-16 units, every object's in the isolate together);
+ * - the relay's tails (`TAIL_UNITS` UTF-16 units, every object's in the isolate together);
  * - the relay's per-object terms (each object's events posts, its sockets' attachments, its
  *   told sign-outs, its tails' own objects: `relay-memory.ts`), once for each owner object
  *   the isolate holds;
@@ -57,7 +57,7 @@ export const UNCOUNTED = Object.freeze({
 /** The live terms, in bytes, for `objects` owner objects in the isolate. */
 export function counts(objects = 1): Record<string, number> {
   const relay = memoryTerms();
-  const tailUnits = Number(/export const TAIL_BYTES = ([0-9_]+);/
+  const tailUnits = Number(/export const TAIL_UNITS = ([0-9_]+);/
     .exec(readFileSync(join(PLATFORM, "owner", "src", "relay.ts"), "utf8"))![1]!
     .replace(/_/g, ""));
   return {

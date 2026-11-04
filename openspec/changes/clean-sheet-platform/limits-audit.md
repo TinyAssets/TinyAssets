@@ -280,7 +280,7 @@ reason; none refuses a write.
 | `owner/src/socket-shape.ts` `SOCKET_TICKETS` | 1,024 | socket tickets outstanding | refused `socket_tickets_full` until one is used or expires | technical ceiling | Guard term `socket_tickets`. |
 | `owner/src/socket-shape.ts` ticket life | 30 s | a socket ticket's life | the app asks again | technical ceiling | A single-use credential in a URL, which servers and proxies log; it lives only for the connect. |
 | `owner/src/relay.ts` sockets | 1,024 | the owner app's sockets open at once | another refused `sockets_full` | technical ceiling | The isolate's 128 MB (memory guard). |
-| `owner/src/relay.ts` `TAIL_BYTES` | 4 Mi UTF-16 units (8 MiB) | the live runs' tails of every owner object in the isolate, together (`slots.ts` `SharedBudget`, review M5) | a late joiner sees fewer old frames; past it the object holding the most drops its oldest | technical ceiling | The isolate's 128 MB, one term of the counts test (`guards/memory-counts.test.ts`). Frames are never committed. |
+| `owner/src/relay.ts` `TAIL_UNITS` | 4 Mi UTF-16 units (8 MiB) | the live runs' tails of every owner object in the isolate, together (`slots.ts` `SharedBudget`, review M5) | a late joiner sees fewer old frames; past it the object holding the most drops its oldest | technical ceiling | The isolate's 128 MB, one term of the counts test (`guards/memory-counts.test.ts`). Frames are never committed. |
 | `owner/src/relay.ts` one frame kept | 256 Ki units | one frame in a tail | relayed live, not kept | technical ceiling | As above. |
 | `owner/src/run-events.ts` `EVENTS_BODY_MAX` | 64 KiB | a runner's events post | refused `events_too_large`; the runner posts more often | technical ceiling | The isolate's 128 MB (memory guard). |
 | `owner/src/run-events.ts` `EVENTS_IN_FLIGHT` | 8 | events posts held at once | `events_busy` (503), posted again | technical ceiling | As above. |
@@ -371,7 +371,7 @@ in a making step (review M-a's 12.07 MiB); now 8 MiB in every run.
 
 **The live terms** (the counts test, from the source constants):
 - the pool: 12 units, 48 MiB;
-- the relay's tails, every object's in the isolate together (`TAIL_BYTES`): 8 MiB;
+- the relay's tails, every object's in the isolate together (`TAIL_UNITS`): 8 MiB;
 - each owner object's relay terms (its events posts, its sockets' attachments, its told
   sign-outs, its tails' own objects: `guards/relay-memory.ts`): 6.79 MiB an object;
 - the owner Worker's resting baseline (`OWNER_BASELINE_BYTES`), 8 MiB: the leg measures the
