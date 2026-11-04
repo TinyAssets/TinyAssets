@@ -70,7 +70,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # "dead script" -- it was not dead, it is the CI closure assertion for
     # `harden-background-branch-execution-authority`). All six were ALREADY
     # present and unregistered on main, so this test was red and non-gating:
-    # `.github/heavy-test-files.txt` routes it to the `slow-tests` job, and only
+    # `.github/heavy-test-files.txt` routes it to the `heavy-tests` job, and only
     # `required-tests` is a required check. A guard that is red where nothing
     # reads it is the same failure as a green one that cannot go red. It is now
     # GREEN in that lane; promoting it to the required lane is a separate

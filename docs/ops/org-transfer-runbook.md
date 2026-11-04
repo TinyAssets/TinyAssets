@@ -70,7 +70,7 @@ without re-running the gate:
    user with write access to the repository can add the pull request to the
    queue" (*Managing a merge queue*). The gate already passed at the PR's head.
 2. Grouping changes the code under test, not the PR's metadata.
-   `required-tests`, `slow-tests` and `invariants` re-run on the group commit.
+   `required-tests` and `invariants` re-run on the group commit.
 3. A `merge_group` run takes the workflow file from the group commit, which
    includes the PR's own edits. Re-running the gate there would let a PR grade
    itself. A PR that edits the guard is caught at PR time, because workflows
@@ -215,7 +215,7 @@ gh api -X POST repos/TinyAssets/TinyAssets/rulesets --input docs/ops/merge-queue
 
 That ruleset (`docs/ops/merge-queue-ruleset.json`) sets squash, max batch 5,
 min 1, a 5-minute wait, a 60-minute check timeout (`required-tests` may take
-up to 50), ALLGREEN (each PR's group commit must pass), and the four required
+up to 50), ALLGREEN (each PR's group commit must pass), and the required
 contexts. It also sets an admin bypass, which matches today's
 `enforce_admins: false`. Classic branch protection stays as it is. Rules and
 protection layer, and the queue waits on the union.

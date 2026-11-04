@@ -45,7 +45,7 @@ on:
   #   2. Everything the gate reads -- the file list, the labels, the body and
   #      the receipt comment -- belongs to the PR, and none of it changes when
   #      the queue stacks the PR on a newer main. What does change is the code,
-  #      and `required-tests`, `slow-tests` and `invariants` re-test that on
+  #      and `required-tests` and `invariants` re-test that on
   #      the merge-group commit.
   #   3. A merge_group run takes this workflow file from the merge-group
   #      commit, which includes the PR's own edits, not from the trusted base.
