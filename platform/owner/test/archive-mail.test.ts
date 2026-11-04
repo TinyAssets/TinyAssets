@@ -14,7 +14,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { BODY_BYTES_MAX } from "../src/bodies";
-import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
+import { LEDGER_LIMITS, type Ledger, mailRecord, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import type { ArchivingOwnerDO } from "./worker";
 import { parseTiers } from "../src/tier";
@@ -35,6 +35,7 @@ import { referenceSegment, storedContent, streamed } from "./segment-support";
 import { drainDue, failure, sqlIn } from "./support";
 
 const ARCHIVING = env.ARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
+const EVE: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
 /** The test object's ceilings (`test/worker.ts`). */
 const LIMITS = { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4, archiveRecords: 2 };
 
@@ -499,7 +500,7 @@ describe("the archive lane", () => {
         cmid: `c${i}`, body: `chain ${i}`, parent: chain.at(-1) ?? null })).message_id);
     }
     expect(await sqlIn(r.stub, "SELECT * FROM archive_segments")).toEqual([]);
-    await held.holdChain();
+    await held.holdChain("hot");
     const reading = r.stub.mailChain(r.bind(null), { message_id: chain[0]!, limit: 50 });
     try {
       await held.chainHeld();
@@ -519,6 +520,74 @@ describe("the archive lane", () => {
     expect([page.messages.map((m) => [m.message_id, m.body]), page.more]).toEqual([
       chain.map((id, i) => [id, `chain ${i}`]), false]);
   });
+
+  it("reads a still chain while another room's mail moves and segments are replaced, " +
+     "never failing inside (N10)", async () => {
+    const r = await rig(ARCHIVING);
+    const held = r.stub as unknown as DurableObjectStub<ArchivingOwnerDO>;
+    const muse = await r.register(MUSE);
+    const eve = await r.register(EVE, "Eve");
+    // The muse's chain: twelve, the owner and the muse in turn, each acked, all moved.
+    const chain: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      const from = i % 2 === 0 ? null : MUSE;
+      chain.push((await r.post(from, `dm:${muse}`, {
+        cmid: `m${i}`, body: `muse ${i}`, parent: chain.at(-1) ?? null })).message_id);
+      const reader = from === null ? MUSE : null;
+      await r.ack(reader, (await r.read(reader)).messages.at(-1)!.seq);
+    }
+    await settle(r);
+    const last = await r.inLedger({}, (ledger: Ledger) => ledger.seqOf(chain.at(-1)!)!);
+    // One of Eve's messages, acked, and the lane run at once: moves, merges and compactions,
+    // which replace segments, the muse's among them.
+    let sent = 0;
+    const churn = async () => {
+      await r.post(null, `dm:${eve}`, { cmid: `e${sent}`, body: `eve ${sent}` });
+      sent++;
+      await r.ack(EVE, (await r.read(EVE)).messages.at(-1)!.seq);
+      await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
+                          "'owner-schedule/archive'");
+      await drainDue(r.stub);
+    };
+    const read = async () => {
+      const page = await r.stub.mailChain(r.bind(null), { message_id: chain[0]!, limit: 50 });
+      expect(page.messages.map((m) => [m.message_id, m.body]))
+        .toEqual(chain.map((id, i) => [id, `muse ${i}`]));
+    };
+    const museSegments = async () => (await sqlIn(r.stub, "SELECT segment FROM " +
+      "archive_segments WHERE first_key <= ? ORDER BY segment", last))
+      .map((row) => row["segment"] as number).join();
+    // One read while the churn runs beside it.
+    let stop = false;
+    const beside = (async () => {
+      while (!stop) {
+        await churn();
+      }
+    })();
+    try {
+      await read();
+    } finally {
+      stop = true;
+      await beside;
+    }
+    // Then 25, each held just past the unit that took its fences while the lane runs once.
+    let replaced = 0;
+    for (let n = 0; n < 25; n++) {
+      const before = await museSegments();
+      await held.holdChain("fenced");
+      const reading = read();
+      try {
+        await held.chainHeld();
+        await churn();
+      } finally {
+        await held.releaseChain();
+      }
+      await reading;
+      replaced += before === await museSegments() ? 0 : 1;
+    }
+    // The muse's segments were replaced under held reads, and each read held.
+    expect(replaced).toBeGreaterThan(0);
+  }, 300_000);
 
   it("aborts a move whose batch changed between its units, the mail kept hot", async () => {
     const r = await rig(ARCHIVING);

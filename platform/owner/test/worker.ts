@@ -10,7 +10,8 @@
 import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
 import {
-  type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO, type SandboxLeases,
+  type ChainStep, type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO,
+  type SandboxLeases,
 } from "../src/owner-do";
 import { RecordingErasures } from "./erasure-fake";
 import { RecordingSandbox } from "./sandbox-fake";
@@ -83,23 +84,23 @@ export class BoundedOwnerDO extends OwnerDO {
   }
 }
 
-/** One chain read held before its hot unit once a test arms it (`Internals.chainBeforeHot`). */
+/** One chain read held at a step once a test arms it (`Internals.chainStep`). */
 class ChainHold {
-  #armed = false;
+  #armed: ChainStep | null = null;
   #reached: () => void = () => {};
   #release: () => void = () => {};
   reached: Promise<void> = Promise.resolve();
 
-  arm(): void {
-    this.#armed = true;
+  arm(step: ChainStep): void {
+    this.#armed = step;
     this.reached = new Promise((resolve) => { this.#reached = resolve; });
   }
 
-  async pass(): Promise<void> {
-    if (!this.#armed) {
+  async pass(step: ChainStep): Promise<void> {
+    if (this.#armed !== step) {
       return;
     }
-    this.#armed = false;
+    this.#armed = null;
     const released = new Promise<void>((resolve) => { this.#release = resolve; });
     this.#reached();
     await released;
@@ -114,8 +115,8 @@ class ChainHold {
  * The owner object as production builds it but for the ledger's ceilings: eight messages
  * hot, four unread, a segment sealed at two records, so a test sees the `archive` lane move
  * acked mail, a post wait at the hot ceiling, and a purge rewrite, with a handful of posts.
- * A test may hold its next chain read before the read's hot unit (`holdChain`), move mail
- * there, and let it go on (`releaseChain`).
+ * A test may hold its next chain read at a step (`holdChain`: after its fences unit, or
+ * before its hot unit), change the archive there, and let it go on (`releaseChain`).
  */
 export class ArchivingOwnerDO extends OwnerDO {
   readonly #hold: ChainHold;
@@ -124,13 +125,13 @@ export class ArchivingOwnerDO extends OwnerDO {
     const hold = new ChainHold();
     super(ctx, env, { ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4,
                                       archiveRecords: 2 },
-                      chainBeforeHot: () => hold.pass() });
+                      chainStep: (step) => hold.pass(step) });
     this.#hold = hold;
   }
 
-  /** Hold the next chain read before its hot unit. */
-  holdChain(): void {
-    this.#hold.arm();
+  /** Hold the next chain read at `step`. */
+  holdChain(step: ChainStep): void {
+    this.#hold.arm(step);
   }
 
   /** Answered once the held chain read waits there. */

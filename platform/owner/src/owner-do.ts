@@ -1417,6 +1417,18 @@ async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileCo
  */
 const READ_TRIES = 3;
 
+/**
+ * A read of the archive that the lane's moves and rewrites changed under each of its
+ * `READ_TRIES`: retried soon, never an internal error (reviews N9 and N10).
+ */
+const ARCHIVE_MOVING = `${STORAGE_BUSY}: the archive moved this mail under each of ` +
+  `${READ_TRIES} reads; try again in 1 second. ${JSON.stringify({ retry_after_s: 1 })}`;
+
+/** A post's parent, hot at its gate, moved to the archive before its unit (`roomPost`). */
+class ParentMoved extends Error {
+  override readonly name = "ParentMoved";
+}
+
 /** The placed contents a read's rows name (ADR-035). */
 function contentsOf(rows: readonly object[]): string[] {
   return rows.flatMap((row) => {
@@ -1807,6 +1819,9 @@ export interface ArchiveMoveSeen {
   readonly records: number;
 }
 
+/** Where a test may hold a chain read (`Internals.chainStep`). */
+export type ChainStep = "fenced" | "hot";
+
 /** What a test reaches past the doors: the erasure's internal path and its retry interval. */
 export interface Internals {
   readonly erasure?: (internal: Erasure) => void;
@@ -1831,10 +1846,12 @@ export interface Internals {
    */
   readonly archiveBetweenPasses?: (storage: OwnerStorage, move: ArchiveMoveSeen) => void;
   /**
-   * Awaited by a chain read between its archived reads and the unit that reads its hot rows,
-   * so a test can move its mail there and see the read find it (review N9).
+   * Awaited by a chain read at two steps: `fenced`, just after the unit that took its
+   * fences, and `hot`, between its archived reads and the unit that reads its hot rows; so a
+   * test can replace its segments or move its mail there and see the read hold (reviews N9
+   * and N10).
    */
-  readonly chainBeforeHot?: () => Promise<void>;
+  readonly chainStep?: (step: ChainStep) => Promise<void>;
   /**
    * The starter package the object seeds and keeps current (`starter.ts`): the one this code
    * carries when omitted, as production builds it; another for a test of updates; null for
@@ -1954,8 +1971,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /** A test's step between an archive move's passes (`Internals.archiveBetweenPasses`). */
   readonly #betweenPasses: ((storage: OwnerStorage, move: ArchiveMoveSeen) => void) | null;
-  /** A test's step before a chain read's hot unit (`Internals.chainBeforeHot`). */
-  readonly #chainBeforeHot: (() => Promise<void>) | null;
+  /** A test's steps in a chain read (`Internals.chainStep`). */
+  readonly #chainStep: ((step: ChainStep) => Promise<void>) | null;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
    * lane: every wake kind's request from its record, after the kill switch (`CONTROL`).
@@ -2260,7 +2277,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     internals.sandbox?.(this.#sandbox);
     this.#codemode = internals.codemode ?? {};
     this.#betweenPasses = internals.archiveBetweenPasses ?? null;
-    this.#chainBeforeHot = internals.chainBeforeHot ?? null;
+    this.#chainStep = internals.chainStep ?? null;
     this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
@@ -3435,29 +3452,52 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
     // A parent archived (acked, moved to a segment) is read from R2 before the units: its
-    // seq, from its id, in the gate; then its record, outside.
-    const parent = await this.#door(() => {
+    // seq, from its id, in the gate; then its record, outside. One the lane moved after the
+    // gate found it hot is read so in a post again (review N10's Low), never refused as no
+    // parent: archived mail never returns hot, so a second post finds it archived.
+    const gated = await this.#door(() => {
       this.#account(binding, "work");
       return this.#archivedParent(request);
     });
-    const archived = parent === null ? null : await this.#archived(parent.seq, parent.id);
-    return this.#busyRings(() => this.#placing((): { body: unknown; writer: string }
-                                                  | { done: Posted } => {
-      const account = this.#account(binding, "work");
-      this.#scope(account, "write_graph");
-      const { r, actor } = this.#poster(account, binding, request);
-      // The room, the sender, the parent, the caps and a resend, before any byte is placed.
-      const resend = this.#ledger.prepare(actor, r["room_id"], r["client_message_id"],
-                                          r["body"], r["parent_id"], archived);
-      return resend !== null ? { done: resend } : { body: r["body"], writer: filerOf(account) };
-    }, (placed) => {
-      const account = this.#account(binding, "work");
-      this.#scope(account, "write_graph");
-      const { r, actor, authority } = this.#poster(account, binding, request);
-      return this.#ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
-                               r["parent_id"], clock(), authority, placed, filerOf(account),
-                               archived);
-    }, { synced: true }), utf8Bytes(String(request?.body ?? "")));
+    for (let tries = 0; ; tries++) {
+      const parent = tries === 0 ? gated : await this.#door(() => {
+        this.#account(binding, "work");
+        return this.#archivedParent(request);
+      });
+      const archived = parent === null ? null : await this.#archived(parent.seq, parent.id);
+      // In each unit: the parent the gate found hot is hot still.
+      const kept = () => {
+        if (archived === null && this.#archivedParent(request) !== null) {
+          throw new ParentMoved();
+        }
+      };
+      try {
+        return await this.#busyRings(() => this.#placing((): { body: unknown; writer: string }
+                                                            | { done: Posted } => {
+          const account = this.#account(binding, "work");
+          this.#scope(account, "write_graph");
+          const { r, actor } = this.#poster(account, binding, request);
+          kept();
+          // The room, the sender, the parent, the caps and a resend, before any byte is placed.
+          const resend = this.#ledger.prepare(actor, r["room_id"], r["client_message_id"],
+                                              r["body"], r["parent_id"], archived);
+          return resend !== null ? { done: resend }
+            : { body: r["body"], writer: filerOf(account) };
+        }, (placed) => {
+          const account = this.#account(binding, "work");
+          this.#scope(account, "write_graph");
+          const { r, actor, authority } = this.#poster(account, binding, request);
+          kept();
+          return this.#ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
+                                   r["parent_id"], clock(), authority, placed,
+                                   filerOf(account), archived);
+        }, { synced: true }), utf8Bytes(String(request?.body ?? "")));
+      } catch (error) {
+        if (!(error instanceof ParentMoved) || tries + 1 >= READ_TRIES) {
+          throw error instanceof ParentMoved ? new Refused(ARCHIVE_MOVING) : error;
+        }
+      }
+    }
   }
 
   /**
@@ -3937,26 +3977,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const start = await this.#door(() => this.#ledger.chainStart(r["message_id"]));
     let root: string;
     let rootSeq: number;
+    let room: string;
     if ("archived" in start) {
       const found = await this.#archived(start.archived, r["message_id"] as string);
       if (found === null) {
         throw new Refused("no such message held");
       }
       root = found.message.chain_root;
+      room = found.message.room_id;
       rootSeq = await this.#door(() => this.#ledger.seqOf(root)) ?? 0;
     } else {
-      ({ root, root_seq: rootSeq } = start);
+      ({ root, root_seq: rootSeq, room } = start);
     }
     const most = typeof r["limit"] === "number" ? r["limit"] : 1;
     for (let tries = 0; tries < READ_TRIES; tries++) {
-      const read = await this.#chainPage(binding, r, root, rootSeq, after, offset, most);
+      const read = await this.#chainPage(binding, r, { root, rootSeq, room }, after, offset,
+                                         most);
       if (read !== null) {
         return { root, messages: read.messages, more: read.more };
       }
     }
-    throw new Refused(`${STORAGE_BUSY}: the archive moved this chain's mail under each of ` +
-                      `${READ_TRIES} reads; try again in 1 second. ` +
-                      JSON.stringify({ retry_after_s: 1 }));
+    throw new Refused(ARCHIVE_MOVING);
   }
 
   /**
@@ -3965,39 +4006,56 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the next segments' chain maps, then each record by range, its body only as the window
    * a page may show (from `body_offset` when it is the page's first message), the windows
    * stopping at `WINDOWS_BYTES` past the first; the first left unread is the frontier, so
-   * the page stops below it and the next goes on from there. Its hot rows are read in a
-   * later unit, which first checks the archive's mark taken with the fences: a move between
-   * them took mail out of the hot rows into a segment the read never saw (review N9), so the
-   * read is null, and `mailChain` reads again from the fences. The page stays the one bounded
-   * page `ledger.chain` fits; only the reads are repeated, at most `READ_TRIES`.
+   * the page stops below it and the next goes on from there. Each fence's content and chunks
+   * are located in the fences' own unit, with the archive's mark (review N10); a segment
+   * replaced after it (a merge, a compaction, a purge's rewrite) is read from its chunks in
+   * their grace, and a read that fails all the same (a chunk collected early, past the figure)
+   * is a changed archive, read again, when the mark moved (`#segmentsRead`). Its hot rows are
+   * read in a later unit, which first checks that no segment made since may hold the chain's
+   * room past `after`: a move between them took mail out of the hot rows into a segment the
+   * read never saw (review N9), so the read is null, and `mailChain` reads again from the
+   * fences. Another room's moves never count. The page stays the one bounded page
+   * `ledger.chain` fits; only the reads are repeated, at most `READ_TRIES`.
    */
-  async #chainPage(binding: Binding, r: Record<string, unknown>, root: string,
-                   rootSeq: number, after: number, offset: number, most: number):
+  async #chainPage(binding: Binding, r: Record<string, unknown>,
+                   chain: { root: string; rootSeq: number; room: string }, after: number,
+                   offset: number, most: number):
       Promise<{ messages: ChainMail[]; more: boolean } | null> {
-    const { fenced, firstHot, mark } = await this.#door(() => ({
-      fenced: this.#ledger.chainFences(rootSeq, after),
-      firstHot: this.#ledger.chainNext(root, after), mark: this.#ledger.archiveMark() }));
+    const { root, rootSeq, room } = chain;
+    const { fenced, firstHot, seen, located } = await this.#door(() => {
+      const fences = this.#ledger.chainFences(rootSeq, after);
+      return { fenced: fences, firstHot: this.#ledger.chainNext(root, after),
+               seen: this.#ledger.archiveMark(),
+               located: this.#bodies.locate(fences.fences.map((fence) => fence.content_id)) };
+    });
+    await this.#chainStep?.("fenced");
     let frontier = fenced.frontier;
     const mail: ArchivedMail[] = [];
-    let held = 0;
-    read: for (const fence of fenced.fences) {
-      const chunks = await this.#segmentChunks(fence);
-      const trailer = await this.#trailer(fence, chunks);
-      for (const [key, at, length] of trailer.chains[root] ?? []) {
-        if (key <= after) {
-          continue;
+    const read = await this.#segmentsRead(seen.mark, async () => {
+      let held = 0;
+      read: for (const fence of fenced.fences) {
+        const chunks = located.get(fence.content_id)!.chunks;
+        const trailer = await this.#trailer(fence, chunks);
+        for (const [key, at, length] of trailer.chains[root] ?? []) {
+          if (key <= after) {
+            continue;
+          }
+          if (mail.length >= most || (mail.length > 0 && held >= WINDOWS_BYTES)) {
+            frontier = key;
+            break read;
+          }
+          const first = mail.length === 0 && (firstHot === null || key < firstHot);
+          const found = await this.#archivedRecord(chunks, at, length, first ? offset : 0);
+          held += found.body === null ? 0 : found.body.end - found.body.offset;
+          mail.push(found);
         }
-        if (mail.length >= most || (mail.length > 0 && held >= WINDOWS_BYTES)) {
-          frontier = key;
-          break read;
-        }
-        const first = mail.length === 0 && (firstHot === null || key < firstHot);
-        const found = await this.#archivedRecord(chunks, at, length, first ? offset : 0);
-        held += found.body === null ? 0 : found.body.end - found.body.offset;
-        mail.push(found);
       }
+      return true;
+    });
+    if (read === null) {
+      return null;
     }
-    await this.#chainBeforeHot?.();
+    await this.#chainStep?.("hot");
     // Its hot messages' placed bodies (ADR-035) are read from R2 between its units, and the
     // page, hot and archived together, fits one answer.
     const archived = { root, mail, frontier };
@@ -4011,16 +4069,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                offsetOf: (contentId) => contentId === read.first ? offset : 0 };
     }, (windows) => {
       this.#owner(binding, "read", CHAINS);
-      return this.#ledger.archiveMark() === mark ? page(windows) : null;
+      return this.#ledger.movedSince(seen.newest, room, after) ? null : page(windows);
     }, (read) => read !== null && read.messages.length === 0 && read.placed.length > 0);
   }
 
   // -- THE ARCHIVE (slice STORE item 2, `segments.ts`) --------------------------------------
 
-  /** A segment's chunks, located in a unit of their own. */
-  async #segmentChunks(fence: Fence): Promise<readonly string[]> {
-    const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
-    return located.get(fence.content_id)!.chunks;
+  /**
+   * Segments' reads from R2, outside any unit, after the unit that took their fences, their
+   * located chunks and the archive's `mark`: the reads' value, or null when they failed
+   * because the archive changed since (the mark moved), for the caller to read again. A
+   * segment replaced since (a merge, a compaction, a purge's rewrite) is let go as garbage
+   * in its grace (`GC_GRACE_S`, 30 days), so its chunks still read for far longer than one
+   * read, and their hashes still check; but past the owner's figure the oldest garbage is
+   * collected early (`files.ts`), and a just-replaced segment's chunks, the newest, could
+   * still go, so a failed read is retried when the mark moved. With the mark unchanged, the
+   * failure is no change of the archive's, and stands, loudly.
+   */
+  async #segmentsRead<T>(mark: string, read: () => Promise<T>): Promise<T | null> {
+    try {
+      return await read();
+    } catch (error) {
+      if (await this.#door(() => this.#ledger.archiveMark().mark !== mark)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   /**
@@ -4065,22 +4139,43 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       : await this.#bodies.windowAt(chunks, bodyAt, head.bodyBytes, offset, PAGE_BYTES) };
   }
 
-  /** An archived message by the seq its id carries, from its segment; null when none. */
+  /**
+   * An archived message by the seq its id carries, from its segment; null when none. Its
+   * fences' contents are located with them and the archive's mark, and a read that failed
+   * because the archive changed is read again (`#segmentsRead`, review N10), at most
+   * `READ_TRIES`, then refused `storage_busy`.
+   */
   async #archived(seq: number, messageId: string): Promise<ArchivedMail | null> {
-    const fences = await this.#door(() => this.#ledger.archiveFences(seq));
-    for (const fence of fences) {
-      const chunks = await this.#segmentChunks(fence);
-      const placement = (await this.#trailer(fence, chunks)).keys.find(([key]) => key === seq);
-      if (placement === undefined) {
+    for (let tries = 0; tries < READ_TRIES; tries++) {
+      const { fences, seen, located } = await this.#door(() => {
+        const fences = this.#ledger.archiveFences(seq);
+        return { fences, seen: this.#ledger.archiveMark(),
+                 located: this.#bodies.locate(fences.map((fence) => fence.content_id)) };
+      });
+      const found = await this.#segmentsRead(seen.mark, async () => {
+        for (const fence of fences) {
+          const chunks = located.get(fence.content_id)!.chunks;
+          const placement = (await this.#trailer(fence, chunks)).keys
+            .find(([key]) => key === seq);
+          if (placement !== undefined) {
+            return { mail: await this.#archivedRecord(chunks, placement[1], placement[2], null) };
+          }
+        }
+        return { mail: null };
+      });
+      if (found === null) {
         continue;
       }
-      const mail = await this.#archivedRecord(chunks, placement[1], placement[2], null);
+      if (found.mail === null) {
+        return null;
+      }
+      const mail = found.mail;
       const purged = await this.#door(() => this.#ledger.purgedAgents());
       return mail.message.message_id === messageId
         && !roomMembers(mail.message.room_id).some((member) => purged.includes(member))
         ? mail : null;
     }
-    return null;
+    throw new Refused(ARCHIVE_MOVING);
   }
 
   /** In a unit: a post's parent's seq, when it is archived (not hot, and the object's). */

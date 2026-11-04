@@ -1648,19 +1648,21 @@ export class Ledger {
   }
 
   /**
-   * Where a chain read starts: the chain holding `messageId`, its root and the root's seq,
-   * when the message is hot; else the seq its id carries, for the door to find it archived.
-   * A read.
+   * Where a chain read starts: the chain holding `messageId`, its root, the root's seq and
+   * its room (a reply is always in its parent's room), when the message is hot; else the seq
+   * its id carries, for the door to find it archived. A read.
    */
-  chainStart(messageId: unknown): { root: string; root_seq: number } | { archived: number } {
+  chainStart(messageId: unknown):
+      { root: string; root_seq: number; room: string } | { archived: number } {
     if (typeof messageId !== "string") {
       throw new Invalid("a chain read names a message id");
     }
-    const row = this.#sql.exec<{ chain_root: string }>(
-      "SELECT chain_root FROM ledger_messages WHERE message_id = ?", messageId).toArray()[0];
+    const row = this.#sql.exec<{ chain_root: string; room_id: string }>(
+      "SELECT chain_root, room_id FROM ledger_messages WHERE message_id = ?", messageId)
+      .toArray()[0];
     if (row !== undefined) {
       const rootSeq = this.seqOf(row.chain_root);
-      return { root: row.chain_root, root_seq: rootSeq ?? 0 };
+      return { root: row.chain_root, root_seq: rootSeq ?? 0, room: row.room_id };
     }
     const seq = this.seqOf(messageId);
     if (seq === null) {
@@ -1686,15 +1688,31 @@ export class Ledger {
   }
 
   /**
-   * The archive's segments as a read saw them: any move, rewrite or drop changes it (a new
-   * segment's id is past every id the table ever gave, `AUTOINCREMENT`; a drop alone lowers
-   * the count). A chain read takes it with its fences and checks it in the unit that reads
-   * its hot rows, so mail moved between them is never missed. A read.
+   * The archive's segments as a read saw them: `mark` changes on any move, rewrite or drop (a
+   * new segment's id is past every id the table ever gave, `AUTOINCREMENT`; a drop alone
+   * lowers the count), and `newest` is the newest segment's id. A read of segments takes it
+   * with its fences: a read that then fails (a fence's content gone, its chunk collected)
+   * failed because the archive changed when `mark` did, and is read again. A read.
    */
-  archiveMark(): string {
+  archiveMark(): { mark: string; newest: number } {
     const { n, newest } = this.#sql.exec<{ n: number; newest: number | null }>(
       "SELECT COUNT(*) AS n, MAX(segment) AS newest FROM archive_segments").one();
-    return `${n}:${newest ?? 0}`;
+    return { mark: `${n}:${newest ?? 0}`, newest: newest ?? 0 };
+  }
+
+  /**
+   * Whether a segment made after `newest` may hold `room`'s mail past `after`: a move (a
+   * tail's, a merge's, a rewrite's) that may have taken that room's hot rows out after a read
+   * took its fences. By its keys and its members bloom, so another room's moves never count
+   * (a room with no agent member is not in any bloom: every new segment past `after` counts).
+   * A read.
+   */
+  movedSince(newest: number, room: string, after: number): boolean {
+    const members = roomMembers(room);
+    return this.#sql.exec<Fence>(
+      "SELECT * FROM archive_segments WHERE segment > ? AND last_key > ?", newest, after)
+      .toArray().some((fence) => members.length === 0
+        || members.some((member) => bloomHas(fenceBloom(fence), member)));
   }
 
   /**
