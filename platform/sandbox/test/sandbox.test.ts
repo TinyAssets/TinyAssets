@@ -13,7 +13,8 @@ import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { SandboxStart } from "../../owner/src/sandbox";
-import { CODES, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
+import { LEASE_TTL_S } from "../../owner/src/files";
+import { backoff, CODES, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
 import { SLOTS } from "../src/slots";
 
 const OPEN = { outside: "on", ordinary: "all", canary: [], inbound: false };
@@ -91,6 +92,22 @@ const line = () => env.SLOTS.getByName(SLOTS).line();
 const alarmOf = (who: string) => runInDurableObject(stub(who), (_instance, state) =>
   state.storage.getAlarm());
 
+/**
+ * What `act` armed, against the delay the code means: an alarm `delay` on from the moment
+ * the code read its clock, which lies between the two reads around `act`. Never a reading
+ * of time passed since, which a loaded runner stretches.
+ */
+async function armedAfter(act: () => Promise<unknown>, read: () => Promise<number | null>,
+                          delay: number): Promise<void> {
+  const before = Date.now();
+  await act();
+  const after = Date.now();
+  const at = await read();
+  expect(at).not.toBeNull();
+  expect(at!).toBeGreaterThanOrEqual(before + delay);
+  expect(at!).toBeLessThanOrEqual(after + delay);
+}
+
 beforeEach(async () => {
   await e2b("/reset", {});
   await control({ ...OPEN, ...NUMBERS });
@@ -104,6 +121,7 @@ describe("a start", () => {
      async () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
+    const began = Date.now();
     expect(await stub(who).start(who, start())).toEqual({ started: true });
     const state = await seen();
     expect(state.sandboxes).toHaveLength(1);
@@ -138,8 +156,8 @@ describe("a start", () => {
     expect(JSON.parse(doc).prompt).toBe("hello");
     // The look is armed a lease's TTL on, for the idle reap, before its renewal window.
     const look = await alarmOf(who);
-    expect(look).toBeGreaterThan(Date.now() + 50_000);
-    expect(look).toBeLessThanOrEqual(Date.now() + 60_000);
+    expect(look!).toBeGreaterThanOrEqual(began + LEASE_TTL_S * 1000);
+    expect(look!).toBeLessThanOrEqual(Date.now() + LEASE_TTL_S * 1000);
   });
 
   it("refuses a run whose doors are not https on the egress host", async () => {
@@ -346,14 +364,17 @@ describe("the platform's line", () => {
   it("rings the first in line again, backing off, while no free is seen", async () => {
     await e2b("/script", { full: true });
     const waiter = owner();
+    const began = Date.now();
     await stub(waiter).start(waiter, start());
     const slots = env.SLOTS.getByName(SLOTS);
-    const first = await runInDurableObject(slots, (_i, state) => state.storage.getAlarm());
-    expect(first).toBeGreaterThan(Date.now() + 50_000);  // LEASE_TTL_S first
-    await runDurableObjectAlarm(slots);
-    await rung(waiter);
-    const second = await runInDurableObject(slots, (_i, state) => state.storage.getAlarm());
-    expect(second! - Date.now()).toBeGreaterThan(110_000);  // then doubled
+    const lineAlarm = () => runInDurableObject(slots, (_i, state) => state.storage.getAlarm());
+    const first = await lineAlarm();
+    expect(first!).toBeGreaterThanOrEqual(began + LEASE_TTL_S * 1000);  // LEASE_TTL_S first
+    expect(first!).toBeLessThanOrEqual(Date.now() + LEASE_TTL_S * 1000);
+    await armedAfter(async () => {  // then doubled
+      await runDurableObjectAlarm(slots);
+      await rung(waiter);
+    }, lineAlarm, 2 * LEASE_TTL_S * 1000);
     // The owner with nothing waiting leaves; the line is empty and unarmed.
     await slots.leave(waiter);
     expect(await runInDurableObject(slots, (_i, state) => state.storage.getAlarm())).toBeNull();
@@ -409,10 +430,9 @@ describe("cancel, status and release", () => {
     expect((await seen()).sandboxes[0]!.state).toBe("running");
     // The run ended; its release never reached this Worker.
     await e2b("/script", { state: { live: 0, quiet: true } });
-    await runDurableObjectAlarm(stub(who));
+    await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who),
+                     LEASE_TTL_S * 1000);
     expect((await seen()).sandboxes[0]!.state).toBe("running");  // the idle clock starts
-    const reap = await alarmOf(who);
-    expect(reap! - Date.now()).toBeGreaterThan(50_000);
     await runInDurableObject(stub(who), (_i, state) => state.storage.sql.exec(
       "UPDATE sandboxes SET idle_since = idle_since - 60000"));
     await runDurableObjectAlarm(stub(who));
@@ -463,6 +483,7 @@ describe("the look before the runtime ceiling", () => {
   });
 
   it("pauses and resumes the same sandbox at a quiet moment in the window", async () => {
+    const began = Date.now();
     const { calls, commands, box, id, who } = await aged(CEILING - WINDOW + 5,
                                                          { live: 1, quiet: true });
     expect(calls.map((call) => call.path).filter((path) => /pause|connect/.test(path)))
@@ -475,7 +496,9 @@ describe("the look before the runtime ceiling", () => {
     expect(await alarmOf(who)).toBeLessThanOrEqual(Date.now() + 60_000);
     const row = await runInDurableObject(stub(who), (_i, state) => state.storage.sql
       .exec<{ end_at: number }>("SELECT end_at FROM sandboxes").one());
-    expect(row.end_at).toBeGreaterThan(Date.now() + (CEILING - 60) * 1000);
+    // A whole ceiling on from the resume, which lies between the two clock reads.
+    expect(row.end_at).toBeGreaterThanOrEqual(began + CEILING * 1000);
+    expect(row.end_at).toBeLessThanOrEqual(Date.now() + CEILING * 1000);
   });
 
   it("goes on looking for a quiet moment inside the window, the starts going on", async () => {
@@ -605,14 +628,12 @@ describe("the look before the runtime ceiling", () => {
     const id = (await seen()).sandboxes[0]!.id;
     await e2b("/age", { id, s: CEILING + 5 });  // past its edge: E2B's own timeout's now
     await e2b("/script", { down: 1_000_000 });
-    const waits: number[] = [];
-    for (let i = 0; i < 4; i += 1) {
-      await runDurableObjectAlarm(stub(who));
-      waits.push((await alarmOf(who))! - Date.now());
-    }
-    expect(waits[0]!).toBeGreaterThan(300);
-    for (let i = 1; i < waits.length; i += 1) {
-      expect(waits[i]!).toBeGreaterThan(waits[i - 1]! * 1.5);
+    // Each failed look arms the next at its back-off, doubling: the delay the code
+    // schedules, read against the clock around the alarm, never time passed since.
+    expect(backoff(2)).toBe(2 * backoff(1));
+    for (let tries = 1; tries <= 4; tries += 1) {
+      await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who),
+                       backoff(tries));
     }
     await e2b("/script", { down: 0 });
   });
@@ -625,14 +646,11 @@ describe("the look before the runtime ceiling", () => {
     const id = (await seen()).sandboxes[0]!.id;
     await e2b("/pause", { id });
     await e2b("/script", { refuseResume: true });
-    const waits: number[] = [];
-    for (let i = 0; i < 4; i += 1) {
-      await runDurableObjectAlarm(stub(who));
-      waits.push((await alarmOf(who))! - Date.now());
-    }
-    expect(waits[0]!).toBeGreaterThan(300);
-    for (let i = 1; i < waits.length; i += 1) {
-      expect(waits[i]!).toBeGreaterThan(waits[i - 1]! * 1.5);
+    // Asked at once the first time (the pause), then each refusal arms the next try at
+    // its back-off: the delay the code schedules, never time passed since.
+    for (let tries = 1; tries <= 4; tries += 1) {
+      await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who),
+                       backoff(tries));
     }
     await e2b("/script", { refuseResume: false });
     await runDurableObjectAlarm(stub(who));
