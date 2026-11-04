@@ -12,48 +12,107 @@ name: review
 #   APPROVE at A, carries(A, head)     -> success, naming A and why it carries
 #   anything else                      -> in progress: the delta needs a review
 #
-# `carries` is the same change (the diff key), or a delta of prose only; never a
-# release-critical path (the scope guard's SENSITIVE_RE).
+# `carries` is the same change, or a delta of Markdown prose only. Only reviews
+# submitted after the PR's last base change count: a retarget changes what was read.
 #
-# Two triggers, both the default branch's copy of this file:
-#   * pull_request_target on a new head: re-decide (a verdict may carry to it);
-#   * workflow_run of review-signal.yml, which runs on pull_request_review with no
-#     permissions, because that event runs the PR's own workflow copy.
+# WHO MAY POST IT. Any workflow job's own check run reports as the GitHub Actions
+# app, so a PR adding a job named `review` would satisfy a context pinned to it. The
+# check is therefore created only by the review GitHub App (`vars.REVIEW_APP_ID`),
+# whose private key is a secret of the `review` environment, deployable from `main`
+# alone; the ruleset pins the `review` context to that App as its expected source,
+# which GitHub enforces. pull_request_target and workflow_run both run on the
+# default branch, so they reach the environment; no PR's own workflow can. Every run
+# names its PR (`external_id`), since a check run lives on a commit two PRs may share.
+#
+# Triggers, all the default branch's copy of this file:
+#   * pull_request_target on a new head, or an edit (a retarget among them);
+#   * workflow_run of review-signal.yml (a review; that file has no permissions,
+#     because pull_request_review runs the PR's own copy), checked against the
+#     signal run's own branch so one PR's copy cannot decide another PR;
+#   * workflow_run of review-queue.yml (a merge group; same reason): the group's
+#     `review` is its PR's own check, read at the PR's head, posted on the group.
 # Nothing here checks out or executes the PR's code: the checkout is the default
 # branch, and the PR's commits are only read as git objects for `carries`.
-#
-# The check run is created through the API with GITHUB_TOKEN, so it reports as the
-# GitHub Actions app, like every other required check. This job's own name is not
-# `review`, so its own check run never stands in for the decision. The merge group's
-# `review` is review-queue.yml.
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, edited]
   workflow_run:
-    workflows: [review-signal]
+    workflows: [review-signal, "review (merge queue)"]
     types: [completed]
 
 permissions:
   contents: read
-  checks: write
   pull-requests: read
-  # The signal's artifact.
+  # The signals' artifacts.
   actions: read
 
-concurrency:
-  # One decision at a time per PR branch, never cancelled: each reads the PR as it is
-  # when it runs, so a queued one decides the newest state.
-  group: review-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch }}
-  cancel-in-progress: false
-
 jobs:
-  decide:
-    name: decide review
+  resolve:
+    name: resolve the PR
     if: >-
       github.event_name == 'pull_request_target' ||
-      (github.event.workflow_run.event == 'pull_request_review' &&
-       github.event.workflow_run.conclusion == 'success')
+      (github.event.workflow_run.conclusion == 'success' &&
+       (github.event.workflow_run.event == 'pull_request_review' ||
+        github.event.workflow_run.event == 'merge_group'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+      kind: ${{ steps.pr.outputs.kind }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Read which PR was reviewed
+        if: github.event.workflow_run.event == 'pull_request_review'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: review-signal
+          path: ${{ runner.temp }}/signal
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: The PR, from the event or a verified signal
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${EVENT_PR:-}" ]; then
+            PR="$EVENT_PR"; KIND="pr"
+          elif [ "$RUN_EVENT" = merge_group ]; then
+            PR="$(python -c 'import sys; from scripts.drain_review_gate import queued_pr; print(queued_pr(sys.argv[1]) or "")' "$RUN_BRANCH")"
+            KIND="queue"
+          else
+            PR="$(python scripts/drain_review_gate.py --signal-pr \
+              --signal-file "$RUNNER_TEMP/signal/pr" --repo "$REPO" \
+              --run-repo "$RUN_REPO" --run-branch "$RUN_BRANCH")"
+            KIND="pr"
+          fi
+          if ! [[ "$PR" =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "::error::no PR to decide"
+            exit 1
+          fi
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
+
+  decide:
+    name: decide review
+    needs: resolve
+    environment: review
+    # One decision at a time per PR of this repository, never cancelled: each reads
+    # the PR as it is when it runs, so a queued one decides the newest state.
+    concurrency:
+      group: review-${{ github.repository }}-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -66,73 +125,92 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
-      - name: Read which PR was reviewed
-        if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: The review App's token (the only identity that may post `review`)
+        id: app
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
         with:
-          name: review-signal
-          path: ${{ runner.temp }}/signal
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
+          app-id: ${{ vars.REVIEW_APP_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+          permission-checks: write
 
       - name: Decide and post the review check
         env:
           GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          REVIEW_APP_ID: ${{ vars.REVIEW_APP_ID }}
           REPO: ${{ github.repository }}
-          EVENT_PR: ${{ github.event.pull_request.number }}
-          SIGNAL: ${{ runner.temp }}/signal/pr
+          PR: ${{ needs.resolve.outputs.pr }}
+          KIND: ${{ needs.resolve.outputs.kind }}
+          GROUP_SHA: ${{ github.event.workflow_run.head_sha }}
+          GROUP_REF: ${{ github.event.workflow_run.head_branch }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "${EVENT_PR:-}" ]; then
-            PR="$EVENT_PR"
-          else
-            # Untrusted data from the PR's copy of review-signal.yml: a number, or nothing.
-            PR="$(head -c 16 "$SIGNAL" | tr -d '[:space:]')"
-          fi
-          if ! [[ "$PR" =~ ^[1-9][0-9]{0,8}$ ]]; then
-            echo "::error::the signal names no PR"
-            exit 1
-          fi
-
-          # The head and base as they are now, from the API, never from the event.
-          read -r HEAD BASE < <(gh api "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
-          if ! [[ "$HEAD" =~ ^[0-9a-f]{40}$ && "$BASE" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::PR #${PR} has no head or base"
-            exit 1
-          fi
-
-          post() { gh api -X POST "repos/${REPO}/check-runs" --input "$1" > /dev/null; }
-          # Pending first. If anything below fails, the head reads "deciding", never a
-          # pass an earlier decision posted before a later BLOCK.
-          jq -n --arg head "$HEAD" '{name: "review", head_sha: $head, status: "in_progress",
-            output: {title: "deciding", summary: "review.yml is reading the reviews."}}' \
-            > "$RUNNER_TEMP/deciding.json"
-          post "$RUNNER_TEMP/deciding.json"
-
-          gh api --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
-            | jq -s . > "$RUNNER_TEMP/reviews.json"
-
-          # The base, the head and every commit a review names, as git objects only.
-          # One that cannot be fetched does not carry.
-          for sha in "$BASE" "$HEAD" $(jq -r '.[].commit_id // empty' "$RUNNER_TEMP/reviews.json" | sort -u); do
-            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
-            git cat-file -e "${sha}^{commit}" 2> /dev/null \
-              || git fetch -q --no-tags --filter=blob:none origin "$sha" \
-              || echo "::warning::could not fetch ${sha}"
-          done
-
-          if ! python scripts/drain_review_gate.py --review-check \
-              --reviews-file "$RUNNER_TEMP/reviews.json" \
-              --base "$BASE" --head "$HEAD" \
-              --scope-guard .github/workflows/pr-scope-guard.yml > "$RUNNER_TEMP/run.json"; then
-            jq -n --arg head "$HEAD" '{name: "review", head_sha: $head, status: "completed",
-              conclusion: "failure", output: {title: "could not decide",
-              summary: "review.yml could not read the reviews; see its log, then rerun it."}}' \
+          post() { GH_TOKEN="$APP_TOKEN" gh api -X POST "repos/${REPO}/check-runs" --input "$1" > /dev/null; }
+          failed() {
+            jq -n --arg sha "$1" --arg id "$2" '{name: "review", head_sha: $sha, external_id: $id,
+              status: "completed", conclusion: "failure", output: {title: "could not decide",
+              summary: "review.yml could not read the PR; see its log, then rerun it."}}' \
               > "$RUNNER_TEMP/run.json"
             post "$RUNNER_TEMP/run.json"
-            exit 1
+          }
+
+          if [ "$KIND" = queue ]; then
+            # The group's `review`: its PR's own check at the PR's head, read as data.
+            if ! python scripts/drain_review_gate.py --queue-review --repo "$REPO" \
+                --ref "$GROUP_REF" --sha "$GROUP_SHA" > "$RUNNER_TEMP/run.json"; then
+              failed "$GROUP_SHA" "queue-pr-${PR}"
+              exit 1
+            fi
+            post "$RUNNER_TEMP/run.json"
+          else
+            # The head and base as they are now, from the API, never from the event.
+            read -r HEAD BASE < <(gh api "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
+            if ! [[ "$HEAD" =~ ^[0-9a-f]{40}$ && "$BASE" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::PR #${PR} has no head or base"
+              exit 1
+            fi
+            # Pending first. If anything below fails, the head reads "deciding", never a
+            # pass an earlier decision posted before a later BLOCK.
+            jq -n --arg head "$HEAD" --arg id "pr-${PR}" '{name: "review", head_sha: $head,
+              external_id: $id, status: "in_progress",
+              output: {title: "deciding", summary: "review.yml is reading the reviews."}}' \
+              > "$RUNNER_TEMP/deciding.json"
+            post "$RUNNER_TEMP/deciding.json"
+
+            gh api --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
+              | jq -s . > "$RUNNER_TEMP/reviews.json"
+            gh api --paginate "repos/${REPO}/issues/${PR}/timeline?per_page=100" --jq '.[]' \
+              | jq -s . > "$RUNNER_TEMP/timeline.json"
+
+            # The base, the head and every commit a review names, as git objects only.
+            # One that cannot be fetched does not carry.
+            for sha in "$BASE" "$HEAD" $(jq -r '.[].commit_id // empty' "$RUNNER_TEMP/reviews.json" | sort -u); do
+              [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
+              git cat-file -e "${sha}^{commit}" 2> /dev/null \
+                || git fetch -q --no-tags --filter=blob:none origin "$sha" \
+                || echo "::warning::could not fetch ${sha}"
+            done
+
+            if ! python scripts/drain_review_gate.py --review-check \
+                --reviews-file "$RUNNER_TEMP/reviews.json" \
+                --timeline-file "$RUNNER_TEMP/timeline.json" --pr "$PR" \
+                --base "$BASE" --head "$HEAD" > "$RUNNER_TEMP/run.json"; then
+              failed "$HEAD" "pr-${PR}"
+              exit 1
+            fi
+            post "$RUNNER_TEMP/run.json"
           fi
-          post "$RUNNER_TEMP/run.json"
+          mkdir -p "$RUNNER_TEMP/review-pr"
+          printf '%s\n' "$PR" > "$RUNNER_TEMP/review-pr/pr"
           jq -r '"review for #'"$PR"' at \(.head_sha): \(.status) \(.conclusion // "") \(.output.title)"' \
             "$RUNNER_TEMP/run.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Which PR this decided, for enqueue-merge.yml: a run started by a review or a
+      # merge group is on the default branch, so its head names no PR.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-pr
+          path: ${{ runner.temp }}/review-pr/
+          retention-days: 1
+          if-no-files-found: error

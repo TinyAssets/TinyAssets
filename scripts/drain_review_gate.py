@@ -25,6 +25,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -405,7 +406,7 @@ class Verdict:
     url: str
 
 
-def latest_verdict(reviews: list[object]) -> Verdict | None:
+def latest_verdict(reviews: list[object], *, since: str | None = None) -> Verdict | None:
     """The latest trusted review whose first non-blank line is a verdict.
 
     `reviews` is `GET /repos/{r}/pulls/{n}/reviews`. A review counts when its
@@ -414,6 +415,9 @@ def latest_verdict(reviews: list[object]) -> Verdict | None:
     surrounding whitespace removed, is exactly `APPROVE` or `BLOCK`. Anything
     else is an ordinary review comment and changes nothing. The latest one by
     `submitted_at` (then id) wins, so a BLOCK after an APPROVE voids it.
+
+    `since` is the time the PR's base last changed (`last_base_change`): a review
+    submitted before it read a diff against another base, so it counts for nothing.
 
     Raises ValueError on a review that is not the API's shape: a list the
     decision cannot read must not shrink into one it can.
@@ -440,10 +444,32 @@ def latest_verdict(reviews: list[object]) -> Verdict | None:
         if not (isinstance(commit, str) and _SHA_RE.fullmatch(commit)
                 and isinstance(when, str) and isinstance(ident, int)):
             raise ValueError(f"review {ident!r} has no commit, time or id")
+        if since is not None and when <= since:
+            continue
         verdict = Verdict(first, commit, str(review.get("html_url") or ""))
         if best is None or (when, ident) > best[:2]:
             best = (when, ident, verdict)
     return None if best is None else best[2]
+
+
+def last_base_change(events: list[object]) -> str | None:
+    """When the PR's base last changed, from `GET /issues/{n}/timeline`; None if never.
+
+    A retarget (`base_ref_changed`) changes the diff a review read: a PR stacked on a
+    branch of unreviewed commits, approved there and retargeted to main, would
+    otherwise merge them under that approval. Raises on an event not the API's shape.
+    """
+    latest: str | None = None
+    for event in events:
+        if not isinstance(event, dict):
+            raise ValueError(f"not a timeline event: {event!r}")
+        if event.get("event") != "base_ref_changed":
+            continue
+        when = event.get("created_at")
+        if not isinstance(when, str):
+            raise ValueError("a base change with no time")
+        latest = when if latest is None or when > latest else latest
+    return latest
 
 
 # Prose: Markdown under docs/, openspec/ and ideas/, and the top-level Markdown
@@ -470,7 +496,6 @@ def carries(
     approved: str,
     head: str,
     *,
-    sensitive: re.Pattern[str],
     cwd: Path | None = None,
 ) -> str | None:
     """Why a verdict on `approved` stands for `head`, or None when it does not.
@@ -481,11 +506,11 @@ def carries(
     change and not the other (a rename counts both its paths). The verdict
     carries when:
 
-    1. no path differs: the same change (the diff key), so a rebase or a
+    1. no path differs: the same change, so a rebase or a
        merge of main that touched none of the PR's files carries;
-    2. every differing path is prose (`is_prose`), a regular non-executable
-       file on both sides, and none is release-critical (`sensitive`, the scope
-       guard's SENSITIVE_RE). A gate definition always gets a fresh review.
+    2. every differing path is prose (`is_prose`: Markdown nothing runs or
+       loads), a regular non-executable file on both sides. A gate, a workflow
+       or any code is never prose, so it always gets a fresh review.
 
     Any git failure, or a commit that cannot be read, is None: a verdict never
     carries across a change nobody can compare.
@@ -503,22 +528,12 @@ def carries(
     if not differing:
         return f"the same change as {approved} (every path's blobs and modes unchanged)"
     names = [p.decode("utf-8", "surrogateescape") for p in differing]
-    if any(sensitive.search(name) for name in names):
-        return None
     if all(
         is_prose(name) and (_modes(then.get(raw)) | _modes(now.get(raw))) <= _PROSE_MODES
         for name, raw in zip(names, differing)
     ):
         return f"only prose changed since {approved}: {', '.join(names)}"
     return None
-
-
-def release_critical(scope_guard_text: str) -> re.Pattern[str]:
-    """The scope guard's SENSITIVE_RE, read from the workflow so no second list grows."""
-    match = re.search(r"^\s*SENSITIVE_RE='([^']+)'", scope_guard_text, re.M)
-    if match is None:
-        raise ValueError("pr-scope-guard.yml has no SENSITIVE_RE")
-    return re.compile(match.group(1))
 
 
 @dataclass(frozen=True)
@@ -535,16 +550,23 @@ def review_check(
     base: str,
     head: str,
     carry: Callable[[str], str | None],
+    since: str | None = None,
 ) -> CheckState:
-    """The `review` check for `head`, from the PR's reviews and `carry(commit)`."""
+    """The `review` check for `head`, from the PR's reviews and `carry(commit)`.
+
+    Only reviews after `since`, the PR's last base change, count.
+    """
     ask = (
         f"A reviewer posts a PR review on the commit it read ({head}), its first "
         "line `APPROVE` or `BLOCK`, the evidence below. Any other delta after a "
         "review gets a one-round delta review of only that delta."
     )
-    verdict = latest_verdict(reviews)
+    verdict = latest_verdict(reviews, since=since)
     if verdict is None:
-        return CheckState(None, f"waiting for review of {head}", ask)
+        title = f"waiting for review of {head}"
+        if since is not None:
+            title += f" (the base changed at {since})"
+        return CheckState(None, title, ask)
     why = carry(verdict.commit)
     if verdict.verdict == "BLOCK":
         if why is None:
@@ -574,52 +596,36 @@ def queued_pr(ref: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def review_run_passed(check_runs: object) -> bool:
-    """Does the latest `review` run among `check_runs` read success?
+def external_id(number: int) -> str:
+    """A PR's `review` check run names its PR: a check run lives on a commit, and two
+    PRs can share one head, so a reader takes only the run made for its own PR."""
+    return f"pr-{number}"
+
+
+def review_run_passed(check_runs: object, number: int) -> bool:
+    """Does the latest `review` run made for PR `number` read success?
 
     `check_runs` is the `check_runs` list of
     `GET /commits/{head}/check-runs?check_name=review`, already narrowed to the
-    Actions app. Latest is the highest id, the order GitHub created them in.
-    No run, or anything unreadable, is not a pass.
+    review App. Latest is the highest id, the order GitHub created them in. A run
+    made for another PR on the same head, no run, or anything unreadable, is not a
+    pass.
     """
     if not isinstance(check_runs, list):
         return False
     runs = [r for r in check_runs if isinstance(r, dict) and isinstance(r.get("id"), int)
-            and r.get("name") == "review"]
+            and r.get("name") == "review" and r.get("external_id") == external_id(number)]
     if not runs:
         return False
     latest = max(runs, key=lambda r: r["id"])
     return latest.get("status") == "completed" and latest.get("conclusion") == "success"
 
 
-def _review_check(argv: list[str]) -> int:
-    """`--review-check`: print the `review` check run for a head, as the API's JSON."""
-    parser = argparse.ArgumentParser(prog="drain_review_gate.py --review-check")
-    parser.add_argument("--reviews-file", type=Path, required=True,
-                        help="the PR's reviews, one JSON array")
-    parser.add_argument("--base", required=True)
-    parser.add_argument("--head", required=True)
-    parser.add_argument("--scope-guard", type=Path, required=True,
-                        help="pr-scope-guard.yml, for its SENSITIVE_RE")
-    args = parser.parse_args(argv)
-    if not _SHA_RE.fullmatch(args.head):
-        print(f"not a commit: {args.head!r}", file=sys.stderr)
-        return 2
-    try:
-        reviews = json.loads(args.reviews_file.read_text(encoding="utf-8"))
-        if not isinstance(reviews, list):
-            raise ValueError("the reviews file is not a JSON array")
-        sensitive = release_critical(args.scope_guard.read_text(encoding="utf-8"))
-        state = review_check(
-            reviews, base=args.base, head=args.head,
-            carry=lambda commit: carries(args.base, commit, args.head, sensitive=sensitive),
-        )
-    except (OSError, ValueError) as exc:
-        print(f"cannot decide the review check: {exc}", file=sys.stderr)
-        return 2
+def _check_run(name_sha: str, state: CheckState, ident: str) -> dict[str, object]:
     run: dict[str, object] = {
         "name": "review",
-        "head_sha": args.head,
+        "head_sha": name_sha,
+        "external_id": ident,
         "output": {"title": state.title[:250], "summary": state.summary},
     }
     if state.conclusion is None:
@@ -627,53 +633,150 @@ def _review_check(argv: list[str]) -> int:
     else:
         run["status"] = "completed"
         run["conclusion"] = state.conclusion
-    print(json.dumps(run))
+    return run
+
+
+def _review_check(argv: list[str]) -> int:
+    """`--review-check`: print the `review` check run for a PR's head, as the API's JSON."""
+    parser = argparse.ArgumentParser(prog="drain_review_gate.py --review-check")
+    parser.add_argument("--reviews-file", type=Path, required=True,
+                        help="the PR's reviews, one JSON array")
+    parser.add_argument("--timeline-file", type=Path, required=True,
+                        help="the PR's timeline events, one JSON array")
+    parser.add_argument("--pr", type=int, required=True)
+    parser.add_argument("--base", required=True)
+    parser.add_argument("--head", required=True)
+    args = parser.parse_args(argv)
+    if not _SHA_RE.fullmatch(args.head) or args.pr < 1:
+        print(f"not a commit and a PR: {args.head!r} #{args.pr}", file=sys.stderr)
+        return 2
+    try:
+        reviews = json.loads(args.reviews_file.read_text(encoding="utf-8"))
+        events = json.loads(args.timeline_file.read_text(encoding="utf-8"))
+        if not isinstance(reviews, list) or not isinstance(events, list):
+            raise ValueError("the reviews or the timeline is not a JSON array")
+        state = review_check(
+            reviews, base=args.base, head=args.head, since=last_base_change(events),
+            carry=lambda commit: carries(args.base, commit, args.head),
+        )
+    except (OSError, ValueError) as exc:
+        print(f"cannot decide the review check: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(_check_run(args.head, state, external_id(args.pr))))
     return 0
 
 
-def _queue_review(argv: list[str]) -> int:
-    """`--queue-review`: does this merge group's PR pass `review` at its head?
+def signal_pr(text: str, pull: object, *, run_repo: str, run_branch: str) -> int:
+    """The PR a review signal names, once GitHub's data says the signal is that PR's.
 
-    Reads the PR's head and its `review` runs with `gh api` (GitHub's data, never
-    the group's code), so a queued PR whose review is missing, pending or failed
-    fails the group.
+    The signal comes from the PR's own copy of review-signal.yml, so it is untrusted:
+    the PR it names must be the one whose branch the signal run ran on (the
+    `workflow_run`'s head repository and branch, which GitHub sets). Otherwise one PR's
+    copy could make another PR decide. Raises when they differ.
+    """
+    number = text.strip()
+    if not number.isdigit() or not 0 < int(number) < 10**9:
+        raise ValueError("the signal names no PR")
+    head = (pull or {}).get("head") if isinstance(pull, dict) else None
+    repo = ((head or {}).get("repo") or {}).get("full_name")
+    if not head or repo != run_repo or head.get("ref") != run_branch:
+        raise ValueError(f"PR #{number}'s branch is not the signal's ({run_repo}:{run_branch})")
+    return int(number)
+
+
+def _signal_pr(argv: list[str]) -> int:
+    """`--signal-pr`: print the PR a review signal names, verified (`signal_pr`)."""
+    parser = argparse.ArgumentParser(prog="drain_review_gate.py --signal-pr")
+    parser.add_argument("--signal-file", type=Path, required=True)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--run-repo", required=True)
+    parser.add_argument("--run-branch", required=True)
+    args = parser.parse_args(argv)
+    try:
+        text = args.signal_file.read_text(encoding="utf-8")[:16]
+        number = text.strip()
+        pull = _gh_json(f"repos/{args.repo}/pulls/{number}") if number.isdigit() else None
+        print(signal_pr(text, pull, run_repo=args.run_repo, run_branch=args.run_branch))
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"refusing the signal: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+# GitHub Actions: the app every Actions job's check run reports as. A job named
+# `review` in any workflow reports as it too, so the review check is not this app's.
+_ACTIONS_APP_ID = 15368
+
+
+def review_app_id(env: dict[str, str] | None = None) -> int:
+    """The review App's id (`REVIEW_APP_ID`, the repository variable).
+
+    The `review` check is created only by that App, whose key lives in the main-only
+    `review` environment, and the ruleset pins the context to it, so no PR's workflow
+    can satisfy it. Missing or malformed fails closed.
+    """
+    value = (os.environ if env is None else env).get("REVIEW_APP_ID", "")
+    if not value.isdigit() or int(value) == _ACTIONS_APP_ID:
+        raise ValueError("REVIEW_APP_ID is not the review App's id")
+    return int(value)
+
+
+def _gh_json(path: str) -> object:
+    out = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=True,
+                         timeout=60)
+    return json.loads(out.stdout)
+
+
+def review_passed_at(repo: str, head: str, number: int, *, app_id: int | None = None) -> bool:
+    """Does `head`'s latest `review` run, by the review App, for PR `number`, read success?
+
+    The one reader of the decision for everything that acts on it (the merge group,
+    enqueue, the queue's freshness probe, the floor hotfix). Raises on a read that
+    fails: a caller that cannot read the check treats the head as unreviewed.
+    """
+    if not _SHA_RE.fullmatch(head):
+        raise ValueError(f"not a commit: {head!r}")
+    app = review_app_id() if app_id is None else app_id
+    runs = _gh_json(f"repos/{repo}/commits/{head}/check-runs?check_name=review&per_page=100")
+    listed = runs.get("check_runs") if isinstance(runs, dict) else None
+    if not isinstance(listed, list):
+        raise ValueError(f"no check runs listed for {head}")
+    return review_run_passed([r for r in listed if isinstance(r, dict)
+                              and (r.get("app") or {}).get("id") == app], number)
+
+
+def _queue_review(argv: list[str]) -> int:
+    """`--queue-review`: print the merge group's `review` check run, as the API's JSON.
+
+    The group's ref names its PR; the PR's head and its own `review` runs are read
+    with `gh api` (GitHub's data, never the group's code). A queued PR whose review is
+    missing, pending, failed or made for another PR fails the group. An unreadable
+    one exits 2, and the workflow posts a failure.
     """
     parser = argparse.ArgumentParser(prog="drain_review_gate.py --queue-review")
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--ref", required=True, help="github.event.merge_group.head_ref")
-    parser.add_argument("--app-id", type=int, default=_ACTIONS_APP_ID)
+    parser.add_argument("--ref", required=True, help="the merge group's branch")
+    parser.add_argument("--sha", required=True, help="the merge group's commit")
     args = parser.parse_args(argv)
     number = queued_pr(args.ref)
-    if number is None:
-        print(f"not a merge-queue ref: {args.ref!r}", file=sys.stderr)
+    if number is None or not _SHA_RE.fullmatch(args.sha):
+        print(f"not a merge-queue ref and commit: {args.ref!r} {args.sha!r}", file=sys.stderr)
         return 2
-
-    def api(path: str) -> object:
-        out = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=True)
-        return json.loads(out.stdout)
-
     try:
-        pull = api(f"repos/{args.repo}/pulls/{number}")
+        pull = _gh_json(f"repos/{args.repo}/pulls/{number}")
         head = pull["head"]["sha"] if isinstance(pull, dict) else None
-        if not isinstance(head, str) or not _SHA_RE.fullmatch(head):
+        if not isinstance(head, str):
             raise ValueError(f"PR #{number} has no head")
-        runs = api(f"repos/{args.repo}/commits/{head}/check-runs?check_name=review&per_page=100")
-        listed = runs.get("check_runs") if isinstance(runs, dict) else None
-        ours = [r for r in listed or [] if isinstance(r, dict)
-                and (r.get("app") or {}).get("id") == args.app_id]
-    except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as exc:
+        passed = review_passed_at(args.repo, head, number)
+    except (subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
         print(f"PR #{number}: cannot read its review check: {exc}", file=sys.stderr)
         return 2
-    if review_run_passed(ours):
-        print(f"PR #{number}: review passed at {head}")
-        return 0
-    print(f"PR #{number}: the review check at {head} is missing, pending or failed",
-          file=sys.stderr)
-    return 1
-
-
-# GitHub Actions: the app every required check here reports as (ruleset 24065294).
-_ACTIONS_APP_ID = 15368
+    state = (CheckState("success", f"PR #{number}'s review passed at {head}", "")
+             if passed else
+             CheckState("failure", f"PR #{number}'s review at {head} is missing, pending, "
+                        "failed or another PR's", ""))
+    print(json.dumps(_check_run(args.sha, state, f"queue-{external_id(number)}")))
+    return 0
 
 
 def _read_text(path: Path | None) -> str | None:
@@ -861,6 +964,8 @@ def main() -> int:
         return _review_check(sys.argv[2:])
     if sys.argv[1:2] == ["--queue-review"]:
         return _queue_review(sys.argv[2:])
+    if sys.argv[1:2] == ["--signal-pr"]:
+        return _signal_pr(sys.argv[2:])
     if sys.argv[1:2] == ["--print-diff-key"]:
         return _print_diff_key(sys.argv[2:])
     if sys.argv[1:2] == ["--list-carry-heads"]:

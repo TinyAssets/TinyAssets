@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -21,9 +20,6 @@ _ENV = {
     "GIT_COMMITTER_NAME": "t",
     "GIT_COMMITTER_EMAIL": "t@example.invalid",
 }
-_SENSITIVE = gate.release_critical(
-    (_ROOT / ".github" / "workflows" / "pr-scope-guard.yml").read_text(encoding="utf-8")
-)
 A = "a" * 40
 B = "b" * 40
 
@@ -115,7 +111,7 @@ def repo(tmp_path: Path):
 
 
 def _carries(repo: Path, base: str, approved: str, head: str) -> str | None:
-    return gate.carries(base, approved, head, sensitive=_SENSITIVE, cwd=repo)
+    return gate.carries(base, approved, head, cwd=repo)
 
 
 def test_the_reviewed_head_and_the_same_change_carry(repo):
@@ -152,13 +148,6 @@ def test_a_prose_delta_carries(repo):
 def test_a_code_or_gate_delta_does_not_carry(repo, files):
     path, base, approved = repo
     assert _carries(path, base, approved, _commit(path, files)) is None
-
-
-def test_a_release_critical_prose_path_does_not_carry(repo):
-    path, base, approved = repo
-    head = _commit(path, {"docs/gates.md": "# g\n"})
-    strict = re.compile(r"^docs/gates\.md$")
-    assert gate.carries(base, approved, head, sensitive=strict, cwd=path) is None
 
 
 def test_a_rename_into_docs_counts_both_paths(repo):
@@ -224,25 +213,94 @@ def test_a_block_fails_where_it_carries_and_waits_after_a_new_change():
     assert _state(reviews).conclusion is None
 
 
-def test_the_cli_prints_the_check_run(tmp_path, repo):
+def _cli(path, reviews, timeline, base, head, pr="12"):
+    return subprocess.run(
+        [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
+         "--reviews-file", str(reviews), "--timeline-file", str(timeline), "--pr", pr,
+         "--base", base, "--head", head], cwd=path, capture_output=True, text=True)
+
+
+def test_the_cli_prints_the_check_run_for_its_pr(tmp_path, repo):
     path, base, approved = repo
     reviews = tmp_path / "reviews.json"
+    timeline = tmp_path / "timeline.json"
     reviews.write_text(json.dumps([_review("APPROVE", approved)]), encoding="utf-8")
-    guard = _ROOT / ".github" / "workflows" / "pr-scope-guard.yml"
-    out = subprocess.run(
-        [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
-         "--reviews-file", str(reviews), "--base", base, "--head", approved,
-         "--scope-guard", str(guard)],
-        cwd=path, capture_output=True, text=True, check=True)
-    run = json.loads(out.stdout)
+    timeline.write_text("[]", encoding="utf-8")
+    run = json.loads(_cli(path, reviews, timeline, base, approved).stdout)
     assert run["name"] == "review" and run["head_sha"] == approved
+    assert run["external_id"] == "pr-12"
     assert run["status"] == "completed" and run["conclusion"] == "success"
     reviews.write_text("{}", encoding="utf-8")
-    refused = subprocess.run(
-        [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
-         "--reviews-file", str(reviews), "--base", base, "--head", approved,
-         "--scope-guard", str(guard)], cwd=path, capture_output=True, text=True)
-    assert refused.returncode == 2
+    assert _cli(path, reviews, timeline, base, approved).returncode == 2
+
+
+# ---- a base change voids the reviews before it ----------------------------------------
+
+
+def test_a_review_before_the_base_changed_counts_for_nothing(tmp_path, repo):
+    path, base, approved = repo
+    reviews = tmp_path / "reviews.json"
+    timeline = tmp_path / "timeline.json"
+    reviews.write_text(json.dumps([_review("APPROVE", approved, when="2026-11-04T10:00:00Z")]),
+                       encoding="utf-8")
+    timeline.write_text(json.dumps([
+        {"event": "commented", "created_at": "2026-11-04T12:00:00Z"},
+        {"event": "base_ref_changed", "created_at": "2026-11-04T11:00:00Z"}]), encoding="utf-8")
+    run = json.loads(_cli(path, reviews, timeline, base, approved).stdout)
+    assert run["status"] == "in_progress"
+    assert "the base changed at 2026-11-04T11:00:00Z" in run["output"]["title"]
+    later = _review("APPROVE", approved, ident=2, when="2026-11-04T11:30:00Z")
+    assert gate.latest_verdict([later], since="2026-11-04T11:00:00Z").verdict == "APPROVE"
+
+
+def test_the_last_base_change_is_read_from_the_timeline():
+    assert gate.last_base_change([]) is None
+    assert gate.last_base_change([
+        {"event": "base_ref_changed", "created_at": "2026-11-04T09:00:00Z"},
+        {"event": "base_ref_changed", "created_at": "2026-11-04T11:00:00Z"},
+        {"event": "labeled", "created_at": "2026-11-04T12:00:00Z"}]) == "2026-11-04T11:00:00Z"
+    with pytest.raises(ValueError):
+        gate.last_base_change([{"event": "base_ref_changed"}])
+
+
+# ---- the signal names only its own PR, and the App alone decides ----------------------
+
+
+def test_a_signal_names_only_the_pr_whose_branch_it_ran_on():
+    pull = {"head": {"ref": "lane-a", "repo": {"full_name": "o/r"}}}
+    assert gate.signal_pr("12\n", pull, run_repo="o/r", run_branch="lane-a") == 12
+    for text, run_repo, run_branch in [("12", "o/r", "lane-b"), ("12", "fork/r", "lane-a"),
+                                       ("x", "o/r", "lane-a"), ("0", "o/r", "lane-a")]:
+        with pytest.raises(ValueError):
+            gate.signal_pr(text, pull, run_repo=run_repo, run_branch=run_branch)
+
+
+def test_the_review_app_is_required_and_is_not_actions():
+    assert gate.review_app_id({"REVIEW_APP_ID": "777"}) == 777
+    for value in ("", "x", "15368"):
+        with pytest.raises(ValueError):
+            gate.review_app_id({"REVIEW_APP_ID": value})
+
+
+def test_review_yml_decides_per_pr_with_the_app_in_its_environment():
+    import yaml
+
+    wf = yaml.safe_load((_ROOT / ".github" / "workflows" / "review.yml").read_text())
+    on = wf[True] if True in wf else wf["on"]
+    assert "edited" in on["pull_request_target"]["types"]
+    decide = wf["jobs"]["decide"]
+    assert decide["environment"] == "review"
+    assert decide["concurrency"]["group"] == (
+        "review-${{ github.repository }}-${{ needs.resolve.outputs.pr }}")
+    assert decide["concurrency"]["cancel-in-progress"] is False
+    assert "concurrency" not in wf
+    steps = "\n".join(str(step) for step in decide["steps"])
+    assert "create-github-app-token" in steps and "REVIEW_APP_PRIVATE_KEY" in steps
+    for name, job in wf["jobs"].items():
+        assert job.get("name") != "review" and name != "review"
+    queue = yaml.safe_load((_ROOT / ".github" / "workflows" / "review-queue.yml").read_text())
+    assert queue["permissions"] == {}
+    assert all(job.get("name") != "review" for job in queue["jobs"].values())
 
 
 # ---- the merge group ---------------------------------------------------------------------
@@ -256,13 +314,45 @@ def test_the_merge_group_ref_names_its_pr():
         assert gate.queued_pr(ref) is None
 
 
-def test_only_a_latest_successful_review_run_passes_the_group():
-    done = {"id": 1, "name": "review", "status": "completed", "conclusion": "success"}
-    waiting = {"id": 2, "name": "review", "status": "in_progress", "conclusion": None}
-    failed = {"id": 3, "name": "review", "status": "completed", "conclusion": "failure"}
-    assert gate.review_run_passed([done])
-    assert not gate.review_run_passed([])
-    assert not gate.review_run_passed(None)
-    assert not gate.review_run_passed([done, waiting])
-    assert not gate.review_run_passed([failed, done])
-    assert not gate.review_run_passed([{**done, "name": "required-tests"}])
+def test_only_the_latest_successful_run_made_for_this_pr_passes():
+    done = {"id": 1, "name": "review", "status": "completed", "conclusion": "success",
+            "external_id": "pr-12"}
+    waiting = {**done, "id": 2, "status": "in_progress", "conclusion": None}
+    failed = {**done, "id": 3, "conclusion": "failure"}
+    assert gate.review_run_passed([done], 12)
+    assert not gate.review_run_passed([done], 13), "another PR on the same head"
+    assert not gate.review_run_passed([{**done, "external_id": None}], 12)
+    assert not gate.review_run_passed([], 12)
+    assert not gate.review_run_passed(None, 12)
+    assert not gate.review_run_passed([done, waiting], 12)
+    assert not gate.review_run_passed([failed, done], 12)
+    assert not gate.review_run_passed([{**done, "name": "required-tests"}], 12)
+
+
+def test_only_the_review_apps_run_passes_a_reader(monkeypatch, capsys):
+    """An Actions-app run named review for the PR (any PR's own job can post one) is not a
+    pass: the App filter is what makes the check the review App's alone."""
+    head = "c" * 40
+    actions = {"id": 9, "name": "review", "status": "completed", "conclusion": "success",
+               "external_id": "pr-12", "app": {"id": 15368}}
+    ours = {**actions, "id": 3, "app": {"id": 777}}
+
+    def api(runs):
+        def fake(path):
+            if path.endswith("/pulls/12"):
+                return {"head": {"sha": head}}
+            assert path == f"repos/o/r/commits/{head}/check-runs?check_name=review&per_page=100"
+            return {"check_runs": runs}
+        return fake
+
+    monkeypatch.setenv("REVIEW_APP_ID", "777")
+    monkeypatch.setattr(gate, "_gh_json", api([actions]))
+    assert not gate.review_passed_at("o/r", head, 12)
+    assert gate._queue_review(["--repo", "o/r", "--ref", f"gh-readonly-queue/main/pr-12-{A}",
+                               "--sha", B]) == 0
+    assert json.loads(capsys.readouterr().out)["conclusion"] == "failure"
+    monkeypatch.setattr(gate, "_gh_json", api([actions, ours]))
+    assert gate.review_passed_at("o/r", head, 12)
+    assert gate._queue_review(["--repo", "o/r", "--ref", f"gh-readonly-queue/main/pr-12-{A}",
+                               "--sha", B]) == 0
+    assert json.loads(capsys.readouterr().out)["conclusion"] == "success"
