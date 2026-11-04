@@ -294,6 +294,195 @@ def parse_shard(raw: str) -> tuple[int, int]:
 def pytest_addoption(parser) -> None:  # pragma: no cover - exercised via pytest -p
     parser.addoption("--ci-shard", default=None, help="I/N: run only files hashed to shard I")
     parser.addoption("--ci-venue", choices=("user", "root"), default=None)
+    parser.addoption("--ci-tree-audit", action="store_true", default=False,
+                     help="fail a test that reads a tree the merge gate's map does not give it")
+
+
+# ---- the tree audit -------------------------------------------------------------
+#
+# The merge gate runs only the tests that may read a tree a tree-only diff touches
+# (affected_tests.provable_shape, tree_readers). This audit is what makes that map a
+# proof rather than a guess: every gate run watches each test's opens, listings and
+# child processes, and a test that reads a tree the map does not give it FAILS,
+# naming the path. Every diff outside the trees runs the whole surface under it, so
+# a test cannot gain an unmapped read without its own change failing here first.
+
+
+class TreeAudit:
+    """Records which tree each running test file touches; reports the unmapped ones."""
+
+    EVENTS = frozenset({"open", "os.listdir", "os.scandir", "subprocess.Popen",
+                        "os.system", "os.posix_spawn", "os.exec"})
+    #: git subcommands that read the checkout; any of them sees every tree.
+    GIT_READS = frozenset({"diff", "ls-files", "ls-tree", "status", "log", "show", "grep",
+                           "archive", "blame", "stash", "add", "commit"})
+
+    def __init__(self, root: Path) -> None:
+        import threading
+
+        import affected_tests
+
+        self.at = affected_tests
+        self.root = root
+        self._map: tuple[dict[str, set[str]], set[str]] | None = None
+        self.every = (*affected_tests.TREES, affected_tests.TOP_MD)
+        self.roots = tuple(sorted({os.path.abspath(root), os.path.realpath(root)}))
+        self.current: str | None = None
+        self.touches: dict[str, list[tuple[str, str]]] = {}
+        self._local = threading.local()
+
+    # -- recording ----------------------------------------------------------------
+    def __call__(self, event: str, args: tuple) -> None:
+        if event not in self.EVENTS or self.current is None or getattr(
+                self._local, "busy", False):
+            return
+        self._local.busy = True
+        try:
+            for tree, path in self._trees(event, args):
+                self.touches.setdefault(self.current, []).append((tree, path))
+        except Exception as exc:  # never raise into the audited call; fail the test instead
+            self.touches.setdefault(self.current, []).append(("?", f"audit error {exc!r}"))
+        finally:
+            self._local.busy = False
+
+    def _relative(self, raw, base: str | None = None) -> str | None:
+        """`raw` relative to the checkout ("" for its root), or None outside it."""
+        path = os.path.normpath(os.path.join(base or os.getcwd(), os.fsdecode(raw)))
+        for root in self.roots:
+            if path == root:
+                return ""
+            if path.startswith(root + os.sep):
+                return path[len(root) + 1:].replace(os.sep, "/")
+        return None
+
+    @staticmethod
+    def _importing() -> bool:
+        frame = sys._getframe(2)
+        while frame is not None:
+            name = frame.f_code.co_filename
+            if name.startswith("<frozen importlib") or f"{os.sep}importlib{os.sep}" in name:
+                return True
+            frame = frame.f_back
+        return False
+
+    def _trees(self, event: str, args: tuple):
+        """(tree, path) for each tree this event touches."""
+        if event in ("open", "os.listdir", "os.scandir"):
+            path = args[0] if args else None
+            if event != "open" and path is None:
+                path = "."
+            # An fd names no path, and os.open (mode None) may be relative to a
+            # dir_fd the event does not carry.
+            if isinstance(path, int) or path is None or (
+                    event == "open" and args[1] is None
+                    and not os.path.isabs(os.fsdecode(path))):
+                return
+            rel = self._relative(path)
+            if rel == "":
+                # Listing the root sees which top-level .md files exist. (A tree's own
+                # directory is never deleted by a tree-only diff: gate_selection runs
+                # the whole suite for that.) Opening the root is no listing, and the
+                # import system lists every sys.path entry, the checkout among them.
+                if event != "open" and not self._importing():
+                    yield self.at.TOP_MD, "."
+            elif rel is not None and self.at.tree_of(rel):
+                yield self.at.tree_of(rel), rel
+            return
+        if event == "subprocess.Popen":
+            argv, cwd = args[1], args[2]
+        elif event == "os.system":
+            argv, cwd = os.fsdecode(args[0]).split(), None
+        else:
+            argv, cwd = args[1], None
+        argv = [argv] if isinstance(argv, (str, bytes, os.PathLike)) else list(argv or ())
+        words = [os.fsdecode(w) for w in argv if isinstance(w, (str, bytes, os.PathLike))]
+        here = os.path.join(os.getcwd(), os.fsdecode(cwd)) if cwd else os.getcwd()
+        for word in (here, *words):
+            if word and not word.startswith("-") and "\n" not in word:
+                rel = self._relative(word, here)
+                if rel and self.at.tree_of(rel):
+                    yield self.at.tree_of(rel), rel
+        if words and os.path.basename(words[0]) == "git":
+            where, rest = here, words[1:]
+            while rest and rest[0].startswith("-"):
+                if rest[0] == "-C" and len(rest) > 1:
+                    where, rest = os.path.join(here, rest[1]), rest[2:]
+                else:
+                    rest = rest[1:]
+            # git run anywhere inside the checkout sees every tree.
+            if rest and rest[0] in self.GIT_READS and self._relative(where) is not None:
+                yield from ((tree, "git " + " ".join(words[1:4])) for tree in self.every)
+
+    # -- reporting ----------------------------------------------------------------
+    def unmapped(self, nodeid: str) -> list[tuple[str, str]]:
+        rel = nodeid.split("::", 1)[0]
+        seen = self.touches.pop(nodeid, []) + self.touches.get(rel, [])
+        if seen and self._map is None:
+            # Built on the first touch (about 6 s on this repo), not per process start,
+            # and unaudited: its own reads are nobody's test.
+            self._local.busy = True
+            try:
+                self._map = self.at.tree_readers(self.at.Graph(self.root))
+            finally:
+                self._local.busy = False
+        readers, shared = self._map or ({}, set())
+        missed, shown = [], set()
+        for tree, path in seen:
+            if tree in shared or rel in readers.get(tree, ()) or (tree, path) in shown:
+                continue
+            shown.add((tree, path))
+            missed.append((tree, path))
+        return missed
+
+
+def _audit_message(rel: str, missed: list[tuple[str, str]]) -> str:
+    lines = [f"{rel} read a tree the merge gate's map does not give it, so a change to "
+             "that tree alone would skip this test (scripts/affected_tests.py tree_readers):"]
+    lines += [f"  {tree}: {path}" for tree, path in missed[:10]]
+    lines.append("Fix: name the path in this test file in path form (a string starting "
+                 "'<tree>/', or ROOT / '<tree>'), so the map sees the read.")
+    return "\n".join(lines)
+
+
+def pytest_configure(config) -> None:  # pragma: no cover - exercised via pytest -p
+    if not config.getoption("--ci-tree-audit", default=False):
+        return
+    import pytest
+
+    audit = TreeAudit(Path(config.rootpath))
+
+    class _Plugin:
+        @pytest.hookimpl(hookwrapper=True)
+        def pytest_make_collect_report(self, collector):
+            previous = audit.current
+            if isinstance(collector, pytest.Module):
+                audit.current = collector.nodeid.split("::", 1)[0]
+            try:
+                yield
+            finally:
+                audit.current = previous
+
+        @pytest.hookimpl(hookwrapper=True)
+        def pytest_runtest_protocol(self, item, nextitem):
+            audit.current = item.nodeid
+            try:
+                yield
+            finally:
+                audit.current = None
+
+        @pytest.hookimpl(hookwrapper=True)
+        def pytest_runtest_makereport(self, item, call):
+            outcome = yield
+            report = outcome.get_result()
+            if report.when != "teardown":
+                return
+            missed = audit.unmapped(item.nodeid)
+            if missed:
+                report.outcome = "failed"
+                report.longrepr = _audit_message(item.nodeid.split("::", 1)[0], missed)
+
+    sys.addaudithook(audit)
+    config.pluginmanager.register(_Plugin(), "ci-tree-audit")
 
 
 def pytest_ignore_collect(collection_path, config):
@@ -1352,16 +1541,15 @@ def main() -> int:
             return 0
         cmd += selection
     elif args.shard:
-        # Loads THIS module as a pytest plugin for its pytest_ignore_collect.
-        # `-p` imports by module name, hence scripts/ on PYTHONPATH below.
-        cmd += ["-p", "ci_required_tests", f"--ci-shard={args.shard[0]}/{args.shard[1]}"]
-    cmd += [*args.pytest_arg]
+        cmd += [f"--ci-shard={args.shard[0]}/{args.shard[1]}"]
+    # Loads THIS module as a pytest plugin, in every run: its pytest_ignore_collect
+    # for a shard, and the tree audit, which proves the merge gate's tree map
+    # (TreeAudit). `-p` imports by module name, hence scripts/ on PYTHONPATH below.
+    cmd += ["-p", "ci_required_tests", "--ci-tree-audit", *args.pytest_arg]
     print("+ " + " ".join(cmd), flush=True)
-    env = None
-    if args.shard:
-        env = dict(os.environ)
-        scripts_dir = str(Path(__file__).resolve().parent)
-        env["PYTHONPATH"] = os.pathsep.join(filter(None, [scripts_dir, env.get("PYTHONPATH")]))
+    env = dict(os.environ)
+    scripts_dir = str(Path(__file__).resolve().parent)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [scripts_dir, env.get("PYTHONPATH")]))
     proc = (run_oracle_venues(cmd, args=args, selection=selection, env=env, junit=junit)
             if args.oracle_venues else subprocess.run(cmd, cwd=REPO_ROOT, env=env))
     print(f"pytest exit code: {proc.returncode}", flush=True)

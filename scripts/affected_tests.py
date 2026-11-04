@@ -348,12 +348,24 @@ def select(
     return sorted(selected), reasons
 
 
-#: Trees that hold prose and specs: never imported, never executed.
-_PROSE_DIRS = ("docs/", "openspec/", "ideas/")
+#: Trees no Python imports: the TypeScript platform workspace (ADR-032) and the
+#: prose. A Python test can observe a file in them only by reading it.
+TREES = ("platform", "docs", "openspec", "ideas")
+#: The top-level markdown files, as one more such tree.
+TOP_MD = "*.md"
+
+
+def tree_of(rel: str) -> str | None:
+    """The tree a repo-relative path lies in (a tree's own directory included), or None."""
+    rel = rel.replace("\\", "/")
+    top = rel.split("/", 1)[0]
+    if top in TREES:
+        return top
+    return TOP_MD if "/" not in rel and rel.endswith(".md") else None
 
 
 def provable_shape(changed: list[str]) -> str | None:
-    """``prose``, or ``None`` when no argument covers the diff. ONE shape.
+    """The trees a diff touches (``docs+platform``), or ``None``. ONE shape.
 
     This is the whole safety story of the merge gate, so it is a WHITELIST, and
     it is as short as it can be.
@@ -370,10 +382,15 @@ def provable_shape(changed: list[str]) -> str | None:
     ``tests/test_agent_turn_journal.py`` omits all four test modules that
     import it. No digest or coverage check can see an OMISSION.
 
-    ``prose`` is the one shape with an argument: every path is under docs/,
-    openspec/, ideas/, or is a top-level ``.md``. Nothing imports or executes
-    it, so it can only affect a test that READS it -- by name
-    (``_mention_keys``) or by walking its directory (``_WALKS``).
+    The one shape with an argument: every path lies in a tree of ``TREES`` or
+    is a top-level ``.md``, and none is a ``.py`` file. Nothing imports those
+    trees, so a Python test can observe them only by READING them: opening or
+    listing a path in them, or handing one to a child process. Which tests can
+    do that is ``tree_readers``; the runner's audit (``ci_required_tests.py``,
+    ``--ci-tree-audit``, on in every gate run) fails any test that reads a tree
+    the map does not give it. Every diff outside this shape runs the whole
+    surface under that audit, so no test gains an unmapped read without its own
+    change failing there first.
 
     A ``tests``-only shape was tried and REMOVED in round 3 (2026-10-03). Its
     argument was that a changed ``tests/test_*.py`` can only affect the tests
@@ -381,27 +398,121 @@ def provable_shape(changed: list[str]) -> str | None:
     leans on the import graph being complete, which is the exact class of claim
     the deletion hole above breaks. Not worth 8% of merges.
 
-    Residual, stated rather than hidden: a test that reaches a prose file
-    through a path it builds without naming the file or its directory. The
-    tree-walking superset in ``gate_selection`` is what shrinks that. It is not
-    a proof, and it is why this list has one entry.
+    Residual, stated rather than hidden: a child process that finds a tree by
+    itself (a script that walks the checkout) when no argument word of it lies
+    in the tree. The audit cannot see inside a child; a test running ``git``
+    is mapped to every tree for that reason, and the post-merge full run remains.
     """
     if not changed:
         return None
+    trees: set[str] = set()
     for raw in changed:
         rel = raw.replace("\\", "/")
-        if not (rel.startswith(_PROSE_DIRS) or (rel.endswith(".md") and "/" not in rel)):
+        tree = tree_of(rel)
+        if tree is None or rel.endswith(".py"):
             return None
-    return "prose"
+        trees.add(tree)
+    return "+".join(sorted(trees))
 
 
-def walking_tests(graph: Graph) -> set[str]:
-    """Every test that enumerates a tree, so a file it never names still reaches it."""
-    return {
-        rel for rel in graph.files
-        if is_test_file(rel) and defines_tests(graph.files[rel])
-        and _WALKS.search(_PATHLIB_JOIN.sub("/", graph.files[rel]))
-    }
+_PATH_CALLS = {"Path", "PurePath", "PurePosixPath", "join", "chdir"}
+_WALK_METHODS = {"rglob", "glob", "iterdir", "walk"}
+_WALK_FUNCS = {"walk", "listdir", "scandir"}
+_GIT = re.compile(r"""["']git["']""")
+
+
+def _name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    return node.attr if isinstance(node, ast.Attribute) else ""
+
+
+def _is_repo_root(node: ast.AST) -> bool:
+    """``Path(".")``, ``Path.cwd()``, ``os.getcwd()`` or an upper-case ROOT/REPO constant."""
+    if isinstance(node, ast.Constant):
+        return node.value in (".", "", "./")
+    if isinstance(node, ast.Call):
+        name = _name(node.func)
+        if name in ("cwd", "getcwd"):
+            return True
+        if name in ("Path", "PurePath"):
+            return not node.args or _is_repo_root(node.args[0])
+        if name in ("resolve", "absolute") and isinstance(node.func, ast.Attribute):
+            return _is_repo_root(node.func.value)
+        return False
+    name = _name(node)
+    return name.isupper() and ("ROOT" in name or "REPO" in name)
+
+
+def tree_reads(source: str, top_md: frozenset[str] = frozenset()) -> set[str]:
+    """The trees a source can read: named in path form, or walked from the checkout's root.
+
+    A tree is named by a string starting ``<tree>/`` (``"platform/owner"``), or by
+    ``"<tree>"`` itself where a path is built (``ROOT / "docs" / "x"``,
+    ``Path("docs")``, ``os.path.join(.., "docs")``, ``cwd="docs"``). The top-level
+    markdown tree is named by one of its file names (`top_md`). A walk
+    (``rglob/glob/iterdir/walk``, ``os.walk/listdir/scandir``) of the root
+    reaches every tree. Unparsable source reads everything.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return {*TREES, TOP_MD}
+    parent: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value[2:] if node.value.startswith("./") else node.value
+            if text in top_md:
+                out.add(TOP_MD)
+            head = text.split("/", 1)[0]
+            if head not in TREES:
+                continue
+            up = parent.get(node)
+            if ("/" in text
+                    or (isinstance(up, ast.BinOp) and isinstance(up.op, ast.Div)
+                        and up.right is node)
+                    or (isinstance(up, ast.Call) and _name(up.func) in _PATH_CALLS)
+                    or (isinstance(up, ast.keyword) and up.arg == "cwd")):
+                out.add(head)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            func = node.func
+            if ((func.attr in _WALK_METHODS and _is_repo_root(func.value))
+                    or (func.attr in _WALK_FUNCS and _name(func.value) == "os"
+                        and (not node.args or _is_repo_root(node.args[0])))):
+                out.update((*TREES, TOP_MD))
+    return out
+
+
+def tree_readers(graph: Graph) -> tuple[dict[str, set[str]], set[str]]:
+    """(tree -> test files that may read it, trees a conftest's closure reads).
+
+    A test reads what its own text or any module in its import closure reads,
+    and every tree when its own text runs ``git`` (git sees the whole checkout).
+    A tree a conftest reads is read by every test, so a diff touching it is ALL.
+    """
+    top_md = frozenset(path.name for path in graph.root.glob("*.md"))
+    own = {rel: tree_reads(src, top_md) for rel, src in graph.files.items()}
+
+    def reach(rel: str) -> set[str]:
+        hit = set(own[rel])
+        for dep in graph.closure(rel):
+            hit |= own.get(dep, set())
+        return hit
+
+    readers: dict[str, set[str]] = {tree: set() for tree in (*TREES, TOP_MD)}
+    for rel, src in graph.files.items():
+        if is_test_file(rel) and defines_tests(src):
+            for tree in reach(rel) | ({*TREES, TOP_MD} if _GIT.search(src) else set()):
+                readers[tree].add(rel)
+    shared: set[str] = set()
+    for rel in graph.files:
+        if rel.endswith("conftest.py"):
+            shared |= reach(rel)
+    return readers, shared
 
 
 def gate_selection(
@@ -415,7 +526,8 @@ def gate_selection(
     Conservative where ``select`` is advisory: ``select`` may under-select
     because a miss there only defers a failure to the queue, and the queue runs
     everything. Here there is no later run to catch it, so anything without a
-    completeness argument is ALL.
+    completeness argument is ALL. With one, it is ``select`` plus every test
+    ``tree_readers`` maps to a touched tree.
     """
     shape = provable_shape(changed)
     if shape is None:
@@ -426,13 +538,51 @@ def gate_selection(
     selected, reasons = select(changed, root, graph, shared)
     if selected is None:
         return None, reasons
-    walkers = walking_tests(graph)
-    added = walkers - set(selected)
-    return sorted(set(selected) | walkers), [
+    readers, conftest_reads = tree_readers(graph)
+    touched = set(shape.split("+"))
+    gone = sorted(tree for tree in touched if tree != TOP_MD and not (root / tree).is_dir())
+    if gone:
+        # A root listing would see the tree vanish, which the audit does not map.
+        return None, [f"{', '.join(gone)}: the whole tree is deleted: running the whole suite"]
+    if touched & conftest_reads:
+        return None, [f"{', '.join(sorted(touched & conftest_reads))}: a conftest reads it, "
+                      "so every test may: running the whole suite"]
+    added = set().union(*(readers[tree] for tree in touched)) - set(selected)
+    return sorted(set(selected) | added), [
         f"shape: {shape}",
         *reasons,
-        f"+{len(added)} tree-walking test file(s), added unconditionally",
+        f"+{len(added)} test file(s) that may read {', '.join(sorted(touched))}",
     ]
+
+
+#: The old stack's code, deleted at the cutover (openspec/changes/clean-sheet-platform/
+#: tasks.md section 9). A test that reaches only this retires with it.
+RETIRING = ("tinyassets/",)
+
+
+def retiring_tests(graph: Graph) -> list[str]:
+    """Test files whose reached repo modules all lie in RETIRING, or load it at import.
+
+    A package ``__init__.py`` holding at most a docstring has no code, so it decides nothing.
+    """
+    def no_code(rel: str) -> bool:
+        try:
+            body = ast.parse(graph.files[rel]).body
+        except (SyntaxError, ValueError):
+            return False
+        return all(isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) for n in body)
+
+    gone = {rel for rel in graph.files if rel.startswith(RETIRING)}
+    gone |= {rel for rel in graph.files
+             if not rel.startswith("tests/") and (
+                 graph.closure(rel) & gone or (rel.endswith("__init__.py") and no_code(rel)))}
+    out = []
+    for rel, src in graph.files.items():
+        if is_test_file(rel) and defines_tests(src):
+            reached = {dep for dep in graph.closure(rel) if not dep.startswith("tests/")}
+            if reached and reached <= gone:
+                out.append(rel)
+    return sorted(out)
 
 
 def changed_files(base: str) -> list[str]:
@@ -482,7 +632,12 @@ def main() -> int:
             "defers a failure to the queue."
         ),
     )
+    ap.add_argument("--retiring", action="store_true",
+                    help="list the test files that retire with RETIRING at the cutover")
     args = ap.parse_args()
+    if args.retiring:
+        sys.stdout.write("".join(f"{rel}\n" for rel in retiring_tests(Graph(REPO_ROOT))))
+        return 0
     if (args.base is None) == (args.changed is None):
         raise SystemExit("pass exactly one of --base or --changed")
     if args.pr and args.gate:
