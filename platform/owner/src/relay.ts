@@ -48,6 +48,7 @@ import {
 import { type WebSocketHandlers, WebSockets } from "agents/websockets";
 
 import { Invalid, Refused } from "./errors";
+import { isBusy, RELAY_RESERVED, reserve, reserved, unreserve } from "./memory";
 import type { Frame } from "./run-events";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SHAPE_HEADERS, SOCKET_FAILED, SOCKET_URL,
@@ -107,6 +108,8 @@ export interface RelayParts {
   live(conversation: string): Promise<readonly string[]>;
   /** The object's clock, in whole seconds. */
   now(): number;
+  /** The object's own name for its relay's share of the isolate's memory (`memory.ts`). */
+  readonly holder: string;
 }
 
 function tag(conversation: string): string {
@@ -133,6 +136,10 @@ export function socketShape(request: Request):
 }
 
 function refusedUpgrade(error: unknown): Response {
+  if (isBusy(error)) {
+    return Response.json({ error: (error as Error).message },
+                         { status: 503, headers: { "Retry-After": "1" } });
+  }
   if (error instanceof Refused || error instanceof Invalid) {
     return Response.json({ error: error.message },
                          { status: error instanceof Refused ? 403 : 400 });
@@ -187,6 +194,7 @@ export class Relay extends LifecycleCapability {
       this.#close(connection, "expired");
     }
     const next = this.#nextExpiry();
+    this.idle();
     return next === null ? undefined : { rescheduleAt: next * 1000 };
   }
 
@@ -211,6 +219,8 @@ export class Relay extends LifecycleCapability {
       if ([...this.capability.getConnections()].length + this.#pending >= OWNER_SOCKETS) {
         throw new Refused(SOCKETS_FULL);
       }
+      // The relay's share of the isolate's memory, held while it keeps a socket or a tail.
+      reserve(this.#parts.holder, RELAY_RESERVED);
     } catch (error) {
       return refusedUpgrade(error);
     }
@@ -223,6 +233,7 @@ export class Relay extends LifecycleCapability {
     } finally {
       this.#accepting.delete(request);
       this.#pending--;
+      this.idle();
     }
   }
 
@@ -305,6 +316,16 @@ export class Relay extends LifecycleCapability {
   }
 
   #keep(run: string, conversation: string, text: string): void {
+    // A tail is kept under the relay's share of the isolate's memory; with no room for the
+    // share now, the frame is relayed and not kept, as a frame too long to keep is.
+    try {
+      reserve(this.#parts.holder, RELAY_RESERVED);
+    } catch (error) {
+      if (isBusy(error)) {
+        return;
+      }
+      throw error;
+    }
     let tail = this.#tails.get(run);
     if (tail === undefined) {
       tail = { conversation, frames: [], bytes: 0 };
@@ -333,6 +354,24 @@ export class Relay extends LifecycleCapability {
       this.#tailBytes -= tail.bytes;
       this.#tails.delete(run);
     }
+    this.idle();
+  }
+
+  /**
+   * The relay's share let go when it keeps no tail and no socket: at each settle, at each
+   * socket's close (the client's or the object's) and expiry pass, and as the object starts
+   * (an instance that came back after an eviction holds none of its old tails).
+   */
+  idle(): void {
+    if (this.#tails.size === 0 && this.#pending === 0
+        && [...this.capability.getConnections()].length === 0) {
+      unreserve(this.#parts.holder);
+    }
+  }
+
+  /** Whether the relay holds its share now (a test's view). */
+  holds(): boolean {
+    return reserved(this.#parts.holder);
   }
 
   /** The tails' size, in UTF-16 code units, and how many runs hold one. */
@@ -389,6 +428,7 @@ export class Relay extends LifecycleCapability {
     for (const connection of this.#select(() => true)) {
       this.#close(connection, kind);
     }
+    this.idle();
   }
 
   /** The sockets open now. */

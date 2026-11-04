@@ -27,6 +27,7 @@
 import { createHash } from "node:crypto";
 
 import { CHUNK_BYTES } from "../../files/src/keys";
+import { granted } from "../../owner/src/memory";
 
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
@@ -37,6 +38,8 @@ export const UPLOAD_PREFIX = "files/upload/";
 export const UPLOAD_BEGIN = "files/upload/begin";
 export const UPLOAD_COMMIT = "files/upload/commit";
 export const UPLOAD_ABORT = "files/upload/abort";
+/** What one chunk's upload holds: its bytes, and their copy as `FILES` is sent them. */
+export const UPLOAD_GRANT = 2 * CHUNK_BYTES;
 const CHUNK_PATH = /^([0-9a-f]{32})\/(0|[1-9][0-9]{0,5})$/;
 
 function failure(status: number, message: string, headers: HeadersInit = {}): Response {
@@ -98,38 +101,42 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
   const intentId = named[1]!;
   const index = Number(named[2]);
   try {
-    const target = await stub.fileUploadTarget(binding, { intent_id: intentId });
-    const chunk = target.chunks[index];
-    if (chunk === undefined) {
-      return failure(404, `the upload has ${target.chunks.length} chunks`);
-    }
-    if (chunk.size > CHUNK_BYTES) {
-      throw new Error("an upload's plan names a chunk larger than a chunk");
-    }
-    const bytes = await exactly(request, chunk.size);
-    if (bytes === null) {
-      return failure(400, `chunk ${index} is ${chunk.size} bytes`);
-    }
-    const digest = createHash("sha256").update(bytes).digest();
-    const headers = { "Content-Digest": contentDigest(digest) };
-    const sent = claimed(request);
-    if (sent !== undefined && sent !== digest.toString("base64")) {
-      return failure(400, "the chunk's SHA-256 is not the Content-Digest it was sent with",
-                     headers);
-    }
-    if (digest.toString("hex") !== chunk.sha256) {
-      return failure(400, `the bytes of chunk ${index} are not the chunk the upload declared`,
-                     headers);
-    }
-    const needed = target.pending.includes(chunk.sha256);
-    if (needed) {
-      await env.FILES.putChunks(target.namespace, target.key,
-                                [{ sha256: chunk.sha256, bytes }]);
-      await stub.fileUploadStored(binding, { intent_id: intentId, chunks: [chunk.sha256] });
-    }
-    return Response.json({ intent_id: intentId, index, stored: needed,
-                           pending: target.pending.length - (needed ? 1 : 0) },
-                         { headers: { "Cache-Control": "no-store", ...headers } });
+    // The chunk and its copy as `FILES` is sent it, under a grant of the isolate's memory
+    // (`answers.ts`); with no room now, `503`, and the client sends the chunk again.
+    return await granted(UPLOAD_GRANT, "an upload's chunk", async () => {
+      const target = await stub.fileUploadTarget(binding, { intent_id: intentId });
+      const chunk = target.chunks[index];
+      if (chunk === undefined) {
+        return failure(404, `the upload has ${target.chunks.length} chunks`);
+      }
+      if (chunk.size > CHUNK_BYTES) {
+        throw new Error("an upload's plan names a chunk larger than a chunk");
+      }
+      const bytes = await exactly(request, chunk.size);
+      if (bytes === null) {
+        return failure(400, `chunk ${index} is ${chunk.size} bytes`);
+      }
+      const digest = createHash("sha256").update(bytes).digest();
+      const headers = { "Content-Digest": contentDigest(digest) };
+      const sent = claimed(request);
+      if (sent !== undefined && sent !== digest.toString("base64")) {
+        return failure(400, "the chunk's SHA-256 is not the Content-Digest it was sent with",
+                       headers);
+      }
+      if (digest.toString("hex") !== chunk.sha256) {
+        return failure(400, `the bytes of chunk ${index} are not the chunk the upload declared`,
+                       headers);
+      }
+      const needed = target.pending.includes(chunk.sha256);
+      if (needed) {
+        await env.FILES.putChunks(target.namespace, target.key,
+                                  [{ sha256: chunk.sha256, bytes }]);
+        await stub.fileUploadStored(binding, { intent_id: intentId, chunks: [chunk.sha256] });
+      }
+      return Response.json({ intent_id: intentId, index, stored: needed,
+                             pending: target.pending.length - (needed ? 1 : 0) },
+                           { headers: { "Cache-Control": "no-store", ...headers } });
+    });
   } catch (error) {
     const refused = refusal(error);
     if (refused === null) {

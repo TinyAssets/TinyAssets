@@ -108,19 +108,17 @@ const BOUNDED: Readonly<Record<string, string>> = Object.freeze({
   "doors/src/binder.ts#sha256: new Uint8Array(n)":
     "a digest or key: a fixed few bytes",
   "doors/src/body.ts#boundedBytes: new Uint8Array(n)":
-    "a body held to its door's ceiling; the tool doors read it inside their request's grant (`answered`), the inbound door owes one with its slice",
+    "a body held to its door's ceiling: called only under its door's grant (the inbound door, `answered`)",
   "doors/src/e2b-hooks.ts#cappedText: new Uint8Array(n)":
     "HOOK_BODY_MAX, a sandbox hook's few KiB",
   "doors/src/egress.ts#decodedChunks: new Uint8Array(n)":
-    "owed: the egress door's events and bodies (EGRESS_BODY_MAX, EVENTS_BODY_MAX) under a grant, with the doors' egress paths",
+    "a sync upload's chunks: called only under its door's grant (`serveSync`, `answered`)",
   "doors/src/egress.ts#decodedOps: new Uint8Array(n)":
-    "owed: the egress door's events and bodies (EGRESS_BODY_MAX, EVENTS_BODY_MAX) under a grant, with the doors' egress paths",
-  "doors/src/egress.ts#serveEgress: .text()":
-    "owed: the egress door's events and bodies (EGRESS_BODY_MAX, EVENTS_BODY_MAX) under a grant, with the doors' egress paths",
+    "a sync commit's inline bytes: called only under its door's grant (`serveSync`, `answered`)",
   "doors/src/egress.ts#spendOf: .text()":
-    "owed: the egress door's events and bodies (EGRESS_BODY_MAX, EVENTS_BODY_MAX) under a grant, with the doors' egress paths",
+    "the gateway's meter for one call: a few hundred bytes of JSON",
   "doors/src/file-bytes.ts#exactly: new Uint8Array(n)":
-    "one upload chunk streamed to the files Worker: CHUNK_BYTES; owed: the upload's grant, with STORE",
+    "one upload chunk (CHUNK_BYTES): called only under its door's grant (`streamUpload`, UPLOAD_GRANT)",
   "doors/src/oidc.ts#bounded: new Uint8Array(n)":
     "an identity provider's discovery or token answer, held to its own small bound",
   "doors/src/oidc.ts#challengeOf: new Uint8Array(n)":
@@ -128,9 +126,9 @@ const BOUNDED: Readonly<Record<string, string>> = Object.freeze({
   "doors/src/session.ts#flowDigest: new Uint8Array(n)":
     "a digest or key: a fixed few bytes",
   "files/src/cipher.ts#open: new Uint8Array(n)":
-    "owed: the files Worker's own grant (memory_research.md §4: shared by every owner), with the files slice",
+    "at most one chunk: called only under its door's grant (the files Worker's PUT_GRANT, GET_GRANT, OBJECT_PUT_GRANT, OBJECT_GET_GRANT)",
   "files/src/cipher.ts#seal: new Uint8Array(n)":
-    "owed: the files Worker's own grant (memory_research.md §4: shared by every owner), with the files slice",
+    "at most one chunk: called only under its door's grant (the files Worker's PUT_GRANT, GET_GRANT, OBJECT_PUT_GRANT, OBJECT_GET_GRANT)",
   "files/src/datakey.ts#chunkName: new Uint8Array(n)":
     "a digest or key: a fixed few bytes",
   "files/src/datakey.ts#rewrap: new Uint8Array(n)":
@@ -138,9 +136,9 @@ const BOUNDED: Readonly<Record<string, string>> = Object.freeze({
   "files/src/datakey.ts#wrap: new Uint8Array(n)":
     "a digest or key: a fixed few bytes",
   "files/src/index.ts##plain: .arrayBuffer()":
-    "owed: the files Worker's own grant (memory_research.md §4: shared by every owner), with the files slice",
+    "at most one chunk: called only under its door's grant (the files Worker's PUT_GRANT, GET_GRANT, OBJECT_PUT_GRANT, OBJECT_GET_GRANT)",
   "files/src/index.ts##plain: new Uint8Array(n)":
-    "owed: the files Worker's own grant (memory_research.md §4: shared by every owner), with the files slice",
+    "at most one chunk: called only under its door's grant (the files Worker's PUT_GRANT, GET_GRANT, OBJECT_PUT_GRANT, OBJECT_GET_GRANT)",
   "files/src/index.ts#getManifestRoot: .text()":
     "a manifest root: a few KiB of keys",
   "files/src/index.ts#hex: new Uint8Array(n)":
@@ -152,7 +150,7 @@ const BOUNDED: Readonly<Record<string, string>> = Object.freeze({
   "owner/src/bodies.ts##window: new Uint8Array(n)":
     "a window of at most one page (`PAGE_BYTES`), under its caller's READ_GRANT",
   "owner/src/export.ts#readPage: JSON.stringify":
-    "owed: export pages (BATCH_BYTES a call) under a grant, with the export's own slice",
+    "one export or generation page: EXPORT_PAGE_BYTES (1 MiB) of rows; a generation's under GENERATION_GRANT",
   "owner/src/files.ts##content: new Uint8Array(n)":
     "an inline file: at most INLINE_BYTES",
   "owner/src/files.ts##known: new Uint8Array(n)":
@@ -179,18 +177,10 @@ const BOUNDED: Readonly<Record<string, string>> = Object.freeze({
     "a file_read or fetch window of at most one page (`PAGE_BYTES`), under its caller's READ_GRANT",
   "owner/src/owner-do.ts##window: new Uint8Array(n)":
     "a file_read or fetch window of at most one page (`PAGE_BYTES`), under its caller's READ_GRANT",
-  "owner/src/owner-do.ts#exportChunks: #files.fetch":
-    "owed: export pages (BATCH_BYTES a call) under a grant, with the export's own slice",
-  "owner/src/owner-do.ts#fileAppend: #files.fetch":
-    "owed: file writes' grants (file_write, file_append, file_edit: at most WHOLE_BYTES), with STORE",
-  "owner/src/owner-do.ts#fileAppend: new Uint8Array(n)":
-    "owed: file writes' grants (file_write, file_append, file_edit: at most WHOLE_BYTES), with STORE",
   "owner/src/owner-do.ts#fileEdit: #files.fetch":
-    "owed: file writes' grants (file_write, file_append, file_edit: at most WHOLE_BYTES), with STORE",
+    "OWED, NOT A GRANT AROUND THIS CODE: a whole file of up to WHOLE_BYTES (16 MiB) read, decoded, edited and encoded holds about four times it, past what any grant fits beside the relay's share; it needs an edit streamed by chunks, or a lower ceiling (Fact 14, reported)",
   "owner/src/owner-do.ts#fileEdit: new Uint8Array(n)":
-    "owed: file writes' grants (file_write, file_append, file_edit: at most WHOLE_BYTES), with STORE",
-  "owner/src/owner-do.ts#fileReadChunks: #files.fetch":
-    "the sync agent's chunk reads: BATCH_BYTES a call; owed: their grant, with STORE",
+    "OWED, NOT A GRANT AROUND THIS CODE: a whole file of up to WHOLE_BYTES (16 MiB) read, decoded, edited and encoded holds about four times it, past what any grant fits beside the relay's share; it needs an edit streamed by chunks, or a lower ceiling (Fact 14, reported)",
   "owner/src/policy.ts#canonical: JSON.stringify":
     "the owner's policy: at most its document's own bound",
   "owner/src/registrations.ts#token: new Uint8Array(n)":

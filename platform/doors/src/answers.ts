@@ -29,21 +29,26 @@ export const REQUEST_FACTOR = 2;
  */
 export const ANSWER_GRANT = 16 * RESULT_CHARS;
 
-/** The grant a request with a body of at most `max` bytes takes. */
-export function requestGrant(request: Request, max: number): number {
+/**
+ * The grant a request with a body of at most `max` bytes takes, with an answer of at most
+ * `answer` (one tool answer's, unless its door answers more).
+ */
+export function requestGrant(request: Request, max: number,
+                             answer: number = ANSWER_GRANT): number {
   const declared = request.headers.get("Content-Length");
   // A declared length past the door's ceiling is refused `413` before a byte is read.
   const bytes = declared === null ? max : /^\d+$/.test(declared) && Number(declared) <= max
     ? Number(declared) : 0;
-  return REQUEST_FACTOR * bytes + ANSWER_GRANT;
+  return REQUEST_FACTOR * bytes + answer;
 }
 
 /** `serve` under the request's grant; `503` when the isolate's memory has no room now. */
 export async function answered(request: Request, max: number,
-                               serve: () => Promise<Response>): Promise<Response> {
+                               serve: () => Promise<Response>,
+                               answer: number = ANSWER_GRANT): Promise<Response> {
   let held;
   try {
-    held = grant(requestGrant(request, max), "a request and its answer");
+    held = grant(requestGrant(request, max, answer), "a request and its answer");
   } catch (error) {
     if (!isBusy(error)) {
       throw error;

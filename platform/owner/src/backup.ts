@@ -46,6 +46,7 @@ import {
 } from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
+import { granted } from "./memory";
 
 /** The manifest lane's name in the schedule. */
 export const MANIFEST_LANE = "manifest";
@@ -74,6 +75,14 @@ export const SEGMENT_ENTRY = 16 + 1 + 16 + 1 + 64 + 1 + 7 + 1;
  * two parts' worth, about 24 MiB of the isolate's 128 MB at its peak.
  */
 const GATHER_BYTES = 2 * CHUNK_BYTES;
+/**
+ * What one pass holds at its worst (`memory.ts`): a burst's lines as UTF-16 text (twice
+ * `GATHER_BYTES`), its parts (`GATHER_BYTES`) and the text a part is built from (one
+ * part), held while each part is put and the log shipped after it, a segment's lines read,
+ * parsed and written (at most a part, a few times over), and each put's copy to `FILES`.
+ * Measured in workerd (`test/memory-peaks.mjs`).
+ */
+export const GENERATION_GRANT = 4 * GATHER_BYTES;
 /**
  * A generation's sizes: a base page's rows, a part's bytes, a burst's. The production
  * figures are these; a test passes smaller ones (`BackupParts.sizes`) to cut a small
@@ -314,22 +323,27 @@ export class Backups {
    */
   async run(now: number, until: number): Promise<void> {
     try {
-      if (!await this.#prune(until)) {
-        return;
-      }
-      const due = this.next(now);
-      let writing = this.#rows().find((row) => row.state === "writing");
-      if (writing === undefined && due !== null && now >= due && (
-            this.#rows().filter((row) => row.state === "done").length === 0
-            || this.#changed())) {
-        const gen = await this.#write(() => this.#open(now));
-        writing = this.#rows().find((row) => row.gen === gen);
-      }
-      if (writing !== undefined && !await this.#carry(writing, until)) {
-        await this.#write(() => this.#sql.exec(
-          "UPDATE owner_backups SET retry_at = ? WHERE gen = ? AND state = 'writing'",
-          Date.now() / 1000 + MANIFEST_CONTINUE_S, writing.gen));
-      }
+      // A pass holds a burst and a segment under one grant of the isolate's memory; with no
+      // room now it is refused `busy`, and the lane comes back after its retry, as for a
+      // failed call.
+      await granted(GENERATION_GRANT, "a generation's pass", async () => {
+        if (!await this.#prune(until)) {
+          return;
+        }
+        const due = this.next(now);
+        let writing = this.#rows().find((row) => row.state === "writing");
+        if (writing === undefined && due !== null && now >= due && (
+              this.#rows().filter((row) => row.state === "done").length === 0
+              || this.#changed())) {
+          const gen = await this.#write(() => this.#open(now));
+          writing = this.#rows().find((row) => row.gen === gen);
+        }
+        if (writing !== undefined && !await this.#carry(writing, until)) {
+          await this.#write(() => this.#sql.exec(
+            "UPDATE owner_backups SET retry_at = ? WHERE gen = ? AND state = 'writing'",
+            Date.now() / 1000 + MANIFEST_CONTINUE_S, writing.gen));
+        }
+      });
     } catch {
       // An R2 call that failed, kept in the rows: the lane comes back after its retry.
       console.error("the generation's pass failed; it is tried again later");

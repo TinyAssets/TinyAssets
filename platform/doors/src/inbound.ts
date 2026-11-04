@@ -32,6 +32,7 @@ import type { InboundAnswer } from "../../owner/src/owner-do";
 
 import apps from "../shared-apps.json" with { type: "json" };
 
+import { answered } from "./answers";
 import { bindInbound, type Bound, withTiers } from "./binder";
 import { boundedBytes } from "./body";
 import {
@@ -237,44 +238,48 @@ export async function serveInbound(request: Request, env: DoorsEnv): Promise<Res
   if (request.method !== "POST") {
     return answer(405, { error: "method_not_allowed" });
   }
-  const body = await boundedBytes(request, INBOUND_BODY_MAX);
-  if (body === null) {
-    return answer(413, { error: "too_large" });
-  }
-  const headers = headersOf(request);
-  if (headers === null) {
-    return answer(400, { error: "too_many_headers" });
-  }
-  const app = sharedApps().find((shared) => shared.endpoint === token);
-  const routed = app !== undefined ? sharedEvent(app, request, body, headers, env)
-    : capabilityEvent(token, request);
-  if (routed.kind === "answer") {
-    return routed.response;
-  }
-  const entry = await readRoute(env, routed.route);
-  if (entry === null) {
-    return routed.shared ? answer(200, { state: "no_op" }) : answer(404, { error: "not_found" });
-  }
-  if (!gateOpen(read.control, entry.o)) {
-    return answer(503, { error: "maintenance" }, true);
-  }
-  // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
-  const { binding, stub } = withTiers(bindInbound(env, entry), {
-    tiers: read.control.tiers, signins: signinsOn(bundledSources(), read.control.signins) });
-  try {
-    return delivered(routed.shared, await stub.inboundAccept(binding, {
-      event_id: routed.eventId, event_at: routed.eventAt, body, headers }));
-  } catch (error) {
-    const refused = refusal(error);
-    if (refused === null) {
-      throw error;
+  // The event's bytes, its proof and its call under one grant of the isolate's memory
+  // (`answers.ts`); with no room now, `503` and its sender delivers it again.
+  return answered(request, INBOUND_BODY_MAX, async () => {
+    const body = await boundedBytes(request, INBOUND_BODY_MAX);
+    if (body === null) {
+      return answer(413, { error: "too_large" });
     }
-    if (routed.shared) {
-      return answer(200, { state: "refused", error: refused.message.split(":")[0] });
+    const headers = headersOf(request);
+    if (headers === null) {
+      return answer(400, { error: "too_many_headers" });
     }
-    const code = refused.message.split(":")[0]!;
-    return answer(code === "inbound_proof_invalid" ? 401 : 404, { error: code });
-  }
+    const app = sharedApps().find((shared) => shared.endpoint === token);
+    const routed = app !== undefined ? sharedEvent(app, request, body, headers, env)
+      : capabilityEvent(token, request);
+    if (routed.kind === "answer") {
+      return routed.response;
+    }
+    const entry = await readRoute(env, routed.route);
+    if (entry === null) {
+      return routed.shared ? answer(200, { state: "no_op" }) : answer(404, { error: "not_found" });
+    }
+    if (!gateOpen(read.control, entry.o)) {
+      return answer(503, { error: "maintenance" }, true);
+    }
+    // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
+    const { binding, stub } = withTiers(bindInbound(env, entry), {
+      tiers: read.control.tiers, signins: signinsOn(bundledSources(), read.control.signins) });
+    try {
+      return delivered(routed.shared, await stub.inboundAccept(binding, {
+        event_id: routed.eventId, event_at: routed.eventAt, body, headers }));
+    } catch (error) {
+      const refused = refusal(error);
+      if (refused === null) {
+        throw error;
+      }
+      if (routed.shared) {
+        return answer(200, { state: "refused", error: refused.message.split(":")[0] });
+      }
+      const code = refused.message.split(":")[0]!;
+      return answer(code === "inbound_proof_invalid" ? 401 : 404, { error: code });
+    }
+  });
 }
 
 /**

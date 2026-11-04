@@ -43,7 +43,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ANSWER_GRANT, REQUEST_FACTOR, requestGrant } from "../../doors/src/answers";
-import { API_BODY_MAX, APP_BODY_MAX } from "../../doors/src/config";
+import { API_BODY_MAX, APP_BODY_MAX, INBOUND_BODY_MAX } from "../../doors/src/config";
+import {
+  GET_GRANT, OBJECT_GET_GRANT, OBJECT_PUT_GRANT, PUT_GRANT,
+} from "../../files/src/keys";
+import { EGRESS_BODY_MAX } from "../src/network";
+import { POST_GRANT } from "../src/run-events";
 import {
   BODY_BYTES_MAX, READ_GRANT, WINDOWS_BYTES, wholeGrant, writeGrant,
 } from "../src/bodies";
@@ -118,15 +123,48 @@ const MCP_BODY_MAX = Number(/export const MCP_BODY_MAX = ([0-9* ]+);/
   .exec(readFileSync(join(PLATFORM, "doors", "src", "mcp.ts"), "utf8"))![1]!
   .split("*").reduce((product, term) => product * Number(term.trim()), 1));
 
+/**
+ * Grants declared in modules that load only in workerd (the Agents SDK, `cloudflare:`), read
+ * from their sources: each `export const <NAME> = <sum of products>;`, its factors numbers
+ * or the units below.
+ */
+const UNITS: Record<string, number> = { CHUNK_BYTES: 4 * MIB, BATCH_BYTES: 8 * MIB,
+                                        SMALL_BYTES: 64 * KIB, GATHER_BYTES: 8 * MIB };
+function declared(path: string, name: RegExp = /[A-Z_]+_GRANT/): Record<string, number> {
+  const source = readFileSync(join(PLATFORM, path), "utf8");
+  return Object.fromEntries([...source.matchAll(
+    new RegExp(`export const (${name.source}) = ([^;]+);`, "g"))].map(([, found, value]) =>
+    [found!, value!.split("+").reduce((sum, term) => sum + term.split("*").reduce(
+      (product, factor) => product * (UNITS[factor.trim()] ?? Number(factor.trim())), 1),
+                                      0)]));
+}
+const OWNER = declared("owner/src/owner-do.ts");
+const { GENERATION_GRANT } = declared("owner/src/backup.ts") as { GENERATION_GRANT: number };
+const { UPLOAD_GRANT } = declared("doors/src/file-bytes.ts") as { UPLOAD_GRANT: number };
+const { SYNC_ANSWER_GRANT, SYNC_BODY_MAX, SYNC_READ_BODY_MAX } = declared(
+  "doors/src/egress.ts", /SYNC_ANSWER_GRANT|SYNC_BODY_MAX|SYNC_READ_BODY_MAX/) as
+  { SYNC_ANSWER_GRANT: number; SYNC_BODY_MAX: number; SYNC_READ_BODY_MAX: number };
+
 /** Each Worker's declared grants, and what its isolate reserves. */
 export function ledger(): Record<string, { reserved: number; grants: Record<string, number> }> {
   return {
     owner: { reserved: RELAY_RESERVED, grants: {
       read: READ_GRANT, placed_write: writeGrant(BODY_BYTES_MAX),
-      whole_read: wholeGrant(MAX_BODY_BYTES) } },
+      whole_read: wholeGrant(MAX_BODY_BYTES), file_write: OWNER["FILE_WRITE_GRANT"]!,
+      file_append: OWNER["FILE_APPEND_GRANT"]!, chunks_read: OWNER["CHUNKS_READ_GRANT"]!,
+      export_chunks: OWNER["EXPORT_CHUNKS_GRANT"]!, generation: GENERATION_GRANT,
+      events_post: POST_GRANT } },
     doors: { reserved: 0, grants: {
       api: doorsGrant(API_BODY_MAX), app: doorsGrant(APP_BODY_MAX),
-      mcp: doorsGrant(MCP_BODY_MAX) } },
+      mcp: doorsGrant(MCP_BODY_MAX), inbound: doorsGrant(INBOUND_BODY_MAX),
+      egress_model: REQUEST_FACTOR * EGRESS_BODY_MAX + ANSWER_GRANT,
+      egress_signin: doorsGrant(EGRESS_BODY_MAX),
+      sync_upload: doorsGrant(SYNC_BODY_MAX),
+      sync_read: REQUEST_FACTOR * SYNC_READ_BODY_MAX + SYNC_ANSWER_GRANT,
+      upload: UPLOAD_GRANT } },
+    files: { reserved: 0, grants: {
+      put: PUT_GRANT, get: GET_GRANT, object_put: OBJECT_PUT_GRANT,
+      object_get: OBJECT_GET_GRANT } },
   };
 }
 
@@ -141,6 +179,12 @@ describe("the isolate's memory ledger", () => {
     expect([REQUEST_FACTOR, ANSWER_GRANT, WINDOWS_BYTES])
       .toEqual([2, 16 * RESULT_CHARS, 4 * RESULT_CHARS]);
     expect(MCP_BODY_MAX).toBe(4 * MIB);
+    expect([GENERATION_GRANT, UPLOAD_GRANT, SYNC_ANSWER_GRANT, SYNC_BODY_MAX, SYNC_READ_BODY_MAX])
+      .toEqual([32 * MIB, 8 * MIB, 40 * MIB, 12 * MIB, 64 * KIB]);
+    expect(OWNER).toEqual({ FILE_WRITE_GRANT: 12 * MIB + MIB, FILE_APPEND_GRANT: 28 * MIB + MIB,
+                            CHUNKS_READ_GRANT: 16 * MIB + MIB, EXPORT_CHUNKS_GRANT: 32 * MIB });
+    // An events post's grant is the relay term's share of one post (`memoryTerms`).
+    expect(POST_GRANT * (MEMORY.postsHeld + 1)).toBe(memoryTerms().events);
   });
 
   it("fits every path's grant alone, twice over, beside its Worker's reservations", () => {

@@ -20,6 +20,18 @@ export class Invalid extends Error {
 export const CHUNK_BYTES = 4 * 1024 * 1024;
 /** The most bytes one put or get call moves: two whole chunks, well under RPC's 32 MiB. */
 export const BATCH_BYTES = 2 * CHUNK_BYTES;
+
+/**
+ * What each call holds at its worst under the isolate's memory budget (`memory.ts`), beyond
+ * its arguments (deserialized before it runs: its caller's grant counts them): a chunks
+ * put, its sealed copy and a create-once read back of each (two chunks a chunk); a chunks
+ * get, each object's bytes, their opened copy and the answer's serialized copy (three); a
+ * generation object's put or get likewise for one part or segment.
+ */
+export const PUT_GRANT = 2 * BATCH_BYTES;
+export const GET_GRANT = 3 * BATCH_BYTES;
+export const OBJECT_PUT_GRANT = 2 * CHUNK_BYTES;
+export const OBJECT_GET_GRANT = 3 * CHUNK_BYTES;
 /** R2's most keys in one delete. */
 export const DELETE_BATCH = 1000;
 

@@ -42,9 +42,11 @@
 import { HINT_KEYS } from "../../gateway/src/api-rules";
 import { EGRESS_BEAT_S, EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER,
          type Outcome, SANDBOX_HEADER } from "../../owner/src/network";
+import { type Grant, grant, isBusy } from "../../owner/src/memory";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../owner/src/run-events";
 
 import { type Bound, bindRun, bindSandbox, bindSync, type Presented, rebound } from "./binder";
+import { ANSWER_GRANT, answered, REQUEST_FACTOR } from "./answers";
 import { jsonObject } from "./body";
 import { type DoorsEnv, EGRESS_ORIGIN } from "./config";
 import { ownerGate } from "./control";
@@ -241,24 +243,27 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
   if (request.method !== "POST") {
     return refused("method_not_allowed", 405);
   }
-  const body = await jsonObject(request, EVENTS_BODY_MAX);
-  if (body instanceof Response) {
-    return body;
-  }
-  if (!eventsBounded(body)) {
-    return refused("events_too_large", 413);
-  }
-  try {
-    return Response.json(await bound.stub.runEvents(bound.binding, body as never),
-                         { headers: { "Cache-Control": "no-store" } });
-  } catch (error) {
-    const answer = refusal(error);
-    if (answer === null) {
-      throw error;
+  // The post, its parse and its call under one grant of the isolate's memory (`answers.ts`).
+  return answered(request, EVENTS_BODY_MAX, async () => {
+    const body = await jsonObject(request, EVENTS_BODY_MAX);
+    if (body instanceof Response) {
+      return body;
     }
-    return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
-                                                       answer.status));
-  }
+    if (!eventsBounded(body)) {
+      return refused("events_too_large", 413);
+    }
+    try {
+      return Response.json(await bound.stub.runEvents(bound.binding, body as never),
+                           { headers: { "Cache-Control": "no-store" } });
+    } catch (error) {
+      const answer = refusal(error);
+      if (answer === null) {
+        throw error;
+      }
+      return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
+                                                         answer.status));
+    }
+  });
 }
 
 /** A sign-in's event door's path: the sign-in's id. */
@@ -288,25 +293,28 @@ async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
   }
   const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
                             presented);
-  const body = await jsonObject(request, EVENTS_BODY_MAX);
-  if (body instanceof Response) {
-    return body;
-  }
-  if (!eventsBounded(body)) {
-    return refused("events_too_large", 413);
-  }
-  try {
-    return Response.json(await bound.stub.signinEvents(bound.binding, {
-      id, frames: body["frames"], ...(body["end"] === undefined ? {} : { end: body["end"] }) }),
-                         { headers: { "Cache-Control": "no-store" } });
-  } catch (error) {
-    const answer = refusal(error);
-    if (answer === null) {
-      throw error;
+  return answered(request, EVENTS_BODY_MAX, async () => {
+    const body = await jsonObject(request, EVENTS_BODY_MAX);
+    if (body instanceof Response) {
+      return body;
     }
-    return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
-                                                       answer.status));
-  }
+    if (!eventsBounded(body)) {
+      return refused("events_too_large", 413);
+    }
+    try {
+      return Response.json(await bound.stub.signinEvents(bound.binding, {
+        id, frames: body["frames"],
+        ...(body["end"] === undefined ? {} : { end: body["end"] }) }),
+                           { headers: { "Cache-Control": "no-store" } });
+    } catch (error) {
+      const answer = refusal(error);
+      if (answer === null) {
+        throw error;
+      }
+      return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
+                                                         answer.status));
+    }
+  });
 }
 
 /**
@@ -331,20 +339,22 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
   }
   const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
                             presented);
-  const body = await jsonObject(request, EGRESS_BODY_MAX);
-  if (body instanceof Response) {
-    return body;
-  }
-  try {
-    return Response.json(await bound.stub.signinReport(bound.binding, body as never),
-                         { headers: { "Cache-Control": "no-store" } });
-  } catch (error) {
-    const answer = refusal(error);
-    if (answer === null) {
-      throw error;
+  return answered(request, EGRESS_BODY_MAX, async () => {
+    const body = await jsonObject(request, EGRESS_BODY_MAX);
+    if (body instanceof Response) {
+      return body;
     }
-    return refused(codeOf(answer.message), answer.status);
-  }
+    try {
+      return Response.json(await bound.stub.signinReport(bound.binding, body as never),
+                           { headers: { "Cache-Control": "no-store" } });
+    } catch (error) {
+      const answer = refusal(error);
+      if (answer === null) {
+        throw error;
+      }
+      return refused(codeOf(answer.message), answer.status);
+    }
+  });
 }
 
 /**
@@ -369,6 +379,18 @@ export const SYNC_HEADER = "x-ta-sync";
  * `BATCH_BYTES`), or the object's read of them, with room for the request's own fields.
  */
 export const SYNC_BODY_MAX = 12 * 1024 * 1024;
+/**
+ * What a sync read's answer holds: the object's chunks as they arrive (two, `BATCH_BYTES`),
+ * their base64 (four bytes each three), the answer's JSON of them, and its bytes.
+ */
+export const SYNC_ANSWER_GRANT = 5 * 2 * 4 * 1024 * 1024;
+/** The sync doors that read, whose answers are the large part. */
+const SYNC_READS: readonly SyncDoor[] = Object.freeze(["changes", "list", "read", "chunks"]);
+/**
+ * A sync read's body: its fields alone (a path of at most 4,096 bytes, a version, a cursor,
+ * counts), so its request takes little of its grant and its answer the rest.
+ */
+export const SYNC_READ_BODY_MAX = 64 * 1024;
 
 function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
@@ -392,7 +414,7 @@ function decodedOps(ops: unknown): unknown {
 }
 
 /** An upload's chunks with each `bytes` decoded from base64; anything else as sent. */
-function decodedChunks(chunks: unknown): unknown {
+export function decodedChunks(chunks: unknown): unknown {
   if (!Array.isArray(chunks)) {
     return chunks;
   }
@@ -437,51 +459,58 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
     return refused("sync_token_unknown", 401);
   }
   const { binding, stub } = bindSync(env, parsed.owner, parsed.hash, inside.hash);
-  const body = await jsonObject(request, SYNC_BODY_MAX);
-  if (body instanceof Response) {
-    return body;
-  }
-  const answer = (value: unknown) => Response.json(value, {
-    headers: { "Cache-Control": "no-store" } });
-  try {
-    switch (door) {
-      case "changes":
-        return answer(await stub.fileChanges(binding, body as never));
-      case "list":
-        return answer(await stub.fileList(binding, body as never));
-      case "read": {
-        const read = await stub.fileRead(binding, body as never);
-        return answer({ ...read, ...(read.inline === undefined ? {}
-          : { inline: base64(read.inline) }) });
+  // The body, its parse, the call and its answer under one grant of the isolate's memory
+  // (`answers.ts`): a read's answer holds its chunks and their base64 (`SYNC_ANSWER_GRANT`),
+  // and its request only its few fields (`SYNC_READ_BODY_MAX`).
+  const reading = SYNC_READS.includes(door);
+  const max = reading ? SYNC_READ_BODY_MAX : SYNC_BODY_MAX;
+  return answered(request, max, async () => {
+    const body = await jsonObject(request, max);
+    if (body instanceof Response) {
+      return body;
+    }
+    const answer = (value: unknown) => Response.json(value, {
+      headers: { "Cache-Control": "no-store" } });
+    try {
+      switch (door) {
+        case "changes":
+          return answer(await stub.fileChanges(binding, body as never));
+        case "list":
+          return answer(await stub.fileList(binding, body as never));
+        case "read": {
+          const read = await stub.fileRead(binding, body as never);
+          return answer({ ...read, ...(read.inline === undefined ? {}
+            : { inline: base64(read.inline) }) });
+        }
+        case "chunks": {
+          const read = await stub.fileReadChunks(binding, body as never);
+          return answer({ chunks: read.chunks.map(base64) });
+        }
+        case "commit":
+          return answer(await stub.fileSyncCommit(binding, {
+            ...body, ops: decodedOps(body["ops"]) } as never));
+        case "upload_begin":
+          return answer(await stub.fileSyncUploadBegin(binding, body as never));
+        case "upload_chunks":
+          return answer(await stub.fileSyncUploadChunks(binding, {
+            ...body, chunks: decodedChunks(body["chunks"]) } as never));
+        case "upload_abort":
+          return answer(await stub.fileSyncUploadAbort(binding, body as never));
       }
-      case "chunks": {
-        const read = await stub.fileReadChunks(binding, body as never);
-        return answer({ chunks: read.chunks.map(base64) });
+    } catch (error) {
+      if (error instanceof Error && error.name === "FileFault") {
+        // A path missing or of the wrong kind, or one the sandbox may not see: its code.
+        return refused(/^[a-z_]{1,32}/.exec(error.message)?.[0] ?? "not_found", 404);
       }
-      case "commit":
-        return answer(await stub.fileSyncCommit(binding, {
-          ...body, ops: decodedOps(body["ops"]) } as never));
-      case "upload_begin":
-        return answer(await stub.fileSyncUploadBegin(binding, body as never));
-      case "upload_chunks":
-        return answer(await stub.fileSyncUploadChunks(binding, {
-          ...body, chunks: decodedChunks(body["chunks"]) } as never));
-      case "upload_abort":
-        return answer(await stub.fileSyncUploadAbort(binding, body as never));
+      const refusedAs = refusal(error);
+      if (refusedAs === null) {
+        throw error;
+      }
+      // The object's whole message, so the sync agent can say what was refused and why (the
+      // used and the total of a full storage among it); its code first, as every door's.
+      return refused(codeOf(refusedAs.message), refusedAs.status, null, refusedAs.message);
     }
-  } catch (error) {
-    if (error instanceof Error && error.name === "FileFault") {
-      // A path missing or of the wrong kind, or one the sandbox may not see: its code.
-      return refused(/^[a-z_]{1,32}/.exec(error.message)?.[0] ?? "not_found", 404);
-    }
-    const refusedAs = refusal(error);
-    if (refusedAs === null) {
-      throw error;
-    }
-    // The object's whole message, so the sync agent can say what was refused and why (the
-    // used and the total of a full storage among it); its code first, as every door's.
-    return refused(codeOf(refusedAs.message), refusedAs.status, null, refusedAs.message);
-  }
+  }, reading ? SYNC_ANSWER_GRANT : ANSWER_GRANT);
 }
 
 export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
@@ -536,13 +565,32 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (reads && bytesHint! > EGRESS_BODY_MAX) {
     return refused("egress_too_large", STATUS.egress_too_large);
   }
-  const text = reads ? await request.text() : null;
-  const hints = text === null ? { model: null, tier: null } : hintsOf(text);
+  // The body read, parsed for its hints and sent on, under a grant of the isolate's memory
+  // (`answers.ts`), held until the gateway answers (the body sent by then), never while the
+  // answer streams.
+  let held: Grant | null = null;
+  try {
+    held = reads ? grant(REQUEST_FACTOR * bytesHint! + ANSWER_GRANT, "a model call's body")
+      : null;
+  } catch (error) {
+    if (!isBusy(error)) {
+      throw error;
+    }
+    return refused("busy", 503);
+  }
+  const release = () => {
+    held?.release();
+    held = null;
+  };
+  let text: string | null;
   let opened: Awaited<ReturnType<typeof stub.egressOpen>>;
   try {
+    text = reads ? await request.text() : null;
+    const hints = text === null ? { model: null, tier: null } : hintsOf(text);
     opened = await stub.egressOpen(binding, {
       run, connection, method: request.method, path, bytes_hint: bytesHint, ...hints });
   } catch (error) {
+    release();
     const answer = refusal(error);
     if (answer === null) {
       throw error;
@@ -550,6 +598,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
     return refused(codeOf(answer.message), answer.status);
   }
   if (!opened.ok) {
+    release();
     return refused(opened.code, STATUS[opened.code], opened.receipt);
   }
   const { reservation, blob, version } = opened;
@@ -624,6 +673,9 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   } catch {
     await finish("failed");
     return refused("egress_gateway_failed", 502);
+  } finally {
+    text = null;
+    release();
   }
   if (typeof answer === "string") {
     sent.then((late) => late.response.body?.cancel(), () => undefined);

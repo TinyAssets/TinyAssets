@@ -143,7 +143,7 @@ import {
   type Placing, READ_GRANT, type Window, writeGrant,
 } from "./bodies";
 import { fitted, jsonBytes, utf8Length } from "./encoded";
-import { grant, granted, RELAY_RESERVED, reserve } from "./memory";
+import { grant, granted, SMALL_BYTES } from "./memory";
 import {
   bodied, type Cut, fitList, fitPage, PAGE_BYTES, RESULT_TOO_LARGE, whole as fits,
 } from "./pages";
@@ -1096,6 +1096,26 @@ const CODE = "code";
 export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode off";
 export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
 const CODE_TIMED_OUT = "the script is past its time";
+/**
+ * What a whole file's write holds at its worst (`fileWrite`): its content as the call's
+ * argument and as UTF-8 (each at most one chunk), and the chunk's copy as `FILES` is sent it;
+ * its units' own objects. Measured in workerd (`test/memory-peaks.mjs`).
+ */
+export const FILE_WRITE_GRANT = 3 * CHUNK_BYTES + 16 * SMALL_BYTES;
+/**
+ * What an append holds at its worst (`fileAppend`): its text as the argument and as UTF-8
+ * (a chunk each), the file's last chunk read, the two joined (two chunks), and their copy as
+ * `FILES` is sent them (two); its units' own objects.
+ */
+export const FILE_APPEND_GRANT = 7 * CHUNK_BYTES + 16 * SMALL_BYTES;
+/** A kept version's chunks read for the sync agent: two chunks, and their answer's copy. */
+export const CHUNKS_READ_GRANT = 2 * BATCH_BYTES + 16 * SMALL_BYTES;
+/**
+ * An export's chunks (`exportChunks`): two chunks read, their base64 (four bytes each three),
+ * and that answer's copy.
+ */
+export const EXPORT_CHUNKS_GRANT = 4 * BATCH_BYTES;
+
 /** A script's answer past what one tool answer holds (`pages.ts`), refused whole. */
 export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value and output are " +
   `past the ${PAGE_BYTES} characters one answer holds; return less, or write it with a tool`;
@@ -1746,7 +1766,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   constructor(ctx: DurableObjectState, env: OwnerEnv, internals: Internals = {}) {
     super(ctx, env);
-    reserve("relay", RELAY_RESERVED);  // the isolate's memory: the relay's share (`memory.ts`)
     this.#gate = new WriteGate(ctx.storage);
     const storage = this.#gate.storage;
     const write = this.#gate.write;
@@ -1954,6 +1973,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       live: (conversation) => this.#door(() => this.#signinOwned(conversation) ? [conversation]
         : this.#runs.liveIn(conversation)),
       now: clock,
+      holder: `relay:${ctx.id.toString()}`,
     });
     // The lanes of the one schedule. There is no global tick; each owner's object
     // schedules only itself.
@@ -2026,6 +2046,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
+    // An instance that came back holds no tail: its relay's share goes unless a socket is
+    // open (`memory.ts`).
+    this.#relay.idle();
     void ctx.blockConcurrencyWhile(async () => {
       if (this.#tombstone) {
         return;  // an erased owner: nothing is made here again
@@ -2078,11 +2101,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   override async webSocketClose(ws: WebSocket, code: number, reason: string,
                                 wasClean: boolean): Promise<void> {
     await this.#lifecycle.webSocketClose(ws, code, reason, wasClean);
+    this.#relay.idle();
   }
 
   /** A hibernating socket's error, handed to Lifecycle. */
   override async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     await this.#lifecycle.webSocketError(ws, error);
+    this.#relay.idle();
   }
 
   /** A door's synchronous body, as one unit of the write gate. */
@@ -2495,9 +2520,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#exports.named(request.export_id, clock());
       return this.#files.storedChunks(request.sha256s);
     });
-    const bytes = await this.#files.fetch(wanted.map((sha256) => ({ sha256 })));
-    return { chunks: wanted.map((sha256, at) => ({
-      sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
+    return granted(EXPORT_CHUNKS_GRANT, "an export's chunks", async () => {
+      const bytes = await this.#files.fetch(wanted.map((sha256) => ({ sha256 })));
+      return { chunks: wanted.map((sha256, at) => ({
+        sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
+    });
   }
 
   /** An export ended: its id names it no longer. */
@@ -4604,7 +4631,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return chunks.slice(first, first + many).map(({ sha256 }) => ({ sha256 }));
     });
-    return { chunks: await this.#files.fetch(reads) };
+    return granted(CHUNKS_READ_GRANT, "a version's chunks read", async () => {
+      return { chunks: await this.#files.fetch(reads) };
+    });
   }
 
   /**
@@ -4619,32 +4648,34 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     await this.#seededFor(() => {
       this.#filer(binding, "work", "write_files");
     });
-    const { account, r, content } = await this.#door(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
-      this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
-      const asked = r["expected_etag"];
-      if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
-        throw new Invalid(UNREAD_WRITE);
+    return granted(FILE_WRITE_GRANT, "a file's write", async () => {
+      const { account, r, content } = await this.#door(() => {
+        const account = this.#filer(binding, "work", "write_files");
+        const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
+        this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
+        const asked = r["expected_etag"];
+        if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
+          throw new Invalid(UNREAD_WRITE);
+        }
+        const given = r["content"];
+        const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
+        if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
+          throw new Invalid("a written file is bytes or text, at most 4 MiB; larger ones are " +
+                            "uploaded");
+        }
+        return { account, r, content };
+      });
+      try {
+        // `Files.write` writes each step around its `FILES` call as a unit of its own.
+        return await fileConflictedAfter(async () => ({
+          entry: await this.#files.write(r["path"], content, {
+            expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
+            authorize: () => this.#filer(binding, "work", "write_files") }),
+        }));
+      } finally {
+        await this.#schedule.sync();
       }
-      const given = r["content"];
-      const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
-      if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
-        throw new Invalid("a written file is bytes or text, at most 4 MiB; larger ones are " +
-                          "uploaded");
-      }
-      return { account, r, content };
     });
-    try {
-      // `Files.write` writes each step around its `FILES` call as a unit of its own.
-      return await fileConflictedAfter(async () => ({
-        entry: await this.#files.write(r["path"], content, {
-          expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
-          authorize: () => this.#filer(binding, "work", "write_files") }),
-      }));
-    } finally {
-      await this.#schedule.sync();
-    }
   }
 
   /**
@@ -4668,89 +4699,91 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     await this.#seededFor(() => {
       this.#filer(binding, "work", "write_files");
     });
-    const { account, path, added } = await this.#door(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["path", "content"]);
-      this.#ownersTree(binding, account, "FILES.append", request, r["path"]);
-      if (STRUCTURED.test(storedPath(r["path"]))) {
-        throw new Invalid("a structured file (JSON, TOML or YAML) is never appended to: read " +
-                          "it and change it with file_edit");
+    return granted(FILE_APPEND_GRANT, "a file's append", async () => {
+      const { account, path, added } = await this.#door(() => {
+        const account = this.#filer(binding, "work", "write_files");
+        const r = fileFields(request, ["path", "content"]);
+        this.#ownersTree(binding, account, "FILES.append", request, r["path"]);
+        if (STRUCTURED.test(storedPath(r["path"]))) {
+          throw new Invalid("a structured file (JSON, TOML or YAML) is never appended to: read " +
+                            "it and change it with file_edit");
+        }
+        const content = r["content"];
+        if (typeof content !== "string" || content === "") {
+          throw new Invalid("appended content is text of at least one character");
+        }
+        const added = new TextEncoder().encode(content);
+        if (added.byteLength > CHUNK_BYTES) {
+          throw new Invalid("appended text is at most 4 MiB at once");
+        }
+        return { account, path: storedPath(r["path"]), added };
+      });
+      const authorize = () => {
+        this.#ownersTree(binding, this.#filer(binding, "work", "write_files"), "FILES.append",
+                         request, path);
+      };
+      try {
+        for (let tries = 0; ; tries += 1) {
+          if (tries === APPEND_TRIES) {
+            throw new Refused(`file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
+                              "append again");
+          }
+          const read = await this.#door((): { done: Entry } | { now: Content | null } => {
+            authorize();
+            const entry = this.#files.stat(path);
+            if (entry !== null && entry.kind !== "file") {
+              throw new Invalid(`${path} is a directory`);
+            }
+            const content = entry === null ? null : this.#files.open(path);
+            const before = content === null ? new Uint8Array(0) : content.inline;
+            if (before !== undefined && before.byteLength + added.byteLength <= INLINE_BYTES) {
+              // Small: read and written in this one unit, so nothing lands between.
+              const whole = new Uint8Array(before.byteLength + added.byteLength);
+              whole.set(before, 0);
+              whole.set(added, before.byteLength);
+              return { done: this.#files.writeSmall(path, whole, {
+                expected: entry?.etag ?? "", mode: entry?.mode, writer: fileWriter(account) }) };
+            }
+            return { now: content };
+          });
+          if ("done" in read) {
+            return { entry: read.done };
+          }
+          const now = read.now;
+          let bytes = added;
+          let prefix: ChunkRef[] = [];
+          if (now !== null) {
+            let tail: Uint8Array;
+            if (now.inline !== undefined) {
+              tail = now.inline;
+            } else {
+              const chunks = now.chunks ?? [];
+              const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
+                ? chunks.length : chunks.length - 1;
+              prefix = chunks.slice(0, whole);
+              const rest = chunks.slice(whole);
+              tail = rest.length === 0 ? new Uint8Array(0)
+                : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
+            }
+            bytes = new Uint8Array(tail.byteLength + added.byteLength);
+            bytes.set(tail, 0);
+            bytes.set(added, tail.byteLength);
+          }
+          const wrote = await fileConflictedAfter(async () => ({
+            entry: await this.#files.write(path, bytes, {
+              expected: now?.entry.etag ?? "",
+              ...(now === null ? {} : { mode: now.entry.mode }), prefix,
+              writer: fileWriter(account), authorize }),
+          }));
+          if (!("conflict" in wrote)) {
+            return wrote;
+          }
+          // Another write landed between the read and this one: read it again.
+        }
+      } finally {
+        await this.#schedule.sync();
       }
-      const content = r["content"];
-      if (typeof content !== "string" || content === "") {
-        throw new Invalid("appended content is text of at least one character");
-      }
-      const added = new TextEncoder().encode(content);
-      if (added.byteLength > CHUNK_BYTES) {
-        throw new Invalid("appended text is at most 4 MiB at once");
-      }
-      return { account, path: storedPath(r["path"]), added };
     });
-    const authorize = () => {
-      this.#ownersTree(binding, this.#filer(binding, "work", "write_files"), "FILES.append",
-                       request, path);
-    };
-    try {
-      for (let tries = 0; ; tries += 1) {
-        if (tries === APPEND_TRIES) {
-          throw new Refused(`file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
-                            "append again");
-        }
-        const read = await this.#door((): { done: Entry } | { now: Content | null } => {
-          authorize();
-          const entry = this.#files.stat(path);
-          if (entry !== null && entry.kind !== "file") {
-            throw new Invalid(`${path} is a directory`);
-          }
-          const content = entry === null ? null : this.#files.open(path);
-          const before = content === null ? new Uint8Array(0) : content.inline;
-          if (before !== undefined && before.byteLength + added.byteLength <= INLINE_BYTES) {
-            // Small: read and written in this one unit, so nothing lands between.
-            const whole = new Uint8Array(before.byteLength + added.byteLength);
-            whole.set(before, 0);
-            whole.set(added, before.byteLength);
-            return { done: this.#files.writeSmall(path, whole, {
-              expected: entry?.etag ?? "", mode: entry?.mode, writer: fileWriter(account) }) };
-          }
-          return { now: content };
-        });
-        if ("done" in read) {
-          return { entry: read.done };
-        }
-        const now = read.now;
-        let bytes = added;
-        let prefix: ChunkRef[] = [];
-        if (now !== null) {
-          let tail: Uint8Array;
-          if (now.inline !== undefined) {
-            tail = now.inline;
-          } else {
-            const chunks = now.chunks ?? [];
-            const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
-              ? chunks.length : chunks.length - 1;
-            prefix = chunks.slice(0, whole);
-            const rest = chunks.slice(whole);
-            tail = rest.length === 0 ? new Uint8Array(0)
-              : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
-          }
-          bytes = new Uint8Array(tail.byteLength + added.byteLength);
-          bytes.set(tail, 0);
-          bytes.set(added, tail.byteLength);
-        }
-        const wrote = await fileConflictedAfter(async () => ({
-          entry: await this.#files.write(path, bytes, {
-            expected: now?.entry.etag ?? "",
-            ...(now === null ? {} : { mode: now.entry.mode }), prefix,
-            writer: fileWriter(account), authorize }),
-        }));
-        if (!("conflict" in wrote)) {
-          return wrote;
-        }
-        // Another write landed between the read and this one: read it again.
-      }
-    } finally {
-      await this.#schedule.sync();
-    }
   }
 
   /**

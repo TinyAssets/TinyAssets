@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
 const PORT = 9339;
 const RUNNER = "core:user:vitest-plugin-runner-memory";
+/** The files Worker's isolate, shared by every owner: its paths' marks name it. */
+const FILES = "core:user:tinyassets-files";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const vitest = join(dirname(createRequire(join(OWNER, "package.json"))
@@ -23,12 +25,12 @@ const run = spawn(process.execPath, [vitest, "run", "--project", "memory",
                     env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
 const exited = new Promise((resolve) => run.on("exit", (code) => resolve(code ?? 1)));
 
-const samples = [];
+const samples = { runner: [], files: [] };
 const marks = [];
 let attached = false;
 let done = false;
 
-async function attach(target) {
+async function attach(target, into, binds) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();
@@ -43,18 +45,20 @@ async function attach(target) {
       pending.get(message.id)?.(message.result ?? message.error);
       pending.delete(message.id);
     } else if (message.method === "Runtime.bindingCalled") {
-      marks.push({ t: performance.now(), at: samples.length, ...JSON.parse(message.params.payload) });
+      marks.push({ t: performance.now(), ...JSON.parse(message.params.payload) });
     }
   };
   ws.onclose = () => { done = true; };
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
   await call("Runtime.enable");
-  await call("Runtime.addBinding", { name: "__mark" });
+  if (binds) {
+    await call("Runtime.addBinding", { name: "__mark" });
+  }
   while (!done && ws.readyState === 1) {
     await call("HeapProfiler.collectGarbage");
     const usage = await call("Runtime.getHeapUsage");
     if (usage?.usedSize !== undefined) {
-      samples.push({ t: performance.now(), used: usage.usedSize });
+      into.push({ t: performance.now(), used: usage.usedSize });
     }
     await sleep(1);
   }
@@ -65,9 +69,11 @@ const attaching = (async () => {
     try {
       const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
       const runner = list.find((target) => target.id === RUNNER);
-      if (runner !== undefined) {
+      const files = list.find((target) => target.id === FILES);
+      if (runner !== undefined && files !== undefined) {
         attached = true;
-        await attach(runner);
+        await Promise.all([attach(runner, samples.runner, true),
+                           attach(files, samples.files, false)]);
       }
     } catch {
       // not up yet
@@ -92,18 +98,19 @@ for (const begin of marks.filter((mark) => mark.mark === "begin")) {
     problems.push(`${begin.path}: no end mark`);
     continue;
   }
-  const before = samples.filter((s) => s.t <= begin.t).at(-1);
-  const during = samples.filter((s) => s.t > begin.t && s.t <= end.t);
+  const isolate = samples[begin.isolate ?? "runner"];
+  const before = isolate.filter((s) => s.t <= begin.t).at(-1);
+  const during = isolate.filter((s) => s.t > begin.t && s.t <= end.t);
   if (before === undefined || during.length === 0) {
     problems.push(`${begin.path}: no heap sample`);
     continue;
   }
   // The path's own: over the lower of the heap just before it and just after it (a test's
   // setup may still be held as it starts).
-  const after = samples.find((s) => s.t > end.t);
+  const after = isolate.find((s) => s.t > end.t);
   const floor = Math.min(before.used, after?.used ?? before.used);
   const peak = Math.max(...during.map((s) => s.used)) - floor;
-  rows.push({ path: begin.path, grant_mib: +(begin.grant / MIB).toFixed(2),
+  rows.push({ path: begin.path, isolate: begin.isolate ?? "runner", grant_mib: +(begin.grant / MIB).toFixed(2),
               live_peak_mib: +(peak / MIB).toFixed(2), samples: during.length,
               rest_mib: +(floor / MIB).toFixed(1) });
   if (peak > begin.grant) {
@@ -115,8 +122,8 @@ let baseline = null;
 if (rest === undefined) {
   problems.push("no rest mark: the isolate's baseline was not measured");
 } else {
-  const near = samples.filter((s) => Math.abs(s.t - rest.t) < 300);
-  baseline = near.length === 0 ? null : Math.max(...near.map((s) => s.used));
+  const near = samples.runner.filter((s) => s.t <= rest.t && s.t > rest.t - 300);
+  baseline = near.length === 0 ? null : Math.min(...near.map((s) => s.used));
   if (baseline === null) {
     problems.push("no heap sample at rest");
   } else if (baseline > rest.baseline) {

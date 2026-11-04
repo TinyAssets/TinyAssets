@@ -19,18 +19,25 @@
  * nothing is changed by the refused call.
  *
  * **The budget.** `GUARD_BYTES` is the isolate less its `BASELINE_BYTES`. Out of it come the
- * reservations (the relay's share, `reserve`, taken once per isolate by the first object
- * that runs the relay) and the grants in flight, and the largest grant in flight is counted
- * twice, so the collector always has room for one grant's garbage beside the live set: a
- * grant `g` is admitted when `held + g + max(g, largest held) + reserved <= GUARD_BYTES`.
+ * reservations (each active relay's share, `reserve`: an object holds one while its relay
+ * keeps tails or sockets, and lets it go when it keeps neither) and the grants in flight,
+ * and the largest grant in flight is counted twice, so the collector always has room for
+ * one grant's garbage beside the live set: a grant `g` is admitted when
+ * `held + g + max(g, largest held) + reserved <= GUARD_BYTES`, a reservation `r` when
+ * `held + r + largest held + reserved <= GUARD_BYTES`.
  * The ledger (`guards/memory-bound.test.ts`) holds every grant a path declares to fit
  * alone, beside the reservations, so a refusal is only ever the load of the moment.
  *
- * **What it cannot see.** A Workers RPC call's arguments are deserialized before its method
- * runs, and an answer handed to the runtime is the runtime's to send: each is bounded by its
- * sender's grant (a door's answer by `RESULT_CHARS`, a request body by its door's ceiling),
- * held for the synchronous turn that refuses it. The relay's terms are per object, and its
- * reservation is one object's (`memory-bound.test.ts` says what that leaves).
+ * **What it cannot see: the residual.** A Workers RPC call's arguments are deserialized
+ * before its method runs, so a call refused `busy` has held them for the turn that refuses
+ * it, and one admitted holds them beside its grant (each grant counts its own call's
+ * arguments, `bodies.ts`). Each is bounded by its sender's ceiling (a body by
+ * `BODY_BYTES_MAX`, a chunk call by `BATCH_BYTES`), but how many calls arrive at once is the
+ * callers', not this isolate's: the workerd memory leg measures it, several objects in one
+ * isolate each written to at once (`test/memory-peaks.mjs`, "objects at once": the live
+ * peak with eight 8 MiB bodies in flight). Carrying large arguments as byte streams, read
+ * under the receiver's grant, removes it (later, memory_research.md §4). An answer handed to
+ * the runtime is the runtime's to send, bounded by `RESULT_CHARS`.
  */
 import { Refused } from "./errors";
 
@@ -49,9 +56,10 @@ export const BASELINE_BYTES = 33_554_432;
 /** What the reservations and the grants in flight share: the isolate less its baseline. */
 export const GUARD_BYTES = ISOLATE_BYTES - BASELINE_BYTES;
 /**
- * The relay's share (`relay.ts`: the runs' tails, the events posts it holds, the sockets'
- * attachments), reserved by the first owner object an isolate runs: today's eighth of the
- * isolate, which `memory-bound.test.ts` holds its worst case within.
+ * An active relay's share (`relay.ts`: the runs' tails and the sockets' attachments), held
+ * by each object while its relay keeps either: an eighth of the isolate, which
+ * `memory-bound.test.ts` holds the relay's worst case within. The events posts it reads are
+ * granted each as it is held (`run-events.ts`).
  */
 export const RELAY_RESERVED = ISOLATE_BYTES / 8;
 /** At most this many bytes may be held across an await without a grant. */
@@ -96,7 +104,11 @@ class Guard {
     return largest;
   }
 
-  /** A static share, once per isolate: the same name again is the same share. */
+  /**
+   * A share held while its holder is active (an object's relay), admitted as a grant is,
+   * or refused `busy`; the same name again is the same share, so an object that comes back
+   * in a new instance holds its own one share, never two.
+   */
   reserve(name: string, bytes: number): void {
     const had = this.#reserved.get(name);
     if (had !== undefined) {
@@ -105,7 +117,23 @@ class Guard {
       }
       return;
     }
+    const reserved = this.#reservedBytes();
+    if (2 * bytes > GUARD_BYTES) {
+      throw new Error(`the ${name} reservation asks more than the isolate's memory holds`);
+    }
+    if (this.#held + bytes + this.#largest() + reserved > GUARD_BYTES) {
+      throw new Refused(BUSY);
+    }
     this.#reserved.set(name, bytes);
+  }
+
+  /** A share let go once its holder is idle; letting go of one not held is nothing. */
+  unreserve(name: string): void {
+    this.#reserved.delete(name);
+  }
+
+  reserves(name: string): boolean {
+    return this.#reserved.has(name);
   }
 
   grant(bytes: number, what: string): Grant {
@@ -164,9 +192,19 @@ export async function granted<T>(bytes: number, what: string, work: () => Promis
   }
 }
 
-/** Reserve the isolate's static share `name` (idempotent): the relay's. */
+/** Hold the share `name` while its holder is active (idempotent), or be refused `busy`. */
 export function reserve(name: string, bytes: number): void {
   ISOLATE.reserve(name, bytes);
+}
+
+/** Let the share `name` go: its holder is idle. */
+export function unreserve(name: string): void {
+  ISOLATE.unreserve(name);
+}
+
+/** Whether the share `name` is held. */
+export function reserved(name: string): boolean {
+  return ISOLATE.reserves(name);
 }
 
 /** The budget as it stands. */

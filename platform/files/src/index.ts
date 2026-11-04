@@ -11,9 +11,15 @@
  * manifest's to know (`owner/src/files.ts`); the namespace is held only there, so no
  * caller can name another owner's chunks without first being that owner's object.
  *
- * Each method takes a batch, because a request may make at most 32 service-binding calls
- * (Workers service bindings): one call moves up to `BATCH_BYTES` (two chunks), well under
- * the 32 MiB a serialized RPC may carry and the memory an isolate shares.
+ * Each method takes a batch, so a large read or write is few calls: each call is a
+ * subrequest of its caller's invocation, of which Workers Paid allows 10,000 by default
+ * ("Subrequests to internal services: matches configured limit", default 10,000; up to
+ * 10M with `limits.subrequests`, which the owner's config sets: Workers limits, updated
+ * 2026-10-29). One call moves up to `BATCH_BYTES` (two chunks), well under the 32 MiB a
+ * serialized RPC may carry, and each holds what it moves under a grant of the isolate's
+ * one memory budget (`owner/src/memory.ts`): this Worker is shared by every owner, so its
+ * isolate's requests are bounded together, and one that does not fit now is refused `busy`
+ * (its caller tries again).
  *
  * - `putChunks` is create-once (`etagDoesNotMatch: "*"`) and passes each hash to R2's
  *   `put` `sha256` option, which verifies the bytes (a mismatch is R2's `BadDigest`,
@@ -56,14 +62,18 @@
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 
+import { granted } from "../../owner/src/memory";
+
 import { type Cipher, cipherOf, open, seal } from "./cipher";
 import { chunkName, type KeyringSecret, mint, rewrap, unwrap } from "./datakey";
 import {
-  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, chunkPrefix, DELETE_BATCH, Invalid, listedChunk,
-  generation, listedManifest, MANIFEST_PARTS, manifestKey, manifestPart, manifestPrefix,
-  type ManifestAt, manifestObjectKey, namespace, segmentKey, segmentSpan,
+  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, chunkPrefix, DELETE_BATCH, GET_GRANT, Invalid,
+  generation, listedChunk, listedManifest, MANIFEST_PARTS, manifestKey, manifestPart,
+  manifestPrefix, OBJECT_GET_GRANT, OBJECT_PUT_GRANT, PUT_GRANT, type ManifestAt,
+  manifestObjectKey, namespace, segmentKey, segmentSpan,
 } from "./keys";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
+
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
 
 export interface FilesEnv {
@@ -252,6 +262,10 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
 
   /** Store chunks under their hashes, each verified by R2; `created` counts the new ones. */
   async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
+    return granted(PUT_GRANT, "a chunks put", () => this.#putChunks(ns, key, chunks));
+  }
+
+  async #putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
     namespace(ns);
     const puts = list<ChunkPut>(chunks, "a put").map((chunk) => {
       if (typeof chunk !== "object" || chunk === null) {
@@ -317,6 +331,10 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
    * `BATCH_BYTES` into the isolate.
    */
   async getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
+    return granted(GET_GRANT, "a chunks get", () => this.#getChunks(ns, key, reads));
+  }
+
+  async #getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
     namespace(ns);
     const whole = this.#cipher() !== "ssec";
     const gets = list<ChunkGet>(reads, "a get").map((read) => {
@@ -393,6 +411,12 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
   /** A generation's object's bytes put under the owner's key at `at`, verified by R2. */
   async #putObject(ns: string, key: string, gen: string, at: ManifestAt, bytes: Uint8Array):
       Promise<ManifestObject> {
+    return granted(OBJECT_PUT_GRANT, "a generation object's put",
+                   () => this.#putObjectHeld(ns, key, gen, at, bytes));
+  }
+
+  async #putObjectHeld(ns: string, key: string, gen: string, at: ManifestAt,
+                       bytes: Uint8Array): Promise<ManifestObject> {
     const body = chunkBytes(bytes);
     const sha256 = await sha256Hex(body);
     const dataKey = await this.#key(ns, key);
@@ -403,6 +427,12 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
 
   /** A generation's object's bytes read under the key `key` (the object's, or the root's). */
   async #getObject(ns: string, key: string, gen: string, at: ManifestAt, sha256: string):
+      Promise<Uint8Array> {
+    return granted(OBJECT_GET_GRANT, "a generation object's get",
+                   () => this.#getObjectHeld(ns, key, gen, at, sha256));
+  }
+
+  async #getObjectHeld(ns: string, key: string, gen: string, at: ManifestAt, sha256: string):
       Promise<Uint8Array> {
     const dataKey = await this.#key(ns, key);
     const object = await this.env.BLOBS.get(manifestObjectKey(ns, gen, at), this.#reading(dataKey));

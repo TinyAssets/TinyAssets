@@ -17,6 +17,7 @@
 import type { EngineEvents, EventMatcher } from "../../doors/src/sources";
 
 import { Refused } from "./errors";
+import { type Grant, grant } from "./memory";
 
 export const FRAME_VERSION = 1;
 
@@ -51,24 +52,35 @@ export const EVENTS_BUSY = "events_busy: the object holds as many runner posts a
 export const EVENTS_RACED = "events_raced: another batch of this run landed first; post " +
   "again shortly";
 
-/** The count of events posts the object holds, refusing one past `EVENTS_IN_FLIGHT`. */
+/**
+ * What one events post holds at its worst (`memory-bound.test.ts`'s term): its body as it
+ * arrived and parsed (its strings two bytes a unit), the frame being relayed as its JSON
+ * text, and each of its frames' own objects.
+ */
+export const POST_GRANT = 3 * EVENTS_BODY_MAX + 2 * FRAME_UNITS_MAX + EVENT_FRAMES_MAX * 512;
+
+/**
+ * The count of events posts the object holds, refusing one past `EVENTS_IN_FLIGHT`, each
+ * held under a grant of the isolate's memory (`memory.ts`), refused `busy` when there is no
+ * room now; either way the runner posts it again.
+ */
 export class PostGate {
-  #held = 0;
+  readonly #grants: Grant[] = [];
 
   get held(): number {
-    return this.#held;
+    return this.#grants.length;
   }
 
-  /** Hold one more post, or refuse it `EVENTS_BUSY`. */
+  /** Hold one more post, or refuse it `EVENTS_BUSY` or `busy`. */
   enter(): void {
-    if (this.#held >= EVENTS_IN_FLIGHT) {
+    if (this.#grants.length >= EVENTS_IN_FLIGHT) {
       throw new Refused(EVENTS_BUSY);
     }
-    this.#held += 1;
+    this.#grants.push(grant(POST_GRANT, "an events post"));
   }
 
   leave(): void {
-    this.#held -= 1;
+    this.#grants.pop()?.release();
   }
 }
 

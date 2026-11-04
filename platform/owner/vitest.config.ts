@@ -38,14 +38,16 @@ function transpiled(path: string): string {
  */
 function filesWorker(keyring: string) {
   const files = config(FILES);
-  const modules = ["index", "keys", "datakey", "cipher"].map((name) => ({
+  // Its own modules, and the isolate's memory guard it imports (`owner/src/memory.ts`).
+  const modules = ["files/src/index", "files/src/keys", "files/src/datakey", "files/src/cipher",
+                   "owner/src/memory", "owner/src/errors"].map((name) => ({
     type: "ESModule" as const,
-    path: join(FILES, "src", name),
-    contents: transpiled(join(FILES, "src", `${name}.ts`)),
+    path: join(PLATFORM, name),
+    contents: transpiled(join(PLATFORM, `${name}.ts`)),
   }));
   return {
     name: files.name,
-    modulesRoot: FILES,
+    modulesRoot: PLATFORM,
     modules,
     compatibilityDate: files.compatibility_date,
     compatibilityFlags: files.compatibility_flags,

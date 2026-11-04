@@ -101,13 +101,16 @@ function hooksWorker() {
  */
 function filesWorker(keyring: string) {
   const files = config(FILES);
+  const platform = join(DOORS, "..");
   return {
     name: files.name,
-    modulesRoot: FILES,
-    modules: ["index", "keys", "datakey", "cipher"].map((name) => ({
+    modulesRoot: platform,
+    // Its own modules, and the isolate's memory guard it imports (`owner/src/memory.ts`).
+    modules: ["files/src/index", "files/src/keys", "files/src/datakey", "files/src/cipher",
+              "owner/src/memory", "owner/src/errors"].map((name) => ({
       type: "ESModule" as const,
-      path: join(FILES, "src", name),
-      contents: ts.transpileModule(readFileSync(join(FILES, "src", `${name}.ts`), "utf8"), {
+      path: join(platform, name),
+      contents: ts.transpileModule(readFileSync(join(platform, `${name}.ts`), "utf8"), {
         compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
       }).outputText,
     })),
