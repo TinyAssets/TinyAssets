@@ -126,8 +126,7 @@ describe("one sandbox an authority (review H-1)", () => {
     // A subscription run's process naming the keyed run spends nothing on its key.
     const open = (run: string, secret: string) => r.stub.egressOpen(
       sandboxOf(r, keyed.start, { secret: hashed(secret) }),
-      { run, connection: key, method: "GET", path: "/v1/models", bytes_hint: null,
-        model: null, tier: null });
+      { run, connection: key, method: "GET", path: "/v1/models", bytes_hint: null });
     expect(await open(keyed.run.run_id, secretOf(plan.start)))
       .toMatchObject({ ok: false, code: "egress_run_closed" });
     expect(await open(plan.run.run_id, secretOf(plan.start)))
@@ -255,7 +254,7 @@ describe("one sandbox an authority (review H-1)", () => {
     const opened = await r.stub.egressOpen(
       sandboxOf(r, keyed.start, { secret: hashed(secretOf(keyed.start)) }),
       { run: keyed.run.run_id, connection: key, method: "GET", path: "/v1/models",
-        bytes_hint: null, model: null, tier: null });
+        bytes_hint: null });
     if (!opened.ok) {
       throw new Error(`refused ${opened.code}`);
     }
@@ -670,7 +669,7 @@ describe("a run's cancel and its heartbeat (review M-2, M-3)", () => {
     expect(await r.stub.egressOpen(
       sandboxOf(r, keyed.start, { secret: hashed(secretOf(keyed.start)) }),
       { run: keyed.run.run_id, connection: key, method: "GET", path: "/v1/models",
-        bytes_hint: null, model: null, tier: null }))
+        bytes_hint: null }))
       .toMatchObject({ ok: false, code: "egress_run_closed" });
     await r.stub.runEvents(runnerBinding(r, keyed.start), { frames: [], end: { exit_code: null } });
     expect(await r.stub.agentStatus(r.bind(), { run_id: keyed.run.run_id }))

@@ -33,8 +33,8 @@ import { type Credential, secret, source } from "./credential";
 import {
   type RingAnswer, ringDoorbell, sealDoorbell, verifyDoorbell, type Verified as Rung,
 } from "./doorbell";
-import { codeOf, Failure, failureResponse, guarded } from "./failure";
-import { forward, forwardMetered, forwardRead, type MeterOutcome, type Metering,
+import { codeOf, failureResponse, guarded } from "./failure";
+import { forward, forwardMetered, forwardRead, type MeterOutcome, type Reserve,
          type Verified, verify } from "./forward";
 import { binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
 import { type Exchanged, exchange, type Refreshed, refresh, type Revoked,
@@ -111,21 +111,22 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
  */
 export class EgressGateway extends WorkerEntrypoint<GatewayEnv> {
   /**
-   * Forwards one sandbox call under the sealed endpoints: a model call metered
-   * (`forwardMetered`), held to its reservation's output cap and body size, or, with no
-   * `metering`, a read (`forwardRead`). Its answer streams back, and its outcome
-   * (`MeterOutcome`, one JSON line) comes on `outcome` once the answer ended. `stop`,
-   * closed or errored, aborts the provider's request.
+   * Forwards one admitted sandbox call under the sealed endpoints: a model call metered
+   * (`forwardMetered`), its reservation made through `reserve`, the door's callback, once
+   * the gateway's one parse read its model and tier; or, with no `reserve`, a read
+   * (`forwardRead`). Its answer streams back, and its outcome (`MeterOutcome`, one JSON
+   * line) comes on `outcome` once the answer ended. `stop`, closed or errored, aborts the
+   * provider's request.
    */
   async forward(owner: string, connection: string, version: number, blob: string,
-                request: Request, metering: Metering | null, stop: ReadableStream<Uint8Array>):
+                request: Request, reserve: Reserve | null, stop: ReadableStream<Uint8Array>):
       Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }> {
     let sent: { response: Response; outcome: Promise<MeterOutcome> };
     try {
       const bound = binding(owner, connection, version);
-      sent = metering === null
+      sent = reserve === null
         ? await forwardRead(this.env, bound, blob, request, stop)
-        : await forwardMetered(this.env, bound, blob, request, checkedMetering(metering), stop,
+        : await forwardMetered(this.env, bound, blob, request, reserve, stop,
                                builtinCatalog());
     } catch (error) {
       sent = { response: failureResponse(codeOf(error, "internal")),
@@ -137,21 +138,6 @@ export class EgressGateway extends WorkerEntrypoint<GatewayEnv> {
       `${JSON.stringify(outcome)}\n`)).then(() => writer.close())).catch(() => undefined);
     return { response: sent.response, outcome: readable };
   }
-}
-
-/** The caller's metering, its whole numbers and its model and tier, or `invalid_request`. */
-function checkedMetering(value: unknown): Metering {
-  const fields = value as Partial<Metering> | null;
-  const whole = (n: unknown) => typeof n === "number" && Number.isSafeInteger(n) && n >= 1;
-  const named = (s: unknown) => typeof s === "string" && /^[\x21-\x7e]{1,256}$/.test(s);
-  if (typeof value !== "object" || value === null
-      || Object.keys(value).sort().join() !== "input_bytes,max_output_tokens,model,tier"
-      || !whole(fields!.input_bytes) || !whole(fields!.max_output_tokens)
-      || !named(fields!.model) || (fields!.tier !== null && !named(fields!.tier))) {
-    throw new Failure("invalid_request");
-  }
-  return { input_bytes: fields!.input_bytes!, max_output_tokens: fields!.max_output_tokens!,
-           model: fields!.model!, tier: fields!.tier ?? null };
 }
 
 export default class Gateway extends WorkerEntrypoint<GatewayEnv> {

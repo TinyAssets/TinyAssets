@@ -83,7 +83,7 @@ export const MOVE_RECORD_BYTES = 256;
 /**
  * The units a move's records hold at `records` records (at least one; at `MOVE_RECORDS`, the
  * most a move holds, five), taken before its records arrive and held to the move's end; each
- * pass takes `MOVE_PASS_UNITS` beside them (`SlotPool.grow`).
+ * pass takes `MOVE_PASS_UNITS` beside them (a lease grown and shrunk back, `SlotPool.lease`).
  */
 export function moveTableUnits(records: number): number {
   return Math.max(1, Math.ceil(records * MOVE_RECORD_BYTES / UNIT_BYTES));

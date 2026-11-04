@@ -283,7 +283,7 @@ describe("tool table guard", () => {
                              "sessionOpen", "registerAgent", "fileRedact", "fileHistoryPurge",
                              "sandboxLeaseOpen", "fileSyncCommit", "policyRead",
                              "sandboxConfig", "sandboxNetworkApplied", "egressOpen",
-                             "egressSettle", "egressReceipts",
+                             "egressReserve", "egressSettle", "egressReceipts",
                              "connectionPrepare", "connectionCommit", "connectionRevoke",
                              "connectionList", "flowFinish"]) {
       expect(DOORS.has(ownerOnly)).toBe(false);

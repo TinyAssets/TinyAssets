@@ -15,7 +15,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { verifyToken } from "../../doors/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
 import type { ModelInfo } from "../src/connections";
-import { EGRESS_BEAT_S, EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
+import { EGRESS_BEAT_S, EGRESS_LIMITS, type EgressMetering, type EgressOpened,
+         type EgressRefusal, LOST_AFTER_S } from "../src/egress";
 import { EGRESS_DEADLINE_S } from "../src/network";
 import type { Binding } from "../src/owner-do";
 import { apiRules } from "../../gateway/src/api-rules";
@@ -137,30 +138,59 @@ beforeAll(async () => {
   OPENAI_MODEL = (await catalog(OPENAI))[0]!.id;
 });
 
+/** The door's open of a call: `extra` its fields, but for the model and tier the reserve names. */
 function request(connection: string, extra: Record<string, unknown> = {}) {
+  const { model: _model, tier: _tier, ...open } = extra;
   return { run: RUN, connection, method: "POST", path: "/v1/messages", bytes_hint: 120,
-           model: MODEL, tier: null, ...extra };
+           ...open };
 }
 
+/** The gateway's reserve of an admitted call: the model and tier its parse read. */
+function reserving(reservation: string, extra: Record<string, unknown> = {}) {
+  return { reservation, model: extra["model"] === undefined ? MODEL : extra["model"],
+           tier: extra["tier"] ?? null };
+}
+
+/** An admitted call, and a model call's metering once reserved (null for a free call). */
+type Admitted = EgressOpened & { readonly metering: EgressMetering | null };
+
+/** A call opened and, for a model call, reserved, as the door and the gateway do. */
 async function admitted(r: Gated, lease: Leased, connection: string,
-                        extra: Record<string, unknown> = {}): Promise<EgressOpened> {
+                        extra: Record<string, unknown> = {}): Promise<Admitted> {
   const opened = await r.stub.egressOpen(lease.as(), request(connection, extra));
   if (!opened.ok) {
     throw new Error(`refused ${opened.code}`);
   }
-  return opened;
+  if (!opened.metered) {
+    return { ...opened, metering: null };
+  }
+  const reserved = await r.stub.egressReserve(lease.as(),
+                                              reserving(opened.reservation, extra));
+  if (!reserved.ok) {
+    throw new Error(`refused ${reserved.code}`);
+  }
+  return { ...opened, metering: reserved.metering };
 }
 
+/** The code a call is refused with, at its open or its reserve, each with its receipt. */
 async function refusedWith(r: Gated, binding: Binding, connection: string,
                            extra: Record<string, unknown> = {}): Promise<string> {
   const opened = await r.stub.egressOpen(binding, request(connection, extra));
+  let refused: EgressRefusal;
   if (opened.ok) {
-    throw new Error("expected a refusal");
+    const reserved = opened.metered
+      ? await r.stub.egressReserve(binding, reserving(opened.reservation, extra)) : null;
+    if (reserved === null || reserved.ok) {
+      throw new Error("expected a refusal");
+    }
+    refused = reserved;
+  } else {
+    refused = opened;
   }
   const [receipt] = await r.sql("SELECT state, code FROM egress_reservations WHERE id = ?",
-                                opened.receipt);
-  expect(receipt).toEqual({ state: "refused", code: opened.code });
-  return opened.code;
+                                refused.receipt);
+  expect(receipt).toEqual({ state: "refused", code: refused.code });
+  return refused.code;
 }
 
 /** Each end signal's one read: it resolves, done or failed, when the object ends it. */
@@ -683,10 +713,17 @@ describe("a call's reservation (review round 3)", () => {
     const named = (await pricedModels(r, connection))[0]!;
     const lease = await leased(r);
     const opened = await admitted(r, lease, connection, {
-      path: `/v1beta/models/${named.model.id}:streamGenerateContent?alt=sse`, model: null });
+      path: `/v1beta/models/${named.model.id}:streamGenerateContent?alt=sse`,
+      model: named.model.id });
     expect(opened.metering).toMatchObject({ model: named.model.id });
     expect(await refusedWith(r, lease.as(), connection, {
-      path: "/v1beta/models/no-such-model:streamGenerateContent?alt=sse", model: null }))
+      path: "/v1beta/models/no-such-model:streamGenerateContent?alt=sse",
+      model: "no-such-model" }))
+      .toBe("egress_unknown_model");
+    // The path names the model: a reserve naming another, listed or not, is not this call.
+    expect(await refusedWith(r, lease.as(), connection, {
+      path: "/v1beta/models/no-such-model:streamGenerateContent?alt=sse",
+      model: named.model.id }))
       .toBe("egress_unknown_model");
   });
 
@@ -705,14 +742,15 @@ describe("a call's reservation (review round 3)", () => {
     const r = await gated();
     const connection = await r.connect("sk-good", OPENAI);
     const lease = await leased(r);
-    for (const model of ["no-such-model", null]) {
-      expect(await refusedWith(r, lease.as(), connection, { path: "/v1/responses", model }))
-        .toBe("egress_unknown_model");
-    }
+    expect(await refusedWith(r, lease.as(), connection, { path: "/v1/responses",
+                                                         model: "no-such-model" }))
+      .toBe("egress_unknown_model");
     expect(await refusedWith(r, lease.as(), connection, { path: "/v1/responses",
                                                          model: OPENAI_MODEL, tier: "scale" }))
       .toBe("egress_unpriced_option");
-    expect(await charges(r)).toHaveLength(3);
+    // Each refused at its reserve: its row a receipt, charged nothing.
+    expect(await charges(r)).toMatchObject([{ state: "refused", charge: null },
+                                            { state: "refused", charge: null }]);
   });
 
   it("holds a priority-tier call, or one naming no tier, at the most pi-ai prices a tier at",
@@ -732,6 +770,101 @@ describe("a call's reservation (review round 3)", () => {
     expect(unnamed.metering).toMatchObject({ tier: null });
     expect((await charges(r)).map((row) => row["est_cost"]))
       .toEqual([named.holds, Math.ceil(named.holds * 2.5), Math.ceil(named.holds * 2.5)]);
+  });
+});
+
+describe("admit, then reserve (egress shape research, A′)", () => {
+  it("opens a model call uncharged, then charges it once the gateway's parse reserves it",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    const opened = await r.stub.egressOpen(lease.as(), request(connection));
+    if (!opened.ok) {
+      throw new Error(`refused ${opened.code}`);
+    }
+    expect(opened.metered).toBe(true);
+    expect(opened).not.toHaveProperty("metering");
+    expect(await charges(r)).toEqual([{ state: "open", source: null, charge: null, rule: null,
+                                        max_output_tokens: null, est_tokens: null,
+                                        est_cost: null, tokens: null, cost: null }]);
+    expect(await runs(r)).toEqual([]);
+    const reserved = await r.stub.egressReserve(lease.as(), reserving(opened.reservation));
+    expect(reserved).toMatchObject({ ok: true, metering: { input_bytes: 120, model: MODEL,
+                                                           tier: null } });
+    expect((await charges(r))[0]).toMatchObject({ state: "open", source: "anthropic",
+                                                  charge: "held" });
+    // The charge counts to its run, and to the source's day, as an admitted call's did.
+    expect(await runs(r)).toMatchObject([{ requests: 1 }]);
+    expect(await ended(opened, 50)).toBe(false);
+  });
+
+  it("refuses a second reserve, a free call's, a settled call's, or another token's",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    const once = await admitted(r, lease, connection);
+    expect((await failure(() => r.stub.egressReserve(lease.as(), reserving(once.reservation))))
+      .message).toMatch(/^invalid egress reserve/);
+    const free = await admitted(r, lease, connection, { method: "GET", path: "/v1/models",
+                                                        bytes_hint: null });
+    expect((await failure(() => r.stub.egressReserve(lease.as(), reserving(free.reservation))))
+      .message).toMatch(/^invalid egress reserve/);
+    const opened = await r.stub.egressOpen(lease.as(), request(connection));
+    if (!opened.ok) {
+      throw new Error(`refused ${opened.code}`);
+    }
+    const other = lease.as(lease.opened.network.generation, "f".repeat(64));
+    expect((await failure(() => r.stub.egressReserve(other, reserving(opened.reservation))))
+      .message).toMatch(/^invalid egress reserve/);
+    expect(await r.stub.egressSettle(lease.as(), settle(opened.reservation)))
+      .toEqual({ settled: true });
+    expect((await failure(() => r.stub.egressReserve(lease.as(), reserving(opened.reservation))))
+      .message).toMatch(/^invalid egress reserve/);
+    for (const bad of [{ reservation: opened.reservation, model: "a b", tier: null },
+                       { reservation: opened.reservation, model: MODEL },
+                       { reservation: "x", model: MODEL, tier: null }]) {
+      expect((await failure(() => r.stub.egressReserve(lease.as(), bad as never))).message)
+        .toMatch(/^invalid egress reserve/);
+    }
+  });
+
+  it("ends the stream of a call it refuses, its row the refusal's receipt", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    const opened = await r.stub.egressOpen(lease.as(), request(connection));
+    if (!opened.ok) {
+      throw new Error(`refused ${opened.code}`);
+    }
+    const refused = await r.stub.egressReserve(lease.as(), reserving(opened.reservation, {
+      model: "no-such-model" }));
+    expect(refused).toEqual({ ok: false, code: "egress_unknown_model",
+                              receipt: opened.reservation });
+    expect(await ended(opened)).toBe(true);
+    expect(await rows(r)).toMatchObject([{ state: "refused", code: "egress_unknown_model" }]);
+    // The door's settle after it changes nothing.
+    expect(await r.stub.egressSettle(lease.as(), settle(opened.reservation)))
+      .toEqual({ settled: false });
+  });
+
+  it("settles an admitted call lost when its beats stop before any reserve, charged nothing",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    const opened = await r.stub.egressOpen(lease.as(), request(connection));
+    if (!opened.ok) {
+      throw new Error(`refused ${opened.code}`);
+    }
+    await r.sql("UPDATE egress_reservations SET opened_at = opened_at - ?", LOST_AFTER_S + 1);
+    await admitted(r, lease, connection);  // the next open recovers the lost one first
+    expect((await charges(r))[0]).toMatchObject({ state: "settled", charge: null });
+    expect(await state(r, opened.reservation)).toEqual({ state: "settled", outcome: "lost" });
+    expect(await ended(opened)).toBe(true);
+    expect((await failure(() => r.stub.egressReserve(lease.as(), reserving(opened.reservation))))
+      .message).toMatch(/^invalid egress reserve/);
   });
 });
 
@@ -859,7 +992,13 @@ describe("the spend caps", () => {
     const [first, second] = await Promise.all([
       r.stub.egressOpen(lease.as(), request(connection)),
       r.stub.egressOpen(lease.as(), request(connection))]);
-    expect([first.ok, second.ok]).toContain(true);
+    if (!first.ok || !second.ok) {
+      throw new Error("both are admitted: admission charges nothing");
+    }
+    // Their reserves at once, each in its own unit.
+    const reserved = await Promise.all([first, second].map((opened) =>
+      r.stub.egressReserve(lease.as(), reserving(opened.reservation))));
+    expect(reserved.map((each) => each.ok)).toContain(true);
     const holding = (await charges(r)).filter((row) => row["charge"] === "held");
     const total = holding.reduce((sum, row) => sum + (row["est_cost"] as number), 0);
     expect(total).toBeLessThanOrEqual(one + Math.floor(one / 2));

@@ -212,7 +212,8 @@ function received(env: LegEnv): ChunkStore {
  * order, its pieces and their plans; held, in the units it declares, at a checkpoint.
  */
 async function moveRecords(env: LegEnv, records: number): Promise<number> {
-  const slot = await holds.ownerSlots().acquire(holds.moveTableUnits(records), true);
+  const slot = await holds.ownerSlots().acquire(holds.moveTableUnits(records), "",
+                                                  undefined, true);
   try {
     const kept = Math.floor(records / 3);
     const seqs = Array.from({ length: records - kept }, (_, n) => kept + n + 1);

@@ -311,7 +311,8 @@ export function moduleState(fileName: string, source: string): string[] {
  *   through the call's guard");
  * - the isolate's chunk slots (`owner/src/slots.ts`): its one pool is module state by
  *   design, since the pool is the isolate's, shared by every object and request in it;
- *   what it holds is a count of slots in use and the calls waiting, never an owner's data.
+ *   what it holds is a count of slots in use, the calls waiting and the leases holding units,
+ *   each with the owner id it waits or holds for, never an owner's data.
  */
 const EXEMPTIONS = Object.freeze([
   Object.freeze({
@@ -325,8 +326,8 @@ const EXEMPTIONS = Object.freeze([
   }),
   Object.freeze({
     path: "owner/src/slots.ts",
-    sha256: "d8ee55c7450b1c2f777bad3cca913cf69831255ab6e725d40c75afea3d50f183",
-    problems: Object.freeze(["owner/src/slots.ts:400: ISOLATE holds a mutable value"]),
+    sha256: "2c4092ff59a8bf5d57d29a2acef1fd813146dc744b184d00d3f1912baf6b7db6",
+    problems: Object.freeze(["owner/src/slots.ts:638: ISOLATE holds a mutable value"]),
   }),
 ]);
 const [EXEMPT, MEMORY] = EXEMPTIONS as unknown as [typeof EXEMPTIONS[0], typeof EXEMPTIONS[0]];

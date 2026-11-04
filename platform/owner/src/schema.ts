@@ -1264,8 +1264,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // A connection keeps where its credential may be forwarded (`egress`: its sealed base
     // URL, endpoints and pi-ai's metered call, no secret), from its setup check. Each sandbox
     // call the object admits is an open row until the egress door settles it; a refused one
-    // is kept as its receipt. A model call's row carries its own charge (`charge`, held to
-    // settled once, as a model reservation's states), which the triggers alone count: into
+    // is kept as its receipt. A model call's row is opened uncharged and carries its own
+    // charge once the gateway's parse reserved it (`charge`, null to held once, on an open row,
+    // then held to settled once, as a model reservation's states), which the triggers alone
+    // count: into
     // `model_spend`, its source's day and month, the counters the model reservations move
     // too, and (migration 12) into its run's own requests, tokens and cost on its `runs` row.
     // Each row names the run its path named. The newest `EGRESS_LIMITS.receiptsKept`
@@ -1314,16 +1316,23 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK ((charge IN ('succeeded', 'failed')) = (tokens IS NOT NULL)))",
     "CREATE INDEX egress_reservations_by_state ON egress_reservations (state, opened_at)",
     "CREATE INDEX egress_reservations_by_time ON egress_reservations (opened_at)",
-    "CREATE TRIGGER egress_reservations_charged AFTER INSERT ON egress_reservations " +
-      `WHEN NEW.charge IS NOT NULL BEGIN ${SPEND("NEW", CHARGED("NEW"))} END`,
+    "CREATE TRIGGER egress_reservations_charged AFTER UPDATE OF charge ON egress_reservations " +
+      `WHEN OLD.charge IS NULL AND NEW.charge IS NOT NULL BEGIN ${
+        SPEND("NEW", CHARGED("NEW"))} END`,
     "CREATE TRIGGER egress_reservations_recharged AFTER UPDATE OF charge, tokens, cost " +
       "ON egress_reservations WHEN NEW.charge IS NOT NULL AND OLD.charge IS NOT NULL " +
       `AND ${CHARGED("NEW")} != ${CHARGED("OLD")} BEGIN ${
         SPEND("NEW", `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} END`,
     "CREATE TRIGGER egress_reservations_kept BEFORE UPDATE OF id, lease_id, epoch, run, token, " +
-      "source, max_output_tokens, est_tokens, est_cost, day, month, connection_id " +
-      "ON egress_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes what " +
-      "it reserved'); END",
+      "connection_id ON egress_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never " +
+      "changes what it reserved'); END",
+    "CREATE TRIGGER egress_reservations_charge_kept BEFORE UPDATE OF source, max_output_tokens, " +
+      "est_tokens, est_cost, day, month ON egress_reservations WHEN OLD.charge IS NOT NULL " +
+      "BEGIN SELECT RAISE(ABORT, 'a reservation never changes what it reserved'); END",
+    "CREATE TRIGGER egress_reservations_reserved_once BEFORE UPDATE OF charge " +
+      "ON egress_reservations WHEN OLD.charge IS NULL AND NEW.charge IS NOT NULL " +
+      "AND (NEW.charge != 'held' OR OLD.state != 'open') " +
+      "BEGIN SELECT RAISE(ABORT, 'a call is reserved once, held, while it is open'); END",
     "CREATE TRIGGER egress_reservations_settled_once BEFORE UPDATE OF charge " +
       "ON egress_reservations WHEN OLD.charge IS NOT NULL AND OLD.charge != 'held' " +
       "BEGIN SELECT RAISE(ABORT, 'a charge is settled once'); END",
@@ -1522,9 +1531,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "BEGIN SELECT RAISE(ABORT, 'socket_tickets_full: as many socket tickets are " +
       "outstanding as may be; use one or wait for one to expire'); END",
     // A sandbox call's charge counts to its run, as it counts to its source's day and month.
-    "CREATE TRIGGER egress_reservations_run_charged AFTER INSERT ON egress_reservations " +
-      `WHEN NEW.charge IS NOT NULL BEGIN ${RUN("NEW", "1", CHARGED_TOKENS("NEW"),
-                                               CHARGED("NEW"))} END`,
+    "CREATE TRIGGER egress_reservations_run_charged AFTER UPDATE OF charge " +
+      "ON egress_reservations WHEN OLD.charge IS NULL AND NEW.charge IS NOT NULL " +
+      `BEGIN ${RUN("NEW", "1", CHARGED_TOKENS("NEW"), CHARGED("NEW"))} END`,
     "CREATE TRIGGER egress_reservations_run_recharged AFTER UPDATE OF charge, tokens, cost " +
       "ON egress_reservations WHEN NEW.charge IS NOT NULL AND OLD.charge IS NOT NULL " +
       `AND (${CHARGED("NEW")} != ${CHARGED("OLD")} OR ${CHARGED_TOKENS("NEW")} != ${

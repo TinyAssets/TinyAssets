@@ -97,7 +97,7 @@ import { type Edited, letGo, planEdit, type Refusal } from "./edit";
 import {
   APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, MOVE_PASS_UNITS, moveTableUnits, ownerSlots,
 } from "./holds";
-import { type Slot, SlotBusy, slotted, type SlotPool } from "./slots";
+import { type Lease as PoolLease, SlotBusy, slotted, type SlotPool } from "./slots";
 import { createHash, randomBytes } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -225,7 +225,8 @@ import {
 } from "./sync-ignore";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
-  Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
+  Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, type EgressReserved,
+  egressRequest, reserveRequest,
   type SandboxBinding, sandboxBinding, settleRequest,
 } from "./egress";
 import {
@@ -1775,61 +1776,69 @@ class MoveReader {
 }
 
 /**
- * An archive move's or rewrite's holds on the isolate's pool (ADR-037): its table's units
+ * An archive move's or rewrite's holds on the isolate's pool (ADR-037), one lease in the
+ * larger class (`SlotPool.lease`, the pool's one admission rule: the oldest holder alone
+ * waits to grow, a younger one is refused `busy` and gives back what it holds, and while the
+ * oldest waits a newcomer takes nothing past the reserve). Its table's units
  * (`moveTableUnits`), taken before its records arrive and held to its end, since the table's
  * bytes are in hand throughout; grown as a rewrite takes in a neighbour; and each pass's
- * `MOVE_PASS_UNITS` beside them (`SlotPool.grow`, wait-die), taken before the pass's first
- * chunk arrives and released once its last is gone: its waits each bring or send its bytes
- * (a chunk read, a chunk put, a unit reading hot records' lines), never a begin or a commit.
- * Refused `busy`, the pass fails as busy: the lane holds and retries, told at three.
+ * `MOVE_PASS_UNITS` beside them, grown before the pass's first chunk arrives and given back
+ * (`Lease.shrink`) once its last is gone: its waits each bring or send its bytes (a chunk
+ * read, a chunk put, a unit reading hot records' lines), never a begin or a commit. Refused
+ * `busy`, the pass fails as busy: the lane holds and retries, told at three.
  */
 class MoveHold {
   readonly #pool: SlotPool;
-  readonly #slots: Slot[];
+  readonly #lease: PoolLease;
+  /** The units its records hold; a pass's are grown past them and given back. */
+  #table: number;
 
-  private constructor(pool: SlotPool, base: Slot) {
+  private constructor(pool: SlotPool, lease: PoolLease, table: number) {
     this.#pool = pool;
-    this.#slots = [base];
+    this.#lease = lease;
+    this.#table = table;
   }
 
-  /** The units for a table of `records` records. */
+  /** The units for a table of `records` records: a lease in the larger class. */
   static async take(pool: SlotPool, records: number): Promise<MoveHold> {
-    return new MoveHold(pool, await pool.acquire(moveTableUnits(records), true));
+    const lease = pool.lease("", true);
+    const table = moveTableUnits(records);
+    await lease.grow(table);
+    return new MoveHold(pool, lease, table);
   }
 
   /** The units held for the table. */
   get units(): number {
-    return this.#slots.reduce((sum, slot) => sum + slot.units, 0);
+    return this.#table;
   }
 
   /** The table grown to hold `records` records: its units grown first. */
   async table(records: number): Promise<void> {
-    const more = moveTableUnits(records) - this.units;
-    if (more > 0) {
-      this.#slots.push(await this.#pool.grow(this.#slots[0]!, more));
+    const table = moveTableUnits(records);
+    if (table > this.#table) {
+      await this.#lease.grow(table);
+      this.#table = table;
     }
   }
 
   /** One pass, holding its own units beside the table's; `letGo` drops what it kept. */
   async pass<T>(act: () => Promise<T>, letGo: () => void): Promise<T> {
-    const step = await this.#pool.grow(this.#slots[0]!, MOVE_PASS_UNITS);
+    await this.#lease.grow(this.#table + MOVE_PASS_UNITS);
     try {
       const done = await act();
       letGo();
       if (this.#pool.observe !== null) {
-        await this.#pool.observe(this.units + step.units);
+        await this.#pool.observe(this.#lease.units);
       }
       return done;
     } finally {
       letGo();
-      step.release();
+      this.#lease.shrink(this.#table);
     }
   }
 
   release(): void {
-    for (const slot of this.#slots) {
-      slot.release();
-    }
+    this.#lease.release();
   }
 }
 
@@ -7345,6 +7354,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#door(() => {
       this.#bind(binding, "work", "egress");
       return this.#egress.open(sandboxBinding(binding.sandbox), r, clock());
+    });
+  }
+
+  /**
+   * An admitted model call's reserve (`Egress.reserve`), which the gateway asks for through
+   * the egress door once its one parse of the body read the model and tier: its metering, or
+   * its refusal's fixed code and receipt. Held to the egress binding that opened the call.
+   */
+  egressReserve(binding: Binding, request: unknown): Promise<EgressReserved | EgressRefusal> {
+    return this.#door(() => {
+      this.#bind(binding, "work", "egress");
+      return this.#egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
+                                  clock());
     });
   }
 
