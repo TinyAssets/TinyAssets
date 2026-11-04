@@ -1686,6 +1686,18 @@ export class Ledger {
   }
 
   /**
+   * The archive's segments as a read saw them: any move, rewrite or drop changes it (a new
+   * segment's id is past every id the table ever gave, `AUTOINCREMENT`; a drop alone lowers
+   * the count). A chain read takes it with its fences and checks it in the unit that reads
+   * its hot rows, so mail moved between them is never missed. A read.
+   */
+  archiveMark(): string {
+    const { n, newest } = this.#sql.exec<{ n: number; newest: number | null }>(
+      "SELECT COUNT(*) AS n, MAX(segment) AS newest FROM archive_segments").one();
+    return `${n}:${newest ?? 0}`;
+  }
+
+  /**
    * The owner's view of a mail chain: the chain rooted at the hot message's root, or at
    * `archived.root` when the door read the chain's start from its segment; oldest first,
    * past `after`, each message with its recipients and how far each took it. Its archived

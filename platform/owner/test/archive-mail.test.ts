@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
+import type { ArchivingOwnerDO } from "./worker";
 import { parseTiers } from "../src/tier";
 import {
   type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable,
@@ -483,6 +484,41 @@ describe("the archive lane", () => {
       message_id: third.message_id, limit: 1, after: 0, body_offset: 100,
       body_message_id: second.message_id } as never))).message).toMatch(/^message_changed/);
   }, 120_000);
+
+  it("finds a chain's mail that the lane moves between its fences and its hot unit (N9)",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const held = r.stub as unknown as DurableObjectStub<ArchivingOwnerDO>;
+    const muse = await r.register(MUSE);
+    const room = `dm:${muse}`;
+    // A chain of four, each a reply to the last, the owner and the muse in turn, unread so
+    // none can move yet; then its read held before its hot unit.
+    const chain: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      chain.push((await r.post(i % 2 === 0 ? null : MUSE, room, {
+        cmid: `c${i}`, body: `chain ${i}`, parent: chain.at(-1) ?? null })).message_id);
+    }
+    expect(await sqlIn(r.stub, "SELECT * FROM archive_segments")).toEqual([]);
+    await held.holdChain();
+    const reading = r.stub.mailChain(r.bind(null), { message_id: chain[0]!, limit: 50 });
+    try {
+      await held.chainHeld();
+      // There: the chain read and acked, more mail past half the hot ceiling, and the lane
+      // moves the chain out of the hot rows into segments the held read never saw.
+      await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
+      await r.ack(null, (await r.read(null)).messages.at(-1)!.seq);
+      await sentAndAcked(r, MUSE, room, 2, "x");
+      await settle(r);
+      const hot = new Set((await sqlIn(r.stub, "SELECT message_id FROM ledger_messages"))
+        .map((row) => row["message_id"] as string));
+      expect(chain.filter((id) => !hot.has(id)).length).toBeGreaterThan(0);
+    } finally {
+      await held.releaseChain();
+    }
+    const page = await reading;
+    expect([page.messages.map((m) => [m.message_id, m.body]), page.more]).toEqual([
+      chain.map((id, i) => [id, `chain ${i}`]), false]);
+  });
 
   it("aborts a move whose batch changed between its units, the mail kept hot", async () => {
     const r = await rig(ARCHIVING);

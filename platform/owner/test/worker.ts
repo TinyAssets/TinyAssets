@@ -83,15 +83,64 @@ export class BoundedOwnerDO extends OwnerDO {
   }
 }
 
+/** One chain read held before its hot unit once a test arms it (`Internals.chainBeforeHot`). */
+class ChainHold {
+  #armed = false;
+  #reached: () => void = () => {};
+  #release: () => void = () => {};
+  reached: Promise<void> = Promise.resolve();
+
+  arm(): void {
+    this.#armed = true;
+    this.reached = new Promise((resolve) => { this.#reached = resolve; });
+  }
+
+  async pass(): Promise<void> {
+    if (!this.#armed) {
+      return;
+    }
+    this.#armed = false;
+    const released = new Promise<void>((resolve) => { this.#release = resolve; });
+    this.#reached();
+    await released;
+  }
+
+  release(): void {
+    this.#release();
+  }
+}
+
 /**
  * The owner object as production builds it but for the ledger's ceilings: eight messages
  * hot, four unread, a segment sealed at two records, so a test sees the `archive` lane move
  * acked mail, a post wait at the hot ceiling, and a purge rewrite, with a handful of posts.
+ * A test may hold its next chain read before the read's hot unit (`holdChain`), move mail
+ * there, and let it go on (`releaseChain`).
  */
 export class ArchivingOwnerDO extends OwnerDO {
+  readonly #hold: ChainHold;
+
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const hold = new ChainHold();
     super(ctx, env, { ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4,
-                                      archiveRecords: 2 } });
+                                      archiveRecords: 2 },
+                      chainBeforeHot: () => hold.pass() });
+    this.#hold = hold;
+  }
+
+  /** Hold the next chain read before its hot unit. */
+  holdChain(): void {
+    this.#hold.arm();
+  }
+
+  /** Answered once the held chain read waits there. */
+  async chainHeld(): Promise<void> {
+    await this.#hold.reached;
+  }
+
+  /** Let the held chain read go on. */
+  releaseChain(): void {
+    this.#hold.release();
   }
 }
 

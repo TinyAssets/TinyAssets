@@ -1831,6 +1831,11 @@ export interface Internals {
    */
   readonly archiveBetweenPasses?: (storage: OwnerStorage, move: ArchiveMoveSeen) => void;
   /**
+   * Awaited by a chain read between its archived reads and the unit that reads its hot rows,
+   * so a test can move its mail there and see the read find it (review N9).
+   */
+  readonly chainBeforeHot?: () => Promise<void>;
+  /**
    * The starter package the object seeds and keeps current (`starter.ts`): the one this code
    * carries when omitted, as production builds it; another for a test of updates; null for
    * none, the tests of everything else, which start from an empty workspace.
@@ -1949,6 +1954,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /** A test's step between an archive move's passes (`Internals.archiveBetweenPasses`). */
   readonly #betweenPasses: ((storage: OwnerStorage, move: ArchiveMoveSeen) => void) | null;
+  /** A test's step before a chain read's hot unit (`Internals.chainBeforeHot`). */
+  readonly #chainBeforeHot: (() => Promise<void>) | null;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
    * lane: every wake kind's request from its record, after the kill switch (`CONTROL`).
@@ -2253,6 +2260,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     internals.sandbox?.(this.#sandbox);
     this.#codemode = internals.codemode ?? {};
     this.#betweenPasses = internals.archiveBetweenPasses ?? null;
+    this.#chainBeforeHot = internals.chainBeforeHot ?? null;
     this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
@@ -3939,16 +3947,37 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } else {
       ({ root, root_seq: rootSeq } = start);
     }
-    // Its archived messages past `after`, as a page reads placed bodies (`pages.ts`, PR 1):
-    // the next segments' chain maps, then each record by range, its body only as the window
-    // a page may show (from `body_offset` when it is the page's first message), the windows
-    // stopping at `WINDOWS_BYTES` past the first; the first left unread is the frontier, so
-    // the page stops below it and the next goes on from there.
-    const { fenced, firstHot } = await this.#door(() => ({
-      fenced: this.#ledger.chainFences(rootSeq, after),
-      firstHot: this.#ledger.chainNext(root, after) }));
-    let frontier = fenced.frontier;
     const most = typeof r["limit"] === "number" ? r["limit"] : 1;
+    for (let tries = 0; tries < READ_TRIES; tries++) {
+      const read = await this.#chainPage(binding, r, root, rootSeq, after, offset, most);
+      if (read !== null) {
+        return { root, messages: read.messages, more: read.more };
+      }
+    }
+    throw new Refused(`${STORAGE_BUSY}: the archive moved this chain's mail under each of ` +
+                      `${READ_TRIES} reads; try again in 1 second. ` +
+                      JSON.stringify({ retry_after_s: 1 }));
+  }
+
+  /**
+   * One read of a chain's page (`mailChain`), or null when the archive changed under it.
+   * Its archived messages past `after`, as a page reads placed bodies (`pages.ts`, PR 1):
+   * the next segments' chain maps, then each record by range, its body only as the window
+   * a page may show (from `body_offset` when it is the page's first message), the windows
+   * stopping at `WINDOWS_BYTES` past the first; the first left unread is the frontier, so
+   * the page stops below it and the next goes on from there. Its hot rows are read in a
+   * later unit, which first checks the archive's mark taken with the fences: a move between
+   * them took mail out of the hot rows into a segment the read never saw (review N9), so the
+   * read is null, and `mailChain` reads again from the fences. The page stays the one bounded
+   * page `ledger.chain` fits; only the reads are repeated, at most `READ_TRIES`.
+   */
+  async #chainPage(binding: Binding, r: Record<string, unknown>, root: string,
+                   rootSeq: number, after: number, offset: number, most: number):
+      Promise<{ messages: ChainMail[]; more: boolean } | null> {
+    const { fenced, firstHot, mark } = await this.#door(() => ({
+      fenced: this.#ledger.chainFences(rootSeq, after),
+      firstHot: this.#ledger.chainNext(root, after), mark: this.#ledger.archiveMark() }));
+    let frontier = fenced.frontier;
     const mail: ArchivedMail[] = [];
     let held = 0;
     read: for (const fence of fenced.fences) {
@@ -3968,22 +3997,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         mail.push(found);
       }
     }
+    await this.#chainBeforeHot?.();
     // Its hot messages' placed bodies (ADR-035) are read from R2 between its units, and the
     // page, hot and archived together, fits one answer.
     const archived = { root, mail, frontier };
     const page = (windows: ReadonlyMap<string, Window>) => this.#ledger.chain(
       r["message_id"], after, r["limit"], windows, offset, r["body_message_id"] ?? null,
       archived);
-    const { messages, more } = await this.#rereadingPage(() => {
+    return this.#rereadingPage(() => {
       this.#owner(binding, "read", CHAINS);
       const read = page(new Map());
       return { contents: read.placed,
                offsetOf: (contentId) => contentId === read.first ? offset : 0 };
     }, (windows) => {
       this.#owner(binding, "read", CHAINS);
-      return page(windows);
-    }, (read) => read.messages.length === 0 && read.placed.length > 0);
-    return { root, messages, more };
+      return this.#ledger.archiveMark() === mark ? page(windows) : null;
+    }, (read) => read !== null && read.messages.length === 0 && read.placed.length > 0);
   }
 
   // -- THE ARCHIVE (slice STORE item 2, `segments.ts`) --------------------------------------
