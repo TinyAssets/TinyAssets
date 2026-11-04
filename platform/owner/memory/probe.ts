@@ -71,11 +71,20 @@ function letters(seed: number, size: number): Uint8Array {
 /** Each isolate's: whether a run is timed, its checkpoints skipped (`/run?timed=1`). */
 const TIMED = { on: false };
 
-const checkpoint = async (env: { DRIVER: Fetcher }) => {
+/**
+ * A checkpoint: the path waits while the driver samples. From the owner isolate it says the
+ * units the isolate's pool holds then (`held`), so the driver holds what is live to them.
+ */
+const checkpoint = async (env: { DRIVER: Fetcher }, held?: number, at = "store") => {
   if (!TIMED.on) {
-    await (await env.DRIVER.fetch("http://driver/checkpoint")).text();
+    await (await env.DRIVER.fetch(`http://driver/checkpoint?at=${at}${held === undefined ? ""
+      : `&held=${held}`}`)).text();
   }
 };
+
+/** A checkpoint in the owner isolate, with the units its pool holds. */
+const owned = (env: { DRIVER: Fetcher }, at: string) =>
+  checkpoint(env, holds.ownerSlots().state().held, at);
 
 const STORED = new Map<string, Uint8Array>();
 
@@ -153,10 +162,14 @@ function received(env: LegEnv): ChunkStore {
   const store = env.FILES;
   return {
     mintKey: (ns) => store.mintKey(ns),
-    putChunks: (ns, key, chunks) => store.putChunks(ns, key, chunks),
+    putChunks: async (ns, key, chunks) => {
+      await owned(env, "before-put");
+      return store.putChunks(ns, key, chunks);
+    },
     getChunks: async (ns, key, reads) => {
+      await owned(env, "before-get");
       const got = await store.getChunks(ns, key, reads);
-      await checkpoint(env);
+      await owned(env, "after-get");
       return got;
     },
     deleteChunks: (ns, key, sha256s) => store.deleteChunks(ns, key, sha256s),
@@ -325,6 +338,8 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
 async function run(env: LegEnv, path: string, mib: number, timed: boolean):
     Promise<number[]> {
   TIMED.on = timed;
+  // Each hold's end, before its release, is a checkpoint too (`SlotPool.observe`).
+  holds.ownerSlots().observe = (units) => owned(env, `end-of-${units}`);
   await env.STORE.timed(timed);
   const appended = LEG.appended;
   return Promise.all(LEG.ready.map(async ({ name, who, etag, content, offset }) => {

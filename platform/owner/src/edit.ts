@@ -20,7 +20,9 @@
  * nothing chunk-sized is held between steps: only the scan's carry (under `|old|` bytes) and
  * the hashes' states. `make` builds one output chunk from the source chunks it spans, read
  * one at a time; the caller holds its making step's units around it and the put that sends
- * it (`Files.writeChunks`). Its cost is reads: about four a changed chunk.
+ * it (`Files.writeChunks`). Each source chunk read is the edit's own and is let go as soon
+ * as its pieces are taken (`letGo`), so a step holds the chunk in hand and no more. Its cost
+ * is reads: about four a changed chunk.
  */
 import { createHash } from "node:crypto";
 
@@ -63,6 +65,19 @@ function indexOfBytes(hay: Uint8Array, needle: Uint8Array, from: number): number
 }
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * A source chunk's bytes let go as its step ends: the edit owns what `read` answers, so its
+ * buffer is detached (`transfer(0)`), and no reference the collector cannot yet rule out
+ * (review M-a: one dead chunk now and then read live one collection longer) keeps them.
+ */
+export function letGo(bytes: Uint8Array): void {
+  const buffer = bytes.buffer as ArrayBuffer & { transfer?: (length: number) => ArrayBuffer };
+  if (bytes.byteOffset === 0 && bytes.byteLength === buffer.byteLength
+      && typeof buffer.transfer === "function") {
+    buffer.transfer(0);
+  }
+}
 
 /**
  * Plan the edit of `source` (chunks of `chunk` bytes, the last shorter), or its refusal, each
@@ -126,6 +141,7 @@ export async function planEdit(source: Source, old: string, replacement: string,
       }
       offset += bytes.byteLength;
       carryAt = offset - carry.byteLength;
+      letGo(bytes);
       return null;
     });
     if (refused !== null) {
@@ -166,6 +182,7 @@ export async function planEdit(source: Source, old: string, replacement: string,
         const lo = from - starts[index]!;
         const hi = Math.min(to - starts[index]!, bytes.byteLength);
         sink(bytes.subarray(lo, hi));
+        letGo(bytes);
         return starts[index]! + hi;
       });
     }

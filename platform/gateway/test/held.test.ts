@@ -13,10 +13,10 @@ import { describe, expect, it } from "vitest";
 import { aliased, apiRules } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { BODY_MAX, GATEWAY_POOL_SLOTS, type Reserve } from "../src/forward";
-import { heldDeadlineMs } from "../src/held";
+import { Hold, HeldRefusal, heldDeadlineMs, readHeld, Tokens } from "../src/held";
 import Gateway, { EgressGateway } from "../src/index";
 import { learnMeter, meteredRecord } from "../src/meter";
-import { isolatePool } from "../../owner/src/slots";
+import { isolatePool, SlotPool } from "../../owner/src/slots";
 import { GOOGLE, OPENAI } from "./support";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
@@ -229,4 +229,133 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     expect(answer.response.status).toBe(500);
     expect(await outcome(answer)).toEqual({ state: "failed" });
   });
+});
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe("the verification's cases (rveg2)", () => {
+  it("weighs a body of `\\u` escapes as the two-byte text its parse makes (V-H1)", () => {
+    const tokens = new Tokens();
+    tokens.feed(new TextEncoder().encode('{"model":"m","input":"\\u2014 dash"}'));
+    expect(tokens.ascii).toBe(false);
+    const plain = new Tokens();
+    plain.feed(new TextEncoder().encode('{"model":"m","input":"a \\n line"}'));
+    expect(plain.ascii).toBe(true);
+  });
+
+  it("lets every one of 16 silent calls go at its unit's deadline: another owner lands (V-H2)",
+     async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const alice = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const mallory = (await gateway.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const model = await responsesModel();
+    const pool = isolatePool(GATEWAY_POOL_SLOTS);
+    const hogs = Array.from({ length: GATEWAY_POOL_SLOTS }, () => egress.forward(
+      "mallory", "c1", 1, mallory, new Request("https://egress/v1/responses", {
+        method: "POST", headers: { "content-length": String(BODY_MAX) },
+        body: new ReadableStream<Uint8Array>({ start() { /* sends nothing */ } }),
+      }), granting(), new ReadableStream()));
+    await until(() => pool.state().held === GATEWAY_POOL_SLOTS);
+    // Alice's ordinary call (one unit), waiting while mallory's silent calls hold the pool.
+    const text = JSON.stringify({ model: model.id, input: "hi" });
+    const answer = await egress.forward("alice", "c1", 1, alice, posted("/v1/responses", text,
+      { "x-fake-mode": "echo" }), granting(), new ReadableStream());
+    expect(answer.response.status).toBe(200);
+    await answer.response.body?.cancel();
+    for (const hog of await Promise.all(hogs)) {
+      expect(await hog.response.json()).toMatchObject({ error: { code: "invalid_request" } });
+    }
+    await until(() => pool.state().held === 0);
+  }, 60_000);
+
+  it("never counts a wait for a unit against the sender (V-M2)", async () => {
+    const pool = new SlotPool(3, 12_000);
+    const blocker = await pool.acquire(2, "x");
+    const text = JSON.stringify({ input: "a".repeat(2 * 1024 * 1024) });
+    const hold = new Hold("a", new AbortController().signal, pool);
+    setTimeout(() => blocker.release(), 11_000);
+    const started = Date.now();
+    const read = await readHeld(posted("/x", text), new TextEncoder().encode(text).byteLength,
+                                hold, new AbortController().signal);
+    expect(read.bytes).toBe(new TextEncoder().encode(text).byteLength);
+    expect(Date.now() - started).toBeGreaterThan(10_500);
+    hold.release();
+  }, 30_000);
+
+  it("refuses a body that cannot fit as soon as its weight passes the pool, not after it",
+     async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    // 4 MiB declared, of which 3.5 MiB of empty objects is sent (past the pool's weight by
+    // its 2.6th MiB), then nothing.
+    const head = '{"model":"m","input":[' + "{},".repeat(3.5 * 1024 * 1024 / 3);
+    const body = new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(head));
+    } });
+    const started = Date.now();
+    const answer = await egress.forward("alice", "c1", 1, blob, new Request(
+      "https://egress/v1/responses", { method: "POST", body,
+                                        headers: { "content-length": String(4 * 1024 * 1024) } }),
+      granting(), new ReadableStream());
+    expect([answer.response.status, await answer.response.json()]).toEqual(
+      [413, { error: { code: "egress_too_large", message: "egress_too_large" } }]);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(isolatePool(GATEWAY_POOL_SLOTS).state().held).toBe(0);
+  });
+});
+
+describe("wait-die under load (rveg2 V-M1)", () => {
+  /** One call: its read grows a unit at a time to `read`, then it tops up to `weight`. */
+  async function call(pool: SlotPool, owner: string, read: number, weight: number,
+                      holdMs: number): Promise<"done" | "busy"> {
+    const hold = new Hold(owner, new AbortController().signal, pool);
+    try {
+      for (let units = 1; units <= read; units++) {
+        await hold.grow(units);
+        await sleep(20);
+      }
+      await hold.grow(weight);
+      await sleep(holdMs);
+      return "done";
+    } catch (error) {
+      if (error instanceof HeldRefusal && error.code === "busy") {
+        return "busy";
+      }
+      throw error;
+    } finally {
+      hold.release();
+    }
+  }
+
+  it("lets a burst through without waiting out the pool's wait: the oldest grows, the others " +
+     "give way", async () => {
+    const pool = new SlotPool(16, 1000);
+    const started = Date.now();
+    const ends = await Promise.all(["a", "b", "c", "d"].map((owner) =>
+      call(pool, owner, 4, 8, 50)));
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(ends.filter((end) => end === "done").length).toBeGreaterThanOrEqual(1);
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  }, 30_000);
+
+  it("keeps a closed loop of 8 owners at least as productive as one call at a time",
+     async () => {
+    const pool = new SlotPool(16, 500);
+    const until = Date.now() + 4000;
+    let done = 0;
+    let busy = 0;
+    await Promise.all(Array.from({ length: 8 }, async (_, n) => {
+      while (Date.now() < until) {
+        if (await call(pool, `o${n}`, 5, 9, 50) === "done") {
+          done++;
+        } else {
+          busy++;
+          await sleep(20);
+        }
+      }
+    }));
+    // One at a time (a read of about 0.1 s, a hold of 0.05 s): about 25 in 4 s.
+    expect(done).toBeGreaterThanOrEqual(25);
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  }, 60_000);
 });

@@ -80,9 +80,9 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 13
-- **technical ceiling**: 168
+- **technical ceiling**: 169
 - **default**: 1
-- **total**: 197
+- **total**: 198
 
 Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-04.
 
@@ -233,7 +233,7 @@ reason; none refuses a write.
 | `gateway/src/held.ts` `BODY_MAX` | 16 MiB | a metered call's declared length | refused `invalid_request` | technical ceiling | As `EGRESS_BODY_MAX`; within it each call is weighed (below). |
 | `gateway/src/held.ts` `GATEWAY_POOL_SLOTS` | 16 slots of 4 MiB | what the gateway's metered calls hold at once | a call waits its turn (owners round-robin), `busy` past the pool's wait | technical ceiling | 64 MiB beside the gateway's 12 MiB idle set, within the isolate's 128 MB (egress shape research §2). |
 | `gateway/src/held.ts` `TEXT_COST`, `BYTE_COST`, `ASCII_BYTE_COST`, `TOKEN_COST` | 2.25, 4.25, 2.25 a byte; 32 B a token | a metered call's weight in slots | a call weighing more than the pool refused `egress_too_large` | technical ceiling | Measured in workerd over 19 body shapes (the text 2.01 times the bytes; the parse's most 4.00 times for non-ASCII text, 2.00 for ASCII, plus up to 30 B a structural token), and asserted after each phase by the memory leg (review H1). |
-| `gateway/src/held.ts` `MIN_RATE`, `heldDeadlineMs` | 0.18 MiB/s; 10 s plus the body at it (100 s for 16 MiB) | how long a metered call holds its slots, from its first byte to its upload's last write | refused `invalid_request`, its slots let go | technical ceiling | Derived from the pool: one slot's worth of body each pool wait (`SLOT_WAIT_MS`), so no unit is held longer than a waiter waits for one. A sandbox's real upload rate is owed live. |
+| `gateway/src/held.ts` `MIN_RATE`, `heldDeadlineMs` | each unit's worth of body (1.78 MiB) within 10 s of its grant, about 0.18 MiB/s; the upload 10 s plus the body at it (100 s for 16 MiB) | how long a metered call holds a unit while it waits on its sender, and its upload | refused `invalid_request`, its units let go | technical ceiling | Derived from the pool: no unit is held longer than a waiter waits for one (`SLOT_WAIT_MS`); a wait for a unit is never counted. A sandbox's real upload rate is owed live. |
 | `doors/src/routing-mac.ts` `LEASE_LIVED` | none of their own | the egress and sync tokens' life | a token lives while its lease's heartbeat renews it | technical ceiling | The lease's life (`LEASE_TTL_S` without a renewal); no run meets a fixed deadline. |
 | `owner/src/cron.ts` `CRON_MIN_GAP_MIN` | 1 minute | the shortest gap between a schedule's runs | nothing below cron's own minute | technical ceiling | Cron's resolution; the tier's runs bound what a schedule starts. |
 | `owner/src/cron.ts` `CRON_MAX_ITEMS` | 60 | values in one cron field's list | a longer list refused | technical ceiling | A minute field's every value. |
@@ -331,23 +331,30 @@ leg's run of 2026-11-04 in this sandbox; it prints them each run.
 
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
-| `owner/src/holds.ts` `OWNER_POOL_UNITS` | 12 units (48 MiB) | the chunk-holding steps one owner isolate runs at once (an edit's reads and makings, an append, a body's read or windows) | a step past it waits its turn, first come first served in its size class | technical ceiling | The pool's term: three edits' making steps beside the reserve, or a whole two-chunk body's read beside one. The counts test holds it with the isolate's other live terms (below); production's `memoryUsageBytes` resets it in a one-line change. |
-| `owner/src/holds.ts` `OWNER_RESERVE_UNITS` | 1 unit | the units only one-unit holds (a window) take | a co-tenant's small read never waits behind edits (review M1); it waits only on other one-unit holds | technical ceiling | A one-unit hold is a page's window: one unit kept for them means no larger hold can keep one waiting. |
-| `owner/src/slots.ts` `SLOT_WAIT_MS` | 10 s | how long a step waits for units | refused `busy` before it changes anything: `503` with `Retry-After: 1` on `/api`, the same refusal on `/mcp`; retried, never a lost write | technical ceiling | The queue's own term: a sixth of the MCP SDK's default request timeout (`DEFAULT_REQUEST_TIMEOUT_MSEC`, 60 s), so the refusal is told while the client still waits, the rest left to the call's own work. At the leg's measured step (18.6 ms a chunk), a full queue of `OWNER_WAITERS` making steps turns over in about 79 ms; the leg fails past the wait. Production's step (R2's round trips) is owed live. |
-| `owner/src/holds.ts` `OWNER_WAITERS` | 12 | the steps waiting for units at once | one more refused `busy` at once | technical ceiling | The memory a waiter holds: no units, but its own request's arguments, which no unit counts yet (PR 3b), at most a unit each by the MCP door (`MCP_BODY_MAX`, 4 MiB); as many waiters as the pool's units keeps what they hold to the pool's own size again. |
-| `owner/src/owner-do.ts` `EDIT_BYTES_MAX` | 500 chunks (2,000 MiB) | the largest file one `file_edit` edits | refused `Invalid`, naming the size; a larger file is rewritten by upload | technical ceiling | ADR-037 ruling 2: no longer `WHOLE_BYTES`; its tightest bound is time. The leg times the worst edit (the first chunk's, longer, so every chunk is read twice, remade and put; the files Worker's own hashing left out) on the real path: 18.6 ms a chunk of wall time at 96 MiB, at least its CPU. A request has 30 s of CPU; two thirds are left for a slower host (a CI runner among them), so 500 chunks, about 9 s measured. The leg fails if the measured time passes 30 s at this figure. About five subrequests a chunk, 2,500 at most. Production's wall time a chunk is owed live; an edit commits whole or not at all. |
+| `owner/src/holds.ts` `OWNER_POOL_UNITS` | 12 units (48 MiB) | the chunk-holding steps one owner isolate runs at once (an edit's reads and makings, an append, a body's read or windows) | a step past it waits its turn, first come first served in its size class | technical ceiling | The pool's term: three edits' making steps beside the reserve, or a whole two-chunk body's read beside a making step. The counts test holds it with the isolate's other live terms (below); production's `memoryUsageBytes` resets it in a one-line change. |
+| `owner/src/holds.ts` `OWNER_RESERVE_UNITS` | 1 unit | the units only one-unit holds (a window) take | a co-tenant's small read never waits behind edits (review M1); it waits only on other one-unit holds | technical ceiling | A one-unit hold is a page's window: one unit kept for them means no larger hold can keep one waiting. And no larger hold is starved by them (review M-b): while one waits, a new one-unit hold takes only the reserve. |
+| `owner/src/slots.ts` `SLOT_WAIT_MS` | 10 s | how long a step waits for units | refused `busy` before it changes anything: `503` with `Retry-After: 1` on `/api`, the same refusal on `/mcp`; retried, never a lost write | technical ceiling | The queue's own term. Neither Claude's nor ChatGPT's connectors document how long they wait for a tool call (users report about 60 s to 5 minutes, searched 2026-11-04); the MCP SDK's default request timeout (`DEFAULT_REQUEST_TIMEOUT_MSEC`, 60 s) is the shortest a client is known to keep. A sixth of it: the refusal is told while the client still waits, the rest left to the call's own work. At the leg's measured step (18.5 ms a chunk) a full queue of larger waiters turns over in about 34 ms, and a full queue of one-unit waiters, a window at a time (1.7 ms), in about 110 ms; the leg fails past the wait. Production's step (R2's round trips) is owed live. |
+| `owner/src/holds.ts` `OWNER_WAITERS` | 3 | the larger holds waiting for units at once | one more refused `busy` at once | technical ceiling | The memory a waiter holds (review L-b): no units, but its own request's arguments, which no unit counts yet (PR 3b), as large as the largest body a door takes, `/api`'s 16 MiB (`API_BODY_MAX`; `/mcp`'s `MCP_BODY_MAX` is 4 MiB). Three keep what they hold to the pool's own size again; four would pass it (the counts test holds this derivation from the sources). |
+| `owner/src/holds.ts` `OWNER_SMALL_WAITERS` | 64 | the one-unit holds (windows) waiting at once, capped apart from the larger ones | one more refused `busy` at once; larger holds waiting never refuse one (review L-a) | technical ceiling | The queue's turnover: a one-unit hold is a read's, its arguments ids, cursors and limits the door checked first; the reserve serves them a window at a time, and 64 turn over in about 110 ms at the leg's measured window, well inside `SLOT_WAIT_MS` (the leg fails past it). |
+| `owner/src/owner-do.ts` `EDIT_BYTES_MAX` | 500 chunks (2,000 MiB) | the largest file one `file_edit` edits | refused `Invalid`, naming the size; a larger file is rewritten by upload | technical ceiling | ADR-037 ruling 2: no longer `WHOLE_BYTES`; its tightest bound is time. The leg times the worst edit (the first chunk's, longer, so every chunk is read twice, remade and put; the files Worker's own hashing left out) on the real path: 18.5 ms a chunk of wall time at 96 MiB, at least its CPU. A request has 30 s of CPU; two thirds are left for a slower host (a CI runner among them), so 500 chunks, about 9 s measured. The leg fails if the measured time passes 30 s at this figure. About five subrequests a chunk, 2,500 at most. Production's wall time a chunk is owed live; an edit commits whole or not at all. |
 
 **Each path's units, and the leg's measured peak at its worst** (heap and backing stores
-over the isolate at rest, sampled at every chunk call while the path is suspended, after a
-swept collection; distinct content in every chunk):
+over the isolate at rest, sampled at every chunk call and at the end of every hold while the
+path is suspended, after a swept collection; distinct content in every chunk; each size run
+twice). At every checkpoint inside a hold the leg also holds what is live to the units the
+pool holds then, beside a quarter chunk of the steps' own objects: each step on its own, the
+reading step's among them (review M-a). A chunk-wise edit lets each source chunk go as its
+pieces are taken (`edit.ts`'s `letGo`, its buffer detached) and each made chunk once it is
+put: before that, a dead source chunk was now and then read live a collection longer, 12 MiB
+in a making step (review M-a's 12.07 MiB); now 8 MiB in every run.
 
 | Path | Declared | Measured | O(1) in size |
 |---|---|---|---|
-| `file_edit`'s reading step (`EDIT_READ_UNITS`) | 1 unit: one source chunk | within the making step's | |
-| `file_edit`'s making step (`EDIT_MAKE_UNITS`) | 3 units: the chunk made, a source chunk, the put's copy | 7.83 / 8.06 / 8.02 MiB at 8 / 32 / 96 MiB; two at once +8.0 MiB | 96 against 32 MiB: −0.04 MiB |
-| `file_append` (`APPEND_UNITS`) | 5 units: the last chunk, the text, the two joined, slack | 16.02 MiB (a last chunk a KiB short of whole, a whole chunk of text) | 32 against 8 MiB: 0 MiB |
-| a body's windows (`WINDOW_UNITS`) | 1 unit | 0.06 MiB | 8 against 2 MiB body: 0 MiB |
-| a whole body (`bodyUnits`) | 3 units a chunk: its bytes, its text, slack | 4.01 MiB (one chunk), 8.01 MiB (two) | by design O(body), at most `BODY_BYTES_MAX` |
+| `file_edit`'s reading step (`EDIT_READ_UNITS`) | 2 units: the source chunk in hand, the call's copy as it arrives | within its units at every checkpoint | |
+| `file_edit`'s making step (`EDIT_MAKE_UNITS`) | 3 units: the chunk made, the source chunk in hand, the put's copy | 8.04 / 8.05 / 8.01 / 8.02 MiB at 8 / 32 / 96 / 192 MiB, the worst of two runs; two at once +8.06 MiB | 192 against 96 MiB: +0.06 MiB |
+| `file_append` (`APPEND_UNITS`) | 5 units: the last chunk, the text, the two joined, slack | 16.00 MiB (a last chunk a KiB short of whole, a whole chunk of text) | 32 against 8 MiB: +0.02 MiB |
+| a body's windows (`WINDOW_UNITS`) | 1 unit | 0.06 MiB | 8 against 2 MiB body: +0.06 MiB |
+| a whole body (`bodyUnits`) | 3 units a chunk: its bytes, its text, slack | 4.02 MiB (one chunk), 8.01 MiB (two) | by design O(body), at most `BODY_BYTES_MAX` |
 | the control (keeps every chunk) | | +24.01 MiB, 32 against 8 MiB | grows, as it must |
 
 **The live terms** (the counts test, from the source constants):
@@ -372,7 +379,8 @@ With one owner object, 70.8 MiB of 122.07 MiB: 51.3 MiB left, uncounted.
   the room left; if production counts it, the pool shrinks to fit.
 - **Holds not yet under a unit**, each owed:
   - a call's RPC arguments (up to `MCP_BODY_MAX` on `/mcp`, `API_BODY_MAX` on `/api`), the
-    waiting calls' among them: PR 3b;
+    waiting calls' among them (at most `OWNER_WAITERS` x `API_BODY_MAX`, the pool's own size,
+    for the larger holds): PR 3b;
   - `file_write`'s whole bytes (`WHOLE_BYTES`): PR 3b;
   - `file_upload_chunks`' two chunks, as arguments, and `file_read_chunks`' two, as its
     answer: PR 3b;

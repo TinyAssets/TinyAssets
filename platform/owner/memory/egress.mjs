@@ -9,10 +9,10 @@
 // - the gateway at S against 4S, while the provider holds its answer: at most a quarter chunk;
 // - the gateway while it uploads: at most 1.05·S + 0.25 MiB (the bytes, once);
 // - N against 2N calls held at once: at most 0.25 MiB more in the gateway per call;
-// - the parse's weight (review H1): for ten body shapes (non-ASCII and ASCII text, and those
-//   whose trees cost most a token: empty objects and arrays, unique keys, nesting two million
-//   deep), the gateway's live set right after the parse, the stringify and the encode is at
-//   most the weight (`held.ts`) its slots were taken for; an under-count fails the leg;
+// - the parse's weight (review H1): for eleven body shapes (non-ASCII, `\u`-escaped and
+//   ASCII text, and those whose trees cost most a token: empty objects and arrays, unique
+//   keys, nesting two million deep), the gateway's live set right after the parse, the
+//   stringify and the encode is at most the weight (`held.ts`) its slots were taken for; an under-count fails the leg;
 // - the pool: a call behind a whole-pool upload waits and then lands; one held past the
 //   pool's wait is refused `busy`.
 // Exports `egressLeg()`, which answers its rows and problems.
@@ -57,6 +57,11 @@ function shapes(bytes) {
   return [
     ["mixed", JSON.stringify({ model: "m", messages: [{ role: "user",
       content: `${"a".repeat(4093)}\u2014`.repeat(Math.floor(bytes / 4100)) }] })],
+    // The same text as Python's `json.dumps` writes it: every byte ASCII, each em dash a
+    // `\u2014` escape the parse makes two-byte (review V-H1).
+    ["escaped", JSON.stringify({ model: "m", messages: [{ role: "user",
+      content: `${"a".repeat(4088)}\u2014`.repeat(Math.floor(bytes / 4100)) }] })
+      .replaceAll("\u2014", "\\u2014")],
     ["ascii", JSON.stringify({ model: "m", messages: [{ role: "user",
       content: "a".repeat(bytes - 60) }] })],
     ["small messages", list(() => '{"role":"user","content":"a"}')],

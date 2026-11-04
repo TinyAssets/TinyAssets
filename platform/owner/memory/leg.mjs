@@ -3,24 +3,28 @@
 //
 // It bundles `probe.ts` (the platform's own owner object, files and bodies code) and runs it
 // in standalone workerd with `--expose-gc`, against an in-memory chunk store in another
-// isolate. Every chunk call is a checkpoint: the path waits on this driver while it collects
-// the owner isolate (a swept full collection) and reads `usedSize + backingStorageSize`
-// through the inspector, so a sample is the live set, byte arrays included (reviews H2,
-// rpcretain_research.md §4: a read must be atomic with its collection); with several paths
-// at once it waits until every one is parked or done. Each file's chunks are distinct, so a
-// longer edit makes and puts every chunk after its change. Then:
+// isolate. Checkpoints: every chunk call (at the store, and in the owner isolate before it
+// and after a chunk arrives) and the end of every hold, before its release (review M-a).
+// At each the path waits on this driver while it collects the owner isolate (a swept full
+// collection) and reads `usedSize + backingStorageSize` through the inspector, so a sample
+// is the live set, byte arrays included (rpcretain_research.md §4: a read must be atomic with
+// its collection); with several paths at once it waits until every one is parked or done.
+// The owner isolate's checkpoints say the units its pool holds. Each file's chunks are
+// distinct, so a longer edit makes and puts every chunk after its change. Then:
 // - the control holds: a path that keeps every chunk reads as growing, or the leg proves
 //   nothing;
 // - the baseline: the isolate at rest, one owner object built and served, is within
 //   `OWNER_BASELINE_BYTES`;
+// - each step on its own: at every checkpoint inside a hold, what is live is within the
+//   units the pool holds then, beside a quarter chunk of the steps' own objects;
 // - O(1) in size: peak(L) - peak(S) is at most a quarter chunk, at sizes past the path's
-//   steady state (an edit of 32 against 96 MiB; an append to 8 against 32 MiB; a body's
-//   window from 2 against 8 MiB);
-// - each path's cost: its peak is within the units it declares (`holds.ts`);
+//   steady state (an edit of 96 against 192 MiB; an append to 8 against 32 MiB; a body's
+//   window from 2 against 8 MiB), each the least of two runs;
+// - each path's cost: its worst run's peak is within the units it declares (`holds.ts`);
 // - per unit: two edits at once hold at most one making step's units more than one;
 // - its time: the worst edit's time a chunk, measured with no collections, keeps
 //   `EDIT_BYTES_MAX` inside a request's 30 s of CPU (the time is wall time, at least the CPU
-//   it spent), and a full queue turns over within `SLOT_WAIT_MS` at the measured step.
+//   it spent), and each class's full queue turns over within `SLOT_WAIT_MS`.
 // Differences cancel the baseline and the probe's own code (review M4); the absolute figure
 // is production's (`memoryUsageBytes`). Run: `npm run test:memory -w owner`. Exits non-zero
 // on any failed check, printing every figure.
@@ -150,11 +154,14 @@ try {
     }
     const go = parked;
     parked = [];
+    // The units the pool holds, as the last path to park said them: nothing has run since.
+    const held = go.at(-1).held;
+    const at = go.map((each) => each.at).join("+");
     sampling = sampling.then(async () => {
       if (sample !== null) {
-        await sample();
+        await sample(held, at);
       }
-      for (const response of go) {
+      for (const { response } of go) {
         response.end("go");
       }
     });
@@ -167,7 +174,9 @@ try {
     } else if (sample === null) {
       response.end("go");
     } else {
-      parked.push(response);
+      const query = new URL(request.url, "http://driver").searchParams;
+      const held = query.get("held");
+      parked.push({ response, held: held === null ? null : Number(held), at: query.get("at") });
       settle();
     }
   });
@@ -181,10 +190,29 @@ try {
     const floor = Math.min(await live(), await live());
     let most = 0;
     let points = 0;
+    // The most a sample in the owner isolate read past the units its pool held then: each
+    // step's live set against its own units, the reading steps' among them (review M-a).
+    let over = -Infinity;
     active = n;
-    sample = async () => {
+    let where = "";
+    let overAt = "";
+    sample = async (held, at) => {
       points += 1;
-      most = Math.max(most, await live() - floor);
+      const now = await live() - floor;
+      if (now > most) {
+        where = `${at} (${held} units)`;
+      }
+      most = Math.max(most, now);
+      // Inside a hold (outside one, what is live is a call's own arguments, which no unit
+      // counts yet: PR 3b).
+      if (held !== null && held > 0) {
+        // Beside its chunks, a step's own objects (its plan, its hashes, its request): at
+        // most the leg's quarter chunk.
+        if (now - held * UNIT - QUARTER > over) {
+          overAt = `${at} (${held} units, ${(now / MIB).toFixed(2)} MiB)`;
+        }
+        over = Math.max(over, now - held * UNIT - QUARTER);
+      }
     };
     try {
       await get(`/run?path=${path}&mib=${mib}`);
@@ -199,6 +227,12 @@ try {
     const least = path === "edit" ? 4 * chunks : path === "hoard" ? chunks : 1;
     if (points < least) {
       throw new Error(`${path} ${mib} MiB x ${n}: ${points} checkpoints, fewer than ${least}`);
+    }
+    if (path !== "hoard") {
+      check(`${path} ${mib} MiB x ${n}: live past the units held, at every hold's checkpoint`,
+            over, 0, "the units its pool held");
+      rows.push({ run: `${path} ${mib} MiB x ${n}`, peak_mib: +(most / MIB).toFixed(2),
+                  at: where, closest_to_its_units: overAt });
     }
     return most;
   };
@@ -232,26 +266,38 @@ try {
                   "cannot see what a path holds");
   }
 
-  const edit = { 8: await peak("edit", 8), 32: await peak("edit", 32),
-                 96: await peak("edit", 96) };
-  check("edit: peak(96 MiB) - peak(32 MiB)", edit[96] - edit[32], QUARTER, "a quarter chunk");
-  for (const mib of [8, 32, 96]) {
-    check(`edit: peak(${mib} MiB)`, edit[mib], costs.EDIT_MAKE_UNITS * UNIT,
-          "EDIT_MAKE_UNITS");
+  // Each size run twice. Now and then a dead chunk reads live one collection longer (a
+  // stale reference the collector cannot yet rule out, never more than one chunk), the more
+  // often the more steps a run takes: each path's cost is held to its worst run, and its
+  // size-independence read from its least, at sizes where that chunk is seen in every run
+  // (96 against 192 MiB), so it is not taken for growth. A path that grows grows in every run.
+  const twice = async (path, mib) => {
+    const [a, b] = [await peak(path, mib), await peak(path, mib)];
+    return { most: Math.max(a, b), least: Math.min(a, b) };
+  };
+  const edit = { 8: await twice("edit", 8), 32: await twice("edit", 32),
+                 96: await twice("edit", 96), 192: await twice("edit", 192) };
+  check("edit: peak(192 MiB) - peak(96 MiB), least of two runs",
+        edit[192].least - edit[96].least, QUARTER, "a quarter chunk");
+  for (const mib of [8, 32, 96, 192]) {
+    check(`edit: peak(${mib} MiB), worst of two runs`, edit[mib].most,
+          costs.EDIT_MAKE_UNITS * UNIT, "EDIT_MAKE_UNITS");
   }
-  const twice = await peak("edit", 32, 2);
-  check("edit: peak(2 at once) - peak(1), at 32 MiB", twice - edit[32],
+  const both = await peak("edit", 32, 2);
+  check("edit: peak(2 at once) - peak(1), at 32 MiB", both - edit[32].least,
         costs.EDIT_MAKE_UNITS * UNIT, "one making step's units");
 
-  const append = { 8: await peak("append", 8), 32: await peak("append", 32) };
-  check("append: peak(32 MiB) - peak(8 MiB)", append[32] - append[8], QUARTER,
-        "a quarter chunk");
-  check("append: peak(32 MiB)", append[32], costs.APPEND_UNITS * UNIT, "APPEND_UNITS");
+  const append = { 8: await twice("append", 8), 32: await twice("append", 32) };
+  check("append: peak(32 MiB) - peak(8 MiB), least of two runs",
+        append[32].least - append[8].least, QUARTER, "a quarter chunk");
+  check("append: peak(32 MiB), worst of two runs", Math.max(append[8].most, append[32].most),
+        costs.APPEND_UNITS * UNIT, "APPEND_UNITS");
 
-  const window = { 2: await peak("window", 2), 8: await peak("window", 8) };
-  check("window: peak(8 MiB body) - peak(2 MiB body)", window[8] - window[2], QUARTER,
-        "a quarter chunk");
-  check("window: peak(8 MiB body)", window[8], costs.WINDOW_UNITS * UNIT, "WINDOW_UNITS");
+  const window = { 2: await twice("window", 2), 8: await twice("window", 8) };
+  check("window: peak(8 MiB body) - peak(2 MiB body), least of two runs",
+        window[8].least - window[2].least, QUARTER, "a quarter chunk");
+  check("window: peak(8 MiB body), worst of two runs", window[8].most,
+        costs.WINDOW_UNITS * UNIT, "WINDOW_UNITS");
 
   check("fetch: peak(4 MiB body)", await peak("fetch", 4), costs.body_units[0] * UNIT,
         "bodyUnits(1)");
@@ -279,6 +325,15 @@ try {
               ok: steps * msPerChunk <= costs.wait_ms });
   if (steps * msPerChunk > costs.wait_ms) {
     problems.push(`a full queue turns over in ${steps * msPerChunk} ms, past SLOT_WAIT_MS`);
+  }
+  // The one-unit holds' queue apart: the reserve serving every waiter, a window at a time.
+  const msPerWindow = Math.min(await timed("window", 8), await timed("window", 8));
+  const smallTurn = (costs.OWNER_SMALL_WAITERS / costs.OWNER_RESERVE_UNITS + 1) * msPerWindow;
+  rows.push({ check: "queue: a full one-unit queue's turnover, a window at a time",
+              ms: +smallTurn.toFixed(1), window_ms: +msPerWindow.toFixed(2),
+              most_ms: costs.wait_ms, ok: smallTurn <= costs.wait_ms });
+  if (smallTurn > costs.wait_ms) {
+    problems.push(`a full one-unit queue turns over in ${smallTurn} ms, past SLOT_WAIT_MS`);
   }
   console.log(JSON.stringify({ owner_rest_mib: +(rest / MIB).toFixed(2), checks: rows },
                              null, 1));

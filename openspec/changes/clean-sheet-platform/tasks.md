@@ -2432,7 +2432,9 @@ R, S, M and W.
 - [x] MEMORY PR 2, memory bounded by structure (ADR-037): one pool of units an isolate
   (`slots.ts`), a path taking units for what it holds while its bytes are in hand, weighted by
   it (`holds.ts`), a reserve so a one-unit hold never waits behind larger ones (review M1),
-  `busy` past the wait or the waiters (`503`, `Retry-After`); `file_edit` chunk-wise, a step
+  nor a larger one is starved by them (M-b), each class's waiters capped apart (L-a), the
+  larger ones by the largest arguments a door takes (L-b), `busy` past the wait or the
+  waiters (`503`, `Retry-After`); an edit's source chunks let go as their pieces are taken; `file_edit` chunk-wise, a step
   per chunk read and per chunk made and put, to `EDIT_BYTES_MAX` (500 chunks, from the
   worst edit's measured time); `file_append`, a body's windows and whole reads each a step;
   the relay's tails one budget an isolate (M5); `agents_list` paged by stable key; owner
@@ -2478,6 +2480,17 @@ R, S, M and W.
   recorded in `deploy/checklist.md` (lows). Measuring it showed a dead local of a suspended
   async function is still kept: the read now returns through `weighedBody`, so its text is
   held once.
+  Verification rveg2 (REQUEST_CHANGES), fixed: a `\u` escape weighs as non-ASCII (Python's
+  `json.dumps` writes them; the leg's eleventh shape, escaped text, passes); growth is
+  wait-die in `slots.ts`'s one admission rule (`#fits`): only the oldest holder waits while it
+  holds, a younger one gives everything back `busy` before its reserve, and while the oldest
+  waits nothing else takes past the reserve; an owner holding half the pool or more takes no
+  more while another owner waits; each unit's worth of body must arrive within the pool's
+  wait of that unit's grant, its clock running only while the call waits on its sender, so
+  16 silent calls let go at their units' deadlines and another owner lands; a stopped wait
+  leaves the queue at once; the reserve waits at most the pool's wait (`busy`); a body is
+  refused `egress_too_large` as soon as its weight passes the pool. A stop racing a reserve
+  already in flight may still be charged whole, as before A′.
   The memory leg's egress cases (`owner/memory/egress.mjs`, run by `leg.mjs`: the real door
   and gateway in isolates of their own, sampled at the provider's checkpoints), measured in
   workerd: the door at 16 against 4 MiB held -0.38 MiB, the gateway -0.01 MiB (each at most a
