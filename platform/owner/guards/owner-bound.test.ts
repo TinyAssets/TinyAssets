@@ -465,7 +465,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                         by: "ARCHIVE_SEGMENTS_MAX: TIER_STORAGE_MAX over SEGMENT_LEAST_BYTES, " +
                           "plus one; each its keys, times, sizes, content id and bloom",
                         indexes: { archive_segments_by_last: key(8, NUMBER) } },
-    archive_moves: { rows: 2, bytes: ROW + 16 + 32 + 64 + NUMBER,
+    archive_moves: { rows: 2, bytes: ROW + 16 + 32 + 64 + 2 * NUMBER,
                      by: "one move in flight a stream, mail and a rewrite",
                      indexes: { sqlite_autoindex_archive_moves_1: key(16) } },
     archive_purges: { rows: L.maxAgentRows, bytes: ROW + AGENT_ID + 2 * NUMBER,
