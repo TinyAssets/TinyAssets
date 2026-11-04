@@ -19,8 +19,8 @@ import {
   TERMS, worstCase,
 } from "./owner-bound.test";
 import {
-  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES,
-  SEGMENT_MIN_RECORDS, TIER_STORAGE_MAX,
+  ARCHIVE_SEGMENTS_MAX, bytesOf, MIN_RECORD_BYTES, pack, recordText, SEGMENT_LEAST_BYTES,
+  SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord, TIER_STORAGE_MAX,
 } from "../src/segments";
 
 const HALF = SHARE * DATABASE_BYTES;
@@ -83,26 +83,55 @@ describe("slice STORE's archive (item 2)", () => {
     expect(HALF - total(others)).toBeGreaterThanOrEqual(DERIVED_ROOM * (1 - LOG_SHARE));
   });
 
-  it("derives the unread ceiling from the hot mail's honest share of the room under half",
-     () => {
-    // Unread mail cannot move (phase 1 archives acked mail only), so each unread message
-    // holds all three of its hot rows: its honest cost is the three ledger terms a row, not
-    // the recipients term's row alone (2.2 KB: that reading would claim 50,000 unread). The
-    // three terms at `maxMessages` are the hot mail's share of the room under half (the hot
-    // size a chosen 50,000; the room left under half is STARTER's and BRAIN's quarters, so it
-    // cannot grow). Of that share, a segment's records stay acked at the hot ceiling so the
-    // lane always has one to move; the unread ceiling is the rest.
+  it("sets the unread ceiling at the hot ceiling less one segment's records", () => {
+    // The guard costs the three hot terms (a message, its body, its recipient) at
+    // `maxMessages` rows, so any unread count up to it fits under half. The one binding
+    // constraint: at the hot ceiling a segment's records stay acked, so the lane always has
+    // one to move. So 50,000 - 25,000. (`maxMessages` is a chosen hot size: the room left
+    // under half is STARTER's and BRAIN's quarters, so it cannot grow.)
     const L = LEDGER_LIMITS;
-    const hot = ["ledger_messages", "message_bodies", "ledger_recipients"]
-      .reduce((sum, table) => sum + termBytes(table, TERMS[table]!), 0);
-    const perMessage = hot / L.maxMessages;
-    expect(perMessage).toBeGreaterThan(14_000);  // 14,535 B at the validators' widest
-    const derived = Math.floor((hot - SEGMENT_MIN_RECORDS * perMessage) / perMessage);
-    expect(L.maxUnacked).toBe(derived);
+    for (const table of ["ledger_messages", "message_bodies", "ledger_recipients"]) {
+      expect(TERMS[table]!.rows, table).toBe(L.maxMessages);
+    }
+    expect(L.maxUnacked).toBe(L.maxMessages - L.archiveRecords);
     expect(L.archiveRecords).toBe(SEGMENT_MIN_RECORDS);
     // The hot share fits under half beside every other term (the guard's own check), and the
     // room left is no more than STARTER's and BRAIN's quarters and a little.
     expect(HALF - total(TERMS)).toBeLessThan(DERIVED_ROOM * 2 * LOG_SHARE + 50e6);
+  });
+
+  it("cuts segments only where both sides hold the least, so ARCHIVE_SEGMENTS_MAX holds " +
+     "(review N2, the reviewer's rvsh2_pack case)", () => {
+    const message = (key: number, body: string): SegmentRecord => ({
+      key, chain: `msg_${String(key).padStart(32, "0")}`,
+      rows: [["ledger_messages", { seq: key, body }]] });
+    const size = (record: SegmentRecord) => bytesOf(recordText(record));
+    // One small message, a straggler with a body at the cap, then small mail just short of
+    // the two: past twice the least, where the old cut left a 698-byte first half.
+    const first = message(0, "x".repeat(400));
+    const straggler = message(1, "y".repeat(BODY_BYTES_MAX));
+    const head = size(first) + size(straggler);
+    const small = size(message(2, "x".repeat(400)));
+    const rest: SegmentRecord[] = [];
+    for (let key = 2, bytes = 0; bytes + small < head; key++, bytes += small) {
+      rest.push(message(key, "x".repeat(400)));
+    }
+    const records = [first, straggler, ...rest];
+    expect(records.reduce((sum, record) => sum + size(record), 0))
+      .toBeGreaterThan(2 * SEGMENT_LEAST_BYTES);
+    const bytesOfPiece = (piece: SegmentRecord[]) =>
+      piece.reduce((sum, record) => sum + size(record), 0);
+    const pieces = pack(records, SEGMENT_LEAST_BYTES);
+    expect(pieces.every((piece) => bytesOfPiece(piece) >= SEGMENT_LEAST_BYTES)).toBe(true);
+    expect(pieces.flat().map((record) => record.key)).toEqual(records.map((r) => r.key));
+    // Many small records past twice the least: several pieces, each the least or more.
+    const many = Array.from({ length: 30_000 }, (_, key) => message(key, "z".repeat(700)));
+    const cut = pack(many, SEGMENT_LEAST_BYTES);
+    expect(cut.length).toBeGreaterThan(1);
+    expect(cut.every((piece) => bytesOfPiece(piece) >= SEGMENT_LEAST_BYTES)).toBe(true);
+    expect(cut.flat().length).toBe(many.length);
+    // At most twice the least, one piece, whatever is in it (a lone one may be small).
+    expect(pack([first], SEGMENT_LEAST_BYTES)).toEqual([[first]]);
   });
 
   it("lets a tier offer about 0.5 TB: the fence rows, each a sealed segment's least bytes",

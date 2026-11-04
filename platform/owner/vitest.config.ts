@@ -209,6 +209,7 @@ export default defineConfig({
                 BARE: { className: "UnboundOwnerDO", useSQLite: true },
                 BOUNDED: { className: "BoundedOwnerDO", useSQLite: true },
                 ARCHIVING: { className: "ArchivingOwnerDO", useSQLite: true },
+                BIGARCHIVING: { className: "BigArchivingOwnerDO", useSQLite: true },
                 RUNG: { className: "RungOwnerDO", useSQLite: true },
                 SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
                 CACHED: { className: "CachedOwnerDO", useSQLite: true },

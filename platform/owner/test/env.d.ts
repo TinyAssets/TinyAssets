@@ -12,6 +12,7 @@ declare namespace Cloudflare {
     BARE: DurableObjectNamespace<import("./worker").UnboundOwnerDO>;
     BOUNDED: DurableObjectNamespace<import("./worker").BoundedOwnerDO>;
     ARCHIVING: DurableObjectNamespace<import("./worker").ArchivingOwnerDO>;
+    BIGARCHIVING: DurableObjectNamespace<import("./worker").BigArchivingOwnerDO>;
     SWITCHED: DurableObjectNamespace<import("./worker").SwitchedOwnerDO>;
     CACHED: DurableObjectNamespace<import("./worker").CachedOwnerDO>;
     SANDBOX: import("../src/sandbox").SandboxService;

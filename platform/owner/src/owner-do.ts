@@ -3584,10 +3584,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#archiveFails++;
       console.error("the archive lane's pass failed", error);
       if (this.#archiveFails === ARCHIVE_FAILS_TOLD) {
+        // What failed, as it said it, never a cause it did not give (review N1).
+        const said = error instanceof Error ? error.message.split("\n")[0]!.slice(0, 200)
+          : String(error).slice(0, 200);
         await this.#door(() => this.#notices.add("storage_busy_long",
-          "Older mail could not be moved out (the storage service did not answer), so new " +
-            "mail may wait; it goes on by itself once the storage service answers again.",
-          clock()));
+          `Older mail could not be moved out (${said}), so new mail may wait at the hot ` +
+            "ceiling; the archive tries again every minute.", clock()));
       }
       return { hold: clock() + ARCHIVE_RETRY_S };
     }

@@ -67,6 +67,17 @@ export class ArchivingOwnerDO extends OwnerDO {
   }
 }
 
+/**
+ * As `ArchivingOwnerDO`, but a segment sealed at six records (or 8 MiB), twelve hot and six
+ * unread: a straggler merge meets its byte budget before its record cap (review N1).
+ */
+export class BigArchivingOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, { ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 12, maxUnacked: 6,
+                                      archiveRecords: 6 } });
+  }
+}
+
 /** A control record that reads open three times, then has outside access off; reads counted. */
 function switching(): { store: KVNamespace; reads: () => number } {
   let reads = 0;

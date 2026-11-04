@@ -462,6 +462,57 @@ describe("segments never overlap in key range (review H1)", () => {
   }, 60_000);
 });
 
+describe("a merge's byte budget (review N1)", () => {
+  it("merges large late-acked mail a budget at a pass, never all at once, every message kept",
+     async () => {
+    const big = env.BIGARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
+    const bigLimits = { ...LEDGER_LIMITS, maxMessages: 12, maxUnacked: 6, archiveRecords: 6 };
+    const r = await rig(big);
+    const muse = await r.register(MUSE);
+    const dot = await r.register(DOT, "Dot");
+    // Three messages near 7 MiB each to Muse, left unread; Dot's small mail after them moves.
+    const large: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      large.push((await r.post(null, `dm:${muse}`, {
+        cmid: `big${i}`, body: `${i}`.padEnd(7 * 1024 * 1024, "x") })).message_id);
+    }
+    await sentAndAcked(r, DOT, `dm:${dot}`, 7, "d");
+    for (let i = 0; i < 20; i++) {
+      await drainDue(r.stub);
+    }
+    const [{ n: segments }] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM " +
+                                                  "archive_segments") as [{ n: number }];
+    expect(segments).toBe(1);
+    // Muse acks them now (a read pages at 8 MiB of bodies, so a page each): three stragglers,
+    // about 21 MiB, inside that segment's keys.
+    for (let i = 0; i < 3; i++) {
+      await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
+    }
+    const pick = await r.inLedger(bigLimits, (ledger: Ledger) => ledger.archivePick());
+    expect(pick!.into).not.toBeNull();
+    expect(pick!.seqs).toHaveLength(2);  // 14 MiB within the 16 MiB budget; the third waits
+    // Past half the ceiling until both merges have run: each pass merges one budget.
+    await sentAndAcked(r, DOT, `dm:${dot}`, 8, "e");
+    for (let i = 0; i < 40; i++) {
+      await drainDue(r.stub);
+      const left = await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id IN " +
+                                       "(SELECT value FROM json_each(?))", JSON.stringify(large));
+      if (left.length === 0) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id IN " +
+                               "(SELECT value FROM json_each(?))", JSON.stringify(large)))
+      .toEqual([]);
+    expect(await overlaps(r)).toEqual([]);
+    for (const [n, id] of large.entries()) {
+      expect((await chained(r, id))?.length).toBe(7 * 1024 * 1024);
+      expect((await chained(r, id))?.[0]).toBe(`${n}`);
+    }
+  }, 180_000);
+});
+
 describe("an export across a move (review H2)", () => {
   it("replays exactly the owner at E by v3's reading: segments' rows after the log",
      async () => {

@@ -1922,6 +1922,7 @@ R, S, M and W.
     - the ledger's newest-`maxReceipts` (50,000) receipts, the older ones let go;
     - `CONVERSATIONS_KEPT` (10,000) making the oldest idle conversation forget its resume id (`run-rows.ts`);
     - file versions, with the index decision (`history_research.md` §4);
+    - **known write amplification:** a single late ack of one small message rewrites its whole 8 to 16 MiB segment (fetch, re-encode, upload, commit), so a sparse late-ack pattern costs a segment rewrite an ack; acceptable for phase 1, a batched or tiered merge is a later refinement;
     - **unread mail archived too** (found by seq, the hot set bounded by bytes): it needs its own research first, since an unread message's recipient state and mail in a run's hands change after a segment is sealed.
   - **Sync-in of the working set alone** (today it materializes the whole workspace), held for the scratch design.
   - **The starter package's agent instructions** naming `$TA_SCRATCH`: slice STARTER carries the scratch guidance, in its `AGENTS.md` and its scratch skill (the run door's MCP instructions carry it today).

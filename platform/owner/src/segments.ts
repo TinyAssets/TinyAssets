@@ -22,7 +22,8 @@
  * the record. A segment is sealed at `SEGMENT_MIN_BYTES` of lines or `SEGMENT_MIN_RECORDS`
  * records, and no record is smaller than `MIN_RECORD_BYTES` (the tests hold the smallest),
  * so every segment but a lone one holds at least `SEGMENT_LEAST_BYTES` of counted storage
- * (a rewrite left small takes in its neighbour by key; a split makes two halves past it), and the fence's rows are at most the storage over
+ * (a rewrite left small takes in its neighbours by key; `pack` cuts only where both sides
+ * hold at least it), and the fence's rows are at most the storage over
  * that, plus one: no count, the one number bounds them.
  */
 import { Buffer } from "node:buffer";
@@ -69,23 +70,37 @@ export const TIER_STORAGE_MAX = (ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES
 export const RECORD_TRAILER_BYTES = 320;
 
 /**
- * Records in key order cut into the pieces one rewrite or merge places: one, or two halves
- * when they pass twice `least` (so each is still at least `least`), never a piece smaller
- * unless all of them are.
+ * Records in key order cut into the pieces one rewrite or merge places, each at least
+ * `least` (review N2): one piece while they hold at most twice `least`; past it, a cut after
+ * each run of records that reaches `least` while what is left still holds at least `least`,
+ * so no piece is ever smaller (a record as large as a body never leaves a small one beside
+ * it: no cut is made where it would). With no such cut, one piece: at most twice `least`
+ * and the largest record, which the moves' byte budget bounds.
  */
 export function pack<T extends SegmentRecord>(records: readonly T[], least: number): T[][] {
   const sizes = records.map((record) => bytesOf(recordText(record)));
   const total = sizes.reduce((sum, size) => sum + size, 0);
-  if (total <= 2 * least || records.length < 2) {
+  if (total <= 2 * least) {
     return [records.slice()];
   }
-  let at = 0;
+  const pieces: T[][] = [];
+  let piece: T[] = [];
   let bytes = 0;
-  while (at < records.length - 1 && bytes + sizes[at]! <= total / 2) {
-    bytes += sizes[at]!;
-    at++;
+  let left = total;
+  for (const [n, record] of records.entries()) {
+    piece.push(record);
+    bytes += sizes[n]!;
+    left -= sizes[n]!;
+    if (bytes >= least && left >= least) {
+      pieces.push(piece);
+      piece = [];
+      bytes = 0;
+    }
   }
-  return [records.slice(0, Math.max(1, at)), records.slice(Math.max(1, at))];
+  if (piece.length > 0) {
+    pieces.push(piece);
+  }
+  return pieces;
 }
 
 /** The 16 digits after the trailer that give its offset. */

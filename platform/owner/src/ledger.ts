@@ -223,11 +223,11 @@ export const WAKE_SETTINGS = Object.freeze({
  * 2, the founder's one wall): `maxMessages` hot messages, the acked ones moved to archive
  * segments by the `archive` lane from half of it, and a post at it answered `storage_busy`
  * (retryable) while the lane catches up, never a delete; and `maxUnacked` messages unread
- * owner-wide, derived from the hot mail's honest share of the room under half the 10 GB
- * (each unread message holds its three hot rows; `limits-audit.md`), less one segment's
- * records so at the hot ceiling there is always a segment to move, past which a post is
- * refused `ledger_full`: too much mail is unread, the readers holding the most named, and
- * reading or acking makes room. Being owner-wide, one noisy sender can fill it. Disabling an agent releases its unacked mail,
+ * owner-wide: the hot ceiling (whose three rows a message the guard already costs, so any
+ * unread count up to it fits under half) less one segment's records, so that at the hot
+ * ceiling there is always a segment's worth of acked mail to move: 50,000 - 25,000. Past it
+ * a post is refused `ledger_full`: too much mail is unread, the readers holding the most
+ * named, and reading or acking makes room. Being owner-wide, one noisy sender can fill it. Disabling an agent releases its unacked mail,
  * and deleting one purges it, archived mail included (`archive_purges`).
  *
  * How they were chosen (ADR-035; `limits-audit.md`). Bodies past `PLACE_BYTES` live in R2,
@@ -1711,16 +1711,26 @@ export class Ledger {
           "ON b.message_id = m.message_id WHERE m.unacked = 0 ORDER BY m.seq LIMIT ?",
         limits.archiveRecords).toArray();
     }
+    // The byte budget (review N1). A tail move seals once its lines reach the seal (so it
+    // holds the least). A merge holds its segment and its stragglers in the isolate at once,
+    // so it takes stragglers only while they fit twice the seal less its segment's bytes, and
+    // always at least one (so the oldest straggler always moves); the rest merge on the next
+    // passes, whatever their sizes.
+    const budget = into === null ? limits.archiveBytes
+      : Math.max(0, 2 * limits.archiveBytes - into.bytes);
     const seqs: number[] = [];
     const contents: string[] = [];
     let bytes = 0;
     for (const row of rows) {
+      if (into !== null && seqs.length > 0 && bytes + row.line_bytes > budget) {
+        break;
+      }
       seqs.push(row.seq);
       if (row.content_id !== null) {
         contents.push(row.content_id);
       }
       bytes += row.line_bytes;
-      if (into === null && bytes >= limits.archiveBytes) {
+      if (into === null && bytes >= budget) {
         break;
       }
     }
