@@ -46,6 +46,9 @@ import { CHUNK_BYTES } from "../src/manifest";
 import { type Binding, EDIT_BYTES_MAX, OwnerDO, type OwnerEnv } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
 import { FILE_DEFAULTS, Policy } from "../src/policy";
+import {
+  MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, SEGMENT_LEAST_BYTES,
+} from "../src/segments";
 import { SLOT_WAIT_MS, UNIT_BYTES } from "../src/slots";
 
 declare function gc(): void;
@@ -201,6 +204,43 @@ function received(env: LegEnv): ChunkStore {
   };
 }
 
+/**
+ * What one move's records hold at `records` (the most, `MOVE_RECORDS`: no real mail reaches
+ * it, its records being past `MIN_RECORD_BYTES`), built by the move's own code as a merge
+ * builds it: the pick's seqs, a table of its segment's kept records (a third, ranges of one
+ * content) and its stragglers, each its own chain (a message id, the longest name), its
+ * order, its pieces and their plans; held, in the units it declares, at a checkpoint.
+ */
+async function moveRecords(env: LegEnv, records: number): Promise<number> {
+  const slot = await holds.ownerSlots().acquire(holds.moveTableUnits(records), true);
+  try {
+    const kept = Math.floor(records / 3);
+    const seqs = Array.from({ length: records - kept }, (_, n) => kept + n + 1);
+    const table = new MoveTable();
+    const content = table.addContent(kept * MIN_RECORD_BYTES,
+      Array.from({ length: Math.ceil(kept * MIN_RECORD_BYTES / CHUNK_BYTES) },
+                 (_, n) => n.toString(16).padStart(64, "0")), null);
+    const id = (n: number) => `msg_${n.toString(16).padStart(32, "0")}`;
+    for (let n = 0; n < kept; n++) {
+      table.push(n + 1, id(n), "dm:leg", n, MIN_RECORD_BYTES, MoveTable.KEPT, content,
+                 n * MIN_RECORD_BYTES);
+    }
+    for (const seq of seqs) {
+      table.push(seq, id(seq), "dm:leg", seq, MIN_RECORD_BYTES, MoveTable.INLINE, -1, 0);
+    }
+    const all = Array.from({ length: table.count }, (_, n) => n);
+    const ordered = [...all].sort((a, b) => table.key(a) - table.key(b));
+    const plans = pack(ordered, SEGMENT_LEAST_BYTES, (n) => table.length(n)).map((part) => {
+      const piece = table.piece(Uint32Array.from(part));
+      return { plan: planSegment("mail", piece), indices: piece.indices };
+    });
+    await owned(env, "move-records");
+    return seqs.length + table.count + plans.length;
+  } finally {
+    slot.release();
+  }
+}
+
 /** The real owner object, with the body paths and the control in reach. */
 export class LegOwner extends OwnerDO {
   readonly #leg: LegEnv;
@@ -257,6 +297,8 @@ export class LegOwner extends OwnerDO {
 
 const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
+const PAT: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
+const ORIGINS = [MUSE, DOT, PAT];
 
 /**
  * An owner object whose `archive` lane the leg runs: the real `OwnerDO` at `limits`, its
@@ -282,10 +324,10 @@ class ArchiveObject extends OwnerDO {
     const storage = this.#state.storage;
     const grants = new Grants(storage, new Policy(storage));
     const ledger = new Ledger(storage, grants, this.#limits);
-    return [MUSE, DOT].map((origin, n) => {
+    return ORIGINS.map((origin, n) => {
       grants.admit(origin.client, "mcp", null, Math.floor(Date.now() / 1000));
       return ledger.register(origin, { kind: "mcp", ref: `conn-${n}` }, {
-        command_center_id: "alpha", display_name: n === 0 ? "Muse" : "Dot",
+        command_center_id: "alpha", display_name: ["Muse", "Dot", "Pat"][n]!,
         delivery_method: "pull", recipe_id: null }).agent_id;
     });
   }
@@ -293,7 +335,7 @@ class ArchiveObject extends OwnerDO {
   /** `count` small messages from the owner to `room`'s agent (`reader`), each acked. */
   legSmall(room: string, reader: number, count: number): number {
     const ledger = this.#ledger();
-    const origin = [MUSE, DOT][reader]!;
+    const origin = ORIGINS[reader]!;
     let last = 0;
     for (let n = 0; n < count; n++) {
       last = ledger.seqOf(ledger.post(null, room, `s${n}`, "x", null).message_id)!;
@@ -308,9 +350,59 @@ class ArchiveObject extends OwnerDO {
   /** Every message to `reader` acked, through the message `id`. */
   legAck(reader: number, id: string): void {
     const ledger = this.#ledger();
-    const origin = [MUSE, DOT][reader]!;
+    const origin = ORIGINS[reader]!;
     ledger.read(origin, 1);
     ledger.ack(origin, ledger.seqOf(id)!);
+  }
+
+  /**
+   * The mail for the most records one merge takes with real messages (the memory research's
+   * merge, round 5): the muse's acked mail interleaved with Dot's and Pat's (two of Pat's to
+   * each), unread; then more of the muse's, acked, so the hot set stays past half. Sealed,
+   * the muse's first 8 MiB span Dot's and Pat's keys; Dot's, acked, merge into it (a piece of
+   * about 16 MiB); Pat's, acked, merge into that up to `MOVE_BYTES`: the measured move. The
+   * last of Dot's and of Pat's messages' seqs.
+   */
+  legInterleaved(rooms: string[]): { dot: number; pat: number } {
+    const ledger = this.#ledger();
+    const post = (room: string, cmid: string) =>
+      ledger.seqOf(ledger.post(null, room, cmid, "x", null).message_id)!;
+    let museLast = 0;
+    let dotLast = 0;
+    let patLast = 0;
+    let c = 0;
+    const ackMuse = () => {
+      ledger.read(MUSE, 1);
+      ledger.ack(MUSE, museLast);
+    };
+    for (let i = 0; i < 8_600; i++) {
+      museLast = post(rooms[0]!, `a${i}`);
+      if (i < 7_700) {
+        dotLast = post(rooms[1]!, `b${i}`);
+      }
+      for (let k = 0; k < 2 && c < 16_900; k++, c++) {
+        patLast = post(rooms[2]!, `c${c}`);
+      }
+      if (i % 50 === 49) {
+        ackMuse();
+      }
+    }
+    ackMuse();
+    for (let i = 0; i < 8_050; i++) {
+      museLast = post(rooms[0]!, `d${i}`);
+      if (i % 50 === 49) {
+        ackMuse();
+      }
+    }
+    ackMuse();
+    return { dot: dotLast, pat: patLast };
+  }
+
+  /** Every message to `reader` acked, through the seq `through`. */
+  legAckSeq(reader: number, through: number): void {
+    const ledger = this.#ledger();
+    ledger.read(ORIGINS[reader]!, 1);
+    ledger.ack(ORIGINS[reader]!, through);
   }
 
   /** An agent deleted, its mail purged from the archive by the lane's rewrites. */
@@ -437,6 +529,20 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       const agents = await stub.legAgents();
       await stub.legSmall(`dm:${agents[0]}`, 0, 25_000 + mib * 1000);
       LEG.ready.push({ name, who, agents, want: 1 });
+    } else if (path === "merge") {
+      // At the production limits: the muse's sealed mail, Dot's merged into it, and Pat's
+      // left for the run to ack: its merge is the measured move.
+      const stub = await archiveObject(env.ARCHIVE, name);
+      const agents = await stub.legAgents();
+      const lasts = await stub.legInterleaved(agents.map((agent) => `dm:${agent}`));
+      await ring(stub, who, agents[0]!, "r0");
+      await settled(stub, (seen) => seen.segments >= 1);
+      const sealed = (await stub.legArchived()).records;
+      await stub.legAckSeq(1, lasts.dot);
+      await ring(stub, who, agents[0]!, "r1");
+      await settled(stub, (seen) => seen.records >= sealed + 7_700);
+      LEG.ready.push({ name, who, agents, want: (await stub.legArchived()).records + 10_000,
+                       offset: lasts.pat });
     } else if (path === "bodies" || path === "rewrite") {
       // At the small limits: two acked bodies of `mib` MiB each, the owner's to the muse and
       // to Dot, sealed together; for the rewrite, the lane has sealed them and Dot is deleted.
@@ -487,7 +593,8 @@ async function ring(stub: DurableObjectStub<ArchiveObject>, who: Binding, agent:
 
 /** Until the lane's passes stand as `done` says (its own alarm runs them), or loudly not. */
 async function settled(stub: DurableObjectStub<ArchiveObject>,
-                       done: (seen: { segments: number; purges: number }) => boolean):
+                       done: (seen: { segments: number; records: number;
+                                  purges: number }) => boolean):
     Promise<void> {
   for (let n = 0; n < 1200; n++) {
     const seen = await stub.legArchived();
@@ -499,7 +606,8 @@ async function settled(stub: DurableObjectStub<ArchiveObject>,
     }
     await scheduler.wait(100);
   }
-  throw new Error("the archive lane did not settle");
+  throw new Error(`the archive lane did not settle: ${JSON.stringify(
+    await stub.legArchived())}`);
 }
 
 async function run(env: LegEnv, path: string, mib: number, timed: boolean):
@@ -513,6 +621,16 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
                                           want }) => {
     const stub = env.OWNER.getByName(name);
     try {
+      if (path === "records") {
+        return await moveRecords(env, MOVE_RECORDS);
+      }
+      if (path === "merge") {
+        const archive = env.ARCHIVE.getByName(name);
+        await archive.legAckSeq(2, offset!);
+        await ring(archive, who, agents![0]!, "r2");
+        await settled(archive, (seen) => seen.records >= want!);
+        return (await archive.legArchived()).records;
+      }
       if (path === "move" || path === "bodies" || path === "rewrite") {
         const archive = path === "move" ? env.ARCHIVE.getByName(name)
           : env.SEGMENTS.getByName(name);
@@ -562,6 +680,8 @@ export default {
                              edit_bytes_max: EDIT_BYTES_MAX, chunk: CHUNK_BYTES,
                              body_units: [1, 2].map((chunks) => holds.bodyUnits(chunks)),
                              move_seal_units: holds.moveTableUnits(25_000),
+                             move_most_units: holds.moveTableUnits(MOVE_RECORDS),
+                             move_records: MOVE_RECORDS,
                              move_body_units: holds.moveTableUnits(2) });
     }
     if (url.pathname === "/rest") {

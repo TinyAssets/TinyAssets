@@ -21,7 +21,10 @@
 //   steady state (an edit of 96 against 192 MiB; an append to 8 against 32 MiB; a body's
 //   window from 2 against 8 MiB), each the least of two runs;
 // - each path's cost: its worst run's peak is within the units it declares (`holds.ts`);
-// - the archive (STORE item 2): a tail seal of small messages (its records' units), a move of
+// - the archive (STORE item 2): what a move's records hold at `MOVE_RECORDS` (built by the
+//   move's own code: no real mail reaches it) within `moveTableUnits` and 256 bytes a record;
+//   the merge of the most records real mail reaches (round 5's), its records within the same
+//   at its passes' ends; a tail seal of small messages, a move of
 //   two large bodies (4 against 8 MiB each, O(1) in size) and a purge's rewrite of them,
 //   each run by the object's own `archive` lane, every pass within its table's and its own
 //   units;
@@ -205,6 +208,8 @@ try {
     let where = "";
     let overAt = "";
     let answer = null;
+    // The most live at a hold's end (after its chunks are let go): its records' own.
+    let ends = 0;
     sample = async (held, at) => {
       points += 1;
       const now = await live() - floor;
@@ -212,6 +217,9 @@ try {
         where = `${at} (${held} units)`;
       }
       most = Math.max(most, now);
+      if (at?.startsWith("end-of") || at === "move-records") {
+        ends = Math.max(ends, now);
+      }
       // Inside a hold (outside one, what is live is a call's own arguments, which no unit
       // counts yet: PR 3b).
       if (held !== null && held > 0) {
@@ -241,9 +249,12 @@ try {
     if (path !== "hoard") {
       check(`${path} ${mib} MiB x ${n}: live past the units held, at every hold's checkpoint`,
             over, 0, "the units its pool held");
-      rows.push({ run: `${path} ${mib} MiB x ${n}`, answer, peak_mib: +(most / MIB).toFixed(2),
+      rows.push({ run: `${path} ${mib} MiB x ${n}`, answer, ends_mib: +(ends / MIB).toFixed(2),
+                  peak_mib: +(most / MIB).toFixed(2),
                   at: where, closest_to_its_units: overAt });
     }
+    peak.ends = ends;
+    peak.answer = answer;
     return most;
   };
   /** A case's wall time with no collections (every checkpoint answered at once). */
@@ -318,6 +329,28 @@ try {
   // every checkpoint), each run's peak within its table's and its pass's units, and a move
   // of large bodies O(1) in their size.
   const pass = costs.MOVE_PASS_UNITS * UNIT;
+  // A move's records at their most, as its own code builds them: within its units, and
+  // within MOVE_RECORD_BYTES a record (beside a quarter chunk of the probe's own).
+  const records = await peak("records", 0);
+  check("archive move: its records at MOVE_RECORDS, within moveTableUnits", records,
+        costs.move_most_units * UNIT, "moveTableUnits(MOVE_RECORDS)");
+  check("archive move: its records at MOVE_RECORDS, a record's bytes", records,
+        costs.move_records * costs.MOVE_RECORD_BYTES + QUARTER,
+        "MOVE_RECORDS x MOVE_RECORD_BYTES + a quarter chunk");
+  rows.push({ check: "archive move: bytes a record at MOVE_RECORDS",
+              bytes: +(records / costs.move_records).toFixed(1),
+              most: costs.MOVE_RECORD_BYTES, ok: records / costs.move_records
+                <= costs.MOVE_RECORD_BYTES + QUARTER / costs.move_records });
+  // The merge of the most records real mail reaches: each pass within its units (above),
+  // its records within MOVE_RECORD_BYTES a record at its passes' ends.
+  const merged = await peak("merge", 0);
+  const mergedRecords = peak.answer[0];
+  check("archive merge: peak, the most records real mail reaches", merged,
+        (costs.move_most_units + costs.MOVE_PASS_UNITS) * UNIT,
+        "moveTableUnits(MOVE_RECORDS) + MOVE_PASS_UNITS");
+  check(`archive merge: live at its passes' ends, ${mergedRecords} records archived`, peak.ends,
+        mergedRecords * costs.MOVE_RECORD_BYTES + QUARTER,
+        "its records x MOVE_RECORD_BYTES + a quarter chunk");
   check("archive move: peak, a tail seal of small messages", await peak("move", 1),
         costs.move_seal_units * UNIT + pass,
         "moveTableUnits(archiveRecords, the most a seal takes) + MOVE_PASS_UNITS");

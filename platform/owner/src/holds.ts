@@ -73,9 +73,10 @@ export const APPEND_UNITS = 5;
  * 53 bytes in typed arrays, 106 doubled; its chain's name, a message id of at most 36 bytes
  * in the table's pool, 72 doubled), its plan's typed arrays (`planSegment`, 42) and the
  * move's lists of its keys and indices (the pick's seqs, its order, its pieces: 36): 256.
- * The workerd leg reads a tail seal of 8,489 small messages (8 MiB of records, near the
- * doubling's worst: its arrays at 16,384) at 1.83 MiB live at its passes' ends, 226 bytes a
- * record.
+ * The workerd leg measures it: a move's records built by its own code at `MOVE_RECORDS`
+ * (no real mail reaches it) 12.98 MiB, 182 bytes a record; the merge of the most records
+ * real mail reaches (32,568) 4.84 MiB at its passes' ends, 156 bytes a record; a tail seal of
+ * 8,489 small messages (its arrays near the doubling's worst, at 16,384) 1.83 MiB, 226.
  */
 export const MOVE_RECORD_BYTES = 256;
 
