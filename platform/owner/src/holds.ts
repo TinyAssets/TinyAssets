@@ -9,7 +9,7 @@
  * within it. The counts test (`guards/memory-counts.test.ts`) holds the pool, with the
  * isolate's other live holds and its resting baseline, within the isolate's 128 MB.
  */
-import { isolatePool, type SlotPool } from "./slots";
+import { isolatePool, type SlotPool, UNIT_BYTES } from "./slots";
 
 /**
  * The pool's capacity, in units (48 MiB): three edits' making steps (`EDIT_MAKE_UNITS`) at
@@ -65,6 +65,37 @@ export const EDIT_MAKE_UNITS = 3;
  * its worst, a last chunk a KiB short of whole and a whole chunk of text).
  */
 export const APPEND_UNITS = 5;
+
+/**
+ * What an archive move's or rewrite's records hold, a record's most, held for the move's life
+ * (its bytes are in hand throughout: `moveTableUnits`). Derived from the structure the code
+ * builds, each array at twice what it holds (they grow by doubling): its table (`MoveTable`:
+ * 53 bytes in typed arrays, 106 doubled; its chain's name, a message id of at most 36 bytes
+ * in the table's pool, 72 doubled), its plan's typed arrays (`planSegment`, 42) and the
+ * move's lists of its keys and indices (the pick's seqs, its order, its pieces: 36): 256.
+ * The workerd leg reads a tail seal of 8,489 small messages (8 MiB of records, near the
+ * doubling's worst: its arrays at 16,384) at 1.83 MiB live at its passes' ends, 226 bytes a
+ * record.
+ */
+export const MOVE_RECORD_BYTES = 256;
+
+/**
+ * The units a move's records hold at `records` records (at least one; at `MOVE_RECORDS`, the
+ * most a move holds, five), taken before its records arrive and held to the move's end; each
+ * pass takes `MOVE_PASS_UNITS` beside them (`SlotPool.grow`).
+ */
+export function moveTableUnits(records: number): number {
+  return Math.max(1, Math.ceil(records * MOVE_RECORD_BYTES / UNIT_BYTES));
+}
+
+/**
+ * One pass of an archive move (a scan, the hashing pass, the sending pass): the source chunk
+ * in hand (`MoveReader`, detached as the next arrives and as the pass ends), the chunk made
+ * from it (detached once hashed or sent), and the put's copy of what it sends, as an edit's
+ * making step (`EDIT_MAKE_UNITS`). The leg reads at most 8.1 MiB of a pass of two 8 MiB
+ * bodies beside a one-unit table, the same at 4 MiB (O(1) in their size).
+ */
+export const MOVE_PASS_UNITS = 3;
 
 /** Body windows (`Bodies.windows`): each at most a page, read by verified ranges. */
 export const WINDOW_UNITS = 1;

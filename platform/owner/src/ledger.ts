@@ -2044,13 +2044,21 @@ export class Ledger {
                 pieces: readonly { content_id: string;
                                    fence: Omit<Fence, "segment" | "content_id"> }[],
                 now: number): void {
+    // A piece a rewrite made again byte for byte (a purged segment's neighbour taken in
+    // whole, alone in its piece) is that segment, kept as it stands: deleted, its content's
+    // last reference would go with it, and the piece would name a content no longer held.
+    const made = new Set(pieces.map((piece) => piece.content_id));
     for (const old of replaced) {
-      if (this.#sql.exec("DELETE FROM archive_segments WHERE segment = ? AND content_id = ? " +
-                           "RETURNING segment", old.segment, old.content_id)
-        .toArray().length === 0) {
+      const gone = made.has(old.content_id)
+        ? this.#sql.exec("SELECT segment FROM archive_segments WHERE segment = ? AND " +
+                           "content_id = ?", old.segment, old.content_id).toArray()
+        : this.#sql.exec("DELETE FROM archive_segments WHERE segment = ? AND content_id = ? " +
+                           "RETURNING segment", old.segment, old.content_id).toArray();
+      if (gone.length === 0) {
         throw new Refused("archive_changed: a replaced segment went between the units");
       }
     }
+    const kept = new Set(replaced.map((old) => old.content_id).filter((id) => made.has(id)));
     if (seqs.length > 0) {
       if (this.#imageDigest(seqs) !== expected) {
         throw new Refused("archive_changed: the batch changed between the move's units");
@@ -2068,7 +2076,9 @@ export class Ledger {
     // visits every segment it had not (review N7: a jump past the replaced segments' ids
     // would skip the segments between them).
     for (const piece of pieces) {
-      this.#fence(piece.content_id, piece.fence, now);
+      if (!kept.has(piece.content_id)) {
+        this.#fence(piece.content_id, piece.fence, now);
+      }
     }
     this.#sql.exec("UPDATE ledger_usage SET archive_blocked = 0");
   }

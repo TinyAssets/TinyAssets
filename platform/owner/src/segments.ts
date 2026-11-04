@@ -68,22 +68,15 @@ export const TIER_STORAGE_MAX = (ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES
 /**
  * The most records' bytes one merge rewrites in a pass: its segment and its stragglers (it
  * takes stragglers while the two fit, and always one). Work, not memory: a move is streamed
- * (`planSegment`, `makeChunk`), so what it holds is `MOVE_HOLD_BYTES` whatever its size;
- * this bounds each pass's reads, hashing and calls. `pack`'s largest piece (twice the least
- * and a record) and the one straggler always taken fit it but for their lines.
+ * (`planSegment`, `makeChunk`), so what it holds is its records' units and a pass's
+ * (`holds.ts`) whatever its size; this bounds each pass's reads, hashing and calls. `pack`'s
+ * largest piece (twice the least and a record) and the one straggler always taken fit it but
+ * for their lines.
  */
 export const MOVE_BYTES = 32 * 1024 * 1024;
 /**
- * What one archive move holds in the isolate (reviews N5 and N6), derived from workerd's
- * measurement (`limits-audit.md`): the most records one move can hold (`MOVE_RECORDS`,
- * 74,933) at a record's measured cost in its packed table and plan (about 192 bytes), beside
- * what the measured worst move held besides its records (its chunks and the runtime's: 26.2
- * MiB), and the service binding's copy of the chunk it sends (4 MiB); 43.9 MiB, rounded up
- * to whole chunks. The grant a move takes from the isolate-wide guard.
- */
-export const MOVE_HOLD_BYTES = 44 * 1024 * 1024;
-/**
- * The most records one move holds (review N7), the bound `MOVE_HOLD_BYTES` is derived at:
+ * The most records one move holds (review N7), the bound its units are derived at
+ * (`holds.ts`'s `moveTableUnits`):
  * `pack`'s largest piece of records at `MIN_RECORD_BYTES` (twice the least of them, and the
  * record past it: 49,933) and the 25,000 stragglers a pick takes at most. A merge's `into`
  * is one piece; a rewrite pass takes in a neighbour only while what it keeps and the
@@ -636,7 +629,8 @@ export async function lineAt(content: Content, offset: number, most: number,
       parts.push(chunk.subarray(0, end + 1));
       return joined(parts);
     }
-    parts.push(chunk);
+    // A copy of the line's start: the chunk it is cut from is let go as the next is read.
+    parts.push(chunk.slice());
     at += chunk.byteLength;
   }
   throw new Error("a segment's record line has no end");

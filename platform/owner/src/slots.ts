@@ -58,6 +58,8 @@ export class SlotBusy extends Error {
 /** Units taken, held until `release` (a second release is nothing). */
 export interface Slot {
   readonly units: number;
+  /** Its holder's age: the order its first units were taken in (`grow` keeps it). */
+  readonly age: number;
   release(): void;
 }
 
@@ -75,6 +77,11 @@ interface Waiter {
   readonly refuse: () => void;
 }
 
+/** A holder waiting for more units (`grow`), with its age. */
+interface Grower extends Waiter {
+  readonly age: number;
+}
+
 /**
  * A pool of `capacity` units, waits of at most `waitMs`, and `reserve` units only one-unit
  * holds take. At most `waiters` larger holds and `smallWaiters` one-unit holds wait at once,
@@ -86,9 +93,14 @@ interface Waiter {
  * - A larger hold never takes the reserve.
  * - While a larger hold waits, a one-unit hold takes only the reserve, so the units one-unit
  *   holds took past it come back to the larger one as they are released (review M-b).
- * Two clauses of this same rule are to come, with the calls that grow what they hold:
- * - wait-die: a call that holds units may wait to grow only if it is the oldest holder, and
- *   while it waits a call holding nothing takes nothing past the reserve;
+ * - Wait-die, for the calls that grow what they hold (`grow`: the archive's move, its table
+ *   held for the move while each pass takes its own units): one holder waits to grow at a
+ *   time, the oldest that asked (a younger one asking is refused `busy` at once; an older
+ *   one asking refuses the younger waiting). It is granted before any queue, and while it
+ *   waits a call takes nothing past the reserve (a larger hold none, a one-unit hold only
+ *   the reserve). The holders it waits on hold nothing they wait to grow, so each releases,
+ *   and it is never waited on itself: no two holders wait on each other.
+ * One clause of this same rule is to come, with the calls that need it:
  * - an owner's share: an owner holding half the pool or more takes no more while another
  *   owner waits.
  * Each class's waiters are drained in order, the larger first, as the rule admits them.
@@ -108,10 +120,14 @@ export class SlotPool {
   /** One-unit holds waiting, and larger ones: each first come first served. */
   readonly #small: Waiter[] = [];
   readonly #large: Waiter[] = [];
+  /** The one holder waiting to grow (`grow`), if any. */
+  #grower: Grower | null = null;
   /** Units held, by one-unit holds, and by larger ones. */
   #smallHeld = 0;
   #largeHeld = 0;
   #peak = 0;
+  /** The last age given (`Slot.age`). */
+  #ages = 0;
 
   constructor(capacity: number, waitMs: number = SLOT_WAIT_MS, waiters: number = 4 * capacity,
               reserve = 0, smallWaiters: number = waiters) {
@@ -136,27 +152,39 @@ export class SlotPool {
    * Whether `units` fit now. A larger hold leaves the reserve free; a one-unit hold takes
    * any free unit, but only the reserve while a larger hold waits.
    */
-  #fits(units: number): boolean {
+  #fits(units: number, large = units > 1): boolean {
     if (this.#held + units > this.capacity) {
       return false;
     }
-    if (units > 1) {
-      return this.#largeHeld + units <= this.capacity - this.reserve;
+    if (large) {
+      return this.#grower === null && this.#largeHeld + units <= this.capacity - this.reserve;
     }
-    return this.#large.length === 0 || this.#smallHeld + 1 <= this.reserve;
+    return (this.#large.length === 0 && this.#grower === null)
+      || this.#smallHeld + 1 <= this.reserve;
   }
 
-  /** `units`, now or once free (first come first served in its class), or refused `busy`. */
-  acquire(units: number): Promise<Slot> {
+  /** Whether a grower's `units` fit now: as a larger hold's, but before every queue. */
+  #growerFits(units: number): boolean {
+    return this.#held + units <= this.capacity
+      && this.#largeHeld + units <= this.capacity - this.reserve;
+  }
+
+  /**
+   * `units`, now or once free (first come first served in its class), or refused `busy`.
+   * `large` takes a one-unit hold in the larger class (a hold that will grow: `grow`), so it
+   * never takes the reserve.
+   */
+  acquire(units: number, large = units > 1): Promise<Slot> {
     const most = this.capacity - this.reserve;
-    if (!Number.isSafeInteger(units) || units < 1 || (units > 1 && units > most)) {
+    if (!Number.isSafeInteger(units) || units < 1 || (units > 1 && units > most)
+        || (large && units > most)) {
       throw new Error(`a call takes 1 to ${Math.max(1, most)} units, not ${units}`);
     }
-    const queue = units === 1 ? this.#small : this.#large;
-    if (queue.length === 0 && this.#fits(units)) {
-      return Promise.resolve(this.#take(units));
+    const queue = large ? this.#large : this.#small;
+    if (queue.length === 0 && this.#fits(units, large)) {
+      return Promise.resolve(this.#take(units, large));
     }
-    if (queue.length >= (units === 1 ? this.#smallWaiters : this.#waiters)) {
+    if (queue.length >= (large ? this.#waiters : this.#smallWaiters)) {
       return Promise.reject(new SlotBusy());
     }
     return new Promise<Slot>((resolve, reject) => {
@@ -180,23 +208,68 @@ export class SlotPool {
     });
   }
 
-  #take(units: number): Slot {
-    if (units === 1) {
-      this.#smallHeld += 1;
-    } else {
+  /**
+   * `units` more for the holder of `held`, as a slot of their own (aged as `held`, released
+   * apart), taken in the larger class: now, or once free before any queue, or refused
+   * `busy` (wait-die, `SlotPool`'s rule: a younger holder asking while an older one waits
+   * is refused at once; an older one asking refuses the younger waiting; past `waitMs`).
+   */
+  grow(held: Slot, units: number): Promise<Slot> {
+    const most = this.capacity - this.reserve;
+    if (!Number.isSafeInteger(units) || units < 1 || held.units + units > most) {
+      throw new Error(`a holder grows to at most ${most} units, not ${held.units} and ${units}`);
+    }
+    const waiting = this.#grower;
+    if (waiting !== null) {
+      if (waiting.age < held.age) {
+        return Promise.reject(new SlotBusy());
+      }
+      this.#grower = null;
+      waiting.refuse();
+    }
+    if (this.#growerFits(units)) {
+      return Promise.resolve(this.#take(units, true, held.age));
+    }
+    return new Promise<Slot>((resolve, reject) => {
+      const grower: Grower = {
+        units, age: held.age,
+        grant: (slot) => {
+          clearTimeout(timer);
+          resolve(slot);
+        },
+        refuse: () => {
+          clearTimeout(timer);
+          reject(new SlotBusy());
+        },
+      };
+      const timer = setTimeout(() => {
+        if (this.#grower === grower) {
+          this.#grower = null;
+          grower.refuse();
+          this.#drain();
+        }
+      }, this.#waitMs);
+      this.#grower = grower;
+    });
+  }
+
+  #take(units: number, large = units > 1, age = ++this.#ages): Slot {
+    if (large) {
       this.#largeHeld += units;
+    } else {
+      this.#smallHeld += 1;
     }
     this.#peak = Math.max(this.#peak, this.#held);
     let held = true;
     return {
-      units,
+      units, age,
       release: () => {
         if (held) {
           held = false;
-          if (units === 1) {
-            this.#smallHeld -= 1;
-          } else {
+          if (large) {
             this.#largeHeld -= units;
+          } else {
+            this.#smallHeld -= 1;
           }
           this.#drain();
         }
@@ -204,14 +277,20 @@ export class SlotPool {
     };
   }
 
-  /** The waiting granted in order: the larger head first, then one-unit holds. */
+  /** The waiting granted in order: a grower first, then the larger head, then one-unit holds. */
   #drain(): void {
     for (let moved = true; moved;) {
       moved = false;
-      for (const queue of [this.#large, this.#small]) {
-        while (queue.length > 0 && this.#fits(queue[0]!.units)) {
+      const grower = this.#grower;
+      if (grower !== null && this.#growerFits(grower.units)) {
+        this.#grower = null;
+        grower.grant(this.#take(grower.units, true, grower.age));
+        moved = true;
+      }
+      for (const [queue, large] of [[this.#large, true], [this.#small, false]] as const) {
+        while (queue.length > 0 && this.#fits(queue[0]!.units, large)) {
           const next = queue.shift()!;
-          next.grant(this.#take(next.units));
+          next.grant(this.#take(next.units, large));
           moved = true;
         }
       }
@@ -220,7 +299,8 @@ export class SlotPool {
 
   state(): PoolState {
     return { capacity: this.capacity, held: this.#held,
-             waiting: this.#small.length + this.#large.length, peak: this.#peak };
+             waiting: this.#small.length + this.#large.length + (this.#grower === null ? 0 : 1),
+             peak: this.#peak };
   }
 
   /** A test's: the most held at once counted again from now. */

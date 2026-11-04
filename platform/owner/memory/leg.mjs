@@ -21,6 +21,10 @@
 //   steady state (an edit of 96 against 192 MiB; an append to 8 against 32 MiB; a body's
 //   window from 2 against 8 MiB), each the least of two runs;
 // - each path's cost: its worst run's peak is within the units it declares (`holds.ts`);
+// - the archive (STORE item 2): a tail seal of small messages (its records' units), a move of
+//   two large bodies (4 against 8 MiB each, O(1) in size) and a purge's rewrite of them,
+//   each run by the object's own `archive` lane, every pass within its table's and its own
+//   units;
 // - per unit: two edits at once hold at most one making step's units more than one;
 // - its time: the worst edit's time a chunk, measured with no collections, keeps
 //   `EDIT_BYTES_MAX` inside a request's 30 s of CPU (the time is wall time, at least the CPU
@@ -69,9 +73,15 @@ const owner :Workerd.Worker = (
   compatibilityDate = "2026-10-23",
   compatibilityFlags = ["nodejs_compat"],
   durableObjectNamespaces = [ (className = "LegOwner", uniqueKey = "owner-memory-leg",
+                               enableSql = true),
+                              (className = "LegArchive", uniqueKey = "owner-memory-archive",
+                               enableSql = true),
+                              (className = "LegSegments", uniqueKey = "owner-memory-segments",
                                enableSql = true) ],
   durableObjectStorage = (localDisk = "objects"),
   bindings = [ (name = "OWNER", durableObjectNamespace = "LegOwner"),
+               (name = "ARCHIVE", durableObjectNamespace = "LegArchive"),
+               (name = "SEGMENTS", durableObjectNamespace = "LegSegments"),
                (name = "FILES", service = (name = "files", entrypoint = "Store")),
                (name = "STORE", service = (name = "files", entrypoint = "Store")),
                (name = "DRIVER", service = "driver"),
@@ -194,6 +204,7 @@ try {
     active = n;
     let where = "";
     let overAt = "";
+    let answer = null;
     sample = async (held, at) => {
       points += 1;
       const now = await live() - floor;
@@ -213,7 +224,7 @@ try {
       }
     };
     try {
-      await get(`/run?path=${path}&mib=${mib}`);
+      answer = JSON.parse(await get(`/run?path=${path}&mib=${mib}`));
       await sampling;
     } finally {
       sample = null;
@@ -222,14 +233,15 @@ try {
     // Every chunk seen: an edit reads each chunk to scan it and to hash it, and makes and puts
     // each (its content distinct, none already stored), so at least four calls a chunk.
     const chunks = Math.ceil(mib * MIB / (4 * MIB));
-    const least = path === "edit" ? 4 * chunks : path === "hoard" ? chunks : 1;
+    const least = path === "edit" ? 4 * chunks : path === "hoard" ? chunks
+      : path === "bodies" || path === "rewrite" ? 2 * chunks : 1;
     if (points < least) {
       throw new Error(`${path} ${mib} MiB x ${n}: ${points} checkpoints, fewer than ${least}`);
     }
     if (path !== "hoard") {
       check(`${path} ${mib} MiB x ${n}: live past the units held, at every hold's checkpoint`,
             over, 0, "the units its pool held");
-      rows.push({ run: `${path} ${mib} MiB x ${n}`, peak_mib: +(most / MIB).toFixed(2),
+      rows.push({ run: `${path} ${mib} MiB x ${n}`, answer, peak_mib: +(most / MIB).toFixed(2),
                   at: where, closest_to_its_units: overAt });
     }
     return most;
@@ -301,6 +313,22 @@ try {
         "bodyUnits(1)");
   check("fetch: peak(8 MiB body)", await peak("fetch", 8), costs.body_units[1] * UNIT,
         "bodyUnits(2)");
+
+  // The archive: each pass of its move and rewrite within the units it holds (above, at
+  // every checkpoint), each run's peak within its table's and its pass's units, and a move
+  // of large bodies O(1) in their size.
+  const pass = costs.MOVE_PASS_UNITS * UNIT;
+  check("archive move: peak, a tail seal of small messages", await peak("move", 1),
+        costs.move_seal_units * UNIT + pass,
+        "moveTableUnits(archiveRecords, the most a seal takes) + MOVE_PASS_UNITS");
+  const bodies = { 4: await twice("bodies", 4), 8: await twice("bodies", 8) };
+  check("archive move: peak(two 8 MiB bodies) - peak(two 4 MiB), least of two runs",
+        bodies[8].least - bodies[4].least, QUARTER, "a quarter chunk");
+  check("archive move: peak(two 8 MiB bodies), worst of two runs", bodies[8].most,
+        costs.move_body_units * UNIT + pass, "moveTableUnits(2) + MOVE_PASS_UNITS");
+  check("archive rewrite: peak, a purge of one of two 8 MiB bodies",
+        await peak("rewrite", 8), costs.move_body_units * UNIT + pass,
+        "moveTableUnits(2) + MOVE_PASS_UNITS");
 
   // Time: the worst edit's, a chunk at a time, with no collections between.
   const chunks = 96 * MIB / costs.chunk;

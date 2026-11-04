@@ -93,9 +93,11 @@
  * `wakes` lane's claim). Only the platform, as the reserved `PLATFORM_CALLER`, sets it, at
  * `admissionSet`, the one door that caller reaches.
  */
-import { type Edited, planEdit, type Refusal } from "./edit";
-import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
-import { slotted } from "./slots";
+import { type Edited, letGo, planEdit, type Refusal } from "./edit";
+import {
+  APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, MOVE_PASS_UNITS, moveTableUnits, ownerSlots,
+} from "./holds";
+import { type Slot, SlotBusy, slotted, type SlotPool } from "./slots";
 import { createHash, randomBytes } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -184,7 +186,7 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import {
-  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_BYTES, MOVE_HOLD_BYTES,
+  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_BYTES,
   MOVE_RECORDS, MoveTable, pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES,
   type Source as Run,
 } from "./segments";
@@ -1726,7 +1728,9 @@ class MoveReader {
     }
     let bytes = this.#last?.sha256 === sha256 ? this.#last.bytes : undefined;
     if (bytes === undefined) {
-      this.#last = null;
+      // The chunk kept is let go before the next arrives: its pieces are taken (`makeChunk`
+      // and `lineAt` copy what they keep), so it never outlives its use (`letGo`).
+      this.letGo();
       bytes = (await this.#files.fetch([{ sha256 }]))[0];
       if (bytes === undefined) {
         throw new Error("a move's chunk was not read");
@@ -1750,6 +1754,14 @@ class MoveReader {
     return bytes;
   };
 
+  /** The chunk kept for the next range let go, its buffer detached (`edit.ts`'s `letGo`). */
+  letGo(): void {
+    if (this.#last !== null) {
+      letGo(this.#last.bytes);
+      this.#last = null;
+    }
+  }
+
   /** After the first pass: every content with a hash read whole and checked, or loudly not. */
   bodiesChecked(): void {
     for (let ref = 0; ref < this.#table.contents; ref++) {
@@ -1759,6 +1771,65 @@ class MoveReader {
       }
     }
     this.#checking = false;
+  }
+}
+
+/**
+ * An archive move's or rewrite's holds on the isolate's pool (ADR-037): its table's units
+ * (`moveTableUnits`), taken before its records arrive and held to its end, since the table's
+ * bytes are in hand throughout; grown as a rewrite takes in a neighbour; and each pass's
+ * `MOVE_PASS_UNITS` beside them (`SlotPool.grow`, wait-die), taken before the pass's first
+ * chunk arrives and released once its last is gone: its waits each bring or send its bytes
+ * (a chunk read, a chunk put, a unit reading hot records' lines), never a begin or a commit.
+ * Refused `busy`, the pass fails as busy: the lane holds and retries, told at three.
+ */
+class MoveHold {
+  readonly #pool: SlotPool;
+  readonly #slots: Slot[];
+
+  private constructor(pool: SlotPool, base: Slot) {
+    this.#pool = pool;
+    this.#slots = [base];
+  }
+
+  /** The units for a table of `records` records. */
+  static async take(pool: SlotPool, records: number): Promise<MoveHold> {
+    return new MoveHold(pool, await pool.acquire(moveTableUnits(records), true));
+  }
+
+  /** The units held for the table. */
+  get units(): number {
+    return this.#slots.reduce((sum, slot) => sum + slot.units, 0);
+  }
+
+  /** The table grown to hold `records` records: its units grown first. */
+  async table(records: number): Promise<void> {
+    const more = moveTableUnits(records) - this.units;
+    if (more > 0) {
+      this.#slots.push(await this.#pool.grow(this.#slots[0]!, more));
+    }
+  }
+
+  /** One pass, holding its own units beside the table's; `letGo` drops what it kept. */
+  async pass<T>(act: () => Promise<T>, letGo: () => void): Promise<T> {
+    const step = await this.#pool.grow(this.#slots[0]!, MOVE_PASS_UNITS);
+    try {
+      const done = await act();
+      letGo();
+      if (this.#pool.observe !== null) {
+        await this.#pool.observe(this.units + step.units);
+      }
+      return done;
+    } finally {
+      letGo();
+      step.release();
+    }
+  }
+
+  release(): void {
+    for (const slot of this.#slots) {
+      slot.release();
+    }
   }
 }
 
@@ -4275,28 +4346,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // and its bloom names the agent, so the purge rewrites that segment in turn). A
       // rewrite that fails never holds the move behind it (review N7): the move runs, and
       // the rewrite's failure is the pass's, counted and told at three.
-      await this.#granted(MOVE_HOLD_BYTES, async () => {
-        let rewrote = false;
-        let failed: unknown = null;
-        try {
-          rewrote = await this.#archiveRewrite();
-        } catch (error) {
-          if (error instanceof Refused && error.message.startsWith("archive_changed")) {
-            rewrote = true;
-          } else {
-            failed = error;
-          }
+      // Each holds its own units of the isolate's pool (`MoveHold`), released as it ends.
+      let rewrote = false;
+      let failed: unknown = null;
+      try {
+        rewrote = await this.#archiveRewrite();
+      } catch (error) {
+        if (error instanceof Refused && error.message.startsWith("archive_changed")) {
+          rewrote = true;
+        } else {
+          failed = error;
         }
-        // The move runs whenever mail is due (the hot set past half), a rewrite or not, so a
-        // long purge never holds new mail at `storage_busy` (review N8); the rewrite's table
-        // is let go before it, so the pass holds one move's at a time.
-        if (!rewrote || await this.#door(() => this.#ledger.archiveDue())) {
-          await this.#archiveMove();
-        }
-        if (failed !== null) {
-          throw failed;
-        }
-      });
+      }
+      // The move runs whenever mail is due (the hot set past half), a rewrite or not, so a
+      // long purge never holds new mail at `storage_busy` (review N8); the rewrite's table
+      // and units are let go before it, so the pass holds one move's at a time.
+      if (!rewrote || await this.#door(() => this.#ledger.archiveDue())) {
+        await this.#archiveMove();
+      }
+      if (failed !== null) {
+        throw failed;
+      }
       await this.#door(() => this.#ledger.archiveEnded());
       return undefined;
     } catch (error) {
@@ -4319,7 +4389,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         return { hold: clock() + ARCHIVE_RETRY_S };
       }
-      console.error("the archive lane's pass failed", error);
+      // The isolate's pool full (`busy`, `MoveHold`): the lane holds and retries, counted
+      // and told at three as any failed pass is; no fault to log.
+      if (!(error instanceof SlotBusy)) {
+        console.error("the archive lane's pass failed", error);
+      }
       if (begun !== null) {
         // What failed, as it said it, never a cause it did not give (review N1).
         const said = (error instanceof Error ? error.message.split("\n")[0]! : String(error))
@@ -4337,17 +4411,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * The seam where the isolate-wide memory guard (`platform-memory`, the memory research's
-   * §4) grants work its bytes: `act` runs holding `bytes`, the most it may hold across an
-   * await, and a grant that does not fit will be refused as busy (the lane holds and
-   * retries). Until that guard lands this only declares the hold: nothing is counted yet.
-   */
-  async #granted<T>(bytes: number, act: () => Promise<T>): Promise<T> {
-    void bytes;
-    return act();
-  }
-
-  /**
    * One move: a straggler's merge (acked mail whose keys fall in a segment, rewritten into
    * it, so no two segments overlap) or the tail's new segment, in the move's two units.
    * Planned from lengths alone, then streamed (`#placePieces`): nothing is read whole.
@@ -4357,20 +4420,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (pick === null) {
       return;
     }
-    const table = new MoveTable();
-    const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, table,
-      (contentId, bytes, sha256) => table.addContent(
-        bytes, this.#bodies.locate([contentId]).get(contentId)!.chunks, sha256)));
-    if (batch === null) {
-      return;
+    // Its table's units before its records arrive: the batch's, and its segment's.
+    const hold = await MoveHold.take(ownerSlots(), pick.seqs.length + (pick.into?.records ?? 0));
+    try {
+      const table = new MoveTable();
+      const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, table,
+        (contentId, bytes, sha256) => table.addContent(
+          bytes, this.#bodies.locate([contentId]).get(contentId)!.chunks, sha256)));
+      if (batch === null) {
+        return;
+      }
+      const reader = new MoveReader(this.#files, table);
+      if (pick.into !== null) {
+        const into = pick.into;
+        await hold.pass(() => this.#scanSegment(into, table, reader), () => reader.letGo());
+      }
+      const all = Array.from({ length: table.count }, (_, n) => n);
+      await this.#placePieces(table, all, pick.into === null ? [] : [pick.into], pick.seqs,
+                              batch.digest, "mail", reader, hold);
+    } finally {
+      hold.release();
     }
-    const reader = new MoveReader(this.#files, table);
-    if (pick.into !== null) {
-      await this.#scanSegment(pick.into, table, reader);
-    }
-    const all = Array.from({ length: table.count }, (_, n) => n);
-    await this.#placePieces(table, all, pick.into === null ? [] : [pick.into], pick.seqs,
-                            batch.digest, "mail", reader);
   }
 
   /**
@@ -4397,8 +4467,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
     const keep = (room: string) => !roomMembers(room).some((member) => purged.has(member));
+    // Its table's units before its records arrive, grown as it takes in each neighbour.
+    const hold = await MoveHold.take(ownerSlots(), target.fence.records);
+    try {
+      return await this.#rewriteHeld(target, keep, hold);
+    } finally {
+      hold.release();
+    }
+  }
+
+  /** `#archiveRewrite` holding its table's units (`hold`, for the target's records). */
+  async #rewriteHeld(target: { fence: Fence; compact: boolean },
+                     keep: (room: string) => boolean, hold: MoveHold): Promise<boolean> {
     const table = new MoveTable();
-    const first = await this.#scanSegment(target.fence, table, null, keep);
+    const scan = (fence: Fence) => {
+      const reader = new MoveReader(this.#files, table);
+      return hold.pass(() => this.#scanSegment(fence, table, reader, keep),
+                       () => reader.letGo());
+    };
+    const first = await scan(target.fence);
     if (first.kept === first.all && !target.compact) {
       await this.#door(() => this.#ledger.purgeSkip(target.fence.segment));
       return true;
@@ -4425,8 +4512,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       replaced.push(beside);
       scanned += beside.bytes;
+      // What it keeps so far and all the neighbour's: within `MOVE_RECORDS` (checked above).
+      await hold.table(table.count + beside.records);
       const from = table.count;
-      await this.#scanSegment(beside, table, null, keep);
+      await scan(beside);
       for (let n = from; n < table.count; n++) {
         size += table.length(n);
       }
@@ -4436,7 +4525,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     const all = Array.from({ length: table.count }, (_, n) => n);
     await this.#placePieces(table, all, replaced, [], "0".repeat(64), "rewrite",
-                            new MoveReader(this.#files, table));
+                            new MoveReader(this.#files, table), hold);
     return true;
   }
 
@@ -4482,7 +4571,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async #placePieces(table: MoveTable, indices: readonly number[], replaced: readonly Fence[],
                      seqs: readonly number[], digest: string, stream: "mail" | "rewrite",
-                     reader: MoveReader): Promise<void> {
+                     reader: MoveReader, hold: MoveHold): Promise<void> {
     const ordered = [...indices].sort((a, b) => table.key(a) - table.key(b));
     const plans = ordered.length === 0 ? []
       : pack(ordered, SEGMENT_LEAST_BYTES, (n) => table.length(n)).map((part) => {
@@ -4490,16 +4579,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return { plan: planSegment("mail", piece), indices: piece.indices };
       });
     const hashes: string[][] = [];
-    for (const { plan, indices: at } of plans) {
-      const sources = (from: number, to: number) =>
-        this.#moveSources(table, at.subarray(from, to));
-      const each: string[] = [];
-      for (let n = 0; n < plan.chunks; n++) {
-        each.push(createHash("sha256").update(await makeChunk(plan, n, sources, reader.read))
-          .digest("hex"));
+    await hold.pass(async () => {
+      for (const { plan, indices: at } of plans) {
+        const sources = (from: number, to: number) =>
+          this.#moveSources(table, at.subarray(from, to));
+        const each: string[] = [];
+        for (let n = 0; n < plan.chunks; n++) {
+          const made = await makeChunk(plan, n, sources, reader.read);
+          each.push(createHash("sha256").update(made).digest("hex"));
+          letGo(made);
+        }
+        hashes.push(each);
       }
-      hashes.push(each);
-    }
+    }, () => reader.letGo());
     reader.bodiesChecked();
     if (this.#betweenPasses !== null) {
       const between = this.#betweenPasses;
@@ -4532,17 +4624,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { started, before };
     });
     try {
-      for (const [n, piece] of pieces.entries()) {
-        const sources = (from: number, to: number) =>
-          this.#moveSources(table, piece.at.subarray(from, to));
-        const wanted = new Set(begun.started[n]!.missing);
-        for (const [k, sha256] of hashes[n]!.entries()) {
-          if (wanted.delete(sha256)) {
-            await this.#files.upload(begun.started[n]!.intent_id, [
-              { sha256, bytes: await makeChunk(piece.plan, k, sources, reader.read) }]);
+      await hold.pass(async () => {
+        for (const [n, piece] of pieces.entries()) {
+          const sources = (from: number, to: number) =>
+            this.#moveSources(table, piece.at.subarray(from, to));
+          const wanted = new Set(begun.started[n]!.missing);
+          for (const [k, sha256] of hashes[n]!.entries()) {
+            if (wanted.delete(sha256)) {
+              const made = await makeChunk(piece.plan, k, sources, reader.read);
+              await this.#files.upload(begun.started[n]!.intent_id, [{ sha256, bytes: made }]);
+              letGo(made);
+            }
           }
         }
-      }
+      }, () => reader.letGo());
       await this.#door(() => {
         const named: { content_id: string; fence: (typeof pieces)[number]["fence"] }[] = [];
         const adopt = (n: number): void => {

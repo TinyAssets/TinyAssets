@@ -14,6 +14,8 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { BODY_BYTES_MAX } from "../src/bodies";
+import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
+import { BUSY } from "../src/slots";
 import { LEDGER_LIMITS, type Ledger, mailRecord, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import type { ArchivingOwnerDO } from "./worker";
@@ -588,6 +590,76 @@ describe("the archive lane", () => {
     // The muse's segments were replaced under held reads, and each read held.
     expect(replaced).toBeGreaterThan(0);
   }, 300_000);
+
+  it("holds its move's units on the isolate's pool; refused busy, the lane holds, counts " +
+     "the pass and moves once there is room", async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    // Every unit of the larger class held elsewhere: a move's table cannot take its own.
+    const pool = ownerSlots();
+    const held = await pool.acquire(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS);
+    let released = false;
+    try {
+      await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
+      await drainDue(r.stub);
+      const [usage] = await sqlIn(r.stub, "SELECT archive_fails AS fails, archive_error AS " +
+                                  "error FROM ledger_usage");
+      // Refused busy past the pool's wait, counted as a failed pass, told at three.
+      expect(usage).toMatchObject({ error: BUSY });
+      expect(usage!["fails"]).toBeGreaterThanOrEqual(1);
+      expect(await sqlIn(r.stub, "SELECT * FROM archive_segments")).toEqual([]);
+      held.release();
+      released = true;
+      // Its hold over, the lane moves.
+      await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
+                          "'owner-schedule/archive'");
+      await settle(r);
+      expect((await sqlIn(r.stub, "SELECT * FROM archive_segments")).length).toBeGreaterThan(0);
+      expect(pool.state()).toMatchObject({ held: 0 });
+    } finally {
+      if (!released) {
+        held.release();
+      }
+    }
+  }, 60_000);
+
+  it("keeps a segment a purge's rewrite makes again byte for byte, its content still held",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    const dot = await r.register(DOT, "Dot");
+    // Two bodies of the least each: each sealed alone. Dot's deleted, its segment's rewrite
+    // takes in the muse's whole, alone in its piece: the same bytes as it stands.
+    const big = (c: string) => c.repeat(8 * 1024 * 1024);
+    const kept = await r.post(null, `dm:${muse}`, { cmid: "b0", body: big("a") });
+    await r.post(null, `dm:${dot}`, { cmid: "b1", body: big("b") });
+    await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
+    await r.ack(DOT, (await r.read(DOT)).messages.at(-1)!.seq);
+    // Small acked mail past half the hot ceiling, then one post that rings the lane.
+    await r.inLedger(LIMITS, (ledger: Ledger) => {
+      let last = 0;
+      for (let n = 0; n < 3; n++) {
+        last = ledger.seqOf(ledger.post(null, `dm:${muse}`, `s${n}`, "x", null).message_id)!;
+      }
+      ledger.read(MUSE, 1);
+      ledger.ack(MUSE, last);
+    });
+    await r.post(null, `dm:${muse}`, { cmid: "ring", body: "ring" });
+    await settle(r);
+    const before = await sqlIn(r.stub, "SELECT segment, content_id FROM archive_segments " +
+                               "WHERE records = 1 ORDER BY segment");
+    expect(before).toHaveLength(2);
+    await r.stub.deleteAgent(r.session(null), { agent_id: dot });
+    await settle(r);
+    const [usage] = await sqlIn(r.stub, "SELECT archive_fails AS fails, archive_error AS " +
+                                "error FROM ledger_usage");
+    expect(usage).toEqual({ fails: 0, error: null });
+    // Every segment's content held (the compaction after may take the kept one in), and the
+    // muse's body reads back whole.
+    expect(await sqlIn(r.stub, "SELECT segment FROM archive_segments WHERE content_id NOT IN " +
+                       "(SELECT content_id FROM file_contents)")).toEqual([]);
+    expect((await chained(r, kept.message_id)) === big("a")).toBe(true);
+  }, 120_000);
 
   it("aborts a move whose batch changed between its units, the mail kept hot", async () => {
     const r = await rig(ARCHIVING);

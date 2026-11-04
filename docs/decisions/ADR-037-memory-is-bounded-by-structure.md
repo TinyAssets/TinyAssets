@@ -52,12 +52,13 @@ The research and reviews (`memory_research.md`, `memshape_research.md`, `rpcreta
      - each step on its own: at every checkpoint inside a hold, what is live is within the units the pool holds then;
      - each path at a small and a large size, past its steady state, differs by at most a quarter chunk (`fileEdit` through `Files.writeChunks`, `fileAppend`, `Bodies.windows`);
      - each path's peak is within its declared units (and `Bodies.fetch`'s, per chunk);
+     - the archive's move and rewrite (STORE item 2), run by the object's own lane: each pass within its records' and its own units, a move of large bodies O(1) in their size;
      - two edits at once hold at most one making step's units more than one;
      - the worst edit's time a chunk keeps `EDIT_BYTES_MAX` inside a request's CPU, and a full queue turns over within the wait.
    - **The counts test** (`owner/guards/memory-counts.test.ts`). From the source constants: the pool's units, the relay's tails, each owner object's relay terms and the measured resting baseline sum within the isolate. It asserts nothing it does not derive.
    - **What neither counts, named, never fitted:**
      - garbage V8 has not yet collected. In workerd it is large and form-dependent, and whether production's 128 MB counts it is unknown;
-     - the holds not yet under a unit: a call's RPC arguments (and the waiting calls'), `file_write`'s whole bytes, `file_upload_chunks`' and `file_read_chunks`' two chunks, a placed body as a write sends it (PR 3b); an export's chunks, sync's raw chunks, an inbound body (PR 4); the archive's move (STORE item 2).
+     - the holds not yet under a unit: a call's RPC arguments (and the waiting calls'), `file_write`'s whole bytes, `file_upload_chunks`' and `file_read_chunks`' two chunks, a placed body as a write sends it (PR 3b); an export's chunks, sync's raw chunks, an inbound body (PR 4).
    - CI does not claim an absolute figure. Differences cancel the baseline and the framework.
 7. **What production proves**, after the go-ahead deploy:
    - the one-Worker probe, with a control that proves it can see a real hold. It answers whether the 128 MB counts garbage V8 has not collected yet;

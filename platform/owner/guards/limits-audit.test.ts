@@ -12,14 +12,18 @@ import { describe, expect, it } from "vitest";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { checkLimits, LEDGER_LIMITS } from "../src/ledger";
+import {
+  MOVE_PASS_UNITS, MOVE_RECORD_BYTES, moveTableUnits, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS,
+} from "../src/holds";
 import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
+import { UNIT_BYTES } from "../src/slots";
 import { WORST_FILL } from "../src/manifest";
 import {
   DATABASE_BYTES, IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES, RUNTIME, SHARE, type Term, termBytes,
   TERMS, worstCase,
 } from "./owner-bound.test";
 import {
-  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_HOLD_BYTES, MOVE_RECORDS, pack,
+  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_RECORDS, pack,
   recordBytes,
   SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord, TIER_STORAGE_MAX,
 } from "../src/segments";
@@ -136,21 +140,12 @@ describe("slice STORE's archive (item 2)", () => {
   });
 
   it("sizes a merge's pass by pack's largest piece and the straggler it always takes", () => {
-    // Work a pass, not memory: the move is streamed (`MOVE_HOLD_BYTES`).
+    // Work a pass, not memory: the move is streamed (`MOVE_PASS_UNITS`, `holds.ts`).
     expect(MOVE_BYTES).toBeGreaterThanOrEqual(2 * SEGMENT_LEAST_BYTES + 2 * BODY_BYTES_MAX);
   });
 
-  it("derives a streamed move's hold from workerd's worst move and the most records one holds",
+  it("derives a move's units from what it builds, and its most records fit the pool",
      () => {
-    const MIB = 1024 * 1024;
-    // Measured in workerd (round 5, `limits-audit.md`): the move with the most records one
-    // merge took at the production limits (32,568: a piece of small records near twice the
-    // least, and small stragglers to MOVE_BYTES) grew the live heap by at most 32.2 MiB; a
-    // record costs about 192 bytes in its packed table (150, measured at the bound) and plan
-    // (42, measured in V8).
-    const PEAK = 32.2 * MIB;
-    const PEAK_RECORDS = 32_568;
-    const PER_RECORD = 192;
     // The most records a move can hold: `pack`'s largest piece of records at their least
     // (twice the least of them and the record past it), and the stragglers one pick takes
     // at most (`LEDGER_LIMITS.archiveRecords`); a rewrite pass is held to it as it takes in
@@ -158,11 +153,22 @@ describe("slice STORE's archive (item 2)", () => {
     const most = Math.floor(2 * SEGMENT_LEAST_BYTES / MIN_RECORD_BYTES) + 1
       + LEDGER_LIMITS.archiveRecords;
     expect(MOVE_RECORDS).toBe(most);
-    // What the worst move held besides its records, the most records' cost, and the
-    // service binding's copy of the chunk it sends.
-    const hold = PEAK - PEAK_RECORDS * PER_RECORD + most * PER_RECORD + CHUNK_BYTES;
-    expect(MOVE_HOLD_BYTES).toBeGreaterThanOrEqual(hold);
-    expect(MOVE_HOLD_BYTES).toBe(Math.ceil(hold / CHUNK_BYTES) * CHUNK_BYTES);
+    // A record's most, each array at twice what it holds (they grow by doubling): its
+    // table's typed arrays (keys, lengths, times, offsets and chain offsets as doubles;
+    // rooms, refs and chain lengths as 32-bit; kinds as bytes), its chain's name (a message
+    // id, `msg_` and 32 hex) in the table's pool, its plan's arrays, and the move's lists of
+    // its keys and indices (the pick's seqs, their order, the pieces).
+    const table = 5 * 8 + 3 * 4 + 1;
+    const chain = "msg_".length + 32;
+    const plan = 42;
+    const lists = 36;
+    expect(MOVE_RECORD_BYTES).toBe(2 * table + 2 * chain + plan + lists);
+    // The most a move holds: its records' units beside one pass's, within the pool's larger
+    // class (the reserve left for one-unit reads).
+    expect(moveTableUnits(MOVE_RECORDS)).toBe(Math.ceil(MOVE_RECORDS * MOVE_RECORD_BYTES
+                                                        / UNIT_BYTES));
+    expect(moveTableUnits(MOVE_RECORDS) + MOVE_PASS_UNITS)
+      .toBeLessThanOrEqual(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS);
   });
 
   it("lets a tier offer about 0.5 TB: the fence rows, each a sealed segment's least bytes",

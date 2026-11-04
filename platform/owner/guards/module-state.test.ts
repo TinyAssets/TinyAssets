@@ -325,8 +325,8 @@ const EXEMPTIONS = Object.freeze([
   }),
   Object.freeze({
     path: "owner/src/slots.ts",
-    sha256: "5c724d95579980be2c53507400631711ce4c90dbe98fc4fb0599fa421955f8be",
-    problems: Object.freeze(["owner/src/slots.ts:320: ISOLATE holds a mutable value"]),
+    sha256: "d8ee55c7450b1c2f777bad3cca913cf69831255ab6e725d40c75afea3d50f183",
+    problems: Object.freeze(["owner/src/slots.ts:400: ISOLATE holds a mutable value"]),
   }),
 ]);
 const [EXEMPT, MEMORY] = EXEMPTIONS as unknown as [typeof EXEMPTIONS[0], typeof EXEMPTIONS[0]];

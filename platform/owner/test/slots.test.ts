@@ -2,7 +2,8 @@
  * The isolate's pool of units (`slots.ts`): taken while held, waited for first come first
  * served within a hold's size class up to a deadline, refused `busy` past it or past the
  * waiters it counts, a one-unit hold never behind a larger one nor a larger one starved by
- * them, each class capped apart, and released whatever happens, once.
+ * them, each class capped apart, a holder growing wait-die (the archive's move), and released
+ * whatever happens, once.
  */
 import { describe, expect, it } from "vitest";
 
@@ -146,6 +147,76 @@ describe("a pool of units", () => {
     expect([failed, pool.state().held]).toEqual(["boom", 0]);
     const slot: Slot = await pool.acquire(1);
     slot.release();
+  });
+
+  it("lets a holder grow before every queue, the others taking nothing past the reserve " +
+     "while it waits", async () => {
+    const pool = new SlotPool(7, 1000, 8, 1);
+    const table = await pool.acquire(1, true);  // a move's table: the larger class
+    const edit = await pool.acquire(3);
+    const order: string[] = [];
+    // A larger call already waiting for room.
+    const queued = pool.acquire(3).then((slot) => { order.push("queued"); return slot; });
+    await tick();
+    expect(pool.state()).toMatchObject({ held: 4, waiting: 1 });
+    // The holder grows by three: it fits now beside the reserve, ahead of the queue.
+    const pass = await pool.grow(table, 2);
+    expect(pass.age).toBe(table.age);
+    pass.release();
+    // Growing past what is free, it waits; a one-unit read takes the reserve only.
+    const growing = pool.grow(table, 4).then((slot) => { order.push("grown"); return slot; });
+    await tick();
+    const read = await pool.acquire(1);
+    const second = pool.acquire(1).then((slot) => { order.push("read"); return slot; });
+    await tick();
+    expect(order).toEqual([]);
+    edit.release();
+    // The edit's three free: the grower takes them first, never the queued larger call.
+    const grown = await growing;
+    expect(order).toEqual(["grown"]);
+    grown.release();
+    read.release();
+    (await second).release();
+    (await queued).release();
+    table.release();
+    expect(order).toEqual(["grown", "queued", "read"]);
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  });
+
+  it("refuses a younger holder's growth while an older waits, and an older's refuses the " +
+     "younger waiting (wait-die)", async () => {
+    const pool = new SlotPool(7, 1000, 8, 1);
+    const older = await pool.acquire(2);
+    const younger = await pool.acquire(2);
+    // The older waits to grow by three (two are free beside the reserve).
+    const waiting = pool.grow(older, 3);
+    await tick();
+    // The younger asks too: refused at once, so it lets go of what it holds.
+    expect(await pool.grow(younger, 1).catch((error: Error) => error.message)).toBe(BUSY);
+    younger.release();
+    (await waiting).release();
+    // A younger holder waits first, and an older one's asking refuses it.
+    const young = await pool.acquire(3);
+    const first = pool.grow(young, 2).catch((error: Error) => error.message);
+    await tick();
+    const old = pool.grow(older, 1);
+    expect(await first).toBe(BUSY);
+    young.release();
+    (await old).release();
+    older.release();
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  });
+
+  it("refuses a growth past its deadline, and never one past the larger class", async () => {
+    const pool = new SlotPool(4, 20, 8, 1);
+    const held = await pool.acquire(2);
+    const other = await pool.acquire(1, true);
+    expect(await pool.grow(held, 1).catch((error: Error) => error.message)).toBe(BUSY);
+    expect(() => pool.grow(held, 2)).toThrow(/grows to at most 3 units/);
+    other.release();
+    (await pool.grow(held, 1)).release();
+    held.release();
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
   });
 
   it("is one pool an isolate, its capacity and reserve its Worker's one figure", () => {

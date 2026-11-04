@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import * as holds from "../src/holds";
+import { MOVE_RECORDS } from "../src/segments";
 import { UNIT_BYTES } from "../src/slots";
 import { ISOLATE_BYTES, memoryTerms } from "./relay-memory";
 import { PLATFORM } from "./sources";
@@ -50,7 +51,6 @@ export const UNCOUNTED = Object.freeze({
     "an export's chunks, as its answer": "PR 4",
     "sync's raw chunk bytes": "PR 4",
     "an inbound event's body (INBOUND_BODY_MAX)": "PR 4",
-    "the archive's move": "STORE item 2",
   }),
 });
 
@@ -99,7 +99,8 @@ describe("an owner isolate's counts", () => {
   it("lets every declared hold run: each fits the pool beside its reserve", () => {
     const larger = holds.OWNER_POOL_UNITS - holds.OWNER_RESERVE_UNITS;
     for (const units of [holds.EDIT_READ_UNITS, holds.EDIT_MAKE_UNITS, holds.APPEND_UNITS,
-                         holds.WINDOW_UNITS, holds.bodyUnits(1), holds.bodyUnits(2)]) {
+                         holds.WINDOW_UNITS, holds.bodyUnits(1), holds.bodyUnits(2),
+                         holds.moveTableUnits(MOVE_RECORDS) + holds.MOVE_PASS_UNITS]) {
       expect(units === 1 || units <= larger).toBe(true);
     }
     expect(holds.WINDOW_UNITS).toBe(1);  // a window takes the reserve, never waits on edits
