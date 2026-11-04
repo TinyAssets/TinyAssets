@@ -114,6 +114,25 @@ export class DivergingOwnerDO extends OwnerDO {
 }
 
 /**
+ * The owner object with the production segment sizes (sealed at 8 MiB of records) but a
+ * small hot set: forty hot, twenty unread, a seal of twenty records, so a test of a purge
+ * across a run of real-sized segments builds them with a few hundred large posts.
+ */
+export class PurgingOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, {
+      ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 40, maxUnacked: 20, archiveRecords: 20 },
+      // Each move as it saw itself between its passes, kept in a table of the test's own.
+      archiveBetweenPasses: (storage, move) => {
+        storage.sql.exec("CREATE TABLE IF NOT EXISTS test_moves (stream TEXT, replaced " +
+                           "INTEGER, records INTEGER)");
+        storage.sql.exec("INSERT INTO test_moves VALUES (?, ?, ?)", move.stream,
+                         move.replaced, move.records);
+      } });
+  }
+}
+
+/**
  * As `ArchivingOwnerDO`, but a segment sealed at six records (or 8 MiB), twelve hot and six
  * unread: a straggler merge meets its byte budget before its record cap (review N1).
  */

@@ -875,19 +875,27 @@ function mailParts(message: Readonly<Record<string, unknown>>,
 }
 
 /**
- * A record a segment holds, kept as it is, appended to a move's table: its range of that
- * segment's content (`ref`), and its first line (its message's row, the only part read) for
- * its room, its chain and its time.
+ * What a segment's record says of itself in its first line (its message's row, the only
+ * part a move reads): its room, its chain and its time.
  */
-export function keptRecord(table: MoveTable, key: number, offset: number, length: number,
-                           ref: number, line: Uint8Array): number {
+export function recordHead(line: Uint8Array): { room: string; chain: string; at: number } {
   const [row] = parseRecord(line);
   if (row === undefined || row[0] !== "ledger_messages") {
     throw new Error("an archived mail record lacks its message");
   }
   const message = row[1];
-  return table.push(key, message["chain_root"] as string, message["room_id"] as string,
-                    message["created_at"] as number, length, MoveTable.KEPT, ref, offset);
+  return { room: message["room_id"] as string, chain: message["chain_root"] as string,
+           at: message["created_at"] as number };
+}
+
+/**
+ * A record a segment holds, kept as it is, appended to a move's table: its range of that
+ * segment's content (`ref`), with its head (`recordHead`).
+ */
+export function keptRecord(table: MoveTable, key: number, offset: number, length: number,
+                           ref: number, head: { room: string; chain: string; at: number }):
+    number {
+  return table.push(key, head.chain, head.room, head.at, length, MoveTable.KEPT, ref, offset);
 }
 
 /** A fence row's members bloom, as bytes. */
@@ -1908,15 +1916,29 @@ export class Ledger {
       this.#sql.exec(`DELETE FROM message_bodies WHERE message_id ${inList}`, list);
       this.#sql.exec(`DELETE FROM ledger_messages WHERE message_id ${inList}`, list);
     }
+    // The purges' cursors stay where they are: what this replaced is gone, and what it
+    // named comes after every cursor, its bloom naming no purged agent, so each purge still
+    // visits every segment it had not (review N7: a jump past the replaced segments' ids
+    // would skip the segments between them).
     for (const piece of pieces) {
       this.#fence(piece.content_id, piece.fence, now);
     }
-    if (replaced.length > 0) {
-      const last = Math.max(...replaced.map((old) => old.segment));
-      this.#sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
-                     last, last);
-    }
     this.#sql.exec("UPDATE ledger_usage SET archive_blocked = 0");
+  }
+
+  /**
+   * In a rewrite's commit: whether it left a segment under the least for the next pass to
+   * go on with (review N7: a bounded pass). Set, `purgeNext` hands the small segment back
+   * as a target until it holds the least or stands alone.
+   */
+  archiveCompactOwed(owed: boolean): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_compact = ?", owed ? 1 : 0);
+  }
+
+  /** Whether a bounded rewrite left compaction owed (so the lane goes on). A read. */
+  archiveCompactPending(): boolean {
+    return this.#sql.exec<{ owed: number }>(
+      "SELECT archive_compact AS owed FROM ledger_usage").one().owed === 1;
   }
 
   /** A segment's fence row, its content named (counted as a placed body's). In a unit. */
@@ -1993,8 +2015,22 @@ export class Ledger {
    * cursors moved past every segment whose bloom names none of them; null when none is left,
    * each purge then done. In a unit.
    */
-  purgeNext(): { fence: Fence } | null {
+  purgeNext(): { fence: Fence; compact: boolean } | null {
     const sql = this.#sql;
+    // First, a segment a bounded rewrite left under the least, while it has a neighbour.
+    if (sql.exec<{ owed: number }>("SELECT archive_compact AS owed FROM ledger_usage").one()
+      .owed === 1) {
+      const small = sql.exec<Fence>(
+        "SELECT * FROM archive_segments WHERE stream = 'mail' AND bytes < ? ORDER BY bytes " +
+          "LIMIT 1", SEGMENT_MIN_BYTES).toArray()[0];
+      const many = sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM (SELECT 1 FROM archive_segments WHERE stream = 'mail' " +
+          "LIMIT 2)").one().n > 1;
+      if (small !== undefined && many) {
+        return { fence: small, compact: true };
+      }
+      sql.exec("UPDATE ledger_usage SET archive_compact = 0");
+    }
     for (let batch = 0; batch < 64; batch++) {
       const purges = sql.exec<{ agent_id: string; next_segment: number }>(
         "SELECT agent_id, next_segment FROM archive_purges ORDER BY next_segment").toArray();
@@ -2011,7 +2047,7 @@ export class Ledger {
                         && bloomHas(bloom, purge.agent_id))) {
           sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
                    fence.segment - 1, fence.segment - 1);
-          return { fence };
+          return { fence, compact: false };
         }
       }
       if (fences.length === 0) {

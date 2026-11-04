@@ -75,14 +75,21 @@ export const TIER_STORAGE_MAX = (ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES
 export const MOVE_BYTES = 32 * 1024 * 1024;
 /**
  * What one archive move holds in the isolate (reviews N5 and N6), derived from workerd's
- * measurement (`limits-audit.md`): the most records one move can hold (`pack`'s largest
- * piece of records at `MIN_RECORD_BYTES` and the 25,000 stragglers a pick takes at most,
- * 74,932) at a record's measured cost in its packed table and plan (about 192 bytes), beside
+ * measurement (`limits-audit.md`): the most records one move can hold (`MOVE_RECORDS`,
+ * 74,933) at a record's measured cost in its packed table and plan (about 192 bytes), beside
  * what the measured worst move held besides its records (its chunks and the runtime's: 26.2
  * MiB), and the service binding's copy of the chunk it sends (4 MiB); 43.9 MiB, rounded up
  * to whole chunks. The grant a move takes from the isolate-wide guard.
  */
 export const MOVE_HOLD_BYTES = 44 * 1024 * 1024;
+/**
+ * The most records one move holds (review N7), the bound `MOVE_HOLD_BYTES` is derived at:
+ * `pack`'s largest piece of records at `MIN_RECORD_BYTES` (twice the least of them, and the
+ * record past it: 49,933) and the 25,000 stragglers a pick takes at most. A merge's `into`
+ * is one piece; a rewrite pass takes in a neighbour only while what it keeps and the
+ * neighbour's records fit it (`#archiveRewrite`). `MoveTable` refuses past it, loudly.
+ */
+export const MOVE_RECORDS = 74_933;
 /**
  * A record's share of its segment's trailer and suffix, counted with its lines in the one
  * number (a message's `line_bytes`): its key's and its chain's places (three numbers each,
@@ -482,6 +489,11 @@ export class MoveTable implements PlanRecords {
   /** A record appended; its index. `ref` names its content (kept, placed), else -1. */
   push(key: number, chain: string | null, room: string, at: number, length: number,
        kind: number, ref: number, offset: number): number {
+    if (this.#count >= MOVE_RECORDS) {
+      // Never a silent cut: the move fails, is counted, and the owner is told at three.
+      throw new Error(`an archive move's records are past MOVE_RECORDS (${MOVE_RECORDS}), ` +
+                      "the bound its memory is derived at");
+    }
     const n = this.#count++;
     const need = this.#count;
     this.#keys = grown(this.#keys, need, (size) => new Float64Array(size));

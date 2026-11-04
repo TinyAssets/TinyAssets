@@ -603,7 +603,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // when it stopped before it could say, as an isolate killed for memory does): counted
       // as a pass begins, so the owner is told after three however they ended (review N3).
       "archive_fails INTEGER NOT NULL DEFAULT 0 CHECK (archive_fails >= 0), " +
-      "archive_error TEXT CHECK (archive_error IS NULL OR length(archive_error) <= 200))",
+      "archive_error TEXT CHECK (archive_error IS NULL OR length(archive_error) <= 200), " +
+      // Whether a bounded rewrite left a segment under the least for the next pass to take
+      // its neighbours into (review N7).
+      "archive_compact INTEGER NOT NULL DEFAULT 0 CHECK (archive_compact IN (0, 1)))",
     "INSERT INTO ledger_usage (only, agents, enabled_agents, messages, settled_wakes) " +
       "VALUES (1, 0, 0, 0, 0)",
     "CREATE TRIGGER outside_agents_added AFTER INSERT ON outside_agents BEGIN " +

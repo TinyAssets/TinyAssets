@@ -19,7 +19,8 @@ import {
   TERMS, worstCase,
 } from "./owner-bound.test";
 import {
-  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_HOLD_BYTES, pack, recordBytes,
+  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_HOLD_BYTES, MOVE_RECORDS, pack,
+  recordBytes,
   SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord, TIER_STORAGE_MAX,
 } from "../src/segments";
 
@@ -150,11 +151,13 @@ describe("slice STORE's archive (item 2)", () => {
     const PEAK = 32.2 * MIB;
     const PEAK_RECORDS = 32_568;
     const PER_RECORD = 192;
-    // The most records a move can hold: `pack`'s largest piece of records at their least,
-    // and the stragglers one pick takes at most (`LEDGER_LIMITS.archiveRecords`).
-    const most = Math.floor(2 * SEGMENT_LEAST_BYTES / MIN_RECORD_BYTES)
+    // The most records a move can hold: `pack`'s largest piece of records at their least
+    // (twice the least of them and the record past it), and the stragglers one pick takes
+    // at most (`LEDGER_LIMITS.archiveRecords`); a rewrite pass is held to it as it takes in
+    // neighbours, and the move's table refuses past it (review N7).
+    const most = Math.floor(2 * SEGMENT_LEAST_BYTES / MIN_RECORD_BYTES) + 1
       + LEDGER_LIMITS.archiveRecords;
-    expect(most).toBe(74_932);
+    expect(MOVE_RECORDS).toBe(most);
     // What the worst move held besides its records, the most records' cost, and the
     // service binding's copy of the chunk it sends.
     const hold = PEAK - PEAK_RECORDS * PER_RECORD + most * PER_RECORD + CHUNK_BYTES;

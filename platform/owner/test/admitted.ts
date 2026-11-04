@@ -18,7 +18,8 @@ type Admitting = { admissionSet(binding: unknown, request: unknown): Promise<unk
 
 /** The owner object's namespaces the tests bind (`vitest.config.ts`). */
 const OWNER_NAMESPACES = ["OWNER", "AGENT", "GATED", "BARE", "BOUNDED", "RUNG", "SWITCHED",
-                          "CACHED", "ARCHIVING", "BIGARCHIVING", "DIVERGING", "SEEDED"];
+                          "CACHED", "ARCHIVING", "BIGARCHIVING", "DIVERGING", "PURGING",
+                          "SEEDED"];
 
 const namespaces = env as unknown as Record<string, unknown>;
 for (const name of OWNER_NAMESPACES) {

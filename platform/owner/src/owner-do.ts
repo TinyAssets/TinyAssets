@@ -163,6 +163,7 @@ import {
 } from "./codemode";
 import {
   type Actor, type Agent, type ArchivedMail, archivedMail, keptRecord, type MailParts,
+  recordHead,
   type ChainMail,
   checkMessage, clock,
   type Delivery, type Fence, Ledger, type LedgerLimits, STORAGE_BUSY,
@@ -172,8 +173,9 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import {
-  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_HOLD_BYTES, MoveTable,
-  pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES, type Source as Run,
+  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_BYTES, MOVE_HOLD_BYTES,
+  MOVE_RECORDS, MoveTable, pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES,
+  type Source as Run,
 } from "./segments";
 import { Erasure } from "./erase";
 import {
@@ -1550,6 +1552,13 @@ export function ownerLanes(deps: LaneDeps):
   };
 }
 
+/** An archive move as a test sees it between its passes: its kind, what it replaces, holds. */
+export interface ArchiveMoveSeen {
+  readonly stream: "mail" | "rewrite";
+  readonly replaced: number;
+  readonly records: number;
+}
+
 /** What a test reaches past the doors: the erasure's internal path and its retry interval. */
 export interface Internals {
   readonly erasure?: (internal: Erasure) => void;
@@ -1568,10 +1577,11 @@ export interface Internals {
    */
   readonly ledgerLimits?: LedgerLimits;
   /**
-   * Run between an archive move's two passes, so a test can make its sources differ there
-   * and see the second pass refused by the chunk's hash (review N5).
+   * Run between an archive move's two passes, with what the move replaces and holds, so a
+   * test can make its sources differ there and see the second pass refused by the chunk's
+   * hash (review N5), or see each move's bound (review N7).
    */
-  readonly archiveBetweenPasses?: (storage: OwnerStorage) => void;
+  readonly archiveBetweenPasses?: (storage: OwnerStorage, move: ArchiveMoveSeen) => void;
   /**
    * The starter package the object seeds and keeps current (`starter.ts`): the one this code
    * carries when omitted, as production builds it; another for a test of updates; null for
@@ -1690,7 +1700,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /** A test's step between an archive move's passes (`Internals.archiveBetweenPasses`). */
-  readonly #betweenPasses: ((storage: OwnerStorage) => void) | null;
+  readonly #betweenPasses: ((storage: OwnerStorage, move: ArchiveMoveSeen) => void) | null;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
    * lane: every wake kind's request from its record, after the kill switch (`CONTROL`).
@@ -1936,7 +1946,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       sandbox: { next: (now) => this.#sandboxTime.next(now),
                  run: (now, until) => this.#meterPass(until) },
       archive: { next: (now) => this.#ledger.archiveDue()
-                   || this.#ledger.purgedAgents().length > 0 ? now : null,
+                   || this.#ledger.purgedAgents().length > 0
+                   || this.#ledger.archiveCompactPending() ? now : null,
                  run: () => this.#archivePass() },
       starter: this.#starter, sender: () => this.#sender, admitted, clock, write, runWakes,
     }), clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
@@ -3763,9 +3774,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         await this.#door(() => this.#notices.add("storage_busy_long", archiveFailing(null),
                                                  clock()));
       }
+      // A purge's rewrite first, so a deleted agent's mail leaves R2 promptly; the order is
+      // not needed for correctness (a merge into a segment that still holds it keeps it,
+      // and its bloom names the agent, so the purge rewrites that segment in turn). A
+      // rewrite that fails never holds the move behind it (review N7): the move runs, and
+      // the rewrite's failure is the pass's, counted and told at three.
       await this.#granted(MOVE_HOLD_BYTES, async () => {
-        if (!await this.#archiveRewrite()) {
+        let rewrote = false;
+        let failed: unknown = null;
+        try {
+          rewrote = await this.#archiveRewrite();
+        } catch (error) {
+          if (error instanceof Refused && error.message.startsWith("archive_changed")) {
+            rewrote = true;
+          } else {
+            failed = error;
+          }
+        }
+        if (!rewrote) {
           await this.#archiveMove();
+        }
+        if (failed !== null) {
+          throw failed;
         }
       });
       await this.#door(() => this.#ledger.archiveEnded());
@@ -3845,10 +3875,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * One rewrite: the next segment a deleted agent's mail may be in, without that mail; one
-   * left under `SEGMENT_LEAST_BYTES` takes in its neighbour by key (never by id), so ranges
-   * stay disjoint and every segment but a lone one holds at least the least. Its records are
-   * ranges of the segments it replaces, streamed as a move's. False when no purge waits.
+   * One rewrite pass: the next segment a deleted agent's mail may be in, without that mail;
+   * one left under `SEGMENT_LEAST_BYTES` takes in its neighbours by key (never by id), so
+   * ranges stay disjoint. Each segment is scanned with the purge's filter: only what is kept
+   * enters the move's table, the rest streams past (review N7).
+   *
+   * Bounded, compacting across passes: a pass takes in a neighbour only while what it keeps
+   * and the neighbour's records stay within `MOVE_RECORDS` and the neighbours it scans
+   * within `MOVE_BYTES` (a merge's work), and stops there. A pass stopped so, still under the
+   * least, places what it kept as one small segment and marks compaction owed
+   * (`archiveCompactOwed`): the next pass takes that segment back as its target
+   * (`purgeNext`) and goes on taking in its neighbours, and so on until it holds the least
+   * or stands alone. Each pass leaves the archive whole and disjoint, only less compacted
+   * until the last; the first neighbour always fits (a small segment's records are under
+   * the least's worth and a piece's at most 49,933), so every pass makes progress. False
+   * when no rewrite waits.
    */
   async #archiveRewrite(): Promise<boolean> {
     const target = await this.#door(() => this.#ledger.purgeNext());
@@ -3856,28 +3897,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return false;
     }
     const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
+    const keep = (room: string) => !roomMembers(room).some((member) => purged.has(member));
     const table = new MoveTable();
-    // A segment's records the purge keeps, by their indices in the table.
-    const kept = async (fence: Fence) => {
-      const [from, to] = await this.#scanSegment(fence, table, null);
-      const some: number[] = [];
-      for (let n = from; n < to; n++) {
-        if (!roomMembers(table.room(n)).some((member) => purged.has(member))) {
-          some.push(n);
-        }
-      }
-      return { all: to - from, kept: some };
-    };
-    const first = await kept(target.fence);
-    if (first.kept.length === first.all) {
+    const first = await this.#scanSegment(target.fence, table, null, keep);
+    if (first.kept === first.all && !target.compact) {
       await this.#door(() => this.#ledger.purgeSkip(target.fence.segment));
       return true;
     }
     const replaced = [target.fence];
-    let records = first.kept;
-    let size = records.reduce((sum, n) => sum + table.length(n), 0);
+    let size = 0;
+    for (let n = 0; n < table.count; n++) {
+      size += table.length(n);
+    }
+    let scanned = 0;
+    let bounded = false;
     // Left small, it takes in its neighbours by key (a neighbour a purge also thinned may
-    // not be enough alone), until it holds the least or none is left: never by id.
+    // not be enough alone), within the pass's bound, until it holds the least or none is
+    // left: never by id.
     while (size < SEGMENT_LEAST_BYTES) {
       const span = { ...target.fence,
                      first_key: Math.min(...replaced.map((fence) => fence.first_key)),
@@ -3886,34 +3922,55 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (beside === null) {
         break;
       }
+      if (table.count + beside.records > MOVE_RECORDS || scanned + beside.bytes > MOVE_BYTES) {
+        bounded = true;
+        break;
+      }
       replaced.push(beside);
-      const more = (await kept(beside)).kept;
-      records = [...records, ...more];
-      size += more.reduce((sum, n) => sum + table.length(n), 0);
+      scanned += beside.bytes;
+      const from = table.count;
+      await this.#scanSegment(beside, table, null, keep);
+      for (let n = from; n < table.count; n++) {
+        size += table.length(n);
+      }
     }
-    await this.#placePieces(table, records, replaced, [], "0".repeat(64), "rewrite",
-                            new MoveReader(this.#files, table));
+    if (target.compact && replaced.length === 1) {
+      // A small segment with no neighbour left to take in: it stands alone, as it may.
+      await this.#door(() => this.#ledger.archiveCompactOwed(false));
+      return false;
+    }
+    const all = Array.from({ length: table.count }, (_, n) => n);
+    await this.#placePieces(table, all, replaced, [], "0".repeat(64), "rewrite",
+                            new MoveReader(this.#files, table),
+                            bounded && size < SEGMENT_LEAST_BYTES);
     return true;
   }
 
   /**
    * A segment's records appended to a move's table as ranges of its content, never held
    * (review N5): its trailer read, then each record's first line alone (its room, its chain,
-   * its time), the chunks read whole one at a time, in order. Their indices, from and to.
+   * its time), the chunks read whole one at a time, in order. Only the records `keep` takes
+   * (by room) enter the table (review N7: a purge's dropped mail streams past). Its records
+   * read, and those kept.
    */
-  async #scanSegment(fence: Fence, table: MoveTable, reader: MoveReader | null):
-      Promise<[number, number]> {
+  async #scanSegment(fence: Fence, table: MoveTable, reader: MoveReader | null,
+                     keep: (room: string) => boolean = () => true):
+      Promise<{ all: number; kept: number }> {
     const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
     const ref = table.addContent(fence.bytes, located.get(fence.content_id)!, null);
     const content = table.contentOf(ref);
     const read = (reader ?? new MoveReader(this.#files, table)).read;
     const trailer = parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
       .decode(await lineAt(content, fence.trailer_offset, fence.trailer_bytes, read)));
-    const from = table.count;
+    let kept = 0;
     for (const [key, offset, length] of trailer.keys) {
-      keptRecord(table, key, offset, length, ref, await lineAt(content, offset, length, read));
+      const head = recordHead(await lineAt(content, offset, length, read));
+      if (keep(head.room)) {
+        keptRecord(table, key, offset, length, ref, head);
+        kept++;
+      }
     }
-    return [from, table.count];
+    return { all: trailer.keys.length, kept };
   }
 
   /**
@@ -3931,7 +3988,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async #placePieces(table: MoveTable, indices: readonly number[], replaced: readonly Fence[],
                      seqs: readonly number[], digest: string, stream: "mail" | "rewrite",
-                     reader: MoveReader): Promise<void> {
+                     reader: MoveReader, leftSmall = false): Promise<void> {
     const ordered = [...indices].sort((a, b) => table.key(a) - table.key(b));
     const plans = ordered.length === 0 ? []
       : pack(ordered, SEGMENT_LEAST_BYTES, (n) => table.length(n)).map((part) => {
@@ -3952,7 +4009,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     reader.bodiesChecked();
     if (this.#betweenPasses !== null) {
       const between = this.#betweenPasses;
-      await this.#door(() => between(this.#storage));
+      await this.#door(() => between(this.#storage, { stream, replaced: replaced.length,
+                                                     records: table.count }));
     }
     const pieces = plans.map(({ plan, indices: at }) => {
       const members = new Set<string>();
@@ -3996,6 +4054,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         const adopt = (n: number): void => {
           if (n === pieces.length) {
             this.#ledger.archiveCommit(seqs, digest, replaced, named, clock());
+            if (stream === "rewrite") {
+              this.#ledger.archiveCompactOwed(leftSmall);
+            }
             const { stored, figure } = this.#files.storedNow();
             if (figure !== null && stored > Math.max(figure, begun.before)) {
               throw new Refused("archive_full: the move would leave the storage figure higher " +

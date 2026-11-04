@@ -18,7 +18,8 @@ import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { parseTiers } from "../src/tier";
 import {
-  type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MoveTable, orderedId,
+  type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable,
+  orderedId,
   parseRecord,
   parseTrailer, planSegment, recordBytes, recordParts, recordRows, type SegmentRecord,
   type Source,
@@ -261,6 +262,16 @@ describe("segments", () => {
     await expect(makeChunk(plan, 0, async (from, to) =>
       planned.slice(from, to).map(() => [new Uint8Array(1)]), read))
       .rejects.toThrow(/not the length its plan placed/);
+  });
+
+  it("are planned in a table that refuses a move past MOVE_RECORDS, loudly (review N7)", () => {
+    const table = new MoveTable();
+    for (let n = 0; n < MOVE_RECORDS; n++) {
+      table.push(n + 1, null, "dm:x", n, MIN_RECORD_BYTES, MoveTable.INLINE, -1, 0);
+    }
+    expect(table.count).toBe(MOVE_RECORDS);
+    expect(() => table.push(MOVE_RECORDS + 1, null, "dm:x", 0, MIN_RECORD_BYTES,
+                            MoveTable.INLINE, -1, 0)).toThrow(/past MOVE_RECORDS/);
   });
 
   it("hold a body raw, never escaped: a record is its body's bytes and its lines' (N3)", () => {
@@ -1011,6 +1022,108 @@ describe("the tail's seal at the production limits (review N4)", () => {
     expect(seen.records).toBeGreaterThanOrEqual(LEDGER_LIMITS.archiveBytes);
     expect(seen.records).toBeLessThan(LEDGER_LIMITS.archiveBytes + seen.largest);
   }, 300_000);
+});
+
+describe("a purge's rewrite, bounded a pass (review N7)", () => {
+  const MIB = 1024 * 1024;
+  /** The lane's job made due now, then run: one pass. */
+  const pass = async (r: Rig) => {
+    await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
+                        "'owner-schedule/archive'");
+    await drainDue(r.stub);
+  };
+  const fences = (r: Rig) => sqlIn(r.stub, "SELECT segment, first_key, last_key, bytes, " +
+                                           "records FROM archive_segments ORDER BY first_key");
+  /**
+   * Mail of `size` bytes a body, `n` messages, every `every`th to Dot and the rest to Muse,
+   * each acked at once, then the lane settled: a run of real-sized segments (8 MiB each).
+   */
+  const build = async (n: number, every: number, size: number) => {
+    const purging = env.PURGING as unknown as DurableObjectNamespace<OwnerDO>;
+    const r = await rig(purging);
+    const muse = await r.register(MUSE);
+    const dot = await r.register(DOT, "Dot");
+    const kept = new Map<string, string>();
+    for (let i = 0; i < n; i++) {
+      const toDot = i % every === every - 1;
+      const body = `${i} `.padEnd(size, toDot ? "d" : "m");
+      const posted = await r.post(null, `dm:${toDot ? dot : muse}`, { cmid: `p${i}`, body });
+      if (toDot) {
+        kept.set(posted.message_id, body);
+      }
+      const reader = toDot ? DOT : MUSE;
+      await r.ack(reader, (await r.read(reader)).messages.at(-1)!.seq);
+      if (i % 10 === 9) {
+        await drainDue(r.stub);
+      }
+    }
+    for (let i = 0; i < 40; i++) {
+      await drainDue(r.stub);
+    }
+    return { r, muse, kept };
+  };
+  /**
+   * Delete Muse, then run the lane until it has nothing left to do, checking the archive
+   * whole after each run; the rewrites each move made, as it saw itself between its passes.
+   */
+  const purge = async (r: Rig, muse: string) => {
+    const before = await fences(r);
+    await sqlIn(r.stub, "DELETE FROM test_moves");
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
+
+    for (let i = 0; i < 60; i++) {
+      await pass(r);
+      const now = await fences(r);
+      // Whole and disjoint after every run, and at most one segment under the least.
+      expect(await overlaps(r)).toEqual([]);
+      expect(now.filter((fence) => (fence["bytes"] as number) < 8 * MIB).length)
+        .toBeLessThanOrEqual(1);
+      const [{ left }] = await sqlIn(r.stub, "SELECT (SELECT COUNT(*) FROM archive_purges) + " +
+        "(SELECT archive_compact FROM ledger_usage) AS left") as [{ left: number }];
+      if (left === 0) {
+        break;
+      }
+    }
+    const passes = (await sqlIn(r.stub, "SELECT replaced, records FROM test_moves WHERE " +
+                                        "stream = 'rewrite'")) as { replaced: number;
+                                                                  records: number }[];
+    return { before, passes, after: await fences(r) };
+  };
+
+  it("finishes nine in ten of a run's mail deleted over several passes, each bounded, " +
+     "byte-exact", async () => {
+    const { r, muse, kept } = await build(120, 10, 860 * 1024);
+    const { before, passes, after } = await purge(r, muse);
+    expect(before.length).toBeGreaterThanOrEqual(8);
+    // Each pass takes in neighbours only within MOVE_BYTES of them: the target and at most
+    // three of these segments; so the purge took several passes, compacting across them.
+    expect(Math.max(...passes.map((p) => p.replaced))).toBeLessThanOrEqual(4);
+    expect(passes.every((p) => p.records <= MOVE_RECORDS)).toBe(true);
+    expect(passes.filter((p) => p.replaced > 1).length).toBeGreaterThan(1);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_purges")).toEqual([{ n: 0 }]);
+    expect(after.every((fence) => (fence["bytes"] as number) >= 8 * MIB)
+           || after.length === 1).toBe(true);
+    for (const [id, body] of kept) {
+      expect((await chained(r, id)) === body).toBe(true);
+    }
+  }, 600_000);
+
+  it("completes a purge of an agent with nearly all the mail (19 in 20): what is left " +
+     "stands alone, byte-exact", async () => {
+    const { r, muse, kept } = await build(200, 20, 430 * 1024);
+    const { before, passes, after } = await purge(r, muse);
+    expect(before.length).toBeGreaterThanOrEqual(8);
+    expect(Math.max(...passes.map((p) => p.replaced))).toBeLessThanOrEqual(4);
+    expect(passes.every((p) => p.records <= MOVE_RECORDS)).toBe(true);
+    expect(passes.length).toBeGreaterThan(2);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_purges")).toEqual([{ n: 0 }]);
+    expect(await sqlIn(r.stub, "SELECT archive_compact AS c FROM ledger_usage"))
+      .toEqual([{ c: 0 }]);
+    expect(after).toHaveLength(1);  // Dot's few archived, under the least, alone
+    for (const [id, body] of kept) {
+      expect((await chained(r, id)) === body).toBe(true);
+    }
+  }, 600_000);
 });
 
 describe("a full owner's archive (review M1)", () => {
