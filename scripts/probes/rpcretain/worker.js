@@ -9,8 +9,9 @@
 //   rpcStream - sends each as a type:"bytes" stream to SELF's Store;
 //   retain    - keeps every chunk in an array: a real O(size) hold, the control, which must
 //               hit exceededMemory near 128 MB to prove the probe can see one.
-// It answers {form, mib, ok, held?, ms?, error?}. A call the runtime resets answers ok:false
-// with the runtime's message; the invocation's outcome is in GraphQL.
+// It answers {form, mib, objectId, ok, held?, ms?, error?}. A call the runtime resets answers
+// ok:false with the runtime's message, and still HTTP 200: the object's outcome is in the
+// Durable Object datasets in GraphQL, matched by objectId.
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
 const CHUNK = 4 * 1024 * 1024;
@@ -71,12 +72,14 @@ export default {
       return new Response("bad request", { status: 400 });
     }
     // A fresh object per run, so no run shares an object's state with an earlier one by name.
-    const stub = env.PROBER.get(env.PROBER.idFromName(`${form}-${mib}-${Date.now()}-${Math.random()}`));
+    // Its id goes back with the answer, so the driver can match the object's own analytics.
+    const id = env.PROBER.idFromName(`${form}-${mib}-${Date.now()}-${Math.random()}`);
+    const objectId = id.toString();
     try {
-      const r = await stub.burst(form, mib);
-      return Response.json({ form, mib, ok: true, ...r });
+      const r = await env.PROBER.get(id).burst(form, mib);
+      return Response.json({ form, mib, objectId, ok: true, ...r });
     } catch (error) {
-      return Response.json({ form, mib, ok: false, error: String(error?.message ?? error) });
+      return Response.json({ form, mib, objectId, ok: false, error: String(error?.message ?? error) });
     }
   },
 };
