@@ -2143,6 +2143,139 @@ R, S, M and W.
 - [ ] Not built, by choice: a verification cache (each subscribe verifies again) and
   retries of a `5xx` (the wake settles failed; the next change rings).
 
+- [x] **Slice BRAIN: the doors half of the one shared brain** (`shared_brain_research.md`
+  §6.2, `autoconnect_research.md` §5.2, `goals_research.md` §6.2; the founder's DCR ruling).
+  - `CLIENT_INSTRUCTIONS` (`doors/src/instructions.ts`) on the `custom` and `directory`
+    profiles, `RUN_INSTRUCTIONS` kept for `run`: the brain's rules in the first 511
+    characters (the goals index before acting, look here before asking, `file_append` to
+    add and `file_edit` to correct, a new board row to claim an act), then onboarding for a
+    user with no `Onboarded` date and no time zone, and the once-only offer of an assistant
+    `agents_list` shows not connected. It names only our tools, never "always", and asks no
+    agent to save to its own memory or install anything.
+  - The writers: `file_append` (additive, `destructiveHint: false`: read, append and write
+    at one etag, reading again on a conflict; a chunked file's whole chunks kept, so any
+    size; at most 4 MiB of text a call), `file_write` (`fileWrite` takes text; off the
+    deferred list) and `file_edit` (one exact occurrence at the file's etag; none or several
+    refused with how many; files up to `WHOLE_BYTES`, the files plane's ceiling for a write
+    through the object), on every profile, each held to `write_files` and to the agent
+    trees. `fetch` answers the etag. `search`, `fetch`, `file_read`, `collection_write` and
+    `agents_list` say when to use them.
+  - File reads and writes await a new owner's seed (`#seededFor`, after the caller's
+    authority; the write-gate guard knows it), so a first `fetch` of `/workspace/USER.md`
+    finds the seeded profile and a first append lands after it.
+  - The vendor at sign-in (`doors/src/apps.ts`): a CIMD client by its document's host
+    (verified), any other by a word of its registered name (unverified), carried in the
+    grant's props and binding and kept on its grant row (migration 4: `vendor`,
+    `vendor_verified`, exported, capture triggers made again). `agents_list.apps` to every
+    grant, narrowed and run ones included: each `apps.json` app connected or not, with its
+    `connect_url`, and unmatched clients as one line. The owner app's connected apps page
+    names each app by vendor and links each one not connected.
+  - `platform/doors/apps.json`: Claude, ChatGPT (with dots and Codex), Grok Bot, Meta Muse,
+    Gemini and Cursor, each with match data, `registration`, connect link, sentence, steps
+    and copy text, its vendor page and the date read. ChatGPT's steps are the current
+    "Plugins, +, Add custom MCP server" (read 2026-11-04). The public `/connect` page built
+    from it is on its own branch, `platform-brain-site`, which lands at the cutover (§9): a
+    merge of `WebSite/site-react/**` redeploys the live site, and live `/mcp` is the old
+    platform until then. Until it lands, `connect_url`'s anchors for Grok, Muse and Gemini
+    are not on the live page; the owner app's connected apps page links them meanwhile.
+    Grok's and Muse's `say` sentence asks their agent to save the TinyAssets skill: it is the
+    user's own request, sent in their own chat as the connect act. Nothing TinyAssets serves to
+    an agent (the instructions, every tool's text, the plugins) asks it to save to its memory
+    or install anything; `doors/guards/apps.test.ts` holds that split.
+  - DCR (founder ruling): served only with `DCR_ENABLED`, and then a registration is taken
+    only when its `client_name` names a `dcr` vendor (Grok, Muse, Gemini, Cursor); a CIMD
+    vendor's name or none is refused `invalid_client_metadata`. Production stays
+    `DCR_ENABLED: "false"` until the go-ahead deploy.
+  - Plugins (`platform/plugins/`, `build.mjs`, `--check` in the doors' guard): ChatGPT and
+    Codex (Agent Plugins format, OpenAI extension, onboarding skill, first example prompt
+    "Set me up on TinyAssets") and Claude (`.claude-plugin/`, `.mcp.json`), each the MCP
+    server and the starter's `shared-brain`, `onboarding`, `goals`, `knowledge`,
+    `rooms-and-board` and `schedule` skills byte for byte. `SUBMIT.md` is the founder's
+    checklist; nothing was submitted.
+  - Starter version 5, text only: onboarding writes `SOUL.md` only for a TinyAssets agent
+    (an outside assistant has none); the shared-brain rule 2 names `file_append` and
+    `file_edit` and one append near the end of a conversation.
+  - The owner app follows a dropped socket (task #68): `follow()` attaches a new socket on
+    any close but the doors' final ones (4400, 4403, 4410, 4440) and calls back so the
+    sign-in panel and the talk view read their state again; `test:app` drops one.
+  - The local proof, in workerd (`doors/test/brain.test.ts`): two MCP clients of one owner,
+    a nonce one appends to `USER.md` found by the other's `search` and `fetch` with the
+    seeded profile whole, corrected by `file_edit` at its etag; two concurrent creates of
+    `offer:connect:grok` leave exactly one row and one conflict.
+- [ ] **Owed by BRAIN, live, after the go-ahead deploy** (proof is observed tool calls and
+  `writer` values, never an agent's say-so; the user's only acts are connect, sign in and
+  answer):
+  1. **Turn DCR on** in the go-ahead deploy (`DCR_ENABLED: "true"`). For each `dcr` vendor
+     (Grok via Cursor's backend, Gemini, Muse, Cursor), the founder makes its first connect
+     attempt while `wrangler tail` runs on the doors Worker (or with the doors' Workers logs
+     open). That attempt's registration is refused, since its `match.redirects` is empty, and
+     the doors log one `dcr_refused` line holding the app's id, its real `client_name` and its
+     `redirect_uris` (bounded, escaped JSON; `apps.ts` `refusedRegistrationLine`). Record those
+     redirects (and the name, if it is not matched as expected) in `apps.json` with the date,
+     and redeploy: only then can it register, and only to those redirects. Confirm Claude's and ChatGPT's CIMD hosts and redirects (`claude.ai`,
+     `chatgpt.com` or `openai.com`) in their first grant rows (`vendor_verified` 1).
+  2. **MCP-first onboarding** (`ui-test`, Claude.ai): a fresh account that never opened
+     the app; connect through `apps.json`'s Claude link; first message "help me plan this
+     week". Pass: a `fetch`/`file_read` of `/workspace/USER.md` is seen; the task is done,
+     then the onboarding questions in one message; `USER.md` gains the answers and
+     `Onboarded:` with Claude's client as `writer`; asked about other assistants, "ChatGPT"
+     gets `https://tinyassets.io/connect/#chatgpt`. Repeat with "what can you do?".
+  3. **The second vendor**: follow that link, connect ChatGPT, then in a fresh ChatGPT
+     conversation ask something that needs the profile. Pass: ChatGPT reads `USER.md`, runs
+     no onboarding again, and `agents_list.apps` shows both connected.
+  4. **Write-back and check-first, both ways** (`ui-test`, A/B): in A state a nonce
+     preference in passing; pass: a new `USER.md` version with A's client as `writer`. In a
+     fresh conversation in B ask what needs it without naming TinyAssets; pass: B calls
+     `search` or `fetch` first and uses the nonce. Then B to A.
+  5. **Collision**: ask A and B close together to make the same board item keyed by one
+     stable key. Pass: one `doing` row; the other reports it taken.
+  6. **The offer, once**: with Claude and ChatGPT connected and Grok not, say in Claude
+     "Grok told me something different yesterday". Pass: Claude answers first, offers Grok
+     once with `connect_url#grok`, `USER.md` gains "Offered to connect grok" and Grok on
+     "Assistants I use"; no offer again in a new Claude or a ChatGPT conversation; a no
+     (third account) records "Don't suggest connecting grok" and no agent offers it again;
+     connecting Grok shows it connected.
+  7. **Goals**: tell ChatGPT a nonce outcome in passing with one small task toward it; pass:
+     a `status: draft` goal page with ChatGPT's client as its first writer and a board row
+     naming it; confirm it in a fresh Claude.ai conversation; pass: Claude reads the goals
+     index first and sets `status: stable`.
+  8. **Layer ablation** (20 prompts each, direct, indirect and negative): connector only;
+     with instructions; with the plugin. Record the check rate, the false-trigger rate, and
+     the approval prompts each write-back costs on ChatGPT and Claude, `file_append`
+     against `file_edit`; whether claude.ai shows the `instructions`.
+  9. **By the founder's hand** (no driver here; name the app version and date): Grok Bot
+     (the `say` sentence), Meta Muse, Claude Duet and Gemini, steps 2 to 6 each, after step 1
+     recorded each one's redirects; before that, each one's connect is refused loudly at its
+     registration, which is what step 1 reads.
+  10. **Codex CLI and Claude Code locally**, two agents on one repository: claims keyed
+     `repo:<name>:<area>`, one `doing` row, the other stops.
+  - Review rvbr (REQUEST_CHANGES on `e4061205e`), fixed: an outside agent's or a run's
+    `file_write` takes a string etag, `""` creating only where absent, and the object refuses
+    null from them (H1); `follow()` shows a run's frame once across sockets, by its `seq`
+    (M1), and waits between reconnects from 1 s doubling to 30 s, back to 1 s once a socket
+    stayed open that long (L1); a CIMD client is verified only when its host and every
+    redirect it registered are the app's (M2); a registration takes only a `dcr` vendor's
+    own redirects, and one with none recorded takes none (M3); migration 4's columns are in
+    the owner bound (L2); `/workspace/USER.md` joins `OWNER_TREES` and `file_append` refuses
+    JSON, TOML and YAML (the founder on L3); `agents_list.apps` gives `last_used`, and the
+    shared-brain skill asks before taking a long-unused app as connected (L4); the
+    served-text guard covers titles, nested argument descriptions, skill descriptions,
+    "always", "every time" and broad triggers (L5); `file_list` and `agents_list` wait for the
+    seed (L6); an append rechecks the agent trees on each try and stops after
+    `APPEND_TRIES` (65: one more than the owner's open uploads) lost tries, `file_busy` (L7).
+  - Review rvbr round 2, fixed: a refused registration naming a `dcr` vendor logs one
+    bounded `dcr_refused` line (its app, `client_name`, `redirect_uris`), which live step 1
+    reads (R2-M1); a small file's append is read and written in one unit and never retries,
+    and only a larger one's retry is capped, at `MAX_OPEN_INTENTS` (64) tries, the chunked
+    writes that can be in flight at once (R2-L1); the old canary stays provisioned until the
+    switch (R2-L2); `file_remove`, `file_rename` and `file_restore` take a string etag from
+    clients and runs (R2-L3); `starter.ts`'s personal-file comment (R2-L4).
+- [ ] Owed by BRAIN to later slices: the submissions themselves (`platform/plugins/SUBMIT.md`,
+  the founder's outward act); Claude's plugin directory follows a repository, so the plugin
+  may need its own repository or a published subfolder; a Gemini listing would need a
+  profile without `converse`, rooms and mail (Google's agent-to-agent ban), outside
+  Direction 7 today; Muse's own client completing our OAuth before a listing is unverified.
+
 ## 8. Founder live test
 
 - [ ] The founder's real account, end to end. Fixes land in the new stack only.
@@ -2207,6 +2340,76 @@ R, S, M and W.
       would never lower a tier. Before `routes`: a billing door on the new platform, with
       Stripe's endpoint moved to it; or the founder's word that no live subscription exists,
       and Stripe's endpoint disabled until that door is built.
+
+- [ ] **The founder's and the canary's owners start fresh** (the founder's ruling, 2026-11-04):
+  the founder's main account and every canary owner account begin on the new platform with
+  nothing imported, so the founder goes through the whole onboarding from the first
+  connection, and each fresh canary owner exercises it once, at its first run. In the
+  cutover window:
+  1. **Back up, never import.** Their old-platform data is exported and kept privately as a
+     backup. It is proven saved before anything is dropped (Fact 13): the export's own
+     listing and checksums are read back from where it is kept. It is **not** imported into
+     their new owners, unlike every other owner's stores in the step above.
+  2. **Admit empty.** Their new owner objects are admitted empty (`admissionSet` from the
+     platform caller, and the `o:` record), so the starter seed and onboarding run at their
+     first connection.
+     **The old canary stays provisioned until the switch.** `deploy/deploy_fail_safe.sh`
+     refuses a data-moving deploy while the core canary is not provisioned (`provisioned=1`
+     from `scripts/verify_core_canary_provision.py`, which checks the pinned
+     `TINYASSETS_CANARY_UNIVERSE_ID`), and the cutover's own moves are such deploys. So the
+     old canary account and its variables are left as they are until the switch is done; the
+     reworked scripts of step 3 and that gate change together, in one change after it.
+  3. **A canary that starts from a fresh, seeded owner.** The canary's live checks run from
+     an owner just seeded: onboarding first, then the usual checks. What the scripts
+     `docs/host-actions.md` names, and `openspec/specs/core-capability-assurance/spec.md`,
+     assume today, read 2026-11-04, nothing changed yet:
+     - `scripts/core_canary_provision.py` and `scripts/verify_core_canary_provision.py`
+       refuse an account whose home is not the repo variable `TINYASSETS_CANARY_UNIVERSE_ID`,
+       then create or repair through the old tools (`read_graph target=model_options`,
+       `target=branches`) a default model, a connection and a branch in that pinned home.
+       A fresh owner has no such home id and none of those. They must: sign in, wait for
+       the seed (`agents_list` shows `main`), check `/workspace/USER.md` has no
+       `Onboarded:` date, run onboarding through an MCP client the way an outside agent does
+       (answer it with fixed canary answers), then provision a model source on the new
+       doors (`/app/api` connect), with no pinned home.
+     - `scripts/owner_box_canary.py` requires both `TINYASSETS_CANARY_UNIVERSE_ID` and
+       `TINYASSETS_CANARY_USER_ID` to match the token's `universe_id` and `principal_id`, then
+       calls `converse` with `graph_id` set to that home. On a fresh owner both ids are new,
+       and the new `converse` takes `agent_id` and `client_send_id`, not `graph_id`. The two
+       variables become the new owner's id read after sign-in (the probe checks its own
+       account through the binding, not a pinned universe), and the call becomes the new
+       `converse`.
+     - `scripts/canary_session.py`: one ordinary sign-in per chain
+       (`TINYASSETS_CANARY_SESSION_SEED_DEPLOY`, `..._UPTIME`), whose seed names the old
+       account's session. A fresh owner on the new issuer needs both chains signed in again,
+       which is the founder's step in `docs/host-actions.md` ("Canary is an ordinary account"), repeated after the
+       switch.
+     - `scripts/mcp_public_canary.py --assert-handles` and `scripts/mcp_tool_canary.py`
+       hold the old platform's handle set (`read_graph`, `write_graph`, `run_graph`,
+       `read_page`, `write_page`, `converse`, `get_status`) and call `get_status` or
+       `read_graph target=status`. The new door serves the tool table
+       (`platform/doors/profiles.json`) and neither of those. Their handle set becomes the
+       custom profile's, and their status call one the new table has (`agents_list`, whose
+       `apps` and `owner_agents` also prove the seed ran).
+     - `scripts/last_activity_canary.py` reads `daemon.last_activity_at` from `get_status`;
+       the new platform has no daemon or `get_status`. Its proof becomes a run's receipt
+       (`run_status` of the canary's scheduled run) on the fresh owner.
+     - The spec's "Hosted live assurance" requirement names "a dedicated canary owner" and
+       its "Canary not provisioned" scenario turns missing configuration into a warning. A
+       fresh owner each cutover means "provisioned" is the state the provision script makes
+       from empty, not pinned variables, so the spec's provisioning wording changes with
+       these scripts.
+     - The same scripts run every five minutes and after every deploy, so the onboarding run
+       happens once per fresh owner, not per probe: it is marked by the `Onboarded:` date,
+       and every later probe starts from the onboarded, seeded owner.
+- [ ] **The public `/connect` page from `apps.json`** (slice BRAIN's website part, on branch
+  `platform-brain-site`), after the routes move above, so the live site never shows steps the
+  live `/mcp` does not serve: merge it to `main` (`deploy-site-react.yml` publishes it, its path
+  filter then including `platform/doors/apps.json`), and its sweep checks one section per app
+  `apps.json` names. It carries `WebSite/site-react/app/connect/page.tsx`,
+  `WebSite/site-react/scripts/sweep.py`, the workflow's path filter and the
+  `public-website-surface` spec's `/connect` line. Then `connect_url` reaches every app's
+  section, Grok's, Muse's and Gemini's among them.
 
 ## 10. The plan's later slices
 

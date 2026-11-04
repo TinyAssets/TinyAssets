@@ -22,6 +22,7 @@ import { describe, expect, it } from "vitest";
 
 import { parse, PLATFORM } from "../../owner/guards/sources";
 import profiles from "../profiles.json" with { type: "json" };
+import { CLIENT_INSTRUCTIONS, CLIENT_KEY, RUN_INSTRUCTIONS } from "../src/instructions";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, profileNames, type Tool, toolNames, toolTable }
   from "../src/tools";
 
@@ -29,7 +30,6 @@ import { CLIENT_PROFILES, DEFAULT_PROFILE, profileNames, type Tool, toolNames, t
 const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
   fileRead: "an outside client's file bytes: the binder streams the owner's (slice L)",
   fileReadChunks: "an outside client's file bytes: the binder streams the owner's (slice L)",
-  fileWrite: "an outside client's file bytes: the binder streams the owner's (slice L)",
   fileUploadBegin: "an outside client's file bytes: the binder streams the owner's (slice L)",
   fileUploadChunks: "an outside client's file bytes: the binder streams the owner's (slice L)",
   fileUploadCommit: "an outside client's file bytes: the binder streams the owner's (slice L)",
@@ -64,14 +64,19 @@ const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph", "ru
 const NEVER_RUN: readonly string[] = Object.freeze(["converse"]);
 /** The file readers' tools (the starter slice): ChatGPT's search and fetch among them. */
 const READERS: readonly string[] = Object.freeze(["file_read", "search", "fetch"]);
+/** The file writers' tools (slice BRAIN): the additive write-back first. */
+const WRITERS: readonly string[] = Object.freeze(["file_append", "file_write", "file_edit"]);
 /** An engine's own tool names, its vendor's: never served as one of ours. */
 const MODEL_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit", "bash", "ta"]);
 /** Fields that would make a tool an operation-selecting executor. */
 const DISPATCH: readonly string[] = Object.freeze(["method", "operation", "tool", "target",
                                                    "action", "command"]);
-/** Writes that destroy or send nothing: an ack, a filed card, a proposal, a new directory. */
+/**
+ * Writes that destroy or send nothing: an ack, a filed card, a proposal, a new directory,
+ * text added after a file's bytes (slice BRAIN: never a byte already there changed).
+ */
 const ADDITIVE: readonly string[] = Object.freeze(["mailboxAck", "registerPropose",
-                                                   "policyPropose", "fileMkdir"]);
+                                                   "policyPropose", "fileMkdir", "fileAppend"]);
 /**
  * Writes that repeat to the same end: an ack through a sequence, a directory made once, a
  * run's cancel (a second ends nothing).
@@ -336,6 +341,52 @@ describe("tool table guard", () => {
     // ChatGPT's two names, each taking its one argument (platform.openai.com/docs/mcp).
     expect((named("search").input["required"] as string[])).toEqual(["query"]);
     expect((named("fetch").input["required"] as string[])).toEqual(["id"]);
+  });
+
+  it("serves the file writers held to write_files in every profile, the append additive " +
+     "and the replacements destructive", () => {
+    const named = (name: string) => toolTable().find((tool) => tool.name === name)!;
+    expect(WRITERS.map((name) => named(name).door)).toEqual(["fileAppend", "fileWrite",
+                                                             "fileEdit"]);
+    expect(named("file_append")).toMatchObject({ capability: "write_files", readOnlyHint: false,
+                                                 destructiveHint: false, idempotentHint: false });
+    for (const name of ["file_write", "file_edit"]) {
+      expect(named(name)).toMatchObject({ capability: "write_files", readOnlyHint: false,
+                                          destructiveHint: true, idempotentHint: false });
+    }
+    for (const profile of ["directory", "custom", "run"] as const) {
+      for (const name of WRITERS) {
+        expect(profileNames(profile)).toContain(name);
+      }
+    }
+    expect(Object.keys(DEFERRED)).not.toContain("fileWrite");
+    // An append made destructive, or an edit made additive, is seen.
+    const table = toolTable();
+    for (const [name, destructiveHint] of [["file_append", true], ["file_edit", false]] as const) {
+      expect(toolProblems(table.map((tool) => tool.name === name
+        ? { ...tool, destructiveHint } : tool), DOORS)).not.toEqual([]);
+    }
+  });
+
+  it("tells an outside client's agent the brain's rules in its first 512 characters, a " +
+     "run's engine its working files", () => {
+    expect(CLIENT_KEY.length).toBeLessThanOrEqual(512);
+    expect(CLIENT_INSTRUCTIONS.startsWith(CLIENT_KEY)).toBe(true);
+    // Each rule in the key part: goals, look first, save, claim.
+    for (const named of ["/workspace/goals/index.md", "search", "fetch", "/workspace/index.md",
+                         "file_append", "file_edit", "collection_write"]) {
+      expect(CLIENT_KEY).toContain(named);
+    }
+    // The tools it names are the table's, so each is one the client is served (connect_url
+    // is a field of agents_list's apps).
+    for (const tool of (CLIENT_INSTRUCTIONS.match(/\b[a-z]+_[a-z_]+\b/g) ?? []).filter((word) => word !== "connect_url")) {
+      expect(toolNames(), tool).toContain(tool);
+    }
+    for (const profile of CLIENT_PROFILES) {
+      expect(profileNames(profile)).toEqual(expect.arrayContaining(
+        ["search", "fetch", "file_append", "file_edit", "collection_write", "agents_list"]));
+    }
+    expect(RUN_INSTRUCTIONS).not.toBe(CLIENT_INSTRUCTIONS);
   });
 
   it("lists exactly each profile's tools: the directory's all but code, a run's all but " +

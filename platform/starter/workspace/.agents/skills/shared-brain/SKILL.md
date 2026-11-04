@@ -1,8 +1,8 @@
 ---
 name: shared-brain
-description: Use whenever a request depends on what the owner or their other agents already know, decided or did, or before an act another of their agents might also take.
+description: Use when a request depends on what the owner or their other agents already know, decided or did, or before an act another of their agents might also take.
 metadata:
-  ta-starter: "shared-brain@1"
+  ta-starter: "shared-brain@2"
 ---
 
 # The shared brain
@@ -28,6 +28,9 @@ When your owner tells you something worth keeping, write it down before you fini
   that stopped being true is rewritten in place, never left contradicting;
 - anything else goes in the knowledge base (the `knowledge` skill), with its source and date;
 - a new directory you make gets an `index.md`, and a line in its parent's index.
+Over MCP, `file_append` adds a directive or a note without touching what is there, and
+`file_edit` corrects one in place; where you can, write what you learned in one append near
+the end of the conversation, so your owner approves few writes.
 
 ## 3. Claim before acting
 Before an act another of your owner's agents could also take (a send, a submission, a
@@ -60,7 +63,9 @@ and tell your owner when the two differ. If yours is newer, update the workspace
 ## 5. Assistants not yet connected
 When your owner says, or clearly shows, that they use an AI assistant, check whether
 `agents_list` shows it connected to TinyAssets; if `agents_list` lists no apps, ask your
-owner whether it is already connected. A file that merely mentions a product is not your
+owner whether it is already connected. An app connected but long unused (its `last_used` in
+`agents_list`) may have been disconnected in that app, which TinyAssets is not told: ask your
+owner before you take it as connected. A file that merely mentions a product is not your
 owner using it. Name the app as `<app>`: its id as `agents_list` gives it, lower-case, the
 same in the claim and in the directives. If it is not connected, and `/workspace/USER.md`
 says neither that it was offered nor not to suggest it, offer it once:

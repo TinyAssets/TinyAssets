@@ -7,6 +7,10 @@
  * two revisions can never serve different tools. GET and DELETE from an older client
  * get `405`. No session is kept anywhere.
  *
+ * Each profile is told its own `instructions`: a run's engine where its working files go
+ * (`RUN_INSTRUCTIONS`), an outside client's agent the shared brain's rules
+ * (`CLIENT_INSTRUCTIONS`).
+ *
  * Every tool is a row of `tools.ts` calling its owner door with the binder's binding, and
  * a request is served only the tools of its caller's profile, which the object answers
  * from the caller's grant (`toolProfile`) before any tool is listed; a caller the object
@@ -22,7 +26,10 @@ import {
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
 import { serveEvents } from "./events";
+import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "./instructions";
 import { callDoor, type ProfileName, refusal, type Tool, toolsNamed } from "./tools";
+
+export { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS };
 
 export const SERVER_INFO = Object.freeze({ name: "tinyassets", version: "1.0.0" });
 
@@ -79,20 +86,6 @@ export async function profiled(bound: Bound): Promise<readonly Tool[] | Response
   return got instanceof Response ? got : got.tools;
 }
 
-/**
- * What a run's engine is told when it connects (the MCP `instructions` every engine reads
- * from its servers, so one text reaches every engine through the one door): where its
- * working files go. Clones, builds and caches go to its scratch area (`$TA_SCRATCH`, on the
- * sandbox's own disk, never synced and never counted in the owner's storage); what the user
- * keeps goes to `/workspace`, or leaves by `git push`.
- */
-export const RUN_INSTRUCTIONS = "Working files: clone repositories, install dependencies and " +
-  "build in your scratch area ($TA_SCRATCH, on this sandbox's own disk). Scratch is kept " +
-  "between runs as a cache, is never synced and never counts toward the user's storage; it " +
-  "may be cleared when the disk runs low. Clone a repository there once and refresh it with " +
-  "`git fetch`. Work the user keeps goes in /workspace (it syncs and counts toward their " +
-  "storage) or leaves by `git push`; a patch of a cloned repository goes in /workspace.";
-
 async function profileOf(bound: Bound):
     Promise<{ profile: ProfileName; tools: readonly Tool[] } | Response> {
   try {
@@ -114,7 +107,7 @@ export async function serveMcp(request: Request, bound: Bound, env: DoorsEnv):
   if (got instanceof Response) {
     return got;
   }
-  const instructions = got.profile === "run" ? RUN_INSTRUCTIONS : undefined;
+  const instructions = got.profile === "run" ? RUN_INSTRUCTIONS : CLIENT_INSTRUCTIONS;
   return createMcpHandler(() => server(bound, got.tools, env, instructions), { legacy: "stateless",
                                                       responseMode: "auto" })
     .fetch(request);

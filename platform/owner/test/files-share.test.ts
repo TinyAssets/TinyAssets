@@ -35,8 +35,18 @@ async function setPolicy(r: Rig, files: unknown) {
                                                policy: { ...policy, files } as never });
 }
 
-const write = (r: Rig, origin: typeof MUSE | null, path: string, body = "x") =>
-  r.stub.fileWrite(r.bind(origin), { path, expected_etag: null, content: text(body) });
+/**
+ * A whole write: the owner's with no etag; an outside client's at the etag it read, as every
+ * agent writes (review H1), "" where there is none (or its path is refused to begin with).
+ */
+const write = async (r: Rig, origin: typeof MUSE | null, path: string, body = "x") => {
+  let etag: string | null = null;
+  if (origin !== null) {
+    etag = await r.stub.fileStat(r.bind(null), { path }).then(({ entry }) => entry?.etag ?? "",
+                                                               () => "");
+  }
+  return r.stub.fileWrite(r.bind(origin), { path, expected_etag: etag, content: text(body) });
+};
 
 /** Everything the manifest holds, to show a refusal left nothing behind. */
 const snapshot = (r: Rig) => Promise.all(["file_space", "file_shares", "file_entries",
@@ -176,8 +186,9 @@ describe("an outside client's share", () => {
       await write(r, null, longPath(dir, MAX_PATH_BYTES, 2000 + i));
     }
     // The client still writes what frees, and short files once it has room.
-    await r.stub.fileRemove(r.bind(MUSE), { path: longPath(dir, MAX_PATH_BYTES, 0),
-                                            expected_etag: null, recursive: false });
+    const gone = longPath(dir, MAX_PATH_BYTES, 0);
+    await r.stub.fileRemove(r.bind(MUSE), { path: gone, recursive: false,
+      expected_etag: (await r.stub.fileStat(r.bind(null), { path: gone })).entry!.etag });
     await counted(r);
   });
 

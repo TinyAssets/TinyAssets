@@ -96,7 +96,8 @@ export function exported(): Readonly<Record<string, ExportTable>> {
                        { session_id: "the owner's session hash the change was made in, as " +
                          "owner_sessions keeps it: a credential's hash, never exported" }),
     outside_clients: t("client source mode scopes generation revoked_at name first_seen " +
-                       "last_seen owner_set agents held profile revision", "client"),
+                       "last_seen owner_set agents held profile revision vendor " +
+                       "vendor_verified", "client"),
     agent_cards: t("card_id client family source_ref generation authenticated_at request " +
                    "digest filed_at", "card_id"),
     connections: t("id source kind display_name provider models status version expires_at " +

@@ -311,6 +311,8 @@ async function agent(name) {
       talk.listener(frame);
     }, () => {
       talk.socket = null;
+    }, () => {
+      settle().catch(report);
     });
   };
   // The socket outlives this view: its frames go to whichever view of this agent is shown.
@@ -578,6 +580,21 @@ function signinPanel(record, present, live) {
     show(view);
     signinSocket?.close();
     let current = view;
+    // What came before a socket attached, the first one or one after a drop: the sign-in's
+    // row as it stands; none, it ended meanwhile, and the panel offers a new one.
+    const reread = async () => {
+      const { signins } = await call("signin/list");
+      const now = signins.find((each) => each.id === view.id);
+      if (now !== undefined) {
+        current = now;
+        show(now);
+      } else if (signinSocket !== null) {
+        signinSocket.close();
+        signinSocket = null;
+        say("The sign-in ended before it could be shown. Start it again.", "bad");
+        sources().catch(report);
+      }
+    };
     signinSocket = await follow(view.id, (frame) => {
       const event = frame.event ?? {};
       if (event.type !== "ta.signin") {
@@ -595,20 +612,10 @@ function signinPanel(record, present, live) {
             accepts_code: event.accepts_code }
         : { ...current, state: event.state };
       show(current);
-    }, () => undefined);
-    // What came before the socket attached: the sign-in's row as it stands; none, it ended
-    // before the socket attached, and the panel offers a new one.
-    const { signins } = await call("signin/list");
-    const now = signins.find((each) => each.id === view.id);
-    if (now !== undefined) {
-      current = now;
-      show(now);
-    } else if (signinSocket !== null) {
-      signinSocket.close();
-      signinSocket = null;
-      say("The sign-in ended before it could be shown. Start it again.", "bad");
-      sources().catch(report);
-    }
+    }, () => undefined, () => {
+      reread().catch(report);
+    });
+    await reread();
   };
   const begin = async (mode) => {
     const view = await call("signin/start", {
@@ -696,7 +703,8 @@ async function sources() {
 // -- Connected apps: code mode, each client's tools, revokes --------------------------
 
 async function apps() {
-  const [policy, { clients }, { tools }, { agents: mains }, { kinds }] = await Promise.all([
+  const [policy, { clients }, { tools }, { agents: mains, apps: known }, { kinds }] =
+    await Promise.all([
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
     call("agent/doorbell/kinds")]);
   const document_ = policy.policy;
@@ -723,6 +731,10 @@ async function apps() {
     await apps();
   };
   const outside = clients.filter((c) => c.source !== "api_key" && c.mode !== "revoked");
+  // Each app by the vendor its sign-in named (`apps.json`), unless the owner renamed it.
+  const named = (c) => c.name || known.find((app) => app.id === c.vendor)?.name
+    || c.client.slice(0, 12);
+  const unconnected = known.filter((app) => app.id !== null && !app.connected);
   fill(main,
        h("h1", {}, "Connected apps"),
        h("section", {},
@@ -749,6 +761,15 @@ async function apps() {
            ? h("p", { class: "muted" }, "No main agent has joined yet.")
            : mains.filter((a) => a.disabled_reason === null).map((a) => doorbell(a, kinds))),
        h("section", {},
+         h("h2", {}, "Connect another assistant"),
+         h("p", { class: "muted" }, "Every assistant you connect shares this same workspace: " +
+           "what you tell one, the others know."),
+         unconnected.length === 0
+           ? h("p", { class: "muted" }, "Every assistant TinyAssets knows is connected.")
+           : h("ul", { class: "apps" }, unconnected.map((app) => h("li", {},
+             h("a", { href: app.connect_url, target: "_blank", rel: "noopener noreferrer" },
+               `Connect ${app.name}`))))),
+       h("section", {},
          h("h2", {}, "Apps you connected"),
          outside.length === 0 ? h("p", { class: "muted" }, "No app is connected.")
            : h("div", { class: "scroll" }, h("table", {},
@@ -759,7 +780,9 @@ async function apps() {
                  h("option", { value: "custom", selected: c.profile === "custom" }, "Your choice above"),
                  h("option", { value: "directory", selected: c.profile === "directory" },
                    "The public directory's set (no code mode)"));
-               return h("tr", {}, h("td", {}, c.name || c.client.slice(0, 12)),
+               return h("tr", {}, h("td", {}, named(c),
+                 c.vendor !== null && c.vendor_verified === 0 && c.name === ""
+                   ? h("span", { class: "muted" }, " (its own name, not verified)") : null),
                  h("td", {}, c.mode === "full" ? "Everything" : `${c.scopes.length} scopes`),
                  h("td", {}, profile, action("Save", async () => {
                    await call("grants/set", { client: c.client, source: c.source, mode: c.mode,
@@ -771,7 +794,7 @@ async function apps() {
                  h("td", {}, when(c.last_seen)),
                  h("td", {}, action("Disconnect", async () => {
                    await call("grants/revoke", { client: c.client });
-                   say(`Disconnected ${c.name || "the app"}.`);
+                   say(`Disconnected ${named(c)}.`);
                    await apps();
                  }, report, { class: "danger" })));
              }))))));

@@ -10,6 +10,7 @@
       "agents_list", "agent_register", "policy_propose", "collection_get",
       "collection_list", "collection_history", "collection_write", "collection_delete",
       "collection_clear", "file_stat", "file_list", "file_read", "search", "fetch",
+      "file_append", "file_write", "file_edit",
       "file_history", "file_usage", "file_mkdir", "file_remove", "file_rename",
       "file_restore", "converse", "run_graph", "run_status", "run_cancel"
     ]
@@ -21,6 +22,7 @@
       "agents_list", "agent_register", "policy_propose", "collection_get",
       "collection_list", "collection_history", "collection_write", "collection_delete",
       "collection_clear", "file_stat", "file_list", "file_read", "search", "fetch",
+      "file_append", "file_write", "file_edit",
       "file_history", "file_usage", "file_mkdir", "file_remove", "file_rename",
       "file_restore", "converse", "run_graph", "run_status", "run_cancel", "code"
     ]
@@ -31,7 +33,7 @@
       "board_digest", "room_post", "agents_list", "agent_register", "policy_propose",
       "collection_get", "collection_list", "collection_history", "collection_write",
       "collection_delete", "collection_clear", "file_stat", "file_list", "file_read",
-      "search", "fetch", "file_history", "file_usage", "file_mkdir", "file_remove",
+      "search", "fetch", "file_append", "file_write", "file_edit", "file_history", "file_usage", "file_mkdir", "file_remove",
       "file_rename", "file_restore", "run_graph", "run_status", "run_cancel", "code"
     ]
   }

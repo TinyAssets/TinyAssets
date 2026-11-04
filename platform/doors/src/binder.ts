@@ -26,6 +26,7 @@ import {
 import { principal } from "../../owner/src/text";
 import { ADMIN_CALLER } from "../../admin/src/caller";
 
+import type { Vendor } from "./apps";
 import { LEASE_LIVED, verifyToken } from "./routing-mac";
 
 import {
@@ -49,6 +50,12 @@ export interface McpProps {
   readonly source_ref: string;
   /** The original interactive sign-in, whole seconds; no refresh moves it. */
   readonly authenticated_at: number;
+  /**
+   * Which of `apps.json`'s vendors the client is, as the sign-in knew it (`apps.ts`
+   * `vendorOf`): verified by its CIMD host, or named by its self-declared name; null when
+   * none matches.
+   */
+  readonly vendor: Vendor | null;
 }
 
 /** What a first-party grant's props hold: the owner, and nothing to vouch for a session. */
@@ -180,11 +187,17 @@ export async function bindMcp(env: DoorsEnv, token: ValidatedAccessToken<unknown
       || typeof props.family !== "string" || !HEX64.test(props.family)) {
     throw new Error("an MCP grant's origin is not its client's");
   }
+  const vendor = props.vendor;
+  if (vendor === undefined || (vendor !== null && (typeof vendor !== "object"
+      || typeof vendor.id !== "string" || typeof vendor.verified !== "boolean"))) {
+    throw new Error("an MCP grant's props name its vendor, or null");
+  }
   return bound(env, {
     owner, caller: owner,
     origin: { client: props.client, family: props.family },
     source: { kind: "mcp", ref: token.clientId },
     authenticated_at: seconds(props.authenticated_at, "an MCP grant's sign-in"),
+    vendor,
   });
 }
 

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tinyassets": {
+      "type": "http",
+      "url": "https://tinyassets.io/mcp"
+    }
+  }
+}
