@@ -93,6 +93,9 @@
  * `wakes` lane's claim). Only the platform, as the reserved `PLATFORM_CALLER`, sets it, at
  * `admissionSet`, the one door that caller reaches.
  */
+import { type Edited, planEdit, type Refusal } from "./edit";
+import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
+import { slotted } from "./slots";
 import { createHash, randomBytes } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -468,9 +471,9 @@ export interface PostRequest {
   readonly parent_id: string | null;
 }
 
-/** An agents list's page: from the `after`th on, a `next` an answer gave (`outsideAgents`). */
+/** An agents list's page: after the cursor a `next` an answer gave (`outsideAgents`). */
 export interface AgentsRequest {
-  readonly after?: number;
+  readonly after?: string;
 }
 
 export interface ReadRequest {
@@ -1299,28 +1302,47 @@ function cursorPath(cursor: unknown): string {
   return Buffer.from(cursor, "base64url").toString("utf8");
 }
 
+/** The agents list's three lists, in the order a page reads them. */
+const AGENT_LISTS = Object.freeze(["agents", "owner_agents", "apps"] as const);
+
+/** Each list's stable key: an agent's id, an owner agent's id, an app's name. */
+function agentKey(list: (typeof AGENT_LISTS)[number], item: Agent | NativeAgent | ConnectedApp):
+    string {
+  return list === "apps" ? (item as ConnectedApp).name : (item as Agent | NativeAgent).agent_id;
+}
+
 /**
- * The agents a caller sees, fitted to one answer from the `after`th on (`outsideAgents`):
- * the three lists read as one sequence, each kept in its own list; `next` when some are left.
+ * The agents a caller sees, fitted to one answer after the cursor `after` (`outsideAgents`,
+ * review M3 and its verification): the three lists read as one sequence, each by its stable
+ * key, so an agent added or removed between pages is neither skipped nor answered twice;
+ * `next`, the last one answered's `<list>:<key>`, when some are left.
  */
 function agentsPage(all: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] },
-                    after: number):
-    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: number } {
-  const items = [...all.agents.map((item) => ({ list: "agents" as const, item })),
-                 ...all.owner_agents.map((item) => ({ list: "owner_agents" as const, item })),
-                 ...all.apps.map((item) => ({ list: "apps" as const, item }))].slice(after);
+                    after: string | null):
+    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
+  const at = after === null ? null : { list: AGENT_LISTS.indexOf(
+    after.slice(0, after.indexOf(":")) as (typeof AGENT_LISTS)[number]),
+                                       key: after.slice(after.indexOf(":") + 1) };
+  if (at !== null && at.list < 0) {
+    throw new Invalid("after is a next an agents list answered");
+  }
+  const items = AGENT_LISTS.flatMap((list, index) => [...all[list]]
+    .map((item) => ({ list, item, key: agentKey(list, item) }))
+    .sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
+    .filter((entry) => at === null || index > at.list || (index === at.list && entry.key > at.key)));
   const empty = { agents: [], owner_agents: [], apps: [] };
   if (items.length === 0) {
     return empty;
   }
-  const kept = fitPage(jsonBytes({ ...empty, next: Number.MAX_SAFE_INTEGER }), items,
-                       (entry, room) => fits(entry.item, room));
+  const kept = fitPage(jsonBytes({ ...empty, next: `owner_agents:${"\u0001".repeat(512)}` }),
+                       items, (entry, room) => fits(entry.item, room));
   const page: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] } =
     { agents: [], owner_agents: [], apps: [] };
   for (const [index, entry] of kept.entries()) {
     (page[items[index]!.list] as unknown[]).push(entry);
   }
-  return kept.length === items.length ? page : { ...page, next: after + kept.length };
+  const last = items[kept.length - 1]!;
+  return kept.length === items.length ? page : { ...page, next: `${last.list}:${last.key}` };
 }
 
 /** A run as an answer shows it: its result cut further to fit one, `result_cut` then. */
@@ -1444,6 +1466,31 @@ function contentsOf(rows: readonly object[]): string[] {
 interface Shown<T> {
   readonly contents: (value: T) => readonly string[];
   readonly fill: (value: T, windows: ReadonlyMap<string, Window>) => T;
+}
+
+/**
+ * The most bytes one `file_edit` edits (ADR-037's ruling 2): no longer `WHOLE_BYTES`, since a
+ * chunk-wise edit's memory does not depend on the file, but the time one call takes, its
+ * tightest bound. The workerd memory leg times the worst edit (the first chunk's, longer, so
+ * every chunk is read, remade and put) on the real path, with the files Worker's own hashing
+ * left out: about 17 ms a chunk of wall time, at least the CPU it spent (2026-11-04, its log
+ * in `limits-audit.md`); a request has 30 s of CPU, and two thirds are left for a slower
+ * host, so 500 chunks (about 9 s). The leg fails if the measured time passes 30 s at this
+ * figure. Its subrequests, about five a chunk, are 2,500 at most. Production's wall time a
+ * chunk (R2's round trips) is owed live; an edit commits whole or not at all.
+ */
+export const EDIT_BYTES_MAX = 500 * CHUNK_BYTES;
+
+/**
+ * An edit's output small enough to keep inline (at most `INLINE_BYTES`, under one chunk):
+ * its one chunk made, in a making step (`hold`).
+ */
+function inlineOf(plan: Edited, hold: <T>(work: () => Promise<T>) => Promise<T>):
+    Promise<Uint8Array> {
+  if (plan.sizes.length !== 1) {
+    throw new Error("an inline edit's output is one chunk");
+  }
+  return hold(() => plan.make(0));
 }
 
 /** A written row as its write answers it: everything but its body, and the body's bytes. */
@@ -3289,12 +3336,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * every one for the owner; for anyone else, the live ones its grant covers (a scoped
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
    * it may mail). One answer holds a page (`pages.ts`, review M3): its agents, the owner's
-   * agents and the apps, in that order, while they fit; when some are left, `next` is how
-   * many were answered so far, for `after` on the next read.
+   * agents and the apps, in that order, each by its stable key, while they fit; when some
+   * are left, `next` is where the next page starts, for `after` on the next read.
    */
   async outsideAgents(binding: Binding, request: AgentsRequest = {}):
       Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
-                next?: number }> {
+                next?: string }> {
     await this.#seededFor(() => {
       this.#account(binding, "read");
     });
@@ -3317,7 +3364,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
       // app that is not connected yet.
       const r = fields(request ?? {}, [], ["after"]);
-      const after = whole(r["after"], "after", 0, Number.MAX_SAFE_INTEGER);
+      const after = r["after"] === undefined ? null : r["after"];
+      if (after !== null && typeof after !== "string") {
+        throw new Invalid("after is a next an agents list answered");
+      }
       return agentsPage({ agents: this.#ledger.agents(account.origin), owner_agents: natives,
                           apps: this.#grants.apps() }, after);
     });
@@ -5327,13 +5377,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (content.inline !== undefined) {
       bytes = content.inline.subarray(offset, want);
     } else {
-      const reads: { sha256: string; offset: number; length: number }[] = [];
+      const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
       let at = 0;
       for (const chunk of content.chunks ?? []) {
         const from = Math.max(offset, at);
         const to = Math.min(want, at + chunk.size);
         if (from < to) {
-          reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from });
+          // Verified (review L7): `FILES` rechecks the whole chunk and answers the range.
+          reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from,
+                       verify: true });
         }
         at += chunk.size;
       }
@@ -5602,31 +5654,36 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           return { entry: read.done };
         }
         const now = read.now;
-        let bytes = added;
-        let prefix: ChunkRef[] = [];
-        if (now !== null) {
-          let tail: Uint8Array;
-          if (now.inline !== undefined) {
-            tail = now.inline;
-          } else {
-            const chunks = now.chunks ?? [];
-            const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
-              ? chunks.length : chunks.length - 1;
-            prefix = chunks.slice(0, whole);
-            const rest = chunks.slice(whole);
-            tail = rest.length === 0 ? new Uint8Array(0)
-              : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
+        // The file's last chunk and the text, joined and written, in one step of
+        // `APPEND_UNITS` (`holds.ts`, ADR-037): what it holds is the same whatever the
+        // file's size.
+        const wrote = await slotted(ownerSlots(), APPEND_UNITS, async () => {
+          let bytes = added;
+          let prefix: ChunkRef[] = [];
+          if (now !== null) {
+            let tail: Uint8Array;
+            if (now.inline !== undefined) {
+              tail = now.inline;
+            } else {
+              const chunks = now.chunks ?? [];
+              const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
+                ? chunks.length : chunks.length - 1;
+              prefix = chunks.slice(0, whole);
+              const rest = chunks.slice(whole);
+              tail = rest.length === 0 ? new Uint8Array(0)
+                : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
+            }
+            bytes = new Uint8Array(tail.byteLength + added.byteLength);
+            bytes.set(tail, 0);
+            bytes.set(added, tail.byteLength);
           }
-          bytes = new Uint8Array(tail.byteLength + added.byteLength);
-          bytes.set(tail, 0);
-          bytes.set(added, tail.byteLength);
-        }
-        const wrote = await fileConflictedAfter(async () => ({
-          entry: await this.#files.write(path, bytes, {
-            expected: now?.entry.etag ?? "",
-            ...(now === null ? {} : { mode: now.entry.mode }), prefix,
-            writer: fileWriter(account), authorize }),
-        }));
+          return fileConflictedAfter(async () => ({
+            entry: await this.#files.write(path, bytes, {
+              expected: now?.entry.etag ?? "",
+              ...(now === null ? {} : { mode: now.entry.mode }), prefix,
+              writer: fileWriter(account), authorize }),
+          }));
+        });
         if (!("conflict" in wrote)) {
           return wrote;
         }
@@ -5641,9 +5698,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * One exact occurrence of `old_text` in a file's text replaced by `new_text`, at the etag
    * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
    * place). Text that occurs nowhere, or more than once, is refused with how many times, so
-   * the caller gives more of the text around it. The file is read and written whole, so it
-   * is at most one whole write (`WHOLE_BYTES`, 16 MiB, the files plane's ceiling for a write
-   * through the object).
+   * the caller gives more of the text around it. A chunked file is edited chunk by chunk
+   * (`edit.ts`, ADR-037), each chunk read or made in a step of the isolate's units of its
+   * own, at most `EDIT_BYTES_MAX`; a small one, whole.
    */
   async fileEdit(binding: Binding, request: FileEditRequest):
       Promise<{ entry: Entry } | FileConflicted> {
@@ -5669,9 +5726,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (entry.etag !== etag) {
         return { conflict: entry };
       }
-      if (entry.size > WHOLE_BYTES) {
-        throw new Invalid(`file_edit edits a file of at most ${WHOLE_BYTES} bytes; write a ` +
-                          "larger one by upload");
+      if (entry.size > EDIT_BYTES_MAX) {
+        throw new Invalid(`file_edit edits a file of at most ${EDIT_BYTES_MAX} bytes, the ` +
+                          "reads and time one call holds; write a larger one by upload");
       }
       return { account, path, old, replacement, content: this.#files.open(path) };
     });
@@ -5679,42 +5736,66 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { conflict: asked.conflict };
     }
     const { account, path, old, replacement, content } = asked;
-    let bytes = content.inline;
-    if (bytes === undefined) {
-      const parts = await this.#files.fetch((content.chunks ?? []).map(({ sha256 }) =>
-        ({ sha256 })));
-      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-      let at = 0;
-      for (const part of parts) {
-        bytes.set(part, at);
-        at += part.byteLength;
+    const authorize = () => this.#filer(binding, "work", "write_files");
+    const refused = (refusal: Refusal): never => {
+      throw new Invalid(refusal === "ill_formed" ? "old_text and new_text are well-formed text"
+        : refusal === "not_utf8" ? `${path} is not UTF-8 text`
+        : refusal === "absent" ? "old_text is not in the file: read it again and give its " +
+          "exact text"
+        : `old_text occurs ${refusal.times} times: give more of the text around the one to ` +
+          "change");
+    };
+    try {
+      if (content.inline !== undefined) {
+        // A small file, kept inline: edited whole, its bytes at most `INLINE_BYTES`.
+        let text: string;
+        try {
+          text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content.inline);
+        } catch {
+          return refused("not_utf8");
+        }
+        const first = text.indexOf(old);
+        if (first < 0) {
+          return refused("absent");
+        }
+        let times = 0;
+        for (let at = first; at >= 0; at = text.indexOf(old, at + 1)) {
+          times += 1;
+        }
+        if (times > 1) {
+          return refused({ times });
+        }
+        const edited = new TextEncoder().encode(
+          text.slice(0, first) + replacement + text.slice(first + old.length));
+        return await fileConflictedAfter(async () => ({
+          entry: await this.#files.write(path, edited, {
+            expected: content.entry.etag, mode: content.entry.mode, writer: fileWriter(account),
+            authorize }),
+        }));
       }
-    }
-    let text: string;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-    } catch {
-      throw new Invalid(`${path} is not UTF-8 text`);
-    }
-    const first = text.indexOf(old);
-    if (first < 0) {
-      throw new Invalid("old_text is not in the file: read it again and give its exact text");
-    }
-    let times = 0;
-    for (let at = first; at >= 0; at = text.indexOf(old, at + 1)) {
-      times += 1;
-    }
-    if (times > 1) {
-      throw new Invalid(`old_text occurs ${times} times: give more of the text around the one ` +
-                        "to change");
-    }
-    const edited = new TextEncoder().encode(
-      text.slice(0, first) + replacement + text.slice(first + old.length));
-    try {
+      // A chunked file, edited chunk by chunk (`edit.ts`, ADR-037): each chunk read in a
+      // reading step, each chunk made and put in a making step, the units taken as its
+      // bytes come and released as they go, never across the begin, the commit or the
+      // other chunks. Its memory does not depend on its size.
+      const chunks = content.chunks ?? [];
+      const pool = ownerSlots();
+      const make = <T>(work: () => Promise<T>) => slotted(pool, EDIT_MAKE_UNITS, work);
+      const plan = await planEdit({
+        size: content.entry.size, chunks,
+        read: async (index) => (await this.#files.fetch([{ sha256: chunks[index]!.sha256 }]))[0]!,
+      }, old, replacement, CHUNK_BYTES, (work) => slotted(pool, EDIT_READ_UNITS, work));
+      if ("refused" in plan) {
+        return refused(plan.refused);
+      }
       return await fileConflictedAfter(async () => ({
-        entry: await this.#files.write(path, edited, {
-          expected: content.entry.etag, mode: content.entry.mode, writer: fileWriter(account),
-          authorize: () => this.#filer(binding, "work", "write_files") }),
+        entry: plan.size <= INLINE_BYTES
+          ? await this.#files.write(path, await inlineOf(plan, make), {
+            expected: content.entry.etag, mode: content.entry.mode,
+            writer: fileWriter(account), authorize })
+          : await this.#files.writeChunks(path, plan.size, plan.hashes, plan.make, {
+            expected: content.entry.etag, mode: content.entry.mode,
+            writer: fileWriter(account), readable: chunks.map(({ sha256 }) => sha256),
+            authorize, hold: make }),
       }));
     } finally {
       await this.#schedule.sync();

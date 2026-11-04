@@ -66,7 +66,10 @@ describe("an append (file_append)", () => {
     // Its size is every line once: none was written twice.
     expect((await r.stub.fileStat(r.bind(null), { path: NOTES })).entry!.size)
       .toBe(lines.join("").length);
-  });
+    // Measured alone at 1.8 to 2.5 s (300 doors, each a unit); the owner leg runs its files
+    // at once on every core, where it once passed vitest's 5 s: 20 s is eight times its
+    // slowest run alone.
+  }, 20_000);
 
   it("loses no append when two land at once", async () => {
     const r = await rig();

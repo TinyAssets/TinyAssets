@@ -219,6 +219,9 @@ export default defineConfig({
               },
               bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
                           ROUTING_MAC_KEY: ROUTING_KEY },
+              // The files Worker's bucket, test-only: a test changes a chunk's bytes under
+              // its key, as storage failing would, and sees a verified read refuse them.
+              r2Buckets: ["BLOBS"],
               serviceBindings: { CONNECT: { name: "tinyassets-gateway",
                                             entrypoint: "ConnectGateway" } },
               outboundService: "fake-upstream",

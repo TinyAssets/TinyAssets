@@ -30,6 +30,8 @@ declare namespace Cloudflare {
     TEST_KEYRING: string;
     /** The files Worker's ring, test-only: a test wraps a data key under its older kid. */
     FILES_TEST_RING: string;
+    /** The files Worker's bucket, test-only: a test tampers a chunk's bytes. */
+    BLOBS: R2Bucket;
     ROUTING_MAC_KEY: string;
   }
 }

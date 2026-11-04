@@ -2429,11 +2429,29 @@ R, S, M and W.
   windows read by verified ranges (`FILES` rechecks the whole chunk and answers the range,
   L7); a cut title or fetch field says so, and a search's cursor is an opaque base64url token
   (L5). The byte guard of `1d284b1b1` is gone (memshape_research.md §5).
-  Owed: PR 2 (chunk slots, chunk-wise `file_edit`, the tail pool, the differential
-  `test:memory` leg, ADR-037); PR 3a (the egress stream, another builder); after the
-  deploy, PR 3b (bodies as streams across RPC), PR 4 (inbound, sync, the files Worker's
-  pool, the AST scan, `file_append`'s `request_id`), production baselines, and the
-  `ui-test` live check reading a long message through to its end.
+  Owed: PR 3a (the egress stream, another builder); after the deploy, PR 3b (bodies as
+  streams across RPC), PR 4 (inbound, sync, the files Worker's pool, the AST scan,
+  `file_append`'s `request_id`), production baselines, and the `ui-test` live check reading
+  a long message through to its end.
+
+- [x] MEMORY PR 2, memory bounded by structure (ADR-037): one pool of units an isolate
+  (`slots.ts`), a path taking units for what it holds while its bytes are in hand, weighted by
+  it (`holds.ts`), a reserve so a one-unit hold never waits behind larger ones (review M1),
+  nor a larger one is starved by them (M-b), each class's waiters capped apart (L-a), the
+  larger ones by the largest arguments a door takes (L-b), `busy` past the wait or the
+  waiters (`503`, `Retry-After`); an edit's source chunks let go as their pieces are taken; `file_edit` chunk-wise, a step
+  per chunk read and per chunk made and put, to `EDIT_BYTES_MAX` (500 chunks, from the
+  worst edit's measured time); `file_append`, a body's windows and whole reads each a step;
+  the relay's tails one budget an isolate (M5); `agents_list` paged by stable key; owner
+  ranged reads verified, a tampered chunk failing loudly. The workerd memory leg
+  (`test:memory`, its own CI leg) runs the real owner object, `Files` and `Bodies` at their
+  worst (distinct content, 8 to 96 MiB), sampling at every chunk call, with a control; the
+  counts test sums the live terms from the sources and names what it does not count
+  (garbage, unmeasured in production; the holds owed by PR 3b and PR 4). The first leg's
+  "retention" was a sampler artifact: a swept read must be atomic with its collection.
+  Owed: the production probe (whether the 128 MB counts uncollected garbage), each
+  Worker's `memoryUsageBytes` to reset the pool and baseline, an `exceededMemory` alert, an
+  edit's wall time a chunk with R2.
 
 ## 10. The plan's later slices
 
