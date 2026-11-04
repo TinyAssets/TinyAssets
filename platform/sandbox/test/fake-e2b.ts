@@ -10,9 +10,10 @@
  * installed by its SHA-256 (`install <sha>`: absent 24, not its digest 25); a command names
  * its runner's digest (`<sha> <command>`: absent 24, and 25 for a digest the test tampered),
  * and is recorded with that digest beside it. The commands answer as scripted: a sign-in
- * check by engine, the runner's state (for `state`, `quiet-wait` and `renew-wait`), `adopt`
- * refused (3) while the state is live and otherwise dropping every other runner, and every
- * other command 0.
+ * check by engine, the runner's state (for `state`, `quiet-wait` and `renew-wait`; `state`
+ * with the runner's protocol), `adopt` refused (3) while the state is live, `prepare`
+ * dropping every other runner while nothing lives, and every other command 0. An upload can
+ * be refused (a full disk), and a command's reply lost after it ran (`lost`).
  */
 interface FakeSandbox {
   id: string;
@@ -52,6 +53,14 @@ interface Script {
   broken: string | null;
   /** A runner digest whose installed bytes the loader finds are not their digest. */
   tampered: string | null;
+  /** The protocol the runner's `state` reports. */
+  protocol: number;
+  /** The room left on the sandbox's disk: an upload larger is answered 507 (none: no bound). */
+  room: number | null;
+  /** A runner command that runs, but whose reply envd loses (answered 502 after it ran). */
+  lost: string | null;
+  /** A runner command answered only after a wait (what it finds is read after the wait). */
+  slow: { command: string; ms: number } | null;
 }
 
 const fake = {
@@ -76,7 +85,8 @@ function reset(): void {
   fake.next = 0;
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
                   full: false, pauseMode: "full", noCount: false, down: 0,
-                  refuseResume: false, broken: null, tampered: null };
+                  refuseResume: false, broken: null, tampered: null, protocol: 1,
+                  room: null, lost: null, slow: null };
 }
 reset();
 
@@ -142,11 +152,10 @@ function loader(box: FakeSandbox, raw: string[]):
     return { code: 25, out: "", argv, runner: digest };
   }
   if (rest[0] === "adopt") {
-    if (fake.script.state.live > 0) {
-      return { code: 3, out: "", argv, runner: digest };
-    }
-    box.runners = new Set([digest]);
-    return { code: 0, out: "", argv, runner: digest };
+    return { code: fake.script.state.live > 0 ? 3 : 0, out: "", argv, runner: digest };
+  }
+  if (rest[0] === "prepare" && fake.script.state.live === 0) {
+    box.runners = new Set([digest]);  // the other runners' bytes dropped, nothing living
   }
   return { ...runner(argv), argv, runner: digest };
 }
@@ -156,7 +165,11 @@ function runner(argv: string[]): { code: number; out: string } {
   if (command === "signin-check") {
     return { code: fake.script.signin[arg ?? ""] ?? 3, out: "" };
   }
-  if (command === "state" || command === "quiet-wait") {
+  if (command === "state") {
+    return { code: 0, out: JSON.stringify({ ...fake.script.state,
+                                            protocol: fake.script.protocol }) };
+  }
+  if (command === "quiet-wait") {
     return { code: 0, out: JSON.stringify(fake.script.state) };
   }
   if (command === "renew-wait") {
@@ -266,6 +279,9 @@ async function envd(request: Request, url: URL): Promise<Response> {
   if (url.pathname === "/files") {
     const path = url.searchParams.get("path") ?? "";
     const bytes = await request.arrayBuffer();
+    if (fake.script.room !== null && bytes.byteLength > fake.script.room) {
+      return new Response("no space left on device", { status: 507 });
+    }
     if (path.startsWith(INCOMING)) {
       // A runner's bytes: kept as their digest and size, not the bundle itself.
       const digest = await sha256(bytes);
@@ -281,11 +297,23 @@ async function envd(request: Request, url: URL): Promise<Response> {
     const length = new DataView(bytes.buffer).getUint32(1);
     const start = JSON.parse(new TextDecoder().decode(bytes.subarray(5, 5 + length))) as {
       process: { cmd: string; args: string[] } };
-    const done = loader(box, [start.process.cmd, ...start.process.args]);
+    const raw = [start.process.cmd, ...start.process.args];
+    const install = raw[1] === "install";
+    const command = install ? "install" : raw[2];
+    if (command !== undefined && command === fake.script.broken) {
+      // The process never starts: nothing of it runs.
+      fake.commands.push({ sandbox: id, argv: [raw[0]!, ...raw.slice(install ? 1 : 2)],
+                           runner: install ? null : raw[1]!, user });
+      return new Response("envd went away", { status: 502 });
+    }
+    if (command !== undefined && command === fake.script.slow?.command) {
+      await new Promise((resolve) => setTimeout(resolve, fake.script.slow!.ms));
+    }
+    const done = loader(box, raw);
     const argv = done.argv;
     fake.commands.push({ sandbox: id, argv, runner: done.runner, user });
-    if (argv[1] !== undefined && argv[1] === fake.script.broken) {
-      return new Response("envd went away", { status: 502 });
+    if (command !== undefined && command === fake.script.lost) {
+      return new Response("envd went away", { status: 502 });  // it ran; its reply is lost
     }
     const parts = [envelope({ event: { start: { pid: 42 } } }),
                    ...(done.out === "" ? [] : [envelope({ event: { data: { stdout: b64(done.out) } } })]),

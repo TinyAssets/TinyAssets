@@ -15,6 +15,7 @@
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes         # the dark deploy
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes --routes  # + the routes
  *   node --experimental-strip-types platform/deploy/deploy.ts --h2          # H2's probes only
+ *   node --experimental-strip-types platform/deploy/deploy.ts --pair        # the pair check
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes --migrate owner
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
@@ -59,9 +60,10 @@
  * `E2B_TEMPLATE` exists at E2B with a ready build; and the pair it deploys, that template
  * and the runner the sandbox Worker ships (its SHA-256, built as the Worker's build makes
  * it), passed its standing checks in this E2B team: E2B holds the pair's tag
- * (`pairTag`), or the apply job runs the pair check (`sandbox/template/build.py
- * --check-pair`, a few throwaway sandboxes, the founder's standing approval of 2026-11-04)
- * and a failure stops the kit. `--public` makes every Cloudflare read and the discovery
+ * (`pairTag`), which the workflow's `pair` job makes before the apply job starts (`--pair`:
+ * `sandbox/template/build.py --check-pair`, a few throwaway sandboxes, the founder's
+ * standing approval of 2026-11-04, given only `PATH`, `HOME` and `E2B_API_KEY`); without it
+ * the kit stops. `--public` makes every Cloudflare read and the discovery
  * check, and leaves to the apply job the checks that need the production secrets (E2B,
  * WorkOS, each secret's value), saying so in its plan.
  */
@@ -537,6 +539,35 @@ export function pairTag(template: string, runner: string): string {
   return `${template}-r${runner.slice(0, 16)}`;
 }
 
+/**
+ * The pair check (`--pair`, the workflow's `pair` job, before the apply job): the pinned
+ * template and the runner this checkout ships, unless E2B already holds their pair's tag;
+ * `build.py --check-pair` runs the standing checks and tags the pair, given only what it
+ * needs (never the deploy's other secrets). A failure, or no tag after it, throws.
+ */
+export async function pairCheck(spawn: typeof spawnSync = spawnSync, fetcher: Fetch = fetch):
+    Promise<void> {
+  const key = input("E2B_API_KEY");
+  if (key === undefined) {
+    throw new Error("E2B_API_KEY is not set (the production environment's secrets)");
+  }
+  const template = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
+  const pair = pairTag(template, shippedRunner());
+  if (await templateReady(pair, key, fetcher)) {
+    console.log(`the pair ${pair} passed its standing checks in this E2B team`);
+    return;
+  }
+  const checked = spawn("python3", [join(PLATFORM, "sandbox", "template", "build.py"),
+                                    "--check-pair"],
+                        { stdio: "inherit", env: { PATH: process.env["PATH"] ?? "",
+                                                   HOME: process.env["HOME"] ?? "",
+                                                   E2B_API_KEY: key } });
+  if (checked.status !== 0 || !await templateReady(pair, key, fetcher)) {
+    throw new Error(`the pair ${pair} failed its standing checks: nothing is deployed`);
+  }
+  console.log(`the pair ${pair} passed its standing checks, run now`);
+}
+
 /** Whether `name:tag` has a ready build at E2B (its OpenAPI spec's alias and tag checks). */
 export async function templateReady(template: string, key: string, fetcher: Fetch = fetch):
     Promise<boolean> {
@@ -715,6 +746,10 @@ async function main(): Promise<void> {
     (process.argv[2] === "keyring-new" ? keyringNew : keyringAdd)(file);
     return;
   }
+  if (flag("--pair")) {
+    await pairCheck();
+    return;
+  }
   if (flag("--h2")) {
     // H2's probes alone: they change nothing, and need a routed door and a probe owner.
     if (flag("--public")) {
@@ -784,15 +819,11 @@ async function main(): Promise<void> {
   } else if (await templateReady(pair, input("E2B_API_KEY")!)) {
     plan.push(`the pair ${pair} passed its standing checks in this E2B team`);
   } else if (!apply) {
-    plan.push(`run the pair check of ${pair} (sandbox/template/build.py --check-pair, a few ` +
-              "throwaway sandboxes) before any change");
+    plan.push(`the pair ${pair} has not passed in this E2B team: the pair job runs its check ` +
+              "(--pair) before the apply job");
   } else {
-    const checked = spawnSync("python3", [join(PLATFORM, "sandbox", "template", "build.py"),
-                                          "--check-pair"], { stdio: "inherit", env: process.env });
-    if (checked.status !== 0) {
-      throw new Error(`the pair ${pair} failed its standing checks: nothing is deployed`);
-    }
-    plan.push(`the pair ${pair} passed its standing checks, run now`);
+    throw new Error(`the pair ${pair} has not passed its standing checks in this E2B team: ` +
+                    "run the pair job (--pair) first; nothing is deployed");
   }
   let zone: string | undefined;
   let steps: RouteStep[] = [];

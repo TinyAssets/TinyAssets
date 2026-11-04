@@ -4,11 +4,13 @@
  * alone to write and readable by every user (the sync agent runs it); a command runs the
  * runner of its digest, re-hashed first, with the digest in its environment; a runner absent
  * (24), bytes that are not their digest (25) or a name that is not a digest (2) run nothing.
+ * The loader takes its paths from no environment: these run a copy of it whose fixed paths
+ * are the test's root's and whose Node is the test's, every other line as it ships.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync }
-  from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
+         statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,17 +36,34 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/** The loader as it ships, its three fixed paths the test's: each found exactly once. */
+function copied(): string {
+  let text = readFileSync(LOADER, "utf8");
+  for (const [line, under] of [["RUNNERS=/opt/ta/runner", `RUNNERS=${root}/opt/ta/runner`],
+                               ["INCOMING=/var/lib/ta/incoming",
+                                `INCOMING=${root}/var/lib/ta/incoming`],
+                               ["NODE=/usr/local/bin/node", `NODE=${process.execPath}`]]) {
+    expect(text.split("\n").filter((each) => each === line)).toHaveLength(1);
+    text = text.replace(`\n${line}\n`, `\n${under}\n`);
+  }
+  const path = join(root, "ta-runner");
+  writeFileSync(path, text, { mode: 0o700 });
+  return path;
+}
+
+let copy = "";
+
 function box(): void {
   root = mkdtempSync(join(tmpdir(), "ta-loader-"));
   chmodSync(root, 0o755);  // as `/` is: every user passes through it
   mkdirSync(join(root, "opt/ta/runner"), { recursive: true, mode: 0o755 });
   mkdirSync(join(root, "var/lib/ta/incoming"), { recursive: true, mode: 0o700 });
+  copy = copied();
 }
 
 function loader(...args: string[]): { code: number; out: string } {
-  const done = spawnSync("/bin/sh", [LOADER, ...args], {
-    encoding: "utf8", env: { PATH: process.env["PATH"], TA_RUNNER_ROOT: root,
-                             TA_RUNNER_NODE: process.execPath } });
+  const done = spawnSync("/bin/sh", [copy, ...args], {
+    encoding: "utf8", env: { PATH: process.env["PATH"] } });
   return { code: done.status ?? -1, out: done.stdout };
 }
 
@@ -53,6 +72,14 @@ function upload(bytes: string, sha = SHA): void {
 }
 
 describe("the loader", () => {
+  it("takes no path from its environment, and ships with LF line ends", () => {
+    const text = readFileSync(LOADER, "utf8");
+    expect(text).not.toMatch(/TA_RUNNER_ROOT|TA_RUNNER_NODE/);
+    expect(text).not.toContain("\r");
+    expect(readFileSync(join(import.meta.dirname, "..", "..", "..", ".gitattributes"), "utf8"))
+      .toMatch(/^platform\/sandbox\/template\/ta-runner text eol=lf$/m);
+  });
+
   it("installs a runner whose bytes are its digest, root's alone to write", () => {
     box();
     upload(RUNNER);

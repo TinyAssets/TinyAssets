@@ -51,3 +51,5 @@ scripts/git-hooks/* text eol=lf
 # line-ending conversion on checkout would make every pin fail. Byte-exact.
 tinyassets/onboarding/ui_libraries/** -text
 tinyassets/onboarding/app/mermaid_vendor.js -text
+# The sandbox runner's loader: a shell script with no extension, its bytes in the template's tag.
+platform/sandbox/template/ta-runner text eol=lf

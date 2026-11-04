@@ -64,10 +64,11 @@ Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and
 - **The sandbox's template is built.** `E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`
   must have a ready build at E2B (`platform/sandbox/template/build.py`, or the manual
   `sandbox-template.yml` workflow in the production team). The kit checks this through E2B's
-  API and stops if it is missing. The runner is the sandbox Worker's own: the kit then looks
-  for the pair's tag (the template and the runner it deploys) and, when absent, runs the pair
-  check (`build.py --check-pair`, a few throwaway sandboxes) before any change; a failure
-  stops it.
+  API and stops if it is missing. The runner is the sandbox Worker's own: the workflow's
+  `pair` job, before the apply job, looks for the pair's tag (the template and the runner it
+  deploys) and, when absent, runs the pair check (`deploy.ts --pair`, `build.py
+  --check-pair`, three throwaway sandboxes, up to about 50 minutes) with the E2B key alone; a
+  failure stops the run, and the apply job stops without the tag.
 - **The Cloudflare plan is Workers Paid.** The owner Worker needs it for its subrequests and
   for Durable Objects on SQLite.
 - **AuthKit's production Google and GitHub apps exist** (WorkOS dashboard).

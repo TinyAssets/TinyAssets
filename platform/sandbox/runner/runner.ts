@@ -14,8 +14,8 @@
  *   the network's resolvers (E2B opens the firewall only), `/proc` remounted `hidepid=2`,
  *   and nothing root runs left writable by another user (`lockDown`), fixed and checked
  *   at every start and resume.
- * - `adopt`: this runner made the sandbox's own while nothing lives (3 otherwise): the disk
- *   held to its format, every other runner's bytes gone.
+ * - `adopt`: this runner to be made the sandbox's own, while nothing lives (3 otherwise):
+ *   the disk held to its format. Its `prepare` then drops every other runner's bytes.
  * - `signin-check <engine>`: the record's `status_argv`, as a run user on a home made from
  *   the engine's store: 0 signed in, 3 not.
  * - `launch <run>`: the start document the Worker put in the root-only inbox taken, and the
@@ -88,7 +88,8 @@ import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
 import { AUTOMATON_STATES, LIST_BYTES, stepNanos } from "../../owner/src/sync-ignore";
 import { openMirror, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport }
   from "./sync";
-import { checkFormat } from "./state-format";
+import { PROTOCOL } from "./protocol";
+import { checkFormat, dropRunners } from "./state-format";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
 /** Every path the runner touches is under this root: `/` in the sandbox, a temp dir in tests. */
@@ -592,6 +593,7 @@ function prepare(servers: readonly string[]): number {
   // The runner's own room on the disk, kept while there is room for it (`scratch.ts`).
   mkdirSync(STATE, { recursive: true, mode: 0o700 });
   checkFormat(STATE, CACHES);
+  dropOtherRunners();
   keepReserve(RESERVE, RESERVE_SIZE);
   // A pasted code is never left at rest (review L1): one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
@@ -683,16 +685,33 @@ function lockDown(): void {
   }
 }
 
+/** The digest the loader ran this runner by, or null (not run by the loader: a test's). */
+function ownDigest(): string | null {
+  const own = process.env["TA_RUNNER_DIGEST"];
+  return own !== undefined && /^[0-9a-f]{64}$/.test(own) ? own : null;
+}
+
 /**
- * This runner made the sandbox's own (`adopt`, by the sandbox Worker, which ships it, only
- * when nothing lives: no run, no sign-in, as `state` saw): the disk held to its format
- * (`checkFormat`), and every other runner's bytes gone from `/opt/ta/runner`, so a sandbox
- * keeps the one it runs. Refused (`NO`) while anything lives, whose runner must stay: a
- * live run's children start again from its own bytes.
+ * Every other runner's bytes gone from `/opt/ta/runner`, at `prepare`, only while nothing
+ * lives (a live run's children start again from their own bytes) and only by the runner the
+ * loader names, which the sandbox's row already names (the Worker commits it before it runs
+ * this runner's `prepare`): a sandbox keeps the one it runs, and no row ever names bytes
+ * that are gone.
+ */
+function dropOtherRunners(): void {
+  if (liveRuns().length + liveLogins().length === 0) {
+    dropRunners(RUNNERS, ownDigest());
+  }
+}
+
+/**
+ * This runner to be made the sandbox's own (`adopt`, by the sandbox Worker, which ships it,
+ * only when nothing lives: no run, no sign-in, as `state` saw): the disk held to its format
+ * (`checkFormat`), changing nothing else. Refused (`NO`) while anything lives, whose runner
+ * must stay. The other runners' bytes go at this runner's `prepare`, once the row names it.
  */
 function adopt(): number {
-  const own = process.env["TA_RUNNER_DIGEST"];
-  if (own === undefined || !/^[0-9a-f]{64}$/.test(own)) {
+  if (ownDigest() === null) {
     throw new Error("adopt is run by the loader, which names the runner's digest");
   }
   if (liveRuns().length + liveLogins().length > 0) {
@@ -701,11 +720,6 @@ function adopt(): number {
   }
   mkdirSync(STATE, { recursive: true, mode: 0o700 });
   checkFormat(STATE, CACHES);
-  for (const name of existsSync(RUNNERS) ? readdirSync(RUNNERS) : []) {
-    if (name !== own) {
-      remove(join(RUNNERS, name));
-    }
-  }
   return OK;
 }
 
@@ -763,7 +777,8 @@ function stateCommand(): number {
   const live = liveRuns();
   // A sign-in in progress keeps its sandbox from the idle reap; it is quiet (no model call).
   process.stdout.write(JSON.stringify({ live: live.length + liveLogins().length,
-                                        quiet: live.every(({ state }) => quiet(state)) }));
+                                        quiet: live.every(({ state }) => quiet(state)),
+                                        protocol: PROTOCOL }));
   return OK;
 }
 

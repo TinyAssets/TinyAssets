@@ -1,14 +1,19 @@
 name: Platform deploy (manual, founder-approved)
 
 # The platform's dark-deploy kit (platform/deploy/deploy.ts, slice L), run by
-# hand from `main`, in two jobs:
+# hand from `main`, in three jobs:
 #   plan   - prints what the run would change to the job summary. It holds
 #            only the Cloudflare token (not a production secret) and the
 #            repo's variables, and changes nothing.
-#   apply  - needs the plan, then waits on the main-only `production`
-#            environment: with the founder as its required reviewer
-#            (docs/host-actions.md), GitHub holds it until he approves,
-#            after the plan is on the page. It runs the kit with `--yes`.
+#   pair   - (dark, routes) after the plan, in the `production` environment
+#            with the E2B key alone: the sandbox's template and the runner
+#            this commit ships checked together on throwaway sandboxes,
+#            unless E2B already holds their pair's tag (deploy.ts --pair).
+#   apply  - needs the plan and the pair, then waits on the main-only
+#            `production` environment: with the founder as its required
+#            reviewer (docs/host-actions.md), GitHub holds it until he
+#            approves, after the plan is on the page. It runs the kit with
+#            `--yes`, which stops unless the pair's tag is at E2B.
 #
 # The apply job's secrets come from the `production` environment's store, so
 # a branch's copy of this file never reaches them
@@ -86,9 +91,47 @@ jobs:
           if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
           node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"
 
-  apply:
+  # The pair check, in a job of its own before apply: the pinned E2B template and the
+  # runner this commit's sandbox Worker ships, unless E2B already holds their pair's tag
+  # (deploy.ts --pair runs sandbox/template/build.py --check-pair: three throwaway
+  # sandboxes of at most 900, 1800 and 300 s, one after another). It holds only the E2B
+  # key, and its SDK is installed from a hashed lock.
+  pair:
     needs: plan
-    if: github.ref == 'refs/heads/main' && inputs.mode != 'plan'
+    if: github.ref == 'refs/heads/main' && (inputs.mode == 'dark' || inputs.mode == 'routes')
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the platform's pinned tools
+        working-directory: platform
+        run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install the template's E2B SDK from its hashed lock
+        run: python3 -m pip install --require-hashes -r platform/sandbox/template/requirements.txt
+
+      - name: The pair check
+        env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+        run: node --experimental-strip-types platform/deploy/deploy.ts --pair
+
+  apply:
+    needs: [plan, pair]
+    if: >-
+      always() && github.ref == 'refs/heads/main' && inputs.mode != 'plan'
+      && needs.plan.result == 'success'
+      && (needs.pair.result == 'success'
+          || (inputs.mode == 'h2' && needs.pair.result == 'skipped'))
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -123,15 +166,6 @@ jobs:
       - name: Install the platform's pinned tools
         working-directory: platform
         run: npm ci
-
-      # The pair check (deploy.ts runs sandbox/template/build.py --check-pair when the
-      # template and the runner it deploys have not passed together in this E2B team).
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install the template's pinned E2B SDK
-        run: python3 -m pip install e2b==2.62.0
 
       - name: Apply
         run: |

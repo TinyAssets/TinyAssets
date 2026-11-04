@@ -14,10 +14,10 @@
 # Exit 24: no runner of that digest here (the Worker uploads it, installs it, asks again);
 # 25: the bytes are not their name (refused loudly: nothing runs); 2: not a digest.
 set -eu
-ROOT=${TA_RUNNER_ROOT:-}
-RUNNERS=$ROOT/opt/ta/runner
-INCOMING=$ROOT/var/lib/ta/incoming
-NODE=${TA_RUNNER_NODE:-/usr/local/bin/node}
+# Fixed paths, taken from no environment (the loader's tests run a copy with their own).
+RUNNERS=/opt/ta/runner
+INCOMING=/var/lib/ta/incoming
+NODE=/usr/local/bin/node
 ABSENT=24
 MISMATCH=25
 
