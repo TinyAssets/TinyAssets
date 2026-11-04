@@ -46,12 +46,8 @@ REQUIRED_CHECKS = (
     "Diff scope declared",
     "required-tests",
     "invariants",
-    "slow-tests",
 )
-# slow-tests is skipped on pull_request and re-run by the queue. The other
-# three run on the pull request; a skip there means the gate did not run.
-_SKIPPABLE = frozenset({"slow-tests"})
-_PASSING = frozenset({"SUCCESS", "SKIPPED"})
+# Every required check runs on the pull request; a skip means it did not run.
 REQUIRED_LABEL = "infra-change"
 TRUSTED_LOGIN = "jonnyton"
 _SCOPE_GUARD = REPO_ROOT / ".github" / "workflows" / "pr-scope-guard.yml"
@@ -107,8 +103,7 @@ def latest_conclusions(nodes: list[dict] | None) -> dict[str, str]:
 
 def checks_green(conclusions: dict[str, str]) -> bool:
     for name in REQUIRED_CHECKS:
-        allowed = _PASSING if name in _SKIPPABLE else frozenset({"SUCCESS"})
-        if conclusions.get(name) not in allowed:
+        if conclusions.get(name) != "SUCCESS":
             return False
     return True
 
@@ -515,9 +510,7 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
     if reason is not None:
         missing = [
             name for name in REQUIRED_CHECKS
-            if conclusions.get(name) not in (
-                _PASSING if name in _SKIPPABLE else frozenset({"SUCCESS"})
-            )
+            if conclusions.get(name) != "SUCCESS"
         ]
         extra = f" (not green: {', '.join(missing)})" if reason.startswith("required") else ""
         print(f"PR #{number}: not enqueued ({reason}){extra}.")

@@ -1,7 +1,8 @@
 # The 32-call cap probe (gateway G0)
 
-For `tasks.md` §6 (the probe before the agent runs a turn on the object). Code:
-`scripts/probes/capprobe/`. Workflow: `.github/workflows/cap-probe.yml` (manual only).
+For `tasks.md` §6 (the probe before the agent runs a turn on the object). Answered, so
+its code (`scripts/probes/capprobe/`) and manual workflow (`.github/workflows/cap-probe.yml`)
+are deleted; both are in git at `7ae171de8`.
 
 ## Found (run 1 on Workers Free, run B on Workers Paid)
 

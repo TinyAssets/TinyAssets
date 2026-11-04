@@ -6,8 +6,9 @@ thread is one pi Session over its own `ThreadStore`, a top-level object in the o
 Worker, hosted by our `ThreadHost`. The design keeps facets as "switch to them if P13
 shows separate limits and GA" (design-decision §6 P13; storage-research O1a). This probe
 answers the open questions by measurement, and adds Q8, F1's erasure crash window, on the
-same throwaway objects. Code: `scripts/probes/facetprobe/`. Workflow:
-`.github/workflows/facet-probe.yml` (manual only). It follows the store probe
+same throwaway objects. Answered, so its code (`scripts/probes/facetprobe/`) and manual
+workflow (`.github/workflows/facet-probe.yml`) are deleted; both are in git at
+`7ae171de8`. It follows the store probe
 (`store-probe.md`) in its safety rules, cleanup and reading-key method.
 
 ## Found
