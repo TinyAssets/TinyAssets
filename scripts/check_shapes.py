@@ -1078,6 +1078,23 @@ def metering_import_problems(root: Path = ROOT) -> list[str]:
     return problems
 
 
+def second_path_problems(rel: str, source: str) -> list[str]:
+    """An added file that opens a second path to an old-stack entry symbol.
+
+    The symbols are the old stack's Python names, so only Python files are
+    scanned: `class Scheduler` in a `platform/` TypeScript file is not a second
+    path to the daemon's scheduler.
+    """
+    if not rel.endswith(".py") or rel.startswith(("tests/", MIRROR_ROOT)):
+        return []
+    return [
+        f"{shape_id} second-path: {rel} matches {pattern}"
+        for shape_id, pattern in ENTRY_SYMBOLS.items()
+        if not any(registered_path(rel, glob) for glob in SHAPES[shape_id].paths)
+        and re.search(pattern, source)
+    ]
+
+
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
     problems.extend(control_plane_policy_problems(root))
@@ -1124,16 +1141,10 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
             rel == home or rel.startswith(home) for home in DOC_HOMES
         ):
             problems.append(f"doc-homes: {rel}")
-        if path.suffix not in {".py", ".js", ".ts"} or rel.startswith("tests/"):
-            continue
-        if rel.startswith(MIRROR_ROOT):
-            continue
-        source = path.read_text(encoding="utf-8", errors="replace")
-        for shape_id, pattern in ENTRY_SYMBOLS.items():
-            if not any(registered_path(rel, glob) for glob in SHAPES[shape_id].paths) and re.search(
-                pattern, source
-            ):
-                problems.append(f"{shape_id} second-path: {rel} matches {pattern}")
+        if path.suffix == ".py":
+            problems.extend(
+                second_path_problems(rel, path.read_text(encoding="utf-8", errors="replace"))
+            )
     problems.extend(added_line_problems(git_added_lines(root)))
     for adr in files("docs/decisions/ADR-*.md", root):
         source = adr.read_text(encoding="utf-8")

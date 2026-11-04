@@ -635,17 +635,6 @@ def pr_tier(selected: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
             and defines_tests((root / name).read_text(encoding="utf-8", errors="replace"))]
 
 
-def needs_image(changed: list[str], root: Path = REPO_ROOT) -> bool:
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
-    from scripts.runtime_paths import runtime_inputs
-
-    inputs = runtime_inputs(root, 'HEAD')
-    return any(inputs.covers(name)
-               or name in ('scripts/affected_tests.py', '.github/workflows/tests.yml')
-               for name in changed)
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", help="git ref to diff against (merge-base ...HEAD)")
