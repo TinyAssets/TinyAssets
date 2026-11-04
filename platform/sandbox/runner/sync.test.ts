@@ -245,10 +245,13 @@ describe("the sync-ignore", () => {
   });
 
   it("matches in linear time: the review's backtracking pattern is instant", () => {
-    const started = Date.now();
+    // CPU time, not wall-clock: another process's load does not stretch it. A backtracking
+    // matcher spends far more than a second here; a linear one, milliseconds.
+    const started = process.cpuUsage();
     expect(wildcard("*a*a*a*a*a*a*b", "a".repeat(100))).toBe(false);
     expect(wildcard("*a*a*a*a*a*a*a*a*b", "a".repeat(10_000))).toBe(false);
-    expect(Date.now() - started).toBeLessThan(1_000);
+    const spent = process.cpuUsage(started);
+    expect((spent.user + spent.system) / 1000).toBeLessThan(1_000);
     expect([wildcard("a*b?d", "aXXbcd"), wildcard("a*b?d", "abd"), wildcard("*", ""),
             wildcard("?", "")]).toEqual([true, false, true, false]);
   });

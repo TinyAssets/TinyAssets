@@ -323,11 +323,13 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     let perPath = Number.POSITIVE_INFINITY;
     for (let round = 0; round < 3; round++) {
       const fresh = Array.from({ length: 300 }, (_, i) => path(10_000 * (round + 1) + i));
-      const began = performance.now();
+      // The process's CPU time, not wall-clock: another process's load does not stretch it.
+      const began = process.cpuUsage();
       for (const each of fresh) {
         matcher(each);
       }
-      perPath = Math.min(perPath, (performance.now() - began) / fresh.length);
+      const spent = process.cpuUsage(began);
+      perPath = Math.min(perPath, (spent.user + spent.system) / 1000 / fresh.length);
     }
     const fresh = [path(1)];
     const name = bytesOf(fresh[0]!.split("/").at(-1)!);
