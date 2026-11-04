@@ -1407,10 +1407,13 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
     expect((await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments"))[0]!["n"])
       .toBeGreaterThan(15);
     await sqlIn(r.stub, "DELETE FROM test_moves");
-    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
-    // Past half the hot ceiling at once (no lane runs between): moves are due from here.
+    // Muse deleted and Dot's mail past half the hot ceiling in one unit of the ledger, which
+    // rings no lane; then one post rings it, so its first pass finds both the purge and mail
+    // due. (Deleted through the door first, its ring could start a pass that rewrote alone
+    // before the mail was due, as one in a loaded leg did: 2026-11-04 18:33, `rrM`.)
     await r.inLedger({ ...LEDGER_LIMITS, maxMessages: 40, maxUnacked: 20, archiveRecords: 20 },
                      (ledger: Ledger) => {
+      ledger.remove(muse);
       for (let i = 0; i < 30; i++) {
         ledger.post(null, `dm:${dot}`, `pre${i}`, `pre ${i}`, null);
         if (i % 10 === 9) {
@@ -1419,6 +1422,8 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
       }
       ledger.ack(DOT, ledger.read(DOT, 100).messages.at(-1)?.seq ?? 0);
     });
+    await r.post(null, `dm:${dot}`, { cmid: "ring", body: "ring" });
+    await r.ack(DOT, (await r.read(DOT)).messages.at(-1)!.seq);
     // The purge runs pass by pass while Dot is sent mail and acks it.
     let done = false;
     const purged = (async () => {
