@@ -6,9 +6,9 @@ thread is one pi Session over its own `ThreadStore`, a top-level object in the o
 Worker, hosted by our `ThreadHost`. The design keeps facets as "switch to them if P13
 shows separate limits and GA" (design-decision §6 P13; storage-research O1a). This probe
 answers the open questions by measurement, and adds Q8, F1's erasure crash window, on the
-same throwaway objects. Answered, so its code (`scripts/probes/facetprobe/`) and manual
-workflow (`.github/workflows/facet-probe.yml`) are deleted; both are in git at
-`7ae171de8`. It follows the store probe
+same throwaway objects. Answered, so its code and its manual workflow are deleted; both
+are at `7ae171de8` (https://github.com/TinyAssets/TinyAssets/tree/7ae171de8/scripts/probes/facetprobe,
+https://github.com/TinyAssets/TinyAssets/tree/7ae171de8/.github/workflows/facet-probe.yml). It follows the store probe
 (`store-probe.md`) in its safety rules, cleanup and reading-key method.
 
 ## Found
@@ -177,7 +177,7 @@ or its isolate; Q1's two fills at once, in two parents; Q5 at size; Q7 if the ga
 The workflow deletes everything right after the questions, before the optional
 analytics step, which reads by object and namespace id.
 
-**Local.** `node scripts/probes/facetprobe/local.mjs` needs `npm ci` in `platform/`, and
+**Local.** The probe's `local.mjs` (at `7ae171de8`) needed `npm ci` in `platform/`, and
 the workflow runs it before deploying. It bundles every copy with `wrangler deploy
 --dry-run`, runs them in miniflare (all but the unsafe copy, whose binding type workerd
 lacks), and drives every question through the door's local-only fetch, which starts the

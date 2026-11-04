@@ -344,7 +344,7 @@ account and no deploy.
   Durable Object stub and public-URL calls per Worker request, per DO RPC, per alarm and
   per background work outliving its RPC, the 15-minute alarm cut, and whether Worker
   `fetch` reaches names resolving to private addresses (miniflare's limit enforcer is a
-  no-op, so only live counts). It ran live (`cap-probe.yml`; the results are in
+  no-op, so only live counts). It ran live (the cap probe's workflow; the results are in
   `cap-probe.md`, and the follow-up runs are 6's probe item). The platform's subrequest
   limit (`limits.subrequests`) is the only cap on gateway calls: no per-kind budget is
   kept beside it.
@@ -1929,7 +1929,7 @@ R, S, M and W.
   store while held. Slice D deleted the thread stores; P1's subrequest count still sets the
   owner Worker's `limits.subrequests`.
 - [x] The facet probe P13 (with Q8, F1's erasure window). Method, key and results:
-  `facet-probe.md`; run by the manual `facet-probe.yml`. Run 1 (41247617223, 2026-10-31):
+  `facet-probe.md`; run by its manual workflow, since deleted. Run 1 (41247617223, 2026-10-31):
   Q1 a parent and all its facets share one ceiling of about 10 GiB (read by hand; at the
   ceiling production resets the parent instead of a size error), so the real per-object
   ceiling is about 10 GiB and the owner-bound guard's 10 × 10^9 denominator is
