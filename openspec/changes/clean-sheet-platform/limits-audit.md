@@ -44,12 +44,12 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,651,436,800.75 bytes, 46.51% of the 10 GB: 348.6 MB under
+**The worst case that ships is 4,651,797,989.75 bytes, 46.52% of the 10 GB: 348.2 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
 Slice STORE item 2 took 152.6 MB of the room under half the change log's bound was derived
 from (665.1 MB), within its quarter (166.3 MB, held by the guard): the archive's fence rows
 (`archive_segments`, 151.4 MB at 59,606 rows), its moves and purges, and a message's two byte
-counts. Before it,
+counts; slice STARTER's terms took 0.4 MB more. Before it,
 slice ID's agent identities and mail
 authority, slice M's change orders, slice W's doorbell subscriptions (`wake_callbacks`,
 423.6 MB at 1,000 agents and their widest), slice S's sandbox wait, slice L's keys and
