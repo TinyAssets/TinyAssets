@@ -15,13 +15,12 @@ name: Enqueue merge
 #
 # This calls enqueuePullRequest once every required check has passed at the
 # head, the `review` check among them (a PR review approving this change,
-# review.yml), and a release-critical diff carries the infra-change label. The
-# actor is MERGE_ATTRIBUTION_TOKEN.
+# review.yml). The actor is MERGE_ATTRIBUTION_TOKEN.
 # If that token lacks Merge queues: Read and write, the job logs the owner
 # step and exits 0. It never uses GITHUB_TOKEN.
 #
-# A review or an infra-change label does not rerun Tests: review.yml decides the
-# one and pr-scope-guard reads the other. This job runs when that guard, Tests,
+# A review does not rerun Tests: review.yml decides it. This job runs when the
+# scope guard, Tests,
 # invariants or a review decision succeeds for a pull request. It does not listen
 # to edited or labeled itself: those events must not start another copy of the
 # test jobs. A review decision made on a review runs on `workflow_run` itself, on

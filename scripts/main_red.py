@@ -210,6 +210,9 @@ def _open_revert(repo: str, sha: str, subject: str, body: str, token: str) -> st
         return None
     remote = f"https://x-access-token:{token}@github.com/{repo}.git"
     _run("git", "push", "-q", remote, f"HEAD:refs/heads/{branch}")
+    # Every PR declares its lane: a revert's is exactly the files it puts back.
+    paths = _run("git", "diff", "--name-only", "origin/main", "HEAD").stdout.split()
+    body = f"{body}\n\nLane: {' '.join(paths)}\n"
     return _gh("pr", "create", "-R", repo, "--base", "main", "--head", branch,
                "--title", revert_title(subject), "--body", body, "--label", LABEL,
                token=token).strip()

@@ -12,8 +12,7 @@ name: review
 #   APPROVE at A, carries(A, head)     -> success, naming A and why it carries
 #   anything else                      -> in progress: the delta needs a review
 #
-# `carries` is the same change (the diff key), or a delta of prose only; never a
-# release-critical path (the scope guard's SENSITIVE_RE).
+# `carries` is the same change, or a delta of Markdown prose only.
 #
 # Two triggers, both the default branch's copy of this file:
 #   * pull_request_target on a new head: re-decide (a verdict may carry to it);
@@ -124,8 +123,7 @@ jobs:
 
           if ! python scripts/drain_review_gate.py --review-check \
               --reviews-file "$RUNNER_TEMP/reviews.json" \
-              --base "$BASE" --head "$HEAD" \
-              --scope-guard .github/workflows/pr-scope-guard.yml > "$RUNNER_TEMP/run.json"; then
+              --base "$BASE" --head "$HEAD" > "$RUNNER_TEMP/run.json"; then
             jq -n --arg head "$HEAD" '{name: "review", head_sha: $head, status: "completed",
               conclusion: "failure", output: {title: "could not decide",
               summary: "review.yml could not read the reviews; see its log, then rerun it."}}' \

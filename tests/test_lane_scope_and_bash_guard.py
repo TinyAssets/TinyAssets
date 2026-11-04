@@ -55,7 +55,7 @@ def test_a_smuggled_lineage_is_refused(tmp_path):
 @pytest.mark.verifies(
     "development-coordination-runtime:A pull request stays inside its declared lane"
 )
-def test_a_release_critical_change_must_declare_a_lane(tmp_path):
+def test_every_change_must_declare_a_lane(tmp_path):
     refused = _lane_cli(tmp_path, "no lane here", ["deploy/deploy_fail_safe.sh"], "--require")
     assert refused.returncode == 2
     assert _lane_cli(tmp_path, "no lane here", ["scripts/peer_agent.py"]).returncode == 0
@@ -106,3 +106,13 @@ def test_a_push_that_did_not_land_is_reported(tmp_path):
     git(work, "push", "-q", "fork", "lane")
     assert guard.push_did_not_land("git push fork lane", work) is None
     assert guard.push_did_not_land("git push fork", work) is None
+
+
+def test_the_scope_guard_requires_a_lane_of_every_pr_and_keeps_no_path_list():
+    """No release-critical list and no cap of it (2026-11-04): every PR declares a lane."""
+    guard = (_ROOT / ".github" / "workflows" / "pr-scope-guard.yml").read_text(encoding="utf-8")
+    assert "SENSITIVE_RE" not in guard and "MAX_SENSITIVE" not in guard
+    assert "infra-change" not in guard
+    assert '--body-file "$RUNNER_TEMP/pr-body-lane.md" --require' in guard
+    enqueue = (_ROOT / "scripts" / "enqueue_merge.py").read_text(encoding="utf-8")
+    assert "SENSITIVE_RE" not in enqueue and "infra-change" not in enqueue

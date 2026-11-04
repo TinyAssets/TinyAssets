@@ -9,12 +9,13 @@ name: PR scope guard
 # DIFF SCOPE caught it. With auto-merge enabled, that PR would have shipped
 # changes to the production deploy workflow under the banner of an auth fix.
 #
-# So: a PR that touches release-critical infrastructure names its files with
-# `Lane:` and carries the `infra-change` label, which this guard adds itself.
+# So: every PR names its files with `Lane:`, and a file outside the lane is
+# refused, which is what catches a dragged lineage file by file. (A count of
+# "release-critical" files, capped at 8, stood in for that until 2026-11-04: it
+# blocked planned, reviewed slices and passed the 2026-10-21 dragged refactor.)
 # This check judges scope only, so it passes when the PR opens. Whether the
-# change was reviewed is the `review` check (review.yml): a PR review on the
-# commit the reviewer read, carried to a later head only by `carries()`, and
-# never across a release-critical path.
+# change was reviewed is the `review` check (review.yml), and what ships is
+# gated by the main-only `production` environment.
 #
 # MUST run unconditionally (no `paths:` filter). A required status check that is
 # path-filtered never reports on PRs outside those paths, and the PR then hangs
@@ -45,14 +46,14 @@ on:
   #      commit, which includes the PR's own edits, not from the trusted base.
   #      Re-running the gate here would let a PR grade itself, so it would
   #      add no trust. A PR that edits this file is caught at PR time instead,
-  #      because .github/workflows/ is a release-critical path.
+  #      by its review.
   merge_group:
     types: [checks_requested]
 
 permissions:
   contents: read
-  # write only to add the infra-change label; PR code is never checked out or run.
-  pull-requests: write
+  # Reads the PR's file list; PR code is never checked out or run.
+  pull-requests: read
 
 concurrency:
   # A merge_group event has no pull_request number. Without the head_ref
@@ -121,13 +122,12 @@ jobs:
       # Under pull_request_target, only the trusted base SHA above is checked out.
       # The PR head is never executed with this workflow's token. The file list
       # below comes from the API.
-      - name: Compare the PR diff against release-critical paths
+      - name: Hold the PR to its declared lane
         if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
           BASE_OID: ${{ github.event.pull_request.base.sha }}
           # The body is author-controlled text. It is read through the
@@ -138,24 +138,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Release-critical: anything that can change how the product is built,
-          # deployed, or what runs in production.
-          #
-          # Generated plugin runtime files are absent from Git. Its builder and
-          # source declarations are release-critical packaging inputs.
-          # scripts/ci_required_tests.py and .github/known-failing-tests.txt are
-          # here because they ARE the `required-tests` gate. That gate runs from
-          # the PR's own checkout (it must — it executes the PR's code), so a PR
-          # can rewrite the thing judging it while keeping the check name green.
-          # Workflow files were already covered; without these two entries the
-          # same neutering could be done one directory over, undeclared.
-          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/ci_structural_guards\.py$|scripts/check_shapes\.py$|scripts/drain_review_gate\.py$|tests/test_shape_registry\.py$|deploy/|Dockerfile$|\.dockerignore$)'
-
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.
           # Project BOTH the new path and, for renames, the previous one. Reading
           # only `.filename` let a PR move tinyassets/auth/provider.py to an
-          # unprotected path and escape the release-critical check entirely -- the
+          # unprotected path and escape the lane check entirely -- the
           # gate saw only the destination (cross-family review 2026-08-26).
           if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files"                             --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null)"; then
             echo "::error::could not read the PR file list — failing closed"
@@ -199,7 +186,7 @@ jobs:
           # An earlier version of this comment claimed the read above already
           # failed closed on truncation; it did not, and a cross-family review
           # caught the false assurance. At the cap we cannot know whether the
-          # unseen files are release-critical, so refuse rather than guess —
+          # unseen files are inside the lane, so refuse rather than guess —
           # a diff that large needs splitting regardless.
           API_FILE_CAP=3000
           if [ "$TOTAL" -ge "$API_FILE_CAP" ]; then
@@ -209,44 +196,22 @@ jobs:
               echo ""
               echo "**Blocked — diff exceeds what the API will report.** ${TOTAL} files;"
               echo "the endpoint caps at ${API_FILE_CAP} and does not report truncation, so"
-              echo "release-critical files could be present and invisible to this check."
+              echo "files outside the lane could be present and invisible to this check."
               echo ""
               echo "Split the PR, or rebase it if it is carrying an unmerged lineage."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          # `|| true` here USED to swallow an execution error as well as "no
-          # match": grep exits 1 for no match and 2+ for a real failure, and a
-          # failure read as an empty hit list means "no release-critical paths
-          # touched" — fail-open on the exact question this gate answers. Found
-          # by cross-family review 2026-09-26 (finding 3) by injecting exit 2.
-          classify() {
-            local rc=0
-            if [ -n "$2" ]; then
-              printf '%s\n' "$CHANGED" | grep "$2" -E "$1" || rc=$?
-            else
-              printf '%s\n' "$CHANGED" | grep -E "$1" || rc=$?
-            fi
-            if [ "$rc" -gt 1 ]; then
-              echo "::error::grep exited ${rc} classifying paths — failing closed" >&2
-              return 1
-            fi
-          }
-          HITS="$(classify "$SENSITIVE_RE" "")" || exit 1
-          HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
-
-          # Declared lane (drain_review_gate.py `declared_lane`): a PR touching a
-          # release-critical path names its files with `Lane:`, and any PR that
-          # names them is held to them, so a smuggled lineage is refused before
-          # anyone reviews it. Bases that predate
-          # the check skip it, as with the forbidden-paths script above.
+          # Declared lane (drain_review_gate.py `declared_lane`): every PR names its
+          # files with `Lane:` and is held to them, so a smuggled lineage is
+          # refused before anyone reviews it. A prose-only PR writes `Lane: docs/`.
+          # Bases that predate the check skip it, as with the forbidden-paths
+          # script above.
           printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-lane.md"
           if grep -q -- '--lane-scope' scripts/drain_review_gate.py; then
-            LANE_REQUIRE=""
-            [ "$HIT_COUNT" -eq 0 ] || LANE_REQUIRE="--require"
             if ! printf '%s\n' "$CHANGED" \
                 | python scripts/drain_review_gate.py --lane-scope \
-                  --body-file "$RUNNER_TEMP/pr-body-lane.md" ${LANE_REQUIRE} \
+                  --body-file "$RUNNER_TEMP/pr-body-lane.md" --require \
                   2> "$RUNNER_TEMP/lane-why.txt"; then
               {
                 echo "### PR scope guard"
@@ -260,93 +225,18 @@ jobs:
             fi
           fi
 
-          echo "### PR scope guard" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Files changed vs merge-base: **${TOTAL}**" >> "$GITHUB_STEP_SUMMARY"
-          echo "Release-critical files touched: **${HIT_COUNT}**" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$HIT_COUNT" -eq 0 ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "No release-critical paths touched." >> "$GITHUB_STEP_SUMMARY"
-            echo "scope guard: clean (${TOTAL} files, none release-critical)"
-            exit 0
-          fi
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "<details><summary>Release-critical files</summary>" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
-          printf '%s\n' "$HITS" | sed 's/^/- `/; s/$/`/' >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
-
-          # HARD CAPS — no label bypasses these. A label is a declaration of intent,
-          # not authorization: it can be applied by any writer, is not bound to a head
-          # SHA, and goes stale the moment someone pushes again. PR #1491 is the case
-          # that proves it — 386 changed files and 16 release-critical, which a bare
-          # label would have waved straight through into auto-merge.
-          # The RISK is release-critical breadth, not raw size. #1491 was dangerous
-          # because it carried 16 release-critical files while claiming to be a
-          # two-file auth fix — not merely because it was large. So:
-          #
-          #   MAX_SENSITIVE is a HARD cap. No label clears it. Past this, a branch
-          #   is almost certainly dragging an unmerged lineage and must be rebased.
-          #
-          #   Total size is only a PROXY for that bloat, so it is declarable. PR
-          #   #1490 proved the difference: a legitimate 166-file recovery touching
-          #   ONE workflow was blocked by a size cap it had no way to satisfy, while
-          #   posing none of the risk the cap exists to catch.
-          MAX_SENSITIVE=8
-          if [ "$HIT_COUNT" -gt "$MAX_SENSITIVE" ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Blocked — beyond the label's authority.** ${HIT_COUNT} release-critical files (hard cap ${MAX_SENSITIVE})." >> "$GITHUB_STEP_SUMMARY"
-            echo "A branch touching this many release-critical files is almost certainly" >> "$GITHUB_STEP_SUMMARY"
-            echo "carrying an unmerged lineage. Rebase onto the target branch, or split it." >> "$GITHUB_STEP_SUMMARY"
-            echo "The \`infra-change\` label cannot clear this." >> "$GITHUB_STEP_SUMMARY"
-            echo "scope guard: BLOCKED — ${HIT_COUNT} release-critical files exceeds hard cap ${MAX_SENSITIVE}"
-            exit 1
-          fi
-
-          LARGE_TOTAL=150
-          if [ "$TOTAL" -gt "$LARGE_TOTAL" ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Note: ${TOTAL} files changed (advisory threshold ${LARGE_TOTAL}) with only ${HIT_COUNT} release-critical." >> "$GITHUB_STEP_SUMMARY"
-            echo "Large but narrow — allowed when declared." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          case ",${LABELS}," in
-            *,infra-change,*)
-              echo "" >> "$GITHUB_STEP_SUMMARY"
-              echo "Declared via the \`infra-change\` label — allowed." >> "$GITHUB_STEP_SUMMARY"
-              echo "scope guard: ${HIT_COUNT} release-critical file(s), declared by label"
-              exit 0
-              ;;
-          esac
-
-          # The Lane above declared the files, so the label is applied here
-          # rather than by hand. A failed label write fails closed: the PR stays
-          # blocked until a rerun labels it. The POST labels the PR, not a
-          # commit, so refuse if a newer head arrived after this run read it.
-          CURRENT_HEAD="$(gh api "repos/${REPO}/pulls/${PR}" --jq .head.sha)" || CURRENT_HEAD=""
-          if [ "$CURRENT_HEAD" != "$HEAD_OID" ]; then
-            echo "scope guard: BLOCKED — PR head moved from ${HEAD_OID} to ${CURRENT_HEAD:-unknown}; the new head's run decides the label"
-            exit 1
-          fi
-          if ! gh api -X POST "repos/${REPO}/issues/${PR}/labels" \
-              -f 'labels[]=infra-change' >/dev/null; then
-            echo "::error::could not add the infra-change label; rerun this check"
-            echo "scope guard: BLOCKED — the infra-change label could not be added"
-            exit 1
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Declared: the \`infra-change\` label was added automatically for ${HIT_COUNT} release-critical file(s)." >> "$GITHUB_STEP_SUMMARY"
-          echo "scope guard: ${HIT_COUNT} release-critical file(s), declared; infra-change label added"
+          {
+            echo "### PR scope guard"
+            echo ""
+            echo "Files changed vs merge-base: **${TOTAL}**, all inside the declared lane."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "scope guard: ${TOTAL} files, inside the lane"
           exit 0
 
 # Honesty note
 # ------------
-# A label-based exemption is only as strong as whoever applies the label, so this
-# does NOT stop a determined actor — it is not a security boundary. What it does
+# A lane is author-written, so it does NOT stop a determined actor — it is not a
+# security boundary; the reviewer judges whether a lane is honest. What it does
 # stop is the failure that actually happened: infrastructure changing SILENTLY,
 # as a side effect of a branch's history, while the PR title and CI both say
 # something narrower. It converts an invisible diff into a deliberate one.

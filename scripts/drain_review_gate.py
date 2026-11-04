@@ -5,7 +5,7 @@ Every pull request needs a review (2026-10-02): the reviewer posts a PR review o
 commit it read, its first line `APPROVE` or `BLOCK`, and `.github/workflows/review.yml`
 turns the latest trusted verdict into the required `review` check on the head
 (`review_check`). A verdict carries to a later head only by `carries`: the same change,
-or a delta of prose only, never a release-critical path.
+or a delta of prose only.
 
 Why every PR: on 2026-10-01 auto-enroll armed #4247 -- a superseded head with a known
 data-loss bug and no review -- and the merge queue admitted it. Before 2026-09-26 the
@@ -190,7 +190,6 @@ def carries(
     approved: str,
     head: str,
     *,
-    sensitive: re.Pattern[str],
     cwd: Path | None = None,
 ) -> str | None:
     """Why a verdict on `approved` stands for `head`, or None when it does not.
@@ -203,9 +202,9 @@ def carries(
 
     1. no path differs: the same change, so a rebase or a
        merge of main that touched none of the PR's files carries;
-    2. every differing path is prose (`is_prose`), a regular non-executable
-       file on both sides, and none is release-critical (`sensitive`, the scope
-       guard's SENSITIVE_RE). A gate definition always gets a fresh review.
+    2. every differing path is prose (`is_prose`: Markdown nothing runs or
+       loads), a regular non-executable file on both sides. A gate, a workflow
+       or any code is never prose, so it always gets a fresh review.
 
     Any git failure, or a commit that cannot be read, is None: a verdict never
     carries across a change nobody can compare.
@@ -223,22 +222,12 @@ def carries(
     if not differing:
         return f"the same change as {approved} (every path's blobs and modes unchanged)"
     names = [p.decode("utf-8", "surrogateescape") for p in differing]
-    if any(sensitive.search(name) for name in names):
-        return None
     if all(
         is_prose(name) and (_modes(then.get(raw)) | _modes(now.get(raw))) <= _PROSE_MODES
         for name, raw in zip(names, differing)
     ):
         return f"only prose changed since {approved}: {', '.join(names)}"
     return None
-
-
-def release_critical(scope_guard_text: str) -> re.Pattern[str]:
-    """The scope guard's SENSITIVE_RE, read from the workflow so no second list grows."""
-    match = re.search(r"^\s*SENSITIVE_RE='([^']+)'", scope_guard_text, re.M)
-    if match is None:
-        raise ValueError("pr-scope-guard.yml has no SENSITIVE_RE")
-    return re.compile(match.group(1))
 
 
 @dataclass(frozen=True)
@@ -319,8 +308,6 @@ def _review_check(argv: list[str]) -> int:
                         help="the PR's reviews, one JSON array")
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
-    parser.add_argument("--scope-guard", type=Path, required=True,
-                        help="pr-scope-guard.yml, for its SENSITIVE_RE")
     args = parser.parse_args(argv)
     if not _SHA_RE.fullmatch(args.head):
         print(f"not a commit: {args.head!r}", file=sys.stderr)
@@ -329,10 +316,9 @@ def _review_check(argv: list[str]) -> int:
         reviews = json.loads(args.reviews_file.read_text(encoding="utf-8"))
         if not isinstance(reviews, list):
             raise ValueError("the reviews file is not a JSON array")
-        sensitive = release_critical(args.scope_guard.read_text(encoding="utf-8"))
         state = review_check(
             reviews, base=args.base, head=args.head,
-            carry=lambda commit: carries(args.base, commit, args.head, sensitive=sensitive),
+            carry=lambda commit: carries(args.base, commit, args.head),
         )
     except (OSError, ValueError) as exc:
         print(f"cannot decide the review check: {exc}", file=sys.stderr)
@@ -421,10 +407,10 @@ def _read_text(path: Path | None) -> str | None:
 
 # A lane's declared files. A lane branched from another lane's WIP commit and
 # carried a 689-line deploy refactor through five reviews (2026-10-21), because
-# every reviewer read the lane's own commits, not its diff against main. A PR
-# that touches a release-critical path must say which files it owns, and every
-# PR that says so is held to it: a file outside the lane is a smuggled lineage
-# or a second intent, and either way it is refused before review starts.
+# every reviewer read the lane's own commits, not its diff against main. Every PR
+# says which files it owns and is held to it: a file outside the lane is a
+# smuggled lineage or a second intent, and either way it is refused before review
+# starts.
 _LANE_RE = re.compile(r"^Lane:[ \t]*(\S.*)$", re.MULTILINE)
 
 
@@ -452,13 +438,13 @@ def _lane_scope(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="drain_review_gate.py --lane-scope")
     parser.add_argument("--body-file", type=Path, required=True)
     parser.add_argument("--require", action="store_true",
-                        help="the diff touches a release-critical path")
+                        help="refuse a body that declares no lane (the scope guard always does)")
     args = parser.parse_args(argv)
     globs = declared_lane(_read_text(args.body_file) or "")
     if globs is None:
         if args.require:
-            print("this PR touches a release-critical path: declare its files as "
-                  "`Lane: <glob> <dir/> ...` in the body", file=sys.stderr)
+            print("every PR declares its files as `Lane: <glob> <dir/> ...` in the body "
+                  "(a prose-only PR: `Lane: docs/`)", file=sys.stderr)
             return 2
         return 0
     stray = outside_lane(sys.stdin.read().splitlines(), globs)

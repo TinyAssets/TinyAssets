@@ -7,8 +7,7 @@ name: review (merge queue)
 #
 # A merge_group run takes this file from the group commit, which includes the PR's
 # edits, so it checks out the group's base (main, already merged) for the script.
-# A PR that edits this file is a release-critical change, which never carries a
-# review.
+# A PR that edits this file is code, never prose, so it never carries a review.
 
 on:
   merge_group:

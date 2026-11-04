@@ -6,8 +6,7 @@ decision, 2026-09-27. Run the steps in order. Each step says who does it: **F**
 is the founder (account or dashboard access), **L** is the lead (a `gh` CLI
 session with admin on the repo).
 
-The code side is three PRs. `pr-scope-guard` caps a PR at 8 release-critical
-files, and no label clears that cap, so one PR can't carry everything:
+The code side is three PRs, each with its own `Lane:`:
 
 | PR | Contents | When it merges |
 |---|---|---|
@@ -73,8 +72,7 @@ without re-running the gate:
    `required-tests` and `invariants` re-run on the group commit.
 3. A `merge_group` run takes the workflow file from the group commit, which
    includes the PR's own edits. Re-running the gate there would let a PR grade
-   itself. A PR that edits the guard is caught at PR time, because workflows
-   are a release-critical path.
+   itself. A PR that edits the guard is caught at PR time, by its review.
 
 `tests/test_merge_queue_triggers.py` pins all four required contexts to a
 `merge_group` trigger. It also pins that the gate steps run only on
@@ -171,13 +169,7 @@ curl -s -H "Authorization: Bearer $tok" https://ghcr.io/v2/tinyassets/tinyassets
 Rebase it on `main` if needed, mark it ready, and merge it by hand. The merge
 queue isn't on yet, so this is a normal merge by your identity.
 
-B needs only its `infra-change` label, because it touches no gate or
-authority path. Other open PRs are a different matter. A review receipt cites
-a comment URL, and the gate checks that the URL is a comment on *this*
-repository's PR (`scripts/drain_review_gate.py`,
-`artifact_names_trusted_comment`). GitHub's redirect doesn't satisfy a string
-match, so every receipt posted before the transfer has to be re-posted after
-it with a `github.com/TinyAssets/TinyAssets` URL. Then:
+B needs only its `Lane:` and its review, like any PR. Then:
 
 ```bash
 gh pr ready 4057 --repo TinyAssets/TinyAssets

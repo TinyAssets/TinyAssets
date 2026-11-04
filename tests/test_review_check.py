@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -21,9 +20,6 @@ _ENV = {
     "GIT_COMMITTER_NAME": "t",
     "GIT_COMMITTER_EMAIL": "t@example.invalid",
 }
-_SENSITIVE = gate.release_critical(
-    (_ROOT / ".github" / "workflows" / "pr-scope-guard.yml").read_text(encoding="utf-8")
-)
 A = "a" * 40
 B = "b" * 40
 
@@ -115,7 +111,7 @@ def repo(tmp_path: Path):
 
 
 def _carries(repo: Path, base: str, approved: str, head: str) -> str | None:
-    return gate.carries(base, approved, head, sensitive=_SENSITIVE, cwd=repo)
+    return gate.carries(base, approved, head, cwd=repo)
 
 
 def test_the_reviewed_head_and_the_same_change_carry(repo):
@@ -152,13 +148,6 @@ def test_a_prose_delta_carries(repo):
 def test_a_code_or_gate_delta_does_not_carry(repo, files):
     path, base, approved = repo
     assert _carries(path, base, approved, _commit(path, files)) is None
-
-
-def test_a_release_critical_prose_path_does_not_carry(repo):
-    path, base, approved = repo
-    head = _commit(path, {"docs/gates.md": "# g\n"})
-    strict = re.compile(r"^docs/gates\.md$")
-    assert gate.carries(base, approved, head, sensitive=strict, cwd=path) is None
 
 
 def test_a_rename_into_docs_counts_both_paths(repo):
@@ -228,11 +217,9 @@ def test_the_cli_prints_the_check_run(tmp_path, repo):
     path, base, approved = repo
     reviews = tmp_path / "reviews.json"
     reviews.write_text(json.dumps([_review("APPROVE", approved)]), encoding="utf-8")
-    guard = _ROOT / ".github" / "workflows" / "pr-scope-guard.yml"
     out = subprocess.run(
         [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
-         "--reviews-file", str(reviews), "--base", base, "--head", approved,
-         "--scope-guard", str(guard)],
+         "--reviews-file", str(reviews), "--base", base, "--head", approved],
         cwd=path, capture_output=True, text=True, check=True)
     run = json.loads(out.stdout)
     assert run["name"] == "review" and run["head_sha"] == approved
@@ -240,8 +227,8 @@ def test_the_cli_prints_the_check_run(tmp_path, repo):
     reviews.write_text("{}", encoding="utf-8")
     refused = subprocess.run(
         [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
-         "--reviews-file", str(reviews), "--base", base, "--head", approved,
-         "--scope-guard", str(guard)], cwd=path, capture_output=True, text=True)
+         "--reviews-file", str(reviews), "--base", base, "--head", approved],
+        cwd=path, capture_output=True, text=True)
     assert refused.returncode == 2
 
 
