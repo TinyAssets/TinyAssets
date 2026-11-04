@@ -591,30 +591,51 @@ describe("the archive lane", () => {
     expect(replaced).toBeGreaterThan(0);
   }, 300_000);
 
-  it("holds its move's units on the isolate's pool; refused busy, the lane holds, counts " +
-     "the pass and moves once there is room", async () => {
+  it("holds its move's units on the isolate's pool; refused busy at once, the lane holds " +
+     "with no failure counted, tells the owner once at the hot ceiling, and moves once there " +
+     "is room (round 11, Lows A and B)", async () => {
     const r = await rig(ARCHIVING);
     const muse = await r.register(MUSE);
+    const lane = async () => {
+      await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
+                          "'owner-schedule/archive'");
+      await drainDue(r.stub);
+    };
+    const usage = async () => (await sqlIn(r.stub, "SELECT archive_fails AS fails, " +
+                                           "archive_error AS error FROM ledger_usage"))[0];
+    const told = async () => (await sqlIn(r.stub, "SELECT detail FROM owner_notices WHERE " +
+                                          "type = 'storage_busy_long'")).length;
     // Every unit of the larger class held elsewhere: a move's table cannot take its own.
     const pool = ownerSlots();
     const held = await pool.acquire(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS);
     let released = false;
     try {
       await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
-      await drainDue(r.stub);
-      const [usage] = await sqlIn(r.stub, "SELECT archive_fails AS fails, archive_error AS " +
-                                  "error FROM ledger_usage");
-      // Refused busy past the pool's wait, counted as a failed pass, told at three.
-      expect(usage).toMatchObject({ error: BUSY });
-      expect(usage!["fails"]).toBeGreaterThanOrEqual(1);
+      // Refused at once, never waiting on the pool inside the alarm: no failure counted, no
+      // notice while the hot set is below its ceiling, nothing moved.
+      const started = Date.now();
+      await lane();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(await usage()).toEqual({ fails: 0, error: null });
+      expect(await told()).toBe(0);
       expect(await sqlIn(r.stub, "SELECT * FROM archive_segments")).toEqual([]);
+      // The hot set at its ceiling: the next post is refused `storage_busy`, and a busy pass
+      // tells the owner, once for the blocked spell.
+      await r.post(null, `dm:${muse}`, { cmid: "u0", body: "unread 0" });
+      await r.post(null, `dm:${muse}`, { cmid: "u1", body: "unread 1" });
+      expect((await failure(() => r.post(null, `dm:${muse}`, { cmid: "u2", body: "x" })))
+        .message).toMatch(/^storage_busy:/);
+      await lane();
+      await lane();
+      expect(await told()).toBe(1);
+      expect(await usage()).toEqual({ fails: 0, error: null });
       held.release();
       released = true;
-      // Its hold over, the lane moves.
-      await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
-                          "'owner-schedule/archive'");
+      // Room again: the lane moves, and no more is told.
+      await lane();
       await settle(r);
       expect((await sqlIn(r.stub, "SELECT * FROM archive_segments")).length).toBeGreaterThan(0);
+      expect(await told()).toBe(1);
       expect(pool.state()).toMatchObject({ held: 0 });
     } finally {
       if (!released) {

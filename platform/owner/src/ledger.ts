@@ -2155,6 +2155,26 @@ export class Ledger {
     this.#sql.exec("UPDATE ledger_usage SET archive_fails = 0, archive_error = NULL");
   }
 
+  /**
+   * In a unit: an `archive` pass refused `busy` (the isolate's pool had not the units free):
+   * contention, not a failure, so the count and the last error stand as the pass found them.
+   */
+  archiveBusy(was: { fails: number; error: string | null }): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_fails = ?, archive_error = ?", was.fails,
+                   was.error);
+  }
+
+  /** Whether the hot set stands at its ceiling: the next post is refused `storage_busy`. */
+  atHotCeiling(): boolean {
+    return this.#usage().messages + 1 > this.#limits.maxMessages;
+  }
+
+  /** When the archive last placed a segment (`made_at`), or 0 for none. A read. */
+  lastPlaced(): number {
+    return this.#sql.exec<{ at: number | null }>(
+      "SELECT MAX(made_at) AS at FROM archive_segments").one().at ?? 0;
+  }
+
   /** In a unit: an `archive` pass failed, as `error` says; it stays counted. */
   archiveFailed(error: string): void {
     this.#sql.exec("UPDATE ledger_usage SET archive_error = ?", error);

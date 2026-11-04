@@ -97,7 +97,9 @@ import { type Edited, letGo, planEdit, type Refusal } from "./edit";
 import {
   APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, MOVE_PASS_UNITS, moveTableUnits, ownerSlots,
 } from "./holds";
-import { type Lease as PoolLease, SlotBusy, slotted, type SlotPool } from "./slots";
+import {
+  type Lease as PoolLease, SLOT_WAIT_MS, SlotBusy, slotted, type SlotPool,
+} from "./slots";
 import { createHash, randomBytes } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -1699,6 +1701,19 @@ const ARCHIVED_HEAD_BYTES = 16 * 1024;
 const ARCHIVE_FAILS_TOLD = 3;
 /** How long a failed `archive` pass holds its lane. */
 const ARCHIVE_RETRY_S = 60;
+/**
+ * How long a pass refused `busy` holds its lane (review round 11, Lows A and B): the pool's
+ * own wait (`SLOT_WAIT_MS`), the term a full queue of larger holds turns over within (the
+ * memory leg checks it), so the units held when it was refused have been given back.
+ */
+const ARCHIVE_BUSY_RETRY_S = SLOT_WAIT_MS / 1000;
+/**
+ * What the owner is told when a busy pool keeps the archive from moving while the hot set
+ * stands at its ceiling: once a blocked spell (since the last segment the lane placed).
+ */
+const ARCHIVE_BUSY_TOLD = "New mail is held at its ceiling because this server is too busy " +
+  `to move older mail out just now; nothing is lost, and the archive tries again every ${
+    ARCHIVE_BUSY_RETRY_S} seconds.`;
 
 /**
  * An archive move's reads of stored contents (review N5): each chunk read whole through
@@ -1776,16 +1791,32 @@ class MoveReader {
 }
 
 /**
+ * `lease` grown to `total` units now, or refused `busy` (everything it holds given back):
+ * inside the alarm a pass never waits on the pool, since the object's other lanes would wait
+ * with it (round 11, Low B). A call that does not fit at once leaves its queue at the next
+ * turn of the event loop; the lane holds and tries again (`ARCHIVE_BUSY_RETRY_S`).
+ */
+async function now(lease: PoolLease, total: number): Promise<void> {
+  const turn = new AbortController();
+  const timer = setTimeout(() => turn.abort(new SlotBusy()), 0);
+  try {
+    await lease.grow(total, turn.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * An archive move's or rewrite's holds on the isolate's pool (ADR-037), one lease in the
- * larger class (`SlotPool.lease`, the pool's one admission rule: the oldest holder alone
- * waits to grow, a younger one is refused `busy` and gives back what it holds, and while the
- * oldest waits a newcomer takes nothing past the reserve). Its table's units
+ * larger class (`SlotPool.lease`, the pool's one admission rule), each growth taken now or
+ * refused `busy` (`now`: inside the alarm it never waits). Its table's units
  * (`moveTableUnits`), taken before its records arrive and held to its end, since the table's
  * bytes are in hand throughout; grown as a rewrite takes in a neighbour; and each pass's
  * `MOVE_PASS_UNITS` beside them, grown before the pass's first chunk arrives and given back
  * (`Lease.shrink`) once its last is gone: its waits each bring or send its bytes (a chunk
  * read, a chunk put, a unit reading hot records' lines), never a begin or a commit. Refused
- * `busy`, the pass fails as busy: the lane holds and retries, told at three.
+ * `busy`, the pass ends with nothing changed: the lane holds and tries again
+ * (`ARCHIVE_BUSY_RETRY_S`), not counted as a failure (`#archivePass`).
  */
 class MoveHold {
   readonly #pool: SlotPool;
@@ -1803,7 +1834,7 @@ class MoveHold {
   static async take(pool: SlotPool, records: number): Promise<MoveHold> {
     const lease = pool.lease("", true);
     const table = moveTableUnits(records);
-    await lease.grow(table);
+    await now(lease, table);
     return new MoveHold(pool, lease, table);
   }
 
@@ -1816,14 +1847,14 @@ class MoveHold {
   async table(records: number): Promise<void> {
     const table = moveTableUnits(records);
     if (table > this.#table) {
-      await this.#lease.grow(table);
+      await now(this.#lease, table);
       this.#table = table;
     }
   }
 
   /** One pass, holding its own units beside the table's; `letGo` drops what it kept. */
   async pass<T>(act: () => Promise<T>, letGo: () => void): Promise<T> {
-    await this.#lease.grow(this.#table + MOVE_PASS_UNITS);
+    await now(this.#lease, this.#table + MOVE_PASS_UNITS);
     try {
       const done = await act();
       letGo();
@@ -4398,11 +4429,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         return { hold: clock() + ARCHIVE_RETRY_S };
       }
-      // The isolate's pool full (`busy`, `MoveHold`): the lane holds and retries, counted
-      // and told at three as any failed pass is; no fault to log.
-      if (!(error instanceof SlotBusy)) {
-        console.error("the archive lane's pass failed", error);
+      if (error instanceof SlotBusy) {
+        // The isolate's pool full (`busy`, `MoveHold`): contention, not storage (round 11,
+        // Low A). Not a failed pass, never logged: the lane tries again once the pool's own
+        // wait has turned its queue over. The owner is told only when it puts storage at risk,
+        // the hot set at its ceiling (the next post refused `storage_busy`) with the moves
+        // blocked: once a blocked spell, since the last segment the lane placed.
+        await this.#door(() => {
+          if (begun !== null) {
+            this.#ledger.archiveBusy(begun);
+          }
+          if (this.#ledger.atHotCeiling()) {
+            const since = this.#ledger.lastPlaced();
+            if (!this.#notices.list().some((notice) => notice.type === "storage_busy_long"
+                && notice.detail === ARCHIVE_BUSY_TOLD && notice.at >= since)) {
+              this.#notices.add("storage_busy_long", ARCHIVE_BUSY_TOLD, clock());
+            }
+          }
+        });
+        return { hold: clock() + ARCHIVE_BUSY_RETRY_S };
       }
+      console.error("the archive lane's pass failed", error);
       if (begun !== null) {
         // What failed, as it said it, never a cause it did not give (review N1).
         const said = (error instanceof Error ? error.message.split("\n")[0]! : String(error))
