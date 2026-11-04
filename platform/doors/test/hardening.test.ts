@@ -481,15 +481,21 @@ describe("L7: the provider's pins", () => {
     const client = await registerClient();
     const alice = owner();
     const { code, verifier } = await authorizeMcp(client, { owner: alice });
+    // The provider dates the grant's creation at the consent and its expiry from the code's
+    // exchange, a second request: a second's tick between them is one more second apart, so
+    // the expiry is read against the seconds around the exchange, not against the creation.
+    const exchanging = Math.floor(Date.now() / 1000);
     const issued = await (await tokenCall({ grant_type: "authorization_code", code,
       redirect_uri: client.redirectUri, client_id: client.clientId, code_verifier: verifier }))
       .json<{ expires_in: number; refresh_token: string }>();
+    const exchanged = Math.floor(Date.now() / 1000);
     expect(issued.expires_in).toBe(ACCESS_TOKEN_TTL_S);
     expect(ACCESS_TOKEN_TTL_S).toBe(3_600);
     expect(REFRESH_TOKEN_TTL_S).toBe(30 * 86_400);
     const oauth = authorizationServer(doorsEnv).getOAuthApi(doorsEnv);
     const before = (await oauth.listUserGrants(alice)).items[0]!;
-    expect(before.expiresAt! - before.createdAt).toBe(30 * 86_400);
+    expect(before.expiresAt!).toBeGreaterThanOrEqual(exchanging + 30 * 86_400);
+    expect(before.expiresAt!).toBeLessThanOrEqual(exchanged + 30 * 86_400);
     await new Promise((resolve) => setTimeout(resolve, 1_100));
     expect((await refresh(client, issued.refresh_token)).status).toBe(200);
     const after = (await oauth.listUserGrants(alice)).items[0]!;
