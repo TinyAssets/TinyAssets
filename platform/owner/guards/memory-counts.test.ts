@@ -42,7 +42,7 @@ export const UNCOUNTED = Object.freeze({
   }),
   holds: Object.freeze({
     "a call's RPC arguments (up to MCP_BODY_MAX on /mcp, API_BODY_MAX on /api)": "PR 3b",
-    "the waiting calls' own arguments (OWNER_WAITERS of them)": "PR 3b",
+    "the waiting calls' own arguments (OWNER_WAITERS and OWNER_SMALL_WAITERS of them)": "PR 3b",
     "file_write's whole bytes (WHOLE_BYTES)": "PR 3b",
     "file_upload_chunks' two chunks, as arguments": "PR 3b",
     "file_read_chunks' two chunks, as its answer": "PR 3b",
@@ -69,6 +69,17 @@ export function counts(objects = 1): Record<string, number> {
   };
 }
 
+/** A door's `export const NAME = <a product of numbers>;`, read from its source. */
+function doorBytes(file: string, name: string): number {
+  const found = new RegExp(`export const ${name} = ([0-9_* ]+);`)
+    .exec(readFileSync(join(PLATFORM, "doors", "src", file), "utf8"));
+  if (found === null) {
+    throw new Error(`doors/src/${file} holds no ${name}`);
+  }
+  return found[1]!.split("*").reduce((product, factor) =>
+    product * Number(factor.trim().replace(/_/g, "")), 1);
+}
+
 const sum = (terms: Record<string, number>) =>
   Object.values(terms).reduce((total, bytes) => total + bytes, 0);
 
@@ -93,7 +104,17 @@ describe("an owner isolate's counts", () => {
     }
     expect(holds.WINDOW_UNITS).toBe(1);  // a window takes the reserve, never waits on edits
     expect(holds.OWNER_RESERVE_UNITS).toBeGreaterThanOrEqual(1);
-    expect(holds.OWNER_WAITERS).toBe(holds.OWNER_POOL_UNITS);
+  });
+
+  it("caps the larger waiters by the largest arguments a waiter holds on any door", () => {
+    // A waiting call holds its own request: at most the largest body a door takes.
+    const largest = Math.max(doorBytes("config.ts", "API_BODY_MAX"),
+                             doorBytes("mcp.ts", "MCP_BODY_MAX"));
+    const pool = holds.OWNER_POOL_UNITS * UNIT_BYTES;
+    expect(holds.OWNER_WAITERS * largest).toBeLessThanOrEqual(pool);
+    expect((holds.OWNER_WAITERS + 1) * largest).toBeGreaterThan(pool);
+    // The one-unit waiters, capped apart, so larger waiters never refuse a small read.
+    expect(holds.OWNER_SMALL_WAITERS).toBeGreaterThan(0);
   });
 
   it("sees a pool that would pass the isolate", () => {

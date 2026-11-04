@@ -2430,7 +2430,9 @@ R, S, M and W.
 - [x] MEMORY PR 2, memory bounded by structure (ADR-037): one pool of units an isolate
   (`slots.ts`), a path taking units for what it holds while its bytes are in hand, weighted by
   it (`holds.ts`), a reserve so a one-unit hold never waits behind larger ones (review M1),
-  `busy` past the wait or the waiters (`503`, `Retry-After`); `file_edit` chunk-wise, a step
+  nor a larger one is starved by them (M-b), each class's waiters capped apart (L-a), the
+  larger ones by the largest arguments a door takes (L-b), `busy` past the wait or the
+  waiters (`503`, `Retry-After`); an edit's source chunks let go as their pieces are taken; `file_edit` chunk-wise, a step
   per chunk read and per chunk made and put, to `EDIT_BYTES_MAX` (500 chunks, from the
   worst edit's measured time); `file_append`, a body's windows and whole reads each a step;
   the relay's tails one budget an isolate (M5); `agents_list` paged by stable key; owner

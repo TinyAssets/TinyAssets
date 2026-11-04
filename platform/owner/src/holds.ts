@@ -12,10 +12,10 @@
 import { isolatePool, type SlotPool } from "./slots";
 
 /**
- * The pool's capacity, in units (48 MiB): three edits' making steps at once
- * (`EDIT_MAKE_UNITS`) beside the reserve, or a whole body's read (`bodyUnits`, two chunks)
- * beside one. The counts test holds it, the waiting calls' own units, the relay's terms and
- * the baseline within the isolate; production's `memoryUsageBytes` resets it in one line.
+ * The pool's capacity, in units (48 MiB): three edits' making steps (`EDIT_MAKE_UNITS`) at
+ * once beside the reserve, or a whole body's read (`bodyUnits`, two chunks) beside a making
+ * step. The counts test holds it with the relay's terms and the baseline
+ * within the isolate; production's `memoryUsageBytes` resets it in one line.
  */
 export const OWNER_POOL_UNITS = 12;
 
@@ -26,21 +26,36 @@ export const OWNER_POOL_UNITS = 12;
 export const OWNER_RESERVE_UNITS = 1;
 
 /**
- * How many calls may wait for units at once (`SlotPool`'s waiters): as many as the pool's
- * units. A waiting call holds nothing a unit counts, but it holds its own request, its
- * arguments, which no unit counts yet (owed with PR 3b's request weights, as every RPC
- * argument is); at most a unit each by the MCP door (`MCP_BODY_MAX`, 4 MiB), so the calls
- * waiting hold at most the pool's own size again. One more is refused `busy` at once.
+ * How many larger holds may wait for units at once (`SlotPool`'s waiters), by the memory a
+ * waiter holds: no units, but its own request's arguments, which no unit counts yet (owed
+ * with PR 3b's request weights, as every RPC argument is), as large as the largest body a
+ * door takes: `/api`'s 16 MiB (`API_BODY_MAX`, four units; `/mcp`'s `MCP_BODY_MAX` is one).
+ * Three keep what the waiting calls hold to the pool's own size again (the counts test
+ * holds the figure to that derivation). One more is refused `busy` at once.
  */
-export const OWNER_WAITERS = OWNER_POOL_UNITS;
-
-/** A chunk-wise edit's reading step (its scan, its hashes): one source chunk in hand. */
-export const EDIT_READ_UNITS = 1;
+export const OWNER_WAITERS = 3;
 
 /**
- * A chunk-wise edit's making step: the chunk made, the source chunk it is copied from, and
- * the put's copy of what it sends (review H2 measured 12.12 MiB at the worst edit with a
- * source chunk cached across steps; with none, the leg reads 8.06 MiB).
+ * How many one-unit holds (windows) may wait at once, apart from the larger ones, so a
+ * co-tenant's small read is never refused for edits waiting. A one-unit hold is a read's:
+ * its arguments are ids, cursors and limits, whose fields the door checked before it asked
+ * for a unit. So the cap is the queue's turnover: the reserve serves them one at a time,
+ * and at the leg's measured window time 64 turn over well within `SLOT_WAIT_MS` (the leg
+ * fails past it).
+ */
+export const OWNER_SMALL_WAITERS = 64;
+
+/**
+ * A chunk-wise edit's reading step (its scan, its hashes): the source chunk in hand and the
+ * call's copy of it as it arrives (the leg reads about 4.07 MiB).
+ */
+export const EDIT_READ_UNITS = 2;
+
+/**
+ * A chunk-wise edit's making step: the chunk made, the source chunk in hand as it is copied
+ * (each let go as its pieces are taken, `edit.ts`'s `letGo`, so none outlives its part:
+ * review M-a read 12.07 MiB with two source chunks still alive), and the put's copy of what
+ * it sends.
  */
 export const EDIT_MAKE_UNITS = 3;
 
@@ -73,5 +88,6 @@ export const OWNER_BASELINE_BYTES = 8 * 1024 * 1024;
 
 /** The isolate's pool, at the owner Worker's capacity and reserve. */
 export function ownerSlots(): SlotPool {
-  return isolatePool(OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_WAITERS);
+  return isolatePool(OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_WAITERS,
+                     OWNER_SMALL_WAITERS);
 }

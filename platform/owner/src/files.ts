@@ -78,6 +78,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 
+import { letGo } from "./edit";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
 import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
@@ -1419,7 +1420,9 @@ export class Files {
       const hold = options.hold ?? ((work) => work());
       for (const sha256 of new Set(missing)) {
         await hold(async () => {
-          await this.#put([{ sha256, bytes: await make(hashes.indexOf(sha256)) }], intent_id);
+          const bytes = await make(hashes.indexOf(sha256));
+          await this.#put([{ sha256, bytes }], intent_id);
+          letGo(bytes);  // sent: its step ends holding nothing of it
         });
       }
       return await this.#write(() => {

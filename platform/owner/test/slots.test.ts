@@ -1,14 +1,22 @@
 /**
  * The isolate's pool of units (`slots.ts`): taken while held, waited for first come first
  * served within a hold's size class up to a deadline, refused `busy` past it or past the
- * waiters it counts, a one-unit hold never behind a larger one, and released whatever
- * happens, once.
+ * waiters it counts, a one-unit hold never behind a larger one nor a larger one starved by
+ * them, each class capped apart, and released whatever happens, once.
  */
 import { describe, expect, it } from "vitest";
 
 import {
+  OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
+} from "../src/holds";
+import {
   BUSY, isolatePool, type Slot, SlotBusy, slotted, SlotPool,
 } from "../src/slots";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The owner's pool, with a shorter wait. */
+const owners = (wait: number) => new SlotPool(OWNER_POOL_UNITS, wait, OWNER_WAITERS,
+                                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -59,6 +67,46 @@ describe("a pool of units", () => {
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
     expect(() => pool.acquire(7)).toThrow(/takes 1 to 6 units, not 7/);
     expect(() => new SlotPool(2, 1000, 2, 2)).toThrow(/at least one unit/);
+  });
+
+  // Review rvmem4 (M-b), flipped: a stream of one-unit holds once starved a larger one.
+  it("lets a five-unit append land amid eight cycling one-unit holds", async () => {
+    const pool = owners(1_500);
+    let on = true;
+    const cyclers = Array.from({ length: 8 }, async () => {
+      while (on) {
+        const slot = await pool.acquire(1);
+        await sleep(20);
+        slot.release();
+      }
+    });
+    await sleep(50);
+    const outcome = await pool.acquire(5).then((slot) => {
+      slot.release();
+      return "granted";
+    }, (error: Error) => error.message);
+    on = false;
+    await Promise.all(cyclers);
+    expect(outcome).toBe("granted");
+  });
+
+  // Review rvmem4 (L-a), flipped: larger waiters once filled a cap one-unit holds shared.
+  it("never refuses a small read for larger holds waiting: each class is capped apart",
+     async () => {
+    const pool = owners(1_500);
+    const held = [await pool.acquire(3), await pool.acquire(3), await pool.acquire(3),
+                  await pool.acquire(2), await pool.acquire(1)];
+    const waiting = Array.from({ length: OWNER_WAITERS }, () =>
+      pool.acquire(3).then((slot) => slot.release(), () => undefined));
+    // One more larger hold is refused at once; a small read waits its turn instead.
+    expect(await pool.acquire(3).catch((error: Error) => error.message)).toMatch(/^busy:/);
+    const small = pool.acquire(1);
+    held.at(-1)!.release();
+    (await small).release();
+    for (const slot of held.slice(0, -1)) {
+      slot.release();
+    }
+    await Promise.all(waiting);
   });
 
   it("refuses busy past its deadline and past its waiters, and a release twice is once",
