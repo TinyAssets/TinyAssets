@@ -383,12 +383,24 @@ in a making step (review M-a's 12.07 MiB); now 8 MiB in every run.
 With one owner object, 70.8 MiB of 122.07 MiB: 51.3 MiB left, uncounted.
 
 **Uncounted, named, never fitted:**
-- **Garbage V8 has not collected yet.** Unmeasured in production: whether the 128 MB counts it
-  is what the production probe answers. In workerd, as high-water RSS over resting RSS with
-  no forced collection: arrays in one isolate 78.9 MiB (it levels off), plain allocation 65.2
-  to 76.0 MiB, returned arrays 101.9 MiB, byte streams 112 to 177 MiB (no plateau within
-  2 GiB), arrays across two isolates 141.7 MiB, `r2Put` 235.5 MiB. Most would not fit in
-  the room left; if production counts it, the pool shrinks to fit.
+- **Garbage V8 has not collected yet.** Sampled in production by the memory probe
+  (`rpcretain-probe.yml` run 41869764034, 2026-11-04, on main at `4b0aaaa60`; Durable Object
+  analytics, `max.memoryUsageBytes` and `exceededMemoryErrors`):
+  - no form that only makes garbage drew a memory error or a reset, each churning up to
+    1 GiB in 4 MiB chunks in one call: sampled peaks plain allocation 34 MiB, arrays over
+    RPC 10 MiB, byte streams over RPC 6.1 MiB, `exceededMemoryErrors` 0 on every row. The
+    metric does count garbage (plain allocation read 18 to 34 MiB holding one 4 MiB chunk
+    live), but production's V8 collected it long before any threshold;
+  - the control (`retain`, every chunk kept) read 130 MiB at 128 held, was counted over
+    (`exceededMemoryErrors` 2) at 258 MiB held without a reset, and was reset at about
+    286 MiB: so 128 MB is a soft, counted limit, and the counts test keeps it. By the probe's
+    own validity rule (fail near 128 MB) the control did not qualify, so the run settles no
+    verdict on garbage; the figures above are what it sampled;
+  - still open, unsampled in production: arrays across two isolates, returned arrays, and
+    `r2Put`. In workerd, as high-water RSS over resting RSS with no forced collection: arrays
+    across two isolates 141.7 MiB, returned arrays 101.9 MiB, `r2Put` 235.5 MiB (and, now
+    sampled above, arrays in one isolate 78.9 MiB, plain allocation 65.2 to 76.0, byte
+    streams 112 to 177). No pool size changes on this reading.
 - **Holds not yet under a unit**, each owed:
   - a call's RPC arguments (up to `MCP_BODY_MAX` on `/mcp`, `API_BODY_MAX` on `/api`), the
     waiting calls' among them (at most `OWNER_WAITERS` x `API_BODY_MAX`, the pool's own size,
