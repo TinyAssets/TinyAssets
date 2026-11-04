@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { BUDGETS, budget, derived, LARGE, SMALL_MS } from "../classes";
+import { BUDGETS, budget, classProblems, derived, LARGE, medium, SMALL_MS } from "../classes";
 import { largeTests, timeoutLiterals } from "../timeouts";
 import { json, REPO } from "../workflows";
 
@@ -40,6 +40,14 @@ describe("test timeouts", () => {
     expect(hits('it.concurrent("a", function () {}, 7);')).toEqual(["7"]);
     expect(hits("vi.setConfig({ testTimeout: 1 });")).toEqual(["vi.setConfig({ testTimeout: 1 })"]);
     expect(hits('it("a", { tags: ["large"] }, () => {}); it("b", () => {});')).toEqual([]);
+    // The reviewer's probes: a hook by name, a quoted key, vitest's own namespace, an alias.
+    expect(hits("beforeAll(setup, 60_000);")).toEqual(["60_000"]);
+    expect(hits("vitest.beforeEach(setup, LONG);")).toEqual(["LONG"]);
+    expect(hits('it("a", body, 60_000);')).toEqual(["60_000"]);
+    expect(hits('it("a", { "timeout": 5 }, () => {});')).toEqual(['"timeout": 5']);
+    expect(hits('vitest.it("a", () => {}, 5);')).toEqual(["5"]);
+    expect(hits("const before = beforeAll;")).toEqual(["before = beforeAll"]);
+    expect(hits("vitest.setConfig({ testTimeout: 1 });")).toHaveLength(1);
     expect(hits('expect(await f(1, () => 2, 3)).toBe(4);')).toEqual([]);
   });
 
@@ -66,6 +74,7 @@ describe("size classes", () => {
       const text = readFileSync(join(REPO, file), "utf8");
       expect(text, file).toMatch(/from "(?:\.\.\/ci|\.)\/classes"/);
       expect(text, file).toMatch(/tags: \[LARGE\]/);
+      expect(text, file).toMatch(/reporters: \[\.\.\.REPORTERS\]/);
       expect(text, file).not.toMatch(/(?:testTimeout|hookTimeout|strictTags)\s*:/);
       const projects = [...text.matchAll(/test: \{\s*name: "([\w-]+)"/g)].map((match) => match[1]);
       expect(projects.length, file).toBeGreaterThan(0);
@@ -74,5 +83,28 @@ describe("size classes", () => {
         expect(BUDGETS.medium[`${ws}/${project}`], `${ws}/${project}`).toBeDefined();
       }
     }
+  });
+});
+
+describe("the run-time check", () => {
+  // A module as a reporter sees it: what Vitest resolved, whatever the test's syntax.
+  const module = (timeouts: { timeout: number; tags?: string[] }[], config = medium("ci/guards")) => ({
+    moduleId: "/x/ci/guards/a.test.ts",
+    project: { name: "guards", config: { root: "/x/ci", ...config } },
+    children: { allTests: () => timeouts.map((t, i) => ({
+      fullName: `t${i}`, options: { timeout: t.timeout, tags: t.tags ?? [] } })) },
+  }) as never;
+
+  it("passes tests at their class's timeout", () => {
+    const budget = medium("ci/guards").testTimeout;
+    expect(classProblems([module([{ timeout: budget },
+                                  { timeout: LARGE.timeout, tags: ["large"] }])])).toEqual([]);
+  });
+
+  it("refuses any other timeout, and a project off its budget", () => {
+    expect(classProblems([module([{ timeout: 60_000 }])])).toHaveLength(1);
+    expect(classProblems([module([{ timeout: medium("ci/guards").testTimeout, tags: ["large"] }])]))
+      .toHaveLength(1);
+    expect(classProblems([module([], { testTimeout: 1, hookTimeout: 1 })])).toHaveLength(1);
   });
 });

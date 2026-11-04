@@ -18,8 +18,10 @@
  * over half its class's budget (Bazel's `--test_verbose_timeout_warnings`), blocking nothing.
  */
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import type { Reporter, TestModule } from "vitest/node";
 
 /** One measurement: the slowest test found, and where it was read. */
 export interface Slowest {
@@ -73,3 +75,47 @@ export const LARGE = Object.freeze({
     "the sizes leg runs these",
   timeout: derived(BUDGETS.large),
 });
+
+/** What a run's tests and projects say against their classes: each line one that differs. */
+export function classProblems(modules: readonly TestModule[]): string[] {
+  const found = new Set<string>();
+  for (const module of modules) {
+    const project = module.project;
+    const name = `${basename(project.config.root)}/${project.name}`;
+    const want = medium(name);
+    if (project.config.testTimeout !== want.testTimeout
+        || project.config.hookTimeout !== want.hookTimeout) {
+      found.add(`${name}: testTimeout ${project.config.testTimeout} and hookTimeout ` +
+                `${project.config.hookTimeout}, not its class's ${want.testTimeout} and ` +
+                `${want.hookTimeout}`);
+    }
+    for (const test of module.children.allTests()) {
+      const large = (test.options.tags ?? []).includes(LARGE.name);
+      const expected = large ? LARGE.timeout : want.testTimeout;
+      if (test.options.timeout !== expected) {
+        found.add(`${module.moduleId} > ${test.fullName}: a timeout of ${test.options.timeout} ` +
+                  `ms, not its class's ${expected} ms (${large ? "large" : name})`);
+      }
+    }
+  }
+  return [...found];
+}
+
+/**
+ * The run-time half of the timeout rule, whatever a test's syntax (a function passed by
+ * name, options from a variable or a spread, `test.extend`, an alias): every test's
+ * effective timeout is its class's, and every project's its budget. It fails the run.
+ */
+export class ClassTimeouts implements Reporter {
+  onTestRunEnd(modules: readonly TestModule[]): void {
+    const problems = classProblems(modules);
+    if (problems.length) {
+      console.error(["A test's timeout is its size class's (platform/ci/classes.ts); tag a " +
+                     "slow test large rather than setting one:", ...problems].join("\n- "));
+      process.exitCode = 1;
+    }
+  }
+}
+
+/** Every config's reporters: Vitest's own, and the class check. */
+export const REPORTERS = ["default", new ClassTimeouts()] as const;

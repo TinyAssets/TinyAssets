@@ -6,7 +6,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium } from "../ci/classes";
+import { LARGE, medium, REPORTERS } from "../ci/classes";
 
 const SANDBOX = dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +29,7 @@ function fakeE2b() {
 export default defineConfig({
   test: {
     tags: [LARGE],
+    reporters: [...REPORTERS],
     projects: [
       {
         // Runs in workerd, from the config's own bindings: its class, the directory and its
