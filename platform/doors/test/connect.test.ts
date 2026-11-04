@@ -100,7 +100,11 @@ async function received(): Promise<{ method: string; url: string; headers: Recor
   return (await env.PROVIDERS.fetch("https://status.test/log")).json();
 }
 
-/** Every value in every table of the owner's object, as one string. */
+/**
+ * Every value in every table of the owner's object, as one string, but the files plane's
+ * wrapped data key: it is sealed in the same format, and is the namespace's own key, never a
+ * connection's (the starter's seed writes files, so every owner has one).
+ */
 function storageOf(owner: string): Promise<string> {
   return runInDurableObject(env.OWNER.getByName(owner), (_instance: OwnerDO, state) => {
     const sql = state.storage.sql;
@@ -109,7 +113,8 @@ function storageOf(owner: string): Promise<string> {
         "AND name NOT LIKE '_cf_%'")
       .toArray().map((row) => row.name);
     return JSON.stringify(tables.map((table) =>
-      sql.exec(`SELECT * FROM "${table.replace(/"/g, "\"\"")}"`).toArray()));
+      sql.exec(`SELECT * FROM "${table.replace(/"/g, "\"\"")}"`).toArray()
+        .map((row) => table === "file_space" ? { ...row, data_key: null } : row)));
   });
 }
 

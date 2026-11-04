@@ -35,11 +35,11 @@ const RPC_METHODS = Object.freeze([
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
   "connectionRevoke", "dataKeyRewrap", "deleteAgent", "disableAgent", "egressBeat", "egressOpen",
   "egressReceipts", "egressSettle", "erasureOutside", "erasureOutsideDone", "exportChunks",
-  "exportEnd", "fileChanges", "fileHistory",
+  "exportEnd", "fileChanges", "fileFetch", "fileHistory",
   "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
-  "fileRestore", "fileStat", "fileSyncCommit", "fileSyncUploadAbort", "fileSyncUploadBegin",
-  "fileSyncUploadChunks",
+  "fileRestore", "fileSearch", "fileStat", "fileSyncCommit", "fileSyncUploadAbort",
+  "fileSyncUploadBegin", "fileSyncUploadChunks", "fileText",
   "fileUploadAbort", "fileUploadBegin",
   "fileUploadChunks", "fileUploadCommit", "fileUploadStored", "fileUploadTarget",
   "fileUsage", "fileWrite",
@@ -52,8 +52,8 @@ const RPC_METHODS = Object.freeze([
   "registerProposal", "registerPropose", "roomPost", "runEvents", "runList", "sandboxBilled",
   "sandboxDays", "sandboxRung", "sessionClose", "sessionCloseAll", "sessionExtend", "sessionOpen",
   "signinCancel", "signinCode", "signinEvents", "signinList", "signinReport", "signinStart",
-  "socketTicket", "socketsEnd", "storageUsage", "tierRead", "tierSet", "toolProfile",
-  "usageReceipts", "wakeEvents", "wakeSubscribe", "wakeUnsubscribe",
+  "socketTicket", "socketsEnd", "starterReceipts", "storageUsage", "tierRead", "tierSet",
+  "toolProfile", "usageReceipts", "wakeEvents", "wakeSubscribe", "wakeUnsubscribe",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */

@@ -53,9 +53,17 @@ const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({
  */
 const MAILBOX_TOOLS: readonly string[] = Object.freeze(["mailbox_read", "mailbox_ack",
                                                         "inbox_digest"]);
-/** The run doors' tools: what a run's own MCP door never serves (ADR-034 decision 11). */
+/** The run doors' tools. */
 const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph", "run_status",
                                                     "run_cancel"]);
+/**
+ * What a run's own MCP door never serves: `converse`, since work between agents is mail
+ * (ADR-034 decision 11). The other run tools it serves: an owner's agents may each do what
+ * any other may (the founder, 2026-11-03), so a run launches, schedules, reads and cancels.
+ */
+const NEVER_RUN: readonly string[] = Object.freeze(["converse"]);
+/** The file readers' tools (the starter slice): ChatGPT's search and fetch among them. */
+const READERS: readonly string[] = Object.freeze(["file_read", "search", "fetch"]);
 /** An engine's own tool names, its vendor's: never served as one of ours. */
 const MODEL_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit", "bash", "ta"]);
 /** Fields that would make a tool an operation-selecting executor. */
@@ -306,18 +314,36 @@ describe("tool table guard", () => {
       .not.toEqual([]);
   });
 
-  it("serves the run tools, and a run's own profile serves none of them", () => {
+  it("serves the run tools, and a run's own profile all but converse", () => {
     expect(toolTable().filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.door))
       .toEqual(["agentSubmit", "agentRun", "agentStatus", "agentCancel"]);
-    expect(profileNames("run").filter((name) => RUN_TOOLS.includes(name))).toEqual([]);
+    expect(profileNames("run").filter((name) => RUN_TOOLS.includes(name)))
+      .toEqual(["run_graph", "run_status", "run_cancel"]);
+  });
+
+  it("serves the file readers read-only, held to read_files, in every profile", () => {
+    const named = (name: string) => toolTable().find((tool) => tool.name === name)!;
+    expect(READERS.map((name) => named(name).door)).toEqual(["fileText", "fileSearch",
+                                                             "fileFetch"]);
+    for (const name of READERS) {
+      expect(named(name)).toMatchObject({ capability: "read_files", readOnlyHint: true,
+                                          destructiveHint: false, idempotentHint: true,
+                                          openWorldHint: false });
+      for (const profile of ["directory", "custom", "run"] as const) {
+        expect(profileNames(profile)).toContain(name);
+      }
+    }
+    // ChatGPT's two names, each taking its one argument (platform.openai.com/docs/mcp).
+    expect((named("search").input["required"] as string[])).toEqual(["query"]);
+    expect((named("fetch").input["required"] as string[])).toEqual(["id"]);
   });
 
   it("lists exactly each profile's tools: the directory's all but code, a run's all but " +
-     "the run and mailbox tools, custom's by default all", () => {
+     "converse and the mailbox tools, custom's by default all", () => {
     const all = toolNames();
     expect(Object.keys(profiles).sort()).toEqual(["custom", "directory", "run"]);
     expect(profileNames("directory")).toEqual(all.filter((name) => name !== "code"));
-    expect(profileNames("run")).toEqual(all.filter((name) => !RUN_TOOLS.includes(name)
+    expect(profileNames("run")).toEqual(all.filter((name) => !NEVER_RUN.includes(name)
                                                     && !MAILBOX_TOOLS.includes(name)));
     expect(profileNames("custom")).toEqual(all);
     expect(profileNames("directory")).not.toContain("code");
@@ -340,7 +366,7 @@ describe("tool table guard", () => {
 
   it("serves a run no mailbox tool: its mail is its input (slice ID)", () => {
     expect(profileNames("run").filter((name) => MAILBOX_TOOLS.includes(name))).toEqual([]);
-    expect(profileNames("run").length).toBe(toolTable().length - RUN_TOOLS.length
+    expect(profileNames("run").length).toBe(toolTable().length - NEVER_RUN.length
                                             - MAILBOX_TOOLS.length);
   });
 

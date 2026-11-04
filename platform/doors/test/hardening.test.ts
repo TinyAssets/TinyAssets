@@ -375,7 +375,9 @@ describe("L5: bounded bodies", () => {
 
 describe("L6 and the sign-in's bounds", () => {
   it.each([
-    ["in the future past the margin", () => now() + 6],
+    // Well past it: a busy test process (other owners' seeds) can take a second or more
+    // between this time and the check, which must not bring it inside the margin.
+    ["in the future past the margin", () => now() + 60],
     ["not whole seconds", () => now() - 10.5],
     ["older than ten minutes", () => now() - 601],
   ])("refuses a sign-in time %s", async (_what, at) => {

@@ -54,9 +54,11 @@ slice ID's agent identities and mail
 authority, slice M's change orders, slice W's doorbell subscriptions (`wake_callbacks`,
 423.6 MB at 1,000 agents and their widest), slice S's sandbox wait, slice L's keys and
 inbound bindings (`inbound_bindings` 23.0 MB, `owner_keys` 2.9 MB), slice SIGNIN's sign-ins,
-and slice P's tables (`sandbox_billed` 29.7 MB with its index by age,
+slice P's tables (`sandbox_billed` 29.7 MB with its index by age,
 `change_log` 164.0 MB, `sandbox_live` 3.8 MB, `sandbox_spans` 3.1 MB, `owner_backups` 1.8 MB
-and its kept rows 0.02 MB, `schema_digests` 1.0 MB, `sandbox_days` 0.4 MB) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+and its kept rows 0.02 MB, `schema_digests` 1.0 MB, `sandbox_days` 0.4 MB), and the starter
+slice's receipts (`starter_receipts` 360,352 bytes and `starter_state` 837 bytes, 361,189
+together, exported and captured) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
 424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
 46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.
@@ -69,7 +71,7 @@ the change log's `LOG_BYTES` takes a quarter of the room as it stood at its deri
 (665.1 MB with every other term at its worst, main at `8161540c1` with slice P, a
 connection's models and egress counted in bytes since review L5-1), an equal
 share with each of the three slices still to land (STORE, STARTER, BRAIN). Their terms take
-the rest, 501.2 MB; the day a slice's terms would pass the half, the guard fails loudly and
+the rest, 500.8 MB (STARTER's 361,189 bytes, well inside its quarter); the day a slice's terms would pass the half, the guard fails loudly and
 the shares are decided again.
 
 The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
@@ -241,6 +243,14 @@ reason; none refuses a write.
 | `owner/src/cron.ts` `CRON_MAX_ITEMS` | 60 | values in one cron field's list | a longer list refused | technical ceiling | A minute field's every value. |
 | `owner/src/cron.ts` `CRON_MAX_CHARS` | 256 characters | a cron expression | a longer expression refused | technical ceiling | The 10 GB: a schedule's row, costed at it in `run_schedules`. |
 | `owner/src/cron.ts` `CRON_HORIZON_DAYS` | 8 years | how far ahead an occurrence is searched | an expression with none in 8 years refused | technical ceiling | The Gregorian calendar: the longest gap between two 29 Februaries is 8 years, so an expression with no occurrence within it has none. |
+| `owner/src/starter.ts` `STARTER_FILES_MAX` | 64 | paths the starter package names, its files and the paths it retired | a package past it fails its own check, at build | technical ceiling | The 10 GB: guard term `starter_receipts`, one receipt a path. The package holds 14 files and retires 1. |
+| `owner/src/starter.ts` `STARTER_RETRY_S` | 300 s | when a failed seed or update is tried again | none: it is tried again | technical ceiling | A retry interval, as `LANE_RETRY_S`: the owner is told once a version. |
+| `owner/src/file-search.ts` `SEARCH_SCAN` | 5,000 entries | manifest entries one `search` reads | the answer's `next_cursor` continues, and says so | technical ceiling | Workers' CPU limit an invocation, 30 s by default (developers.cloudflare.com/workers/platform/limits/#cpu-time), on the object's one thread, held at a tenth of it so a slower host has room. Measured worst case at this bound (`guards/search-cpu.test.ts`, V8 on the build host, 2026-11-03): 5,000 inline files of 4,096 bytes of distinct words, every one matching, and a 1 MiB query, 766 to 907 ms of CPU across runs; 5,000 full OKF indexes, 416 to 418 ms; the query's words, 41 to 54 ms (the manifest page's read is SQLite's, apart). Nothing is refused. |
+| `owner/src/file-search.ts` `SEARCH_ANSWER_BYTES` | 5,548,714 bytes (16 MiB less `SEARCH_ENVELOPE_BYTES`, over 3) | the results, as JSON in UTF-8, one `search` answers | the answer's `next_cursor` resumes right after its last match | technical ceiling | The whole answer stays within the platform's one body ceiling (`EGRESS_BODY_MAX`, 16 MiB, the isolate's 128 MB): the MCP door answers the results as structured content and as a JSON text copy escaped into a string, which at worst doubles it, so the answer is at most three times the results' JSON plus the envelope. Measured worst case (`guards/search-cpu.test.ts`): 206 results of 4,096-byte paths and titles of quotes and backslashes, framed as the door frames them, 14,215,892 bytes of 16,777,216. Nothing is refused. |
+| `owner/src/file-search.ts` `SEARCH_ENVELOPE_BYTES` | 128 KiB | what an answer holds beside its results | none: it is room kept | technical ceiling | The JSON-RPC envelope, the MCP keys, the event framing, `note`, and `next_cursor` (a 4,096-byte path, at most 6 bytes a byte as JSON, in both copies, escaped: about 74 KiB at worst). |
+| `owner/src/file-search.ts` `SEARCH_QUERY_BYTES` | 1 MiB | a `search` query | a longer query refused | technical ceiling | The isolate's 128 MB: a query's word set takes about 15 bytes of heap a query byte (measured: 16 MiB, 2,643,546 words, 252 MB; 1 MiB, 182,760 words), so 1 MiB takes about 15 MB, inside the room `EGRESS_BODY_MAX`'s derivation leaves (about 44 MB). |
+| `owner/src/file-search.ts` `READ_DEFAULT_BYTES` | 64 KiB | a `file_read` window when none is asked | none: `max_bytes` asks up to a chunk | default | A size a model's context takes; the call may ask more. |
+| `owner/src/owner-do.ts` `file_read` and `fetch` window | 4 MiB | text one call answers | `next_offset` reads on | technical ceiling | One chunk, the files plane's own unit (`CHUNK_BYTES`), so one call holds at most one chunk in the object. |
 | `owner/src/notices.ts` `NOTICES_KEPT` | 1,000 | owner notices kept | the oldest let go | technical ceiling | The 10 GB: guard term `owner_notices`. |
 | `owner/src/notices.ts` `NOTICE_DETAIL` | 1,024 characters | a notice's detail | a longer detail cut | technical ceiling | Inside `owner_notices`; the full error stays in its source. |
 | `owner/src/run-rows.ts` `RUNS_KEPT` | 2,000 | settled runs kept as receipts | an older run's status is gone (its transcript stays) | technical ceiling | The 10 GB: guard term `runs`, 90.4 MB with the live and waiting runs. |

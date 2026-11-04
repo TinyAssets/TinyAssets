@@ -628,12 +628,13 @@ describe("agents mailing each other (review H3, M1)", () => {
     const b1 = await newest(r);
     expect(told(b1)).toEqual({ from: `alice (native ${alice.agent_id})`, room,
                                message: asked.message_id, body: "what is 2+2?" });
-    // Nothing else of the ledger: no mailbox, no receipt, no chain.
+    // Nothing else of the ledger: no mailbox, no chain. Its own runs' receipts it reads, as
+    // any of the owner's agents may (the founder, 2026-11-03).
     const asRun = runBinding(r, b1);
     expect((await failure(() => r.stub.mailboxRead(asRun, { limit: 1 }))).message)
       .toBe(RUN_NO_MAILBOX);
-    expect((await failure(() => r.stub.agentStatus(asRun, { run_id: b1.run }))).message)
-      .toMatch(/run_starts_none/);
+    expect(await r.stub.agentStatus(asRun, { run_id: b1.run }))
+      .toMatchObject({ run_id: b1.run, agent: "bob" });
     // From that alone it answers, and alice's run is told bob's answer.
     const mail = told(b1);
     await r.stub.roomPost(asRun, { room_id: mail.room, client_message_id: "a", body: "4",

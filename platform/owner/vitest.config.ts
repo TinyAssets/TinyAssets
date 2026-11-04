@@ -213,6 +213,7 @@ export default defineConfig({
                 RUNG: { className: "RungOwnerDO", useSQLite: true },
                 SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
                 CACHED: { className: "CachedOwnerDO", useSQLite: true },
+                SEEDED: { className: "SeededOwnerDO", useSQLite: true },
               },
               bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
                           ROUTING_MAC_KEY: ROUTING_KEY },
