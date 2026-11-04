@@ -64,6 +64,7 @@ Purpose: {slug}
 Provider: {provider}
 Branch: {branch}
 Base ref: {base_ref}
+Lane: TODO — the files this PR owns: paths, globs and dir/ prefixes
 Issue/PR: TODO — link the issue, PR, or openspec/changes/ dir
 Spec refs: TODO — relevant openspec/specs capability or ADR
 Ship condition: TODO — what must be true to merge
@@ -171,6 +172,14 @@ def cmd_new(args: argparse.Namespace) -> int:
     print(f"  -> edit {wt_path / '_PURPOSE.md'} (fill the TODO fields; it stays local)")
     print("  -> publish it with `python scripts/wt.py pr` when the lane goes public")
     return 0
+
+
+def lane_declared(text: str) -> bool:
+    """A purpose file names this PR's files: a `Lane:` line, not the scaffold's TODO."""
+    from drain_review_gate import declared_lane, universal_globs
+
+    globs = declared_lane(text)
+    return bool(globs) and "TODO" not in globs and not universal_globs(globs)
 
 
 def _purpose_title(text: str) -> str:
@@ -284,6 +293,11 @@ def cmd_pr(args: argparse.Namespace) -> int:
         raise SystemExit(
             "_PURPOSE.md has no usable `Purpose:` line (still the slug or TODO); "
             "pass --title"
+        )
+    if not lane_declared(text):
+        raise SystemExit(
+            "_PURPOSE.md has no `Lane:` line naming this PR's files (every PR declares one); "
+            "fill it in before publishing"
         )
     base = _normalize_base(args.base, args.remote)
     push = ["git", "push", "-u", args.remote, branch]

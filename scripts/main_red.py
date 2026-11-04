@@ -195,6 +195,11 @@ def _close_alarm(repo: str, sha: str, run_url: str) -> None:
             f"Required tests are green on main again at `{sha[:12]}`: {run_url}")
 
 
+def revert_body(body: str, paths: list[str]) -> str:
+    """A revert PR's body: every PR declares its lane, a revert's the files it puts back."""
+    return f"{body}\n\nLane: {' '.join(paths)}\n"
+
+
 def _open_revert(repo: str, sha: str, subject: str, body: str, token: str) -> str | None:
     """Push auto-revert/<sha12> and open the PR with a user token (so CI runs on it)."""
     branch = f"{REVERT_PREFIX}{sha[:12]}"
@@ -210,9 +215,8 @@ def _open_revert(repo: str, sha: str, subject: str, body: str, token: str) -> st
         return None
     remote = f"https://x-access-token:{token}@github.com/{repo}.git"
     _run("git", "push", "-q", remote, f"HEAD:refs/heads/{branch}")
-    # Every PR declares its lane: a revert's is exactly the files it puts back.
     paths = _run("git", "diff", "--name-only", "origin/main", "HEAD").stdout.split()
-    body = f"{body}\n\nLane: {' '.join(paths)}\n"
+    body = revert_body(body, paths)
     return _gh("pr", "create", "-R", repo, "--base", "main", "--head", branch,
                "--title", revert_title(subject), "--body", body, "--label", LABEL,
                token=token).strip()

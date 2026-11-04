@@ -281,6 +281,22 @@ def duplicates(items: list[Test], lines: dict, protected=frozenset()) -> dict[st
     return result
 
 
+def prune_body(orphans: set[str], duplicate: dict[str, str]) -> str:
+    """The prune PR's body. Every PR declares its lane: a prune edits only tests/."""
+    body = ["Prune tests against the current OpenSpec shape.", "", "Registry row(s): S8",
+            "Lane: tests/", ""]
+    if orphans:
+        body.append(f"Test-Removal: retired -- {len(orphans)} tests name no current shape row.")
+    if duplicate:
+        body.append(
+            f"Test-Removal: consolidated -- {len(duplicate)} tests have kept coverage witnesses"
+        )
+    body.extend(["", "Requires ordinary review; do not auto-merge.", ""])
+    body.extend(f"- `{node}`: orphaned" for node in sorted(orphans))
+    body.extend(f"- `{node}`: covered by `{witness}`" for node, witness in duplicate.items())
+    return "\n".join(body) + "\n"
+
+
 def prune(root: Path, items: list[Test], removals: set[str]) -> None:
     """Delete whole functions (all parameter cases), preserving unrelated source."""
     by_file = defaultdict(list)
@@ -374,17 +390,7 @@ def main(argv=None) -> int:
     if args.prune:
         orphans = {t.node for t in items if not any(rows.get(i) == "current" for i in t.ids)}
         prune(args.root, items, orphans | set(duplicate))
-        body = ["Prune tests against the current OpenSpec shape.", "", "Registry row(s): S8", ""]
-        if orphans:
-            body.append(f"Test-Removal: retired -- {len(orphans)} tests name no current shape row.")
-        if duplicate:
-            body.append(
-                f"Test-Removal: consolidated -- {len(duplicate)} tests have kept coverage witnesses"
-            )
-        body.extend(["", "Requires ordinary review; do not auto-merge.", ""])
-        body.extend(f"- `{node}`: orphaned" for node in sorted(orphans))
-        body.extend(f"- `{node}`: covered by `{witness}`" for node, witness in duplicate.items())
-        args.body.write_text("\n".join(body) + "\n", encoding="utf-8")
+        args.body.write_text(prune_body(orphans, duplicate), encoding="utf-8")
         return 0
     print(
         f"{report['tests']} tests; {len(report['untagged'])} untagged; "

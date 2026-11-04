@@ -129,3 +129,26 @@ def test_a_lane_that_matches_every_path_is_refused(tmp_path, lane):
 @pytest.mark.parametrize("lane", ["docs/", "*.md", "platform/owner/", "scripts/peer_agent.py"])
 def test_a_narrow_lane_is_not_universal(lane):
     assert review.universal_globs(review.declared_lane(f"Lane: {lane}")) == []
+
+
+def test_every_bot_opened_pr_declares_a_lane():
+    """The scope guard refuses a PR with no Lane:, so each PR a workflow or script opens
+    writes one that holds its own files."""
+    import importlib
+
+    shape = importlib.import_module("scripts.test_shape")
+    body = shape.prune_body({"tests/test_old.py::test_x"}, {})
+    assert review.declared_lane(body) == ["tests/"]
+    main_red = importlib.import_module("scripts.main_red")
+    body = main_red.revert_body("Reverts it.", ["tinyassets/a.py", "tests/test_a.py"])
+    assert review.outside_lane(["tinyassets/a.py", "tests/test_a.py"],
+                               review.declared_lane(body)) == []
+    okf = (_ROOT / "platform" / "starter" / "okf-watch.ts").read_text(encoding="utf-8")
+    assert '"Lane: platform/starter/"' in okf
+    template = (_ROOT / ".github" / "workflows" / "sandbox-template.yml").read_text()
+    assert ('echo "Lane: platform/sandbox/wrangler.jsonc '
+            'platform/sandbox/template/passed.json"') in template
+    wt = importlib.import_module("scripts.wt")
+    assert not wt.lane_declared(wt.PURPOSE_TEMPLATE)
+    assert not wt.lane_declared("Lane: *\n")
+    assert wt.lane_declared("Lane: scripts/wt.py tests/\n")
