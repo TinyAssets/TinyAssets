@@ -223,8 +223,9 @@ describe("a read's pages", () => {
       }
     });
     const seen: string[] = [];
-    for (let after = 0, pages = 0; ; pages++) {
-      const page = await stub.outsideAgents(as(name), after === 0 ? {} : { after });
+    let removed = false;
+    for (let after: string | undefined, pages = 0; ; pages++) {
+      const page = await stub.outsideAgents(as(name), after === undefined ? {} : { after });
       expect(bytes(page)).toBeLessThanOrEqual(RESULT_CHARS);
       seen.push(...page.agents.map((agent) => agent.agent_id));
       if (page.next === undefined) {
@@ -232,7 +233,15 @@ describe("a read's pages", () => {
         break;
       }
       after = page.next;
+      if (!removed) {
+        // An agent already answered goes between pages: none later is skipped for it.
+        removed = true;
+        await runInDurableObject(stub, (_instance, state) => {
+          state.storage.sql.exec("DELETE FROM outside_agents WHERE agent_id = ?", seen[0]!);
+        });
+      }
     }
+    expect(seen).toHaveLength(1000);
     expect(new Set(seen).size).toBe(1000);
   });
 });

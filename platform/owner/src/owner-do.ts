@@ -461,9 +461,9 @@ export interface PostRequest {
   readonly parent_id: string | null;
 }
 
-/** An agents list's page: from the `after`th on, a `next` an answer gave (`outsideAgents`). */
+/** An agents list's page: after the cursor a `next` an answer gave (`outsideAgents`). */
 export interface AgentsRequest {
-  readonly after?: number;
+  readonly after?: string;
 }
 
 export interface ReadRequest {
@@ -1292,28 +1292,47 @@ function cursorPath(cursor: unknown): string {
   return Buffer.from(cursor, "base64url").toString("utf8");
 }
 
+/** The agents list's three lists, in the order a page reads them. */
+const AGENT_LISTS = Object.freeze(["agents", "owner_agents", "apps"] as const);
+
+/** Each list's stable key: an agent's id, an owner agent's id, an app's name. */
+function agentKey(list: (typeof AGENT_LISTS)[number], item: Agent | NativeAgent | ConnectedApp):
+    string {
+  return list === "apps" ? (item as ConnectedApp).name : (item as Agent | NativeAgent).agent_id;
+}
+
 /**
- * The agents a caller sees, fitted to one answer from the `after`th on (`outsideAgents`):
- * the three lists read as one sequence, each kept in its own list; `next` when some are left.
+ * The agents a caller sees, fitted to one answer after the cursor `after` (`outsideAgents`,
+ * review M3 and its verification): the three lists read as one sequence, each by its stable
+ * key, so an agent added or removed between pages is neither skipped nor answered twice;
+ * `next`, the last one answered's `<list>:<key>`, when some are left.
  */
 function agentsPage(all: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] },
-                    after: number):
-    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: number } {
-  const items = [...all.agents.map((item) => ({ list: "agents" as const, item })),
-                 ...all.owner_agents.map((item) => ({ list: "owner_agents" as const, item })),
-                 ...all.apps.map((item) => ({ list: "apps" as const, item }))].slice(after);
+                    after: string | null):
+    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
+  const at = after === null ? null : { list: AGENT_LISTS.indexOf(
+    after.slice(0, after.indexOf(":")) as (typeof AGENT_LISTS)[number]),
+                                       key: after.slice(after.indexOf(":") + 1) };
+  if (at !== null && at.list < 0) {
+    throw new Invalid("after is a next an agents list answered");
+  }
+  const items = AGENT_LISTS.flatMap((list, index) => [...all[list]]
+    .map((item) => ({ list, item, key: agentKey(list, item) }))
+    .sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
+    .filter((entry) => at === null || index > at.list || (index === at.list && entry.key > at.key)));
   const empty = { agents: [], owner_agents: [], apps: [] };
   if (items.length === 0) {
     return empty;
   }
-  const kept = fitPage(jsonBytes({ ...empty, next: Number.MAX_SAFE_INTEGER }), items,
-                       (entry, room) => fits(entry.item, room));
+  const kept = fitPage(jsonBytes({ ...empty, next: `owner_agents:${"\u0001".repeat(512)}` }),
+                       items, (entry, room) => fits(entry.item, room));
   const page: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] } =
     { agents: [], owner_agents: [], apps: [] };
   for (const [index, entry] of kept.entries()) {
     (page[items[index]!.list] as unknown[]).push(entry);
   }
-  return kept.length === items.length ? page : { ...page, next: after + kept.length };
+  const last = items[kept.length - 1]!;
+  return kept.length === items.length ? page : { ...page, next: `${last.list}:${last.key}` };
 }
 
 /** A run as an answer shows it: its result cut further to fit one, `result_cut` then. */
@@ -3157,12 +3176,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * every one for the owner; for anyone else, the live ones its grant covers (a scoped
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
    * it may mail). One answer holds a page (`pages.ts`, review M3): its agents, the owner's
-   * agents and the apps, in that order, while they fit; when some are left, `next` is how
-   * many were answered so far, for `after` on the next read.
+   * agents and the apps, in that order, each by its stable key, while they fit; when some
+   * are left, `next` is where the next page starts, for `after` on the next read.
    */
   async outsideAgents(binding: Binding, request: AgentsRequest = {}):
       Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
-                next?: number }> {
+                next?: string }> {
     await this.#seededFor(() => {
       this.#account(binding, "read");
     });
@@ -3185,7 +3204,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
       // app that is not connected yet.
       const r = fields(request ?? {}, [], ["after"]);
-      const after = whole(r["after"], "after", 0, Number.MAX_SAFE_INTEGER);
+      const after = r["after"] === undefined ? null : r["after"];
+      if (after !== null && typeof after !== "string") {
+        throw new Invalid("after is a next an agents list answered");
+      }
       return agentsPage({ agents: this.#ledger.agents(account.origin), owner_agents: natives,
                           apps: this.#grants.apps() }, after);
     });
@@ -4575,13 +4597,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (content.inline !== undefined) {
       bytes = content.inline.subarray(offset, want);
     } else {
-      const reads: { sha256: string; offset: number; length: number }[] = [];
+      const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
       let at = 0;
       for (const chunk of content.chunks ?? []) {
         const from = Math.max(offset, at);
         const to = Math.min(want, at + chunk.size);
         if (from < to) {
-          reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from });
+          // Verified (review L7): `FILES` rechecks the whole chunk and answers the range.
+          reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from,
+                       verify: true });
         }
         at += chunk.size;
       }
