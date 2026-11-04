@@ -9,7 +9,14 @@ SessionStart hook; Codex/Cursor/Cowork call the script). It:
 * fetches with --prune so deleted remote branches stop lingering locally,
 * warns loudly if the PRIMARY checkout is off ``main`` or behind origin/main —
   the exact "1,209 behind / dirty" condition that triggered this work,
-* never mutates the working tree (honors hard rule #13 — advisory only).
+* never mutates the working tree (honors hard rule #13 — advisory only),
+  except ``--heal`` on Windows, below.
+
+The primary checkout is meant to stay on ``main`` only on the founder's Windows
+dev box. Elsewhere (a Linux cloud session works in the primary checkout, on its
+own session branch) ``--heal`` does nothing and the off-main warning is not
+given: switching that checkout to ``main`` would strand its work in an
+unpushed local branch.
 
 Exit code is 0 by default (advisory). ``--strict`` exits 1 when the primary
 checkout is off-main or behind, so a hook can surface it more forcefully.
@@ -18,6 +25,7 @@ checkout is off-main or behind, so a hook can surface it more forcefully.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -129,7 +137,9 @@ def main(argv: list[str]) -> int:
     if not args.no_fetch:
         _run(["git", "fetch", "--prune", args.remote])
 
-    if args.heal and is_primary_checkout():
+    # Windows only: see the module docstring.
+    dev_box = os.name == "nt"
+    if args.heal and dev_box and is_primary_checkout():
         steps = heal(args.remote, args.base_ref.split("/", 1)[-1])
         if steps:
             print("Sync gate — healed the primary checkout:")
@@ -142,7 +152,7 @@ def main(argv: list[str]) -> int:
     main_name = args.base_ref.split("/", 1)[-1]
 
     warnings: list[str] = []
-    if primary and branch != main_name:
+    if dev_box and primary and branch != main_name:
         warnings.append(
             f"⚠ primary checkout is on '{branch}', not '{main_name}'. "
             f"Never live on a feature branch — `git switch {main_name}` and work from worktrees "

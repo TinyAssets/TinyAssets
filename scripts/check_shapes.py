@@ -474,16 +474,31 @@ INSTRUCTION_FILES = frozenset({
     "AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md",
     "openspec/config.yaml",
 })
-INSTRUCTION_DIRS = (".claude/", ".agents/skills/", "openspec/specs/", "docs/")
+INSTRUCTION_DIRS = (
+    ".claude/", ".agents/skills/", "openspec/specs/", "openspec/changes/", "docs/",
+)
 PATH_TOKEN = re.compile(r"[\w.-]+(?:/[\w.*-]+)*/?")
+SUPERSEDED_MARK = re.compile(r"Superseded by ADR-\d+")
 
 
-def instruction_text(rel: str, source: str) -> str | None:
+def superseded_changes(root: Path = ROOT) -> set[str]:
+    """Open changes whose proposal says, in its first five lines, that an ADR superseded it."""
+    out = set()
+    for proposal in files("openspec/changes/*/proposal.md", root):
+        head = "\n".join(proposal.read_text(encoding="utf-8").splitlines()[:5])
+        if SUPERSEDED_MARK.search(head):
+            out.add(proposal.parent.name)
+    return out
+
+
+def instruction_text(rel: str, source: str, superseded: set[str] = frozenset()) -> str | None:
     """The part of ``rel`` that instructs an agent, or None when it is not an instruction file."""
     if rel.startswith(".github/workflows/"):
         return "\n".join(line for line in source.splitlines() if line.lstrip().startswith("#"))
     if re.fullmatch(r"docs/decisions/ADR-\d+[\w.-]*\.md", rel):
         return None  # an ADR body is a dated record (ADR-005)
+    if rel.startswith("openspec/changes/") and rel.split("/")[2] in superseded:
+        return None  # kept only for its evidence; nobody builds from it
     if (
         rel in INSTRUCTION_FILES
         or rel.startswith(INSTRUCTION_DIRS)
@@ -508,12 +523,25 @@ def cited_paths(rel: str, text: str) -> set[str]:
 
 
 def deleted_doc_references(root: Path = ROOT) -> list[str]:
+    """A path this diff deletes (or renames away) that is still cited.
+
+    A deleted ``docs/`` path fails wherever the tracked tree cites it. Any other
+    deleted path, or a folder the diff emptied, fails where an instruction file
+    cites it (``instruction_text``). Archived and superseded changes are history.
+
+    It does not see: a path in a workflow's ``run:`` lines (only comments are
+    instructions there); a path inside a URL (``.../blob/main/CODEX.md``); and a
+    citation added by a later diff of a path an earlier diff deleted, since each
+    run sees only its own deletions.
+    """
     base = _merge_base(root)
     if base is None:
         return []
     deleted = set(
         subprocess.check_output(
-            ["git", "diff", "--diff-filter=D", "--name-only", base], cwd=root, text=True
+            ["git", "diff", "--no-renames", "--diff-filter=D", "--name-only", base],
+            cwd=root,
+            text=True,
         ).splitlines()
     )
     if not deleted:
@@ -527,6 +555,7 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
         if str(parent) != "." and not (root / parent).exists()
     }
     gone = deleted | deleted_dirs
+    superseded = superseded_changes(root)
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().split("\0")
     problems = set()
     for rel in tracked:
@@ -543,35 +572,69 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
         cited_docs = {item.rstrip(".,;") for item in re.findall(r"docs/[\w./-]+", source)}
         for ref in cited_docs & deleted_docs:
             problems.add(f"deleted-doc-reference: {rel} cites {ref}")
-        text = instruction_text(rel, source)
+        text = instruction_text(rel, source, superseded)
         if text is None:
             continue
         for ref in cited_paths(rel, text) & gone:
-            if ref not in cited_docs:
+            if ref not in cited_docs & deleted_docs:  # reported above
                 problems.add(f"deleted-path-reference: {rel} cites {ref}")
     return sorted(problems)
 
 
 def adr_superseded_open(root: Path = ROOT) -> list[str]:
-    """A change an accepted ADR supersedes is archived, or its proposal says so at its head."""
+    """A change an accepted ADR supersedes is archived, or its proposal says so at its head.
+
+    The ADR names the change in its "What it (or this) supersedes" section, or in a
+    Status sentence with "supersedes", as `openspec/changes/<name>` or as a
+    backticked `<name>` of an open or archived change. A prefixed name that is
+    neither open nor archived fails, so a typo cannot pass. Superseding one
+    decision of a change counts as superseding the change.
+    """
+    changes = root / "openspec/changes"
+    archive = changes / "archive"
+    open_names = (
+        {p.name for p in changes.iterdir() if p.is_dir()} - {"archive"}
+        if changes.is_dir()
+        else set()
+    )
+    archived = (
+        {re.sub(r"^\d{4}-\d{2}-\d{2}-", "", p.name) for p in archive.iterdir() if p.is_dir()}
+        if archive.is_dir()
+        else set()
+    )
     problems = []
     for adr in files("docs/decisions/ADR-*.md", root):
         number = re.match(r"ADR-(\d+)", adr.name)
         source = adr.read_text(encoding="utf-8")
-        status = re.search(r"(?ms)^## Status\s*\n(.*?)(?:^\s*$|^## )", source)
+        status = re.search(r"(?ims)^## Status\s*\n(.*?)(?:^\s*$|^## )", source)
         if not number or not status or not status.group(1).lstrip().startswith("Accepted"):
             continue
-        scope = [s for s in re.split(r"(?<=\.)\s+", status.group(1)) if "Supersedes" in s]
-        section = re.search(r"(?ms)^## What it supersedes\s*\n(.*?)(?=^## |\Z)", source)
+        scope = [
+            s for s in re.split(r"(?<=\.)\s+", status.group(1))
+            if re.search(r"(?i)\bsupersedes\b", s)
+        ]
+        section = re.search(
+            r"(?ims)^## (?:what (?:it|this) )?supersedes\b[^\n]*\n(.*?)(?=^## |\Z)", source
+        )
         if section:
             scope.append(section.group(1))
-        marker = f"Superseded by ADR-{number.group(1)}"
-        named = re.findall(r"openspec/changes/([a-z0-9][a-z0-9-]*)", "\n".join(scope))
-        for name in sorted(set(named)):
-            change = root / "openspec/changes" / name
-            if name == "archive" or not change.is_dir():
+        text = "\n".join(scope)
+        adr_id = f"ADR-{number.group(1)}"
+        marker = f"Superseded by {adr_id}"
+        prefixed = set(re.findall(r"openspec/changes/([a-z0-9][a-z0-9-]*)", text)) - {"archive"}
+        bare = {
+            name for name in re.findall(r"`([a-z0-9][a-z0-9-]*)/?`", text)
+            if name in open_names or name in archived
+        }
+        for name in sorted(prefixed | bare):
+            if name not in open_names:
+                if name not in archived:
+                    problems.append(
+                        f"superseded-unknown: {adr_id} supersedes {name}, "
+                        "which is neither an open nor an archived change"
+                    )
                 continue
-            proposal = change / "proposal.md"
+            proposal = changes / name / "proposal.md"
             head = (
                 "\n".join(proposal.read_text(encoding="utf-8").splitlines()[:5])
                 if proposal.is_file()
@@ -579,7 +642,7 @@ def adr_superseded_open(root: Path = ROOT) -> list[str]:
             )
             if marker not in head:
                 problems.append(
-                    f"superseded-open: ADR-{number.group(1)} supersedes {name}; archive it "
+                    f"superseded-open: {adr_id} supersedes {name}; archive it "
                     f"or put '{marker}' in its proposal's first lines"
                 )
     return problems

@@ -536,8 +536,11 @@ def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
     _init_repo(repo)
     _commit_file(repo, "tinyassets/attribution/core.py", "x\n", "code")
     _commit_file(repo, "AGENTS.md", "10. Ship-time attribution: `tinyassets/attribution/`.\n"
-                 "Codex reads CODEX.md; deploy with care.\n", "a")
+                 "Codex reads CODEX.md; deploy with care.\n"
+                 "See docs/getting-started for setup. Run scripts/old_tool.py.\n", "a")
     _commit_file(repo, "CODEX.md", "x\n", "codex")
+    _commit_file(repo, "docs/getting-started" + "/README.md", "x\n", "folder")
+    _commit_file(repo, "scripts/old_tool.py", "x\n", "renamed below")
     _commit_file(repo, "docs/ops/launch.md", "Read [the handoff](gone.md) first.\n", "rel")
     _commit_file(repo, ".agents/skills/s/references/gone.md", "x\n", "ref")
     _commit_file(repo, ".agents/skills/s/SKILL.md", "See [it](references/gone.md).\n", "s")
@@ -546,20 +549,39 @@ def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
                  "run: echo tinyassets/attribution\n", "w")
     _commit_file(repo, "tinyassets/other.py", "# tinyassets/attribution/core.py\n", "code2")
     _commit_file(repo, "openspec/changes/archive/old/tasks.md", "docs/ops/gone.md\n", "arch")
+    _commit_file(repo, "openspec/changes/the-build/tasks.md", "Run `scripts/old_tool.py`.\n", "b")
+    _commit_file(repo, "openspec/changes/old-plan/proposal.md",
+                 "# Old plan\n\n**Superseded by ADR-032.**\n", "sup")
+    _commit_file(repo, "openspec/changes/old-plan/tasks.md", "Run scripts/old_tool.py.\n", "sup2")
     _commit_file(repo, "deploy/x.sh", "x\n", "a folder named like a prose word")
     base = _commit_file(repo, "docs/ops/gone.md", "x\n", "doc")
     _git(repo, "update-ref", "refs/remotes/origin/main", base)
     _git(repo, "rm", "-q", "-r", "tinyassets/attribution", ".agents/skills/s/references",
-         "docs/ops/gone.md", "CODEX.md", "deploy/x.sh")
+         "docs/ops/gone.md", "CODEX.md", "deploy/x.sh", "docs/getting-started")
+    _git(repo, "mv", "scripts/old_tool.py", "scripts/new_tool.py")
+    _git(repo, "commit", "-q", "-m", "head")
 
     assert check_shapes.deleted_doc_references(repo) == [
         "deleted-path-reference: .agents/skills/s/SKILL.md cites "
         ".agents/skills/s/references/gone.md",
         "deleted-path-reference: .github/workflows/w.yml cites tinyassets/attribution/core.py",
         "deleted-path-reference: AGENTS.md cites CODEX.md",
+        "deleted-path-reference: AGENTS.md cites docs/getting-started",
+        "deleted-path-reference: AGENTS.md cites scripts/old_tool.py",
         "deleted-path-reference: AGENTS.md cites tinyassets/attribution",
         "deleted-path-reference: docs/ops/launch.md cites docs/ops/gone.md",
+        "deleted-path-reference: openspec/changes/the-build/tasks.md cites scripts/old_tool.py",
     ]
+
+
+def test_the_gate_runs_both_new_checks():
+    with (
+        patch.object(check_shapes, "adr_superseded_open", return_value=["adr-sentinel"]),
+        patch.object(check_shapes, "deleted_doc_references", return_value=["path-sentinel"]),
+    ):
+        problems = check_shapes.check()
+    assert "adr-sentinel" in problems
+    assert "path-sentinel" in problems
 
 
 def _adr(root: Path, status: str, body: str) -> None:
@@ -576,24 +598,34 @@ def _proposal(root: Path, name: str, text: str) -> None:
 
 
 def test_a_change_an_adr_supersedes_must_be_archived_or_marked(tmp_path: Path):
-    _adr(tmp_path, "Accepted. Supersedes `openspec/changes/by-status`. Build order:\n"
+    _adr(tmp_path, "Accepted. supersedes `openspec/changes/by-status`. Build order:\n"
          "`openspec/changes/the-build/`.",
-         "## What it supersedes\n\n- `openspec/changes/by-section` D10.\n"
+         "## What this supersedes\n\n- `openspec/changes/by-section` D10.\n"
+         "- `bare-name`, by name alone.\n"
          "- `openspec/changes/archived-already`.\n\n## Consequences\n\n"
          "`openspec/changes/later-section`.\n")
-    for name in ("by-status", "by-section", "the-build", "later-section"):
+    (tmp_path / "openspec/changes/archive/2026-01-01-archived-already").mkdir(parents=True)
+    for name in ("by-status", "by-section", "bare-name", "the-build", "later-section"):
         _proposal(tmp_path, name, f"# {name}\n\n## Why\n")
     assert check_shapes.adr_superseded_open(tmp_path) == [
-        "superseded-open: ADR-099 supersedes by-section; archive it or put "
-        "'Superseded by ADR-099' in its proposal's first lines",
-        "superseded-open: ADR-099 supersedes by-status; archive it or put "
-        "'Superseded by ADR-099' in its proposal's first lines",
+        f"superseded-open: ADR-099 supersedes {name}; archive it or put "
+        "'Superseded by ADR-099' in its proposal's first lines"
+        for name in ("bare-name", "by-section", "by-status")
     ]
-    for name in ("by-status", "by-section"):
+    for name in ("by-status", "by-section", "bare-name"):
         _proposal(tmp_path, name, f"# {name}\n\n**Superseded by ADR-099.**\n\n## Why\n")
     assert check_shapes.adr_superseded_open(tmp_path) == []
     _proposal(tmp_path, "by-status", "# by-status\n\n**Superseded by ADR-098.**\n")
     assert len(check_shapes.adr_superseded_open(tmp_path)) == 1
+
+
+def test_a_superseded_change_that_does_not_exist_fails_loudly(tmp_path: Path):
+    _adr(tmp_path, "Accepted.", "## Supersedes\n\n- `openspec/changes/typo-name`.\n")
+    (tmp_path / "openspec/changes").mkdir(parents=True)
+    assert check_shapes.adr_superseded_open(tmp_path) == [
+        "superseded-unknown: ADR-099 supersedes typo-name, "
+        "which is neither an open nor an archived change"
+    ]
 
 
 def test_a_proposed_adr_supersedes_nothing_yet(tmp_path: Path):

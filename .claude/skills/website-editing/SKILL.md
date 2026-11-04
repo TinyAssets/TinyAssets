@@ -37,11 +37,11 @@ Copy and tokens are reviewed in the browser (`npm run dev`), not in the diff.
 ## Copy rules
 
 - **Sell outcomes, not mechanisms.** Never open with "AI-powered workflow
-  engine". Lead with what a universe finishes: a merged PR, a ledger, a
+  engine". Lead with what your agent finishes: a merged PR, a ledger, a
   watched feed. The proof on the home page is a real receipt (PR #2728).
 - **Naming.** *TinyAssets* is the platform, site, and brand. *Tiny* is the
-  universe the person talks to; it speaks first person. A chatbot *relays* to
-  the universe; it never "embodies" it.
+  agent the person talks to; it speaks first person. A chatbot *relays*
+  to the agent; it never "embodies" it.
 - **Honest availability.** No platform model; Claude is a setup-token deposit,
   not an OAuth button; ChatGPT/Codex is one tap. Android is a pre-release APK;
   desktop builds are unsigned and from source. Say so in words.
