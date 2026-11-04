@@ -52,9 +52,21 @@ export function safeDirs(base: string, dir: string, mode: number,
   let at = base;
   for (const segment of below(base, dir)) {
     at = join(at, segment);
-    const found = kind(at);
+    let found = kind(at);
     if (found === null) {
-      mkdirSync(at, { mode });
+      try {
+        mkdirSync(at, { mode });
+      } catch (error) {
+        // Made by another process between the look and the make (two runs of one sandbox
+        // starting at once): a real directory is what was asked for, and like any directory
+        // found it keeps its maker's mode and owner; anything else is refused below.
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw error;
+        }
+        found = kind(at);
+      }
+    }
+    if (found === null) {
       // The new directory is a real one this process made: its mode and owner set on it
       // by an open descriptor (`O_DIRECTORY | O_NOFOLLOW`).
       const fd = openSync(at, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
