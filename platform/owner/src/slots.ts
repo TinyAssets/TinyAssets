@@ -86,11 +86,11 @@ interface Waiter {
  * - A larger hold never takes the reserve.
  * - While a larger hold waits, a one-unit hold takes only the reserve, so the units one-unit
  *   holds took past it come back to the larger one as they are released (review M-b).
- * - A call waiting to grow while it holds units (wait-die, the gateway's `Hold.grow`: only
- *   the oldest holder may wait so) passes every other: while it waits, a call holding
- *   nothing takes nothing past the reserve; and an owner holding half the pool or more takes
- *   no more while another owner waits. Both are clauses of this same rule, the egress
- *   stream's to add here (`rveg_report.md` V-M1, V-H2).
+ * Two clauses of this same rule are to come, with the calls that grow what they hold:
+ * - wait-die: a call that holds units may wait to grow only if it is the oldest holder, and
+ *   while it waits a call holding nothing takes nothing past the reserve;
+ * - an owner's share: an owner holding half the pool or more takes no more while another
+ *   owner waits.
  * Each class's waiters are drained in order, the larger first, as the rule admits them.
  */
 export class SlotPool {
