@@ -10,7 +10,7 @@ import type { Meter } from "../src/credential";
 import { BODY_MAX, GATEWAY_POOL_SLOTS, REQUEST_FACTOR, requestSlots } from "../src/forward";
 import { clamped } from "../src/meter";
 import { EGRESS_BODY_MAX } from "../../owner/src/network";
-import { CHUNK_BYTES } from "../../owner/src/slots";
+import { UNIT_BYTES } from "../../owner/src/slots";
 
 describe("a key the rules read, spelled another way (egress shape research §4)", () => {
   it("is refused at every level the rules read: Google's snake_case, any case-folded alias",
@@ -157,7 +157,7 @@ describe("the gateway's pool", () => {
      () => {
     expect(GATEWAY_POOL_SLOTS).toBe(16);
     expect(REQUEST_FACTOR).toBe(4);
-    expect(BODY_MAX).toBe(GATEWAY_POOL_SLOTS * CHUNK_BYTES / REQUEST_FACTOR);
+    expect(BODY_MAX).toBe(GATEWAY_POOL_SLOTS * UNIT_BYTES / REQUEST_FACTOR);
     expect(EGRESS_BODY_MAX).toBe(BODY_MAX);
     expect(requestSlots(0)).toBe(1);
     expect(requestSlots(1)).toBe(1);

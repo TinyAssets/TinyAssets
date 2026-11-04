@@ -33,7 +33,7 @@ import { aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, serve
          tierMultiplier, unpricedOption, valueAt } from "./api-rules";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
-import { CHUNK_BYTES, isolatePool, type Slot, SlotBusy } from "../../owner/src/slots";
+import { UNIT_BYTES, isolatePool, type Slot, SlotBusy } from "../../owner/src/slots";
 
 /** The longest one forwarded request may run (§6: a policy write's bound on a stream). */
 export const FORWARD_DEADLINE_MS = 24 * 60 * 60 * 1000;
@@ -43,7 +43,7 @@ const VERIFY_DEADLINE_MS = 15 * 1000;
 
 /**
  * The gateway's pool (`slots.ts`, egress shape research §2 and §5): 16 slots of one
- * `CHUNK_BYTES` each, 64 MiB, beside the gateway's idle live set (12 MiB, measured in
+ * `UNIT_BYTES` each, 64 MiB, beside the gateway's idle live set (12 MiB, measured in
  * workerd). A metered call holds its request whole while it reads, parses, rewrites and
  * uploads it, at most `REQUEST_FACTOR` times its `Content-Length` at once (the text and the
  * tree while parsing, the tree and the output while serializing, the output and its bytes
@@ -58,11 +58,11 @@ export const REQUEST_FACTOR = 4;
  * A metered call's body bound, derived: the most one call can take, the whole pool, at
  * `REQUEST_FACTOR` (16 MiB). The egress door's `EGRESS_BODY_MAX` is the same figure.
  */
-export const BODY_MAX = GATEWAY_POOL_SLOTS * CHUNK_BYTES / REQUEST_FACTOR;
+export const BODY_MAX = GATEWAY_POOL_SLOTS * UNIT_BYTES / REQUEST_FACTOR;
 
 /** The slots a metered call of `length` bytes takes: ⌈`REQUEST_FACTOR`·CL / chunk⌉. */
 export function requestSlots(length: number): number {
-  return Math.max(1, Math.ceil(REQUEST_FACTOR * length / CHUNK_BYTES));
+  return Math.max(1, Math.ceil(REQUEST_FACTOR * length / UNIT_BYTES));
 }
 
 /** The bytes each write of a metered call's upload carries. */

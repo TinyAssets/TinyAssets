@@ -2445,11 +2445,19 @@ R, S, M and W.
   clamps in place, encodes once and uploads through a `FixedLengthStream` in 64 KiB writes,
   its slots let go at the upload's end. `EGRESS_BODY_MAX` = `BODY_MAX` = pool ÷ 4, derived.
   `hintsOf`, `HINT_KEYS` and `egress_reservation_mismatch`'s use are gone.
-  Owed: the research's memory-leg cases in PR 2's `test:memory` harness once it lands (doors
-  S vs 4S, the gateway waiting and uploading, N vs 2N, the pool); `egress_aliased_key`,
-  `egress_reserve_refused` and `busy` join `failure.ts`'s table, and
-  `egress_reservation_mismatch` leaves it, at the next E2B template build (the runner bundles
-  `failure.ts`); live, `memoryUsageBytes` for the gateway and the doors.
+  The memory leg's egress cases (`owner/memory/egress.mjs`, run by `leg.mjs`: the real door
+  and gateway in isolates of their own, sampled at the provider's checkpoints), measured in
+  workerd: the door at 16 against 4 MiB held -0.38 MiB, the gateway -0.01 MiB (each at most a
+  quarter chunk); the gateway uploading 4.25 MiB for 4 MiB and 16.08 MiB for 16 MiB (at most
+  1.05·S + 0.25 MiB); 0.03 MiB a call more in the gateway at 8 against 4 calls held (at most
+  0.25); a call behind a whole-pool upload lands, and is `busy` past the pool's wait; the
+  control (a door reading the body whole) reads 11.99 MiB more. A caller's stop now ends the
+  answer closed, not errored with its abort, so workerd's "Uncaught (in promise) AbortError"
+  per stopped call (14 in the doors' egress suite, on `main` too) is gone.
+  Owed: `egress_aliased_key`, `egress_reserve_refused` and `busy` stay in `forward.ts`'s own
+  table (`EGRESS_CODES`) and join `failure.ts`'s, and `egress_reservation_mismatch` leaves
+  it, at the next E2B template build (the runner bundles `failure.ts`, so a change to it is a
+  new template); live, `memoryUsageBytes` for the gateway and the doors.
 
 ## 10. The plan's later slices
 
