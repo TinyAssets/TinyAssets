@@ -24,9 +24,8 @@ import { runInNewContext } from "node:vm";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { AUTOMATON_STATES, defaultSyncIgnore, LIST_BYTES, SANDBOX_HEAP }
+import { AUTOMATON_STATES, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP }
   from "../../owner/src/sync-ignore";
-import { walkFiles } from "./fsafe";
 import {
   CHUNK_BYTES, COMMIT_OPS, ignoredBy, memoryMirror, openMirror, type Place, SYNC_BODY,
   SyncClient, SyncFenced, syncIn, syncOut, wildcard,
@@ -347,10 +346,8 @@ describe("memory, whatever the tree holds", () => {
   /**
    * Sync-out of a tree of `modules` folders of 100 files each, sampled at every call as
    * sync-in is: the peak over the live set before it, the most calls open at once, the most
-   * ops a commit carried and its largest body. With it, `matcher`: what the sync-ignore's
-   * matcher remembers of the same tree (its folders and names, `REMEMBERED_CHARS` at most),
-   * read the same way after it matched every path the walk offers it, as sync-out does.
-   * `keep` is the control: a client that keeps every op it is sent.
+   * ops a commit carried and its largest body. `keep` is the control: a client that keeps
+   * every op it is sent.
    */
   async function syncOutMemory(modules: number, keep = false) {
     const { place: p, local, root } = place();
@@ -360,15 +357,6 @@ describe("memory, whatever the tree holds", () => {
       for (let f = 0; f < 100; f++) {
         writeFileSync(join(dir, `component-file-number-${f}.ts`), "");
       }
-    }
-    let matcher = live();
-    {
-      const matches = ignoredBy(defaultSyncIgnore());
-      for (const rel of walkFiles(local, (each, isDir) => matches(each, isDir) === "custom")) {
-        matches(rel);
-      }
-      matcher = live() - matcher;
-      expect(matches("x")).toBeNull();
     }
     const mirror = openMirror(join(root, "mirror.db"));
     const kept: unknown[] = [];
@@ -400,7 +388,7 @@ describe("memory, whatever the tree holds", () => {
                   LEASE, []);
     mirror.close();
     rmSync(local, { recursive: true, force: true });
-    return { peak, matcher, inFlight, ops, body };
+    return { peak, inFlight, ops, body };
   }
 
   it("sync-out over many paths holds about what it holds over few", async () => {
@@ -411,7 +399,7 @@ describe("memory, whatever the tree holds", () => {
     const FEW = 10 * BATCH;
     const MANY = 100 * BATCH;
     // Each size the least of two runs (a run's peak is the path's own plus whatever the
-    // process made for a moment beside it), the matcher's at the same run.
+    // process made for a moment beside it).
     const least = (runs: Awaited<ReturnType<typeof syncOutMemory>>[]) =>
       runs.reduce((best, run) => run.peak < best.peak ? run : best);
     const all: Awaited<ReturnType<typeof syncOutMemory>>[] = [];
@@ -430,21 +418,21 @@ describe("memory, whatever the tree holds", () => {
     expect(inFlight).toBe(1);
     expect(Math.max(...all.map((run) => run.ops))).toBe(COMMIT_OPS);
     expect(Math.max(...all.map((run) => run.body))).toBeLessThanOrEqual(SYNC_BODY);
-    // What a tree costs past one batch is the matcher's memory of its folders and names
-    // (bounded by `REMEMBERED_CHARS`), never its paths: the walk holds one directory a level,
-    // and the mirror and the removals are read a page at a time.
-    const bound = (run: typeof few) =>
-      inFlight * batch.peak + Math.max(0, run.matcher - batch.matcher) + QUARTER;
+    // What a tree may cost past one batch is the sync-ignore matcher's memory of names,
+    // `REMEMBERED_NAME_BYTES` at most (of folders it keeps only the path's own,
+    // `sync-ignore.test.ts`), never its paths: the walk holds one directory a level, and the
+    // mirror and the removals are read a page at a time.
+    const bound = inFlight * batch.peak + REMEMBERED_NAME_BYTES + QUARTER;
     // The control: a client that keeps every op it is sent reads as growing, past the
     // bound, or the samples prove nothing.
     const kept = [await syncOutMemory(FEW, true), await syncOutMemory(2 * FEW, true)];
     expect(kept[1]!.peak - kept[0]!.peak).toBeGreaterThan(QUARTER);
-    expect(kept[1]!.peak).toBeGreaterThan(bound(kept[1]!));
-    // Each size within one batch beside the matcher's memory, and ten times the paths no
-    // more than the matcher's memory of them more.
-    expect(few.peak).toBeLessThanOrEqual(bound(few));
-    expect(many.peak).toBeLessThanOrEqual(bound(many));
-    expect(many.peak - few.peak).toBeLessThanOrEqual(many.matcher - few.matcher + QUARTER);
+    expect(kept[1]!.peak).toBeGreaterThan(bound);
+    // Each size within one batch beside the matcher's names, and ten times the paths no more
+    // than those names more.
+    expect(few.peak).toBeLessThanOrEqual(bound);
+    expect(many.peak).toBeLessThanOrEqual(bound);
+    expect(many.peak - few.peak).toBeLessThanOrEqual(REMEMBERED_NAME_BYTES + QUARTER);
   }, 900_000);
 });
 

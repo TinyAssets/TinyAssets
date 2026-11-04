@@ -317,16 +317,13 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     }
     expect(states).toBeLessThanOrEqual(AUTOMATON_STATES);
     const words = Math.max(1, Math.ceil(states / 32));
-    // Warmed first (the JIT's), then the best of three rounds of fresh paths, asked in order:
-    // each folder's paths in one run, as the sync's walk and its sorted removal pass ask
-    // them (the matcher remembers the folders of the path before, `ignoredBy`).
+    // Warmed first (the JIT's), then the best of three rounds of fresh paths.
     for (let i = 0; i < 300; i++) {
       matcher(path(5000 + i));
     }
     let perPath = Number.POSITIVE_INFINITY;
     for (let round = 0; round < 3; round++) {
-      const fresh = Array.from({ length: 300 }, (_, i) => path(10_000 * (round + 1) + i))
-        .sort();
+      const fresh = Array.from({ length: 300 }, (_, i) => path(10_000 * (round + 1) + i));
       const began = performance.now();
       for (const each of fresh) {
         matcher(each);
@@ -342,7 +339,56 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
       / 1e6;
     expect(perPath).toBeLessThanOrEqual(bound);
   }, 300_000);
+
+  it("R7 in the sync's own orders: each folder stepped once, a path its own segment", () => {
+    const [, list, path] = DEEP;
+    const lines = [...defaultSyncIgnore(), ...list];
+    const words = 1;  // R7's lines are Aho–Corasick's, the defaults indexes': no automaton
+    expect(lines.reduce((sum, line) => sum + automatonStates(line), 0)).toBe(0);
+    const files = Array.from({ length: 300 }, (_, i) => path(10_000 + i)).sort();
+    // The walk's order (`walkFiles`): each folder asked once, before what is under it.
+    const walk: [string, boolean][] = [];
+    const asked = new Set<string>();
+    for (const file of files) {
+      for (let cut = file.indexOf("/"); cut >= 0; cut = file.indexOf("/", cut + 1)) {
+        if (!asked.has(file.slice(0, cut))) {
+          asked.add(file.slice(0, cut));
+          walk.push([file.slice(0, cut), true]);
+        }
+      }
+      walk.push([file, false]);
+    }
+    // The walk's bound an entry (R7's, above), summed: a pass asks each entry once, the
+    // folders among them, and the removal pass, asking only the files, steps each of their
+    // folders once (the paths under a folder adjacent), so it is held to the same sum.
+    const bound = walk.reduce((sum, [each]) => sum + walkCost(each, words), 0);
+    const took = (entries: readonly [string, boolean][]) => {
+      let least = Number.POSITIVE_INFINITY;
+      for (let round = 0; round < 3; round++) {
+        const matcher = ignoredBy(lines);
+        const began = performance.now();
+        for (const [each, isDir] of entries) {
+          matcher(each, isDir);
+        }
+        least = Math.min(least, performance.now() - began);
+      }
+      return least;
+    };
+    expect(took(walk)).toBeLessThanOrEqual(bound);
+    expect(took(files.map((file) => [file, false]))).toBeLessThanOrEqual(bound);
+  }, 300_000);
 });
+
+/**
+ * The walk's bound a path, in ms (R7's, the review's): its name and its `/` and segment at
+ * `words` words of `STEP_NS` and the indexes' walk, Aho–Corasick's fallback from its folder's
+ * node (at most its folder's depth), half again for this host.
+ */
+function walkCost(path: string, words: number): number {
+  const name = bytesOf(path.split("/").at(-1)!);
+  const folder = bytesOf(path.slice(0, Math.max(0, path.lastIndexOf("/"))));
+  return ((2 * name + 1) * (words * STEP_NS + INDEX_NS) + folder * INDEX_NS) * 1.5 / 1e6;
+}
 
 /**
  * What the indexes take a byte of text, in ns: a map lookup a byte of a name's tries and of

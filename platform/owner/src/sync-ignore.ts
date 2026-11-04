@@ -640,6 +640,47 @@ class Anywhere {
   }
 }
 
+/**
+ * Literal path lines as a trie of whole segments, an edge `node/segment` a map key: a path
+ * is looked up a segment a folder, walked on from its folder's node, so a folder costs its
+ * own segment, never its whole path.
+ */
+class Segments {
+  readonly edges = new Map<string, number>();
+  readonly ends = new Map<number, Best>();
+  nodes = 1;
+
+  /** The node after `segment` from `node`; -1: no line goes on that way. */
+  child(node: number, segment: string): number {
+    return node < 0 || this.edges.size === 0 ? -1
+      : this.edges.get(`${node}/${segment}`) ?? -1;
+  }
+
+  add(path: string, rule: number, dirOnly: boolean): void {
+    let node = 0;
+    for (const segment of path.split("/")) {
+      let to = this.child(node, segment);
+      if (to < 0) {
+        to = this.nodes++;
+        this.edges.set(`${node}/${segment}`, to);
+      }
+      node = to;
+    }
+    const best = this.ends.get(node) ?? { any: -1, all: -1 };
+    better(best, rule, dirOnly);
+    this.ends.set(node, best);
+  }
+
+  /** The lines that end at `node`, into `best`. */
+  collect(node: number, best: Best): void {
+    const end = node < 0 ? undefined : this.ends.get(node);
+    if (end !== undefined) {
+      best.any = Math.max(best.any, end.any);
+      best.all = Math.max(best.all, end.all);
+    }
+  }
+}
+
 // -- The automaton ---------------------------------------------------------------------------
 
 interface AutomatonLine {
@@ -814,7 +855,7 @@ interface Rule {
 interface Compiled {
   readonly rules: Rule[];
   readonly names: Map<string, Best>;
-  readonly paths: Map<string, Best>;
+  readonly paths: Segments;
   readonly suffix: Trie;
   readonly prefix: Trie;
   readonly pathPrefix: Trie;
@@ -829,7 +870,7 @@ function compile(lines: readonly string[]): Compiled {
   const defaults = new Set(DEFAULT_IGNORES);
   const rules: Rule[] = [];
   const names = new Map<string, Best>();
-  const paths = new Map<string, Best>();
+  const paths = new Segments();
   const suffix = new Trie();
   const prefix = new Trie();
   const pathPrefix = new Trie();
@@ -891,7 +932,11 @@ function compile(lines: readonly string[]): Compiled {
     }
     rules.push(record);
     if (cls.kind === "literal") {
-      literalInto(parsed.name ? names : paths, decode(cls.bytes), rule, parsed.dirOnly);
+      if (parsed.name) {
+        literalInto(names, decode(cls.bytes), rule, parsed.dirOnly);
+      } else {
+        paths.add(decode(cls.bytes), rule, parsed.dirOnly);
+      }
     } else if (cls.kind === "anywhere" && !cls.bytes.includes(SLASH)) {
       literalInto(names, decode(cls.bytes), rule, parsed.dirOnly);  // `**/name` is `name`
     } else if (cls.kind === "anywhere") {
@@ -947,20 +992,22 @@ export function wildcard(pattern: string, text: string): boolean {
 /**
  * What a matcher remembers, so that a walk matches each folder and each repeated name once.
  *
- * - **Folders:** the folders of the path last asked, and nothing more. Every caller asks a
- *   folder's paths in one run: the sync's walk (`walkFiles`, a folder and then all under it)
- *   and its removal pass (the mirror's paths, sorted, so those under a folder are adjacent).
+ * - **Folders:** the folders of the path last asked (a folder asked is one of them), and
+ *   nothing more. Every caller asks a folder's paths in one run: the sync's walk
+ *   (`walkFiles`, a folder and then all under it) and its removal pass (the mirror's paths,
+ *   sorted, so those under a folder are adjacent), so each folder is stepped once a pass.
  *   A path's folders are what matching it computes anyway, so this memory grows with a
- *   path's depth, never with the tree. Asked out of order, a path costs its folders again,
- *   never a different answer.
+ *   path's depth, never with the tree. Asked out of order, a path steps again the folders it
+ *   does not share with the last, each at its own segment's cost (a literal path line is
+ *   looked up a segment at a time, `Segments`), never a different answer.
  * - **Names:** at most `REMEMBERED_NAME_BYTES`, each name counted at what it really takes
  *   (`NAME_ENTRY_BYTES` beside its characters at two bytes each); past it the memory starts
- *   again. 1 MiB holds about 6,000 names, many more than a tree's repeated names (`index.ts`,
- *   `package.json`), so each is matched about once every 6,000 names met.
+ *   again. 256 KiB holds 1,200 to 1,500 names, many more than a tree's repeated names
+ *   (`index.ts`, `package.json`), so each is matched about once every 1,200 names met.
  *
  * Refuses nothing.
  */
-export const REMEMBERED_NAME_BYTES = 1024 * 1024;
+export const REMEMBERED_NAME_BYTES = 256 * 1024;
 /**
  * The heap one remembered name takes beside its characters (its key's header, its best, the
  * map's slot at its doubling's worst). Measured with its characters: 93 to 107 bytes for a
@@ -985,6 +1032,8 @@ interface Folder {
   readonly alive: boolean;
   readonly trie: number;
   readonly ac: number;
+  /** Its node among the literal path lines (`Segments`), or -1. */
+  readonly literal: number;
 }
 
 /**
@@ -1034,14 +1083,11 @@ export function ignoredBy(lines: readonly string[]): Matcher {
     return record.negative ? null : record.kind;
   };
   /** A path's own best, and its path structures' states after it, from its folder's. */
-  const step = (parent: Folder | null, name: string, full: string) => {
+  const step = (parent: Folder | null, name: string) => {
     const segment = utf8(name);
     const best = { ...nameBest(name, segment) };
-    const literal = c.paths.get(full);
-    if (literal !== undefined) {
-      best.any = Math.max(best.any, literal.any);
-      best.all = Math.max(best.all, literal.all);
-    }
+    const literal = c.paths.child(parent === null ? 0 : parent.literal, name);
+    c.paths.collect(literal, best);
     const head = parent === null ? segment : Uint8Array.of(SLASH, ...segment);
     // A path's `L*`: walked on from its folder's node, its matches in this segment alone
     // (an `L` ending before it would leave a `/` for the `*`).
@@ -1068,7 +1114,7 @@ export function ignoredBy(lines: readonly string[]): Matcher {
         auto.accepted(D, best);
       }
     }
-    return { best, D, I, alive, trie, ac };
+    return { best, D, I, alive, trie, ac, literal };
   };
   // The folders of the last path asked, outermost first: `chain[i]` is `last` up to
   // `ends[i]` (why these alone: `REMEMBERED_NAME_BYTES`).
@@ -1099,12 +1145,16 @@ export function ignoredBy(lines: readonly string[]): Matcher {
     while (ends.length === 0 || ends[ends.length - 1]! < dir.length) {
       const cut = dir.indexOf("/", from);
       const end = cut < 0 ? dir.length : cut;
-      const path = dir.slice(0, end);
-      const made = step(parent, dir.slice(from, end), path);
-      const ignored = parent?.ignored ?? (SYNC_IGNORE_REL.startsWith(`${path}/`) ? null
-        : decided(made.best, true));
-      parent = { ignored, D: made.D, I: made.I, alive: made.alive, trie: made.trie,
-                 ac: made.ac };
+      if (parent === null || parent.ignored === null) {
+        const made = step(parent, dir.slice(from, end));
+        // A folder on the sync-ignore's way (`.ta`) is never ignored.
+        const onWay = end < SYNC_IGNORE_REL.length
+          && SYNC_IGNORE_REL.charCodeAt(end) === SLASH
+          && SYNC_IGNORE_REL.startsWith(dir.slice(0, end));
+        parent = { ignored: onWay ? null : decided(made.best, true), D: made.D, I: made.I,
+                   alive: made.alive, trie: made.trie, ac: made.ac, literal: made.literal };
+      }
+      // Under an ignored folder everything is ignored as it is, so nothing more is stepped.
       chain.push(parent);
       ends.push(end);
       from = end + 1;
@@ -1113,15 +1163,21 @@ export function ignoredBy(lines: readonly string[]): Matcher {
     return parent!;
   };
   const match = (rel: string, isDir = false): Kind | null => {
-    if (rel === SYNC_IGNORE_REL || SYNC_IGNORE_REL.startsWith(`${rel}/`)) {
+    if (rel.length <= SYNC_IGNORE_REL.length && SYNC_IGNORE_REL.startsWith(rel)
+        && (rel.length === SYNC_IGNORE_REL.length
+            || SYNC_IGNORE_REL.charCodeAt(rel.length) === SLASH)) {
       return null;  // the file itself, and the folders on its way, are never kept out
+    }
+    if (isDir) {
+      // Its paths come next in a walk: matched as the chain's own, once.
+      return folder(rel).ignored;
     }
     const cut = rel.lastIndexOf("/");
     const parent = cut < 0 ? null : folder(rel.slice(0, cut));
     if (parent !== null && parent.ignored !== null) {
       return parent.ignored;  // nothing under an ignored folder comes back
     }
-    return decided(step(parent, cut < 0 ? rel : rel.slice(cut + 1), rel).best, isDir);
+    return decided(step(parent, cut < 0 ? rel : rel.slice(cut + 1)).best, false);
   };
   return Object.assign(match, { unapplied: c.unapplied });
 }
