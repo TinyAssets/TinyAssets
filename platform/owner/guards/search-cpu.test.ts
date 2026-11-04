@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { EGRESS_BODY_MAX } from "../src/network";
+import { RESULT_CHARS } from "../src/encoded";
 import {
   SEARCH_ANSWER_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, type Scanned, searchPage, words,
 } from "../src/file-search";
@@ -52,7 +52,9 @@ describe("the search's worst case", () => {
     });
     let found = 0;
     const ms = cpuMs(() => {
-      found = searchPage(entries, false, terms, () => "u").results.length;
+      // Every entry matches: the answer's bytes left unbounded, so all are scored and kept.
+      found = searchPage(entries, false, terms, () => "u", Number.MAX_SAFE_INTEGER)
+        .results.length;
     });
     console.log(`search worst case, distinct words: ${Math.round(ms)} ms CPU, ${found} results`);
     expect(found).toBe(SEARCH_SCAN);
@@ -78,7 +80,7 @@ describe("the search's worst case", () => {
     expect(ms).toBeLessThan(3_000);
   }, 60_000);
 
-  it("keeps the worst answer, envelope and escapes included, under the body ceiling", () => {
+  it("keeps the worst answer, envelope and escapes included, within one answer", () => {
     // Every result at its widest and worst to escape: a 4,096-byte path of quotes and
     // backslashes in names of 255 bytes, a title of as many, a url of its encoded folder.
     const name = '"\\'.repeat(127) + "x";
@@ -97,16 +99,16 @@ describe("the search's worst case", () => {
     expect(page.resume).not.toBeNull();  // it stopped at its bytes, not its scan
     const result = { results: page.results, next_cursor: page.resume,
                      note: "more of the files are still to search: search again with next_cursor" };
-    // As the MCP door answers it (`mcp.ts`): structured content and its JSON text copy, in
-    // a JSON-RPC response, framed as a server-sent event.
-    const answer = `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: Number.MAX_SAFE_INTEGER,
-      result: { content: [{ type: "text", text: JSON.stringify(result) }],
-                structuredContent: result } })}\n\n`;
-    const bytes = encoder.encode(answer).byteLength;
-    console.log(`worst answer: ${page.results.length} results, ${bytes} bytes of ${EGRESS_BODY_MAX}`);
-    expect(bytes).toBeLessThanOrEqual(EGRESS_BODY_MAX);
+    // As the MCP door answers it (`mcp.ts`): the result's JSON, once, as text.
+    const bytes = encoder.encode(JSON.stringify(result)).byteLength;
+    console.log(`worst answer: ${page.results.length} results, ${bytes} bytes of ${RESULT_CHARS}`);
+    expect(bytes).toBeLessThanOrEqual(RESULT_CHARS);
     expect(encoder.encode(JSON.stringify(page.results)).byteLength)
       .toBeLessThanOrEqual(SEARCH_ANSWER_BYTES);
+    // Each title is whole, or cut to fit and said so; every path and url is whole.
+    expect(page.results.every((hit) => hit.title === title || hit.title_cut === true))
+      .toBe(true);
+    expect(page.results.every((hit) => hit.id.startsWith(dir))).toBe(true);
   }, 60_000);
 
   it("holds a query's words to their measured heap", () => {

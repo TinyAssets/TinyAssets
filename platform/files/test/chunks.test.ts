@@ -265,6 +265,24 @@ describe("getChunks", () => {
       .toBe("a chunk the manifest holds is missing from the bucket");
   });
 
+  it("reads a verified range from its whole chunk, its hash rechecked (review L7)", async () => {
+    const space = ns();
+    const digits = bytes("0123456789");
+    await put(space, digits);
+    const d = await sha(digits);
+    const verified = () => files().getChunks(space, [{ sha256: d, offset: 2, length: 3,
+                                                       verify: true },
+                                                     { sha256: d, offset: 8, length: 100,
+                                                       verify: true }]);
+    expect(await verified()).toEqual([bytes("234"), bytes("89")]);
+    // Bytes changed under the chunk's key: a verified range fails loudly, a plain one cannot see.
+    await ssec(env.BLOBS).put(await named(space, d), bytes("0123456780"),
+                              { ssecKey: await unwrap(RING, space, await keyOf(space)) });
+    expect((await failure(verified)).message).toBe("a chunk's bytes no longer match its hash");
+    expect(await files().getChunks(space, [{ sha256: d, offset: 2, length: 3 }]))
+      .toEqual([bytes("234")]);
+  });
+
   it.each([
     [{ offset: -1, length: 1 }], [{ offset: 0, length: 0 }], [{ offset: 0.5, length: 1 }],
     [{ offset: 0, length: CHUNK_BYTES + 1 }], [{ offset: CHUNK_BYTES, length: 1 }],

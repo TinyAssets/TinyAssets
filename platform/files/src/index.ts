@@ -11,9 +11,12 @@
  * manifest's to know (`owner/src/files.ts`); the namespace is held only there, so no
  * caller can name another owner's chunks without first being that owner's object.
  *
- * Each method takes a batch, because a request may make at most 32 service-binding calls
- * (Workers service bindings): one call moves up to `BATCH_BYTES` (two chunks), well under
- * the 32 MiB a serialized RPC may carry and the memory an isolate shares.
+ * Each method takes a batch, so a large read or write is few calls: each call is a
+ * subrequest of its caller's invocation, of which Workers Paid allows 10,000 by default
+ * ("Subrequests to internal services: matches configured limit", default 10,000; up to
+ * 10M with `limits.subrequests`, which the owner's config sets: Workers limits, updated
+ * 2026-10-29). One call moves up to `BATCH_BYTES` (two chunks), well under the 32 MiB a
+ * serialized RPC may carry.
  *
  * - `putChunks` is create-once (`etagDoesNotMatch: "*"`) and passes each hash to R2's
  *   `put` `sha256` option, which verifies the bytes (a mismatch is R2's `BadDigest`,
@@ -21,7 +24,9 @@
  *   headers (R2's S3 API lists SHA-256 as a composite checksum only). An existing key is
  *   a no-op only when it holds exactly these bytes; anything else under a hash key fails
  *   loudly instead of counting as a deduplicated hit.
- * - `getChunks` reads chunks whole, rechecking each hash, or byte ranges of them.
+ * - `getChunks` reads chunks whole, rechecking each hash, or byte ranges of them: a range
+ *   read with `verify` reads its whole chunk, rechecks its hash and answers the range alone,
+ *   so the caller holds only the range and still reads verified bytes.
  * - `deleteChunks` removes up to 1,000 chunks in one call (R2's batch limit), named by their
  *   hashes under the owner's key; the owner object's garbage collection is its only caller,
  *   for keys in its own chunk table.
@@ -136,11 +141,15 @@ export interface ChunkPut {
   readonly bytes: Uint8Array;
 }
 
-/** One chunk to read: whole, or `length` bytes from `offset`. */
+/**
+ * One chunk to read: whole, or `length` bytes from `offset`; with `verify`, a range read
+ * from the whole chunk, its hash rechecked here, and only the range answered (review L7).
+ */
 export interface ChunkGet {
   readonly sha256: string;
   readonly offset?: number;
   readonly length?: number;
+  readonly verify?: boolean;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -324,7 +333,12 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
         throw new Invalid("a get is a hash and an optional range");
       }
       const at = range(read);
-      return { sha256: chunkHash(read.sha256), ...at, budget: whole ? CHUNK_BYTES : at.budget };
+      if (read.verify !== undefined && typeof read.verify !== "boolean") {
+        throw new Invalid("a get's verify is true or false");
+      }
+      // A verified range moves only its length to the caller (the whole chunk is held here).
+      return { sha256: chunkHash(read.sha256), ...at, verify: read.verify === true,
+               budget: whole && read.verify !== true ? CHUNK_BYTES : at.budget };
     });
     if (gets.reduce((sum, get) => sum + get.budget, 0) > BATCH_BYTES) {
       throw new Invalid(`a get moves at most ${BATCH_BYTES} bytes`);
@@ -332,16 +346,18 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     const dataKey = await this.#key(ns, key);
     return Promise.all(gets.map(async (get) => {
       const name = await chunkName(dataKey, get.sha256);
+      const ranged = get.verify ? undefined : get.range;
       const object = await this.env.BLOBS.get(chunkKey(ns, name),
-                                              this.#reading(dataKey, get.range));
+                                              this.#reading(dataKey, ranged));
       if (object === null) {
         throw new Error("a chunk the manifest holds is missing from the bucket");
       }
-      const bytes = await this.#plain(dataKey, chunkKey(ns, name), object, get.range);
-      if (get.range === undefined && await sha256Hex(bytes) !== get.sha256) {
+      const bytes = await this.#plain(dataKey, chunkKey(ns, name), object, ranged);
+      if (ranged === undefined && await sha256Hex(bytes) !== get.sha256) {
         throw new Error("a chunk's bytes no longer match its hash");
       }
-      return bytes;
+      return get.verify && get.range !== undefined
+        ? bytes.slice(get.range.offset, get.range.offset + get.range.length) : bytes;
     }));
   }
 

@@ -18,6 +18,7 @@ import { profileNames } from "../src/tools";
 import {
   appPost, call, connect, legacyPost, OPEN, registerClient, serveFirstPartyDocument,
   setControl, signInApp, type Tokens, url,
+  answerOf,
 } from "./support";
 
 function owner(): string {
@@ -121,20 +122,17 @@ describe("the MCP door's tool profiles", () => {
     await o.profile((await mcpOrigin(registered.clientId, registered.redirectUri)).client,
                     "directory");
     const found = await client.callTool({ name: "search", arguments: { query: "boilers" } });
-    expect(found.structuredContent).toMatchObject({ next_cursor: null, results: [{
+    expect(answerOf(found)).toMatchObject({ next_cursor: null, results: [{
       id: "/workspace/plumber.md", title: "Bo",
       url: `https://tinyassets.io/app#data/${encodeURIComponent("/workspace")}` }] });
-    // The text copy is the same JSON, as ChatGPT's connectors read either.
-    expect(JSON.parse((found.content as { text: string }[])[0]!.text))
-      .toEqual(found.structuredContent);
     const fetched = await client.callTool({ name: "fetch",
                                             arguments: { id: "/workspace/plumber.md" } });
-    expect(fetched.structuredContent).toMatchObject({ id: "/workspace/plumber.md", title: "Bo",
+    expect(answerOf(fetched)).toMatchObject({ id: "/workspace/plumber.md", title: "Bo",
                                                       metadata: { type: "Person" } });
-    expect((fetched.structuredContent as { text: string }).text).toContain("Bo fixes boilers.");
+    expect((answerOf(fetched) as { text: string }).text).toContain("Bo fixes boilers.");
     const read = await client.callTool({ name: "file_read", arguments: {
       path: "/workspace/plumber.md", offset: 4, max_bytes: 12 } });
-    expect(read.structuredContent).toMatchObject({ offset: 4, text: "type: Person",
+    expect(answerOf(read)).toMatchObject({ offset: 4, text: "type: Person",
                                                    next_offset: 16 });
     await client.close();
   });
@@ -151,7 +149,7 @@ describe("the MCP door's tool profiles", () => {
       "return digest.rows.map((row) => row.head);",
     ].join("\n") } });
     expect(ran.isError).toBeFalsy();
-    expect(ran.structuredContent).toMatchObject({ ok: true, value: ["todo"],
+    expect(answerOf(ran)).toMatchObject({ ok: true, value: ["todo"],
       calls: { ok: 2, error: 0 }, landed: [{ name: "collection_write", status: "ok", count: 1 }] });
     // Outside access switched off: the door refuses before any script runs.
     await setControl({ ...OPEN, outside: "off" });

@@ -40,7 +40,7 @@ describe("the inbox digest", () => {
     await write(r, "room:app:den", "m1", "hello den");
     const first = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: 0 });
     expect(first.mail.messages.map((m) => m.body)).toEqual(["are you there?"]);
-    expect(live(first.rooms.rows).map((row) => [row.collection, row.row_id, row.body_chars]))
+    expect(live(first.rooms.rows).map((row) => [row.collection, row.row_id, row.body_bytes]))
       .toEqual([["room:app:lobby", "m1", 1000], ["room:app:den", "m1", 9]]);
     expect(live(first.rooms.rows)[0]!.head).toBe("x".repeat(512));
     expect(live(first.rooms.rows)[1]!).toMatchObject({ head: "hello den", writer: r.owner });
@@ -128,7 +128,7 @@ describe("a digest past a pruned deletion (review rvlim N1)", () => {
 });
 
 describe("a digest's placed bodies (ADR-035)", () => {
-  it("reads placed mail and rows from R2: whole heads and lengths, a delete's entry kept " +
+  it("reads placed mail and rows from R2: whole heads and sizes, a delete's entry kept " +
      "body-less", async () => {
     const r = await rig();
     const agent = await r.register(MUSE);
@@ -141,11 +141,11 @@ describe("a digest's placed bodies (ADR-035)", () => {
       .toEqual([{ n: 2 }]);
     const inbox = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: 0 });
     expect(inbox.mail.messages.map((m) => [m.body, m.integrity])).toEqual([[mail, "ok"]]);
-    expect(live(inbox.rooms.rows).map((m) => [m.row_id, m.head, m.body_chars]))
-      .toEqual([["big", "é".repeat(512), 2000]]);
+    expect(live(inbox.rooms.rows).map((m) => [m.row_id, m.head, m.body_bytes]))
+      .toEqual([["big", "é".repeat(512), 4000]]);
     expect(live(inbox.rooms.rows)[0]!).not.toHaveProperty("content_id");
     const board = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: 0 });
-    expect(live(board.rows).map((m) => [m.row_id, m.body_chars])).toEqual([["task", 2000]]);
+    expect(live(board.rows).map((m) => [m.row_id, m.body_bytes])).toEqual([["task", 4000]]);
     // A delete's entry carries no body: nothing of it is placed, and the digest reports it.
     const [stored] = await r.sql("SELECT etag FROM collection_rows WHERE row_id = 'task'");
     await r.stub.collectionDelete(r.bind(null), { collection: "board", row_id: "task",

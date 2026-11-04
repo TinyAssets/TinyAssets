@@ -107,13 +107,16 @@ export function toolTable(): readonly Tool[] {
   const etag = orNull("The entry's current etag, or null to create it");
   const after = int("Changes after this cursor: 0 at first, then the last answer's cursor");
   const head = int("At most this many characters of each row's body (512 when omitted)");
+  const bodyFrom = int("The first item's body from this byte: a body_next_offset an answer " +
+                       "gave (0 when omitted)");
   return [
     { name: "inbox_digest", door: "inboxDigest", capability: "read_graph",
       title: "Inbox digest", ...READ,
       description: "Read what is new for this agent in one call: its unacknowledged mail, " +
         "oldest first, and the rows of the owner's rooms changed after a cursor, each " +
-        "with the head of its body. Acknowledge mail with mailbox_ack; read a whole row " +
-        "with collection_get. An answer with reset true means a deletion past the cursor " +
+        "with the head of its body. Acknowledge mail with mailbox_ack; a mail body cut to " +
+        "fit (truncated true) is read on with mailbox_read's body_offset and message_id; " +
+        "read a whole row with collection_get. An answer with reset true means a deletion past the cursor " +
         "is no longer kept: read the rooms again whole, then go on from the cursor given.",
       input: args({ limit: int("At most this many messages, and this many room rows"),
                     after },
@@ -129,10 +132,15 @@ export function toolTable(): readonly Tool[] {
       input: args({ limit: int("At most this many rows"), after }, { head_chars: head }) },
     { name: "mailbox_read", door: "mailboxRead", capability: "read_graph",
       title: "Read mailbox", ...READ,
-      description: "Read this agent's unacknowledged mailbox messages, oldest first.",
+      description: "Read this agent's unacknowledged mailbox messages, oldest first. One " +
+        "answer holds at most 50000 characters: a message whose body does not fit is cut, " +
+        "with truncated true and body_next_offset; read the rest by calling again with " +
+        "body_offset set to it and message_id set to that message's, before acknowledging it.",
       input: args({ limit: int("At most this many messages") },
                   { max_bytes: int("At most this many body bytes in all"),
-                    pad_bytes: int("Pad the page to this many bytes") }) },
+                    pad_bytes: int("Pad the page to this many bytes"),
+                    body_offset: bodyFrom,
+                    message_id: str("With body_offset, the message whose body is read on") }) },
     { name: "mailbox_ack", door: "mailboxAck", capability: "write_graph",
       title: "Acknowledge mailbox", readOnlyHint: false, destructiveHint: false,
       idempotentHint: true, openWorldHint: false,
@@ -152,8 +160,9 @@ export function toolTable(): readonly Tool[] {
       description: "List the agents registered for this connection, the owner's own " +
         "agents, each with the id its rooms name, and which of the owner's AI apps are " +
         "connected to TinyAssets, each one not connected with its connect_url, the page " +
-        "with its connect step.",
-      input: args({}) },
+        "with its connect step. One answer holds as many as fit; when it carries next, read " +
+        "again with after set to it for the rest.",
+      input: args({}, { after: int("Read on after this many: a next an answer gave") }) },
     { name: "agent_register", door: "registerPropose", capability: null,
       title: "Request agent registration", readOnlyHint: false, destructiveHint: false,
       idempotentHint: false, openWorldHint: false,
@@ -170,19 +179,31 @@ export function toolTable(): readonly Tool[] {
                   { request_id: str("Your id for this proposal, for retries") }) },
     { name: "collection_get", door: "collectionGet", capability: "read_graph",
       title: "Get collection row", ...READ,
-      description: "Read one row of a collection.",
-      input: args({ collection, row_id: row }) },
+      description: "Read one row of a collection. One answer holds at most 50000 " +
+        "characters: a body that does not fit is cut, with truncated true and " +
+        "body_next_offset; read the rest by calling again with body_offset set to it and " +
+        "etag set to the row's etag, which refuses the read if the row changed meanwhile.",
+      input: args({ collection, row_id: row },
+                  { body_offset: int("The body from this byte: a body_next_offset an " +
+                                     "answer gave"),
+                    etag: str("The etag the earlier part came with") }) },
     { name: "collection_list", door: "collectionPull", capability: "read_graph",
       title: "List collection rows", ...READ,
-      description: "List a collection's rows changed after a revision.",
+      description: "List a collection's rows changed after a revision, as many as one " +
+        "answer holds (at most 50000 characters); go on from the cursor it gives. A first " +
+        "row whose body does not fit is cut (truncated true): read the rest with " +
+        "collection_get.",
       input: args({ collection, after: int("Rows changed after this revision"),
                     limit: int("At most this many rows") }) },
     { name: "collection_history", door: "collectionHistory", capability: "read_graph",
       title: "Collection row history", ...READ,
       description: "Read the kept history of one collection row, newest first by page; " +
-        "pass before_revision for the older entries when the answer says more.",
+        "pass before_revision for the older entries when the answer says more. A newest " +
+        "entry whose body does not fit one answer is cut (truncated true): call again with " +
+        "the same before_revision and body_offset set to its body_next_offset.",
       input: args({ collection, row_id: row },
-                  { before_revision: int("Entries before this revision") }) },
+                  { before_revision: int("Entries before this revision"),
+                    body_offset: bodyFrom }) },
     { name: "collection_write", door: "collectionWrite", capability: "write_graph",
       title: "Write collection row", ...CHANGE,
       description: "Write one collection row against its current etag. A new row " +
@@ -215,9 +236,10 @@ export function toolTable(): readonly Tool[] {
       title: "Read file", ...READ,
       description: "Use this to read a file of the user's TinyAssets workspace by its " +
         "path, such as their profile /workspace/USER.md: its UTF-8 text from offset (0 when " +
-        "omitted), at most max_bytes (65536 when omitted, up to 4194304), cut at a " +
-        "character. next_offset is where the next part starts, or null at the end. Its " +
-        "entry carries the etag file_edit and file_write take.",
+        "omitted), at most max_bytes (65536 when omitted, up to 4194304) and at most what " +
+        "one answer holds (50000 characters), cut at a character. next_offset is where the " +
+        "next part starts, or null at the end. Its entry carries the etag file_edit and " +
+        "file_write take.",
       input: args({ path }, { offset: int("The byte to start at: 0, or a next_offset"),
                               max_bytes: int("At most this many bytes of text") }) },
     { name: "search", door: "fileSearch", capability: "read_files",
@@ -234,8 +256,9 @@ export function toolTable(): readonly Tool[] {
     { name: "fetch", door: "fileFetch", capability: "read_files",
       title: "Fetch file", ...READ,
       description: "Use this to read one of the user's TinyAssets files a search found, " +
-        "by its id, the file's path: its title, its text (file_read reads past 4 MiB), its " +
-        "url and its metadata, the etag file_edit takes among them.",
+        "by its id, the file's path: its title, its text (as much as one answer holds; " +
+        "when metadata.truncated, file_read reads on from metadata.next_offset), its url " +
+        "and its metadata, the etag file_edit takes among them.",
       input: args({ id: str("The id a search answered: the file's path") }) },
     { name: "file_append", door: "fileAppend", capability: "write_files",
       title: "Append to file", readOnlyHint: false, destructiveHint: false,
@@ -392,12 +415,14 @@ export function callDoor(stub: DurableObjectStub<OwnerDO>, binding: Binding, too
  * owner's storage figure (`storage_full`, `owner/src/storage-full.ts`) is 507 Insufficient
  * Storage, so a client tells the one wall from a permission; one only open uploads cause
  * (`uploads_open`), or an append that lost to other writes every try (`file_busy`), is 409,
- * since it clears as they finish.
+ * since it clears as they finish. The isolate's chunk slots in use (`busy`) is 503, retried
+ * after a second.
  */
 export function refusal(error: unknown):
-    { status: 400 | 403 | 409 | 507; message: string } | null {
+    { status: 400 | 403 | 409 | 503 | 507; message: string } | null {
   if (error instanceof Error && (error.name === "Refused" || error.name === "Invalid")) {
     return { status: error.name === "Invalid" ? 400
+               : error.message.startsWith("busy:") ? 503
                : error.message.startsWith("storage_full:") ? 507
                : error.message.startsWith("uploads_open:")
                  || error.message.startsWith("file_busy:") ? 409 : 403,

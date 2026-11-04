@@ -2411,6 +2411,23 @@ R, S, M and W.
   `public-website-surface` spec's `/connect` line. Then `connect_url` reaches every app's
   section, Grok's, Muse's and Gemini's among them.
 
+- [x] MEMORY PR 1, answers once, paged (`memory_research.md` §3, as `memshape_research.md`
+  §5 re-shaped it): each tool result one text block of its JSON, no `structuredContent`;
+  every read paged by its answer's encoded size, counted exactly, to `RESULT_CHARS` (50,000,
+  Claude Code's inline default): mail, digests, chains, collection rows and history,
+  conflicts, `file_read`, `fetch`, `file_list`, `file_history`, `search`, run views,
+  `agents_list` (M3), `code` answers (output cut and said so, M6); a cut body says
+  `body_bytes`, `body_next_offset` and `truncated`, read on by `body_offset` with the
+  message's id (L2) or the row's etag (L3); a write answers its row without its body (H3);
+  windows read by verified ranges (`FILES` rechecks the whole chunk and answers the range,
+  L7); a cut title or fetch field says so, and a search's cursor is an opaque base64url token
+  (L5). The byte guard of `1d284b1b1` is gone (memshape_research.md §5).
+  Owed: PR 2 (chunk slots, chunk-wise `file_edit`, the tail pool, the differential
+  `test:memory` leg, ADR-037); PR 3a (the egress stream, another builder); after the
+  deploy, PR 3b (bodies as streams across RPC), PR 4 (inbound, sync, the files Worker's
+  pool, the AST scan, `file_append`'s `request_id`), production baselines, and the
+  `ui-test` live check reading a long message through to its end.
+
 ## 10. The plan's later slices
 
 - [ ] Rooms and status (S4), app manifest and agent players (S6), device runner

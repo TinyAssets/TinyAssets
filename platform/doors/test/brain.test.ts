@@ -12,6 +12,7 @@ import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "../src/instructions";
 import type { DoorsEnv } from "../src/config";
 import {
   call, connect, doorsEnv, OPEN, registerClient, setControl, sqlIn, type Tokens, url,
+  answerOf,
 } from "./support";
 
 function owner(): string {
@@ -36,7 +37,7 @@ async function tool(client: Client, name: string, args: Record<string, unknown>)
   const answer = await client.callTool({ name, arguments: args });
   const first = (answer.content as { type: string; text: string }[])[0];
   return answer.isError === true ? { error: first?.text ?? "", value: {} }
-    : { error: null, value: answer.structuredContent as Record<string, unknown> };
+    : { error: null, value: answerOf(answer) };
 }
 
 const register = (environment: DoorsEnv, name: string, redirect = "https://client.test/cb") =>

@@ -84,8 +84,10 @@ describe("schema migration on wake", () => {
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(version(state)).toBe(MIGRATIONS.length);
     });
+    // The write answered its row without its body (review H3); the read, with it.
+    const { body_bytes: _bytes, ...row } = "row" in written ? written.row : { body_bytes: 0 };
     expect((await stub.collectionGet(as(name), { collection: "board", row_id: "t" })).row)
-      .toEqual("row" in written ? written.row : null);
+      .toEqual({ ...row, body: "1" });
   });
 
   it("applies only the migrations past the stored version, in order", async () => {

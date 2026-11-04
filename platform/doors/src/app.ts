@@ -88,6 +88,7 @@
  * Sign-out tells the object first, whether or not a session cookie came, so the sockets
  * opened under the device's grant close before the grant is revoked (`socketsEnd`).
  */
+import { answerJson } from "./answers";
 import {
   type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
   socketRequest, withTiers,
@@ -282,7 +283,7 @@ async function ownerTool(name: string, { binding, stub }: Bound,
   if (tool === undefined) {
     return failure(404, "no such tool");
   }
-  return json(200, await callDoor(stub, binding, tool, request));
+  return answerJson(tool.name, await callDoor(stub, binding, tool, request));
 }
 
 /**
