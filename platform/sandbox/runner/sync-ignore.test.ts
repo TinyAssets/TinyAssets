@@ -4,7 +4,8 @@
  * in `test-data/gitignore/`) and random lists, every path's answer git's; the hostile lists
  * of the review's rounds 1 to 6, answered as git does with the lines that fit, at a cost a
  * path within the automaton's own (`STEP_NS` a word step); its memory a list byte within
- * what the sandbox's heap leaves (`LIST_BYTES`).
+ * what the sandbox's heap leaves (`LIST_BYTES`); what it remembers of a tree the same at
+ * any size, its answers the same in any order, and a walk's path its own segment's cost.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync,
@@ -19,7 +20,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
   AGENT_PEAK, AUTOMATON_STATES, automatonStates, defaultSyncIgnore, HEAP_PER_LIST_BYTE,
-  ignoredBy, LIST_BYTES, SANDBOX_HEAP, STEP_NS, unappliedLines,
+  ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, STEP_NS, unappliedLines,
 } from "../../owner/src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -316,13 +317,16 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     }
     expect(states).toBeLessThanOrEqual(AUTOMATON_STATES);
     const words = Math.max(1, Math.ceil(states / 32));
-    // Warmed first (the JIT's), then the best of three rounds of fresh paths.
+    // Warmed first (the JIT's), then the best of three rounds of fresh paths, asked in order:
+    // each folder's paths in one run, as the sync's walk and its sorted removal pass ask
+    // them (the matcher remembers the folders of the path before, `ignoredBy`).
     for (let i = 0; i < 300; i++) {
       matcher(path(5000 + i));
     }
     let perPath = Number.POSITIVE_INFINITY;
     for (let round = 0; round < 3; round++) {
-      const fresh = Array.from({ length: 300 }, (_, i) => path(10_000 * (round + 1) + i));
+      const fresh = Array.from({ length: 300 }, (_, i) => path(10_000 * (round + 1) + i))
+        .sort();
       const began = performance.now();
       for (const each of fresh) {
         matcher(each);
@@ -402,5 +406,183 @@ describe("its memory", () => {
       }
       expect(perByte, label).toBeLessThanOrEqual(HEAP_PER_LIST_BYTE);
     }
+  }, 300_000);
+});
+
+describe("what it remembers of a tree, and what that buys", () => {
+  setFlagsFromString("--expose-gc");
+  const gc = runInNewContext("gc") as () => void;
+  // The live set: the heap and the byte arrays' backing stores, read right after full
+  // collections (the owner memory leg's sampler, `owner/memory/leg.mjs`).
+  const live = () => {
+    gc();
+    gc();
+    const usage = process.memoryUsage();
+    return usage.heapUsed + usage.arrayBuffers;
+  };
+
+  /**
+   * A tree of `folders` folders, each entry as the sync's walk offers it (`walkFiles`: a
+   * folder, then what is under it): `project/module-i/src`, each folder a name every folder
+   * has and a short name of its own (a remembered name's worst: its entry's cost beside few
+   * characters).
+   */
+  function* tree(folders: number): Generator<[string, boolean]> {
+    for (let i = 0; i < folders / 2; i++) {
+      const module = `project/module-${i}`;
+      yield [module, true];
+      yield [`${module}/index.ts`, false];
+      yield [`${module}/${i.toString(36)}`, false];
+      yield [`${module}/src`, true];
+      yield [`${module}/src/index.ts`, false];
+      yield [`${module}/src/${(i + folders).toString(36)}`, false];
+    }
+  }
+
+  /**
+   * The most the matcher holds over a walk of `folders` folders, sampled every 5,000 paths;
+   * `keep` is the control: a matcher that keeps every folder it is asked.
+   */
+  const held = (folders: number, keep = false) => {
+    const matcher = ignoredBy(defaultSyncIgnore());
+    const kept: string[] = [];
+    matcher("project", true);
+    const base = live();
+    let peak = 0;
+    let asked = 0;
+    for (const [path, isDir] of tree(folders)) {
+      matcher(path, isDir);
+      if (keep && isDir) {
+        kept.push(path);
+      }
+      if (++asked % 5_000 === 0) {
+        peak = Math.max(peak, live() - base);
+      }
+    }
+    peak = Math.max(peak, live() - base);
+    expect(kept).toHaveLength(keep ? folders : 0);
+    return peak;
+  };
+
+  it("holds its names within `REMEMBERED_NAME_BYTES` and of its folders only the path's own, " +
+     "at 10k, 100k and 200k folders", () => {
+    // The steps' own objects and the path's few folders: a quarter of the names' memory,
+    // as the owner memory leg allows a step (ADR-037).
+    const QUARTER = REMEMBERED_NAME_BYTES / 4;
+    const bound = REMEMBERED_NAME_BYTES + QUARTER;
+    // Each size the least of two runs (a run's peak is the matcher's plus whatever the
+    // process made for a moment beside it).
+    const least = (folders: number) => Math.min(held(folders), held(folders));
+    const sizes = [10_000, 100_000, 200_000].map(least);
+    // The control: a matcher that keeps every folder reads as growing, past the bound, or
+    // the samples prove nothing.
+    const kept = [held(10_000, true), held(100_000, true)];
+    expect(kept[1]! - kept[0]!).toBeGreaterThan(QUARTER);
+    expect(kept[1]!).toBeGreaterThan(bound);
+    for (const size of sizes) {
+      expect(size).toBeLessThanOrEqual(bound);
+    }
+    // O(1) in the tree: twenty times the folders hold at most a quarter more.
+    expect(sizes[2]! - sizes[0]!).toBeLessThanOrEqual(QUARTER);
+  }, 300_000);
+
+  it("answers a large mixed tree as git does, in any order, as with nothing remembered", () => {
+    let seed = 20261104;
+    const random = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
+    const pick = <T>(xs: readonly T[]) => xs[Math.floor(random() * xs.length)]!;
+    // Names the lists name, names that sort before `/` (`-`, `.`, a space) beside a folder of
+    // the same head, and names of more than one byte.
+    const names = ["src", "lib", "index.ts", "node_modules", "build", "dist", "gen", "docs",
+                   "draft-1.md", "keep.log", "x.log", "a", "a-b", "a.b", "a b", "b", "Library",
+                   "Temp", "__pycache__", "m.pyc", ".cache", "top-only", "ü", "😀", "k"];
+    const paths = new Set<string>();
+    while (paths.size < 12_000) {
+      const depth = 1 + Math.floor(random() * 7);
+      paths.add(Array.from({ length: depth }, (_, i) => i === depth - 1 && random() < 0.5
+        ? `f${Math.floor(random() * 500)}.${pick(["ts", "log", "md"])}` : pick(names)).join("/"));
+    }
+    const lines = [...defaultSyncIgnore(),
+                   ...["Node", "Python", "Unity"].flatMap((name) =>
+                     readFileSync(join(TEMPLATES, `${name}.gitignore`), "utf8").split("\n")),
+                   "**/gen/**", "!keep.log", "docs/*/draft-*", "/top-only", "a/**/b",
+                   "*.lo[gk]", "!a/build/", "a?b/", "ü/k"];
+    // Walk order (git's oracle walks the tree it made, a folder and then what is under it).
+    const { all, ignored } = gitIgnores(lines, [...paths]);
+    expect(all.length).toBeGreaterThan(12_000);
+    const walked = ignoredBy(lines);
+    const inWalk = new Map(all.map(([path, isDir]) => [path, walked(path, isDir)]));
+    expect(all.filter(([path]) => ignored.has(path) !== (inWalk.get(path) !== null))
+      .map(([path, isDir]) => `${path}${isDir ? "/" : ""}`)).toEqual([]);
+    expect(new Set(inWalk.values()).size).toBe(3);  // custom, default and null all met
+    // Any order answers the same: shuffled (every path a jump), and sorted, as the removal
+    // pass asks.
+    const shuffled = [...all];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+    }
+    const jumping = ignoredBy(lines);
+    expect(shuffled.filter(([path, isDir]) => jumping(path, isDir) !== inWalk.get(path)))
+      .toEqual([]);
+    const sorting = ignoredBy(lines);
+    const sorted = [...all].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    expect(sorted.filter(([path, isDir]) => sorting(path, isDir) !== inWalk.get(path)))
+      .toEqual([]);
+    // And as a matcher with nothing remembered answers, a fresh one each path.
+    expect(shuffled.slice(0, 400).filter(([path, isDir]) =>
+      ignoredBy(lines)(path, isDir) !== inWalk.get(path))).toEqual([]);
+  }, 300_000);
+
+  it("matches a path in a walk at its own segment's cost, whatever its depth", () => {
+    // Path lines that keep the automaton alive across every `/` (a leading `**/`, `*` loops):
+    // without the path's folders remembered, each path would cost its whole length.
+    const lines = [...defaultSyncIgnore()];
+    let states = 0;
+    const add = (line: string) => {
+      if (states + automatonStates(line) > AUTOMATON_STATES) {
+        return false;
+      }
+      lines.push(line);
+      states += automatonStates(line);
+      return true;
+    };
+    add(`**/*${"?".repeat(28)}*`);
+    for (let i = 0; add(`*/**/${"?".repeat(26)}${letters[i % letters.length]}*`); i++) {
+      // filled to the ceiling
+    }
+    const words = Math.ceil(states / 32);
+    expect(words).toBeGreaterThan(200);
+    // A walk 40 folders deep, then 100 modules of 5 folders of 10 files.
+    const entries: [string, boolean][] = [];
+    let top = "";
+    for (let level = 0; level < 40; level++) {
+      top = top === "" ? `level-${level}` : `${top}/level-${level}`;
+      entries.push([top, true]);
+    }
+    for (let i = 0; i < 100; i++) {
+      entries.push([`${top}/module-${i}`, true], [`${top}/module-${i}/src`, true]);
+      for (let j = 0; j < 5; j++) {
+        const part = `${top}/module-${i}/src/part-${j}`;
+        entries.push([part, true]);
+        for (let f = 0; f < 10; f++) {
+          entries.push([`${part}/file-${f}.ts`, false]);
+        }
+      }
+    }
+    // The review's bound a path (above): its name and `/` and segment, at ⌈S/32⌉ words of
+    // `STEP_NS` and the indexes' walk, half again for this host; a folder twice (the walk's
+    // entry, and once more as the folder of the paths under it).
+    const bound = entries.reduce((sum, [path, isDir]) => sum + (isDir ? 2 : 1)
+      * (2 * bytesOf(path.split("/").at(-1)!) + 1) * (words * STEP_NS + INDEX_NS) * 1.5, 0) / 1e6;
+    let took = Number.POSITIVE_INFINITY;
+    for (let round = 0; round < 3; round++) {
+      const matcher = ignoredBy(lines);
+      const began = performance.now();
+      for (const [path, isDir] of entries) {
+        matcher(path, isDir);
+      }
+      took = Math.min(took, performance.now() - began);
+    }
+    expect(took).toBeLessThanOrEqual(bound);
   }, 300_000);
 });

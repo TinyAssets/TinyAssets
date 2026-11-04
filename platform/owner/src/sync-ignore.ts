@@ -945,12 +945,29 @@ export function wildcard(pattern: string, text: string): boolean {
 // -- Matching a path ---------------------------------------------------------------------------
 
 /**
- * The most characters a matcher's memory of names and folders holds (two bytes each, each
- * folder's automaton state counted in its words): a tree's folders repeat in every path
- * under them, so each is matched once; past it the memory starts again, so it holds at most
- * 16 MiB however large the tree or long its paths. Refuses nothing.
+ * What a matcher remembers, so that a walk matches each folder and each repeated name once.
+ *
+ * - **Folders:** the folders of the path last asked, and nothing more. Every caller asks a
+ *   folder's paths in one run: the sync's walk (`walkFiles`, a folder and then all under it)
+ *   and its removal pass (the mirror's paths, sorted, so those under a folder are adjacent).
+ *   A path's folders are what matching it computes anyway, so this memory grows with a
+ *   path's depth, never with the tree. Asked out of order, a path costs its folders again,
+ *   never a different answer.
+ * - **Names:** at most `REMEMBERED_NAME_BYTES`, each name counted at what it really takes
+ *   (`NAME_ENTRY_BYTES` beside its characters at two bytes each); past it the memory starts
+ *   again. 1 MiB holds about 6,000 names, many more than a tree's repeated names (`index.ts`,
+ *   `package.json`), so each is matched about once every 6,000 names met.
+ *
+ * Refuses nothing.
  */
-const REMEMBERED_CHARS = 8 * 1024 * 1024;
+export const REMEMBERED_NAME_BYTES = 1024 * 1024;
+/**
+ * The heap one remembered name takes beside its characters (its key's header, its best, the
+ * map's slot at its doubling's worst). Measured with its characters: 93 to 107 bytes for a
+ * name of 4 characters, 147 to 192 for 26, 205 to 261 for 120; counted, 168, 212 and 400.
+ * The matcher's memory test (`sync-ignore.test.ts`) holds a tree of short names to it.
+ */
+export const NAME_ENTRY_BYTES = 160;
 
 /**
  * A list's matcher: for a path and whether it is a folder, the kind of the line that
@@ -979,17 +996,7 @@ interface Folder {
 export function ignoredBy(lines: readonly string[]): Matcher {
   const c = compile(lines);
   const byName = new Map<string, Best>();
-  const byFolder = new Map<string, Folder>();
   let held = 0;
-  const remember = <T>(memory: Map<string, T>, key: string, value: T, chars: number) => {
-    if (held + chars > REMEMBERED_CHARS) {
-      byName.clear();
-      byFolder.clear();
-      held = 0;
-    }
-    memory.set(key, value);
-    held += chars;
-  };
   const nameBest = (name: string, bytes: Uint8Array): Best => {
     const known = byName.get(name);
     if (known !== undefined) {
@@ -1009,7 +1016,13 @@ export function ignoredBy(lines: readonly string[]): Matcher {
         c.nameAutomaton.accepted(D, best);
       }
     }
-    remember(byName, name, best, name.length + 8);
+    const cost = 2 * name.length + NAME_ENTRY_BYTES;
+    if (held + cost > REMEMBERED_NAME_BYTES) {
+      byName.clear();
+      held = 0;
+    }
+    byName.set(name, best);
+    held += cost;
     return best;
   };
   const decided = (best: Best, isDir: boolean): Kind | null => {
@@ -1057,20 +1070,47 @@ export function ignoredBy(lines: readonly string[]): Matcher {
     }
     return { best, D, I, alive, trie, ac };
   };
+  // The folders of the last path asked, outermost first: `chain[i]` is `last` up to
+  // `ends[i]` (why these alone: `REMEMBERED_NAME_BYTES`).
+  const chain: Folder[] = [];
+  const ends: number[] = [];
+  let last = "";
   const folder = (dir: string): Folder => {
-    const known = byFolder.get(dir);
-    if (known !== undefined) {
-      return known;
+    if (chain.length > 0 && dir === last) {
+      return chain[chain.length - 1]!;
     }
-    const cut = dir.lastIndexOf("/");
-    const parent = cut < 0 ? null : folder(dir.slice(0, cut));
-    const made = step(parent, cut < 0 ? dir : dir.slice(cut + 1), dir);
-    const ignored = parent?.ignored ?? (SYNC_IGNORE_REL.startsWith(`${dir}/`) ? null
-      : decided(made.best, true));
-    const value: Folder = { ignored, D: made.D, I: made.I, alive: made.alive,
-                            trie: made.trie, ac: made.ac };
-    remember(byFolder, dir, value, dir.length + 4 * c.pathAutomaton.W + 16);
-    return value;
+    // Keep the folders `dir` shares with the last path: those it starts with, whole.
+    let same = 0;
+    const most = Math.min(dir.length, last.length);
+    while (same < most && dir.charCodeAt(same) === last.charCodeAt(same)) {
+      same++;
+    }
+    while (chain.length > 0) {
+      const end = ends[ends.length - 1]!;
+      if (end <= same && (end === dir.length || dir.charCodeAt(end) === SLASH)) {
+        break;
+      }
+      chain.pop();
+      ends.pop();
+    }
+    // Then each folder below them, on its way to `dir`.
+    let parent = chain.length > 0 ? chain[chain.length - 1]! : null;
+    let from = ends.length > 0 ? ends[ends.length - 1]! + 1 : 0;
+    while (ends.length === 0 || ends[ends.length - 1]! < dir.length) {
+      const cut = dir.indexOf("/", from);
+      const end = cut < 0 ? dir.length : cut;
+      const path = dir.slice(0, end);
+      const made = step(parent, dir.slice(from, end), path);
+      const ignored = parent?.ignored ?? (SYNC_IGNORE_REL.startsWith(`${path}/`) ? null
+        : decided(made.best, true));
+      parent = { ignored, D: made.D, I: made.I, alive: made.alive, trie: made.trie,
+                 ac: made.ac };
+      chain.push(parent);
+      ends.push(end);
+      from = end + 1;
+    }
+    last = dir;
+    return parent!;
   };
   const match = (rel: string, isDir = false): Kind | null => {
     if (rel === SYNC_IGNORE_REL || SYNC_IGNORE_REL.startsWith(`${rel}/`)) {
