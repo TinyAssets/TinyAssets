@@ -1,8 +1,11 @@
-// Each Worker's resting isolate in workerd (ADR-037): its bundle, as a deploy builds it,
-// loaded with no bindings, one request served, then a swept full collection, and its heap
-// plus backing stores read through the inspector. The figures `holds.ts` records
-// (`BASELINE_BYTES`) until production's `memoryUsageBytes` replaces them; run by hand when
-// a Worker's dependencies change: `node memory/baselines.mjs`.
+// The doors' and the files Worker's module-load floors in workerd (ADR-037): each bundle, as
+// a deploy builds it, loaded with no bindings, one request served by a stub entry (not the
+// Worker's own code), then a swept full collection, and its heap plus backing stores read
+// through the inspector. A floor, not a baseline: no object is built and the Worker's own
+// paths stay uncompiled (review M4). The owner's baseline is measured with an owner object
+// built, migrated and served, by the memory leg (`memory/leg.mjs`), which holds it within
+// `OWNER_BASELINE_BYTES`; the doors' and files' pools (PR 3b, PR 4) measure theirs the same
+// way. Run by hand: `node memory/baselines.mjs`.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -18,7 +21,7 @@ const MIB = 1024 * 1024;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const figures = {};
-for (const [name, port] of [["owner", 8911], ["doors", 8912], ["files", 8913]]) {
+for (const [name, port] of [["doors", 8912], ["files", 8913]]) {
   const out = mkdtempSync(join(tmpdir(), `baseline-${name}-`));
   try {
     execFileSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", out, "--config",
@@ -81,4 +84,4 @@ const w :Workerd.Worker = (
     rmSync(out, { recursive: true, force: true });
   }
 }
-console.log(JSON.stringify({ resting_mib: figures }));
+console.log(JSON.stringify({ module_load_floor_mib: figures }));

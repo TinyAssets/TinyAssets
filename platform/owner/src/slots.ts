@@ -1,38 +1,45 @@
 /**
- * Memory bounded by structure (ADR-037, memshape_research.md §2): an isolate's one pool of
- * chunk slots.
+ * Memory bounded by structure (ADR-037): an isolate's one pool of units.
  *
- * Large data moves only as streams or 4 MiB chunks, never whole. A path that holds chunks
- * (at most two in hand, and the files plane's copy of what it sends or reads: three
- * `UNIT_BYTES`, `CHUNK_SLOT_BYTES`) takes one slot while it holds them, and only then: when
- * the bytes are in hand, never across a wait on another service (review M2). A pool counts
- * slots, never bytes: what a slot holds is the code's own construction, so nothing is
- * estimated at run time. Its capacity is its Worker's own, a parameter (the owner object's
- * `OWNER_CHUNK_SLOTS`, the gateway's); the counts test holds each capacity times its slot's
- * cost, with the Worker's baseline and what no unit models, within the isolate's 128 MB.
+ * Large data moves only as streams or 4 MiB chunks, never whole. A path takes units for
+ * what it holds while it holds it, and only then: a step's units are taken before the bytes
+ * it brings arrive and released once they are gone, never across a step that holds nothing
+ * of them (review M1). A hold is weighted by what it holds, in units of `UNIT_BYTES`, the
+ * files plane's chunk: a body window takes one, a chunk-wise edit's making step its declared
+ * cost (`holds.ts`), each measured by the workerd leg. A pool counts units, never bytes, so
+ * nothing is estimated at run time. Its capacity is its Worker's own, a parameter (the owner
+ * object's `OWNER_POOL_UNITS`, the gateway's); the counts test holds it, with every other live
+ * hold, within the isolate's 128 MB.
  *
- * **Waiting.** A slot that is not free now is waited for, first come first served, up to
- * `SLOT_WAIT_MS`; at most `waiters` wait at once. Past either, the call is refused `busy`,
- * told and retryable, before it changes anything. So contention queues briefly instead of
- * refusing ordinary load, and an overload is loud, never a lost write.
+ * **Waiting.** Units not free now are waited for, first come first served within a hold's
+ * size class, up to `SLOT_WAIT_MS`, with at most `waiters` waiting. Past either the call is
+ * refused `busy`, told and retryable, before it changes anything. A one-unit hold (a window)
+ * never waits behind a larger one: larger holds leave `reserve` units free, which only
+ * one-unit holds take, and they queue apart. So a co-tenant's small read waits only on other
+ * small reads, never behind edits.
  *
- * **Release** holds whatever happens: `slotted` releases in `finally`, and a slot released
- * twice is released once.
+ * **Release** holds whatever happens: `slotted` releases in `finally`, and units released
+ * twice are released once.
  *
  * **Retained data** (the relay's tails) is one exact budget an isolate (`SharedBudget`),
  * split across the objects holding any, the largest dropping its oldest past it.
  *
  * It imports nothing, so any Worker uses it (the owner object, the gateway). Its one
- * module-scope holder (`isolatePool`, `isolateTails`) is the platform's pinned exemption from
- * the no-module-state rule (`module-state.test.ts`): it holds a count of slots in use, the
- * calls waiting for one, and which objects' tails share the budget, never an owner's data.
+ * module-scope holder (`isolatePool`, `isolateTails`) is one of the platform's two pinned
+ * exemptions from the no-module-state rule (`module-state.test.ts`, the gateway's interposer
+ * the other): it holds a count of units in use, the calls waiting, and which objects' tails
+ * share the budget, never an owner's data.
  */
 
-/** A slot's unit: one 4 MiB chunk, the files plane's own. */
+/** A unit: one 4 MiB chunk, the files plane's own. */
 export const UNIT_BYTES = 4 * 1024 * 1024;
-/** What one slot holds at most: two chunks in hand, and the files plane's copy of one. */
-export const CHUNK_SLOT_BYTES = 3 * UNIT_BYTES;
-/** How long a call waits for a slot before it is refused `busy`. */
+/**
+ * How long a call waits for units before it is refused `busy`: the queue's own term. A
+ * waiting tool call is answered within a sixth of the MCP SDK's default request timeout
+ * (`DEFAULT_REQUEST_TIMEOUT_MSEC`, 60 s), so the refusal is told and retried well inside
+ * what the client waits, the rest left to the call's own work. A waiter is served sooner
+ * whenever the holds ahead of it turn over faster: the leg measures a step's hold.
+ */
 export const SLOT_WAIT_MS = 10_000;
 /** The refusal: retryable, never a loss (the doors answer it `503` with `Retry-After`). */
 export const BUSY = "busy: this server is holding as much as it may at once; try again shortly";
@@ -45,13 +52,13 @@ export class SlotBusy extends Error {
   }
 }
 
-/** Slots taken, held until `release` (a second release is nothing). */
+/** Units taken, held until `release` (a second release is nothing). */
 export interface Slot {
   readonly units: number;
   release(): void;
 }
 
-/** A pool's state, a test's view: its capacity, the slots in use, the calls waiting. */
+/** A pool's state, a test's view: its capacity, the units in use, the calls waiting. */
 export interface PoolState {
   readonly capacity: number;
   readonly held: number;
@@ -65,33 +72,52 @@ interface Waiter {
   readonly refuse: () => void;
 }
 
-/** A pool of `capacity` slots, waits of at most `waitMs`, at most `waiters` waiting. */
+/**
+ * A pool of `capacity` units, waits of at most `waitMs`, at most `waiters` waiting (its
+ * Worker's own figure; four times the capacity unless it names one), and `reserve` units
+ * only one-unit holds take.
+ */
 export class SlotPool {
   readonly capacity: number;
+  readonly reserve: number;
   readonly #waitMs: number;
   readonly #waiters: number;
-  readonly #queue: Waiter[] = [];
+  /** One-unit holds waiting, and larger ones: each first come first served. */
+  readonly #small: Waiter[] = [];
+  readonly #large: Waiter[] = [];
   #held = 0;
   #peak = 0;
 
-  constructor(capacity: number, waitMs: number = SLOT_WAIT_MS, waiters: number = 4 * capacity) {
+  constructor(capacity: number, waitMs: number = SLOT_WAIT_MS, waiters: number = 4 * capacity,
+              reserve = 0) {
     if (!Number.isSafeInteger(capacity) || capacity < 1) {
-      throw new Error("a pool holds at least one slot");
+      throw new Error("a pool holds at least one unit");
+    }
+    if (!Number.isSafeInteger(reserve) || reserve < 0 || reserve >= capacity) {
+      throw new Error("a pool's reserve leaves larger holds at least one unit");
     }
     this.capacity = capacity;
+    this.reserve = reserve;
     this.#waitMs = waitMs;
     this.#waiters = waiters;
   }
 
-  /** `units` slots, now or once free (first come first served), or refused `busy`. */
+  /** Whether `units` fit now: a larger hold leaves the reserve free. */
+  #fits(units: number): boolean {
+    return this.#held + units <= (units === 1 ? this.capacity : this.capacity - this.reserve);
+  }
+
+  /** `units`, now or once free (first come first served in its class), or refused `busy`. */
   acquire(units: number): Promise<Slot> {
-    if (!Number.isSafeInteger(units) || units < 1 || units > this.capacity) {
-      throw new Error(`a call takes 1 to ${this.capacity} slots, not ${units}`);
+    const most = this.capacity - this.reserve;
+    if (!Number.isSafeInteger(units) || units < 1 || (units > 1 && units > most)) {
+      throw new Error(`a call takes 1 to ${Math.max(1, most)} units, not ${units}`);
     }
-    if (this.#queue.length === 0 && this.#held + units <= this.capacity) {
+    const queue = units === 1 ? this.#small : this.#large;
+    if (queue.length === 0 && this.#fits(units)) {
       return Promise.resolve(this.#take(units));
     }
-    if (this.#queue.length >= this.#waiters) {
+    if (this.#small.length + this.#large.length >= this.#waiters) {
       return Promise.reject(new SlotBusy());
     }
     return new Promise<Slot>((resolve, reject) => {
@@ -104,14 +130,14 @@ export class SlotPool {
         refuse: () => reject(new SlotBusy()),
       };
       const timer = setTimeout(() => {
-        const at = this.#queue.indexOf(waiter);
+        const at = queue.indexOf(waiter);
         if (at >= 0) {
-          this.#queue.splice(at, 1);
+          queue.splice(at, 1);
           waiter.refuse();
-          this.#drain();  // a large waiter gone may free the head for smaller ones
+          this.#drain();
         }
       }, this.#waitMs);
-      this.#queue.push(waiter);
+      queue.push(waiter);
     });
   }
 
@@ -132,15 +158,17 @@ export class SlotPool {
   }
 
   #drain(): void {
-    while (this.#queue.length > 0 && this.#held + this.#queue[0]!.units <= this.capacity) {
-      const next = this.#queue.shift()!;
-      next.grant(this.#take(next.units));
+    for (const queue of [this.#small, this.#large]) {
+      while (queue.length > 0 && this.#fits(queue[0]!.units)) {
+        const next = queue.shift()!;
+        next.grant(this.#take(next.units));
+      }
     }
   }
 
   state(): PoolState {
-    return { capacity: this.capacity, held: this.#held, waiting: this.#queue.length,
-             peak: this.#peak };
+    return { capacity: this.capacity, held: this.#held,
+             waiting: this.#small.length + this.#large.length, peak: this.#peak };
   }
 
   /** A test's: the most held at once counted again from now. */
@@ -149,7 +177,7 @@ export class SlotPool {
   }
 }
 
-/** Run `work` holding `units` of `pool`'s slots, released whatever it does. */
+/** Run `work` holding `units` of `pool`, released whatever it does. */
 export async function slotted<T>(pool: SlotPool, units: number, work: () => Promise<T>):
     Promise<T> {
   const slot = await pool.acquire(units);
@@ -237,15 +265,16 @@ const ISOLATE: { pool: SlotPool | null; tails: SharedBudget | null } = { pool: n
                                                                           tails: null };
 
 /**
- * The isolate's one pool, made on first use with its Worker's `capacity`; every object and
- * request in the isolate shares it. Asked for another capacity, it is a bug: one Worker, one
- * figure.
+ * The isolate's one pool, made on first use with its Worker's `capacity`, `reserve` and
+ * `waiters`; every object and request in the isolate shares it. Asked for another, it is a
+ * bug: one Worker, one figure.
  */
-export function isolatePool(capacity: number): SlotPool {
+export function isolatePool(capacity: number, reserve = 0, waiters = 4 * capacity): SlotPool {
   if (ISOLATE.pool === null) {
-    ISOLATE.pool = new SlotPool(capacity);
-  } else if (ISOLATE.pool.capacity !== capacity) {
-    throw new Error(`the isolate's pool holds ${ISOLATE.pool.capacity} slots, not ${capacity}`);
+    ISOLATE.pool = new SlotPool(capacity, SLOT_WAIT_MS, waiters, reserve);
+  } else if (ISOLATE.pool.capacity !== capacity || ISOLATE.pool.reserve !== reserve) {
+    throw new Error(`the isolate's pool holds ${ISOLATE.pool.capacity} units ` +
+                    `(${ISOLATE.pool.reserve} reserved), not ${capacity} (${reserve})`);
   }
   return ISOLATE.pool;
 }
