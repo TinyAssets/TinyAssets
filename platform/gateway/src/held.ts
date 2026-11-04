@@ -15,24 +15,30 @@
  *   for empty objects, 30.4 B for objects of unique keys. So a call weighs
  *   `BYTE_COST` (4.25, or `ASCII_BYTE_COST` 2.25) a byte plus `TOKEN_COST` (32) a token;
  *   the tokens are counted as the bytes stream in, outside strings, by a byte scan
- *   (`Tokens`), so the weight is known before the parse.
+ *   (`Tokens`), so the weight is known before the parse. A `\u` escape counts as
+ *   non-ASCII: the parse makes its string two-byte (review V-H1).
  *
- * **When it is taken.** While it reads, a call holds ⌈`TEXT_COST`·read / unit⌉ slots, one
- * more taken before the bytes that need it are kept, so a slow sender holds only what it
- * sent. Once the body is in, its weight's slots (`weightSlots`) are taken before the parse; a
- * call that alone weighs more than the pool is refused `egress_too_large` (the ceiling the
- * costs derive: 15 MiB of a body with a non-ASCII character, 28 MiB of an ASCII one, the
- * egress door's 16 MiB first). Each wait for a slot is the pool's own (`busy` past it), the
- * owners waiting taking turns.
+ * **When it is taken.** While it reads, a call holds ⌈`TEXT_COST`·read / unit⌉ units of a
+ * lease (`SlotPool.lease`, wait-die), one more taken before the bytes that need it are kept,
+ * so a slow sender holds only what it sent. Once the body is in, its weight's units
+ * (`weightSlots`) are taken before the parse. A call is refused `egress_too_large` as soon as
+ * its weight so far passes what one call may hold (the ceiling the costs derive: 15 MiB of a
+ * body with a non-ASCII character, 28 MiB of an ASCII one, the egress door's 16 MiB first),
+ * and before a byte is read when even its declared length as ASCII would. Each wait for a unit
+ * is the pool's own (`busy` past it, the owners waiting taking turns and sharing the pool
+ * under contention), and a holder that cannot grow at once and is not the oldest holder gives
+ * everything back, `busy`, before its reserve, so nothing is charged.
  *
- * **How long.** The phase from its first slot to its upload's last write is held to
- * `heldDeadlineMs`: the pool's own wait plus the body at `MIN_RATE`, the slowest a sender
- * may be while it holds a slot (one slot's worth of body each pool wait, so no unit is held
- * longer than a waiter waits for one: about 0.18 MiB/s, 100 s for 16 MiB). It is derived
- * from the pool, not measured: no sandbox's upload rate could be measured without a live
- * sandbox (owed live). The caller's stop ends the phase too.
+ * **How long.** Each unit's worth of body must arrive within `SLOT_WAIT_MS` of that unit's
+ * grant (`readHeld`), so no unit is held longer than a waiter waits for one; its clock runs
+ * only while the call waits on its sender, never during a wait for a unit. That is the
+ * slowest a sender may be, `MIN_RATE` (about 0.18 MiB/s). The reserve may take the pool's
+ * wait (`busy` past it), and the upload `heldDeadlineMs` (the pool's wait plus the body at
+ * `MIN_RATE`, 100 s for 16 MiB), each counted from its own start. All of it is derived from
+ * the pool, not measured: no sandbox's upload rate could be measured without a live sandbox
+ * (owed live). The caller's stop ends every phase at once.
  */
-import { isolatePool, SLOT_WAIT_MS, type Slot, SlotBusy, type SlotPool, UNIT_BYTES }
+import { isolatePool, type Lease, SLOT_WAIT_MS, SlotBusy, type SlotPool, UNIT_BYTES }
   from "../../owner/src/slots";
 
 /** The gateway's pool: 16 slots of one 4 MiB unit, 64 MiB, beside its 12 MiB idle set. */
@@ -50,7 +56,7 @@ export const BODY_MAX = 16 * 1024 * 1024;
 /** The slowest a sender may be while it holds a slot, in bytes a second (see the header). */
 export const MIN_RATE = UNIT_BYTES / TEXT_COST / (SLOT_WAIT_MS / 1000);
 
-/** The longest a call of `length` bytes may hold its slots: the pool's wait, and the body. */
+/** The longest the upload of `length` bytes may take: the pool's wait, and the body. */
 export function heldDeadlineMs(length: number): number {
   return SLOT_WAIT_MS + Math.ceil(1000 * length / MIN_RATE);
 }
@@ -80,8 +86,10 @@ export class HeldRefusal extends Error {
 /**
  * The structural tokens of a JSON text as its bytes stream in: each `{`, `[`, `,` and `:`
  * outside a string, and each string. UTF-8 never puts an ASCII byte inside a multi-byte
- * character, so a byte scan reads the same structure the parse will. `ascii` is whether
- * every byte was.
+ * character, so a byte scan reads the same structure the parse will. `ascii` is whether the
+ * parse's strings are all one-byte: every byte ASCII, and no `\u` escape (which may name a
+ * character past Latin-1, and Python's `json.dumps` writes one for every non-ASCII
+ * character: review V-H1).
  */
 export class Tokens {
   count = 0;
@@ -93,6 +101,7 @@ export class Tokens {
     let count = this.count;
     let inString = this.#inString;
     let escaped = this.#escaped;
+    let wide = false;
     let high = 0;
     for (let at = 0; at < bytes.length; at++) {
       const byte = bytes[at]!;
@@ -100,6 +109,9 @@ export class Tokens {
       if (inString) {
         if (escaped) {
           escaped = false;
+          if (byte === 0x75) {
+            wide = true;
+          }
         } else if (byte === 0x5c) {
           escaped = true;
         } else if (byte === 0x22) {
@@ -115,7 +127,7 @@ export class Tokens {
     this.count = count;
     this.#inString = inString;
     this.#escaped = escaped;
-    if (high >= 0x80) {
+    if (high >= 0x80 || wide) {
       this.ascii = false;
     }
   }
@@ -140,58 +152,45 @@ export function raced<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /**
- * A call's slots: grown as its need grows, each wait the pool's own and the call's stop or
- * deadline, released once, whatever happens (a slot granted after the release is released
- * at once).
+ * A call's units: a lease of the pool (`SlotPool.lease`, wait-die: a holder that cannot grow
+ * at once waits only if it is the oldest holder, any other gives everything back and is
+ * `busy`), each wait the pool's own and ended at once by the call's stop.
  */
 export class Hold {
-  readonly #pool: SlotPool;
-  readonly #owner: string;
+  readonly #lease: Lease;
+  readonly #most: number;
   readonly #signal: AbortSignal;
-  readonly #slots: Slot[] = [];
-  #units = 0;
-  #released = false;
 
   constructor(owner: string, signal: AbortSignal,
               pool: SlotPool = isolatePool(GATEWAY_POOL_SLOTS)) {
-    this.#pool = pool;
-    this.#owner = owner;
+    this.#lease = pool.lease(owner);
+    this.#most = pool.most;
     this.#signal = signal;
   }
 
   get units(): number {
-    return this.#units;
+    return this.#lease.units;
   }
 
-  /** At least `units` slots held, or `egress_too_large`, `busy`, or the stop's reason. */
+  /** The most units one call may hold. */
+  get most(): number {
+    return this.#most;
+  }
+
+  /** At least `units` held, or `egress_too_large`, `busy` (all let go), or the stop's reason. */
   async grow(units: number): Promise<void> {
-    if (units > Math.max(1, this.#pool.capacity - this.#pool.reserve)) {
+    if (units > this.#most) {
       throw new HeldRefusal("egress_too_large");
     }
-    while (!this.#released && this.#units < units) {
-      const pending = this.#pool.acquire(units - this.#units, this.#owner);
-      pending.then((slot) => {
-        if (this.#released) {
-          slot.release();
-        } else {
-          this.#slots.push(slot);
-          this.#units += slot.units;
-        }
-      }, () => undefined);
-      try {
-        await raced(pending, this.#signal);
-      } catch (error) {
-        throw error instanceof SlotBusy ? new HeldRefusal("busy") : error;
-      }
+    try {
+      await this.#lease.grow(units, this.#signal);
+    } catch (error) {
+      throw error instanceof SlotBusy ? new HeldRefusal("busy") : error;
     }
   }
 
   release(): void {
-    this.#released = true;
-    for (const slot of this.#slots.splice(0)) {
-      slot.release();
-    }
-    this.#units = 0;
+    this.#lease.release();
   }
 }
 
@@ -211,11 +210,27 @@ export async function weighedBody(request: Request, length: number, hold: Hold |
            weight: parseWeight(body.bytes, body.tokens.count, body.tokens.ascii) };
 }
 
+/** A promise that rejects with the sender's refusal once `ms` have passed. */
+function senderLate(ms: number): { late: Promise<never>; clear: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new HeldRefusal("invalid_request")), Math.max(0, ms));
+  });
+  late.catch(() => undefined);
+  return { late, clear: () => clearTimeout(timer) };
+}
+
 /**
  * The body's text, its byte length and its tokens: exactly `length` bytes read (a body
  * shorter or longer is `invalid_request`), each chunk decoded as it comes (a streaming fatal
  * `TextDecoder`) and counted (`Tokens`), so no copy of its bytes is gathered; `hold` grown
- * before each chunk is kept, to ⌈`TEXT_COST`·read / unit⌉; stopped by `signal`.
+ * before each chunk is kept, to ⌈`TEXT_COST`·read / unit⌉; refused `egress_too_large` as soon
+ * as its weight so far passes what one call may hold (review item 6); stopped by `signal`.
+ *
+ * **The sender's deadline** (review V-H2, V-M2): each unit's worth of body must arrive
+ * within `SLOT_WAIT_MS` of that unit's grant, or the call is `invalid_request`, its units let
+ * go. The clock runs only while the call waits on its sender: a wait for a unit is the pool's
+ * own (`busy` past it), never counted against the sender.
  */
 export async function readHeld(request: Request, length: number, hold: Hold | null,
                                signal: AbortSignal):
@@ -227,23 +242,44 @@ export async function readHeld(request: Request, length: number, hold: Hold | nu
     }
     return { text: "", bytes: 0, tokens };
   }
+  const most = hold?.most ?? Number.POSITIVE_INFINITY;
+  // The least the body can weigh is its bytes as ASCII text with no tokens: past the pool,
+  // refused before a byte is read.
+  if (weightSlots(ASCII_BYTE_COST * length) > most) {
+    throw new HeldRefusal("egress_too_large");
+  }
   const reader = request.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
   let text = "";
   let bytes = 0;
   try {
     await hold?.grow(1);
+    let granted = Date.now();
     for (;;) {
-      const { done, value } = await raced(reader.read(), signal);
-      if (done) {
+      const sender = senderLate(granted + SLOT_WAIT_MS - Date.now());
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await raced(Promise.race([reader.read(), sender.late]), signal);
+      } finally {
+        sender.clear();
+      }
+      if (chunk.done) {
         break;
       }
+      const value = chunk.value;
       bytes += value.byteLength;
       if (bytes > length) {
         throw new HeldRefusal("invalid_request");
       }
-      await hold?.grow(Math.ceil(TEXT_COST * bytes / UNIT_BYTES));
       tokens.feed(value);
+      if (weightSlots(parseWeight(bytes, tokens.count, tokens.ascii)) > most) {
+        throw new HeldRefusal("egress_too_large");
+      }
+      const units = Math.ceil(TEXT_COST * bytes / UNIT_BYTES);
+      if (hold !== null && units > hold.units) {
+        await hold.grow(units);
+        granted = Date.now();  // the new unit's clock starts at its grant
+      }
       text += decoder.decode(value, { stream: true });
     }
     text += decoder.decode();

@@ -35,6 +35,7 @@ import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 import { BODY_MAX, heldDeadlineMs, Hold, HeldRefusal, raced, weighedBody, weightSlots }
   from "./held";
+import { SLOT_WAIT_MS } from "../../owner/src/slots";
 
 /** The longest one forwarded request may run (§6: a policy write's bound on a stream). */
 export const FORWARD_DEADLINE_MS = 24 * 60 * 60 * 1000;
@@ -372,7 +373,19 @@ async function prepared(request: Request, length: number, credential: Credential
     return { refused: "egress_unpriced_option" };
   }
   // The call reserved for the model and tier this parse read, the only reading there is.
-  const reserved = await raced(reserve({ model: id, tier }), signal);
+  // The reserve, to the caller's stop and the pool's wait: an object that does not answer
+  // within it leaves the call `busy`, its units let go. A reserve already in flight when the
+  // caller stops may still commit at the owner's object, which then keeps the charge (the
+  // door settles a stopped call `unknown`), as before A′.
+  const reserving = new AbortController();
+  const late = setTimeout(() => reserving.abort(new HeldRefusal("busy")), SLOT_WAIT_MS);
+  let reserved: Reservation;
+  try {
+    reserved = await raced(reserve({ model: id, tier }),
+                           AbortSignal.any([signal, reserving.signal]));
+  } finally {
+    clearTimeout(late);
+  }
   if (!("metering" in reserved)) {
     return { refused: "egress_reserve_refused" };
   }
@@ -473,20 +486,18 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     if (declared === null || !/^[0-9]{1,15}$/.test(declared) || Number(declared) > BODY_MAX) {
       return refused("invalid_request", resealed);
     }
-    // Held from its first slot to its upload's last write: to its deadline, and its stop.
-    const deadline = AbortSignal.timeout(heldDeadlineMs(Number(declared)));
-    held = AbortSignal.any([cancelled.signal, deadline]);
-    const hold = new Hold(bound.owner, held);
+    // Held from its first unit to its upload's last write, to its stop; its sender's deadline
+    // is the read's (`readHeld`), its reserve's the pool's wait, its upload's its own.
+    const hold = new Hold(bound.owner, cancelled.signal);
     let ready: Prepared;
     try {
       ready = await prepared(request, Number(declared), credential, any, target.pathname,
-                             catalog, reserve, hold, held, () => hold.release());
+                             catalog, reserve, hold, cancelled.signal, () => hold.release());
     } catch (error) {
       hold.release();
       // Nothing was sent: the call is `failed`, whatever stopped it (M3).
       return refused(cancelled.signal.aborted ? "aborted"
-        : error instanceof HeldRefusal ? error.code
-          : deadline.aborted ? "invalid_request" : "internal", resealed);
+        : error instanceof HeldRefusal ? error.code : "internal", resealed);
     }
     if ("refused" in ready) {
       hold.release();
@@ -495,6 +506,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     ({ upload, model, listed } = ready);
     body = upload.body;
     // Past its deadline, or stopped, the upload ends there.
+    held = AbortSignal.any([cancelled.signal,
+                            AbortSignal.timeout(heldDeadlineMs(Number(declared)))]);
     held.addEventListener("abort", () => upload?.stop(), { once: true });
   }
   const headers = new Headers();
