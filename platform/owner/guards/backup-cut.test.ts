@@ -12,8 +12,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { cutParts, GENERATION_SIZES, lineBytes } from "../src/backup";
-import { chunkLine } from "../src/export";
+import { cutParts, GENERATION_SIZES } from "../src/backup";
+import { chunkLine, lineBytes } from "../src/export";
 import { CHUNK_BYTES } from "../src/manifest";
 import { CPU_LIMIT_MS, cpuMs } from "./cpu";
 

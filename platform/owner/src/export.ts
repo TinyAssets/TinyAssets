@@ -73,7 +73,11 @@ import { Invalid } from "./errors";
 
 export const EXPORT_FORMAT = "tinyassets-export";
 export const EXPORT_VERSION = 3;
-/** The rows' text one page gathers before it ends: well inside one RPC's 32 MiB. */
+/**
+ * The rows' bytes one page gathers before it ends, counted as a generation's part holds them
+ * (each line's UTF-8 and its newline): well inside one RPC's 32 MiB. `export.test.ts` ("a
+ * generation at production sizes") holds a page of three-byte characters to it.
+ */
 export const EXPORT_PAGE_BYTES = 1024 * 1024;
 /** Rows read at a time while a page fills. */
 const READ_BATCH = 256;
@@ -319,7 +323,8 @@ function value(cell: unknown): unknown {
 
 /** A page of the stream: its lines, the chunks it names, and where the next one starts. */
 export interface Page {
-  readonly lines: string[];
+  /** Its lines, each encoded once as a part holds it (`lineBytes`). */
+  readonly lines: Uint8Array[];
   /** The chunks section 3 names in this page, in order; their bytes are the caller's to add. */
   readonly chunks: { readonly sha256: string; readonly size: number }[];
   readonly next: Cursor | null;
@@ -343,14 +348,19 @@ export const EXPORT_LIFE_S = 7 * 86_400;
 /** Exports open at once; past them the oldest is ended. */
 export const EXPORTS_OPEN = 16;
 
+/** A stream's line as a part holds it: its UTF-8 and its newline, encoded once. */
+export function lineBytes(line: string): Uint8Array {
+  return new TextEncoder().encode(`${line}\n`);
+}
+
 /**
  * One page of a generation's base pass from `cursor`, read in the caller's unit: at most
- * `pageBytes` (`EXPORT_PAGE_BYTES`) of rows' text past the first row, or chunks up to
+ * `pageBytes` (`EXPORT_PAGE_BYTES`) of rows' bytes past the first row, or chunks up to
  * `chunkBytes` in all (at least one), then the next cursor, or null once the base is read.
  */
 export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: Header,
                          chunkBytes: number, pageBytes: number = EXPORT_PAGE_BYTES): Page {
-  const lines: string[] = [];
+  const lines: Uint8Array[] = [];
   const all = exported();
   const names = Object.keys(all);
   /** The section after every table: the chunks' bytes. */
@@ -359,8 +369,8 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
   let after = cursor.after;
   let bytes = 0;
   if (section < 0) {
-    lines.push(JSON.stringify({ t: "header", format: EXPORT_FORMAT, version: EXPORT_VERSION,
-                                ...header }));
+    lines.push(lineBytes(JSON.stringify({ t: "header", format: EXPORT_FORMAT,
+                                          version: EXPORT_VERSION, ...header })));
     section = 0;
     after = null;
   }
@@ -373,10 +383,10 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
       `SELECT ${[...new Set([...columns, ...key])].join(", ")} FROM ${table} ${where}` +
         `ORDER BY ${keyed} LIMIT ${READ_BATCH}`, ...(after ?? [])).toArray();
     for (const row of rows) {
-      const line = JSON.stringify({ t: "row", table, row: Object.fromEntries(
-        columns.map((column) => [column, value(row[column])])) });
+      const line = lineBytes(JSON.stringify({ t: "row", table, row: Object.fromEntries(
+        columns.map((column) => [column, value(row[column])])) }));
       lines.push(line);
-      bytes += line.length;
+      bytes += line.byteLength;
       after = key.map((column) => row[column] as string | number);
       if (bytes >= pageBytes) {
         return { lines, chunks: [], next: { section, after } };

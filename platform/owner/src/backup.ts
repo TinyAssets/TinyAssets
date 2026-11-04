@@ -42,7 +42,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import type { ChangeLog } from "./changelog";
 import {
-  chunkLine, decodeCursor, encodeCursor, endLine, EXPORT_PAGE_BYTES, readPage,
+  chunkLine, decodeCursor, encodeCursor, endLine, EXPORT_PAGE_BYTES, lineBytes, readPage,
 } from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
@@ -121,11 +121,6 @@ function dayStart(day: string): number {
 /** The owner's own offset into the night, in seconds. */
 export function spread(owner: string): number {
   return createHash("sha256").update(owner).digest().readUInt32BE(0) % MANIFEST_SPREAD_S;
-}
-
-/** A stream's line as a part holds it: its UTF-8 and its newline, encoded once. */
-export function lineBytes(line: string): Uint8Array {
-  return new TextEncoder().encode(`${line}\n`);
 }
 
 /**
@@ -564,7 +559,7 @@ export class Backups {
       }
       // A burst of whole base pages, each read in a unit of its own, with no outside call
       // between them; the unit that reads the last fixes E, the log's last seq then.
-      // Each line encoded once, as its part will hold it, so the burst is bounded by bytes.
+      // Each line encoded once (its page's), as its part will hold it: bounded by bytes.
       const lines: Uint8Array[] = [];
       let size = 0;
       let next: string | null = at.cursor;
@@ -581,10 +576,9 @@ export class Backups {
           return { read, last: read.next === null ? log.state().last : null, at: Date.now() };
         });
         for (const line of [...page.read.lines,
-                            ...page.read.chunks.map((chunk) => chunkLine(chunk))]) {
-          const bytes = lineBytes(line);
-          lines.push(bytes);
-          size += bytes.byteLength;
+                            ...page.read.chunks.map((chunk) => lineBytes(chunkLine(chunk)))]) {
+          lines.push(line);
+          size += line.byteLength;
         }
         if (page.read.next === null) {
           e = page.last;

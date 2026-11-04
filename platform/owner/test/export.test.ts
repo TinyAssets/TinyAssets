@@ -15,7 +15,9 @@ import { PLATFORM_CALLER, PLATFORM_ONLY } from "../src/admission";
 import {
   GENERATION_SIZES, MANIFEST_CEILING, MANIFEST_CONTINUE_S, PART_ENTRY, SEGMENT_ENTRY, spread,
 } from "../src/backup";
-import { EXPORT_LIFE_S, exported, NOT_EXPORTED } from "../src/export";
+import {
+  decodeCursor, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED, readPage,
+} from "../src/export";
 import type FilesService from "../../files/src/index";
 import {
   CHUNK_BYTES, CHUNK_GONE, type Files, GC_GRACE_S, INLINE_BYTES,
@@ -361,18 +363,48 @@ describe("a generation", () => {
 describe("a generation at production sizes (rs_cap §2.1)", () => {
   /** A row's most bytes (Durable Objects' SQLite limits), as `owner-bound.test.ts` costs it. */
   const ROW_MAX = 2_000_000;
-  /** A fixture line's most UTF-16 units: a notice row's line at its 1,000 characters. */
-  const WIDEST = 1_100;
+  /** A fixture line's most bytes: a notice row's at 1,000 three-byte characters, and newline. */
+  const WIDEST = 3_300;
+  /** Notices of 1,000 characters, every other one of three-byte characters (`€`). */
+  const notices3 = (o: Owner, count: number) => sqlIn(o.stub,
+    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) " +
+    "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', CASE WHEN i % 2 = 0 THEN " +
+    "printf('%.1000c', 'a') ELSE replace(printf('%.1000c', 'a'), 'a', '€') END FROM n", count);
+
+  it("reads each page of three-byte characters within its bytes, its lines whole", async () => {
+    const o = await owner();
+    await notices3(o, 2_000);
+    const pages = await runInDurableObject(o.stub, (_instance: OwnerDO, state) => {
+      const seen: { bytes: number; rows: number }[] = [];
+      for (let cursor = decodeCursor(null); ;) {
+        const page = readPage(state.storage.sql, cursor, { schema: MIGRATIONS.length,
+                                                           owner: "owner", at: 0, gen: "g", s: 1 },
+                              Number.MAX_SAFE_INTEGER, EXPORT_PAGE_BYTES);
+        const text = page.lines.map((line) => new TextDecoder().decode(line));
+        expect(text.every((line) => line.endsWith("\n") && JSON.parse(line) !== null)).toBe(true);
+        seen.push({ bytes: page.lines.reduce((sum, line) => sum + line.byteLength, 0),
+                    rows: text.filter((line) => line.includes('"table":"owner_notices"')).length });
+        if (page.next === null) {
+          return seen;
+        }
+        cursor = page.next;
+      }
+    });
+    console.log(`pages of ${pages.map((page) => page.bytes).join(", ")} bytes`);
+    // Counted in UTF-16, each page of these would hold about twice its bytes.
+    for (const page of pages) {
+      expect(page.bytes).toBeLessThan(EXPORT_PAGE_BYTES + WIDEST);
+    }
+    expect(pages.length).toBeGreaterThan(3);
+    expect(pages.reduce((sum, page) => sum + page.rows, 0)).toBe(2_000);
+  }, 120_000);
 
   it("finishes an owner of several bursts, read back exactly, each burst bounded by its " +
      "bytes and its row under a row's 2 MB", async () => {
     const o = await owner();
     // 14,000 notices of 1,000 characters, every other one of three-byte characters: about
     // 29 MB of base, so that each burst counts its UTF-8, not its UTF-16 (a third of it).
-    await sqlIn(o.stub,
-      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 14000) " +
-      "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', CASE WHEN i % 2 = 0 THEN " +
-      "printf('%.1000c', 'a') ELSE replace(printf('%.1000c', 'a'), 'a', '€') END FROM n");
+    await notices3(o, 14_000);
     const bursts: number[] = [];
     let entries = 0;
     const widest = { part: 0, segment: 0 };
@@ -411,15 +443,15 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     expect(made.lines.filter((line) => line.t === "row" && line["table"] === "owner_notices"))
       .toHaveLength(14_000);
     expect(digest(replay(made.lines))).toBe(made.atE);
-    // Several bursts, each at most the gather and its last page, counted in bytes: a page
-    // is counted in UTF-16 (`readPage`), so at most three bytes a unit. Counted in UTF-16,
-    // a burst of these would be over half again as large.
+    // Several bursts, each under the gather and its last page, every one counted in bytes
+    // (a page at most its bytes and the line that reached them). Counted in UTF-16, a burst
+    // of these would be over half again as large.
     console.log(`bursts of ${bursts.map((bytes) => (bytes / 2 ** 20).toFixed(1)).join(", ")} ` +
                 `MiB; the row at most ${rowMost} bytes, its widest entries ` +
                 `${JSON.stringify(widest)}`);
     expect(bursts.length).toBeGreaterThanOrEqual(3);
     for (const bytes of bursts) {
-      expect(bytes).toBeLessThan(GENERATION_SIZES.gather + 3 * (GENERATION_SIZES.page + WIDEST));
+      expect(bytes).toBeLessThan(GENERATION_SIZES.gather + GENERATION_SIZES.page + WIDEST);
     }
     // The row: under a row's 2 MB as it ran, and its lists' entries, at production's sizes
     // (a part's seven digits), within what the schema and the guard cost them at.
