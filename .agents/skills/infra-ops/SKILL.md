@@ -28,8 +28,10 @@ once; the profile persists the session.
 
 ## Cloudflare
 
-DNS/Worker/token operations. Prefer the **API** (`scripts/emergency_dns_flip.py`
-for DNS + Worker-route CRUD; `wrangler deploy` for Worker code) over dashboard
+DNS/Worker/token operations. Platform Workers deploy only through **Platform
+deploy** (`platform/deploy/checklist.md`); never `wrangler deploy` the old proxy
+(`deploy/cloudflare-worker`) by hand (`tasks.md` §9 R1). Prefer the **API**
+(`scripts/emergency_dns_flip.py` for DNS + Worker-route CRUD) over dashboard
 automation — the dashboard is a one-time gate to mint the API token. The Custom
 Token form uses react-select and is unreliable to automate (>5 tool calls without
 a green run → hand to the host). Full token scopes, rotation cadence, Monaco/Radix

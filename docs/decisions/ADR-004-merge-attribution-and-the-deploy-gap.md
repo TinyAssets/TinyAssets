@@ -92,8 +92,8 @@ Options, ranked, with what each costs:
    `github-merge-queue[bot]` and DOES trigger `build-image` → `deploy-prod`.
    So with the queue on, the deploy gap this ADR describes is closed by the
    queue itself. A user identity (the PAT) is needed only to *enter* the queue,
-   because an auto-merge armed by `GITHUB_TOKEN` never enqueues. Evidence is in
-   `docs/ops/org-transfer-runbook.md`.
+   because an auto-merge armed by `GITHUB_TOKEN` never enqueues. Evidence was in
+   the org-transfer runbook, deleted 2026-11-04 (git history).
 4. **Drop `strict`** — removes the re-sync race with a one-line protection
    change, but lets checks pass against a stale base so incompatible PR
    combinations can merge. On an automated high-frequency merge path that
