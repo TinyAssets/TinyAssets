@@ -10,7 +10,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium } from "../ci/classes";
+import { LARGE, medium, REPORTERS } from "../ci/classes";
 
 const PLATFORM = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = join(PLATFORM, "files");
@@ -189,6 +189,7 @@ const FILES_RING = JSON.stringify({
 export default defineConfig({
   test: {
     tags: [LARGE],
+    reporters: [...REPORTERS],
     projects: [
       {
         // Runs in workerd. OWNER is bound for the tests only: wrangler.jsonc gives the
