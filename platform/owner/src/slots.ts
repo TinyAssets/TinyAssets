@@ -71,27 +71,137 @@ export interface PoolState {
 
 interface Waiter {
   readonly units: number;
+  readonly owner: string;
   readonly grant: (slot: Slot) => void;
-  readonly refuse: () => void;
+  readonly refuse: (reason?: unknown) => void;
+}
+
+/**
+ * Waiters of one size class, fair across owners: each owner's calls first come first served,
+ * the owners with waiters taking turns (round-robin), the first in turn order served next and
+ * then sent to the back. Calls that name no owner are one owner's.
+ */
+class Turns {
+  /** Each owner's waiters, in turn order. */
+  readonly #queues = new Map<string, Waiter[]>();
+  length = 0;
+
+  push(waiter: Waiter): void {
+    const queue = this.#queues.get(waiter.owner);
+    if (queue === undefined) {
+      this.#queues.set(waiter.owner, [waiter]);
+    } else {
+      queue.push(waiter);
+    }
+    this.length += 1;
+  }
+
+  /** Each owner's oldest waiter, in turn order. */
+  *heads(): Generator<Waiter> {
+    for (const queue of this.#queues.values()) {
+      yield queue[0]!;
+    }
+  }
+
+  /** `waiter`, an owner's oldest, taken: its owner's turn is spent, to the back. */
+  take(waiter: Waiter): void {
+    const queue = this.#queues.get(waiter.owner)!;
+    queue.shift();
+    this.#queues.delete(waiter.owner);
+    if (queue.length > 0) {
+      this.#queues.set(waiter.owner, queue);
+    }
+    this.length -= 1;
+  }
+
+  remove(waiter: Waiter): boolean {
+    const queue = this.#queues.get(waiter.owner);
+    const at = queue?.indexOf(waiter) ?? -1;
+    if (queue === undefined || at < 0) {
+      return false;
+    }
+    queue.splice(at, 1);
+    if (queue.length === 0) {
+      this.#queues.delete(waiter.owner);
+    }
+    this.length -= 1;
+    return true;
+  }
+
+  /** How many of `owner`'s calls wait here. */
+  count(owner: string): number {
+    return this.#queues.get(owner)?.length ?? 0;
+  }
+
+  /**
+   * The full class's room for a newcomer of `owner`: the newest waiter of the owner waiting
+   * most is refused `busy`, unless that is `owner`'s own share already. So the waiters are
+   * shared without a fixed cap an owner.
+   */
+  makeRoom(owner: string): boolean {
+    let most: Waiter[] | null = null;
+    for (const queue of this.#queues.values()) {
+      if (most === null || queue.length > most.length) {
+        most = queue;
+      }
+    }
+    if (most === null || most.length <= this.count(owner) + 1) {
+      return false;
+    }
+    const evicted = most.at(-1)!;
+    this.remove(evicted);
+    evicted.refuse();
+    return true;
+  }
+}
+
+/**
+ * Units a call holds and grows as its need grows (`SlotPool.lease`; the gateway's `Hold`). A
+ * lease that holds units and cannot grow at once waits only if it is the pool's oldest holder
+ * (wait-die); any other gives back everything it holds and is refused `busy`, retryable and
+ * before anything it guards has begun. Only the oldest holder ever waits while it holds, so
+ * the waits form no cycle, and while it waits no other call takes past the reserve, so it is
+ * never starved.
+ */
+export interface Lease {
+  readonly units: number;
+  /** At least `total` units held, or `busy` (its units let go), or `signal`'s reason. */
+  grow(total: number, signal?: AbortSignal): Promise<void>;
+  release(): void;
+}
+
+/**
+ * Who asks for units, as `#fits` reads it: the owner, whether the hold is a larger one (more
+ * than one unit in all), and the lease that grows, if any.
+ */
+interface Asker {
+  readonly owner: string;
+  readonly large: boolean;
+  readonly lease: LeaseOf | null;
 }
 
 /**
  * A pool of `capacity` units, waits of at most `waitMs`, and `reserve` units only one-unit
  * holds take. At most `waiters` larger holds and `smallWaiters` one-unit holds wait at once,
  * each class its own cap, so larger holds waiting never get a small read refused (each its
- * Worker's own figure; four times the capacity unless it names one).
+ * Worker's own figure; four times the capacity unless it names one). A call may name its
+ * owner (the gateway's calls do; the owner object's isolate is one owner's): within each
+ * class the owners waiting take turns (`Turns`), and a full class makes room by refusing the
+ * newest waiter of the owner waiting most.
  *
  * **The one admission rule** (`#fits`): a call takes free units only where no call it must
  * not pass is waiting for them.
  * - A larger hold never takes the reserve.
  * - While a larger hold waits, a one-unit hold takes only the reserve, so the units one-unit
  *   holds took past it come back to the larger one as they are released (review M-b).
- * Two clauses of this same rule are to come, with the calls that grow what they hold:
- * - wait-die: a call that holds units may wait to grow only if it is the oldest holder, and
- *   while it waits a call holding nothing takes nothing past the reserve;
- * - an owner's share: an owner holding half the pool or more takes no more while another
- *   owner waits.
- * Each class's waiters are drained in order, the larger first, as the rule admits them.
+ * - While the oldest holder waits to grow (wait-die: only it may wait while it holds), no
+ *   other call takes past the reserve: a younger holder gives way, and a call holding nothing
+ *   takes only the reserve, as for a larger hold waiting (`rveg_report.md` V-M1).
+ * - While another owner waits, an owner holding half the pool or more takes no more until
+ *   that waiter is served: a share under contention, not a cap; alone, an owner may use it
+ *   all (V-H2).
+ * Each class's waiters are drained as the rule admits them, the oldest holder's growth first,
+ * then the larger, in turns by owner.
  */
 export class SlotPool {
   readonly capacity: number;
@@ -105,12 +215,17 @@ export class SlotPool {
   readonly #waitMs: number;
   readonly #waiters: number;
   readonly #smallWaiters: number;
-  /** One-unit holds waiting, and larger ones: each first come first served. */
-  readonly #small: Waiter[] = [];
-  readonly #large: Waiter[] = [];
-  /** Units held, by one-unit holds, and by larger ones. */
+  /** One-unit holds waiting, and larger ones: each in turns by owner. */
+  readonly #small = new Turns();
+  readonly #large = new Turns();
+  /** The oldest holder's growth, waiting: passed by no other call. */
+  #oldest: { asker: Asker; units: number; waiter: Waiter } | null = null;
+  /** The leases holding units, by age: the first is the oldest holder. */
+  readonly #holders = new Set<LeaseOf>();
+  /** Units held, by one-unit holds, and by larger ones; and by each owner. */
   #smallHeld = 0;
   #largeHeld = 0;
+  readonly #heldBy = new Map<string, number>();
   #peak = 0;
 
   constructor(capacity: number, waitMs: number = SLOT_WAIT_MS, waiters: number = 4 * capacity,
@@ -132,60 +247,162 @@ export class SlotPool {
     return this.#smallHeld + this.#largeHeld;
   }
 
-  /**
-   * Whether `units` fit now. A larger hold leaves the reserve free; a one-unit hold takes
-   * any free unit, but only the reserve while a larger hold waits.
-   */
-  #fits(units: number): boolean {
+  /** The most units one larger hold may take: it leaves the reserve free. */
+  get most(): number {
+    return Math.max(1, this.capacity - this.reserve);
+  }
+
+  /** Whether another owner than `owner` waits for units. */
+  #othersWait(owner: string): boolean {
+    const mine = this.#small.count(owner) + this.#large.count(owner)
+      + (this.#oldest?.asker.owner === owner ? 1 : 0);
+    return this.#small.length + this.#large.length + (this.#oldest === null ? 0 : 1) > mine;
+  }
+
+  /** The admission rule (see the class): whether `units` for `asker` fit now. */
+  #fits(units: number, asker: Asker): boolean {
     if (this.#held + units > this.capacity) {
       return false;
     }
-    if (units > 1) {
-      return this.#largeHeld + units <= this.capacity - this.reserve;
+    // The owner's share: half the pool or more, while another owner waits, takes no more.
+    if ((this.#heldBy.get(asker.owner) ?? 0) * 2 >= this.capacity
+        && this.#othersWait(asker.owner)) {
+      return false;
     }
-    return this.#large.length === 0 || this.#smallHeld + 1 <= this.reserve;
+    // While the oldest holder waits to grow (within its own share), no other call passes it
+    // but into the reserve.
+    const oldest = this.#oldest;
+    const passed = oldest !== null && oldest.asker !== asker
+      && ((this.#heldBy.get(oldest.asker.owner) ?? 0) * 2 < this.capacity
+          || !this.#othersWait(oldest.asker.owner));
+    if (asker.large) {
+      return !passed && this.#largeHeld + units <= this.capacity - this.reserve;
+    }
+    return (this.#large.length === 0 && !passed) || this.#smallHeld + 1 <= this.reserve;
   }
 
-  /** `units`, now or once free (first come first served in its class), or refused `busy`. */
-  acquire(units: number): Promise<Slot> {
+  /**
+   * `units` for `owner`, now or once free (its turn in its class, its own calls first come
+   * first served), or refused `busy`; `signal`, aborted, takes the call out of its queue at
+   * once.
+   */
+  acquire(units: number, owner = "", signal?: AbortSignal): Promise<Slot> {
     const most = this.capacity - this.reserve;
     if (!Number.isSafeInteger(units) || units < 1 || (units > 1 && units > most)) {
       throw new Error(`a call takes 1 to ${Math.max(1, most)} units, not ${units}`);
     }
-    const queue = units === 1 ? this.#small : this.#large;
-    if (queue.length === 0 && this.#fits(units)) {
-      return Promise.resolve(this.#take(units));
+    return this.#ask(units, { owner, large: units > 1, lease: null }, signal);
+  }
+
+  #ask(units: number, asker: Asker, signal?: AbortSignal): Promise<Slot> {
+    if (signal?.aborted === true) {
+      return Promise.reject(signal.reason);
     }
-    if (queue.length >= (units === 1 ? this.#smallWaiters : this.#waiters)) {
+    const queue = asker.large ? this.#large : this.#small;
+    if (queue.length === 0 && this.#fits(units, asker)) {
+      return Promise.resolve(this.#take(units, asker));
+    }
+    if (queue.length >= (asker.large ? this.#waiters : this.#smallWaiters)
+        && !queue.makeRoom(asker.owner)) {
       return Promise.reject(new SlotBusy());
     }
     return new Promise<Slot>((resolve, reject) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", stop);
+      };
       const waiter: Waiter = {
         units,
+        owner: asker.owner,
         grant: (slot) => {
-          clearTimeout(timer);
+          done();
           resolve(slot);
         },
-        refuse: () => reject(new SlotBusy()),
+        refuse: (reason?: unknown) => {
+          done();
+          reject(reason ?? new SlotBusy());
+        },
       };
-      const timer = setTimeout(() => {
-        const at = queue.indexOf(waiter);
-        if (at >= 0) {
-          queue.splice(at, 1);
-          waiter.refuse();
+      const leave = (reason?: unknown) => {
+        if (queue.remove(waiter)) {
+          waiter.refuse(reason);
           this.#drain();
         }
-      }, this.#waitMs);
+      };
+      const stop = () => leave(signal!.reason);
+      const timer = setTimeout(() => leave(), this.#waitMs);
+      signal?.addEventListener("abort", stop, { once: true });
       queue.push(waiter);
     });
   }
 
-  #take(units: number): Slot {
-    if (units === 1) {
-      this.#smallHeld += 1;
-    } else {
-      this.#largeHeld += units;
+  /** A lease of units for `owner`, empty: see `Lease`. */
+  lease(owner = ""): Lease {
+    return new LeaseOf(this, owner);
+  }
+
+  /** A holding lease's growth by `units` to `total`: now, the oldest holder's wait, or busy. */
+  grow(lease: LeaseOf, units: number, total: number, signal?: AbortSignal): Promise<Slot> {
+    if (signal?.aborted === true) {
+      return Promise.reject(signal.reason);
     }
+    const asker: Asker = { owner: lease.owner, large: total > 1, lease };
+    if (this.#fits(units, asker)) {
+      return Promise.resolve(this.#take(units, asker));
+    }
+    // Wait-die: only the oldest holder waits while it holds; any other gives way.
+    if (this.#holders.values().next().value !== lease || this.#oldest !== null) {
+      return Promise.reject(new SlotBusy());
+    }
+    return new Promise<Slot>((resolve, reject) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", stop);
+        if (this.#oldest?.waiter === waiter) {
+          this.#oldest = null;
+        }
+      };
+      const waiter: Waiter = {
+        units,
+        owner: lease.owner,
+        grant: (slot) => {
+          done();
+          resolve(slot);
+        },
+        refuse: (reason?: unknown) => {
+          done();
+          reject(reason ?? new SlotBusy());
+          this.#drain();
+        },
+      };
+      const stop = () => waiter.refuse(signal!.reason);
+      const timer = setTimeout(() => waiter.refuse(), this.#waitMs);
+      signal?.addEventListener("abort", stop, { once: true });
+      this.#oldest = { asker, units, waiter };
+    });
+  }
+
+  /** A lease that now holds units joins the holders, the youngest; one let go leaves. */
+  holding(lease: LeaseOf, held: boolean): void {
+    if (held) {
+      this.#holders.add(lease);
+      return;
+    }
+    this.#holders.delete(lease);
+    if (this.#oldest?.asker.lease === lease) {
+      this.#oldest.waiter.refuse();
+    }
+  }
+
+  #take(units: number, asker: Asker): Slot {
+    const large = asker.large;
+    if (large) {
+      this.#largeHeld += units;
+    } else {
+      this.#smallHeld += units;
+    }
+    const owner = asker.owner;
+    this.#heldBy.set(owner, (this.#heldBy.get(owner) ?? 0) + units);
     this.#peak = Math.max(this.#peak, this.#held);
     let held = true;
     return {
@@ -193,10 +410,16 @@ export class SlotPool {
       release: () => {
         if (held) {
           held = false;
-          if (units === 1) {
-            this.#smallHeld -= 1;
-          } else {
+          if (large) {
             this.#largeHeld -= units;
+          } else {
+            this.#smallHeld -= units;
+          }
+          const left = this.#heldBy.get(owner)! - units;
+          if (left === 0) {
+            this.#heldBy.delete(owner);
+          } else {
+            this.#heldBy.set(owner, left);
           }
           this.#drain();
         }
@@ -204,15 +427,31 @@ export class SlotPool {
     };
   }
 
-  /** The waiting granted in order: the larger head first, then one-unit holds. */
+  /**
+   * The waiting granted as the rule admits them, until it admits no more: the oldest holder's
+   * growth first, then the larger class, then one-unit holds, each in turns by owner (an
+   * owner the rule holds back is passed over; an owner's oldest call that does not fit waits
+   * for it, so a large call is never starved by smaller ones behind it).
+   */
   #drain(): void {
     for (let moved = true; moved;) {
       moved = false;
-      for (const queue of [this.#large, this.#small]) {
-        while (queue.length > 0 && this.#fits(queue[0]!.units)) {
-          const next = queue.shift()!;
-          next.grant(this.#take(next.units));
-          moved = true;
+      const oldest = this.#oldest;
+      if (oldest !== null && this.#fits(oldest.units, oldest.asker)) {
+        oldest.waiter.grant(this.#take(oldest.units, oldest.asker));
+        moved = true;
+      }
+      for (const [queue, large] of [[this.#large, true], [this.#small, false]] as const) {
+        for (const head of [...queue.heads()]) {
+          const asker: Asker = { owner: head.owner, large, lease: null };
+          if (this.#fits(head.units, asker)) {
+            queue.take(head);
+            head.grant(this.#take(head.units, asker));
+            moved = true;
+          } else if ((this.#heldBy.get(head.owner) ?? 0) * 2 < this.capacity
+                     || !this.#othersWait(head.owner)) {
+            break;  // within its share and not fitting: it waits for its units
+          }
         }
       }
     }
@@ -220,12 +459,68 @@ export class SlotPool {
 
   state(): PoolState {
     return { capacity: this.capacity, held: this.#held,
-             waiting: this.#small.length + this.#large.length, peak: this.#peak };
+             waiting: this.#small.length + this.#large.length + (this.#oldest === null ? 0 : 1),
+             peak: this.#peak };
   }
 
   /** A test's: the most held at once counted again from now. */
   resetPeak(): void {
     this.#peak = this.#held;
+  }
+}
+
+/** `SlotPool.lease`'s lease. */
+class LeaseOf implements Lease {
+  readonly owner: string;
+  readonly #pool: SlotPool;
+  readonly #slots: Slot[] = [];
+  #units = 0;
+  #released = false;
+
+  constructor(pool: SlotPool, owner: string) {
+    this.#pool = pool;
+    this.owner = owner;
+  }
+
+  get units(): number {
+    return this.#units;
+  }
+
+  async grow(total: number, signal?: AbortSignal): Promise<void> {
+    if (!Number.isSafeInteger(total) || total < 1 || (total > 1 && total > this.#pool.most)) {
+      throw new Error(`a lease holds 1 to ${this.#pool.most} units, not ${total}`);
+    }
+    while (!this.#released && this.#units < total) {
+      const need = total - this.#units;
+      let slot: Slot;
+      try {
+        slot = this.#units === 0 ? await this.#pool.acquire(need, this.owner, signal)
+          : await this.#pool.grow(this, need, total, signal);
+      } catch (error) {
+        if (error instanceof SlotBusy) {
+          this.release();  // die: everything it holds goes back
+        }
+        throw error;
+      }
+      if (this.#released) {
+        slot.release();
+        return;
+      }
+      this.#slots.push(slot);
+      if (this.#units === 0) {
+        this.#pool.holding(this, true);
+      }
+      this.#units += slot.units;
+    }
+  }
+
+  release(): void {
+    this.#released = true;
+    this.#pool.holding(this, false);
+    for (const slot of this.#slots.splice(0)) {
+      slot.release();
+    }
+    this.#units = 0;
   }
 }
 

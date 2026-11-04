@@ -148,6 +148,119 @@ describe("a pool of units", () => {
     slot.release();
   });
 
+  it("serves the owners waiting in turn, each owner's own calls first come first served",
+     async () => {
+    for (const units of [1, 2]) {
+      const pool = new SlotPool(2, 5000);
+      const holding = await pool.acquire(2, "a");
+      const order: string[] = [];
+      const wait = (owner: string, name: string) => pool.acquire(units, owner).then((slot) => {
+        order.push(name);
+        slot.release();
+      });
+      // Owner a queues three calls before owner b queues one: b is served second, not fourth.
+      const calls = [wait("a", "a1"), wait("a", "a2"), wait("a", "a3"), wait("b", "b1")];
+      await tick();
+      holding.release();
+      await Promise.all(calls);
+      expect(order).toEqual(["a1", "b1", "a2", "a3"]);
+    }
+  });
+
+  it("shares its waiters without a cap an owner: a newcomer takes the place of the owner " +
+     "waiting most", async () => {
+    const pool = new SlotPool(1, 5000, 3);
+    const holding = await pool.acquire(1, "a");
+    const flooded = [pool.acquire(1, "a"), pool.acquire(1, "a"), pool.acquire(1, "a")]
+      .map((call) => call.then((slot) => { slot.release(); return "landed"; },
+                               (error: Error) => error.message));
+    await tick();
+    // The waiters are full of a's: b's call takes the place of a's newest, which is busy.
+    const other = pool.acquire(1, "b").then((slot) => { slot.release(); return "landed"; });
+    await tick();
+    expect(pool.state().waiting).toBe(3);
+    // Another of a's, past the waiters, is busy itself: a already waits most.
+    expect((await pool.acquire(1, "a").catch((error: Error) => error)) instanceof SlotBusy)
+      .toBe(true);
+    holding.release();
+    expect(await Promise.all(flooded)).toEqual(["landed", "landed", BUSY]);
+    expect(await other).toBe("landed");
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  });
+
+  it("lets only the oldest holder wait to grow (wait-die): a younger one gives everything back",
+     async () => {
+    const pool = new SlotPool(6, 5000);
+    const older = pool.lease("a");
+    const younger = pool.lease("b");
+    await older.grow(2);
+    await younger.grow(2);
+    const fillers = [await pool.acquire(1, "c"), await pool.acquire(1, "c")];
+    // The younger cannot grow at once: it dies, its units back, told busy.
+    const died = await younger.grow(3).catch((error: Error) => error);
+    expect(died).toBeInstanceOf(SlotBusy);
+    expect([younger.units, pool.state().held]).toEqual([0, 4]);
+    // The oldest waits, and while it waits a newcomer takes nothing it waits for.
+    const refill = await pool.acquire(2, "c");
+    const grown = older.grow(3);
+    await tick();
+    let came = false;
+    const newcomer = pool.acquire(1, "d").then((slot) => { came = true; return slot; });
+    await tick();
+    expect(pool.state()).toMatchObject({ held: 6, waiting: 2 });
+    // One unit back: the oldest holder's, not the newcomer's, though the newcomer fits.
+    fillers[0]!.release();
+    await grown;
+    await tick();
+    expect([older.units, came, pool.state().waiting]).toEqual([3, false, 1]);
+    fillers[1]!.release();
+    const late = await newcomer;
+    older.release();
+    late.release();
+    refill.release();
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  });
+
+  it("holds an owner at half the pool or more to what it holds while another owner waits",
+     async () => {
+    const pool = new SlotPool(4, 5000);
+    const a1 = await pool.acquire(1, "a");
+    const a2 = await pool.acquire(1, "a");
+    const b1 = await pool.acquire(1, "b");
+    // b waits for two; a, at half the pool, takes no more until b is served.
+    const order: string[] = [];
+    const b2 = pool.acquire(2, "b").then((slot) => { order.push("b"); return slot; });
+    const a3 = pool.acquire(1, "a").then((slot) => { order.push("a"); return slot; });
+    await tick();
+    expect(order).toEqual([]);
+    a1.release();
+    b1.release();
+    await b2;
+    await a3;
+    expect(order).toEqual(["b", "a"]);
+    (await b2).release();
+    a2.release();
+    (await a3).release();
+    // Alone, an owner may take the whole pool.
+    const all = await Promise.all([1, 2, 3, 4].map(() => pool.acquire(1, "a")));
+    expect(pool.state().held).toBe(4);
+    all.forEach((slot) => slot.release());
+  });
+
+  it("takes a stopped wait out of the queue at once", async () => {
+    const pool = new SlotPool(1, 5000);
+    const held = await pool.acquire(1, "x");
+    const stop = new AbortController();
+    const waiting = pool.acquire(1, "a", stop.signal).catch((error: unknown) => error);
+    await tick();
+    expect(pool.state().waiting).toBe(1);
+    stop.abort(new Error("stopped"));
+    expect(((await waiting) as Error).message).toBe("stopped");
+    expect(pool.state().waiting).toBe(0);
+    held.release();
+    expect(pool.state().held).toBe(0);
+  });
+
   it("is one pool an isolate, its capacity and reserve its Worker's one figure", () => {
     const pool = isolatePool(7, 1, 7);
     expect(isolatePool(7, 1, 7)).toBe(pool);

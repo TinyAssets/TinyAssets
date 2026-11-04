@@ -865,15 +865,17 @@ account and no deploy.
   import resolved or the guard fails), so it outlived the in-object loop, which slice D
   deleted. **The
   reservation rule**: the call is reserved for the model it names, read where its API's
-  rules say (the door reads the body's top-level `model`, `HINT_KEYS`, once, and hands it
-  to `egressOpen` with the body's tier; a path names Google's), refused
+  rules say (since PR 3a the gateway's one parse reads the body's `model` and tier and asks
+  `egressReserve` through the door's `reserve` callback; a path names Google's), refused
   `egress_unknown_model` when the connection does not list it, and priced at that model's
   dearest rates (input at the dearest of uncached, cache-read and cache-write) by pi-ai's
   `calculateCost` over the catalog's records: the input held at that model's context
   window (a body's bytes do not bound its tokens: a file, a cached context or a prior
   response it names can be far larger), and the output at that model's cap and what the
   caps leave, which the gateway clamps every output-cap alias the API reads to; the
-  gateway refuses a body naming another model or tier (`egress_reservation_mismatch`); a call asking several choices (`n`, `candidateCount`)
+  one parse is the only reading of the body, so no other model or tier can be sent than the
+  one reserved, and a key the rules read spelled another way is refused
+  `egress_aliased_key`; a call asking several choices (`n`, `candidateCount`)
   is refused `egress_multiple_choices`, and one enabling a server-side tool the provider
   bills beyond tokens (a web search, code execution, a hosted MCP connector, a plugin) is
   refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`). **Price
@@ -2422,7 +2424,7 @@ R, S, M and W.
   windows read by verified ranges (`FILES` rechecks the whole chunk and answers the range,
   L7); a cut title or fetch field says so, and a search's cursor is an opaque base64url token
   (L5). The byte guard of `1d284b1b1` is gone (memshape_research.md §5).
-  Owed: PR 3a (the egress stream, another builder); after the deploy, PR 3b (bodies as
+  Owed: after the deploy, PR 3b (bodies as
   streams across RPC), PR 4 (inbound, sync, the files Worker's pool, the AST scan,
   `file_append`'s `request_id`), production baselines, and the `ui-test` live check reading
   a long message through to its end.
@@ -2445,6 +2447,69 @@ R, S, M and W.
   Owed: the production probe (whether the 128 MB counts uncollected garbage), each
   Worker's `memoryUsageBytes` to reset the pool and baseline, an `exceededMemory` alert, an
   edit's wall time a chunk with R2.
+
+- [x] MEMORY PR 3a, the egress door as a stream, re-planned as A′
+  (`egressshape_research.md` §5, superseding memshape's scanner): the doors stream
+  `request.body` unread, admit at `egressOpen` with no hints (the row open, uncharged) and pass
+  `reserve`, a function the gateway calls back over RPC, which answers `egressReserve` and
+  keeps a refusal's code and receipt for the door's answer. The owner charges an admitted
+  model call once, for the model and tier the gateway read (the schema's triggers set its
+  charge from none to held once, on an open row); an unreserved open row is open as any
+  other (rate, beats, settled `lost` charged nothing). The gateway's metered path takes
+  slots of its pool as its body arrives and by its weight (`GATEWAY_POOL_SLOTS` 16, PR 2's
+  `slots.ts`; `busy` past the wait; see the review below), reads `Content-Length` decoded
+  chunk-wise, parses once, refuses spelling
+  aliases (`aliased`: `generation_config.max_output_tokens` and case-folded keys, the open
+  metering bypass on Google calls), reads model and tier from that parse, awaits `reserve`,
+  clamps in place, encodes once and uploads through a `FixedLengthStream` in 64 KiB writes,
+  its slots let go at the upload's end.
+  `hintsOf`, `HINT_KEYS` and `egress_reservation_mismatch`'s use are gone.
+  Review rveg (REQUEST_CHANGES), fixed: a call is weighed by what its tree can cost, its bytes
+  and its structural tokens counted as they stream in (`gateway/src/held.ts`: 4.25 a byte with
+  a non-ASCII character, 2.25 without, 32 B a token, measured in workerd over 19 shapes, the
+  worst empty objects at 11.67 and nesting at 15 times the body), one weighing more than the
+  pool refused `egress_too_large` (H1), and the memory leg samples right after the parse, the
+  stringify and the encode for ten shapes, failing on an under-count; its slots are taken as
+  its bytes arrive, its weight's once the body is in, its read and its reserve stopped at its
+  caller's stop and past `heldDeadlineMs` (the pool's wait plus the body at 0.18 MiB/s, one
+  slot's worth a pool wait), and the pool's waiters are served round-robin by owner, sharing
+  the waiters without a fixed cap (H2); a key past ASCII at a read level, and a body `model`
+  where the path names it, refused (M1, M2); every end before the fetch settled `failed` (M3);
+  a body shorter than its `Content-Length` refused, the slots let go on a throw before the
+  fetch, a stopped call never reserved nor sent, and the deploy kit's one-after-another order
+  recorded in `deploy/checklist.md` (lows). Measuring it showed a dead local of a suspended
+  async function is still kept: the read now returns through `weighedBody`, so its text is
+  held once.
+  Verification rveg2 (REQUEST_CHANGES), fixed: a `\u` escape weighs as non-ASCII (Python's
+  `json.dumps` writes them; the leg's eleventh shape, escaped text, passes); growth is
+  wait-die in `slots.ts`'s one admission rule (`#fits`): only the oldest holder waits while it
+  holds, a younger one gives everything back `busy` before its reserve, and while the oldest
+  waits nothing else takes past the reserve; an owner holding half the pool or more takes no
+  more while another owner waits; each unit's worth of body must arrive within the pool's
+  wait of that unit's grant, its clock running only while the call waits on its sender, so
+  16 silent calls let go at their units' deadlines and another owner lands; a stopped wait
+  leaves the queue at once; the reserve waits at most the pool's wait (`busy`); a body is
+  refused `egress_too_large` as soon as its weight passes the pool. A stop racing a reserve
+  already in flight may still be charged whole, as before A′.
+  Owed, the verification's Lows (recorded, no code): a slow sender can game "oldest", holding
+  its first unit early so wait-die favours it (measured 16 % lower throughput at
+  saturation); a user-defined endpoint that reads its upload slowly holds the call's units
+  through the upload, bounded by `heldDeadlineMs`.
+  The memory leg's egress cases (`owner/memory/egress.mjs`, run by `leg.mjs`: the real door
+  and gateway in isolates of their own, sampled at the provider's checkpoints), measured in
+  workerd: the door at 16 against 4 MiB held -0.38 MiB, the gateway -0.01 MiB (each at most a
+  quarter chunk); the gateway uploading 4.25 MiB for 4 MiB and 16.08 MiB for 16 MiB (at most
+  1.05·S + 0.25 MiB); 0.03 MiB a call more in the gateway at 8 against 4 calls held (at most
+  0.25); a call behind a whole-pool upload lands, and is `busy` past the pool's wait; the
+  control (a door reading the body whole) reads 11.99 MiB more. A caller's stop now ends the
+  answer closed, not errored with its abort, so workerd's "Uncaught (in promise) AbortError"
+  per stopped call (14 in the doors' egress suite, on `main` too) is gone.
+  Owed: a sandbox's real upload rate, measured live, against `MIN_RATE`;
+  `egress_aliased_key`, `egress_reserve_refused`, `egress_too_large` and `busy` stay in
+  `forward.ts`'s own
+  table (`EGRESS_CODES`) and join `failure.ts`'s, and `egress_reservation_mismatch` leaves
+  it, at the next E2B template build (the runner bundles `failure.ts`, so a change to it is a
+  new template); live, `memoryUsageBytes` for the gateway and the doors.
 
 ## 10. The plan's later slices
 

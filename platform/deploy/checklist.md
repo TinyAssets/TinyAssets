@@ -150,6 +150,16 @@ It never counts as "absent".
   probe.
 - **Open the gates** in the control record when you are ready: canary owners first, then
   `outside: "on"`, and `inbound: true` for `/hooks/inbound`.
+- **Later deploys change the Workers one after another, never at once.** The kit deploys
+  `files, gateway, hooks, sandbox, owner, doors` in turn (`WORKERS` in `deploy.ts`), so
+  between two of them old and new versions serve together. A change to a contract between
+  them needs either an order in which each step is compatible with both sides, or a
+  maintenance window (the control record's maintenance gate closed for the run). Egress PR
+  3a (admit, then reserve) is such a change: the open request lost its `model` and `tier`, and
+  `EgressGateway.forward` takes a `reserve` callback in place of its metering, so a new
+  gateway behind old doors answers `internal` (settled `failed`, nothing sent) and a new
+  owner refuses an old door's open. It ships in the first deploy, where nothing serves yet; a
+  later change of that kind takes the window.
 
 ## Registrations you make by hand at the providers
 

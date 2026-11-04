@@ -36,6 +36,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { egressLeg } from "./egress.mjs";
+
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(OWNER, "package.json"));
 const MIB = 1024 * 1024;
@@ -344,6 +346,11 @@ try {
   driver.close();
   rmSync(work, { recursive: true, force: true });
 }
+// The egress cases (egress shape research §5, `egress.mjs`): the door and the gateway in
+// isolates of their own, after the owner's paths.
+const egress = await egressLeg();
+console.log(JSON.stringify({ egress: egress.rows }, null, 1));
+problems.push(...egress.problems);
 if (problems.length > 0) {
   console.error(problems.join("\n"));
   process.exit(1);

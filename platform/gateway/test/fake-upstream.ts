@@ -40,7 +40,8 @@
  *   that offers no tools (a compaction's summary), is answered as `cmd:echo`, billed so too.
  *
  * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
- * `say`, `decoded`, `hdr`, `jsonesc`); `auth.test` and `auth.openai.com` are token
+ * `say`, `decoded`, `hdr`, `jsonesc`, and `held`: the body read to its end, its length
+ * answered after 1.5 s, as a provider holds its answer until its first token); `auth.test` and `auth.openai.com` are token
  * endpoints; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
  * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
  * code: its module state (the cancel registry, the evil log) is the fake's, never the
@@ -381,6 +382,11 @@ async function forwardEcho(request: Request): Promise<Response> {
     // Answers only after 10 s (a timer, so workerd does not cut it as hung).
     return new Promise<Response>((resolve) =>
       setTimeout(() => resolve(new Response("late")), 10_000));
+  }
+  if (mode === "held") {
+    const length = (await request.arrayBuffer()).byteLength;
+    return new Promise<Response>((resolve) =>
+      setTimeout(() => resolve(Response.json({ length })), 1500));
   }
   if (mode === "redirect") {
     return new Response(null, { status: 307, headers: { location: "https://evil.test/steal" } });

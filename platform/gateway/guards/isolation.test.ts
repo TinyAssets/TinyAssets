@@ -11,7 +11,8 @@
  * - Imports, read from the AST and resolved as paths: a relative one must land in
  *   `gateway/src/` or be one of `OWNER_MODULES` (the owner grammar, its errors, and the
  *   wake records with their callback checks, which the doorbell applies again where it
- *   sends, and the records' file), however it is spelled
+ *   sends, the records' file, and the isolate's slot pool, which imports nothing),
+ *   however it is spelled
  *   (`./../../owner/...` included); a bare one must be pi-ai, `cloudflare:workers`, or
  *   `node:async_hooks` in `egress.ts` alone; absolute specifiers, dynamic `import()` and
  *   `require` are refused.
@@ -38,6 +39,7 @@ const KEYRING_HOME = "gateway/src/keyring.ts";
 /** The modules outside the gateway its source may reach, as resolved paths. */
 const OWNER_MODULES: readonly string[] = Object.freeze([
   "owner/src/text", "owner/src/errors", "owner/src/wake-records", "owner/wake-kinds.json",
+  "owner/src/slots",
 ]);
 const PI_AI = "@earendil-works/pi-ai";
 /** The runtime modules a source may import, and where. */

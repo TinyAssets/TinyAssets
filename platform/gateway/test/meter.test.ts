@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
-import { apiRules, fallbackList, freeCall, HINT_KEYS, manyChoices, paidTool, ruledApis,
+import { aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, ruledApis,
          servedPriced,
          tierMultiplier, unpricedOption } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
@@ -515,17 +515,7 @@ describe("the price beyond tokens (review round 3)", () => {
     expect(unpricedOption(apiRules(api)!, body)).toBe(false);
   });
 
-  it("reads the model where every API's rules say, and the door reads the same keys", () => {
-    for (const api of ["anthropic-messages", "openai-completions", "openai-responses",
-                       "mistral-conversations", "google-generative-ai"]) {
-      const rules = apiRules(api)!;
-      if (rules.model !== null) {
-        expect(HINT_KEYS).toContain(rules.model);
-      }
-      if (rules.tier !== null) {
-        expect(HINT_KEYS).toContain(rules.tier.key);
-      }
-    }
+  it("reads the model where every API's rules say", () => {
     const completions = apiRules("openai-completions")!;
     const pi = { stream_options: { include_usage: true } };
     expect(describes(completions, ["max_tokens"], pi, ["model"])).toBe(true);

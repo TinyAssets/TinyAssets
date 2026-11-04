@@ -399,8 +399,7 @@ describe("simultaneous runs", () => {
     const call = (run: string, connection: string,
                   as = run === onA.run.run_id ? onA.start : onB.start) =>
       r.stub.egressOpen(egress(as), {
-        run, connection, method: "GET", path: "/v1/models", bytes_hint: null, model: null,
-        tier: null });
+        run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
     // A run id alone authorizes nothing: one run's process naming the other's id, with its
     // own secret, spends on neither (slice R's review H-1).
     expect(await call(onB.run.run_id, b, onA.start))
