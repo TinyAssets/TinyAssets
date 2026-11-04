@@ -12,7 +12,11 @@ One module of the doors Worker SHALL hold every `getByName` call and build every
 - **THEN** the binder refuses it as a bug and no object is reached
 
 ### Requirement: Our authorization server issues the connectors' tokens
-The doors SHALL run their own OAuth authorization server, issuer `https://tinyassets.io`, on Workers OAuth Provider 1.2.4, with the resources `/mcp` (outside clients) and `/app` (first-party clients only). Client ID Metadata Documents SHALL be on; dynamic registration SHALL be on only behind its flag. Every authorization SHALL run the upstream sign-in with `prompt=login` and server-side PKCE, and SHALL take a sign-in only when at most 600 s old. Consent SHALL never be remembered.
+The doors SHALL run their own OAuth authorization server, issuer `https://tinyassets.io`, on Workers OAuth Provider 1.2.4, with the resources `/mcp` (outside clients) and `/app` (first-party clients only). Client ID Metadata Documents SHALL be on; dynamic registration SHALL be served only behind its flag (`DCR_ENABLED`), and then SHALL take a registration only when its `client_name` names a vendor `apps.json` marks `registration: "dcr"` (a vendor that offers no CIMD: the founder's ruling, the one pre-login exception to no anonymous traffic); any other registration SHALL be refused `invalid_client_metadata` before anything is stored. At sign-in the doors SHALL name the client's vendor from `apps.json`: a CIMD client by its document URL's host (verified), any other by a word of its registered name (unverified), none when no app matches; the grant's props carry it, and its binding every call. Every authorization SHALL run the upstream sign-in with `prompt=login` and server-side PKCE, and SHALL take a sign-in only when at most 600 s old. Consent SHALL never be remembered.
+
+#### Scenario: A vendor's client registers itself
+- **WHEN** `DCR_ENABLED` is true and clients register as "Gemini", then as "ChatGPT", then as "Some Agent"
+- **THEN** the first is registered and its sign-in names the vendor `gemini`, unverified; the other two are refused `400 invalid_client_metadata`
 
 #### Scenario: A client authorizes again after a revoke
 - **WHEN** the owner revoked an MCP client and the client starts a new authorization
@@ -86,6 +90,24 @@ A profile SHALL be data (`doors/profiles.json`) listing table tools in the table
 #### Scenario: A revoked client lists its tools
 - **WHEN** a revoked client sends `tools/list`
 - **THEN** it is answered `403` "outside client revoked"
+
+### Requirement: An outside client's agent is told the shared brain's rules
+`/mcp` SHALL serve the `custom` and `directory` profiles fixed MCP `instructions` (`CLIENT_INSTRUCTIONS`), and a run's door its own (`RUN_INSTRUCTIONS`). The client text's first 512 characters SHALL hold the brain's rules: the user's goals index read before acting, look here first (`search`, then `fetch`; `/workspace/index.md`) before asking, save what the user says (`file_append` adds, `file_edit` corrects), and claim an act with a new board row before taking it. It SHALL then say how to onboard a user new to TinyAssets (no `Onboarded` date and no time zone in `/workspace/USER.md`) and to offer, once, an assistant `agents_list` shows not connected, recording the offer or the no in `USER.md`. It SHALL name only the table's tools, never another vendor's, never "always", and SHALL ask no agent to save to its own memory or install anything.
+
+#### Scenario: A client connects
+- **WHEN** an outside client's MCP session initializes
+- **THEN** its `instructions` are `CLIENT_INSTRUCTIONS`, whose first 511 characters are the brain's rules
+
+### Requirement: An outside agent writes back what it learns
+`/mcp` SHALL serve every profile three file writers over the owner's file doors, each held to `write_files` and to the agent-trees rule: `file_append` (text added after a file's bytes, the file made when absent; it never changes a byte already there, so `destructiveHint: false`; it writes at the etag it read and reads again on a conflict, so two appends never lose each other, and a chunked file keeps its whole chunks), `file_write` (a whole file's text at its etag) and `file_edit` (the one exact occurrence of `old_text` replaced at the file's etag; none, or more than one, refused with how many), both destructive. `fetch`'s metadata SHALL carry the file's etag. `search`, `fetch` and `file_read` SHALL each say when to use them (what the user or their other agents already saved), and `collection_write` that a new row is a claim. File reads and writes SHALL wait for a new owner's starter seed, after the caller's authority is checked.
+
+#### Scenario: Two vendors' agents share one brain
+- **WHEN** one client appends a nonce to `/workspace/USER.md` and another client of the same owner searches for it
+- **THEN** the second finds `/workspace/USER.md`, its text holds the nonce and the seeded profile whole, and it corrects the line with `file_edit` at the etag `fetch` gave
+
+#### Scenario: Two agents claim one act at once
+- **WHEN** two clients `collection_write` the board row `offer:connect:grok` with `expected_etag: ""` together
+- **THEN** exactly one creates it and the other is answered the conflict, and one row exists
 
 ### Requirement: A main agent spends few calls
 `/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, deletions included, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the hooks Worker, refused once the owner's policy turns code mode off, on by default, or where the caller's profile lacks it).

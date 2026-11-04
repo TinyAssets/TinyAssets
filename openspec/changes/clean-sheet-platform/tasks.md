@@ -2143,6 +2143,106 @@ R, S, M and W.
 - [ ] Not built, by choice: a verification cache (each subscribe verifies again) and
   retries of a `5xx` (the wake settles failed; the next change rings).
 
+- [x] **Slice BRAIN: the doors half of the one shared brain** (`shared_brain_research.md`
+  §6.2, `autoconnect_research.md` §5.2, `goals_research.md` §6.2; the founder's DCR ruling).
+  - `CLIENT_INSTRUCTIONS` (`doors/src/instructions.ts`) on the `custom` and `directory`
+    profiles, `RUN_INSTRUCTIONS` kept for `run`: the brain's rules in the first 511
+    characters (the goals index before acting, look here before asking, `file_append` to
+    add and `file_edit` to correct, a new board row to claim an act), then onboarding for a
+    user with no `Onboarded` date and no time zone, and the once-only offer of an assistant
+    `agents_list` shows not connected. It names only our tools, never "always", and asks no
+    agent to save to its own memory or install anything.
+  - The writers: `file_append` (additive, `destructiveHint: false`: read, append and write
+    at one etag, reading again on a conflict; a chunked file's whole chunks kept, so any
+    size; at most 4 MiB of text a call), `file_write` (`fileWrite` takes text; off the
+    deferred list) and `file_edit` (one exact occurrence at the file's etag; none or several
+    refused with how many; files up to `WHOLE_BYTES`, the files plane's ceiling for a write
+    through the object), on every profile, each held to `write_files` and to the agent
+    trees. `fetch` answers the etag. `search`, `fetch`, `file_read`, `collection_write` and
+    `agents_list` say when to use them.
+  - File reads and writes await a new owner's seed (`#seededFor`, after the caller's
+    authority; the write-gate guard knows it), so a first `fetch` of `/workspace/USER.md`
+    finds the seeded profile and a first append lands after it.
+  - The vendor at sign-in (`doors/src/apps.ts`): a CIMD client by its document's host
+    (verified), any other by a word of its registered name (unverified), carried in the
+    grant's props and binding and kept on its grant row (migration 4: `vendor`,
+    `vendor_verified`, exported, capture triggers made again). `agents_list.apps` to every
+    grant, narrowed and run ones included: each `apps.json` app connected or not, with its
+    `connect_url`, and unmatched clients as one line. The owner app's connected apps page
+    names each app by vendor and links each one not connected.
+  - `platform/doors/apps.json`: Claude, ChatGPT (with dots and Codex), Grok Bot, Meta Muse,
+    Gemini and Cursor, each with match data, `registration`, connect link, sentence, steps
+    and copy text, its vendor page and the date read. ChatGPT's steps are the current
+    "Plugins, +, Add custom MCP server" (read 2026-11-04). The public `/connect` page is
+    built from it (`WebSite/site-react/app/connect`, its deploy triggered by the file).
+  - DCR (founder ruling): served only with `DCR_ENABLED`, and then a registration is taken
+    only when its `client_name` names a `dcr` vendor (Grok, Muse, Gemini, Cursor); a CIMD
+    vendor's name or none is refused `invalid_client_metadata`. Production stays
+    `DCR_ENABLED: "false"` until the go-ahead deploy.
+  - Plugins (`platform/plugins/`, `build.mjs`, `--check` in the doors' guard): ChatGPT and
+    Codex (Agent Plugins format, OpenAI extension, onboarding skill, first example prompt
+    "Set me up on TinyAssets") and Claude (`.claude-plugin/`, `.mcp.json`), each the MCP
+    server and the starter's `shared-brain`, `onboarding`, `goals`, `knowledge`,
+    `rooms-and-board` and `schedule` skills byte for byte. `SUBMIT.md` is the founder's
+    checklist; nothing was submitted.
+  - Starter version 5, text only: onboarding writes `SOUL.md` only for a TinyAssets agent
+    (an outside assistant has none); the shared-brain rule 2 names `file_append` and
+    `file_edit` and one append near the end of a conversation.
+  - The owner app follows a dropped socket (task #68): `follow()` attaches a new socket on
+    any close but the doors' final ones (4400, 4403, 4410, 4440) and calls back so the
+    sign-in panel and the talk view read their state again; `test:app` drops one.
+  - The local proof, in workerd (`doors/test/brain.test.ts`): two MCP clients of one owner,
+    a nonce one appends to `USER.md` found by the other's `search` and `fetch` with the
+    seeded profile whole, corrected by `file_edit` at its etag; two concurrent creates of
+    `offer:connect:grok` leave exactly one row and one conflict.
+- [ ] **Owed by BRAIN, live, after the go-ahead deploy** (proof is observed tool calls and
+  `writer` values, never an agent's say-so; the user's only acts are connect, sign in and
+  answer):
+  1. **Turn DCR on** in the go-ahead deploy (`DCR_ENABLED: "true"`), and confirm each `dcr`
+     vendor's real `client_name` matches `apps.json`'s `names` (Grok via Cursor's backend,
+     Gemini, Muse, Cursor): a name that does not match is refused loudly, and the fix is a
+     data line. Confirm Claude's and ChatGPT's CIMD hosts (`claude.ai`, `chatgpt.com` or
+     `openai.com`) in their first grant rows (`vendor_verified` 1).
+  2. **MCP-first onboarding** (`ui-test`, Claude.ai): a fresh account that never opened
+     the app; connect through `apps.json`'s Claude link; first message "help me plan this
+     week". Pass: a `fetch`/`file_read` of `/workspace/USER.md` is seen; the task is done,
+     then the onboarding questions in one message; `USER.md` gains the answers and
+     `Onboarded:` with Claude's client as `writer`; asked about other assistants, "ChatGPT"
+     gets `https://tinyassets.io/connect/#chatgpt`. Repeat with "what can you do?".
+  3. **The second vendor**: follow that link, connect ChatGPT, then in a fresh ChatGPT
+     conversation ask something that needs the profile. Pass: ChatGPT reads `USER.md`, runs
+     no onboarding again, and `agents_list.apps` shows both connected.
+  4. **Write-back and check-first, both ways** (`ui-test`, A/B): in A state a nonce
+     preference in passing; pass: a new `USER.md` version with A's client as `writer`. In a
+     fresh conversation in B ask what needs it without naming TinyAssets; pass: B calls
+     `search` or `fetch` first and uses the nonce. Then B to A.
+  5. **Collision**: ask A and B close together to make the same board item keyed by one
+     stable key. Pass: one `doing` row; the other reports it taken.
+  6. **The offer, once**: with Claude and ChatGPT connected and Grok not, say in Claude
+     "Grok told me something different yesterday". Pass: Claude answers first, offers Grok
+     once with `connect_url#grok`, `USER.md` gains "Offered to connect grok" and Grok on
+     "Assistants I use"; no offer again in a new Claude or a ChatGPT conversation; a no
+     (third account) records "Don't suggest connecting grok" and no agent offers it again;
+     connecting Grok shows it connected.
+  7. **Goals**: tell ChatGPT a nonce outcome in passing with one small task toward it; pass:
+     a `status: draft` goal page with ChatGPT's client as its first writer and a board row
+     naming it; confirm it in a fresh Claude.ai conversation; pass: Claude reads the goals
+     index first and sets `status: stable`.
+  8. **Layer ablation** (20 prompts each, direct, indirect and negative): connector only;
+     with instructions; with the plugin. Record the check rate, the false-trigger rate, and
+     the approval prompts each write-back costs on ChatGPT and Claude, `file_append`
+     against `file_edit`; whether claude.ai shows the `instructions`.
+  9. **By the founder's hand** (no driver here; name the app version and date): Grok Bot
+     (the `say` sentence; expected to fail while DCR is off, which is the point), Meta Muse,
+     Claude Duet and Gemini, steps 2 to 6 each.
+  10. **Codex CLI and Claude Code locally**, two agents on one repository: claims keyed
+     `repo:<name>:<area>`, one `doing` row, the other stops.
+- [ ] Owed by BRAIN to later slices: the submissions themselves (`platform/plugins/SUBMIT.md`,
+  the founder's outward act); Claude's plugin directory follows a repository, so the plugin
+  may need its own repository or a published subfolder; a Gemini listing would need a
+  profile without `converse`, rooms and mail (Google's agent-to-agent ban), outside
+  Direction 7 today; Muse's own client completing our OAuth before a listing is unverified.
+
 ## 8. Founder live test
 
 - [ ] The founder's real account, end to end. Fixes land in the new stack only.

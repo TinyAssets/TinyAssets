@@ -353,6 +353,13 @@ A grant's revision SHALL move on every owner set and revoke, and the owner's set
 - **WHEN** the owner sets a scoped grant's triples in another order, or sets a revoked grant revoked under a new name
 - **THEN** the generation is unchanged, and a revoked grant keeps its revoke's time as its fence
 
+### Requirement: Any agent of the owner sees which of the owner's apps are connected
+An MCP client's grant row SHALL keep the vendor its sign-in named (`vendor`, an `apps.json` id, and `vendor_verified`; migration 4), recorded at its first call or once it is named. `outsideAgents` (`agents_list`) SHALL answer every caller, a narrowed grant's and a run's included, `apps`: each `apps.json` app with whether a live MCP grant names it, how many, the latest seen, whether a CIMD host verified one, and its `connect_url` (the public connect page's anchor); and, when any, the live MCP grants no app matched as one line. A revoked grant SHALL not count; a vendor `apps.json` does not name SHALL be refused.
+
+#### Scenario: Two apps connected and one revoked
+- **WHEN** a Muse client (named) and a Claude client (CIMD) are connected and the owner revokes the Muse one
+- **THEN** `agents_list.apps` shows Claude connected and verified, Muse and the others not connected, each with its connect_url
+
 ### Requirement: A grant names its tool profile
 Each outside client's grant SHALL name its tool profile (`doors/profiles.json`): `custom` until the owner names `directory` in its session; a free row SHALL name `custom`. The object SHALL answer a caller's tools (`toolProfile`): a run's, the `run` profile; a client's, its grant's, where `custom` is the owner's policy's `tools.custom` (distinct names of the MCP door's tools), or every tool when the policy names none; `code` only while the owner's policy has `hooks.codemode` on, its default. Code mode SHALL be no capability: the profile and the switch are the owner's choice of it.
 
