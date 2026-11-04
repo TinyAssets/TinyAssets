@@ -75,14 +75,20 @@ import { forbids } from "./text";
 /**
  * The gateway as the egress door binds it (`EGRESS`, its `EgressGateway` entrypoint): one
  * sandbox model call forwarded, metered, under the sealed endpoints of the blob the owner's
- * object handed out for it; its metered outcome comes as one JSON line on `outcome`, and
- * closing `stop` aborts it. Every refusal is a fixed-code answer; the provider's own
- * answers pass through.
+ * object handed out for it, its body streamed; a model call's reservation made through
+ * `reserve` (the door's callback, a stub over RPC) once the gateway's one parse read the
+ * body's model and tier, null for a free call; its metered outcome comes as one JSON line on
+ * `outcome`, and closing `stop` aborts it. Every refusal is a fixed-code answer; the
+ * provider's own answers pass through.
  */
 export interface EgressService {
   forward(owner: string, connection: string, version: number, blob: string, request: Request,
-          metering: { readonly max_output_tokens: number; readonly input_bytes: number;
-                      readonly model: string; readonly tier: string | null } | null,
+          reserve: ((call: { readonly model: string; readonly tier: string | null }) =>
+            Promise<{ readonly metering: { readonly max_output_tokens: number;
+                                           readonly input_bytes: number;
+                                           readonly model: string;
+                                           readonly tier: string | null } }
+                    | { readonly refused: string }>) | null,
           stop: ReadableStream<Uint8Array>):
     Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }>;
 }
@@ -173,14 +179,13 @@ export const EGRESS_BEAT_S = 60;
  * The most bytes one request body a Worker reads whole: the platform's one ceiling for it,
  * the egress door's and the gateway's model call (`BODY_MAX`), the API's and the owner
  * surface's tool calls (`API_BODY_MAX`, `APP_BODY_MAX`), a row's or a message's body at
- * half of it (`BODY_BYTES_MAX`, room for its JSON escapes). A technical ceiling of the
- * isolate's 128 MB (Cloudflare's Workers limits), shared by its concurrent requests: the
- * text read (16 MiB, held at most twice that as UTF-16), its parsed copy (as much again)
- * and its serialized copy to the next hop (16 MiB) come to 80 MiB at worst, leaving room
- * for the rest. The live memory probe is owed to slice L. Streaming the bodies would lift
- * it; it is not taken, since a tool call's arguments are parsed whole as JSON at the door
- * and the gateway meters a model call's whole body, so neither path streams today.
- * Providers take more (Anthropic's Messages API, 128 MB), past what an isolate holds.
+ * half of it (`BODY_BYTES_MAX`, room for its JSON escapes). A technical ceiling, derived
+ * (egress shape research §2): the egress door streams a model call's body, and the gateway,
+ * which parses it once, holds at most `REQUEST_FACTOR` (4) times it while it reads, rewrites
+ * and uploads it, in slots of its pool (`GATEWAY_POOL_SLOTS`, 16 of one 4 MiB chunk); so the
+ * largest call is the whole pool, 64 MiB, at 4 times its bytes: 16 MiB (the gateway's
+ * `BODY_MAX`, held equal by its tests). Providers take more (Anthropic's Messages API,
+ * 128 MB), past what one pool holds.
  */
 export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
 

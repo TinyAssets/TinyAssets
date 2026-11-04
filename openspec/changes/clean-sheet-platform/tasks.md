@@ -865,15 +865,17 @@ account and no deploy.
   import resolved or the guard fails), so it outlived the in-object loop, which slice D
   deleted. **The
   reservation rule**: the call is reserved for the model it names, read where its API's
-  rules say (the door reads the body's top-level `model`, `HINT_KEYS`, once, and hands it
-  to `egressOpen` with the body's tier; a path names Google's), refused
+  rules say (since PR 3a the gateway's one parse reads the body's `model` and tier and asks
+  `egressReserve` through the door's `reserve` callback; a path names Google's), refused
   `egress_unknown_model` when the connection does not list it, and priced at that model's
   dearest rates (input at the dearest of uncached, cache-read and cache-write) by pi-ai's
   `calculateCost` over the catalog's records: the input held at that model's context
   window (a body's bytes do not bound its tokens: a file, a cached context or a prior
   response it names can be far larger), and the output at that model's cap and what the
   caps leave, which the gateway clamps every output-cap alias the API reads to; the
-  gateway refuses a body naming another model or tier (`egress_reservation_mismatch`); a call asking several choices (`n`, `candidateCount`)
+  one parse is the only reading of the body, so no other model or tier can be sent than the
+  one reserved, and a key the rules read spelled another way is refused
+  `egress_aliased_key`; a call asking several choices (`n`, `candidateCount`)
   is refused `egress_multiple_choices`, and one enabling a server-side tool the provider
   bills beyond tokens (a web search, code execution, a hosted MCP connector, a plugin) is
   refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`). **Price
@@ -2423,10 +2425,31 @@ R, S, M and W.
   L7); a cut title or fetch field says so, and a search's cursor is an opaque base64url token
   (L5). The byte guard of `1d284b1b1` is gone (memshape_research.md §5).
   Owed: PR 2 (chunk slots, chunk-wise `file_edit`, the tail pool, the differential
-  `test:memory` leg, ADR-037); PR 3a (the egress stream, another builder); after the
+  `test:memory` leg, ADR-037); after the
   deploy, PR 3b (bodies as streams across RPC), PR 4 (inbound, sync, the files Worker's
   pool, the AST scan, `file_append`'s `request_id`), production baselines, and the
   `ui-test` live check reading a long message through to its end.
+
+- [x] MEMORY PR 3a, the egress door as a stream, re-planned as A′
+  (`egressshape_research.md` §5, superseding memshape's scanner): the doors stream
+  `request.body` unread, admit at `egressOpen` with no hints (the row open, uncharged) and pass
+  `reserve`, a function the gateway calls back over RPC, which answers `egressReserve` and
+  keeps a refusal's code and receipt for the door's answer. The owner charges an admitted
+  model call once, for the model and tier the gateway read (the schema's triggers set its
+  charge from none to held once, on an open row); an unreserved open row is open as any
+  other (rate, beats, settled `lost` charged nothing). The gateway's metered path takes
+  ⌈4·CL / 4 MiB⌉ slots of its pool (`GATEWAY_POOL_SLOTS` 16, PR 2's `slots.ts`; `busy` past
+  the wait), reads at most `Content-Length` decoded chunk-wise, parses once, refuses spelling
+  aliases (`aliased`: `generation_config.max_output_tokens` and case-folded keys, the open
+  metering bypass on Google calls), reads model and tier from that parse, awaits `reserve`,
+  clamps in place, encodes once and uploads through a `FixedLengthStream` in 64 KiB writes,
+  its slots let go at the upload's end. `EGRESS_BODY_MAX` = `BODY_MAX` = pool ÷ 4, derived.
+  `hintsOf`, `HINT_KEYS` and `egress_reservation_mismatch`'s use are gone.
+  Owed: the research's memory-leg cases in PR 2's `test:memory` harness once it lands (doors
+  S vs 4S, the gateway waiting and uploading, N vs 2N, the pool); `egress_aliased_key`,
+  `egress_reserve_refused` and `busy` join `failure.ts`'s table, and
+  `egress_reservation_mismatch` leaves it, at the next E2B template build (the runner bundles
+  `failure.ts`); live, `memoryUsageBytes` for the gateway and the doors.
 
 ## 10. The plan's later slices
 

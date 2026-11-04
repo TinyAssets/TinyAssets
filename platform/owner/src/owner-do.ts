@@ -210,7 +210,8 @@ import {
 } from "./sync-ignore";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
-  Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
+  Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, type EgressReserved,
+  egressRequest, reserveRequest,
   type SandboxBinding, sandboxBinding, settleRequest,
 } from "./egress";
 import {
@@ -6392,6 +6393,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#door(() => {
       this.#bind(binding, "work", "egress");
       return this.#egress.open(sandboxBinding(binding.sandbox), r, clock());
+    });
+  }
+
+  /**
+   * An admitted model call's reserve (`Egress.reserve`), which the gateway asks for through
+   * the egress door once its one parse of the body read the model and tier: its metering, or
+   * its refusal's fixed code and receipt. Held to the egress binding that opened the call.
+   */
+  egressReserve(binding: Binding, request: unknown): Promise<EgressReserved | EgressRefusal> {
+    return this.#door(() => {
+      this.#bind(binding, "work", "egress");
+      return this.#egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
+                                  clock());
     });
   }
 

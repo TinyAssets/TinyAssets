@@ -16,14 +16,19 @@
  *    or altered one is refused before any object is reached, and the placeholder key is
  *    never read. No directory is read: the owner's object checks the secret's hash, its
  *    lease and the lease's expiry, strongly consistent. Then the maintenance gate.
- * 2. **Admission and the reservation**, at the owner's object (`egressOpen`): the lease,
- *    the generations, the connection, its sealed endpoints, the metered call, the rate and a
- *    model reservation by the loop's own rules; or a refusal's fixed code and receipt.
- * 3. **Forward**: the request, its path after `/c/<connection>`, to the gateway's egress
- *    entrypoint (`EGRESS.forward`), metered: held to the reservation's output cap and the
- *    body length it was reserved for, its every inbound credential (the placeholder with
- *    them) stripped and the sealed one injected. The provider's answer streams back as it
- *    comes, but for the gateway's own headers (`x-ta-resealed`, which goes to the settle).
+ * 2. **Admission**, at the owner's object (`egressOpen`): the lease, the generations, the
+ *    connection, its sealed endpoints, the metered call, its declared length and the rate;
+ *    or a refusal's fixed code and receipt. The door reads none of the body.
+ * 3. **Forward**: the request, its path after `/c/<connection>` and its body as the stream
+ *    it came as, to the gateway's egress entrypoint (`EGRESS.forward`), metered: the gateway
+ *    parses a model call's body once and calls back `reserve` (egress shape research, A′),
+ *    which the door answers with the object's `egressReserve`, the model reservation by the
+ *    loop's own rules for the model and tier that parse read; the call is then held to the
+ *    reservation's output cap and the body length it was admitted by, its every inbound
+ *    credential (the placeholder with them) stripped and the sealed one injected. A refused
+ *    reserve is answered with the object's own code and receipt. The provider's answer
+ *    streams back as it comes, but for the gateway's own headers (`x-ta-resealed`, which goes
+ *    to the settle).
  * 4. **Settle** (`egressSettle`), once, on every end, with the bytes this door streamed and
  *    the gateway's metered outcome (`unknown` unless the answer completed): `complete`,
  *    `aborted` (the client stopped reading, or left before the answer), `failed` (the
@@ -39,7 +44,7 @@
  * other door: the other doors serve `tinyassets.io` alone, and the object refuses the
  * sandbox binding at every door but the egress doors.
  */
-import { HINT_KEYS } from "../../gateway/src/api-rules";
+import type { Reservation } from "../../gateway/src/forward";
 import { EGRESS_BEAT_S, EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER,
          type Outcome, SANDBOX_HEADER } from "../../owner/src/network";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../owner/src/run-events";
@@ -96,25 +101,6 @@ const STATUS: Readonly<Record<EgressCode, number>> = Object.freeze({
   egress_length_required: 411, egress_rate: 429, egress_spend_refused: 402,
   egress_unknown_model: 404, egress_unpriced_option: 403, egress_too_large: 413,
 });
-/** A hint the door hands the owner's object: visible ASCII, as the object takes it. */
-const HINT = /^[\x21-\x7e]{1,256}$/;
-
-/** The body's top-level string at each of `HINT_KEYS`, as a reservation reads it, or null. */
-export function hintsOf(text: string): { model: string | null; tier: string | null } {
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return { model: null, tier: null };
-  }
-  const at = (key: string) => {
-    const value = typeof body === "object" && body !== null && !Array.isArray(body)
-      ? (body as Record<string, unknown>)[key] : undefined;
-    return typeof value === "string" && HINT.test(value) ? value : null;
-  };
-  return { model: at(HINT_KEYS[0]!), tier: at(HINT_KEYS[1]!) };
-}
-
 type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string }
   | { state: "failed" }
   | { state: "unknown" };
@@ -530,18 +516,17 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   const path = `${route[4]!}${url.search}`;
   const length = request.headers.get("content-length");
   const bytesHint = length !== null && LENGTH.test(length) ? Number(length) : null;
-  // A model call's body is read here, once: the object reserves the call for the model it
-  // names (and its tier), and the same bytes go on to the gateway.
-  const reads = request.method !== "GET" && request.method !== "HEAD" && bytesHint !== null;
-  if (reads && bytesHint! > EGRESS_BODY_MAX) {
+  // The door reads none of the body: it streams to the gateway, which parses a model call's
+  // once and asks the object to reserve it (`reserve`). Its declared length is what the
+  // call is admitted by, within the gateway's own bound.
+  const carries = request.method !== "GET" && request.method !== "HEAD";
+  if (carries && bytesHint !== null && bytesHint > EGRESS_BODY_MAX) {
     return refused("egress_too_large", STATUS.egress_too_large);
   }
-  const text = reads ? await request.text() : null;
-  const hints = text === null ? { model: null, tier: null } : hintsOf(text);
   let opened: Awaited<ReturnType<typeof stub.egressOpen>>;
   try {
     opened = await stub.egressOpen(binding, {
-      run, connection, method: request.method, path, bytes_hint: bytesHint, ...hints });
+      run, connection, method: request.method, path, bytes_hint: bytesHint });
   } catch (error) {
     const answer = refusal(error);
     if (answer === null) {
@@ -612,18 +597,50 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   timer = setTimeout(() => stop("deadline"), deadlineMs);
   request.signal?.addEventListener("abort", () => stop("aborted"));
 
+  // A model call's reserve, which the gateway calls back (a stub to this function) once its
+  // one parse read the body's model and tier; a refusal is kept, so the door answers the
+  // object's own code and receipt, whatever the gateway or the ended stream says.
+  let reserving: Promise<unknown> | null = null;
+  const kept: { rejected: Response | null } = { rejected: null };
+  const reserve = (call: { model: string; tier: string | null }): Promise<Reservation> => {
+    const asked = bound.stub.egressReserve(binding, { reservation, model: call.model,
+                                                      tier: call.tier })
+      .then((reserved): Reservation => {
+        if (reserved.ok) {
+          return { metering: reserved.metering };
+        }
+        kept.rejected = refused(reserved.code, STATUS[reserved.code], reserved.receipt);
+        return { refused: reserved.code };
+      }, (error: unknown): Reservation => {
+        const answer = refusal(error);
+        if (answer === null) {
+          throw error;
+        }
+        kept.rejected = refused(codeOf(answer.message), answer.status);
+        return { refused: codeOf(answer.message) };
+      });
+    reserving = asked.catch(() => undefined);
+    return asked;
+  };
   const forwarded = new Request(`${EGRESS_ORIGIN}${path}`, {
     method: request.method, headers: request.headers, redirect: "manual",
-    body: request.method === "GET" || request.method === "HEAD" ? null : text ?? request.body,
+    body: carries ? request.body : null,
   });
   const sent = env.EGRESS.forward(binding.owner, connection, version, blob, forwarded,
-                                  opened.metering, halt.readable);
+                                  opened.metered ? reserve : null, halt.readable);
   let answer: { response: Response; outcome: ReadableStream<Uint8Array> } | Outcome;
   try {
     answer = await Promise.race([sent, halted]);
   } catch {
     await finish("failed");
     return refused("egress_gateway_failed", 502);
+  }
+  await reserving;
+  if (kept.rejected !== null) {
+    // The object refused the reserve: its receipt is the call's, and nothing was sent.
+    sent.then((late) => late.response.body?.cancel(), () => undefined);
+    await finish(typeof answer === "string" ? answer : "failed");
+    return kept.rejected;
   }
   if (typeof answer === "string") {
     sent.then((late) => late.response.body?.cancel(), () => undefined);

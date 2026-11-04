@@ -215,17 +215,17 @@ function objectAt(body: Record<string, unknown>, path: readonly string[]): Recor
  * `body` with every output-cap alias the API reads at most `cap` (the one pi-ai sets set to
  * `cap` when the request names none); when it streams, the API's usage-report fields set,
  * so its answer reports what it used; and each option the API's rules default when absent
- * (`default_when_absent`) set to that value.
+ * (`default_when_absent`) set to that value. In place: `body` itself, changed and returned,
+ * so a call's request is held once (egress shape research §2), never copied.
  */
 export function clamped(meter: Meter, body: Record<string, unknown>, cap: number,
                         api?: string): Record<string, unknown> {
-  const copy = structuredClone(body);
   const rules = api === undefined ? null : apiRules(api);
   const aliases = [meter.output_field,
                    ...(rules?.outputs ?? []).filter((path) =>
                      path.join("\0") !== meter.output_field.join("\0"))];
   for (const [index, path] of aliases.entries()) {
-    const owner = index === 0 ? objectAt(copy, path.slice(0, -1)) : valueAt(copy, path.slice(0, -1));
+    const owner = index === 0 ? objectAt(body, path.slice(0, -1)) : valueAt(body, path.slice(0, -1));
     if (typeof owner !== "object" || owner === null || Array.isArray(owner)) {
       continue;
     }
@@ -238,18 +238,18 @@ export function clamped(meter: Meter, body: Record<string, unknown>, cap: number
     at[last] = typeof asked === "number" && Number.isSafeInteger(asked) && asked >= 1
       ? Math.min(asked, cap) : cap;
   }
-  if (rules !== null && (rules.stream === null || valueAt(copy, rules.stream) === true)) {
+  if (rules !== null && (rules.stream === null || valueAt(body, rules.stream) === true)) {
     for (const [path, value] of rules.usage) {
-      objectAt(copy, path.slice(0, -1))[path.at(-1)!] = value;
+      objectAt(body, path.slice(0, -1))[path.at(-1)!] = value;
     }
   }
   // An option left to the account's default, which pi-ai cannot price: the priced value.
   for (const { path, default_when_absent: value } of rules?.unpriced ?? []) {
-    if (value !== undefined && valueAt(copy, path) === undefined) {
-      objectAt(copy, path.slice(0, -1))[path.at(-1)!] = value;
+    if (value !== undefined && valueAt(body, path) === undefined) {
+      objectAt(body, path.slice(0, -1))[path.at(-1)!] = value;
     }
   }
-  return copy;
+  return body;
 }
 
 /** The catalog's record of the model `id`, on the sealed API, or null. */

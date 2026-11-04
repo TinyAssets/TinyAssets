@@ -11,11 +11,53 @@ import { describe, expect, it } from "vitest";
 import { builtinCatalog } from "../src/catalog";
 import { learnMeter, meteredRecord } from "../src/meter";
 import { Failure, guarded } from "../src/failure";
+import { BODY_MAX, GATEWAY_POOL_SLOTS, type Metering, type Reserve } from "../src/forward";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { open } from "../src/keyring";
+import { isolatePool } from "../../owner/src/slots";
 import { ALICE, ANTHROPIC, OPENAI, sealed } from "./support";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
+
+/** A reserve that grants each call it is asked for, as asked, recording each ask. */
+function granting(asked: unknown[] = [], fields: Partial<Metering> = {}): Reserve {
+  return async (call) => {
+    asked.push(call);
+    return { metering: { max_output_tokens: 100, input_bytes: BODY_MAX, model: call.model,
+                         tier: call.tier, ...fields } };
+  };
+}
+
+/** A model call's `POST`, its `Content-Length` declared as the egress door hands it on. */
+function posted(path: string, body: string, headers: Record<string, string> = {}): Request {
+  return new Request(`https://egress${path}`, {
+    method: "POST", body,
+    headers: { "content-length": String(new TextEncoder().encode(body).byteLength),
+               ...headers } });
+}
+
+/** An OpenAI Responses model whose output cap pi-ai sets, so its calls can be metered. */
+async function responsesModel(): Promise<{ id: string }> {
+  const catalog = builtinCatalog();
+  for (const record of catalog.provider("openai")!.getModels()
+    .filter((candidate) => candidate.api === "openai-responses")) {
+    if (await learnMeter(catalog, OPENAI.upstream, "sk-fwd", meteredRecord(
+      catalog, OPENAI.upstream, record.id)!) !== null) {
+      return record;
+    }
+  }
+  throw new Error("no metered Responses model in the catalog");
+}
+
+async function until(check: () => boolean): Promise<void> {
+  for (let tries = 0; tries < 500; tries++) {
+    if (check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("timed out");
+}
 
 async function rejected(run: () => Promise<unknown>): Promise<string> {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
@@ -136,16 +178,15 @@ describe("the gateway Worker", () => {
     expect(Object.getOwnPropertyNames(Gateway.prototype)).toContain("forward");
     const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
-    const metering = { max_output_tokens: 100, input_bytes: 10_000, model: "m", tier: null };
     const outcome = async (answer: { outcome: ReadableStream<Uint8Array> }) =>
       JSON.parse(await new Response(answer.outcome).text()) as { state: string };
     // A sealed endpoint that is not pi-ai's model call is never metered, so never sent.
     const listing = await egress.forward("alice", "c1", 1, blob, new Request(
-      "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }), metering,
+      "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }), granting(),
       new ReadableStream());
     expect(listing.response.status).toBe(403);
     expect(await outcome(listing)).toEqual({ state: "failed" });
-    // With no metering, a read of a sealed endpoint goes, and nothing else does.
+    // With no reserve, a read of a sealed endpoint goes, and nothing else does.
     const read = await egress.forward("alice", "c1", 1, blob, new Request(
       "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }), null,
       new ReadableStream());
@@ -155,16 +196,6 @@ describe("the gateway Worker", () => {
       "https://egress/v1/responses", { method: "POST", body: "{}" }), null, new ReadableStream());
     expect(unmetered.response.status).toBe(403);
     expect(await unmetered.response.json()).toMatchObject({ error: { code: "unmetered" } });
-    // A model call's body past the length it was reserved for is refused before anything is
-    // read of it; within it, the call goes on to its model's check.
-    const body = JSON.stringify({ model: "no-such-model", input: "hi" });
-    const call = (bytes: number) => egress.forward("alice", "c1", 1, blob, new Request(
-      "https://egress/v1/responses", { method: "POST", body }),
-      { max_output_tokens: 100, input_bytes: bytes, model: "no-such-model", tier: null }, new ReadableStream());
-    const long = await call(body.length - 1);
-    expect(await long.response.json()).toMatchObject({ error: { code: "invalid_request" } });
-    const fits = await call(body.length);
-    expect(await fits.response.json()).toMatchObject({ error: { code: "unknown_model" } });
     // The caller's stop aborts a provider request that has not answered yet.
     const started = Date.now();
     const stop = new IdentityTransformStream();
@@ -175,88 +206,43 @@ describe("the gateway Worker", () => {
     expect(await stopped.response.json()).toMatchObject({ error: { code: "upstream_unreachable" } });
     expect(Date.now() - started).toBeLessThan(5000);
     // A metered call cut before any answer may have reached the provider: never free.
-    const catalog = builtinCatalog();
-    let model: { id: string } | undefined;
-    for (const record of catalog.provider("openai")!.getModels()
-      .filter((candidate) => candidate.api === "openai-responses")) {
-      if (await learnMeter(catalog, OPENAI.upstream, "sk-fwd", meteredRecord(
-        catalog, OPENAI.upstream, record.id)!) !== null) {
-        model = record;  // one whose output cap pi-ai sets, so its calls can be metered
-        break;
-      }
-    }
+    const model = await responsesModel();
     const cutStop = new IdentityTransformStream();
-    const streamed = JSON.stringify({ model: model!.id, input: "hi", stream: true });
-    const cut = egress.forward("alice", "c1", 1, blob, new Request("https://egress/v1/responses", {
-      method: "POST", body: streamed, headers: { "x-fake-mode": "hang" } }),
-      { max_output_tokens: 100, input_bytes: streamed.length, model: model!.id, tier: null }, cutStop.readable);
+    const cut = egress.forward("alice", "c1", 1, blob, posted("/v1/responses", JSON.stringify({
+      model: model.id, input: "hi", stream: true }), { "x-fake-mode": "hang" }),
+      granting(), cutStop.readable);
     await new Promise((resolve) => setTimeout(resolve, 50));
     await cutStop.writable.getWriter().close();
     expect(await outcome(await cut)).toEqual({ state: "unknown" });
-    // What the reservation cannot bound is refused before anything is sent.
-    for (const [extra, code] of [[{ tools: [{ type: "web_search" }] }, "egress_unmetered_tool"],
-                                 [{ tools: [{ type: "function", name: "f" }] }, null]] as const) {
-      const text = JSON.stringify({ model: model!.id, input: "hi", ...extra });
-      const answer = await egress.forward("alice", "c1", 1, blob, new Request(
-        "https://egress/v1/responses", { method: "POST", body: text,
-                                          headers: { "x-fake-mode": "echo" } }),
-        { max_output_tokens: 100, input_bytes: text.length, model: model!.id, tier: null },
-        new ReadableStream());
-      if (code === null) {
-        expect(answer.response.status).toBe(200);
-        await answer.response.body?.cancel();
-      } else {
-        expect(await answer.response.json()).toMatchObject({ error: { code } });
-      }
-    }
-    // Only the call the owner's object reserved goes: its model, at its tier.
-    const sent = async (fields: Record<string, unknown>, tier: string | null,
-                        named = model!.id) => {
-      const text = JSON.stringify({ model: model!.id, input: "hi", stream: true, ...fields });
-      const answer = await egress.forward("alice", "c1", 1, blob, new Request(
-        "https://egress/v1/responses", { method: "POST", body: text }),
-        { max_output_tokens: 100, input_bytes: text.length, model: named, tier },
-        new ReadableStream());
-      return answer;
-    };
-    for (const [fields, tier, named] of [[{}, null, "another-model"],
-                                         [{ service_tier: "priority" }, null, model!.id],
-                                         [{}, "priority", model!.id],
-                                         [{ service_tier: 2 }, null, model!.id]] as const) {
-      const answer = await sent(fields, tier, named);
-      expect(await answer.response.json())
-        .toMatchObject({ error: { code: "egress_reservation_mismatch" } });
-    }
-    expect(await (await sent({ service_tier: "scale" }, "scale")).response.json())
-      .toMatchObject({ error: { code: "egress_unpriced_option" } });
     // A priority call is priced as pi-ai prices it, above the standard call's price.
+    const sent = (fields: Record<string, unknown>) => egress.forward("alice", "c1", 1, blob,
+      posted("/v1/responses", JSON.stringify({ model: model.id, input: "hi", stream: true,
+                                                ...fields })), granting(),
+      new ReadableStream());
     const settledAt = async (answer: Awaited<ReturnType<typeof sent>>) => {
       await answer.response.text();
       return JSON.parse(await new Response(answer.outcome).text()) as
         { state: string; cost: number };
     };
-    const standard = await settledAt(await sent({ service_tier: "default" }, "default"));
-    const priority = await settledAt(await sent({ service_tier: "priority" }, "priority"));
+    const standard = await settledAt(await sent({ service_tier: "default" }));
+    const priority = await settledAt(await sent({ service_tier: "priority" }));
     expect(standard.state).toBe("succeeded");
     expect(priority.state).toBe("succeeded");
     expect(priority.cost).toBeGreaterThanOrEqual(standard.cost * 2 - 1e-12);
     // An answer naming no tier was served at the account's default, maybe priority: it
     // settles at the dearest the API allows.
-    const unnamed = await settledAt(await sent({}, null));
+    const unnamed = await settledAt(await sent({}));
     expect(unnamed.state).toBe("succeeded");
     expect(unnamed.cost).toBeCloseTo(standard.cost * 2.5, 12);
     // The first event's echoed `auto` is not the served tier: `default` at the end is ×1.
-    const auto = await settledAt(await sent({ service_tier: "auto" }, "auto"));
+    const auto = await settledAt(await sent({ service_tier: "auto" }));
     expect(auto.state).toBe("succeeded");
     expect(auto.cost).toBeCloseTo(standard.cost, 12);
     // Provider beta headers, which can widen a call past its reservation, are stripped.
-    const betaText = JSON.stringify({ model: model!.id, input: "hi" });
-    const beta = await egress.forward("alice", "c1", 1, blob, new Request(
-      "https://egress/v1/responses", { method: "POST", body: betaText, headers: {
+    const beta = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses",
+      JSON.stringify({ model: model.id, input: "hi" }), {
         "x-fake-mode": "echo", "anthropic-beta": "context-1m", "openai-beta": "assistants=v2",
-        "x-vendor-beta": "on", "x-kept": "yes" } }),
-      { max_output_tokens: 100, input_bytes: betaText.length, model: model!.id, tier: null },
-      new ReadableStream());
+        "x-vendor-beta": "on", "x-kept": "yes" }), granting(), new ReadableStream());
     const echoed = await beta.response.json() as { headers: Record<string, string> };
     expect(echoed.headers["x-kept"]).toBe("yes");
     for (const name of ["anthropic-beta", "openai-beta", "x-vendor-beta"]) {
@@ -275,15 +261,11 @@ describe("the gateway Worker", () => {
         break;
       }
     }
-    const message = async (served: string | null, fields: Record<string, unknown> = {}) => {
-      const text = JSON.stringify({ model: named!.id, max_tokens: 50, stream: true,
-                                    messages: [{ role: "user", content: "cmd:echo" }],
-                                    ...fields });
-      const answer = await egress.forward("alice", "c2", 1, anthropic, new Request(
-        "https://egress/v1/messages", { method: "POST", body: text,
-                                         headers: served === null ? {}
-                                           : { "x-fake-served-tier": served } }),
-        { max_output_tokens: 100, input_bytes: text.length, model: named!.id, tier: null },
+    const message = async (served: string | null) => {
+      const answer = await egress.forward("alice", "c2", 1, anthropic, posted("/v1/messages",
+        JSON.stringify({ model: named!.id, max_tokens: 50, stream: true,
+                         messages: [{ role: "user", content: "cmd:echo" }] }),
+        served === null ? {} : { "x-fake-served-tier": served }), granting(),
         new ReadableStream());
       const streamed = await answer.response.text();
       return { streamed, outcome: JSON.parse(await new Response(answer.outcome).text()) as
@@ -295,17 +277,152 @@ describe("the gateway Worker", () => {
     expect((await message("standard")).outcome.state).toBe("succeeded");
     expect((await message("priority")).outcome).toEqual({ state: "unknown" });
     const refused = await egress.forward("", "c1", 1, blob, new Request("https://egress/v1/models"),
-                                         metering, new ReadableStream());
+                                         granting(), new ReadableStream());
     expect(refused.response.status).toBe(400);
-    await expect(egress.forward("alice", "c1", 1, blob, new Request("https://egress/v1/models"),
-                                { max_output_tokens: 0, input_bytes: 1, model: "m", tier: null },
-                                new ReadableStream()))
-      .resolves.toMatchObject({ response: expect.any(Response) });
     // The owner's own entrypoint forwards unmetered (its MCP client's, tasks 4 M).
     const owned = await gateway.forward("alice", "c1", 1, blob, new Request(
       "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }));
     expect(owned.status).toBe(200);
   }, 30_000);
+
+  it("reserves a model call for the model and tier its one parse read, wherever the keys lie",
+     async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const model = await responsesModel();
+    const asked: unknown[] = [];
+    const refusing: Reserve = async (call) => {
+      asked.push(call);
+      return { refused: "egress_spend_refused" };
+    };
+    const call = async (text: string, reserve: Reserve = refusing) => egress.forward(
+      "alice", "c1", 1, blob, posted("/v1/responses", text, { "x-fake-mode": "echo" }),
+      reserve, new ReadableStream());
+    // A tier the body names, or none (null); the last of duplicate keys, as JSON.parse reads
+    // them and as the provider receives the gateway's own parse; a model after a field of
+    // almost the whole bound.
+    const large = "x".repeat(BODY_MAX - 200);
+    for (const [text, expected] of [
+      [JSON.stringify({ model: model.id, input: "hi" }), { model: model.id, tier: null }],
+      [JSON.stringify({ model: model.id, input: "hi", service_tier: "priority" }),
+       { model: model.id, tier: "priority" }],
+      [`{"model":"another-model","service_tier":"priority","input":"hi","model":${
+        JSON.stringify(model.id)},"service_tier":"flex"}`, { model: model.id, tier: "flex" }],
+      [`{"input":"${large}","service_tier":"default","model":${JSON.stringify(model.id)}}`,
+       { model: model.id, tier: "default" }]] as const) {
+      asked.length = 0;
+      const answer = await call(text);
+      // The object's refusal reaches the caller, and nothing is sent.
+      expect([answer.response.status, await answer.response.json()]).toEqual(
+        [403, { error: { code: "egress_reserve_refused", message: "egress_reserve_refused" } }]);
+      expect(asked).toEqual([expected]);
+    }
+    // What the reservation cannot bound, or what is not the call, is refused before any
+    // reserve: none is asked for, so none is charged.
+    asked.length = 0;
+    for (const [text, code] of [
+      ["not json", "invalid_request"],
+      [JSON.stringify({ model: "no-such-model", input: "hi" }), "unknown_model"],
+      [JSON.stringify({ model: model.id, input: "hi", tools: [{ type: "web_search" }] }),
+       "egress_unmetered_tool"],
+      [JSON.stringify({ model: model.id, input: "hi", service_tier: 2 }),
+       "egress_unpriced_option"],
+      [JSON.stringify({ model: model.id, input: "hi", service_tier: "scale" }),
+       "egress_unpriced_option"],
+      [JSON.stringify({ model: model.id, input: "hi", MAX_OUTPUT_TOKENS: 999_999 }),
+       "egress_aliased_key"],
+      [JSON.stringify({ model: model.id, input: "hi", maxOutputTokens: 999_999 }),
+       "egress_aliased_key"]] as const) {
+      expect(await (await call(text)).response.json()).toMatchObject({ error: { code } });
+    }
+    expect(asked).toEqual([]);
+    // A body past its declared length, or one with none, or one past the bound, is refused
+    // as it is read; so is one past the length the object reserved it at.
+    const text = JSON.stringify({ model: model.id, input: "hi" });
+    const declared = (length: string | null, body: string = text) => egress.forward(
+      "alice", "c1", 1, blob, new Request("https://egress/v1/responses", {
+        method: "POST", body: new Blob([body]).stream(),
+        headers: length === null ? {} : { "content-length": length } }),
+      granting(asked), new ReadableStream());
+    for (const length of [String(text.length - 1), null, String(BODY_MAX + 1), "-1"]) {
+      expect(await (await declared(length)).response.json())
+        .toMatchObject({ error: { code: "invalid_request" } });
+    }
+    expect(asked).toEqual([]);
+    expect(await (await call(text, granting([], { input_bytes: text.length - 1 }))).response
+      .json()).toMatchObject({ error: { code: "invalid_request" } });
+    // An object that reserved another call than it was asked is the platform's bug: loud.
+    const other: Reserve = async (asking) => ({ metering: {
+      max_output_tokens: 10, input_bytes: BODY_MAX, model: "another-model", tier: asking.tier } });
+    const wrong = await call(text, other);
+    expect([wrong.response.status, await wrong.response.json()])
+      .toEqual([500, { error: { code: "internal", message: "internal" } }]);
+  }, 60_000);
+
+  it("sends the provider the clamped parse as bytes, with its Content-Length", async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const model = await responsesModel();
+    const asked = { model: model.id, input: [{ role: "user", content: "— every 😀" }],
+                    max_output_tokens: 900_000_000, temperature: 0.5 };
+    const answer = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses",
+      JSON.stringify(asked), { "x-fake-mode": "echo" }), granting([], { max_output_tokens: 77 }),
+      new ReadableStream());
+    const echoed = await answer.response.json() as { body: string;
+                                                    headers: Record<string, string> };
+    const expected = JSON.stringify({ ...asked, max_output_tokens: 77 });
+    expect(echoed.body).toBe(expected);
+    expect(echoed.headers["content-length"])
+      .toBe(String(new TextEncoder().encode(expected).byteLength));
+    expect(echoed.headers["transfer-encoding"]).toBeUndefined();
+  });
+
+  it("holds its slots while it reads, rewrites and uploads, never across the provider's wait",
+     async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const model = await responsesModel();
+    const pool = isolatePool(GATEWAY_POOL_SLOTS);
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+    // A call of the whole bound takes the whole pool while its reserve is pending.
+    let grant: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => { grant = resolve; });
+    const whole = JSON.stringify({ model: model.id, input: "x".repeat(BODY_MAX - 200) });
+    const first = egress.forward("alice", "c1", 1, blob, posted("/v1/responses", whole,
+      { "x-fake-mode": "held" }), async (call) => {
+      await pending;
+      return granting()(call);
+    }, new ReadableStream());
+    await until(() => pool.state().held === GATEWAY_POOL_SLOTS);
+    // The next waits, first come first served, as many as may wait; one more is `busy`.
+    const small = JSON.stringify({ model: model.id, input: "hi" });
+    const refusing: Reserve = async () => ({ refused: "egress_spend_refused" });
+    const waiting = Array.from({ length: 4 * GATEWAY_POOL_SLOTS }, () => egress.forward(
+      "alice", "c1", 1, blob, posted("/v1/responses", small), refusing,
+      new ReadableStream()));
+    await until(() => pool.state().waiting === 4 * GATEWAY_POOL_SLOTS);
+    const busy = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses", small),
+                                      refusing, new ReadableStream());
+    expect([busy.response.status, busy.response.headers.get("retry-after"),
+            await busy.response.json()])
+      .toEqual([503, "1", { error: { code: "busy", message: "busy" } }]);
+    // Reserved, the first uploads and lets its slots go at the upload's end: the waiting
+    // calls land while the provider still holds its answer.
+    let answeredYet = false;
+    void first.then(() => { answeredYet = true; });
+    grant();
+    for (const answer of await Promise.all(waiting)) {
+      expect(await answer.response.json()).toMatchObject({
+        error: { code: "egress_reserve_refused" } });
+    }
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+    expect(answeredYet).toBe(false);
+    const answered = await first;
+    // The provider read the whole upload: the call as clamped, its output cap added.
+    expect(await answered.response.json()).toEqual({ length: new TextEncoder().encode(
+      JSON.stringify({ ...JSON.parse(whole), max_output_tokens: 100 })).byteLength });
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  }, 60_000);
 
   it("gives the doors' entrypoint only the connect steps", async () => {
     // The doors' own tests reach it over their real `GATEWAY` binding; here, its surface.
