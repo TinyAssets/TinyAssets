@@ -23,6 +23,7 @@ import { PAGE_BYTES } from "../src/pages";
 import { customTools, validate } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure } from "./support";
+import { BOUNDED_TIMEOUT_MS } from "./worker";
 
 /** The owner turns code mode on or off, and names its own `custom` tools, in its session. */
 async function setPolicy(r: Rig, codemode: boolean, custom?: string[]): Promise<void> {
@@ -148,16 +149,19 @@ describe("the code door", () => {
   it("stops a script past its wall time", async () => {
     const r = await rig(env.BOUNDED as unknown as DurableObjectNamespace<OwnerDO>);
     await setPolicy(r, true);
-    const started = Date.now();
+    const before = Date.now();
     const looped = await r.stub.codeRun(r.bind(null), { script: lines(
       "for (let n = 0; n < 3; n++) {",
       "  await tools.collection_write({ collection: 'board', row_id: 'r' + n, body: 'b',",
       "    expected_etag: '', private: false });",
       "}",
       "for (;;) { await tools.agents_list({}); }") });
-    expect(Date.now() - started).toBeLessThan(10_000);
-    expect(looped).toMatchObject({ ok: false, error: { kind: "timeout",
-                                                       message: /timed out after 2000 ms/ } });
+    // Wall time is the property: the script ran to its deadline, never stopped early, and
+    // was stopped by it, the deadline the code enforces. A script that ran on would hit
+    // this test's class budget instead; no hand number stands in for either.
+    expect(Date.now() - before).toBeGreaterThanOrEqual(BOUNDED_TIMEOUT_MS);
+    expect(looped).toMatchObject({ ok: false, error: {
+      kind: "timeout", message: new RegExp(`timed out after ${BOUNDED_TIMEOUT_MS} ms`) } });
     expect(looped.calls.ok).toBeGreaterThan(1);
     // Which writes landed before the stop; the reads are only counted.
     expect(looped.landed).toEqual([{ name: "collection_write", status: "ok", count: 3 }]);

@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
-import { BUSY } from "../src/slots";
+import { BUSY, SLOT_WAIT_MS } from "../src/slots";
 import { LEDGER_LIMITS, type Ledger, mailRecord, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import type { ArchivingOwnerDO } from "./worker";
@@ -612,10 +612,13 @@ describe("the archive lane", () => {
     try {
       await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
       // Refused at once, never waiting on the pool inside the alarm: no failure counted, no
-      // notice while the hot set is below its ceiling, nothing moved.
-      const started = Date.now();
+      // notice while the hot set is below its ceiling, nothing moved. The pool's units stay
+      // held through the pass, so a pass that waited would be refused only by the pool's own
+      // timer, `SLOT_WAIT_MS` on: finishing inside it is the never-waiting, by the code's
+      // constant, not a hand-set figure.
+      const before = Date.now();
       await lane();
-      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(Date.now() - before).toBeLessThan(SLOT_WAIT_MS);
       expect(await usage()).toEqual({ fails: 0, error: null });
       expect(await told()).toBe(0);
       expect(await sqlIn(r.stub, "SELECT * FROM archive_segments")).toEqual([]);
