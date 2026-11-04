@@ -984,6 +984,71 @@ test("a leaked token alone changes no agent's definition, and a missing door is 
   }
 });
 
+/** Requests to `pattern` held until `release()`; `seen` resolves when the first one comes. */
+async function holding(pattern) {
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  let seen;
+  const first = new Promise((resolve) => { seen = resolve; });
+  const going = new Set();
+  const handler = async (route) => {
+    seen();
+    const sent = released.then(() => route.continue());
+    going.add(sent);
+    await sent;
+  };
+  await page.route(pattern, handler);
+  return { first, release: async () => {
+    release();
+    // Every request held goes on before the route is taken away, so none is handled twice.
+    await Promise.all(going);
+    await page.unroute(pattern, handler);
+  } };
+}
+
+test("a save re-lists its own folder, never the folder the owner went to since (review L2)",
+     { timeout: 60_000 }, async () => {
+  const folder = "/workspace/agents/helper";
+  await page.goto(`${ORIGIN}/app#data/${encodeURIComponent(folder)}`);
+  await page.getByRole("heading", { name: `Files in ${folder}` }).waitFor();
+  await page.getByRole("link", { name: "AGENTS.md" }).click();
+  await page.locator("textarea.editor").waitFor();
+  const save = await holding("**/app/api/files/write");
+  await page.getByRole("button", { name: "Save" }).click();
+  await save.first;
+  // The owner moves on while the save is in flight; then it lands, and re-lists its folder.
+  await page.goto(`${ORIGIN}/app#data`);
+  await page.getByRole("heading", { name: "Files in /workspace" }).waitFor();
+  const relisted = page.waitForResponse((response) =>
+    response.url().endsWith("/app/api/tools/file_list")
+    && response.request().postData()?.includes("agents/helper"));
+  await save.release();
+  await page.locator(".message.good", { hasText: "Saved" }).waitFor();
+  await relisted;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(await page.getByRole("heading", { name: "Files in /workspace" }).count(), 1);
+  assert.equal(await page.getByRole("heading", { name: `Files in ${folder}` }).count(), 0);
+});
+
+test("a screen still loading never paints over the signed-out view (review L1)",
+     { timeout: 60_000 }, async () => {
+  await page.goto(`${ORIGIN}/app#home`);
+  await page.getByRole("heading", { name: "Home", exact: true }).waitFor();
+  const grants = await holding("**/app/api/grants");
+  await page.goto(`${ORIGIN}/app#keys`);
+  await grants.first;
+  // Signed out while API keys still loads; then its answer comes.
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("heading", { name: "Your TinyAssets" }).waitFor();
+  const answered = page.waitForResponse((response) =>
+    response.url().endsWith("/app/api/grants"));
+  await grants.release();
+  await answered;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(await page.getByRole("heading", { name: "Your TinyAssets" }).count(), 1);
+  assert.equal(await page.getByRole("heading", { name: "API keys", exact: true }).count(), 0);
+});
+
 test("the app made no third-party request and threw nothing", () => {
   assert.deepEqual(errors, []);
   assert.deepEqual(outside, []);
