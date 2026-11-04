@@ -329,3 +329,13 @@ def test_only_the_latest_successful_run_made_for_this_pr_passes():
     assert not gate.review_run_passed([done, waiting], 12)
     assert not gate.review_run_passed([failed, done], 12)
     assert not gate.review_run_passed([{**done, "name": "required-tests"}], 12)
+
+
+def test_no_receipt_wording_is_left_where_people_read_it():
+    """The receipt is gone: nothing posts, documents or prompts for one."""
+    for rel in (".github/workflows/okf-watch.yml", ".github/workflows/enqueue-merge.yml",
+                "scripts/main_red.py", "docs/host-actions.md",
+                "docs/reference/executable-gates.md"):
+        text = (_ROOT / rel).read_text(encoding="utf-8")
+        assert "review receipt" not in text and "Drain-Review-" not in text, rel
+        assert "a receipt like every PR" not in text, rel

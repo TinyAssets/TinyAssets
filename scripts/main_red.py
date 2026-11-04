@@ -14,7 +14,7 @@ so this runs after every Tests run on main (.github/workflows/main-red.yml):
   never a revert.
 * Still red with failing test IDs on a push run whose PARENT commit was green:
   that merge is a candidate cause. Open a revert PR (not auto-armed; it needs a
-  receipt like every PR) and raise the alarm issue.
+  review like every PR) and raise the alarm issue.
 * Still red otherwise (the parent's state is unknown or red, a scheduled run, a
   revert commit): alarm only. Reverting without knowing the culprit reverts
   the wrong change.
