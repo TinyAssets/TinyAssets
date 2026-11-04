@@ -1013,6 +1013,9 @@ def test_selector_runs_only_files_with_test_cases(tmp_path) -> None:
     assert selected == ["tests/test_consumer.py"]
     selected, _ = select(["tests/test_helper.py"], root=tmp_path, shared=set())
     assert selected == ["tests/test_consumer.py"]
+    # The tree must exist: a diff that deletes a whole tree runs everything.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "example.md").write_text("x\n")
     selected, _ = gate_selection(["docs/example.md"], root=tmp_path, shared=set())
     assert selected == ["tests/test_walker.py"]
 

@@ -50,6 +50,25 @@ quarantine comparison and the `required-tests` aggregate job SHALL be unchanged.
 - **WHEN** `--required-runner` is combined with `--shell`, `--no-bwrap` or `--as-root`, or is given no `--out` or no single `--junit` under `/out`
 - **THEN** the oracle refuses and runs nothing
 
+### Requirement: A tree-only diff runs the Python tests that can read it
+The merge-group selection SHALL run, for a diff confined to `platform/`, `docs/`,
+`openspec/`, `ideas/` and the top-level `.md` files with no `.py` file, the tests
+`affected_tests.tree_readers` maps to a touched tree, plus `select()`. It SHALL
+run the whole surface for any other diff. Every runner run SHALL audit reads:
+a test that reads a tree the map does not give it fails.
+
+#### Scenario: A platform-only diff is queued
+- **WHEN** a merge group's diff changes only files under `platform/`
+- **THEN** the shards run only the tests that name `platform/` in path form, walk the checkout's root or run git, and a test of the old stack that does neither does not run
+
+#### Scenario: A test reads a tree the map cannot see
+- **WHEN** a test opens, lists or hands a child process a path in a tree its file is not mapped to
+- **THEN** that test fails, naming the tree and the path
+
+#### Scenario: A diff touches Python
+- **WHEN** any changed path is a `.py` file or lies outside the trees
+- **THEN** the selection is the whole surface
+
 ### Requirement: Source-PR feedback uses the same capable venue
 The `affected-tests` job SHALL select its files from the pull-request merge
 checkout against `HEAD^1` before entering the oracle, then pass that selection,
