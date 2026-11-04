@@ -522,6 +522,28 @@ def cited_paths(rel: str, text: str) -> set[str]:
     return out
 
 
+def _head_commit(root: Path) -> str:
+    """The commit under review: the oracle snapshot's source commit, else HEAD.
+
+    The linux oracle commits its copied work tree as a snapshot on top of the source
+    head and passes that head as ``ORACLE_SOURCE_HEAD``. The snapshot's own tree
+    lacks every tracked-but-ignored file, so it is not the tree to diff.
+    """
+    source = os.environ.get("ORACLE_SOURCE_HEAD", "").strip()
+    if _COMMIT_RE.fullmatch(source):
+        sha = _commit_sha(root, source)
+        if sha:
+            return sha
+    if _on_actions() and _checkout_git_dir() is not None and _commit_sha(root, "HEAD~1") is None:
+        borrowed = _borrow_commit(root, "HEAD")  # a history-free snapshot: the mount's HEAD
+        if borrowed:
+            return borrowed
+    sha = _commit_sha(root, "HEAD")
+    if sha is None:
+        raise RuntimeError("deleted-path check needs a HEAD commit")
+    return sha
+
+
 def deleted_doc_references(root: Path = ROOT) -> list[str]:
     """A path this diff deletes (or renames away) that is still cited.
 
@@ -533,17 +555,29 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
     instructions there); a path inside a URL (``.../blob/main/CODEX.md``); and a
     citation added by a later diff of a path an earlier diff deleted, since each
     run sees only its own deletions.
+
+    A path counts as deleted only when it is gone from the head commit, compared
+    commit to commit (``_head_commit``), never because the work tree lacks it: the
+    linux oracle's snapshot drops tracked-but-ignored files (``.claude/settings.json``,
+    ``output/``), and an uncommitted local deletion is not yet a deletion.
     """
     base = _merge_base(root)
     if base is None:
         return []
-    deleted = set(
-        subprocess.check_output(
-            ["git", "diff", "--no-renames", "--diff-filter=D", "--name-only", base],
+    head = _head_commit(root)
+
+    def in_head(path: str) -> bool:
+        return _git(root, "cat-file", "-e", f"{head}:{path}").returncode == 0
+
+    deleted = {
+        path
+        for path in subprocess.check_output(
+            ["git", "diff", "--no-renames", "--diff-filter=D", "--name-only", base, head],
             cwd=root,
             text=True,
         ).splitlines()
-    )
+        if not in_head(path)
+    }
     if not deleted:
         return []
     deleted_docs = {path for path in deleted if path.startswith("docs/")}
@@ -552,7 +586,7 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
         str(parent)
         for path in deleted
         for parent in PurePosixPath(path).parents
-        if str(parent) != "." and not (root / parent).exists()
+        if str(parent) != "." and not in_head(str(parent))
     }
     gone = deleted | deleted_dirs
     superseded = superseded_changes(root)

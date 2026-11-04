@@ -18,7 +18,7 @@ def _no_ambient_ci_event(monkeypatch, request):
     if request.node.name == "test_shape_registry":
         return  # the live registry check runs against the real event
     for name in ("GITHUB_ACTIONS", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH",
-                 "GITHUB_SHA", "MERGE_GROUP_BASE_SHA"):
+                 "GITHUB_SHA", "MERGE_GROUP_BASE_SHA", "ORACLE_SOURCE_HEAD"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -572,6 +572,58 @@ def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
         "deleted-path-reference: docs/ops/launch.md cites docs/ops/gone.md",
         "deleted-path-reference: openspec/changes/the-build/tasks.md cites scripts/old_tool.py",
     ]
+
+
+def test_a_tracked_ignored_path_missing_from_the_tree_is_not_deleted(
+    tmp_path: Path, monkeypatch
+):
+    """The oracle snapshot drops tracked-but-ignored files; only a commit deletes a path."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, ".gitignore", "output/\n", "ignore")
+    (repo / "output").mkdir()
+    (repo / "output/log.md").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "-f", "output/log.md")
+    _git(repo, "commit", "-q", "-m", "tracked though ignored")
+    base = _commit_file(repo, "AGENTS.md", "Append to `output/log.md`.\n", "cite")
+    head = _commit_file(repo, "README.md", "x\n", "the branch")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base)
+
+    # A local work tree without the file: not committed, so not deleted.
+    (repo / "output/log.md").unlink()
+    assert check_shapes.deleted_doc_references(repo) == []
+
+    # The oracle's snapshot: a fresh index from the copied tree, committed on the head.
+    snapshot = tmp_path / "work"
+    snapshot.mkdir()
+    for name in (".gitignore", "AGENTS.md", "README.md"):
+        (snapshot / name).write_text((repo / name).read_text(encoding="utf-8"), encoding="utf-8")
+    _init_repo_at(snapshot)
+    info = snapshot / ".git/objects/info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "alternates").write_text(f"{(repo / '.git/objects').as_posix()}\n", encoding="utf-8")
+    _git(snapshot, "update-ref", "HEAD", head)
+    _git(snapshot, "update-ref", "refs/remotes/origin/main", base)
+    _git(snapshot, "add", "-A")
+    _git(snapshot, "commit", "-q", "-m", "linux oracle snapshot")
+    assert _git(snapshot, "ls-files", "output") == ""
+    monkeypatch.setenv("ORACLE_SOURCE_HEAD", head)
+    assert check_shapes.deleted_doc_references(snapshot) == []
+
+    # A real deletion on the branch still fails.
+    _git(repo, "checkout", "-q", "--", ".")
+    _git(repo, "rm", "-q", "output/log.md")
+    _git(repo, "commit", "-q", "-m", "delete it")
+    monkeypatch.delenv("ORACLE_SOURCE_HEAD")
+    assert check_shapes.deleted_doc_references(repo) == [
+        "deleted-path-reference: AGENTS.md cites output/log.md"
+    ]
+
+
+def _init_repo_at(repo: Path) -> None:
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "shape@localhost")
+    _git(repo, "config", "user.name", "shape")
 
 
 def test_the_gate_runs_both_new_checks():
