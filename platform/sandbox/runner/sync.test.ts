@@ -19,12 +19,14 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 
 import { afterAll, describe, expect, it } from "vitest";
 
 import { AUTOMATON_STATES, LIST_BYTES, SANDBOX_HEAP } from "../../owner/src/sync-ignore";
 import {
-  ignoredBy, memoryMirror, type Mirror, openMirror, type Place, SyncClient, SyncFenced,
+  CHUNK_BYTES, ignoredBy, memoryMirror, openMirror, type Place, SyncClient, SyncFenced,
   syncIn, syncOut, wildcard,
 } from "./sync";
 
@@ -255,36 +257,90 @@ describe("the sync-ignore", () => {
 });
 
 describe("memory, whatever the tree holds", () => {
-  it("sync-in streams a file larger than the sandbox's memory (1 GiB) to disk", async () => {
+  // A sample is the live set: the heap and the byte arrays' backing stores, read right after
+  // full collections, at a checkpoint where sync-in is parked on a door's call (the owner
+  // memory leg's sampler, `owner/memory/leg.mjs`). Never RSS: it counts garbage not yet
+  // collected and pages the allocator keeps, so it reads the collector's timing, not the code.
+  setFlagsFromString("--expose-gc");
+  const gc = runInNewContext("gc") as () => void;
+  const live = () => {
+    gc();
+    gc();
+    const usage = process.memoryUsage();
+    return usage.heapUsed + usage.arrayBuffers;
+  };
+
+  /**
+   * Sync-in of one file of `chunks` chunks from a stand-in door, sampled at every call: the
+   * peak over the live set before it, the most calls open at once (each answered after a
+   * turn of the loop, so calls made together overlap) and the largest reply. `keep` is the
+   * control: a client that keeps every reply it is given.
+   */
+  async function syncInMemory(chunks: number, keep = false) {
     const { place: p, local } = place();
-    const CHUNK = 4 * 1024 * 1024;
-    const CHUNKS = 320;  // 1.25 GiB
-    const piece = Buffer.alloc(CHUNK, 3).toString("base64");
+    const piece = Buffer.alloc(CHUNK_BYTES, 3).toString("base64");
+    const kept: string[] = [];
+    const mirror = memoryMirror();
+    let open = 0;
+    let inFlight = 0;
+    let reply = 0;
     let peak = 0;
-    const base = process.memoryUsage().rss;
-    const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 5);
-    const mirror: Mirror = memoryMirror();
-    await syncIn(client((door, body) => {
-      peak = Math.max(peak, process.memoryUsage().rss);
-      if (door === "changes") {
-        return { status: 200, body: { cursor: 5, changes: [
-          { path: "/workspace/video.bin", kind: "file", version: 1 }] } };
+    const base = live();
+    const fetcher = (async (url: string, init: { body: string }) => {
+      open += 1;
+      inFlight = Math.max(inFlight, open);
+      await new Promise((resolve) => setImmediate(resolve));
+      peak = Math.max(peak, live() - base);
+      const door = url.split("/sync/")[1]!;
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      const text = JSON.stringify(door === "changes"
+        ? { cursor: 5, changes: [{ path: "/workspace/video.bin", kind: "file", version: 1 }] }
+        : door === "read"
+        ? { entry: { version: 1, mode: 0, kind: "file" },
+            chunks: Array.from({ length: chunks }, (_, i) => ({
+              sha256: i.toString(16).padStart(64, "0"), size: CHUNK_BYTES })) }
+        : { chunks: Array.from({ length: body["count"] as number }, () => piece) });
+      reply = Math.max(reply, text.length);
+      if (keep) {
+        kept.push(text);
       }
-      if (door === "read") {
-        return { status: 200, body: { entry: { version: 1, mode: 0, kind: "file" },
-          chunks: Array.from({ length: CHUNKS }, (_, i) => ({ sha256: String(i), size: CHUNK })) } };
-      }
-      return { status: 200, body: { chunks: Array.from({ length: body["count"] as number },
-                                                         () => piece) } };
-    }), p, mirror);
-    clearInterval(timer);
-    expect(statSync(join(local, "video.bin")).size).toBe(CHUNK * CHUNKS);
-    expect(mirror.get("/workspace/video.bin")!.size).toBe(CHUNK * CHUNKS);
-    // Bounded by a few replies in flight (each 8 MiB of chunks, as base64 and decoded, the
-    // stand-in door's own copies among them), never by the file: it is 1.25 GiB.
-    expect(peak - base).toBeLessThan(384 * 1024 * 1024);
+      open -= 1;
+      return new Response(text, { status: 200 });
+    }) as unknown as typeof fetch;
+    await syncIn(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p, mirror);
+    expect(statSync(join(local, "video.bin")).size).toBe(CHUNK_BYTES * chunks);
+    expect(mirror.get("/workspace/video.bin")!.size).toBe(CHUNK_BYTES * chunks);
     rmSync(join(local, "video.bin"));
-  }, 300_000);
+    return { peak, inFlight, reply };
+  }
+
+  it("sync-in streams a file larger than the sandbox's memory (1 GiB) to disk", async () => {
+    const LARGE = 320;  // 1.25 GiB
+    const SMALL = LARGE / 4;
+    // The steps' own objects (the file's list of chunks among them): a quarter chunk, as the
+    // owner memory leg allows each step and the difference of two sizes (ADR-037).
+    const QUARTER = CHUNK_BYTES / 4;
+    // Each size the least of two runs, as the leg reads it: a run's peak is the path's own
+    // plus whatever the process made for a moment beside it.
+    const runs = [await syncInMemory(SMALL), await syncInMemory(LARGE),
+                  await syncInMemory(SMALL), await syncInMemory(LARGE)];
+    const small = Math.min(runs[0]!.peak, runs[2]!.peak);
+    const large = Math.min(runs[1]!.peak, runs[3]!.peak);
+    // What the code holds by its shape: the replies it has open at once (one: each call is
+    // awaited before the next), each at most a call's chunks (the count it asks for, as
+    // base64), and the steps' own objects.
+    const bound = Math.max(...runs.map((run) => run.inFlight)) *
+      Math.max(...runs.map((run) => run.reply)) + QUARTER;
+    // The control: a client that keeps every reply reads as growing, past the bound, or the
+    // samples prove nothing.
+    const kept = [await syncInMemory(LARGE / 16, true), await syncInMemory(LARGE / 8, true)];
+    expect(kept[1]!.peak - kept[0]!.peak).toBeGreaterThan(QUARTER);
+    expect(kept[0]!.peak).toBeGreaterThan(bound);
+    // Each step within the bound, and O(1) in the file's size: four times the file holds no
+    // more than a quarter chunk more.
+    expect(large).toBeLessThanOrEqual(bound);
+    expect(large - small).toBeLessThanOrEqual(QUARTER);
+  }, 600_000);
 
   it("sync-out over many paths holds about what it holds over few", async () => {
     const heap = async (files: number) => {
