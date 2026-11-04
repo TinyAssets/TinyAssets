@@ -1,0 +1,146 @@
+name: sandbox-template
+
+# Builds the sandbox's E2B template, runs its standing checks, and opens a pull request that
+# pins the tag that passed (platform/sandbox/template/build.py has the build, the checks and
+# passed.json; sandbox/guards/template.test.ts holds wrangler.jsonc's E2B_TEMPLATE to a tag
+# passed.json records).
+#
+# Paid: one E2B template build and three short-lived check sandboxes. Pressing dispatch, and
+# typing build-template, is the owner's approval of that spend (AGENTS.md Fact 4). It runs
+# only on main, in the main-only `production` environment, the one place E2B_API_KEY is
+# readable; no host and no local key is needed (Direction 8). A tag already pinned with a
+# passing record builds nothing.
+#
+# The pull request is pushed and opened with the user token, as okf-watch.yml's are: one
+# opened with GITHUB_TOKEN would start no checks. It is reviewed and merged like any other;
+# this workflow deploys nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type build-template to spend one E2B template build'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-template
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build and check the template
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Require the confirmation and both credentials
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          E2B_PRESENT: ${{ secrets.E2B_API_KEY != '' }}
+          TOKEN_PRESENT: ${{ secrets.MERGE_ATTRIBUTION_TOKEN != '' }}
+        run: |
+          if [ "$CONFIRM" != "build-template" ]; then
+            echo "::error::Refusing to spend a template build: type build-template in the confirm input."
+            exit 1
+          fi
+          if [ "$E2B_PRESENT" != "true" ]; then
+            echo "::error::E2B_API_KEY is empty or unset in the production environment."
+            exit 1
+          fi
+          if [ "$TOKEN_PRESENT" != "true" ]; then
+            echo "::error::MERGE_ATTRIBUTION_TOKEN is empty or unset: a pin opened with GITHUB_TOKEN would start no checks."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Install the platform's pinned tools (the runner's bundle needs them)
+        working-directory: platform
+        run: npm ci
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the E2B SDK at build.py's pin
+        run: |
+          python -m venv "$RUNNER_TEMP/e2b"
+          "$RUNNER_TEMP/e2b/bin/pip" install --quiet e2b==2.62.0
+
+      - name: The tag this tree makes
+        id: tag
+        run: |
+          set -euo pipefail
+          name="$("$RUNNER_TEMP/e2b/bin/python" platform/sandbox/template/build.py --tag-only)"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          pinned="$(node -e 'const ts=require("./platform/node_modules/typescript");
+            const t=require("fs").readFileSync("platform/sandbox/wrangler.jsonc","utf8");
+            console.log(ts.parseConfigFileTextToJson("w",t).config.vars.E2B_TEMPLATE)')"
+          if [ "$pinned" = "$name" ] && jq -e --arg tag "${name#*:}" \
+              'any(.[]; .tag == $tag)' platform/sandbox/template/passed.json > /dev/null; then
+            echo "built=no" >> "$GITHUB_OUTPUT"
+            echo "${name} is already pinned with a passing record: nothing to build." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "built=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build, then the standing checks (logins, routes, matcher)
+        if: steps.tag.outputs.built == 'yes'
+        env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/e2b/bin/python" platform/sandbox/template/build.py | tee "$RUNNER_TEMP/build.log"
+          tail -n 1 "$RUNNER_TEMP/build.log" | jq -e --arg name "$NAME" '.template == $name' > /dev/null
+
+      - name: Pin the tag that passed (no token)
+        if: steps.tag.outputs.built == 'yes'
+        id: pin
+        env:
+          NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          sed -i -E "s|(\"E2B_TEMPLATE\": \")tinyassets-sandbox:[a-z0-9]+(\")|\1${NAME}\2|" \
+            platform/sandbox/wrangler.jsonc
+          git diff --exit-code --quiet platform/sandbox/wrangler.jsonc \
+            && { echo "::error::wrangler.jsonc's E2B_TEMPLATE was not rewritten"; exit 1; }
+          branch="sandbox-template/${NAME#*:}"
+          git switch -c "$branch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add platform/sandbox/wrangler.jsonc platform/sandbox/template/passed.json
+          git commit -q -m "Sandbox template ${NAME}: built and checked by sandbox-template.yml"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          {
+            echo "Pins \`${NAME}\`, built and checked by sandbox-template.yml run ${GITHUB_RUN_ID}."
+            echo ""
+            echo "Its standing checks are the new entry in \`platform/sandbox/template/passed.json\`."
+            echo ""
+            echo "Lane: platform/sandbox/wrangler.jsonc platform/sandbox/template/passed.json"
+          } > "$RUNNER_TEMP/body.md"
+
+      - name: Push and open the pin
+        if: steps.tag.outputs.built == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.pin.outputs.branch }}
+          NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" \
+            "HEAD:refs/heads/${BRANCH}"
+          gh pr create --base main --head "$BRANCH" --title "Sandbox template ${NAME}" \
+            --body-file "$RUNNER_TEMP/body.md"
