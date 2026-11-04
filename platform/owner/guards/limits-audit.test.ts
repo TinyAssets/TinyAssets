@@ -19,12 +19,9 @@ import {
   TERMS, worstCase,
 } from "./owner-bound.test";
 import {
-  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, MOVE_BYTES, pack, recordBytes, SEGMENT_LEAST_BYTES,
-  SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord, TIER_STORAGE_MAX,
+  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, MOVE_BYTES, MOVE_HOLD_BYTES, pack, recordBytes,
+  SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord, TIER_STORAGE_MAX,
 } from "../src/segments";
-
-/** The isolate's memory (Workers limits), as the memory guard counts it. */
-const ISOLATE_BYTES = 128 * 1000 * 1000;
 
 const HALF = SHARE * DATABASE_BYTES;
 /**
@@ -124,30 +121,38 @@ describe("slice STORE's archive (item 2)", () => {
       .toBeGreaterThan(2 * SEGMENT_LEAST_BYTES);
     const bytesOfPiece = (piece: SegmentRecord[]) =>
       piece.reduce((sum, record) => sum + size(record), 0);
-    const pieces = pack(records, SEGMENT_LEAST_BYTES);
+    const pieces = pack(records, SEGMENT_LEAST_BYTES, size);
     expect(pieces.every((piece) => bytesOfPiece(piece) >= SEGMENT_LEAST_BYTES)).toBe(true);
     expect(pieces.flat().map((record) => record.key)).toEqual(records.map((r) => r.key));
     // Many small records past twice the least: several pieces, each the least or more.
     const many = Array.from({ length: 30_000 }, (_, key) => message(key, "z".repeat(700)));
-    const cut = pack(many, SEGMENT_LEAST_BYTES);
+    const cut = pack(many, SEGMENT_LEAST_BYTES, size);
     expect(cut.length).toBeGreaterThan(1);
     expect(cut.every((piece) => bytesOfPiece(piece) >= SEGMENT_LEAST_BYTES)).toBe(true);
     expect(cut.flat().length).toBe(many.length);
     // At most twice the least, one piece, whatever is in it (a lone one may be small).
-    expect(pack([first], SEGMENT_LEAST_BYTES)).toEqual([[first]]);
+    expect(pack([first], SEGMENT_LEAST_BYTES, size)).toEqual([[first]]);
   });
 
-  it("holds a move within the isolate: MOVE_BYTES of records and its chunks (review N3)", () => {
-    // The worst merge, measured in workerd (round 3, `limits-audit.md`): its live heap grew
-    // 39.8 MiB at 31.8 MiB of records, two chunks being sent.
-    const MEASURED = 39.8 * 1024 * 1024;
-    // `pack`'s largest piece (twice the least and a record) and the one straggler always
-    // taken: the forced merge is within the budget but for two records' lines.
+  it("sizes a merge's pass by pack's largest piece and the straggler it always takes", () => {
+    // Work a pass, not memory: the move is streamed (`MOVE_HOLD_BYTES`).
     expect(MOVE_BYTES).toBeGreaterThanOrEqual(2 * SEGMENT_LEAST_BYTES + 2 * BODY_BYTES_MAX);
-    // Its records, the two chunks being sent and the service binding's copy of them, and
-    // the measured peak with that copy, each within half the isolate.
-    expect(MOVE_BYTES + 4 * CHUNK_BYTES).toBeLessThanOrEqual(ISOLATE_BYTES / 2);
-    expect(MEASURED + 2 * CHUNK_BYTES).toBeLessThanOrEqual(ISOLATE_BYTES / 2);
+  });
+
+  it("declares a streamed move's hold at its terms, past what workerd measured (review N5)",
+     () => {
+    // What a move holds whatever its records: the chunk being made, the source chunk kept
+    // and the one being read, the service binding's copy of the chunk sent; the plan at a
+    // segment's most records (about 200 bytes each), the trailer as text and as bytes
+    // (about 110 each), and a group of hot records' rows and lines.
+    const terms = 4 * CHUNK_BYTES + SEGMENT_MIN_RECORDS * (200 + 2 * 110) + 1024 * 1024;
+    expect(MOVE_HOLD_BYTES).toBeGreaterThanOrEqual(terms);
+    // Measured in workerd (`limits-audit.md`, round 4): the largest live heap growth of the
+    // worst merge, the worst rewrite and a tail seal of the smallest messages, sampled after
+    // two forced GCs; the service binding's copy of a chunk on top, which the heap may not
+    // show.
+    const MEASURED = 20.0 * 1024 * 1024;
+    expect(MOVE_HOLD_BYTES).toBeGreaterThanOrEqual(MEASURED + CHUNK_BYTES);
   });
 
   it("lets a tier offer about 0.5 TB: the fence rows, each a sealed segment's least bytes",

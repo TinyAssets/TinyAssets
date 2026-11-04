@@ -210,6 +210,7 @@ export default defineConfig({
                 BOUNDED: { className: "BoundedOwnerDO", useSQLite: true },
                 ARCHIVING: { className: "ArchivingOwnerDO", useSQLite: true },
                 BIGARCHIVING: { className: "BigArchivingOwnerDO", useSQLite: true },
+                DIVERGING: { className: "DivergingOwnerDO", useSQLite: true },
                 RUNG: { className: "RungOwnerDO", useSQLite: true },
                 SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
                 CACHED: { className: "CachedOwnerDO", useSQLite: true },

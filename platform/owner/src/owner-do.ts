@@ -162,7 +162,8 @@ import {
   CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
 } from "./codemode";
 import {
-  type Actor, type Agent, type ArchivedMail, archivedMail, type ArchiveRecord, heldRecord,
+  type Actor, type Agent, type ArchivedMail, archivedMail, keptRecord, type MailParts,
+  type MoveRecord,
   type ChainMail,
   checkMessage, clock,
   type Delivery, type Fence, Ledger, type LedgerLimits, STORAGE_BUSY,
@@ -172,8 +173,8 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import {
-  chunkReads, encodeSegment, joined, pack, parseTrailer, recordBytes, roomMembers,
-  SEGMENT_LEAST_BYTES, SegmentReader,
+  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_HOLD_BYTES, pack,
+  parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES, type Source as Run,
 } from "./segments";
 import { Erasure } from "./erase";
 import {
@@ -1388,6 +1389,71 @@ const ARCHIVE_FAILS_TOLD = 3;
 /** How long a failed `archive` pass holds its lane. */
 const ARCHIVE_RETRY_S = 60;
 
+/**
+ * An archive move's reads of stored contents (review N5): each chunk read whole through
+ * `FILES` (which rechecks its hash), the last one kept for the next range in it; and each
+ * placed body of the batch checked against its message's hash as its chunks are first read,
+ * in order, in the move's first pass (`bodiesChecked`).
+ */
+class MoveReader {
+  readonly #files: Files;
+  readonly #placed: ReadonlyMap<string, Stored>;
+  readonly #checks = new Map<string, { next: number; hash: ReturnType<typeof createHash>;
+                                       sha256: string }>();
+  #last: { sha256: string; bytes: Uint8Array } | null = null;
+
+  constructor(files: Files, placed: ReadonlyMap<string, Stored>,
+              records: readonly MoveRecord[]) {
+    this.#files = files;
+    this.#placed = placed;
+    for (const record of records) {
+      if (record.hot?.placed != null) {
+        this.#checks.set(record.hot.placed, { next: 0, hash: createHash("sha256"),
+                                              sha256: record.hot.sha256 });
+      }
+    }
+  }
+
+  readonly read = async (content: Stored, index: number): Promise<Uint8Array> => {
+    const sha256 = content.chunks[index];
+    if (sha256 === undefined) {
+      throw new Error("a move's range runs past its content");
+    }
+    let bytes = this.#last?.sha256 === sha256 ? this.#last.bytes : undefined;
+    if (bytes === undefined) {
+      this.#last = null;
+      bytes = (await this.#files.fetch([{ sha256 }]))[0];
+      if (bytes === undefined) {
+        throw new Error("a move's chunk was not read");
+      }
+      this.#last = { sha256, bytes };
+    }
+    const check = this.#checks.get(content.id);
+    if (check !== undefined && check.next === index) {
+      check.hash.update(bytes);
+      check.next++;
+    }
+    return bytes;
+  };
+
+  /** A hot record's placed body, as its source: its content's whole range. */
+  placed(record: MoveRecord): Run {
+    const content = this.#placed.get(record.hot!.placed!)!;
+    return { content, offset: 0, length: content.size };
+  }
+
+  /** After the first pass: every placed body read whole and its message's, or loudly not. */
+  bodiesChecked(): void {
+    for (const [id, check] of this.#checks) {
+      if (check.next !== this.#placed.get(id)!.chunks.length
+          || check.hash.digest("hex") !== check.sha256) {
+        throw new Error("an archived body is not the body its message holds");
+      }
+    }
+    this.#checks.clear();
+  }
+}
+
 /** The owner's notice that the archive keeps failing: its last error as it said it, if any. */
 function archiveFailing(said: string | null): string {
   return `Older mail could not be moved out (${said ?? "the last tries stopped before they " +
@@ -1502,6 +1568,11 @@ export interface Internals {
    * `archive` lane's moves are seen with a handful of messages.
    */
   readonly ledgerLimits?: LedgerLimits;
+  /**
+   * Run between an archive move's two passes, so a test can make its sources differ there
+   * and see the second pass refused by the chunk's hash (review N5).
+   */
+  readonly archiveBetweenPasses?: (storage: OwnerStorage) => void;
   /**
    * The starter package the object seeds and keeps current (`starter.ts`): the one this code
    * carries when omitted, as production builds it; another for a test of updates; null for
@@ -1619,6 +1690,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sandbox: SandboxLeases;
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
+  /** A test's step between an archive move's passes (`Internals.archiveBetweenPasses`). */
+  readonly #betweenPasses: ((storage: OwnerStorage) => void) | null;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
    * lane: every wake kind's request from its record, after the kill switch (`CONTROL`).
@@ -1921,6 +1994,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#sandbox = this.#sandboxLeases();
     internals.sandbox?.(this.#sandbox);
     this.#codemode = internals.codemode ?? {};
+    this.#betweenPasses = internals.archiveBetweenPasses ?? null;
     this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
@@ -3690,9 +3764,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         await this.#door(() => this.#notices.add("storage_busy_long", archiveFailing(null),
                                                  clock()));
       }
-      if (!await this.#archiveRewrite()) {
-        await this.#archiveMove();
-      }
+      await this.#granted(MOVE_HOLD_BYTES, async () => {
+        if (!await this.#archiveRewrite()) {
+          await this.#archiveMove();
+        }
+      });
       await this.#door(() => this.#ledger.archiveEnded());
       return undefined;
     } catch (error) {
@@ -3733,31 +3809,53 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
+   * The seam where the isolate-wide memory guard (`platform-memory`, the memory research's
+   * §4) grants work its bytes: `act` runs holding `bytes`, the most it may hold across an
+   * await, and a grant that does not fit will be refused as busy (the lane holds and
+   * retries). Until that guard lands this only declares the hold: nothing is counted yet.
+   */
+  async #granted<T>(bytes: number, act: () => Promise<T>): Promise<T> {
+    void bytes;
+    return act();
+  }
+
+  /**
    * One move: a straggler's merge (acked mail whose keys fall in a segment, rewritten into
    * it, so no two segments overlap) or the tail's new segment, in the move's two units.
+   * Planned from lengths alone, then streamed (`#placePieces`): nothing is read whole.
    */
   async #archiveMove(): Promise<void> {
     const pick = await this.#door(() => this.#ledger.archivePick());
     if (pick === null) {
       return;
     }
-    const located = await this.#door(() => this.#bodies.locate(pick.contents));
-    const bodies = await this.#bodies.fetchParts(located);
-    const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, bodies));
+    const batch = await this.#door(() => {
+      const planned = this.#ledger.archiveBatch(pick.seqs);
+      return planned === null ? null
+        : { ...planned, located: this.#bodies.locate(pick.contents) };
+    });
     if (batch === null) {
       return;
     }
-    const kept = pick.into === null ? [] : (await this.#segmentRecords(pick.into)).kept;
+    const placed = new Map<string, Stored>();
+    for (const record of batch.records) {
+      const id = record.hot?.placed ?? null;
+      if (id !== null) {
+        placed.set(id, { id, chunks: batch.located.get(id)!, size: record.hot!.bytes });
+      }
+    }
+    const reader = new MoveReader(this.#files, placed, batch.records);
+    const kept = pick.into === null ? [] : await this.#scanSegment(pick.into, reader);
     const records = [...kept, ...batch.records].sort((a, b) => a.key - b.key);
     await this.#placePieces(records, pick.into === null ? [] : [pick.into], pick.seqs,
-                            batch.digest, "mail");
+                            batch.digest, "mail", reader);
   }
 
   /**
    * One rewrite: the next segment a deleted agent's mail may be in, without that mail; one
    * left under `SEGMENT_LEAST_BYTES` takes in its neighbour by key (never by id), so ranges
-   * stay disjoint and every segment but a lone one holds at least the least. False when no
-   * purge waits.
+   * stay disjoint and every segment but a lone one holds at least the least. Its records are
+   * ranges of the segments it replaces, streamed as a move's. False when no purge waits.
    */
   async #archiveRewrite(): Promise<boolean> {
     const target = await this.#door(() => this.#ledger.purgeNext());
@@ -3765,18 +3863,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return false;
     }
     const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
-    // A segment's kept records: as views when they bring the rewrite to the least (it then
-    // reads no further), else copied out, so what it carries to the next is only its mail.
-    const kept = (fence: Fence, size: number) => this.#segmentRecords(fence, (record) =>
-      !roomMembers(record.room).some((member) => purged.has(member)), SEGMENT_LEAST_BYTES - size);
-    const first = await kept(target.fence, 0);
+    const reader = new MoveReader(this.#files, new Map(), []);
+    const kept = async (fence: Fence) => {
+      const all = await this.#scanSegment(fence, reader);
+      return { all: all.length, kept: all.filter((record) =>
+        !roomMembers(record.room).some((member) => purged.has(member))) };
+    };
+    const first = await kept(target.fence);
     if (first.kept.length === first.all) {
       await this.#door(() => this.#ledger.purgeSkip(target.fence.segment));
       return true;
     }
     const replaced = [target.fence];
     let records = first.kept;
-    let size = records.reduce((sum, record) => sum + recordBytes(record), 0);
+    let size = records.reduce((sum, record) => sum + record.length, 0);
     // Left small, it takes in its neighbours by key (a neighbour a purge also thinned may
     // not be enough alone), until it holds the least or none is left: never by id.
     while (size < SEGMENT_LEAST_BYTES) {
@@ -3788,49 +3888,33 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         break;
       }
       replaced.push(beside);
-      const more = (await kept(beside, size)).kept;
+      const more = (await kept(beside)).kept;
       records = [...records, ...more];
-      size += more.reduce((sum, record) => sum + recordBytes(record), 0);
+      size += more.reduce((sum, record) => sum + record.length, 0);
     }
     records.sort((a, b) => a.key - b.key);
-    await this.#placePieces(records, replaced, [], "0".repeat(64), "rewrite");
+    await this.#placePieces(records, replaced, [], "0".repeat(64), "rewrite", reader);
     return true;
   }
 
   /**
-   * A segment's records, read from R2 as its chunks, each with its room, never parsed past
-   * its first line (review N3); `keep` says which stay (a purge's). Kept all, or at least
-   * `views` bytes of them, they are views of the chunks, never joined. Kept fewer, each kept
-   * one is copied out in key order and each chunk let go once read past, so the read holds
-   * the chunks or the copies, never both whole, and the dropped mail's bytes are not held
-   * past it. So a move holds at most the records it places and two chunks (`MOVE_BYTES`,
-   * `limits-audit.md`). The count read, and those kept.
+   * A segment's records as ranges of its content, never held (review N5): its trailer read,
+   * then each record's first line alone (its room, its chain, its time), the chunks read
+   * whole one at a time, in order.
    */
-  async #segmentRecords(fence: Fence, keep: (record: ArchiveRecord) => boolean = () => true,
-                        views = 0): Promise<{ all: number; kept: ArchiveRecord[] }> {
+  async #scanSegment(fence: Fence, reader: MoveReader): Promise<MoveRecord[]> {
     const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
-    const reader = new SegmentReader(await this.#files.fetch(located.get(fence.content_id)!
-      .map((sha256) => ({ sha256 }))));
+    const content: Stored = { id: fence.content_id, chunks: located.get(fence.content_id)!,
+                               size: fence.bytes };
     const trailer = parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
-      .decode(reader.slice(fence.trailer_offset, fence.trailer_bytes)));
-    const read: (ArchiveRecord | null)[] = trailer.keys.map(([key, offset, length]) =>
-      heldRecord(key, reader.views(offset, length)));
-    const keeps = read.map((record) => keep(record!));
-    const keptBytes = trailer.keys.reduce((sum, [, , length], n) =>
-      sum + (keeps[n] ? length : 0), 0);
-    if (keeps.every(Boolean) || keptBytes >= views) {
-      return { all: read.length, kept: read.filter((_record, n) => keeps[n]) as ArchiveRecord[] };
+      .decode(await lineAt(content, fence.trailer_offset, fence.trailer_bytes,
+                           reader.read)));
+    const records: MoveRecord[] = [];
+    for (const [key, offset, length] of trailer.keys) {
+      records.push(keptRecord(key, offset, length, content,
+                              await lineAt(content, offset, length, reader.read)));
     }
-    const kept: ArchiveRecord[] = [];
-    for (const [n, [, offset, length]] of trailer.keys.entries()) {
-      const record = read[n]!;
-      read[n] = null;
-      if (keeps[n]) {
-        kept.push({ ...record, held: [joined(record.held!)] });
-      }
-      reader.release(offset + length);
-    }
-    return { all: read.length, kept };
+    return records;
   }
 
   /**
@@ -3838,38 +3922,60 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * hot batch `seqs` in its second unit (ADR-035's order: the bytes to R2 first, held by
    * uploads that may pass the storage figure, then named in one unit, which may not leave the
    * stored figure above both the figure and where the move found it: `archive_full`).
+   * Streamed (review N5, the memory research's §2 A): each piece planned from its records'
+   * lengths; pass 1 makes each chunk from the source ranges it covers, hashes it and drops
+   * it (and checks each placed body against its message's hash), for `Files.begin`; pass 2
+   * makes each again and sends it, one a call. The sources do not change between the passes
+   * (contents are named by their hashes; the batch's rows are checked at the commit by their
+   * digest), and a chunk that did differ is refused by R2's check of its hash: loudly.
    */
-  async #placePieces(records: readonly ArchiveRecord[],
-                     replaced: readonly Fence[], seqs: readonly number[], digest: string,
-                     stream: "mail" | "rewrite"): Promise<void> {
-    const pieces = records.length === 0 ? [] : pack(records, SEGMENT_LEAST_BYTES).map((part) => {
-      const encoded = encodeSegment("mail", part);
-      const members = new Set(part.flatMap((record) => roomMembers(record.room)));
-      const times = part.map((record) => record.at);
-      return { encoded, fence: {
-        first_key: encoded.trailer.first, last_key: encoded.trailer.last,
+  async #placePieces(records: readonly MoveRecord[], replaced: readonly Fence[],
+                     seqs: readonly number[], digest: string, stream: "mail" | "rewrite",
+                     reader: MoveReader): Promise<void> {
+    const plans = records.length === 0 ? []
+      : pack(records, SEGMENT_LEAST_BYTES, (record) => record.length)
+        .map((part) => planSegment("mail", part));
+    const sources = (part: readonly MoveRecord[]) => this.#moveSources(part, reader);
+    const hashes: string[][] = [];
+    for (const plan of plans) {
+      const each: string[] = [];
+      for (let n = 0; n < plan.chunks; n++) {
+        each.push(createHash("sha256").update(await makeChunk(plan, n, sources, reader.read))
+          .digest("hex"));
+      }
+      hashes.push(each);
+    }
+    reader.bodiesChecked();
+    if (this.#betweenPasses !== null) {
+      const between = this.#betweenPasses;
+      await this.#door(() => between(this.#storage));
+    }
+    const pieces = plans.map((plan) => {
+      const members = new Set(plan.records.flatMap((record) => roomMembers(record.room)));
+      const times = plan.records.map((record) => record.at);
+      return { plan, fence: {
+        first_key: plan.first, last_key: plan.last,
         first_at: Math.min(...times), last_at: Math.max(...times),
-        records: encoded.trailer.records, bytes: encoded.size,
-        trailer_offset: encoded.trailer_offset, trailer_bytes: encoded.trailer_bytes,
+        records: plan.records.length, bytes: plan.size,
+        trailer_offset: plan.trailer_offset, trailer_bytes: plan.trailer_bytes,
         members: Ledger.members(members) } };
     });
     const begun = await this.#door(() => {
       const before = this.#files.storedNow().stored;
-      const started = pieces.map((piece) => this.#files.begin(
-        piece.encoded.size, piece.encoded.hashes, "owner", [], true, null, true));
+      const started = pieces.map((piece, n) => this.#files.begin(
+        piece.plan.size, hashes[n]!, "owner", [], true, null, true));
       this.#ledger.moveBegun(stream, started[0]?.intent_id ?? "0".repeat(32), digest, clock(),
                              before);
       return { started, before };
     });
     try {
-      // Each chunk made as it is sent, two a call (a `FILES` call's most), so a move holds
-      // its records and two chunks, never a segment's second copy.
       for (const [n, piece] of pieces.entries()) {
         const wanted = new Set(begun.started[n]!.missing);
-        const puts = piece.encoded.hashes.flatMap((sha256, k) => wanted.delete(sha256) ? [k] : []);
-        for (let at = 0; at < puts.length; at += 2) {
-          await this.#files.upload(begun.started[n]!.intent_id, puts.slice(at, at + 2).map((k) =>
-            ({ sha256: piece.encoded.hashes[k]!, bytes: piece.encoded.chunk(k) })));
+        for (const [k, sha256] of hashes[n]!.entries()) {
+          if (wanted.delete(sha256)) {
+            await this.#files.upload(begun.started[n]!.intent_id, [
+              { sha256, bytes: await makeChunk(piece.plan, k, sources, reader.read) }]);
+          }
         }
       }
       await this.#door(() => {
@@ -3900,6 +4006,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#ledger.moveEnded(stream, begun.started[0]?.intent_id ?? "0".repeat(32));
       });
     }
+  }
+
+  /**
+   * The sources of a group of a move's records, in their order: a kept one's range of its
+   * segment; a hot one's lines, read again in a unit, around its body (inline, or its
+   * placed content's whole range).
+   */
+  async #moveSources(records: readonly MoveRecord[], reader: MoveReader):
+      Promise<(readonly Run[])[]> {
+    const hot = records.flatMap((record) => record.hot === undefined ? [] : [record.key]);
+    const parts = hot.length === 0 ? new Map<number, MailParts>()
+      : await this.#door(() => this.#ledger.archiveParts(hot));
+    return records.map((record): Run[] => {
+      if (record.kept !== undefined) {
+        return [{ content: record.kept.content, offset: record.kept.offset,
+                  length: record.length }];
+      }
+      const own = parts.get(record.key)!;
+      const body = own.inline ?? reader.placed(record);
+      return [own.head, body, own.tail];
+    });
   }
 
   /**

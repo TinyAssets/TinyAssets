@@ -66,14 +66,22 @@ export const ARCHIVE_SEGMENTS_MAX = 59_606;
  */
 export const TIER_STORAGE_MAX = (ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES;
 /**
- * The most records' bytes one move holds in the isolate at once (review N3): a merge's
- * segment and its stragglers (it takes stragglers while the two fit, and always one). A move
- * holds its records once and the two chunks it is sending: the worst merge, measured in
- * workerd, at 50.1 MB of the isolate's 128 MB with the call's copy (`limits-audit.md`).
- * `pack`'s largest piece (twice the least and a record) and the one straggler always taken
- * fit it but for their lines, so the always-one rule passes it by a few KB at most.
+ * The most records' bytes one merge rewrites in a pass: its segment and its stragglers (it
+ * takes stragglers while the two fit, and always one). Work, not memory: a move is streamed
+ * (`planSegment`, `makeChunk`), so what it holds is `MOVE_HOLD_BYTES` whatever its size;
+ * this bounds each pass's reads, hashing and calls. `pack`'s largest piece (twice the least
+ * and a record) and the one straggler always taken fit it but for their lines.
  */
 export const MOVE_BYTES = 32 * 1024 * 1024;
+/**
+ * What one archive move holds in the isolate, whatever its records (review N5, the memory
+ * research's §2 A): the output chunk being made, the source chunk it reads and the one
+ * before it, the service binding's copy of the chunk it sends, a group of hot records' rows
+ * and lines, the plan (each record's place, about 200 bytes a record) and the trailer's
+ * text when its chunk is made. The grant a move takes from the isolate-wide guard; measured
+ * in workerd at the worst mixes (`limits-audit.md`).
+ */
+export const MOVE_HOLD_BYTES = 32 * 1024 * 1024;
 /**
  * A record's share of its segment's trailer and suffix, counted with its lines in the one
  * number (a message's `line_bytes`): its key's and its chain's places (three numbers each,
@@ -88,10 +96,11 @@ export const RECORD_TRAILER_BYTES = 320;
  * each run of records that reaches `least` while what is left still holds at least `least`,
  * so no piece is ever smaller (a record as large as a body never leaves a small one beside
  * it: no cut is made where it would). With no such cut, one piece: at most twice `least`
- * and the largest record, which the moves' byte budget bounds.
+ * and the largest record. Each record's bytes are `size`'s.
  */
-export function pack<T extends SegmentRecord>(records: readonly T[], least: number): T[][] {
-  const sizes = records.map(recordBytes);
+export function pack<T>(records: readonly T[], least: number, size: (record: T) => number):
+    T[][] {
+  const sizes = records.map(size);
   const total = sizes.reduce((sum, size) => sum + size, 0);
   if (total <= 2 * least) {
     return [records.slice()];
@@ -133,9 +142,9 @@ export interface SegmentRecord {
   /** The record's rows, written in this order. */
   readonly rows: readonly SegmentRow[];
   /**
-   * Its bytes as a segment already holds them, as views of the chunks they were read in: a
-   * record a merge or a rewrite keeps is placed as it was, never parsed nor copied (its
-   * `rows` then empty).
+   * Its bytes as a segment already holds them (its `rows` then empty): a record kept as it
+   * was. A move keeps such records as ranges of their segment instead (`Source`), never
+   * read whole.
    */
   readonly held?: readonly Uint8Array[];
 }
@@ -151,22 +160,6 @@ export interface Trailer {
   readonly records: number;
   readonly keys: readonly Placement[];
   readonly chains: Readonly<Record<string, readonly Placement[]>>;
-}
-
-/**
- * A segment encoded, never joined whole: its parts in order (each line's bytes, each raw
- * body as the view it came as), its size, its trailer's range, and its chunks made one at a
- * time on demand, so a move holds its inputs and a chunk or two, never a second copy.
- */
-export interface Encoded {
-  readonly trailer: Trailer;
-  readonly trailer_offset: number;
-  readonly trailer_bytes: number;
-  readonly size: number;
-  /** Each chunk's hash, in order (`FILES` names chunks by them). */
-  readonly hashes: readonly string[];
-  /** Chunk `n`'s bytes, made afresh. */
-  chunk(n: number): Uint8Array;
 }
 
 /** A row as its export line (`export.ts`'s grammar), with its newline; a raw one's marked. */
@@ -210,129 +203,172 @@ export function bytesOf(text: string): number {
   return new TextEncoder().encode(text).byteLength;
 }
 
-/** A stream's records, in key order, encoded as one segment (`Encoded`). */
-export function encodeSegment(stream: string, records: readonly SegmentRecord[]): Encoded {
-  if (records.length === 0) {
-    throw new Error("a segment holds at least one record");
-  }
-  const parts: Uint8Array[] = [];
+/** A stored content a segment's bytes are read from: its chunks by hash, and its size. */
+export interface Content {
+  readonly id: string;
+  readonly chunks: readonly string[];
+  readonly size: number;
+}
+
+/** A run of a segment's bytes: bytes held (a line), or a range of a stored content. */
+export type Source = Uint8Array
+  | { readonly content: Content; readonly offset: number; readonly length: number };
+
+/** A record as a plan places it: its key, its chain, and its bytes' length. */
+export interface Planned {
+  readonly key: number;
+  readonly chain: string | null;
+  readonly length: number;
+}
+
+/**
+ * A segment planned from its records' lengths alone, before any of its bytes is read: each
+ * record's offset, the trailer's place and size, and the chunks it is cut into. Its bytes
+ * are the format above, exactly; each chunk is made from its sources when it is wanted
+ * (`makeChunk`), so a segment is never held.
+ */
+export interface Plan<T extends Planned> {
+  readonly stream: string;
+  readonly records: readonly T[];
+  readonly offsets: readonly number[];
+  readonly first: number;
+  readonly last: number;
+  readonly trailer_offset: number;
+  readonly trailer_bytes: number;
+  readonly size: number;
+  readonly chunks: number;
+}
+
+/** A plan's trailer line (with its newline) and its 16-digit suffix, made when wanted. */
+function trailerOf(stream: string, records: readonly Planned[], offsets: readonly number[],
+                   at: number): Uint8Array {
   const keys: Placement[] = [];
   const chains: Record<string, Placement[]> = {};
-  let offset = 0;
-  for (const record of records) {
-    const own = recordParts(record);
-    const length = lengthOf(own);
-    const placement: Placement = [record.key, offset, length];
+  for (const [n, record] of records.entries()) {
+    const placement: Placement = [record.key, offsets[n]!, record.length];
     keys.push(placement);
     if (record.chain !== null) {
       (chains[record.chain] ??= []).push(placement);
     }
-    parts.push(...own);
-    offset += length;
-  }
-  for (let i = 1; i < keys.length; i++) {
-    if (keys[i]![0] <= keys[i - 1]![0]) {
-      throw new Error("a segment's records are in key order, each key once");
-    }
   }
   const trailer: Trailer = { stream, first: keys[0]![0], last: keys.at(-1)![0],
                              records: keys.length, keys, chains };
-  const line = new TextEncoder().encode(`${JSON.stringify({ t: "segment", ...trailer })}\n`);
-  parts.push(line, new TextEncoder().encode(String(offset).padStart(SUFFIX_BYTES, "0")));
-  const size = offset + line.byteLength + SUFFIX_BYTES;
-  // Chunk `n` as the views of the parts it spans: hashed from them in place, and copied
-  // into one array only when sent, so a segment is never held twice (review N3).
-  const spans = (n: number): Uint8Array[] => {
-    const from = n * CHUNK_BYTES;
-    const until = Math.min(from + CHUNK_BYTES, size);
-    const out: Uint8Array[] = [];
-    let at = 0;
-    for (const part of parts) {
-      const end = at + part.byteLength;
-      if (end > from && at < until) {
-        out.push(part.subarray(Math.max(from, at) - at, Math.min(until, end) - at));
-      }
-      at = end;
-    }
-    return out;
-  };
-  const count = Math.ceil(size / CHUNK_BYTES);
-  const hashes = Array.from({ length: count }, (_, n) => {
-    const hash = createHash("sha256");
-    for (const view of spans(n)) {
-      hash.update(view);
-    }
-    return hash.digest("hex");
-  });
-  return { trailer, trailer_offset: offset, trailer_bytes: line.byteLength, size, hashes,
-           chunk: (n) => joined(spans(n)) };
+  return new TextEncoder().encode(`${JSON.stringify({ t: "segment", ...trailer })}\n${
+    String(at).padStart(SUFFIX_BYTES, "0")}`);
 }
 
-/** A segment encoded, as one array of bytes (for tests and small segments). */
-export function segmentBytes(encoded: Encoded): Uint8Array {
-  const whole = new Uint8Array(encoded.size);
-  for (let n = 0; n * CHUNK_BYTES < encoded.size; n++) {
-    whole.set(encoded.chunk(n), n * CHUNK_BYTES);
+/** A stream's records, in key order, planned as one segment. */
+export function planSegment<T extends Planned>(stream: string, records: readonly T[]): Plan<T> {
+  if (records.length === 0) {
+    throw new Error("a segment holds at least one record");
   }
-  return whole;
+  const offsets: number[] = [];
+  let at = 0;
+  for (const [n, record] of records.entries()) {
+    if (n > 0 && record.key <= records[n - 1]!.key) {
+      throw new Error("a segment's records are in key order, each key once");
+    }
+    offsets.push(at);
+    at += record.length;
+  }
+  const tail = trailerOf(stream, records, offsets, at).byteLength;
+  return { stream, records, offsets, first: records[0]!.key, last: records.at(-1)!.key,
+           trailer_offset: at, trailer_bytes: tail - SUFFIX_BYTES, size: at + tail,
+           chunks: Math.ceil((at + tail) / CHUNK_BYTES) };
+}
+
+/** Records `makeChunk` asks its sources for at once. */
+const SOURCE_GROUP = 512;
+
+/**
+ * Chunk `n` of a plan's segment, made from just the source ranges it covers: each record's
+ * sources (`sources`, asked a group of records at a time: held lines, or ranges of stored
+ * contents, read a whole 4 MiB chunk at a time through `read`), and the trailer when it
+ * reaches it. A record whose sources are not the length it was planned at fails loudly.
+ */
+export async function makeChunk<T extends Planned>(
+    plan: Plan<T>, n: number,
+    sources: (records: readonly T[]) => Promise<readonly (readonly Source[])[]>,
+    read: (content: Content, index: number) => Promise<Uint8Array>): Promise<Uint8Array> {
+  const from = n * CHUNK_BYTES;
+  const until = Math.min(from + CHUNK_BYTES, plan.size);
+  const out = new Uint8Array(until - from);
+  // The records it covers: the last whose offset is at or before `from`, on to `until`.
+  let lo = 0;
+  let hi = plan.records.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (plan.offsets[mid]! <= from) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  let end = lo;
+  while (end < plan.records.length && plan.offsets[end]! < until) {
+    end++;
+  }
+  for (let group = lo; group < end && plan.offsets[group]! < plan.trailer_offset;
+       group += SOURCE_GROUP) {
+    const records = plan.records.slice(group, Math.min(end, group + SOURCE_GROUP));
+    const each = await sources(records);
+    for (const [k, runs] of each.entries()) {
+      let at = plan.offsets[group + k]!;
+      for (const run of runs) {
+        const length = run instanceof Uint8Array ? run.byteLength : run.length;
+        const a = Math.max(from, at);
+        const b = Math.min(until, at + length);
+        if (a < b && run instanceof Uint8Array) {
+          out.set(run.subarray(a - at, b - at), a - from);
+        } else if (a < b && !(run instanceof Uint8Array)) {
+          // The stored chunks the overlap spans, each read whole (so `FILES` rechecks it):
+          // content byte `x` is segment byte `x + shift`.
+          const shift = at - run.offset;
+          for (let c = Math.floor((a - shift) / CHUNK_BYTES); c * CHUNK_BYTES < b - shift; c++) {
+            const chunk = await read(run.content, c);
+            const base = c * CHUNK_BYTES + shift;
+            const lo = Math.max(a, base);
+            const hi = Math.min(b, base + chunk.byteLength);
+            out.set(chunk.subarray(lo - base, hi - base), lo - from);
+          }
+        }
+        at += length;
+      }
+      if (at !== plan.offsets[group + k]! + records[k]!.length) {
+        throw new Error("an archive move's record is not the length its plan placed");
+      }
+    }
+  }
+  if (until > plan.trailer_offset) {
+    const tail = trailerOf(plan.stream, plan.records, plan.offsets, plan.trailer_offset);
+    const a = Math.max(from, plan.trailer_offset);
+    out.set(tail.subarray(a - plan.trailer_offset, until - plan.trailer_offset), a - from);
+  }
+  return out;
 }
 
 /**
- * A segment's bytes as the chunks they came in, read by range without joining them: a range
- * is the views of the chunks it spans (`views`), or one array (`slice`, a copy only when it
- * spans two, for the small reads: a trailer, one record). A reader that copies records out
- * lets go of each chunk once it has read past it (`release`), so it never holds the copy and
- * the whole beside it.
+ * The line a stored content holds at `offset`, with its newline: read a whole chunk at a
+ * time through `read` until its end. The line of a record's first row, for its room, its
+ * chain and its time, so a kept record is never read past it.
  */
-export class SegmentReader {
-  readonly #parts: (Uint8Array | null)[];
-  readonly #sizes: number[];
-
-  constructor(parts: readonly Uint8Array[]) {
-    this.#parts = [...parts];
-    this.#sizes = parts.map((part) => part.byteLength);
-  }
-
-  views(offset: number, length: number): Uint8Array[] {
-    const out: Uint8Array[] = [];
-    let at = 0;
-    let left = length;
-    for (const [n, part] of this.#parts.entries()) {
-      const end = at + this.#sizes[n]!;
-      if (left > 0 && offset < end) {
-        if (part === null) {
-          throw new Error("a segment's range was let go");
-        }
-        const from = Math.max(0, offset - at);
-        const take = Math.min(left, part.byteLength - from);
-        out.push(part.subarray(from, from + take));
-        offset += take;
-        left -= take;
-      }
-      at = end;
+export async function lineAt(content: Content, offset: number, most: number,
+                             read: (content: Content, index: number) => Promise<Uint8Array>):
+    Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  let at = offset;
+  while (at < Math.min(content.size, offset + most)) {
+    const c = Math.floor(at / CHUNK_BYTES);
+    const chunk = (await read(content, c)).subarray(at - c * CHUNK_BYTES);
+    const end = chunk.indexOf(0x0a);
+    if (end >= 0) {
+      parts.push(chunk.subarray(0, end + 1));
+      return joined(parts);
     }
-    if (left > 0) {
-      throw new Error("a segment's range runs past its content");
-    }
-    return out;
+    parts.push(chunk);
+    at += chunk.byteLength;
   }
-
-  /** Let go of every chunk that ends at or before `offset`: no later read reaches it. */
-  release(offset: number): void {
-    let at = 0;
-    for (const [n, size] of this.#sizes.entries()) {
-      at += size;
-      if (at > offset) {
-        return;
-      }
-      this.#parts[n] = null;
-    }
-  }
-
-  slice(offset: number, length: number): Uint8Array {
-    const views = this.views(offset, length);
-    return views.length === 1 ? views[0]! : joined(views);
-  }
+  throw new Error("a segment's record line has no end");
 }
 
 /** Byte arrays joined into one. */
@@ -344,21 +380,6 @@ export function joined(parts: readonly Uint8Array[]): Uint8Array {
     at += part.byteLength;
   }
   return whole;
-}
-
-/** A record's first row (its key's own: a message's), read from its views' first line. */
-export function firstRow(views: readonly Uint8Array[]): [string, Record<string, unknown>] {
-  const line: Uint8Array[] = [];
-  for (const view of views) {
-    const end = view.indexOf(0x0a);
-    if (end >= 0) {
-      line.push(view.subarray(0, end + 1));
-      const [row] = parseRecord(joined(line));
-      return [row![0], row![1]];
-    }
-    line.push(view);
-  }
-  throw new Error("a segment's record line has no end");
 }
 
 /** A trailer's line, parsed and checked. */
@@ -442,15 +463,20 @@ export function chunkReads(chunks: readonly string[], offset: number, length: nu
 
 /**
  * The digest the two units of a move compare: the batch's rows as the object holds them,
- * hashed one row's JSON at a time (review N3: never the batch's JSON whole, which escapes
- * an inline body of control characters six times over).
+ * hashed one message's rows at a time as they are read (review N3: never the batch's JSON
+ * whole, which escapes an inline body of control characters six times over; review N5:
+ * never the batch held at once).
  */
-export function imageDigest(images: readonly unknown[]): string {
-  const hash = createHash("sha256");
-  for (const image of images) {
-    hash.update(JSON.stringify(image)).update("\n");
+export class ImageDigest {
+  readonly #hash = createHash("sha256");
+
+  add(image: unknown): void {
+    this.#hash.update(JSON.stringify(image)).update("\n");
   }
-  return hash.digest("hex");
+
+  digest(): string {
+    return this.#hash.digest("hex");
+  }
 }
 
 /**

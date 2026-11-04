@@ -96,6 +96,24 @@ export class ArchivingOwnerDO extends OwnerDO {
 }
 
 /**
+ * As `ArchivingOwnerDO`, but between each move's two passes the oldest hot message's
+ * recipient row is changed (its time's last bit, so its line keeps its length), so the
+ * second pass makes other bytes than the first hashed: R2's check of the chunk's hash must
+ * refuse them.
+ */
+export class DivergingOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, {
+      ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4, archiveRecords: 2 },
+      archiveBetweenPasses: (storage) => {
+        storage.sql.exec("UPDATE ledger_recipients SET changed_at = changed_at + 1 - " +
+                           "2 * (changed_at % 2) " +
+                           "WHERE seq = (SELECT min(seq) FROM ledger_messages)");
+      } });
+  }
+}
+
+/**
  * As `ArchivingOwnerDO`, but a segment sealed at six records (or 8 MiB), twelve hot and six
  * unread: a straggler merge meets its byte budget before its record cap (review N1).
  */

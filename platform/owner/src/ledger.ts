@@ -99,8 +99,8 @@ import { exported } from "./export";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import {
-  bloomHas, bloomOf, bytesOf, firstRow, idKey, idOrder, imageDigest, MOVE_BYTES, orderedId,
-  parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_MIN_BYTES,
+  bloomHas, bloomOf, bytesOf, type Content, idKey, idOrder, ImageDigest, MOVE_BYTES, orderedId,
+  parseRecord, type Planned, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
@@ -846,39 +846,71 @@ export function archivedMail(bytes: Uint8Array): ArchivedMail {
   return { message, body, recipients };
 }
 
-/** A record a move places, with its room and when its message was posted. */
-export type ArchiveRecord = SegmentRecord & { readonly room: string; readonly at: number };
-
-/** A record's message row, which carries its room, its chain and its time. */
-function archiveRecordOf(record: SegmentRecord, message: Record<string, unknown> | undefined):
-    ArchiveRecord {
-  if (message === undefined) {
-    throw new Error("an archived mail record lacks its message");
-  }
-  return { ...record, chain: message["chain_root"] as string,
-           room: message["room_id"] as string, at: message["created_at"] as number };
-}
-
-/** A record made from its rows (a hot message's, as `mailRecord` built it), with its room. */
-export function archivedRecord(key: number, rows: readonly SegmentRow[]): ArchiveRecord {
-  return archiveRecordOf({ key, chain: null, rows },
-                         rows.find(([table]) => table === "ledger_messages")?.[1]);
+/**
+ * A record an archive move places (planned from its length alone, `planSegment`), with its
+ * room and when its message was posted: kept from a segment (a range of that segment's
+ * content, placed as it is), or a hot message's (its rows read again for each chunk that
+ * covers it, `archiveParts`, and its placed body's content by id, if it has one).
+ */
+export interface MoveRecord extends Planned {
+  readonly room: string;
+  readonly at: number;
+  readonly kept?: { readonly content: Content; readonly offset: number };
+  readonly hot?: { readonly placed: string | null; readonly sha256: string;
+                   readonly bytes: number };
 }
 
 /**
- * A record a segment holds, kept as it is (its bytes the views it was read in, review N3):
- * only its first line, its message's row, is parsed, for its room, its chain and its time.
+ * A hot message's bytes as its segment record holds them, but its body: its row's line and
+ * its body row's (the body raw after it, the row naming no content: the segment holds it),
+ * its inline body's bytes if it has no placed one, and the newline after the body with its
+ * recipients' lines (`mailRecord`'s, exactly).
  */
-export function heldRecord(key: number, views: readonly Uint8Array[]): ArchiveRecord {
-  const [table, row] = firstRow(views);
-  return archiveRecordOf({ key, chain: null, rows: [], held: views },
-                         table === "ledger_messages" ? row : undefined);
+export interface MailParts {
+  readonly head: Uint8Array;
+  readonly inline: Uint8Array | null;
+  readonly tail: Uint8Array;
+}
+
+/** A hot message's parts (`MailParts`) from its rows. */
+function mailParts(message: Readonly<Record<string, unknown>>,
+                   body: Readonly<Record<string, unknown>>,
+                   recipients: readonly Readonly<Record<string, unknown>>[]): MailParts {
+  const encoder = new TextEncoder();
+  const size = body["body_bytes"] as number;
+  return {
+    head: encoder.encode(rowLine("ledger_messages", exportRow("ledger_messages", message))
+      + rowLine("message_bodies", { ...exportRow("message_bodies", body), body: null,
+                                    content_id: null }, size)),
+    inline: body["content_id"] === null ? encoder.encode(body["body"] as string) : null,
+    tail: encoder.encode("\n" + recipients.map((each) =>
+      rowLine("ledger_recipients", exportRow("ledger_recipients", each))).join("")),
+  };
+}
+
+/**
+ * A record a segment holds, kept as it is: its range of that segment's content, and its
+ * first line (its message's row, the only part read) for its room, its chain and its time.
+ */
+export function keptRecord(key: number, offset: number, length: number, content: Content,
+                           line: Uint8Array): MoveRecord {
+  const [row] = parseRecord(line);
+  if (row === undefined || row[0] !== "ledger_messages") {
+    throw new Error("an archived mail record lacks its message");
+  }
+  const message = row[1];
+  return { key, chain: message["chain_root"] as string, length,
+           room: message["room_id"] as string, at: message["created_at"] as number,
+           kept: { content, offset } };
 }
 
 /** A fence row's members bloom, as bytes. */
 export function fenceBloom(fence: Fence): Uint8Array {
   return Uint8Array.from(Buffer.from(fence.members, "hex"));
 }
+
+/** The hot messages a move reads at once, its rows and its lines (review N5). */
+const IMAGE_GROUP = 512;
 
 /** The archive chain read's segments a page reads at most. */
 export const CHAIN_SEGMENTS = 8;
@@ -1782,59 +1814,88 @@ export class Ledger {
     return seqs.length === 0 ? null : { seqs, contents, into };
   }
 
-  /** The batch's rows as the object holds them, in seq order: what the two units compare. */
-  #images(seqs: readonly number[]): { message: StoredMessage;
-                                      body: Record<string, SqlStorageValue>;
-                                      recipients: Record<string, SqlStorageValue>[] }[] | null {
-    const list = JSON.stringify(seqs);
-    const messages = this.#sql.exec<StoredMessage>(
-      "SELECT * FROM ledger_messages WHERE seq IN (SELECT value FROM json_each(?)) " +
-        "AND unacked = 0 ORDER BY seq", list).toArray();
-    if (messages.length !== seqs.length) {
-      return null;
+  /**
+   * The batch's rows as the object holds them, in seq order, a group at a time (never the
+   * batch held at once, review N5): each message's row, its body's and its recipients', as
+   * `each` takes them; false when one is no longer hot and acked.
+   */
+  #images(seqs: readonly number[],
+          each: (message: StoredMessage, body: Record<string, SqlStorageValue>,
+                 recipients: Record<string, SqlStorageValue>[]) => void): boolean {
+    for (let at = 0; at < seqs.length; at += IMAGE_GROUP) {
+      const group = seqs.slice(at, at + IMAGE_GROUP);
+      const messages = this.#sql.exec<StoredMessage>(
+        "SELECT * FROM ledger_messages WHERE seq IN (SELECT value FROM json_each(?)) " +
+          "AND unacked = 0 ORDER BY seq", JSON.stringify(group)).toArray();
+      if (messages.length !== group.length) {
+        return false;
+      }
+      for (const message of messages) {
+        each(message, this.#sql.exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM message_bodies WHERE message_id = ?", message.message_id).one(),
+             this.#sql.exec<Record<string, SqlStorageValue>>(
+               "SELECT * FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
+               message.message_id).toArray());
+      }
     }
-    return messages.map((message) => ({
-      message,
-      body: this.#sql.exec<Record<string, SqlStorageValue>>(
-        "SELECT * FROM message_bodies WHERE message_id = ?", message.message_id).one(),
-      recipients: this.#sql.exec<Record<string, SqlStorageValue>>(
-        "SELECT * FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
-        message.message_id).toArray(),
-    }));
+    return true;
+  }
+
+  /** The digest of the batch's rows as held (`ImageDigest`), or null when one is gone. */
+  #imageDigest(seqs: readonly number[]): string | null {
+    const images = new ImageDigest();
+    return this.#images(seqs, (message, body, recipients) =>
+      images.add({ message, body, recipients })) ? images.digest() : null;
   }
 
   /**
-   * A batch's records (its placed bodies handed in as the chunks they were read in, each
-   * checked against its message's hash), the digest of its rows as held, and the agents its
-   * rooms name; null when it changed since it was picked. A read.
+   * A batch planned (review N5: from its rows' lengths, never their bytes held): each
+   * message's record, its length, room, time, and its placed body by content id (checked
+   * against its hash as the move reads it) or its inline body checked here; the digest of
+   * its rows as held, and the agents its rooms name; null when it changed since it was
+   * picked. A read.
    */
-  archiveBatch(seqs: readonly number[], bodies: ReadonlyMap<string, readonly Uint8Array[]>):
-      { records: ArchiveRecord[]; digest: string; members: string[]; first_at: number;
+  archiveBatch(seqs: readonly number[]):
+      { records: MoveRecord[]; digest: string; members: string[]; first_at: number;
         last_at: number } | null {
-    const images = this.#images(seqs);
-    if (images === null) {
-      return null;
-    }
+    const images = new ImageDigest();
     const members = new Set<string>();
-    const records = images.map(({ message, body, recipients }) => {
-      const contentId = body["content_id"] as string | null;
-      const raw = contentId === null ? [new TextEncoder().encode(body["body"] as string)]
-        : bodies.get(contentId);
-      const hash = createHash("sha256");
-      for (const part of raw ?? []) {
-        hash.update(part);
-      }
-      if (raw === undefined || hash.digest("hex") !== message.body_sha256) {
+    const records: MoveRecord[] = [];
+    const held = this.#images(seqs, (message, body, recipients) => {
+      images.add({ message, body, recipients });
+      const parts = mailParts(message, body, recipients);
+      const placed = body["content_id"] as string | null;
+      if (parts.inline !== null
+          && createHash("sha256").update(parts.inline).digest("hex") !== message.body_sha256) {
         throw new Error("an archived body is not the body its message holds");
       }
       for (const member of roomMembers(message.room_id)) {
         members.add(member);
       }
-      const record = mailRecord(message, { ...body, content_id: null }, recipients, raw);
-      return archivedRecord(record.key, record.rows);
+      records.push({ key: message.seq, chain: message.chain_root, room: message.room_id,
+                     at: message.created_at,
+                     length: parts.head.byteLength + message.body_bytes + parts.tail.byteLength,
+                     hot: { placed, sha256: message.body_sha256,
+                            bytes: message.body_bytes } });
     });
-    return { records, digest: imageDigest(images), members: [...members],
-             first_at: images[0]!.message.created_at, last_at: images.at(-1)!.message.created_at };
+    if (!held || records.length === 0) {
+      return null;
+    }
+    return { records, digest: images.digest(), members: [...members],
+             first_at: records[0]!.at, last_at: records.at(-1)!.at };
+  }
+
+  /**
+   * Hot messages' parts (`MailParts`) by seq, read again for the chunk a move is making;
+   * one missing (no longer hot and acked) is `archive_changed`. A read.
+   */
+  archiveParts(seqs: readonly number[]): Map<number, MailParts> {
+    const parts = new Map<number, MailParts>();
+    if (!this.#images(seqs, (message, body, recipients) =>
+      parts.set(message.seq, mailParts(message, body, recipients)))) {
+      throw new Refused("archive_changed: a message moved went from the hot set mid-move");
+    }
+    return parts;
   }
 
   /**
@@ -1857,12 +1918,12 @@ export class Ledger {
       }
     }
     if (seqs.length > 0) {
-      const images = this.#images(seqs);
-      if (images === null || imageDigest(images) !== expected) {
+      if (this.#imageDigest(seqs) !== expected) {
         throw new Refused("archive_changed: the batch changed between the move's units");
       }
-      const list = JSON.stringify(images.map((image) => image.message.message_id));
-      const inList = "IN (SELECT value FROM json_each(?))";
+      const list = JSON.stringify(seqs);
+      const inList = "IN (SELECT message_id FROM ledger_messages WHERE seq IN " +
+        "(SELECT value FROM json_each(?)))";
       // Recipients before their messages: their triggers read the message's size.
       this.#sql.exec(`DELETE FROM ledger_recipients WHERE message_id ${inList}`, list);
       this.#sql.exec(`DELETE FROM message_bodies WHERE message_id ${inList}`, list);

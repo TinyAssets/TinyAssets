@@ -210,16 +210,4 @@ export class Bodies {
     }
     return bodies;
   }
-
-  /**
-   * The located bodies' bytes, by content id, as the chunks they were read in (never joined,
-   * so a move holds each body once): read from R2, each chunk rechecked. Outside any unit.
-   */
-  async fetchParts(located: Located): Promise<Map<string, Uint8Array[]>> {
-    const bodies = new Map<string, Uint8Array[]>();
-    for (const [contentId, chunks] of located) {
-      bodies.set(contentId, await this.#files.fetch(chunks.map((sha256) => ({ sha256 }))));
-    }
-    return bodies;
-  }
 }
