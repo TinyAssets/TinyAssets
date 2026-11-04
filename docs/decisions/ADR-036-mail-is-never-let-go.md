@@ -25,6 +25,11 @@ Accepted (founder's rules, ruled by the coordinator 2026-11-04: one storage numb
 3. **Mail counts at its real bytes** in the one number, hot and archived: a hot message's rows as export lines, its body among them; an archived one, its segment's bytes.
 4. **Unread mail has no count per mailbox.** One owner-wide ceiling on hot unacked mail (`maxUnacked`, the hot ceiling less one segment's records) is a technical ceiling of the object's 10 GB; past it a post is `ledger_full`, which says too much mail is unread and that reading and acking makes room. It never offers an upgrade.
 
+## Specified in
+
+- `openspec/changes/clean-sheet-platform/specs/owner-object/spec.md`: the ledger's two ceilings, the archive segments, an agent's deletion and the resend window;
+- `openspec/changes/clean-sheet-platform/limits-audit.md`: `maxMessages`, `maxUnacked`, the segments' seal and `TIER_STORAGE_MAX`.
+
 ## Consequences
 
 - No mail is lost at a count or at the storage figure; a full storage refuses new mail, as consumer mail does.
