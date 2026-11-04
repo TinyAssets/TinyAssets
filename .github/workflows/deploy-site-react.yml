@@ -22,6 +22,7 @@ on:
       - 'WebSite/site-react/**'
       - 'WebSite/design-system/**'
       - 'WebSite/shared/**'
+      - 'platform/doors/apps.json'
       - '.github/workflows/deploy-site-react.yml'
   workflow_dispatch:
     inputs:
