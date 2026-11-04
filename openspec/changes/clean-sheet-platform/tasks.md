@@ -2511,12 +2511,14 @@ R, S, M and W.
   control (a door reading the body whole) reads 11.99 MiB more. A caller's stop now ends the
   answer closed, not errored with its abort, so workerd's "Uncaught (in promise) AbortError"
   per stopped call (14 in the doors' egress suite, on `main` too) is gone.
-  Owed: a sandbox's real upload rate, measured live, against `MIN_RATE`;
-  `egress_aliased_key`, `egress_reserve_refused`, `egress_too_large` and `busy` stay in
-  `forward.ts`'s own
-  table (`EGRESS_CODES`) and join `failure.ts`'s, and `egress_reservation_mismatch` leaves
-  it, at the next E2B template build (the runner bundles `failure.ts`, so a change to it is a
-  new template); live, `memoryUsageBytes` for the gateway and the doors.
+  Owed: a sandbox's real upload rate, measured live, against `MIN_RATE`; live,
+  `memoryUsageBytes` for the gateway and the doors.
+  Done at the template build `tinyassets-sandbox:s683105ce69435bb9` (2026-11-04, pinned,
+  its checks in `passed.json`): `egress_aliased_key`, `egress_reserve_refused`,
+  `egress_too_large` and `busy` (its `Retry-After` kept) are in `failure.ts`'s table and
+  `forward.ts`'s own (`EGRESS_CODES`) is gone; `egress_reservation_mismatch` left it. The same
+  template carries the runner's `safeDirs` fix: two runs starting at once in a fresh sandbox
+  both make its shared directories, and an `EEXIST` on a real directory is the one asked for.
 
 ## 10. The plan's later slices
 
