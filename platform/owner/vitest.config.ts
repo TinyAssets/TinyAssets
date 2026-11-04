@@ -10,7 +10,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium, REPORTERS } from "../ci/classes";
+import { CLASS_CHECK, LARGE, medium } from "../ci/classes";
 
 const PLATFORM = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = join(PLATFORM, "files");
@@ -189,7 +189,6 @@ const FILES_RING = JSON.stringify({
 export default defineConfig({
   test: {
     tags: [LARGE],
-    reporters: [...REPORTERS],
     projects: [
       {
         // Runs in workerd. OWNER is bound for the tests only: wrangler.jsonc gives the
@@ -237,7 +236,7 @@ export default defineConfig({
         ],
         // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
         test: { name: "workerd", ...medium("owner/workerd"), include: ["test/**/*.test.ts"],
-                setupFiles: ["./test/admitted.ts"] },
+                setupFiles: [CLASS_CHECK, "./test/admitted.ts"] },
       },
       {
         // Static guards over the source and config, in Node. The migrations guard imports

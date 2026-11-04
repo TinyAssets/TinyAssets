@@ -7,7 +7,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium, REPORTERS } from "../ci/classes";
+import { LARGE, medium } from "../ci/classes";
 
 const TEST = join(dirname(fileURLToPath(import.meta.url)), "test");
 
@@ -39,7 +39,6 @@ const KEYRING = JSON.stringify({
 export default defineConfig({
   test: {
     tags: [LARGE],
-    reporters: [...REPORTERS],
     projects: [
       {
         // Runs in workerd, under the config's own runtime and flags. The keyring is the

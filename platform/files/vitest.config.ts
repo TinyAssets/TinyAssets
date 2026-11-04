@@ -1,12 +1,11 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium, REPORTERS } from "../ci/classes";
+import { LARGE, medium } from "../ci/classes";
 
 export default defineConfig({
   test: {
     tags: [LARGE],
-    reporters: [...REPORTERS],
     projects: [
       {
         // Runs in workerd, against the config's own R2 binding.
