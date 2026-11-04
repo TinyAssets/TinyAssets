@@ -5,9 +5,14 @@
  * `https://fake.test/*` (through the `E2B` service binding). It is also the ring queue's
  * consumer in tests, recording each ring.
  *
- * The runner's commands (`/usr/local/bin/ta-runner <command>`) answer as scripted: a
- * sign-in check by engine, the runner's state (for `state`, `quiet-wait` and `renew-wait`),
- * and every other command 0.
+ * The runner's loader (`/usr/local/bin/ta-runner`, `template/ta-runner`) as the template
+ * bakes it: a sandbox holds no runner until one is uploaded under `/var/lib/ta/incoming/` and
+ * installed by its SHA-256 (`install <sha>`: absent 24, not its digest 25); a command names
+ * its runner's digest (`<sha> <command>`: absent 24, and 25 for a digest the test tampered),
+ * and is recorded with that digest beside it. The commands answer as scripted: a sign-in
+ * check by engine, the runner's state (for `state`, `quiet-wait` and `renew-wait`), `adopt`
+ * refused (3) while the state is live and otherwise dropping every other runner, and every
+ * other command 0.
  */
 interface FakeSandbox {
   id: string;
@@ -20,7 +25,11 @@ interface FakeSandbox {
   metadata: Record<string, string>;
   template: string;
   secure: boolean;
+  /** The runners installed in it, by digest. */
+  runners: Set<string>;
 }
+
+const INCOMING = "/var/lib/ta/incoming/";
 
 interface Script {
   signin: Record<string, number>;
@@ -41,13 +50,17 @@ interface Script {
   refuseResume: boolean;
   /** A runner command whose process start envd answers 502 (the sandbox went away). */
   broken: string | null;
+  /** A runner digest whose installed bytes the loader finds are not their digest. */
+  tampered: string | null;
 }
 
 const fake = {
   sandboxes: new Map<string, FakeSandbox>(),
   calls: [] as { method: string; path: string; body: unknown; query: string }[],
   files: new Map<string, string>(),
-  commands: [] as { sandbox: string; argv: string[]; user: string }[],
+  /** Each upload under the loader's incoming directory: its bytes' digest. */
+  incoming: new Map<string, string>(),
+  commands: [] as { sandbox: string; argv: string[]; runner: string | null; user: string }[],
   rings: [] as unknown[],
   script: null as unknown as Script,
   next: 0,
@@ -57,12 +70,13 @@ function reset(): void {
   fake.sandboxes.clear();
   fake.calls = [];
   fake.files.clear();
+  fake.incoming.clear();
   fake.commands = [];
   fake.rings = [];
   fake.next = 0;
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
                   full: false, pauseMode: "full", noCount: false, down: 0,
-                  refuseResume: false, broken: null };
+                  refuseResume: false, broken: null, tampered: null };
 }
 reset();
 
@@ -94,6 +108,47 @@ function envelope(message: unknown, flags = 0): Uint8Array {
 
 function b64(text: string): string {
   return btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+}
+
+async function sha256(bytes: ArrayBuffer): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** The loader: `install <sha>`, or a command by its runner's digest (`argv` without it). */
+function loader(box: FakeSandbox, raw: string[]):
+    { code: number; out: string; argv: string[]; runner: string | null } {
+  const [cmd, first, ...rest] = raw;
+  if (first === "install") {
+    const digest = rest[0] ?? "";
+    const path = `${box.id}:${INCOMING}${digest}`;
+    const got = fake.incoming.get(path);
+    fake.incoming.delete(path);
+    const code = got === undefined ? 24 : got !== digest ? 25 : 0;
+    if (code === 0) {
+      box.runners.add(digest);
+    }
+    return { code, out: "", argv: [cmd!, "install", digest], runner: null };
+  }
+  const digest = first ?? "";
+  const argv = [cmd!, ...rest];
+  if (!/^[0-9a-f]{64}$/.test(digest)) {
+    return { code: 2, out: "", argv, runner: digest };
+  }
+  if (!box.runners.has(digest)) {
+    return { code: 24, out: "", argv, runner: digest };
+  }
+  if (fake.script.tampered === digest) {
+    return { code: 25, out: "", argv, runner: digest };
+  }
+  if (rest[0] === "adopt") {
+    if (fake.script.state.live > 0) {
+      return { code: 3, out: "", argv, runner: digest };
+    }
+    box.runners = new Set([digest]);
+    return { code: 0, out: "", argv, runner: digest };
+  }
+  return { ...runner(argv), argv, runner: digest };
 }
 
 function runner(argv: string[]): { code: number; out: string } {
@@ -133,7 +188,7 @@ async function api(request: Request, url: URL): Promise<Response> {
     const box: FakeSandbox = { id, token: `envd-${id}`, state: "running", startedAt: Date.now(),
                                timeout: b.timeout, pauseMode: null, network: b.network,
                                metadata: b.metadata, template: b.templateID,
-                               secure: b.secure === true };
+                               secure: b.secure === true, runners: new Set() };
     fake.sandboxes.set(id, box);
     return Response.json({ templateID: b.templateID, sandboxID: id, clientID: "x",
                            envdVersion: "0.10.0",
@@ -209,21 +264,29 @@ async function envd(request: Request, url: URL): Promise<Response> {
   }
   const user = atob((request.headers.get("Authorization") ?? "Basic ").slice(6)).split(":")[0]!;
   if (url.pathname === "/files") {
-    fake.files.set(`${id}:${url.searchParams.get("path")}`,
-                   new TextDecoder().decode(await request.arrayBuffer()));
-    return Response.json([{ name: "x", type: "file", path: url.searchParams.get("path") }]);
+    const path = url.searchParams.get("path") ?? "";
+    const bytes = await request.arrayBuffer();
+    if (path.startsWith(INCOMING)) {
+      // A runner's bytes: kept as their digest and size, not the bundle itself.
+      const digest = await sha256(bytes);
+      fake.incoming.set(`${id}:${path}`, digest);
+      fake.files.set(`${id}:${path}`, `sha256:${digest} bytes:${bytes.byteLength}`);
+    } else {
+      fake.files.set(`${id}:${path}`, new TextDecoder().decode(bytes));
+    }
+    return Response.json([{ name: "x", type: "file", path }]);
   }
   if (url.pathname === "/process.Process/Start") {
     const bytes = new Uint8Array(await request.arrayBuffer());
     const length = new DataView(bytes.buffer).getUint32(1);
     const start = JSON.parse(new TextDecoder().decode(bytes.subarray(5, 5 + length))) as {
       process: { cmd: string; args: string[] } };
-    const argv = [start.process.cmd, ...start.process.args];
-    fake.commands.push({ sandbox: id, argv, user });
+    const done = loader(box, [start.process.cmd, ...start.process.args]);
+    const argv = done.argv;
+    fake.commands.push({ sandbox: id, argv, runner: done.runner, user });
     if (argv[1] !== undefined && argv[1] === fake.script.broken) {
       return new Response("envd went away", { status: 502 });
     }
-    const done = runner(argv);
     const parts = [envelope({ event: { start: { pid: 42 } } }),
                    ...(done.out === "" ? [] : [envelope({ event: { data: { stdout: b64(done.out) } } })]),
                    envelope({ event: { end: { exitCode: done.code, exited: true,
@@ -271,10 +334,17 @@ export default {
         const id = `sbx${String(fake.next += 1).padStart(5, "0")}`;
         fake.sandboxes.set(id, { id, token: `envd-${id}`, state: "paused", startedAt: Date.now(),
                                  timeout: 60, pauseMode: "full", network: null, metadata,
-                                 template: "t", secure: true });
+                                 template: "t", secure: true, runners: new Set() });
         return Response.json({ id });
       }
-      return Response.json({ sandboxes: [...fake.sandboxes.values()], calls: fake.calls,
+      if (url.pathname === "/runners") {
+        // A sandbox's installed runners set whole: one born under an older Worker's.
+        const { id, runners } = await request.json() as { id: string; runners: string[] };
+        fake.sandboxes.get(id)!.runners = new Set(runners);
+        return Response.json({});
+      }
+      return Response.json({ sandboxes: [...fake.sandboxes.values()].map((box) => ({
+                               ...box, runners: [...box.runners] })), calls: fake.calls,
                              files: Object.fromEntries(fake.files), commands: fake.commands,
                              rings: fake.rings });
     }

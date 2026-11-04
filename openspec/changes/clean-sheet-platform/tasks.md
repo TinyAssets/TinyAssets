@@ -2520,6 +2520,38 @@ R, S, M and W.
   template carries the runner's `safeDirs` fix: two runs starting at once in a fresh sandbox
   both make its shared directories, and an `EEXIST` on a real directory is the one asked for.
 
+- [x] **The runner by digest** (founder, 2026-11-04; `rs_template.md` §3 and §4): the template
+  is the environment alone (Node, the engines from their locks, the user pool, the
+  directories, the loader `template/ta-runner`), its tag the digest of those inputs only
+  (`build.py`, the loader, `RUNS_CEILING`'s value, the engines' install pins and locks), so a
+  runner change is a Worker deploy, never a template build. The sandbox Worker's build makes
+  `runner.mjs` (`build.command`) and imports it as data (`src/runner-bytes.ts`); its digest is
+  computed from those bytes. Every command is `ta-runner <sha256> <command>`, the loader
+  hashing the bytes again before it runs them (absent 24: the Worker uploads to
+  `/var/lib/ta/incoming/<sha>`, installs, asks again once; 25, not their digest: thrown,
+  nothing launches). A sandbox's row holds the digest it runs: the Worker's at a create, and
+  the Worker's adopted at a start or resume that finds nothing living (`state`, then
+  `install` and the runner's `adopt`, which holds the disk to its format and drops every
+  other runner's bytes); a live run's or sign-in's runner stays, its children re-run from
+  their own bytes. The on-disk format's rule (`runner/state-format.ts`, `limits-audit.md`):
+  a runner reads its format and the one before, fails loudly on any other, and a format
+  change ships in two deploys, so a rollback of one deploy is always safe; only true caches
+  (`sessions-seen.json`) are discarded when the format moves. Tests: the Worker against the
+  fake E2B's loader (create installs before `prepare`; a resume with it there sends nothing
+  more; absent, then installed and asked again; tampered bytes launch nothing; an older
+  Worker's runner kept under a live run, then adopted; a rolled-back Worker's converges the
+  same way); the loader as root (`runner/loader.test.ts`); `adopt`; the format record and its
+  reading (`runner/state-format.test.ts`); the template guard (the tag takes no runner input,
+  `build.py`'s tag and the guard's equal, the bundle the same bytes every build). The deploy
+  kit runs the pair check (`build.py --check-pair`) before a deploy whose pair, the template
+  and the runner it ships, has no pair tag at E2B (`pairTag`); a manual workflow
+  (`sandbox-template.yml`, production environment) builds templates with no host. Measured
+  here: the bundle is 272,426 bytes (about 66 KiB gzipped), hashed by the loader in under 2 ms.
+- [ ] Owed by the runner by digest: the one template build with the loader (the last a runner
+  change needs), its pin and its `passed.json` entry, which also measures the upload and
+  install of a runner a sandbox does not have yet (`install` in the entry); then, at the
+  first deploy, the pair check from the deploy kit live.
+
 ## 10. The plan's later slices
 
 - [ ] Rooms and status (S4), app manifest and agent players (S6), device runner

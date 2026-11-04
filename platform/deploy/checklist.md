@@ -62,8 +62,12 @@ Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and
   to have AuthKit send it (`max_age=0`). Taking the binder's clock at the code exchange
   instead is not something the code can do: it would need its own change and your approval.
 - **The sandbox's template is built.** `E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`
-  must have a ready build at E2B (`platform/sandbox/template/build.py`). The kit checks this
-  through E2B's API and stops if it is missing.
+  must have a ready build at E2B (`platform/sandbox/template/build.py`, or the manual
+  `sandbox-template.yml` workflow in the production team). The kit checks this through E2B's
+  API and stops if it is missing. The runner is the sandbox Worker's own: the kit then looks
+  for the pair's tag (the template and the runner it deploys) and, when absent, runs the pair
+  check (`build.py --check-pair`, a few throwaway sandboxes) before any change; a failure
+  stops it.
 - **The Cloudflare plan is Workers Paid.** The owner Worker needs it for its subrequests and
   for Durable Objects on SQLite.
 - **AuthKit's production Google and GitHub apps exist** (WorkOS dashboard).

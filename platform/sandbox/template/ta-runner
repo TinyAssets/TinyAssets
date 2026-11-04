@@ -1,6 +1,80 @@
 #!/bin/sh
-# The runner's command (slice S): Node with E2B's egress CA trusted beside the system's, so the
-# runner's own posts to the egress host, which E2B's proxy intercepts to set the egress token,
-# verify. Root only (mode 0700): the Worker runs it through envd as root.
+# The runner's loader, the one piece of the runner the template bakes (runner by digest):
+# the sandbox Worker ships the runner's bundle and names it by its SHA-256; this installs it
+# and runs it by that name, its bytes hashed again before every command, so what runs is
+# exactly the bytes the deployed Worker holds. Root only (0700): the Worker runs it through
+# envd as root.
+#
+#   ta-runner install <sha256>           /var/lib/ta/incoming/<sha256> checked, then installed
+#                                        at /opt/ta/runner/<sha256>/runner.mjs (root, 0644)
+#   ta-runner <sha256> <command> [arg]   that runner, checked, then run (Node with E2B's
+#                                        egress CA trusted beside the system's, so the
+#                                        runner's posts to the egress host verify)
+#
+# Exit 24: no runner of that digest here (the Worker uploads it, installs it, asks again);
+# 25: the bytes are not their name (refused loudly: nothing runs); 2: not a digest.
+set -eu
+ROOT=${TA_RUNNER_ROOT:-}
+RUNNERS=$ROOT/opt/ta/runner
+INCOMING=$ROOT/var/lib/ta/incoming
+NODE=${TA_RUNNER_NODE:-/usr/local/bin/node}
+ABSENT=24
+MISMATCH=25
+
+is_digest() {
+  case $1 in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  [ ${#1} -eq 64 ]
+}
+
+sha() {
+  sha256sum "$1" | cut -d ' ' -f 1
+}
+
+if [ "${1:-}" = install ]; then
+  want=${2:-}
+  if ! is_digest "$want"; then
+    echo "ta-runner: install takes a runner's sha256" >&2
+    exit 2
+  fi
+  from=$INCOMING/$want
+  if [ -L "$from" ] || [ ! -f "$from" ]; then
+    echo "ta-runner: no runner $want was uploaded" >&2
+    exit $ABSENT
+  fi
+  # Moved first into a directory of root's alone, then hashed there: no other user can
+  # change the bytes between the check and the install.
+  stage=$(mktemp -d "$RUNNERS/.install.XXXXXX")
+  mv "$from" "$stage/runner.mjs"
+  if [ "$(sha "$stage/runner.mjs")" != "$want" ]; then
+    rm -rf "$stage"
+    echo "ta-runner: the runner uploaded is not $want" >&2
+    exit $MISMATCH
+  fi
+  chown -R 0:0 "$stage"
+  chmod 0644 "$stage/runner.mjs"
+  chmod 0755 "$stage"
+  rm -rf "${RUNNERS:?}/$want"
+  mv "$stage" "$RUNNERS/$want"
+  exit 0
+fi
+
+want=${1:-}
+if ! is_digest "$want"; then
+  echo "ta-runner: ta-runner <sha256> <command> or ta-runner install <sha256>" >&2
+  exit 2
+fi
+shift
+file=$RUNNERS/$want/runner.mjs
+if [ -L "$RUNNERS/$want" ] || [ -L "$file" ] || [ ! -f "$file" ]; then
+  echo "ta-runner: no runner $want here" >&2
+  exit $ABSENT
+fi
+if [ "$(sha "$file")" != "$want" ]; then
+  echo "ta-runner: the runner at $want is not its digest" >&2
+  exit $MISMATCH
+fi
 export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/e2b-ca.crt
-exec /usr/local/bin/node /opt/ta/runner/runner.mjs "$@"
+export TA_RUNNER_DIGEST="$want"
+exec "$NODE" "$file" "$@"

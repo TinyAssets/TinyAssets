@@ -1,0 +1,80 @@
+name: Sandbox template (manual, founder-approved)
+
+# The sandbox's E2B template (platform/sandbox/template/build.py), built in the
+# deploying E2B team with that team's key, from no host (Direction 8). Since the
+# runner by digest, the template is the image alone (Node, the engines from
+# their locks, the user pool, the runner's loader): a runner change is a Worker
+# deploy, and this runs only when build.py's tag moves (an engine's pin, the
+# pool's size, the loader, the script).
+#
+# Modes:
+#   build - builds the template, runs its three standing checks with this
+#           commit's runner on throwaway sandboxes (each killed), tags the
+#           passed pair at E2B and uploads passed.json, whose new entry and the
+#           printed tag are then committed with the pin (wrangler.jsonc).
+#   pair  - the pair check alone: the pinned template with this commit's
+#           runner, no build (the deploy kit runs the same before a deploy).
+#
+# Each run spends: a build and a few sandbox-minutes. Its secret comes from the
+# main-only `production` environment's store, so a branch's copy of this file
+# never reaches it (tests/test_workflow_production_environment.py).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'build | pair'
+        required: true
+        default: pair
+        type: choice
+        options: [build, pair]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-template
+  cancel-in-progress: false
+
+jobs:
+  template:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the platform's pinned tools (the runner's bundle)
+        working-directory: platform
+        run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the template's pinned E2B SDK
+        run: python3 -m pip install e2b==2.62.0
+
+      - name: Build and check
+        run: |
+          set -euo pipefail
+          if [ "${MODE}" = "pair" ]; then
+            python3 platform/sandbox/template/build.py --check-pair
+          else
+            python3 platform/sandbox/template/build.py
+          fi
+
+      - name: Keep the record of what passed
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: passed-json
+          path: platform/sandbox/template/passed.json

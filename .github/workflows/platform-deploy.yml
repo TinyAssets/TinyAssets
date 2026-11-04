@@ -124,6 +124,15 @@ jobs:
         working-directory: platform
         run: npm ci
 
+      # The pair check (deploy.ts runs sandbox/template/build.py --check-pair when the
+      # template and the runner it deploys have not passed together in this E2B team).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the template's pinned E2B SDK
+        run: python3 -m pip install e2b==2.62.0
+
       - name: Apply
         run: |
           set -euo pipefail

@@ -1,0 +1,16 @@
+{
+  "1": {
+    "mirror": [
+      {
+        "type": "table",
+        "name": "files",
+        "sql": "CREATE TABLE files (path TEXT PRIMARY KEY, version INTEGER NOT NULL, size INTEGER NOT NULL, mtime_ms REAL NOT NULL, sha256 TEXT NOT NULL) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "meta",
+        "sql": "CREATE TABLE meta (only INTEGER PRIMARY KEY CHECK (only = 1), cursor INTEGER NOT NULL)"
+      }
+    ]
+  }
+}

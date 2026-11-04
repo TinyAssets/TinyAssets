@@ -21,7 +21,7 @@ import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
   DOORS, handover, kvPresent, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
-  ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, zoneOf,
+  pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner, zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
 } from "../../deploy/deploy";
 import { parseControl } from "../src/directory";
@@ -439,6 +439,19 @@ describe("the deploy kit", () => {
       .rejects.toThrow();
     await expect(templateReady("tinyassets-sandbox", "k", e2b(200, true))).rejects.toThrow();
   });
+
+  it("names the pair it deploys by the template and the runner the sandbox Worker ships",
+     () => {
+    const runner = shippedRunner();
+    expect(runner).toMatch(/^[0-9a-f]{64}$/);
+    expect(shippedRunner()).toBe(runner);  // the same bytes every build
+    expect(pairTag("tinyassets-sandbox:s0123456789abcdef", runner))
+      .toBe(`tinyassets-sandbox:s0123456789abcdef-r${runner.slice(0, 16)}`);
+    expect(() => pairTag("tinyassets-sandbox:s1", "runner")).toThrow(/SHA-256/);
+    // build.py marks a passed pair with the same tag.
+    const script = readFileSync(join(PLATFORM, "sandbox", "template", "build.py"), "utf8");
+    expect(script).toContain('return f"{tag_}-r{runner_sha[:16]}"');
+  }, 60_000);
 
   it("deploys a later version without touching routes, and names its version", () => {
     expect(versionOf("Uploaded tinyassets-owner\nWorker Version ID: " +

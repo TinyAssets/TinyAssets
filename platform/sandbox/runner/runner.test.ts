@@ -1538,6 +1538,40 @@ describe("cancel and the runner's state", () => {
     expect(box.runner("cancel", start.run).code).toBe(3);
   });
 
+  it("adopts this runner only when nothing lives: its format marked, the others' bytes gone",
+     async () => {
+    const own = "a".repeat(64);
+    const old = "b".repeat(64);
+    for (const digest of [own, old]) {
+      box.write(`/opt/ta/runner/${digest}/runner.mjs`, "// a runner");
+    }
+    box.write("/var/lib/ta/sessions-seen.json", "{}");
+    box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
+                             sleepMs: 20_000 });
+    const start = startDoc(doors, "claude-code", { config: config("claude-code") });
+    box.start(start);
+    box.runner("launch", start.run);
+    await waitFor(() => box.ran("claude-code").length > 0);
+    process.env["TA_RUNNER_DIGEST"] = own;
+    try {
+      // A run lives: its runner stays, and nothing changes.
+      expect(box.runner("adopt").code).toBe(3);
+      expect(readdirSync(box.path("/opt/ta/runner")).sort()).toEqual([own, old]);
+      box.runner("cancel", start.run);
+      await doors.ended_(25_000, start.run);
+      await waitFor(() => JSON.parse(box.runner("state").out).live === 0);
+      expect(box.runner("adopt").code).toBe(0);
+      expect(readdirSync(box.path("/opt/ta/runner"))).toEqual([own]);
+      expect(readFileSync(box.path("/var/lib/ta/format"), "utf8")).toBe("1\n");
+      // A new marker: the one cache gone with it; the durable state kept.
+      expect(existsSync(box.path("/var/lib/ta/sessions-seen.json"))).toBe(false);
+    } finally {
+      delete process.env["TA_RUNNER_DIGEST"];
+    }
+    // Run by no loader (no digest named), it refuses.
+    expect(box.runner("adopt").code).toBe(1);
+  }, 40_000);
+
   it("kills a CLI that ignores SIGTERM, after its grace", async () => {
     box.cli("codex", { lines: [], sleepMs: 60_000, stubborn: true });
     const start = startDoc(doors, "codex", { config: config("codex") });
