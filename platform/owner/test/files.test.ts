@@ -393,7 +393,7 @@ describe("every file door", () => {
   it("writes an outside client's changes as that client's", async () => {
     const r = await rig();
     await r.register(MUSE);
-    expect(entryOf(await write(r, `${W}/a.txt`, "x", null, r.bind(MUSE))).writer)
+    expect(entryOf(await write(r, `${W}/a.txt`, "x", "", r.bind(MUSE))).writer)
       .toBe(`client:${MUSE.client}`);
   });
 
@@ -468,7 +468,7 @@ describe("every file door", () => {
     const [row] = (await r.stub.grantList(r.bind(null))).clients;
     const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
       const writing = instance.fileWrite(r.bind(MUSE), {
-        path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
+        path: `${W}/big.bin`, expected_etag: "", content: new Uint8Array(INLINE_BYTES + 1) })
         .then(() => "written", (error: Error) => error.message);
       // Its intent is made in a few microtasks; its put to FILES needs I/O, so it is
       // still out while the queue is held and the grant narrowed ahead of the commit.

@@ -599,6 +599,52 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
   await page.locator(".message.good", { hasText: "Signed in to Claude." }).last().waitFor();
 });
 
+test("a talk whose socket drops mid-run goes on on a new socket, each frame shown once " +
+     "(review M1)", { timeout: 120_000 }, async () => {
+  // The sockets are kept by the script the sign-in drop's test added to the context.
+  await page.goto(`${ORIGIN}/app#agents/helper`);
+  await page.reload();
+  const before = (await starts()).length;
+  await page.getByPlaceholder("Say something to helper").fill("again");
+  await page.getByRole("button", { name: "Send" }).click();
+  let start;
+  for (let i = 0; i < 100 && start === undefined; i++) {
+    start = (await starts())[before];
+    if (start === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(start, "the run asked the sandbox to start");
+  await report(start, { frames: [
+    { seq: 1, at: 1, event: { type: "session", id: "s-drop" } },
+    { seq: 2, at: 2, event: { type: "tool_execution_start", tool: "read" } }] });
+  await page.locator(".frame", { hasText: "s-drop" }).waitFor();
+  const live = () => page.evaluate(() => window.__sockets
+    .filter((socket) => socket.url.includes("/app/api/agent/socket")
+                        && socket.readyState === WebSocket.OPEN).length);
+  const made = await page.evaluate(() => window.__sockets.length);
+  await page.evaluate(() => window.__sockets.filter((socket) =>
+    socket.url.includes("/app/api/agent/socket") && socket.readyState === WebSocket.OPEN)
+    .at(-1).close(4000, "dropped"));
+  for (let i = 0; i < 100; i++) {
+    if (await page.evaluate(() => window.__sockets.length) > made && await live() >= 1) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(await live() >= 1, "no new socket after the drop");
+  // The doors sent the run's kept frames again to the new socket: each is shown once.
+  await report(start, { frames: [
+    { seq: 3, at: 3, event: { type: "message_end",
+                              message: { role: "assistant", content: "Again from pi" } } }],
+                        end: { exit_code: 0 } });
+  await page.locator(".said.agent", { hasText: "Again from pi" }).waitFor();
+  assert.equal(await page.locator(".frame", { hasText: "s-drop" }).count(), 1);
+  const frames = await page.locator(".frame").allInnerTexts();
+  assert.equal(frames.filter((text) => text.includes("s-drop")).length, 1);
+  assert.equal(new Set(frames).size, frames.length, `a frame shown twice: ${frames.join(" | ")}`);
+});
+
 test("every screen opens on the doors' answers, and says plainly what is not here yet",
      { timeout: 60_000 }, async () => {
   for (const [hash, heading] of [["home", "Home"], ["agents", "Agents"],

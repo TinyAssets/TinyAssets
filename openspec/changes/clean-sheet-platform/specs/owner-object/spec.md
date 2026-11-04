@@ -299,7 +299,7 @@ An agent's register, disable, delete or file change, a policy write, a wake-limi
 - **THEN** it is refused as having no session
 
 ### Requirement: Every agent may change the agent trees unless the owner narrowed it
-A change under `OWNER_TREES` (agents' `agent.json`, instructions and skills) SHALL be taken from every agent of the owner by default (founder, 2026-11-03): an outside client under a full grant, a run, and a sandbox sync. A grant the owner narrowed (`scoped`), its runs and its sandbox's sync SHALL be refused there (`AGENTS_OWNER_ONLY`). The owner's own app token SHALL change them only in the live session, receipted when refused.
+A change under `OWNER_TREES` (agents' `agent.json`, instructions and skills, the goals, and the owner's profile `/workspace/USER.md`, whose directives every agent follows) SHALL be taken from every agent of the owner by default (founder, 2026-11-03): an outside client under a full grant, a run, and a sandbox sync. A grant the owner narrowed (`scoped`), its runs and its sandbox's sync SHALL be refused there (`AGENTS_OWNER_ONLY`). The owner's own app token SHALL change them only in the live session, receipted when refused.
 
 #### Scenario: A default-grant agent edits another agent's agent.json
 - **WHEN** an outside client under its default full grant widens `/workspace/agents/other/agent.json`
@@ -354,7 +354,7 @@ A grant's revision SHALL move on every owner set and revoke, and the owner's set
 - **THEN** the generation is unchanged, and a revoked grant keeps its revoke's time as its fence
 
 ### Requirement: Any agent of the owner sees which of the owner's apps are connected
-An MCP client's grant row SHALL keep the vendor its sign-in named (`vendor`, an `apps.json` id, and `vendor_verified`; migration 4), recorded at its first call or once it is named. `outsideAgents` (`agents_list`) SHALL answer every caller, a narrowed grant's and a run's included, `apps`: each `apps.json` app with whether a live MCP grant names it, how many, the latest seen, whether a CIMD host verified one, and its `connect_url` (the public connect page's anchor); and, when any, the live MCP grants no app matched as one line. A revoked grant SHALL not count; a vendor `apps.json` does not name SHALL be refused.
+An MCP client's grant row SHALL keep the vendor its sign-in named (`vendor`, an `apps.json` id, and `vendor_verified`; migration 4), recorded at its first call or once it is named. `outsideAgents` (`agents_list`) SHALL answer every caller, after a new owner's seed,, a narrowed grant's and a run's included, `apps`: each `apps.json` app with whether a live MCP grant names it, how many, when one was last used (`last_used`, ISO 8601), whether a CIMD host verified one, and its `connect_url` (the public connect page's anchor); and, when any, the live MCP grants no app matched as one line. A revoked grant SHALL not count; a vendor `apps.json` does not name SHALL be refused.
 
 #### Scenario: Two apps connected and one revoked
 - **WHEN** a Muse client (named) and a Claude client (CIMD) are connected and the owner revokes the Muse one

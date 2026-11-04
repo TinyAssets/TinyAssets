@@ -1,6 +1,6 @@
 ---
 name: shared-brain
-description: Use whenever a request depends on what the owner or their other agents already know, decided or did, or before an act another of their agents might also take.
+description: Use when a request depends on what the owner or their other agents already know, decided or did, or before an act another of their agents might also take.
 metadata:
   ta-starter: "shared-brain@2"
 ---
@@ -63,7 +63,9 @@ and tell your owner when the two differ. If yours is newer, update the workspace
 ## 5. Assistants not yet connected
 When your owner says, or clearly shows, that they use an AI assistant, check whether
 `agents_list` shows it connected to TinyAssets; if `agents_list` lists no apps, ask your
-owner whether it is already connected. A file that merely mentions a product is not your
+owner whether it is already connected. An app connected but long unused (its `last_used` in
+`agents_list`) may have been disconnected in that app, which TinyAssets is not told: ask your
+owner before you take it as connected. A file that merely mentions a product is not your
 owner using it. Name the app as `<app>`: its id as `agents_list` gives it, lower-case, the
 same in the claim and in the directives. If it is not connected, and `/workspace/USER.md`
 says neither that it was offered nor not to suggest it, offer it once:

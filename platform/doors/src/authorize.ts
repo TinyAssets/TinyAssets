@@ -281,15 +281,27 @@ async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn)
 
 /**
  * Which vendor a signing-in client is (`apps.ts`): a CIMD client by its document's host,
- * which the provider fetched (verified); any other by the name it registered, which only it
- * vouches for. Recorded in the grant's props, and by the owner's object at the client's
+ * which the provider fetched, verified only when every redirect it registered is that app's;
+ * any other by the name it registered, which only it vouches for. Recorded in the grant's props, and by the owner's object at the client's
  * first call, so every agent can tell which of the owner's apps are connected.
  */
-async function signedInVendor(oauth: OAuthHelpers, clientId: string): Promise<Vendor | null> {
-  if (clientId.startsWith("https://")) {
-    return vendorOf(clientId, null);
+async function signedInVendor(oauth: OAuthHelpers, clientId: string, redirectUri: string):
+    Promise<Vendor | null> {
+  let client: Awaited<ReturnType<OAuthHelpers["lookupClient"]>>;
+  try {
+    client = await oauth.lookupClient(clientId);
+  } catch (error) {
+    if (!(error instanceof CimdFetchError)) {
+      throw error;
+    }
+    // The document fetched at /authorize is gone now: only this sign-in's redirect is known,
+    // which the provider checked against it then.
+    client = null;
   }
-  return vendorOf(clientId, (await oauth.lookupClient(clientId))?.clientName ?? null);
+  // Every redirect the client registered, the one this sign-in sends access to among them.
+  const redirects = [...new Set([...(client?.redirectUris ?? []), redirectUri])];
+  return vendorOf(clientId, clientId.startsWith("https://") ? null : client?.clientName ?? null,
+                  redirects);
 }
 
 /** `GET /oauth/upstream/callback`: the verified sign-in becomes the grant. */
@@ -338,7 +350,7 @@ export async function callback(request: Request, env: DoorsEnv,
     const props: McpProps = {
       kind: "mcp", owner, ...await mcpOrigin(original.clientId, original.redirectUri),
       source_ref: original.clientId, authenticated_at: signedIn.authenticated_at,
-      vendor: await signedInVendor(oauth, original.clientId),
+      vendor: await signedInVendor(oauth, original.clientId, original.redirectUri),
     };
     // A re-authorization replaces the client's earlier grant from the same installation,
     // so one installation's sign-in never revokes another's and stale grants never pile

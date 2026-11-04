@@ -173,10 +173,13 @@ export type Client = {
 
 type Stored = Omit<Client, "scopes"> & { scopes: string };
 
+/** Whole seconds as ISO 8601. */
+const iso = (seconds: number): string => new Date(seconds * 1000).toISOString();
+
 /**
  * One of the owner's AI apps as any of its agents sees it (`agents_list`): an `apps.json`
- * app, whether a live MCP grant names it (`connections` of them, the latest seen at
- * `last_seen`), whether a CIMD host verified one, and where its connect step is; or
+ * app, whether a live MCP grant names it (`connections` of them, the latest used at
+ * `last_used`), whether a CIMD host verified one, and where its connect step is; or
  * (`id` null) the connected clients no app matched.
  */
 export interface ConnectedApp {
@@ -185,7 +188,12 @@ export interface ConnectedApp {
   readonly connected: boolean;
   readonly connections: number;
   readonly verified: boolean;
-  readonly last_seen: number | null;
+  /**
+   * When one of its clients last called, ISO 8601 (to `GRANT_LIMITS.seenIntervalS`), or null:
+   * an app long unused may have been disconnected in its own app, which TinyAssets is not
+   * told, so an agent asks before taking it as connected.
+   */
+  readonly last_used: string | null;
   readonly connect_url: string | null;
 }
 
@@ -392,14 +400,15 @@ export class Grants {
       const row = by.get(app.id);
       return { id: app.id, name: app.name, connected: row !== undefined,
                connections: row?.n ?? 0, verified: row !== undefined && row.verified === 1,
-               last_seen: row?.seen ?? null, connect_url: connectUrl(app.id) };
+               last_used: row === undefined ? null : iso(row.seen),
+               connect_url: connectUrl(app.id) };
     });
     const other = rows.filter((row) => row.vendor === null
                                        || !appList().some((app) => app.id === row.vendor));
     const others = other.reduce((sum, row) => sum + row.n, 0);
     if (others > 0) {
       listed.push({ id: null, name: "Other apps", connected: true, connections: others,
-                    verified: false, last_seen: Math.max(...other.map((row) => row.seen)),
+                    verified: false, last_used: iso(Math.max(...other.map((row) => row.seen))),
                     connect_url: null });
     }
     return listed;

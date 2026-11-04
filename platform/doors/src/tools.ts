@@ -245,15 +245,18 @@ export function toolTable(): readonly Tool[] {
         "workspace, such as a directive at the end of /workspace/USER.md or a note in their " +
         "knowledge, and makes the file when it is absent. It never changes what is already " +
         "there. The text goes in exactly as given: begin it with a newline where the file " +
-        "needs one.",
+        "needs one. A JSON, TOML or YAML file is changed with file_edit instead.",
       input: args({ path, content: str("The text to add at the end, as UTF-8: at most " +
                                            "4 MiB") }) },
     { name: "file_write", door: "fileWrite", capability: "write_files",
       title: "Write file", ...CHANGE,
       description: "Write a whole file of the user's TinyAssets workspace: its text " +
-        "replaces what is there, at the file's current etag (null to create it). A conflict " +
-        "answers the file as it now stands. At most 4 MiB of text.",
-      input: args({ path, expected_etag: etag,
+        "replaces what is there, at the file's current etag, or \"\" to create a file that " +
+        "is not there yet. A conflict answers the file as it now stands. At most 4 MiB of " +
+        "text.",
+      input: args({ path,
+                    expected_etag: str("The file's current etag, from fetch, file_read or " +
+                                       "file_stat, or \"\" to create it only when absent"),
                     content: str("The file's whole text, as UTF-8: at most 4 MiB") },
                   { mode: int("1 to make the file executable, 0 not; kept when omitted") }) },
     { name: "file_edit", door: "fileEdit", capability: "write_files",
@@ -308,12 +311,12 @@ export function toolTable(): readonly Tool[] {
     { name: "run_graph", door: "agentRun", capability: "run_graph",
       title: "Run an agent", ...CHANGE,
       description: "Launch one of the owner's agents on an input, in a fresh conversation of " +
-        "its own: now, at a time, or at each time a cron names. Answers the run, or the " +
+        "its own: now, at a time, or at the times a cron names. Answers the run, or the " +
         "schedule, at once.",
       input: args({ agent: str("Which of the owner's agents, such as main"),
                     input: str("What the agent is asked to do") },
                   { at: num("When to run it, in seconds since the epoch"),
-                    cron: str("Run it at each time this names: minute, hour, day of the " +
+                    cron: str("Run it at the times this names: minute, hour, day of the " +
                               "month, month and day of the week, in UTC") }) },
     { name: "run_status", door: "agentStatus", capability: null,
       title: "Run status", ...READ,
@@ -383,14 +386,16 @@ export function callDoor(stub: DurableObjectStub<OwnerDO>, binding: Binding, too
  * An owner object's refusal or invalid request, as opposed to a bug. A refusal at the
  * owner's storage figure (`storage_full`, `owner/src/storage-full.ts`) is 507 Insufficient
  * Storage, so a client tells the one wall from a permission; one only open uploads cause
- * (`uploads_open`) is 409, since it clears as they finish or are cancelled.
+ * (`uploads_open`), or an append that lost to other writes every try (`file_busy`), is 409,
+ * since it clears as they finish.
  */
 export function refusal(error: unknown):
     { status: 400 | 403 | 409 | 507; message: string } | null {
   if (error instanceof Error && (error.name === "Refused" || error.name === "Invalid")) {
     return { status: error.name === "Invalid" ? 400
                : error.message.startsWith("storage_full:") ? 507
-               : error.message.startsWith("uploads_open:") ? 409 : 403,
+               : error.message.startsWith("uploads_open:")
+                 || error.message.startsWith("file_busy:") ? 409 : 403,
              message: error.message };
   }
   return null;

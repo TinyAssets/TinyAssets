@@ -9,7 +9,9 @@ from the starter's skills and `platform/doors/apps.json`. Don't edit them by han
 1. **The doors are live.** The go-ahead deploy is done, and `https://tinyassets.io/mcp`
    answers a signed-in client.
 2. **Dynamic registration is decided.** `DCR_ENABLED` is `"true"` if Grok, Muse or Gemini
-   are to connect. Claude and ChatGPT use CIMD and don't need it.
+   are to connect, and each one's redirect URIs are recorded in `apps.json`
+   (`match.redirects`). Until they are, its registration is refused. Claude and ChatGPT use
+   CIMD and don't need it.
 3. **The live proof passed.** The steps are in `tasks.md`, under "Owed by BRAIN, live".
    Both plugins' prompts were tried on a real account.
 4. **The legal pages say what TinyAssets stores.** Both directories link the privacy and

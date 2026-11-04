@@ -39,10 +39,10 @@ async function tool(client: Client, name: string, args: Record<string, unknown>)
     : { error: null, value: answer.structuredContent as Record<string, unknown> };
 }
 
-const register = (environment: DoorsEnv, name: string) => call(new Request(
-  url("/oauth/register"), {
+const register = (environment: DoorsEnv, name: string, redirect = "https://client.test/cb") =>
+  call(new Request(url("/oauth/register"), {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_name: name, redirect_uris: ["https://client.test/cb"],
+    body: JSON.stringify({ client_name: name, redirect_uris: [redirect],
                            token_endpoint_auth_method: "none" }),
   }), environment);
 
@@ -62,7 +62,8 @@ describe("an outside client's agent", () => {
 describe("a client's vendor, at sign-in", () => {
   it("is named by a registered client's own name, unverified, or none", async () => {
     const alice = owner();
-    for (const [name, vendor] of [["Muse", "muse"], ["Some Agent", null]] as const) {
+    for (const [name, vendor] of [["Muse", "muse"], ["Gemini", "gemini"],
+                                  ["Some Agent", null]] as const) {
       const client = await mcpClient(await connect(await registerClient(name), { owner: alice }));
       await tool(client, "agents_list", {});
       await client.close();
@@ -106,29 +107,88 @@ describe("dynamic registration (the founder's ruling: for vendors with no CIMD)"
 
   it("is served only with DCR_ENABLED", async () => {
     expect((await register(doorsEnv, "Grok")).status).toBe(404);
-    expect((await register(on, "Grok")).status).toBe(201);
+    const metadata = await (await call(new Request(
+      url("/.well-known/oauth-authorization-server")), on)).json<Record<string, unknown>>();
+    expect(metadata["registration_endpoint"]).toBe("https://tinyassets.io/oauth/register");
   });
 
-  it("takes only a client whose name names a vendor that registers dynamically", async () => {
+  it("takes no registration for a vendor whose redirects are not recorded yet, a CIMD " +
+     "vendor's name or none, and none of the review's phishing ones (M3)", async () => {
+    const refused = async (name: string, redirect = "https://client.test/cb") => {
+      const answer = await register(on, name, redirect);
+      expect(answer.status, name).toBe(400);
+      return (await answer.json<{ error: string; error_description: string }>());
+    };
+    // Every dcr vendor's redirects wait for the live test: dynamic registration is off.
     for (const name of ["Gemini", "Grok Bot", "Cursor", "Muse"]) {
-      expect((await register(on, name)).status, name).toBe(201);
+      expect(await refused(name)).toMatchObject({ error: "invalid_client_metadata",
+        error_description: expect.stringMatching(/is off until its redirect URIs are recorded/) });
     }
-    // A CIMD vendor's name, or no vendor's, is refused before anything is stored.
     for (const name of ["ChatGPT", "Claude", "Some Agent", ""]) {
-      const refused = await register(on, name);
-      expect(refused.status, name).toBe(400);
-      expect(await refused.json()).toMatchObject({ error: "invalid_client_metadata" });
+      expect((await refused(name)).error_description).toMatch(/^Dynamic registration is only/);
+    }
+    for (const name of ["Grok official TinyAssets support", "Cursor helper by evil",
+                        "Gemini Import Tool", "Grok by phish.example"]) {
+      await refused(name, "https://phish.example/cb");
     }
   });
+});
 
-  it("names the vendor at sign-in, unverified", async () => {
-    const made = await (await register(on, "Gemini")).json<{ client_id: string }>();
+describe("a CIMD document on a vendor's host that sends access elsewhere (review M2)", () => {
+  it("is that vendor unverified, and its consent says where access goes", async () => {
+    const document = "https://chatgpt.com/some/user/path/cimd.json";
+    const redirect = "https://attacker.example/cb";
+    const real = globalThis.fetch;
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      return request.url === document
+        ? Response.json({ client_id: document, client_name: "ChatGPT",
+                          redirect_uris: [redirect], token_endpoint_auth_method: "none",
+                          grant_types: ["authorization_code", "refresh_token"],
+                          response_types: ["code"] })
+        : real(input, init);
+    });
+    try {
+      const alice = owner();
+      const client = await mcpClient(await connect({ clientId: document, redirectUri: redirect },
+                                                   { owner: alice }));
+      await tool(client, "agents_list", {});
+      expect(await sqlIn(alice, "SELECT vendor, vendor_verified FROM outside_clients"))
+        .toEqual([{ vendor: "chatgpt", vendor_verified: 0 }]);
+      await client.close();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("file_write over MCP (review H1)", () => {
+  it("never replaces a file with no etag: null is refused, and \"\" on a file there is a " +
+     "conflict", async () => {
     const alice = owner();
-    const client = await mcpClient(await connect(
-      { clientId: made.client_id, redirectUri: "https://client.test/cb" }, { owner: alice }));
-    await tool(client, "agents_list", {});
-    expect(await sqlIn(alice, "SELECT vendor, vendor_verified FROM outside_clients"))
-      .toEqual([{ vendor: "gemini", vendor_verified: 0 }]);
+    const client = await mcpClient(await connect(await registerClient("Claude Code",
+                                                                      "http://127.0.0.1/cb"),
+                                                 { owner: alice }));
+    const write = (await client.listTools()).tools.find((t) => t.name === "file_write")!;
+    expect(JSON.stringify(write.inputSchema)).not.toContain("null");
+    // The schema refuses null before the object; the object refuses it too (owner test).
+    const nulled = await tool(client, "file_write", { path: "/workspace/USER.md",
+                                                      expected_etag: null,
+                                                      content: "# replaced\n" });
+    expect(nulled.error).not.toBeNull();
+    const created = await tool(client, "file_write", { path: "/workspace/USER.md",
+                                                       expected_etag: "",
+                                                       content: "# replaced\n" });
+    expect(created.error).toBeNull();
+    expect(created.value).toHaveProperty("conflict");
+    const after = await tool(client, "fetch", { id: "/workspace/USER.md" });
+    expect(after.value["text"]).toContain("## Profile");
+    // At the etag it read, the replacement lands.
+    const etag = (after.value["metadata"] as { etag: string }).etag;
+    const replaced = await tool(client, "file_write", { path: "/workspace/USER.md",
+                                                        expected_etag: etag,
+                                                        content: "# mine\n" });
+    expect(replaced.value).toHaveProperty("entry");
     await client.close();
   });
 });

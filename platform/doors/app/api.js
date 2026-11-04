@@ -142,19 +142,32 @@ export async function signOut() {
  * dropped, the token's time up, the object restarted) is followed by a new socket.
  */
 const FINAL_CLOSES = [4400, 4403, 4410, 4440];
+/**
+ * The waits before a new socket after a drop: the first, then each one doubled up to the
+ * last, back to the first once a socket has stayed open as long as the last (review L1).
+ * Half a minute at most, so a tab left open on a dead network asks for a ticket about twice
+ * a minute, and a run's frames come back soon after the network does.
+ */
+const RECONNECT_FIRST_MS = 1000;
+const RECONNECT_MOST_MS = 30_000;
 
 /**
  * A live socket on one of the owner's conversations: a single-use ticket first (behind the
- * token), then the socket with the ticket as its one credential. `onFrame` gets each frame.
- * A socket that drops is followed by a new one (a new ticket), and `onAttach` is called
- * again so the caller reads the state as it now stands: the frames sent while it was down
- * are not sent again. `onClose` gets the close code and reason when it ends for good: closed
- * here, a final close from the doors, or no new ticket to be had. Answers a handle with
- * `close()` and the current socket's `readyState`.
+ * token), then the socket with the ticket as its one credential. `onFrame` gets each frame
+ * once: the doors send a live run's kept frames again to each new socket, so a frame at or
+ * below the last `seq` seen for its run is dropped (review M1). A socket that drops is
+ * followed by a new one (a new ticket), after a wait that doubles while sockets keep
+ * dropping, and `onAttach` is called again so the caller reads the state as it now stands.
+ * `onClose` gets the close code and reason when it ends for good: closed here, a final close
+ * from the doors, or no new ticket to be had. Answers a handle with `close()` and the
+ * current socket's `readyState`.
  */
 export async function follow(conversation, onFrame, onClose, onAttach = () => undefined) {
   let socket = null;
   let closed = false;
+  let wait = RECONNECT_FIRST_MS;
+  /** The last seq shown, by run, across every socket of this follow. */
+  const shown = new Map();
   const handle = {
     close() {
       closed = true;
@@ -164,21 +177,33 @@ export async function follow(conversation, onFrame, onClose, onAttach = () => un
       return closed ? WebSocket.CLOSED : socket?.readyState ?? WebSocket.CONNECTING;
     },
   };
+  const deliver = (frame) => {
+    if (typeof frame?.run === "string" && Number.isSafeInteger(frame.seq)) {
+      const last = shown.get(frame.run);
+      if (last !== undefined && frame.seq <= last) {
+        return;
+      }
+      shown.set(frame.run, frame.seq);
+    }
+    onFrame(frame);
+  };
   const attach = async () => {
     const { ticket } = await call("agent/socket-ticket", { conversation_id: conversation });
     const query = new URLSearchParams({ conversation_id: conversation, ticket });
     const opened = new WebSocket(`wss://${location.host}/app/api/agent/socket?${query}`);
     socket = opened;
-    let open = false;
+    let openedAt = null;
     opened.addEventListener("open", () => {
-      open = true;
+      openedAt = Date.now();
     });
     opened.addEventListener("message", (event) => {
+      let frame;
       try {
-        onFrame(JSON.parse(event.data));
+        frame = JSON.parse(event.data);
       } catch {
-        onFrame({ kind: "unreadable", event: String(event.data) });
+        frame = { kind: "unreadable", event: String(event.data) };
       }
+      deliver(frame);
     });
     opened.addEventListener("close", (event) => {
       if (closed || FINAL_CLOSES.includes(event.code)) {
@@ -186,8 +211,12 @@ export async function follow(conversation, onFrame, onClose, onAttach = () => un
         onClose(event.code, event.reason);
         return;
       }
-      // Dropped: a new socket, then the state read again. One that never opened waits a
-      // moment first, so a refused socket is not asked for again at once.
+      // Dropped: a new socket after the wait, then the state read again.
+      if (openedAt !== null && Date.now() - openedAt >= RECONNECT_MOST_MS) {
+        wait = RECONNECT_FIRST_MS;
+      }
+      const now = wait;
+      wait = Math.min(wait * 2, RECONNECT_MOST_MS);
       setTimeout(() => {
         if (closed) {
           return;
@@ -196,7 +225,7 @@ export async function follow(conversation, onFrame, onClose, onAttach = () => un
           closed = true;
           onClose(event.code, error instanceof Error ? error.message : String(error));
         });
-      }, open ? 0 : 1000);
+      }, now);
     });
   };
   await attach();

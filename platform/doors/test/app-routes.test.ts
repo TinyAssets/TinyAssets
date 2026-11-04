@@ -303,8 +303,10 @@ describe("the owner app's sources and tools routes", () => {
 
   it("call a table tool as the owner itself, and no name the table lacks", async () => {
     const app = await signInApp({ owner: owner() });
-    expect(await answered(await appPost("tools/agents_list", app.access_token, null, {})))
-      .toEqual({ agents: [], owner_agents: [], apps: expect.any(Array) });
+    // The list waits for the new owner's seed, so the starter's main is there.
+    const listed = await answered(await appPost("tools/agents_list", app.access_token, null, {}));
+    expect(listed).toEqual({ agents: [], owner_agents: expect.any(Array), apps: expect.any(Array) });
+    expect((listed["owner_agents"] as { agent: string }[]).map((a) => a.agent)).toEqual(["main"]);
     expect(await answered(await appPost("tools/inbox_digest", app.access_token, null,
                                         { limit: 10, after: 0 })))
       .toMatchObject({ mail: { messages: [] }, rooms: { rows: [] } });

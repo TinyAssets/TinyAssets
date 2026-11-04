@@ -151,7 +151,7 @@ import { Invalid, Refused } from "./errors";
 import {
   BATCH_BYTES, type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef,
   type ChunkStore, type Content, type Entry, FileConflict, FileFault, Files, GC_GRACE_S,
-  INLINE_BYTES, type Lease, WHOLE_BYTES,
+  INLINE_BYTES, type Lease, MAX_OPEN_INTENTS, WHOLE_BYTES,
   OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
@@ -1148,6 +1148,20 @@ function conflicted<T>(act: () => T): T | Conflicted {
     throw error;
   }
 }
+
+/** Files an append never changes: text put after their end breaks what they mean. */
+const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
+/**
+ * The tries an append makes before it is refused `file_busy`: each lost try means another
+ * write to the same file landed between its read and its write, and a write of a chunked
+ * file holds one of the owner's open uploads while it lands, so this many losses in a row
+ * is more than every upload the owner can have open at once (`MAX_OPEN_INTENTS`) landing on
+ * one file: a flood, never ordinary company.
+ */
+export const APPEND_TRIES = MAX_OPEN_INTENTS + 1;
+/** An outside agent's or a run's whole write with no etag: it never replaces a file unread. */
+export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
+  "only when absent: read the file first (fetch, file_read or file_stat)";
 
 function fileFields(request: unknown, required: readonly string[],
                     optional: readonly string[] = []): Record<string, unknown> {
@@ -2913,8 +2927,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
    * it may mail).
    */
-  outsideAgents(binding: Binding):
+  async outsideAgents(binding: Binding):
       Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] }> {
+    await this.#seededFor(() => {
+      this.#account(binding, "read");
+    });
     return this.#door(() => {
       const account = this.#account(binding, "read");
       const own = account.origin === null && account.run === null;
@@ -4169,8 +4186,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A directory's entries by name; with `head_chars`, each small file's (inline, so no
    * bucket is read) first characters of its text, enough for its frontmatter.
    */
-  fileList(binding: Binding, request: FileListRequest):
+  async fileList(binding: Binding, request: FileListRequest):
       Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
+    await this.#seededFor(() => {
+      this.#reader(binding, "read", "read_files");
+    });
     return this.#door(() => {
       const visible = this.#reader(binding, "read", "read_files");
       const r = fileFields(request, ["dir", "limit"], ["after", "head_chars"]);
@@ -4199,7 +4219,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileText(binding: Binding, request: FileTextRequest):
       Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
-    await this.#seededFor(binding, "read", "read_files");
+    await this.#seededFor(() => {
+      this.#filer(binding, "read", "read_files");
+    });
     const asked = await this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path"], ["offset", "max_bytes"]);
@@ -4267,7 +4289,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileSearch(binding: Binding, request: FileSearchRequest):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
-    await this.#seededFor(binding, "read", "read_files");
+    await this.#seededFor(() => {
+      this.#filer(binding, "read", "read_files");
+    });
     return this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["query"], ["cursor"]);
@@ -4296,7 +4320,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileFetch(binding: Binding, request: FileFetchRequest):
       Promise<{ id: string; title: string; text: string; url: string;
                 metadata: FetchMetadata }> {
-    await this.#seededFor(binding, "read", "read_files");
+    await this.#seededFor(() => {
+      this.#filer(binding, "read", "read_files");
+    });
     const content = await this.#door(() => {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["id"]);
@@ -4362,15 +4388,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * Write a whole file of at most one chunk (4 MiB); larger ones go by upload. Its content is
-   * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement).
+   * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement). An
+   * outside client or a run writes at the etag it read, or `""` to create a file only when it
+   * is absent, never with no etag at all (review H1): a replacement never lands over a file
+   * the agent did not read. The owner's own app may still write with none.
    */
   async fileWrite(binding: Binding, request: FileWriteRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    await this.#seededFor(binding, "work", "write_files");
+    await this.#seededFor(() => {
+      this.#filer(binding, "work", "write_files");
+    });
     const { account, r, content } = await this.#door(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
       this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
+      const asked = r["expected_etag"];
+      if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
+        throw new Invalid(UNREAD_WRITE);
+      }
       const given = r["content"];
       const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
@@ -4399,13 +4434,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * that meets another's write reads the file again and puts its text after that. A file of
    * whole chunks keeps them as they are (`Files.write`'s `prefix`), so only its last chunk
    * and the text are written again, at any size. The text is at most one chunk (4 MiB).
+   * A structured file (`STRUCTURED`: JSON, TOML, YAML) is refused: text put after its end
+   * breaks what it means however whole its bytes stay, so it is edited (the founder,
+   * 2026-11-04). Each try checks the caller's authority and the agent trees again, and an
+   * append that loses `APPEND_TRIES` times in a row is refused `file_busy`.
    */
   async fileAppend(binding: Binding, request: FileAppendRequest): Promise<{ entry: Entry }> {
-    await this.#seededFor(binding, "work", "write_files");
+    await this.#seededFor(() => {
+      this.#filer(binding, "work", "write_files");
+    });
     const { account, path, added } = await this.#door(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "content"]);
       this.#ownersTree(binding, account, "FILES.append", request, r["path"]);
+      if (STRUCTURED.test(storedPath(r["path"]))) {
+        throw new Invalid("a structured file (JSON, TOML or YAML) is never appended to: read " +
+                          "it and change it with file_edit");
+      }
       const content = r["content"];
       if (typeof content !== "string" || content === "") {
         throw new Invalid("appended content is text of at least one character");
@@ -4417,10 +4462,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { account, path: storedPath(r["path"]), added };
     });
     const authorize = () => {
-      this.#filer(binding, "work", "write_files");
+      this.#ownersTree(binding, this.#filer(binding, "work", "write_files"), "FILES.append",
+                       request, path);
     };
     try {
-      for (;;) {
+      for (let tries = 0; ; tries += 1) {
+        if (tries === APPEND_TRIES) {
+          throw new Refused(`file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
+                            "append again");
+        }
         const now = await this.#door(() => {
           authorize();
           const entry = this.#files.stat(path);
@@ -4474,7 +4524,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileEdit(binding: Binding, request: FileEditRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    await this.#seededFor(binding, "work", "write_files");
+    await this.#seededFor(() => {
+      this.#filer(binding, "work", "write_files");
+    });
     const asked = await this.#door(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "old_text", "new_text", "expected_etag"]);
@@ -4547,16 +4599,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A new owner's starter seed, awaited before a file door touches the files, after the
-   * caller's authority is checked: an outside agent's first `fetch` of `/workspace/USER.md`
-   * finds the seeded profile however soon after sign-up it comes, and its first write lands
-   * beside the seeded files, never before them (autoconnect_research.md §2.1).
+   * A new owner's starter seed, awaited before a door touches the files or lists the agents,
+   * after the caller's authority is checked in a unit (`check`): an outside agent's first
+   * `fetch` of `/workspace/USER.md` or `agents_list` finds the seeded profile and `main`
+   * however soon after sign-up it comes, and its first write lands beside the seeded files,
+   * never before them (autoconnect_research.md §2.1).
    */
-  async #seededFor(binding: Binding, door: "read" | "work",
-                   capability: "read_files" | "write_files"): Promise<void> {
-    await this.#door(() => {
-      this.#filer(binding, door, capability);
-    });
+  async #seededFor(check: () => void): Promise<void> {
+    await this.#door(check);
     await this.#seeded();
   }
 

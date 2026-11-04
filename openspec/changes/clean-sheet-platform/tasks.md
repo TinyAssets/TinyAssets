@@ -2202,11 +2202,13 @@ R, S, M and W.
 - [ ] **Owed by BRAIN, live, after the go-ahead deploy** (proof is observed tool calls and
   `writer` values, never an agent's say-so; the user's only acts are connect, sign in and
   answer):
-  1. **Turn DCR on** in the go-ahead deploy (`DCR_ENABLED: "true"`), and confirm each `dcr`
-     vendor's real `client_name` matches `apps.json`'s `names` (Grok via Cursor's backend,
-     Gemini, Muse, Cursor): a name that does not match is refused loudly, and the fix is a
-     data line. Confirm Claude's and ChatGPT's CIMD hosts (`claude.ai`, `chatgpt.com` or
-     `openai.com`) in their first grant rows (`vendor_verified` 1).
+  1. **Turn DCR on** in the go-ahead deploy (`DCR_ENABLED: "true"`). For each `dcr` vendor
+     (Grok via Cursor's backend, Gemini, Muse, Cursor) read its real `client_name` and its
+     `redirect_uris` from its first registration attempt, which is refused while its
+     `match.redirects` is empty (dynamic registration is off for it until then), and record
+     both in `apps.json` with the date: only then can it register, and only to those
+     redirects. Confirm Claude's and ChatGPT's CIMD hosts and redirects (`claude.ai`,
+     `chatgpt.com` or `openai.com`) in their first grant rows (`vendor_verified` 1).
   2. **MCP-first onboarding** (`ui-test`, Claude.ai): a fresh account that never opened
      the app; connect through `apps.json`'s Claude link; first message "help me plan this
      week". Pass: a `fetch`/`file_read` of `/workspace/USER.md` is seen; the task is done,
@@ -2237,10 +2239,25 @@ R, S, M and W.
      the approval prompts each write-back costs on ChatGPT and Claude, `file_append`
      against `file_edit`; whether claude.ai shows the `instructions`.
   9. **By the founder's hand** (no driver here; name the app version and date): Grok Bot
-     (the `say` sentence; expected to fail while DCR is off, which is the point), Meta Muse,
-     Claude Duet and Gemini, steps 2 to 6 each.
+     (the `say` sentence), Meta Muse, Claude Duet and Gemini, steps 2 to 6 each, after step 1
+     recorded each one's redirects; before that, each one's connect is refused loudly at its
+     registration, which is what step 1 reads.
   10. **Codex CLI and Claude Code locally**, two agents on one repository: claims keyed
      `repo:<name>:<area>`, one `doing` row, the other stops.
+  - Review rvbr (REQUEST_CHANGES on `e4061205e`), fixed: an outside agent's or a run's
+    `file_write` takes a string etag, `""` creating only where absent, and the object refuses
+    null from them (H1); `follow()` shows a run's frame once across sockets, by its `seq`
+    (M1), and waits between reconnects from 1 s doubling to 30 s, back to 1 s once a socket
+    stayed open that long (L1); a CIMD client is verified only when its host and every
+    redirect it registered are the app's (M2); a registration takes only a `dcr` vendor's
+    own redirects, and one with none recorded takes none (M3); migration 4's columns are in
+    the owner bound (L2); `/workspace/USER.md` joins `OWNER_TREES` and `file_append` refuses
+    JSON, TOML and YAML (the founder on L3); `agents_list.apps` gives `last_used`, and the
+    shared-brain skill asks before taking a long-unused app as connected (L4); the
+    served-text guard covers titles, nested argument descriptions, skill descriptions,
+    "always", "every time" and broad triggers (L5); `file_list` and `agents_list` wait for the
+    seed (L6); an append rechecks the agent trees on each try and stops after
+    `APPEND_TRIES` (65: one more than the owner's open uploads) lost tries, `file_busy` (L7).
 - [ ] Owed by BRAIN to later slices: the submissions themselves (`platform/plugins/SUBMIT.md`,
   the founder's outward act); Claude's plugin directory follows a repository, so the plugin
   may need its own repository or a published subfolder; a Gemini listing would need a
@@ -2311,6 +2328,61 @@ R, S, M and W.
       would never lower a tier. Before `routes`: a billing door on the new platform, with
       Stripe's endpoint moved to it; or the founder's word that no live subscription exists,
       and Stripe's endpoint disabled until that door is built.
+
+- [ ] **The founder's and the canary's owners start fresh** (the founder's ruling, 2026-11-04):
+  the founder's main account and every canary owner account begin on the new platform with
+  nothing imported, so the founder goes through the whole onboarding from the first
+  connection, and the canary exercises it each time it runs. In the cutover window:
+  1. **Back up, never import.** Their old-platform data is exported and kept privately as a
+     backup. It is proven saved before anything is dropped (Fact 13): the export's own
+     listing and checksums are read back from where it is kept. It is **not** imported into
+     their new owners, unlike every other owner's stores in the step above.
+  2. **Admit empty.** Their new owner objects are admitted empty (`admissionSet` from the
+     platform caller, and the `o:` record), so the starter seed and onboarding run at their
+     first connection.
+  3. **A canary that starts from a fresh, seeded owner.** The canary's live checks run from
+     an owner just seeded: onboarding first, then the usual checks. What the scripts
+     `docs/host-actions.md` names, and `openspec/specs/core-capability-assurance/spec.md`,
+     assume today, read 2026-11-04, nothing changed yet:
+     - `scripts/core_canary_provision.py` and `scripts/verify_core_canary_provision.py`
+       refuse an account whose home is not the repo variable `TINYASSETS_CANARY_UNIVERSE_ID`,
+       then create or repair through the old tools (`read_graph target=model_options`,
+       `target=branches`) a default model, a connection and a branch in that pinned home.
+       A fresh owner has no such home id and none of those. They must: sign in, wait for
+       the seed (`agents_list` shows `main`), check `/workspace/USER.md` has no
+       `Onboarded:` date, run onboarding through an MCP client the way an outside agent does
+       (answer it with fixed canary answers), then provision a model source on the new
+       doors (`/app/api` connect), with no pinned home.
+     - `scripts/owner_box_canary.py` requires both `TINYASSETS_CANARY_UNIVERSE_ID` and
+       `TINYASSETS_CANARY_USER_ID` to match the token's `universe_id` and `principal_id`, then
+       calls `converse` with `graph_id` set to that home. On a fresh owner both ids are new,
+       and the new `converse` takes `agent_id` and `client_send_id`, not `graph_id`. The two
+       variables become the new owner's id read after sign-in (the probe checks its own
+       account through the binding, not a pinned universe), and the call becomes the new
+       `converse`.
+     - `scripts/canary_session.py`: one ordinary sign-in per chain
+       (`TINYASSETS_CANARY_SESSION_SEED_DEPLOY`, `..._UPTIME`), whose seed names the old
+       account's session. A fresh owner on the new issuer needs both chains signed in again,
+       which is the founder's step in `docs/host-actions.md` ("Canary is an ordinary account"), repeated after the
+       switch.
+     - `scripts/mcp_public_canary.py --assert-handles` and `scripts/mcp_tool_canary.py`
+       hold the old platform's handle set (`read_graph`, `write_graph`, `run_graph`,
+       `read_page`, `write_page`, `converse`, `get_status`) and call `get_status` or
+       `read_graph target=status`. The new door serves the tool table
+       (`platform/doors/profiles.json`) and neither of those. Their handle set becomes the
+       custom profile's, and their status call one the new table has (`agents_list`, whose
+       `apps` and `owner_agents` also prove the seed ran).
+     - `scripts/last_activity_canary.py` reads `daemon.last_activity_at` from `get_status`;
+       the new platform has no daemon or `get_status`. Its proof becomes a run's receipt
+       (`run_status` of the canary's scheduled run) on the fresh owner.
+     - The spec's "Hosted live assurance" requirement names "a dedicated canary owner" and
+       its "Canary not provisioned" scenario turns missing configuration into a warning. A
+       fresh owner each cutover means "provisioned" is the state the provision script makes
+       from empty, not pinned variables, so the spec's provisioning wording changes with
+       these scripts.
+     - The same scripts run every five minutes and after every deploy, so the onboarding run
+       happens once per fresh owner, not per probe: it is marked by the `Onboarded:` date,
+       and every later probe starts from the onboarded, seeded owner.
 
 ## 10. The plan's later slices
 

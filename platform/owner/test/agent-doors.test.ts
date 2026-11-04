@@ -132,7 +132,8 @@ describe("the owner's agent definitions (review H1)", () => {
 
   it("name the agent trees: the agents, their skills, their prompts and the goals", () => {
     expect(OWNER_TREES).toEqual([AGENTS_DIR, "/workspace/.agents", "/workspace/skills",
-                                 "/workspace/prompts", "/workspace/goals"]);
+                                 "/workspace/prompts", "/workspace/goals",
+                                 "/workspace/USER.md"]);
   });
 
   it("hold the owner's goals as every other agent tree: a default (full) grant writes them, " +
@@ -189,11 +190,11 @@ describe("the owner's agent definitions (review H1)", () => {
     const r = await rig();
     await r.admit(MUSE);
     const made = await r.stub.fileWrite(r.bind(MUSE), { path: "/workspace/agentsX/AGENTS.md",
-                                                        expected_etag: null,
+                                                        expected_etag: "",
                                                         content: bytes("mine") });
     expect("entry" in made && made.entry.writer).toBe(`client:${MUSE.client}`);
     expect((await failure(() => r.stub.fileWrite(r.bind(MUSE), {
-      path: "/workspaceX/a.md", expected_etag: null, content: bytes("x") }))).name)
+      path: "/workspaceX/a.md", expected_etag: "", content: bytes("x") }))).name)
       .toBe("Invalid");
   }, 30_000);
 });
