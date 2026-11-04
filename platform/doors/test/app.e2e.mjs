@@ -173,6 +173,11 @@ before(async () => {
     .map((host) => `MAP ${host}:443 127.0.0.1:${port}`).join(", ");
   browser = await chromium.launch({ env, args: [
     "--no-proxy-server",
+    // workerd's self-signed certificate, accepted by the browser's network stack itself:
+    // the context's `ignoreHTTPSErrors` alone left each WebSocket's first TLS handshake
+    // refused (`CertificateUnknown`), and now and then the socket itself died before it
+    // opened (1006), so the sign-in panel never saw its end (the merge queue's red run).
+    "--ignore-certificate-errors",
     // Our hosts and the two hand-off hosts to the local workerd; nothing else resolves.
     `--host-resolver-rules=${local}, MAP * ~NOTFOUND`,
   ] });
