@@ -31,6 +31,8 @@ const PRODUCTION_SECRETS = [
   // never see them.
   "TINYASSETS_CANARY_SESSION_KEY", "TINYASSETS_CANARY_SESSION_SEED_DEPLOY",
   "TINYASSETS_CANARY_SESSION_SEED_UPTIME", "TINYASSETS_CANARY_HMAC_KEY",
+  // Spends money on E2B (sandbox-template.yml builds; platform-deploy.yml applies).
+  "E2B_API_KEY",
 ];
 
 /**
