@@ -339,3 +339,10 @@ def test_no_receipt_wording_is_left_where_people_read_it():
         text = (_ROOT / rel).read_text(encoding="utf-8")
         assert "review receipt" not in text and "Drain-Review-" not in text, rel
         assert "a receipt like every PR" not in text, rel
+
+
+def test_okf_watch_ready_comment_runs_no_command():
+    """Backticks in the double-quoted comment body would run `review` as a command."""
+    text = (_ROOT / ".github" / "workflows" / "okf-watch.yml").read_text(encoding="utf-8")
+    line = next(line for line in text.splitlines() if "The cooldown is over" in line)
+    assert "`" not in line

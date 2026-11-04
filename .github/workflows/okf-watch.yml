@@ -208,7 +208,7 @@ jobs:
           for number in $READY; do
             gh pr ready "$number"
             gh pr edit "$number" --add-label okf-review-due
-            gh pr comment "$number" --body "The cooldown is over: ready for review. Read the spec diff, not the version line; the checks are in the description. It merges only once its `review` check passes: an APPROVE PR review on its head."
+            gh pr comment "$number" --body "The cooldown is over: ready for review. Read the spec diff, not the version line; the checks are in the description. It merges only once its review check passes: an APPROVE PR review on its head."
           done
 
       - name: Tell the founder (never fails the run)
