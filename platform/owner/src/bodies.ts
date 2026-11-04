@@ -28,7 +28,9 @@ import { Invalid } from "./errors";
 import { windowEnd } from "./file-search";
 import type { Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
+import { ownerSlots } from "./holds";
 import { CHUNK_BYTES, PLACE_BYTES } from "./manifest";
+import { slotted } from "./slots";
 
 export { PLACE_BYTES } from "./manifest";
 
@@ -67,6 +69,25 @@ export interface Window {
 
 export const BODY_OFFSET_INSIDE =
   "body_offset is inside a character: start at a body_next_offset an answer gave";
+
+/**
+ * The verified range reads of a body's bytes `[offset, end)`: each chunk it spans, by the
+ * range it needs, which `FILES` reads whole, rechecks and answers alone (review L7).
+ */
+export function windowReads(chunks: readonly string[], size: number, offset: number,
+                            end: number):
+    { sha256: string; offset: number; length: number; verify: true }[] {
+  const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
+  for (const [index, sha256] of chunks.entries()) {
+    const at = index * CHUNK_BYTES;
+    const from = Math.max(offset, at);
+    const to = Math.min(end, at + CHUNK_BYTES, size);
+    if (from < to) {
+      reads.push({ sha256, offset: from - at, length: to - from, verify: true });
+    }
+  }
+  return reads;
+}
 
 /** A body its row keeps, as the window from `offset` to its end. */
 export function inlineWindow(body: string, offset: number): Window {
@@ -254,13 +275,16 @@ export class Bodies {
   async fetch(located: Located): Promise<Map<string, string>> {
     const bodies = new Map<string, string>();
     for (const [contentId, { chunks }] of located) {
-      const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-      const parts = await this.#files.fetch(chunks.map((sha256) => ({ sha256 })));
-      let text = "";
-      for (const part of parts) {
-        text += decoder.decode(part, { stream: true });
-      }
-      bodies.set(contentId, text + decoder.decode());
+      // A body of at most two chunks (`BODY_BYTES_MAX`), read under one slot (`holds.ts`).
+      bodies.set(contentId, await slotted(ownerSlots(), 1, async () => {
+        const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+        const parts = await this.#files.fetch(chunks.map((sha256) => ({ sha256 })));
+        let text = "";
+        for (const part of parts) {
+          text += decoder.decode(part, { stream: true });
+        }
+        return text + decoder.decode();
+      }));
     }
     return bodies;
   }
@@ -275,16 +299,23 @@ export class Bodies {
   async windows(located: Located, maxOf: (contentId: string) => number,
                 offsetOf: (contentId: string) => number = () => 0): Promise<Map<string, Window>> {
     const windows = new Map<string, Window>();
-    let held = 0;
-    for (const [contentId, { chunks, size }] of located) {
-      if (windows.size > 0 && held >= WINDOWS_BYTES) {
-        break;
-      }
-      const window = await this.#window(chunks, size, offsetOf(contentId), maxOf(contentId));
-      held += window.end - window.offset;
-      windows.set(contentId, window);
+    if (located.size === 0) {
+      return windows;
     }
-    return windows;
+    // The windows read under one slot (`holds.ts`): each is at most a page, its chunks read
+    // by verified ranges, so a slot is far more than they hold.
+    return slotted(ownerSlots(), 1, async () => {
+      let held = 0;
+      for (const [contentId, { chunks, size }] of located) {
+        if (windows.size > 0 && held >= WINDOWS_BYTES) {
+          break;
+        }
+        const window = await this.#window(chunks, size, offsetOf(contentId), maxOf(contentId));
+        held += window.end - window.offset;
+        windows.set(contentId, window);
+      }
+      return windows;
+    });
   }
 
   async #window(chunks: readonly string[], size: number, offset: number, max: number):
@@ -299,16 +330,7 @@ export class Bodies {
     // Each chunk the window spans read by the range it needs, verified: `FILES` reads the
     // whole chunk, rechecks its hash and answers the range alone (review L7), so a window
     // holds only itself and its bytes are still the content's.
-    const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
-    for (const [index, sha256] of chunks.entries()) {
-      const at = index * CHUNK_BYTES;
-      const from = Math.max(offset, at);
-      const to = Math.min(end, at + CHUNK_BYTES, size);
-      if (from < to) {
-        reads.push({ sha256, offset: from - at, length: to - from, verify: true });
-      }
-    }
-    const parts = await this.#files.fetch(reads);
+    const parts = await this.#files.fetch(windowReads(chunks, size, offset, end));
     const bytes = new Uint8Array(end - offset);
     let put = 0;
     for (const part of parts) {

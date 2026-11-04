@@ -1,0 +1,186 @@
+// The workerd memory leg (ADR-037, memshape_research.md §5 PR 2): each chunk-wise path is
+// O(1) in the size of its data, proven by differences, never by an absolute peak.
+//
+// It bundles `probe.ts` (the platform's own edit, window and slot code) and runs it in
+// standalone workerd with `--expose-gc`. The probe suspends at checkpoints (after each chunk
+// read, made and put): at each, this driver collects the owner isolate (a swept full
+// collection) and reads `usedSize + backingStorageSize` through the inspector while the
+// path waits, then releases it, so a sample is the path's live set, byte arrays included
+// (reviews H2, rpcretain_research.md §4: a read must be atomic with its collection). Then:
+// - the control holds: a path that keeps every chunk reads as growing (at least three
+//   quarters of what it adds), or the leg proves nothing;
+// - O(1) in size: peak(4S) - peak(S) is at most a quarter chunk (an edit of 8 against
+//   32 MiB; a read of 4 against 16 MiB, bodies of whole chunks);
+// - the unit's cost: peak(S) is at most the slot's cost (`CHUNK_SLOT_BYTES`, 12 MiB);
+// - per unit: N and 2N at once, the increment per unit at most that cost.
+// Differences cancel the baseline and the probe's own code (review M4); the absolute figure
+// is production's (`memoryUsageBytes`). Run: `npm run test:memory -w owner`. Exits non-zero
+// on any failed check.
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
+const require = createRequire(join(OWNER, "package.json"));
+const MIB = 1024 * 1024;
+const CHUNK = 4 * MIB;
+const SLOT = 3 * CHUNK;
+const PORT = 8899;
+const INSPECT = 9399;
+const DRIVER = 8898;
+const HTTP = `http://127.0.0.1:${PORT}`;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const work = mkdtempSync(join(tmpdir(), "owner-memory-"));
+const { build } = require("esbuild");
+await build({ entryPoints: [join(OWNER, "memory", "probe.ts")], bundle: true, format: "esm",
+              platform: "neutral", target: "es2022", outfile: join(work, "probe.js"),
+              external: ["cloudflare:*", "node:*"], logLevel: "error" });
+writeFileSync(join(work, "config.capnp"), `using Workerd = import "/workerd/workerd.capnp";
+const config :Workerd.Config = (
+  v8Flags = ["--expose-gc"],
+  services = [ (name = "main", worker = .owner), (name = "files", worker = .files),
+               (name = "driver", external = (address = "127.0.0.1:${DRIVER}", http = ())) ],
+  sockets = [ (name = "http", address = "127.0.0.1:${PORT}", http = (), service = "main") ],
+);
+const owner :Workerd.Worker = (
+  modules = [ (name = "probe.js", esModule = embed "probe.js") ],
+  compatibilityDate = "2026-10-23",
+  compatibilityFlags = ["nodejs_compat"],
+  durableObjectNamespaces = [ (className = "Holder", uniqueKey = "owner-memory-leg") ],
+  durableObjectStorage = (inMemory = void),
+  bindings = [ (name = "HOLDER", durableObjectNamespace = "Holder"),
+               (name = "STORE", service = (name = "files", entrypoint = "Store")),
+               (name = "DRIVER", service = "driver") ],
+);
+const files :Workerd.Worker = (
+  modules = [ (name = "probe.js", esModule = embed "probe.js") ],
+  compatibilityDate = "2026-10-23",
+  compatibilityFlags = ["nodejs_compat"],
+  bindings = [ (name = "HOLDER", durableObjectNamespace = (className = "Holder",
+                                                           serviceName = "main")),
+               (name = "STORE", service = (name = "files", entrypoint = "Store")),
+               (name = "DRIVER", service = "driver") ],
+);
+`);
+
+const driver = createServer();
+await new Promise((resolve) => driver.listen(DRIVER, "127.0.0.1", resolve));
+const workerd = join(dirname(require.resolve("workerd/package.json")), "bin", "workerd");
+const child = spawn(workerd, ["serve", join(work, "config.capnp"),
+                              `--inspector-addr=127.0.0.1:${INSPECT}`],
+                    { stdio: ["ignore", "inherit", "inherit"] });
+const problems = [];
+try {
+  let list = [];
+  for (let n = 0; n < 100 && list.length < 2; n++) {
+    await sleep(100);
+    list = await fetch(`http://127.0.0.1:${INSPECT}/json/list`).then((r) => r.json(), () => []);
+  }
+  const owner = list.find((target) => target.id === "main");
+  if (owner === undefined) {
+    throw new Error(`no owner isolate among the inspector's targets: ${JSON.stringify(list)}`);
+  }
+  const ws = new WebSocket(owner.webSocketDebuggerUrl);
+  let id = 0;
+  const pending = new Map();
+  ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id !== undefined) {
+      pending.get(message.id)?.(message.result ?? message.error);
+      pending.delete(message.id);
+    }
+  };
+  await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+  const call = (method, params = {}) => new Promise((resolve) => {
+    const n = ++id;
+    pending.set(n, resolve);
+    ws.send(JSON.stringify({ id: n, method, params }));
+  });
+  await call("Runtime.enable");
+  const live = async () => {
+    await fetch(`${HTTP}/gc`).then((r) => r.text());
+    const usage = await call("Runtime.getHeapUsage");
+    return usage.usedSize + (usage.backingStorageSize ?? 0);
+  };
+  // The checkpoints: one at a time, each sampled while its path waits on it.
+  let sample = null;
+  let queue = Promise.resolve();
+  driver.on("request", (request, response) => {
+    queue = queue.then(async () => {
+      if (sample !== null) {
+        await sample();
+      }
+      response.end("go");
+    });
+  });
+  await live();
+  const idle = await live();
+  /** The most a case holds over the idle isolate, read at its checkpoints. */
+  const peak = async (path, mib, n = 1) => {
+    await fetch(`${HTTP}/drop`).then((r) => r.text());
+    const floor = Math.min(await live(), await live());
+    let most = 0;
+    let points = 0;
+    sample = async () => {
+      points += 1;
+      most = Math.max(most, await live() - floor);
+    };
+    const answer = await fetch(`${HTTP}/run?path=${path}&mib=${mib}&n=${n}`);
+    const body = await answer.text();
+    await queue;
+    sample = null;
+    if (!answer.ok) {
+      throw new Error(`${path} ${mib} MiB × ${n}: ${answer.status} ${body}`);
+    }
+    if (points < mib / 4) {
+      throw new Error(`${path} ${mib} MiB × ${n}: only ${points} checkpoints were read`);
+    }
+    return most;
+  };
+  const rows = [];
+  const check = (name, value, most, what) => {
+    rows.push({ check: name, mib: +(value / MIB).toFixed(2), most_mib: +(most / MIB).toFixed(2),
+                ok: value <= most });
+    if (value > most) {
+      problems.push(`${name}: ${value} bytes, past ${what} (${most})`);
+    }
+  };
+  // The control first: what it keeps must read as kept.
+  const hoarded = await peak("hoard", 32) - await peak("hoard", 8);
+  rows.push({ check: "control: peak(32 MiB) - peak(8 MiB), kept", mib: +(hoarded / MIB)
+    .toFixed(2), least_mib: 18, ok: hoarded >= 18 * MIB });
+  if (hoarded < 18 * MIB) {
+    problems.push(`the control kept 24 MiB more and read ${hoarded} bytes more: the leg ` +
+                  "cannot see what a path holds");
+  }
+  // A read against bodies of whole chunks (its setup puts a chunk at a time).
+  for (const [path, small, large] of [["edit", 8, 32], ["read", 4, 16]]) {
+    const at = await peak(path, small);
+    const atLarge = await peak(path, large);
+    check(`${path}: peak(${large} MiB) - peak(${small} MiB)`, atLarge - at, CHUNK / 4,
+          "a quarter chunk");
+    check(`${path}: peak(${small} MiB)`, at, SLOT, "one slot's cost");
+  }
+  const one = await peak("edit", 8, 2);
+  const two = await peak("edit", 8, 4);
+  check("edit: (peak(4 objects) - peak(2 objects)) / 2", (two - one) / 2, SLOT,
+        "one slot's cost");
+  console.log(JSON.stringify({ owner_idle_mib: +(idle / MIB).toFixed(2), checks: rows },
+                             null, 1));
+  ws.close();
+} catch (error) {
+  problems.push(String(error?.stack ?? error));
+} finally {
+  child.kill("SIGKILL");
+  driver.close();
+  rmSync(work, { recursive: true, force: true });
+}
+if (problems.length > 0) {
+  console.error(problems.join("\n"));
+  process.exit(1);
+}

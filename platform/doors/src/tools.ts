@@ -162,7 +162,7 @@ export function toolTable(): readonly Tool[] {
         "connected to TinyAssets, each one not connected with its connect_url, the page " +
         "with its connect step. One answer holds as many as fit; when it carries next, read " +
         "again with after set to it for the rest.",
-      input: args({}, { after: int("Read on after this many: a next an answer gave") }) },
+      input: args({}, { after: str("Read on after this: a next an answer gave") }) },
     { name: "agent_register", door: "registerPropose", capability: null,
       title: "Request agent registration", readOnlyHint: false, destructiveHint: false,
       idempotentHint: false, openWorldHint: false,

@@ -11,6 +11,7 @@ import { bundledRecords, catalogOf } from "../src/sources";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
 import { type OwnerEnv, OwnerDO as RealOwnerDO, type SandboxLeases } from "../../owner/src/owner-do";
+import { SlotBusy } from "../../owner/src/slots";
 import { RecordingErasures } from "../../owner/test/erasure-fake";
 import { RecordingSandbox } from "../../owner/test/sandbox-fake";
 
@@ -19,7 +20,21 @@ import { RecordingSandbox } from "../../owner/test/sandbox-fake";
  * and a recording fake behind its `SANDBOX` binding (tests only: slice S binds the real
  * sandbox Worker).
  */
+/**
+ * Owners whose next `agents_list` is refused `busy`, as a full slot pool refuses it
+ * (`owner/src/slots.ts`): the tests of the doors' 503 and `Retry-After`.
+ */
+export const BUSY_ONCE = new Set<string>();
+
 export class OwnerDO extends RealOwnerDO {
+  override outsideAgents(...args: Parameters<RealOwnerDO["outsideAgents"]>):
+      ReturnType<RealOwnerDO["outsideAgents"]> {
+    if (BUSY_ONCE.delete(args[0].owner)) {
+      return Promise.reject(new SlotBusy());
+    }
+    return super.outsideAgents(...args);
+  }
+
   readonly sandbox: SandboxLeases;
   readonly recorder: RecordingSandbox;
   /** The erasure queue, recording only: the tests run the doors' consumer on what it sent. */

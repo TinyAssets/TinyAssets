@@ -1394,6 +1394,41 @@ export class Files {
   }
 
   /**
+   * Write a file of `size` bytes whose chunks are `hashes` (cut at 4 MiB), made one at a time
+   * by `make` (a chunk-wise edit, `edit.ts`): only the chunks the files plane lacks are made
+   * and sent, each checked against its hash; the chunks `readable` names were read by the
+   * caller (its old file's), so they are kept, never sent again. One chunk in hand at a time.
+   */
+  async writeChunks(path: unknown, size: number, hashes: readonly string[],
+                    make: (index: number) => Promise<Uint8Array>,
+                    options: { expected: unknown; mode?: unknown; writer: string;
+                               readable: readonly string[]; authorize?: () => void }):
+      Promise<Entry> {
+    const at = storedPath(path);
+    const expected = expectedEtag(options.expected);
+    const mode = modeOf(options.mode);
+    const authorize = options.authorize ?? (() => undefined);
+    const { intent_id, missing } = await this.#write(() => {
+      authorize();
+      return this.begin(size, hashes, options.writer, options.readable);
+    });
+    try {
+      for (const sha256 of new Set(missing)) {
+        const bytes = await make(hashes.indexOf(sha256));
+        await this.#put([{ sha256, bytes }], intent_id);
+      }
+      return await this.#write(() => {
+        authorize();
+        return this.commit(intent_id, at, { expected, mode, writer: options.writer,
+                                            parents: true, op: "write" });
+      });
+    } catch (error) {
+      await this.#write(() => this.abort(intent_id));
+      throw error;
+    }
+  }
+
+  /**
    * Put chunks through `FILES`, then, in a unit once it accepted them, record them stored
    * and sent for `intentId`: its writer has shown it holds their bytes.
    */
