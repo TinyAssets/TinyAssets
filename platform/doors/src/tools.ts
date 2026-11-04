@@ -162,7 +162,7 @@ export function toolTable(): readonly Tool[] {
         "connected to TinyAssets, each one not connected with its connect_url, the page " +
         "with its connect step. One answer holds as many as fit; when it carries next, read " +
         "again with after set to it for the rest.",
-      input: args({}, { after: int("Read on after this many: a next an answer gave") }) },
+      input: args({}, { after: str("Read on after this: a next an answer gave") }) },
     { name: "agent_register", door: "registerPropose", capability: null,
       title: "Request agent registration", readOnlyHint: false, destructiveHint: false,
       idempotentHint: false, openWorldHint: false,
@@ -415,18 +415,32 @@ export function callDoor(stub: DurableObjectStub<OwnerDO>, binding: Binding, too
  * owner's storage figure (`storage_full`, `owner/src/storage-full.ts`) is 507 Insufficient
  * Storage, so a client tells the one wall from a permission; one only open uploads cause
  * (`uploads_open`), or an append that lost to other writes every try (`file_busy`), is 409,
- * since it clears as they finish. The isolate's chunk slots in use (`busy`) is 503, retried
- * after a second.
+ * since it clears as they finish or are cancelled. The isolate's chunk slots in use (`busy`)
+ * is 503, retried after a second. A post at the hot mail ceiling while older mail moves out
+ * (`storage_busy`, `owner/src/ledger.ts`) is 503 with its `Retry-After`, never the wall.
  */
 export function refusal(error: unknown):
-    { status: 400 | 403 | 409 | 503 | 507; message: string } | null {
+    { status: 400 | 403 | 409 | 503 | 507; message: string; retry_after_s?: number } | null {
   if (error instanceof Error && (error.name === "Refused" || error.name === "Invalid")) {
+    if (error.name === "Refused" && error.message.startsWith("storage_busy:")) {
+      const found = /"retry_after_s":(\d+)/.exec(error.message);
+      return { status: 503, message: error.message,
+               retry_after_s: found === null ? 30 : Number(found[1]) };
+    }
+    if (error.name === "Refused" && error.message.startsWith("busy:")) {
+      return { status: 503, message: error.message, retry_after_s: 1 };
+    }
     return { status: error.name === "Invalid" ? 400
-               : error.message.startsWith("busy:") ? 503
                : error.message.startsWith("storage_full:") ? 507
                : error.message.startsWith("uploads_open:")
                  || error.message.startsWith("file_busy:") ? 409 : 403,
              message: error.message };
   }
   return null;
+}
+
+/** The headers a refusal's answer carries: `Retry-After` for a busy one. */
+export function refusalHeaders(refused: { retry_after_s?: number }): Record<string, string> {
+  return refused.retry_after_s === undefined ? {}
+    : { "Retry-After": String(refused.retry_after_s) };
 }

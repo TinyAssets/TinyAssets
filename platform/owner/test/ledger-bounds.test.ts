@@ -3,8 +3,10 @@
  *
  * Each runs the ledger on the object's own storage with some bounds changed
  * (`inLedger`), and checks that the counters the bounds read agree with the rows they
- * count. Unacked mail is reserved per mailbox inside the ceilings, so eviction always
- * finds a message to take: the last test drives a long random exchange to show it.
+ * count. Mail is bounded by two technical ceilings and no mailbox's count (slice STORE item
+ * 2): too much unread mail owner-wide is `ledger_full`, and the hot ceiling `storage_busy`
+ * while the archive lane moves acked mail out; nothing is ever evicted (`archive-mail.test.ts`
+ * covers the lane).
  */
 import { describe, expect, it } from "vitest";
 
@@ -28,51 +30,57 @@ function refusal(act: () => unknown): string {
   throw new Error("expected a refusal");
 }
 
-/** Small mailboxes that fit `maxMessages` exactly: `agents` agents of `each`, owner `own`. */
-function tight(agents: number, each: number, own: number): Partial<LedgerLimits> {
-  return { maxAgents: agents, maxAgentRows: agents + 2, maxAgentUnacked: each,
-           maxOwnerUnacked: own, maxSenderUnacked: own, maxMessages: agents * each + own };
+/** Small ceilings: `unread` messages unread owner-wide, `hot` held hot, a segment of one. */
+function tight(unread: number, hot: number, agents = 3): Partial<LedgerLimits> {
+  return { maxAgents: agents, maxAgentRows: agents + 2, maxUnacked: unread, archiveRecords: 1,
+           maxMessages: hot };
 }
 
+/** `ledger_full`, naming the readers holding the most unread mail (`most`). */
+const FULL = (n: number, most: string) => `ledger_full: too much mail is unread (${n} message${
+  n === 1 ? " waits" : "s wait"} for their readers; the most for ${most}); reading and ` +
+  "acking mail makes room";
+const ANY_FULL = new RegExp("^ledger_full: too much mail is unread \\(\\d+ messages? waits? " +
+  "for their readers; the most for .+\\); reading and acking mail makes room$");
+const BUSY = "storage_busy: your storage is catching up, moving older mail out; try again in " +
+  '30 seconds. {"retry_after_s":30}';
+
 describe("the ledger's limits", () => {
-  it("hold each mailbox's caps within the ceilings, not reserved out of them", () => {
+  it("leave the hot ceiling a segment to move past the unread ceiling", () => {
     expect(checkLimits(LEDGER_LIMITS)).toBe(LEDGER_LIMITS);
     const L = LEDGER_LIMITS;
-    expect(Math.max(L.maxAgentUnacked, L.maxOwnerUnacked)).toBeLessThanOrEqual(L.maxMessages);
-    expect(L.maxSenderUnacked).toBeLessThanOrEqual(L.maxOwnerUnacked);
-    // The caps the audit's draft asked for, which reserving them could not hold.
-    expect([L.maxAgents, L.maxAgentUnacked, L.maxOwnerUnacked, L.maxSenderUnacked])
-      .toEqual([1_000, 1_000, 10_000, 5_000]);
-    expect(L.maxAgents * L.maxAgentUnacked + L.maxOwnerUnacked).toBeGreaterThan(L.maxMessages);
+    expect([L.maxMessages, L.maxUnacked, L.archiveRecords, L.archiveBytes])
+      .toEqual([50_000, 25_000, 25_000, 8 * 1024 * 1024]);
+    expect(L.maxUnacked + L.archiveRecords).toBeLessThanOrEqual(L.maxMessages);
     for (const [bad, reason] of [
-      [{ maxMessages: L.maxOwnerUnacked - 1 }, "a mailbox's messages exceed its ceiling"],
-      [{ maxSenderUnacked: L.maxOwnerUnacked + 1 }, "a mailbox's messages exceed its ceiling"],
-      [{ maxAgents: 1_001, maxAgentUnacked: 1 }, "maxAgents exceeds maxAgentRows"],
+      [{ maxUnacked: L.maxMessages }, "the unread ceiling leaves the hot ceiling no segment"],
+      [{ archiveRecords: 0 }, "the unread ceiling leaves the hot ceiling no segment"],
+      [{ maxAgents: 1_001 }, "maxAgents exceeds maxAgentRows"],
     ] as const) {
       expect(() => checkLimits({ ...LEDGER_LIMITS, ...bad })).toThrow(reason);
     }
   });
 
-  it("refuses to build a ledger over limits whose mailboxes do not fit", async () => {
+  it("refuses to build a ledger over limits that leave no segment to move", async () => {
     const r = await rig();
     const refused = await failure(() => r.inLedger({ maxMessages: 9_999 }, () => "built"));
-    expect(refused.message).toMatch(/invalid ledger limits: a mailbox's messages exceed/);
+    expect(refused.message).toMatch(/invalid ledger limits: the unread ceiling leaves/);
     expect(await r.inLedger({}, () => "built")).toBe("built");
   });
 
-  it("refuses a post, loudly, when the ledger holds only unread mail at a ceiling", async () => {
+  it("refuses a post, in plain words, when too much mail is unread, whoever it is to",
+     async () => {
     const r = await rig();
-    await r.inLedger({ ...tight(2, 2, 1), maxMessages: 2 }, (ledger: Ledger) => {
+    await r.inLedger(tight(2, 3), (ledger: Ledger) => {
       const muse = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       const dot = `dm:${ledger.register(DOT, MCP, { ...PULL, display_name: "Dot" }).agent_id}`;
       ledger.post(null, muse, "c1", "for muse", null);
       ledger.post(null, muse, "c2", "for muse too", null);
-      // Dot's own mailbox is empty, but the ledger holds two unread messages.
+      // Dot's own mailbox is empty, but two messages wait for their reader.
       expect(refusal(() => ledger.post(null, dot, "c3", "for dot", null)))
-        .toBe("ledger_full: every message the ledger holds is unread; a reader acks to " +
-              "make room");
+        .toBe(FULL(2, "Muse (2)"));
       ledger.ack(MUSE, 1);
-      ledger.post(null, dot, "c3", "for dot", null);  // evicts the acked one
+      ledger.post(null, dot, "c3", "for dot", null);
     });
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
@@ -80,94 +88,66 @@ describe("the ledger's limits", () => {
 });
 
 describe("the ledger's bounds", () => {
-  it("refuses a full mailbox's posts only, and evicts the oldest acked message",
+  it("holds a post at the hot ceiling as storage_busy, retryable, and never deletes",
      async () => {
     const r = await rig();
-    const seqs = await r.inLedger(tight(1, 2, 1), (ledger: Ledger) => {
+    const kept = await r.inLedger(tight(2, 3), (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
-      ledger.post(null, room, "c1", "body 1", null);
-      ledger.post(null, room, "c2", "body 2", null);
-      expect(refusal(() => ledger.post(null, room, "c3", "body 3", null)))
-        .toBe("this agent's mailbox is full");
-      ledger.post(MUSE, room, "m1", "to the owner", null);  // the owner's mailbox is its own
-      expect(refusal(() => ledger.post(MUSE, room, "m2", "again", null)))
-        .toBe("this agent's unacked mail to the owner is full");
-      ledger.read(MUSE, 10);
-      ledger.ack(MUSE, 1);
-      ledger.post(null, room, "c3", "body 3", null);  // evicts seq 1 only
-      ledger.ack(MUSE, 4);
-      ledger.post(null, room, "c4", "body 4", null);  // and then seq 2
-      return ledger.read(MUSE, 10).messages.map((m) => m.seq);
+      for (const n of [1, 2, 3]) {
+        ledger.post(null, room, `c${n}`, `body ${n}`, null);
+        ledger.read(MUSE, 10);
+        ledger.ack(MUSE, n);
+      }
+      expect(ledger.archiveDue()).toBe(true);  // the archive lane's work, not a delete
+      expect(refusal(() => ledger.post(null, room, "c4", "body 4", null))).toBe(BUSY);
+      return ledger.read(MUSE, 10).messages.length;
     });
-    expect(seqs).toEqual([5]);  // a seq is never reused
+    expect(kept).toBe(0);  // all acked: past the cursor nothing is unread
     expect((await r.table("message_bodies")).map((b) => b["body"]))
-      .toEqual(["to the owner", "body 3", "body 4"]);
+      .toEqual(["body 1", "body 2", "body 3"]);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
   });
 
-  it("evicts an acked message past an older one still unread, never the unread one",
+  it("counts no mailbox: one reader may hold every unread message, and an ack frees room",
      async () => {
     const r = await rig();
-    const bodies = await r.inLedger(tight(1, 2, 1), (ledger: Ledger) => {
+    await r.inLedger(tight(3, 4), (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
-      ledger.post(null, room, "c1", "unread, and oldest", null);
+      for (const n of [1, 2, 3]) {
+        ledger.post(null, room, `c${n}`, `body ${n}`, null);
+      }
+      expect(refusal(() => ledger.post(null, room, "c4", "body 4", null)))
+        .toBe(FULL(3, "Muse (3)"));
+      // Mail to the owner waits on the same one ceiling: no mailbox has its own.
+      expect(refusal(() => ledger.post(MUSE, room, "m1", "to the owner", null)))
+        .toBe(FULL(3, "Muse (3)"));
+      ledger.ack(MUSE, 1);
       ledger.post(MUSE, room, "m1", "to the owner", null);
-      ledger.post(null, room, "c2", "unread too", null);  // the ledger is at its ceiling
-      ledger.ack(null, 2);
-      ledger.post(MUSE, room, "m2", "evicts m1, the only acked message", null);
-      return ledger.read(MUSE, 10).messages.map((m) => m.body);
     });
-    expect(bodies).toEqual(["unread, and oldest", "unread too"]);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
   });
 
-  it("counts no body bytes: a body's own size bounds no mailbox (ADR-035)", async () => {
+  it("counts no body bytes: a body's own size bounds no ceiling (ADR-035)", async () => {
     const r = await rig();
-    await r.inLedger(tight(1, 2, 1), (ledger: Ledger) => {
+    await r.inLedger(tight(2, 3), (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       ledger.post(null, room, "c1", "x".repeat(PLACE_BYTES), null);
       ledger.post(null, room, "c2", "y".repeat(PLACE_BYTES), null);
-      expect(refusal(() => ledger.post(null, room, "c3", "1", null)))
-        .toBe("this agent's mailbox is full");
+      expect(refusal(() => ledger.post(null, room, "c3", "1", null))).toBe(FULL(2, "Muse (2)"));
     });
-    expect(Object.keys(LEDGER_LIMITS).filter((key) => key.endsWith("Bytes"))).toEqual([]);
+    // A segment's seal, not a bound: the one byte count the ledger keeps.
+    expect(Object.keys(LEDGER_LIMITS).filter((key) => key.endsWith("Bytes")))
+      .toEqual(["archiveBytes"]);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
   });
 
-  it("holds one agent to its share of the owner's mailbox", async () => {
+  it("releases a disabled agent's unacked mail, so it no longer holds the unread ceiling, " +
+     "and keeps it", async () => {
     const r = await rig();
-    const left = await r.inLedger({ maxSenderUnacked: 2, maxOwnerUnacked: 3 },
-                                  (ledger: Ledger) => {
-      const muse = ledger.register(MUSE, MCP, PULL).agent_id;
-      const dot = ledger.register(DOT, MCP, { ...PULL, display_name: "Dot" }).agent_id;
-      const third = ledger.register(origin(3), MCP, PULL).agent_id;
-      ledger.post(MUSE, `dm:${muse}`, "m1", "one", null);
-      ledger.post(MUSE, `dm:${muse}`, "m2", "two", null);
-      expect(refusal(() => ledger.post(MUSE, `dm:${muse}`, "m3", "three", null)))
-        .toBe("this agent's unacked mail to the owner is full");
-      ledger.post(DOT, `dm:${dot}`, "d1", "dot's own share", null);
-      expect(refusal(() => ledger.post(origin(3), `dm:${third}`, "t1", "x", null)))
-        .toBe("the owner's mailbox is full");  // until the owner acks
-      ledger.post(null, `dm:${muse}`, "o1", "the owner is never held to a share", null);
-      const page = ledger.read(null, 10);
-      ledger.ack(null, page.messages[0]!.seq);
-      ledger.post(MUSE, `dm:${muse}`, "m3", "three", null);
-      const share = new Map(ledger.agents(null).map((a) => [a.agent_id, a.unacked_to_owner]));
-      return [share.get(muse), share.get(dot)];
-    });
-    expect(left).toEqual([2, 1]);
-    const [usage, actual] = await counters(r);
-    expect(usage).toEqual(actual);
-  });
-
-  it("releases a disabled agent's unacked mail, so it no longer holds the ledger",
-     async () => {
-    const r = await rig();
-    const [muse, dot] = await r.inLedger({ ...tight(1, 3, 1), maxSenderUnacked: 1 },
-                                         (ledger: Ledger) => {
+    const [muse, dot] = await r.inLedger(tight(3, 7), (ledger: Ledger) => {
       const a = ledger.register(MUSE, MCP, PULL).agent_id;
       for (const n of [1, 2, 3]) {
         ledger.post(null, `dm:${a}`, `c${n}`, `body ${n}`, null);  // never read nor acked
@@ -175,20 +155,13 @@ describe("the ledger's bounds", () => {
       ledger.disable(a, "gone");
       const b = ledger.register(DOT, MCP, { ...PULL, display_name: "Dot" }).agent_id;
       for (const n of [1, 2, 3]) {
-        ledger.post(null, `dm:${b}`, `d${n}`, `body ${n}`, null);  // evicts as it needs
+        ledger.post(null, `dm:${b}`, `d${n}`, `body ${n}`, null);
       }
-      ledger.post(DOT, `dm:${b}`, "r1", "the agent's own post", null);
       return [a, b];
     });
     const messages = await r.table("ledger_messages");
-    expect(messages.map((m) => [m["sender_id"], m["room_id"]])).toEqual([
-      [OWNER, `dm:${dot}`], [OWNER, `dm:${dot}`], [OWNER, `dm:${dot}`], [dot, `dm:${dot}`]]);
-    // A re-enabled agent reads what eviction has left of its mail.
-    await r.inLedger({ ...tight(2, 3, 1), maxSenderUnacked: 1 }, (ledger: Ledger) => {
-      ledger.register(MUSE, MCP, PULL);
-      expect(ledger.read(MUSE, 10).messages).toEqual([]);
-      expect(ledger.agents(null).map((a) => a.agent_id).sort()).toEqual([muse, dot].sort());
-    });
+    expect(messages.map((m) => m["room_id"])).toEqual([
+      `dm:${muse}`, `dm:${muse}`, `dm:${muse}`, `dm:${dot}`, `dm:${dot}`, `dm:${dot}`]);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
   });
@@ -260,20 +233,15 @@ describe("the ledger's bounds", () => {
     expect([usage, usage["agents"], usage["enabled_agents"]]).toEqual([actual, 2, 1]);
   });
 
-  it("answers a retried ack after its mail was evicted, and dedupes only what it holds",
-     async () => {
+  it("answers a retried ack, and dedupes a resend of what it holds hot", async () => {
     const r = await rig();
-    await r.inLedger({ ...tight(1, 1, 1), maxSenderUnacked: 1 }, (ledger: Ledger) => {
+    await r.inLedger(tight(1, 3), (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       const sent = ledger.post(null, room, "c1", "hello", null);
       expect(ledger.post(null, room, "c1", "hello", null)).toEqual(sent);  // held: the same
       ledger.ack(MUSE, 1);
-      ledger.post(MUSE, room, "m1", "one", null);
-      ledger.ack(null, 2);
-      ledger.post(MUSE, room, "m2", "two", null);  // evicts seq 1, Muse's only mail
       expect(ledger.ack(MUSE, 1)).toEqual({ reader: expect.any(String), through: 1 });
-      // The declared idempotency window: once evicted, the same id is a new message.
-      expect(ledger.post(null, room, "c1", "hello", null).message_id).not.toBe(sent.message_id);
+      expect(ledger.post(null, room, "c1", "hello", null)).toEqual(sent);  // acked, still hot
     });
   });
 
@@ -347,9 +315,10 @@ describe("the ledger's bounds", () => {
       .toMatch(/an acked recipient never holds its message again/);
   });
 
-  it("always finds room by eviction through a long random exchange", async () => {
+  it("never deletes mail through a long random exchange: a post is held off in plain words",
+     async () => {
     const r = await rig();
-    const limits = { ...tight(3, 2, 4), maxSenderUnacked: 2, maxAgentRows: 4 };
+    const limits = { ...tight(4, 6), maxAgentRows: 4 };
     const seen = await r.inLedger(limits, (ledger: Ledger) => {
       let seed = 7;
       const pick = (n: number) => {  // mulberry32: seeded, so every run is the same run
@@ -361,8 +330,7 @@ describe("the ledger's bounds", () => {
       const people: Origin[] = [MUSE, DOT, origin(3), origin(4), origin(5)];
       const refusals = new Map<string, number>();
       const allowed = new Set([
-        "this agent's mailbox is full", "the owner's mailbox is full",
-        "this agent's unacked mail to the owner is full", "room is not an enabled agent's dm",
+        "FULL", BUSY, "room is not an enabled agent's dm",
         "this outside identity is not one enabled agent",
         "the owner's enabled agents are at their limit",
         "the owner's agent registry is full; delete a disabled agent to make room",
@@ -393,7 +361,8 @@ describe("the ledger's bounds", () => {
             ledger.remove(idOf(who));
           }
         } catch (error) {
-          const message = (error as Error).message.replace(/ [(].*[)]$/, "");  // its count
+          const said = (error as Error).message;
+          const message = ANY_FULL.test(said) ? "FULL" : said;
           if (!allowed.has(message)) {
             throw error;  // the invariant's own loud error among them
           }
@@ -402,13 +371,9 @@ describe("the ledger's bounds", () => {
       }
       return refusals;
     });
-    // The exchange really pressed every mailbox, and evicted many times over.
-    for (const reason of ["this agent's mailbox is full", "the owner's mailbox is full",
-                          "this agent's unacked mail to the owner is full"]) {
-      expect(seen.get(reason) ?? 0).toBeGreaterThan(0);
-    }
-    const [posted] = await r.sql("SELECT seq FROM sqlite_sequence WHERE name = 'ledger_messages'");
-    expect(posted!["seq"]).toBeGreaterThan(10 * limits.maxMessages!);
+    // The exchange really pressed both ceilings, and deleted nothing to get past them.
+    expect(seen.get("FULL") ?? 0).toBeGreaterThan(0);
+    expect(seen.get(BUSY) ?? 0).toBeGreaterThan(0);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
     expect(usage["messages"]).toBeLessThanOrEqual(limits.maxMessages!);

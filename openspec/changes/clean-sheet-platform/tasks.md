@@ -865,15 +865,17 @@ account and no deploy.
   import resolved or the guard fails), so it outlived the in-object loop, which slice D
   deleted. **The
   reservation rule**: the call is reserved for the model it names, read where its API's
-  rules say (the door reads the body's top-level `model`, `HINT_KEYS`, once, and hands it
-  to `egressOpen` with the body's tier; a path names Google's), refused
+  rules say (since PR 3a the gateway's one parse reads the body's `model` and tier and asks
+  `egressReserve` through the door's `reserve` callback; a path names Google's), refused
   `egress_unknown_model` when the connection does not list it, and priced at that model's
   dearest rates (input at the dearest of uncached, cache-read and cache-write) by pi-ai's
   `calculateCost` over the catalog's records: the input held at that model's context
   window (a body's bytes do not bound its tokens: a file, a cached context or a prior
   response it names can be far larger), and the output at that model's cap and what the
   caps leave, which the gateway clamps every output-cap alias the API reads to; the
-  gateway refuses a body naming another model or tier (`egress_reservation_mismatch`); a call asking several choices (`n`, `candidateCount`)
+  one parse is the only reading of the body, so no other model or tier can be sent than the
+  one reserved, and a key the rules read spelled another way is refused
+  `egress_aliased_key`; a call asking several choices (`n`, `candidateCount`)
   is refused `egress_multiple_choices`, and one enabling a server-side tool the provider
   bills beyond tokens (a web search, code execution, a hosted MCP connector, a plugin) is
   refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`). **Price
@@ -2082,9 +2084,16 @@ R, S, M and W.
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".
+- [x] Slice STORE item 2, phase 1 (`history_research.md` §4; ADR-036): acked mail moves to archive segments (files-plane content in the export's line grammar with a trailing index, under the owner's data key, one fence row a segment, `segments.ts`) instead of being evicted: the `archive` lane from half the hot ceiling, the two-unit move, `storage_busy` (503, `Retry-After`) at the hot ceiling and never a delete; message ids carry their seq, so the chain read and a reply find archived mail with no row for it; an agent's deletion drops its archived mail at once and the lane rewrites it out; export version 3 ships the segments as they are; mail counted at its real bytes; at full storage new mail is `storage_full` and acked mail is never let go (superseding ADR-035 decision 5 for mail); one owner-wide unread ceiling (`maxUnacked`, the hot ceiling less a segment's records) in place of the three mailbox caps; a tier's storage held to `TIER_STORAGE_MAX` (about 0.5 TB, the fence rows' guard term at 8 MiB a segment). Review round 3: bodies stored raw beside their lines, never escaped, so a record is its bytes; a move holds its records once and two chunks, bounded by `MOVE_BYTES` (32 MiB) and measured in workerd at 50.1 MB of the isolate's 128 MB; the lane's failures counted in storage as a pass begins, so passes killed with their isolate still tell the owner; the seal on records' own bytes, so a sealed segment always holds the least. Review round 4 (N5, `memory_research.md` §2 A): the move streamed, planned from lengths and made a chunk at a time in two passes from the source ranges each covers, the bytes unchanged; `MOVE_HOLD_BYTES` (32 MiB) its hold, measured in workerd at 20.0 MiB for the worst merge; `MOVE_BYTES` a pass's work only; the move's grant behind a seam (`#granted`) until the isolate-wide guard (`platform-memory`) lands on main. After PR 2 (#5410): the seam is a real hold on the isolate's pool (`MoveHold`): its records' units (`moveTableUnits`, `MOVE_RECORD_BYTES` 256 a record) for the move's life and each pass's `MOVE_PASS_UNITS` (3) beside them, on one lease grown wait-die and shrunk back (`SlotPool.lease`, main's one admission rule since #5414); refused `busy` (taken now inside the alarm, never waited for), the lane holds for `SLOT_WAIT_MS` and tries again, not a failure, the owner told only at the hot ceiling, once a blocked spell (round 11, Lows A and B); the memory leg runs a seal, a move of large bodies and a purge's rewrite. Review round 5 (N6): the move's records packed in typed arrays (`MoveTable`), about 192 bytes a record, and `MOVE_HOLD_BYTES` (44 MiB) derived from workerd's measurement of the move with the most records and the most records one move can hold (`MOVE_RECORDS`, 74,933). Round 5 verification (N7): a purge's rewrite scans with the purge's filter, each pass bounded by `MOVE_RECORDS` kept and `MOVE_BYTES` scanned, compacting across passes (the small segment derived from the fences, `archive_segments_small`); `MoveTable` refuses past its bound; a pass moves mail whenever it is due, a rewrite or not (round 6, N8); the purges' cursors no longer jump.
 - [ ] Owed by slice STORE:
   - **Option B of the latency probe** (R2 get, put, list from an owner-shaped object) needs a token with Workers R2 Storage: Edit. The index decision (shards or R2 trees) waits on it, and the count caps stay until then. Its `probe-latency-run` branch is made again only for that run; afterwards the probe's workflow and scripts are removed.
-  - **Old versions, collection history and read mail moved to R2 segments** (mail never evicted silently), encrypted under slice P's per-owner key: after P lands. Its schema baseline and its key are the base.
+  - **Later phases of item 2, each a silent loss to remove:**
+    - collection history's `maxHistoryCharge` pruning (phase 2, on the same segments);
+    - the ledger's newest-`maxReceipts` (50,000) receipts, the older ones let go;
+    - `CONVERSATIONS_KEPT` (10,000) making the oldest idle conversation forget its resume id (`run-rows.ts`);
+    - file versions, with the index decision (`history_research.md` §4);
+    - **known write amplification:** a single late ack of one small message rewrites its whole 8 to 16 MiB segment (fetch, re-encode, upload, commit), so a sparse late-ack pattern costs a segment rewrite an ack; acceptable for phase 1, a batched or tiered merge is a later refinement;
+    - **unread mail archived too** (found by seq, the hot set bounded by bytes): it needs its own research first, since an unread message's recipient state and mail in a run's hands change after a segment is sealed.
   - **Sync-in of the working set alone** (today it materializes the whole workspace), held for the scratch design.
   - **The starter package's agent instructions** naming `$TA_SCRATCH`: slice STARTER carries the scratch guidance, in its `AGENTS.md` and its scratch skill (the run door's MCP instructions carry it today).
   - **`linux_oracle.py`** for the scratch modes and the reserve: no Docker daemon in the build session. The runner's root tests cover the modes.
@@ -2422,11 +2431,94 @@ R, S, M and W.
   windows read by verified ranges (`FILES` rechecks the whole chunk and answers the range,
   L7); a cut title or fetch field says so, and a search's cursor is an opaque base64url token
   (L5). The byte guard of `1d284b1b1` is gone (memshape_research.md §5).
-  Owed: PR 2 (chunk slots, chunk-wise `file_edit`, the tail pool, the differential
-  `test:memory` leg, ADR-037); PR 3a (the egress stream, another builder); after the
-  deploy, PR 3b (bodies as streams across RPC), PR 4 (inbound, sync, the files Worker's
-  pool, the AST scan, `file_append`'s `request_id`), production baselines, and the
-  `ui-test` live check reading a long message through to its end.
+  Owed: after the deploy, PR 3b (bodies as
+  streams across RPC), PR 4 (inbound, sync, the files Worker's pool, the AST scan,
+  `file_append`'s `request_id`), production baselines, and the `ui-test` live check reading
+  a long message through to its end.
+
+- [x] MEMORY PR 2, memory bounded by structure (ADR-037): one pool of units an isolate
+  (`slots.ts`), a path taking units for what it holds while its bytes are in hand, weighted by
+  it (`holds.ts`), a reserve so a one-unit hold never waits behind larger ones (review M1),
+  nor a larger one is starved by them (M-b), each class's waiters capped apart (L-a), the
+  larger ones by the largest arguments a door takes (L-b), `busy` past the wait or the
+  waiters (`503`, `Retry-After`); an edit's source chunks let go as their pieces are taken; `file_edit` chunk-wise, a step
+  per chunk read and per chunk made and put, to `EDIT_BYTES_MAX` (500 chunks, from the
+  worst edit's measured time); `file_append`, a body's windows and whole reads each a step;
+  the relay's tails one budget an isolate (M5); `agents_list` paged by stable key; owner
+  ranged reads verified, a tampered chunk failing loudly. The workerd memory leg
+  (`test:memory`, its own CI leg) runs the real owner object, `Files` and `Bodies` at their
+  worst (distinct content, 8 to 96 MiB), sampling at every chunk call, with a control; the
+  counts test sums the live terms from the sources and names what it does not count
+  (garbage, unmeasured in production; the holds owed by PR 3b and PR 4). The first leg's
+  "retention" was a sampler artifact: a swept read must be atomic with its collection.
+  Owed: the production probe (whether the 128 MB counts uncollected garbage), each
+  Worker's `memoryUsageBytes` to reset the pool and baseline, an `exceededMemory` alert, an
+  edit's wall time a chunk with R2.
+
+- [x] MEMORY PR 3a, the egress door as a stream, re-planned as A′
+  (`egressshape_research.md` §5, superseding memshape's scanner): the doors stream
+  `request.body` unread, admit at `egressOpen` with no hints (the row open, uncharged) and pass
+  `reserve`, a function the gateway calls back over RPC, which answers `egressReserve` and
+  keeps a refusal's code and receipt for the door's answer. The owner charges an admitted
+  model call once, for the model and tier the gateway read (the schema's triggers set its
+  charge from none to held once, on an open row); an unreserved open row is open as any
+  other (rate, beats, settled `lost` charged nothing). The gateway's metered path takes
+  slots of its pool as its body arrives and by its weight (`GATEWAY_POOL_SLOTS` 16, PR 2's
+  `slots.ts`; `busy` past the wait; see the review below), reads `Content-Length` decoded
+  chunk-wise, parses once, refuses spelling
+  aliases (`aliased`: `generation_config.max_output_tokens` and case-folded keys, the open
+  metering bypass on Google calls), reads model and tier from that parse, awaits `reserve`,
+  clamps in place, encodes once and uploads through a `FixedLengthStream` in 64 KiB writes,
+  its slots let go at the upload's end.
+  `hintsOf`, `HINT_KEYS` and `egress_reservation_mismatch`'s use are gone.
+  Review rveg (REQUEST_CHANGES), fixed: a call is weighed by what its tree can cost, its bytes
+  and its structural tokens counted as they stream in (`gateway/src/held.ts`: 4.25 a byte with
+  a non-ASCII character, 2.25 without, 32 B a token, measured in workerd over 19 shapes, the
+  worst empty objects at 11.67 and nesting at 15 times the body), one weighing more than the
+  pool refused `egress_too_large` (H1), and the memory leg samples right after the parse, the
+  stringify and the encode for ten shapes, failing on an under-count; its slots are taken as
+  its bytes arrive, its weight's once the body is in, its read and its reserve stopped at its
+  caller's stop and past `heldDeadlineMs` (the pool's wait plus the body at 0.18 MiB/s, one
+  slot's worth a pool wait), and the pool's waiters are served round-robin by owner, sharing
+  the waiters without a fixed cap (H2); a key past ASCII at a read level, and a body `model`
+  where the path names it, refused (M1, M2); every end before the fetch settled `failed` (M3);
+  a body shorter than its `Content-Length` refused, the slots let go on a throw before the
+  fetch, a stopped call never reserved nor sent, and the deploy kit's one-after-another order
+  recorded in `deploy/checklist.md` (lows). Measuring it showed a dead local of a suspended
+  async function is still kept: the read now returns through `weighedBody`, so its text is
+  held once.
+  Verification rveg2 (REQUEST_CHANGES), fixed: a `\u` escape weighs as non-ASCII (Python's
+  `json.dumps` writes them; the leg's eleventh shape, escaped text, passes); growth is
+  wait-die in `slots.ts`'s one admission rule (`#fits`): only the oldest holder waits while it
+  holds, a younger one gives everything back `busy` before its reserve, and while the oldest
+  waits nothing else takes past the reserve; an owner holding half the pool or more takes no
+  more while another owner waits; each unit's worth of body must arrive within the pool's
+  wait of that unit's grant, its clock running only while the call waits on its sender, so
+  16 silent calls let go at their units' deadlines and another owner lands; a stopped wait
+  leaves the queue at once; the reserve waits at most the pool's wait (`busy`); a body is
+  refused `egress_too_large` as soon as its weight passes the pool. A stop racing a reserve
+  already in flight may still be charged whole, as before A′.
+  Owed, the verification's Lows (recorded, no code): a slow sender can game "oldest", holding
+  its first unit early so wait-die favours it (measured 16 % lower throughput at
+  saturation); a user-defined endpoint that reads its upload slowly holds the call's units
+  through the upload, bounded by `heldDeadlineMs`.
+  The memory leg's egress cases (`owner/memory/egress.mjs`, run by `leg.mjs`: the real door
+  and gateway in isolates of their own, sampled at the provider's checkpoints), measured in
+  workerd: the door at 16 against 4 MiB held -0.38 MiB, the gateway -0.01 MiB (each at most a
+  quarter chunk); the gateway uploading 4.25 MiB for 4 MiB and 16.08 MiB for 16 MiB (at most
+  1.05·S + 0.25 MiB); 0.03 MiB a call more in the gateway at 8 against 4 calls held (at most
+  0.25); a call behind a whole-pool upload lands, and is `busy` past the pool's wait; the
+  control (a door reading the body whole) reads 11.99 MiB more. A caller's stop now ends the
+  answer closed, not errored with its abort, so workerd's "Uncaught (in promise) AbortError"
+  per stopped call (14 in the doors' egress suite, on `main` too) is gone.
+  Owed: a sandbox's real upload rate, measured live, against `MIN_RATE`; live,
+  `memoryUsageBytes` for the gateway and the doors.
+  Done at the template build `tinyassets-sandbox:s683105ce69435bb9` (2026-11-04, pinned,
+  its checks in `passed.json`): `egress_aliased_key`, `egress_reserve_refused`,
+  `egress_too_large` and `busy` (its `Retry-After` kept) are in `failure.ts`'s table and
+  `forward.ts`'s own (`EGRESS_CODES`) is gone; `egress_reservation_mismatch` left it. The same
+  template carries the runner's `safeDirs` fix: two runs starting at once in a fresh sandbox
+  both make its shared directories, and an `EEXIST` on a real directory is the one asked for.
 
 ## 10. The plan's later slices
 

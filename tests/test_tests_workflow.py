@@ -1223,6 +1223,20 @@ def _check_platform_legs(job: dict) -> None:
         f"a leg runs what no workspace's tests are: {commands - covered}")
 
 
+def test_platform_tests_runs_the_workerd_memory_leg():
+    """The owner's memory leg (ADR-037) runs as its own leg: the differential workerd check that
+    each chunk-wise path is O(1) in its data's size, with a control that must read as growing."""
+    legs = _load()["jobs"]["platform-tests"]["strategy"]["matrix"]["include"]
+    assert {"leg": "memory", "command": "npm run test:memory -w owner"} in legs, legs
+    import json
+
+    scripts = json.loads((_REPO / "platform" / "owner" / "package.json").read_text(
+        encoding="utf-8"))["scripts"]
+    assert scripts["test:memory"] == "node memory/leg.mjs", scripts
+    leg = (_REPO / "platform" / "owner" / "memory" / "leg.mjs").read_text(encoding="utf-8")
+    assert "the control kept" in leg and "--expose-gc" in leg, "the leg lost its control"
+
+
 def test_platform_tests_has_a_leg_for_every_workspace():
     """`platform-tests` is a matrix, one leg a workspace, none dropped nor made a no-op."""
     _check_platform_legs(_load()["jobs"]["platform-tests"])

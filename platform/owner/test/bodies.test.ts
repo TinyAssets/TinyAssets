@@ -344,19 +344,29 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       .message).toBe(TIER_UNREAD);
   });
 
-  it("A5: acked placed mail makes room at the tier's storage before a post is refused",
+  it("A5: acked placed mail is never let go at the tier's storage: the post is refused " +
+     "storage_full and every mail is kept (ADR-036, superseding ADR-035 decision 5)",
      async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    for (let n = 0; n < 8; n++) {
-      await r.stub.roomPost(r.bind(null, { tiers: tiers(4 * 2 * PLACE_BYTES) }), {
-        room_id: `dm:${muse}`, client_message_id: `c${n}`,
-        body: `${n}`.padEnd(LARGE.length, "é"), parent_id: null });
+    let refused: Error | null = null;
+    let sent = 0;
+    for (let n = 0; n < 8 && refused === null; n++) {
+      try {
+        await r.stub.roomPost(r.bind(null, { tiers: tiers(4 * 2 * PLACE_BYTES) }), {
+          room_id: `dm:${muse}`, client_message_id: `c${n}`,
+          body: `${n}`.padEnd(LARGE.length, "é"), parent_id: null });
+        sent++;
+      } catch (error) {
+        refused = error as Error;
+        break;
+      }
       const page = await r.read(MUSE);
       await r.ack(MUSE, page.messages.at(-1)!.seq);
     }
+    expect(storageFullOf(refused!.message)).toMatchObject({ limit_bytes: 4 * 2 * PLACE_BYTES });
     const [held] = await r.sql("SELECT COUNT(*) AS n FROM ledger_messages");
-    expect(held!["n"]).toBeLessThan(8);
+    expect(held!["n"]).toBe(sent);
   });
 
   it("A6: a history read past one page says so, and its cursor reads the older entries",

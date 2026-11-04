@@ -7,9 +7,9 @@
  * cursor it ever handed out, any number of exports read at once, and a crash anywhere
  * repeats only what was not yet acknowledged.
  *
- * **Format `tinyassets-export`, version 2.** Newline-delimited JSON (one object a line,
+ * **Format `tinyassets-export`, version 3.** Newline-delimited JSON (one object a line,
  * UTF-8), in this order:
- * 1. `{"t":"header","format":"tinyassets-export","version":2,"schema":<n>,"owner":"<id>",
+ * 1. `{"t":"header","format":"tinyassets-export","version":3,"schema":<n>,"owner":"<id>",
  *    "at":<ms>,"gen":"<id>","s":<seq>}`: once, first; `schema` is the owner schema's
  *    migration count, which says what each table's columns are (`schema.ts`); `gen` the
  *    generation and `s` its log's first seq.
@@ -31,6 +31,24 @@
  * is exactly the owner at E: a key the log names has its value at E in its last line; a key
  * it does not name did not change from S to E, so its base line is its value at E (Postgres's
  * base backup and WAL replay, at row level).
+ *
+ * **Archive segments (version 3; slice STORE item 2, `segments.ts`).** An `archive_segments`
+ * row names a content whose bytes are export lines of this same grammar: each archived record's
+ * `row` lines (a message, its body's row, its recipients), then one `{"t":"segment",...}`
+ * trailer line, then 16 ASCII digits (the trailer's offset). A body is raw, never escaped: its
+ * row holds `"body":null` and its line adds `"raw":"body","raw_bytes":<n>`, and the line's
+ * newline is followed by the body's `n` bytes (its UTF-8) and a newline; a reader puts them,
+ * decoded, back in the row's `body` (`recordRows`). A reader, having read the base and the
+ * log to E, fetches the chunks of each `archive_segments` row standing at E as any content's
+ * and applies its `row` lines **after the log**, over it: a
+ * move deletes its rows from their tables (the log names them `gone`) in the same unit that
+ * names the segment, and a moved row never returns to its table (its key, a message's seq and
+ * id, is never given again), so a key a segment at E holds is the owner's at E as the segment
+ * holds it. A segment that a rewrite replaced before E has no row at E and is not read. The
+ * reader drops the lines of a room naming an agent in `archive_purges` at E (deleted, its
+ * segments not yet rewritten). Segments ship as they are, so a generation never reads the
+ * archive back. The id key (`ledger_ids`) rides along, so whoever holds an export can read
+ * the seq (and so the volume) a message id carries; it gates no access.
  *
  * A file's bytes are its content's: `file_entries` and `file_history` name a `content_id`;
  * `file_contents` holds a small one `inline`, else `file_content_chunks` lists its chunks
@@ -54,7 +72,7 @@
 import { Invalid } from "./errors";
 
 export const EXPORT_FORMAT = "tinyassets-export";
-export const EXPORT_VERSION = 2;
+export const EXPORT_VERSION = 3;
 /** The rows' text one page gathers before it ends: well inside one RPC's 32 MiB. */
 export const EXPORT_PAGE_BYTES = 1024 * 1024;
 /** Rows read at a time while a page fills. */
@@ -134,12 +152,20 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     native_agents: t("agent_id agent created_at retired_at unacked_to_owner", "agent_id"),
     ledger_messages: t("seq message_id command_center_id room_id sender_kind sender_id " +
                        "client_message_id body_sha256 parent_id chain_root chain_depth " +
-                       "created_at body_bytes unacked authority attended", "seq"),
-    message_bodies: t("message_id room_id body created_at body_bytes content_id filer",
-                      "message_id"),
+                       "created_at body_bytes unacked authority attended line_bytes", "seq"),
+    message_bodies: t("message_id room_id body created_at body_bytes content_id filer " +
+                      "meta_bytes", "message_id"),
     ledger_recipients: t("message_id agent_id seq state changed_at unacked", "message_id agent_id"),
     ledger_receipts: t("seq agent_id kind ref at detail_json", "seq"),
     ledger_readers: t("reader through_seq acked_at unacked", "reader"),
+    // The archive: each segment's fence (its content holds the archived rows), the agents
+    // deleted while segments may hold their mail, and the key a message id carries its seq
+    // under.
+    archive_segments: t("segment stream first_key last_key first_at last_at records bytes " +
+                        "content_id filer trailer_offset trailer_bytes members made_at",
+                        "segment"),
+    archive_purges: t("agent_id at next_segment", "agent_id"),
+    ledger_ids: t("only id_key", "only"),
     // Spend.
     model_spend: t("period source cost", "period source"),
     model_reservations: t("seq id run connection_id source model state rule max_output_tokens " +
@@ -186,6 +212,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   collection_usage: "counters the schema's triggers derive",
   collection_space: "counters the schema's triggers derive, and the change feed's floors",
   ledger_usage: "counters the schema's triggers derive",
+  archive_moves: "an archive move in flight, between its two units",
   policy_usage: "counters the schema's triggers derive",
   proposal_shares: "counters the schema's triggers derive",
   ledger_wakes: "doorbell deliveries in flight",

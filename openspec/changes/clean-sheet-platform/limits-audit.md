@@ -44,8 +44,12 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,499,205,219.5 bytes, 44.99% of the 10 GB: 500.8 MB under
-half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`),
+**The worst case that ships is 4,651,798,214.75 bytes, 46.52% of the 10 GB: 348.2 MB under
+half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
+Slice STORE item 2 took 152.6 MB of the room under half the change log's bound was derived
+from (665.1 MB), within its quarter (166.3 MB, held by the guard): the archive's fence rows
+(`archive_segments`, 151.4 MB at 59,606 rows), its moves and purges, and a message's two byte
+counts; slice STARTER's terms took 0.4 MB more. Before it,
 slice ID's agent identities and mail
 authority, slice M's change orders, slice W's doorbell subscriptions (`wake_callbacks`,
 423.6 MB at 1,000 agents and their widest), slice S's sandbox wait, slice L's keys and
@@ -80,13 +84,16 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 13
-- **technical ceiling**: 156
-- **total**: 184
+- **technical ceiling**: 169
+- **default**: 1
+- **total**: 198
 
-Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
+Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-04.
 
 Removed by this slice, since only the tier's storage bounds what they bounded, or no
 platform fact stood behind them:
+- the ledger's mailbox caps (`maxOwnerUnacked`, `maxAgentUnacked`, `maxSenderUnacked`), slice
+  STORE item 2: one owner-wide unread ceiling, `maxUnacked`, in their place;
 - the collections' byte caps (`maxOwnerBytes`, `maxCollectionBytes`, `maxWriterBytes`,
   `maxHistoryBytes`) and their writer and row counts (`maxWriterRows`, `maxRows`,
   `maxOwnerRows`), now one charge of the rows as SQLite lays them out;
@@ -168,7 +175,7 @@ reason; none refuses a write.
 | `owner/src/files.ts` `MAX_HELD_CHUNKS` | 20,000 | chunks all open uploads hold | a new upload refused while they hold it | technical ceiling | The 10 GB, inside `file_intents`. |
 | `owner/src/files.ts` open uploads' bytes | the storage figure, its most | bytes all open uploads hold before they commit | an upload's begin refused `uploads_open` (409 at the doors) when what is stored fits but what open uploads hold leaves no room: reported apart from stored bytes, never "full", never an upgrade | technical ceiling | Their chunks count in the storage figure from begin, so they can never hold more than it. An upload the sync agent gives up is aborted at once (`upload_abort`), and a sync lease's open uploads are aborted when the lease ends, so none waits out `INTENT_TTL_S` holding room. |
 | `owner/src/files.ts` `INTENT_TTL_S` | 86,400 s | how long a file upload may stay open | a large upload over a slow link must finish within a day | technical ceiling | An open upload holds its chunks in `file_intents` and the quota until it ends; a 40 GiB file at 1 MB/s takes 11 hours. |
-| `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. |
+| `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. `file_edit` is no longer bound by it (ADR-037, ruling 2): it edits chunk by chunk (`EDIT_BYTES_MAX`, below). A whole write's bytes are not yet under a unit (PR 3b). |
 | `owner/src/files.ts` `MAX_SYNC_OPS` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short in the object's request CPU. |
 | `owner/src/files.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The 10 GB, inside the manifest's bytes. |
 | `owner/src/files.ts` `tempDir` | 239 bytes | a temporary directory's prefix | a longer prefix refused | technical ceiling | One path component, `MAX_NAME_BYTES` 255, with its 16 hex. |
@@ -182,10 +189,15 @@ reason; none refuses a write.
 | `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries, erased keys' last entries among them | the oldest entries pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows`. A message has one recipient, so no term moves with it. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, disabled agents included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_usage`. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held | the oldest acked message evicted; refused `ledger_full` if every one is unread | technical ceiling | The 10 GB: guard terms `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxOwnerUnacked` | 10,000 | messages unread by the owner | a post to the owner refused past it | technical ceiling | Within `maxMessages` (`checkLimits`), so no mailbox holds the whole ledger. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentUnacked` | 1,000 | messages unread in one agent's mailbox | a post to that agent refused | technical ceiling | As above. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxSenderUnacked` | 5,000 | one sender's messages unread by the owner | a sender's post refused past it | technical ceiling | Within `maxOwnerUnacked`, so no agent fills the owner's mailbox. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held hot | never a delete (ADR-036): the `archive` lane moves acked mail to segments from half of it, and a post at it is `storage_busy` (503, `Retry-After` 30 s) until a move lands; when a move cannot land for the storage figure, `storage_full` | technical ceiling | A chosen hot size whose cost the guard holds under half: `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB, each at 50,000 rows, 726.8 MB together, 14,535 B a message at the validators' widest. It cannot grow: the room left under half (348.6 MB) is STARTER's and BRAIN's quarters (332.6 MB) and 16 MB. Slice STORE item 2: the hot set, not the owner's mail; archived mail is bounded by the tier's storage alone. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxUnacked` | 25,000 | messages some recipient has not acked, owner-wide, whoever they are to | a post refused `ledger_full`: too much mail is unread, naming the readers holding the most; reading and acking makes room (never an upgrade) | technical ceiling | The hot ceiling less one segment's records: 50,000 − 25,000. The guard costs the three hot terms (a message, its body, its recipient, 14,535 B together at the validators' widest) at `maxMessages` rows, so any unread count up to it fits under half; the one binding constraint is that at the hot ceiling a segment's records (`SEGMENT_MIN_RECORDS`) stay acked, so the lane always has one to move (`checkLimits`, `limits-audit.test.ts`). It replaces the owner's 10,000, each agent's 1,000 and each sender's 5,000, which no platform fact forced; being owner-wide, one noisy sender can fill it (the spec says so). |
+| `owner/src/segments.ts` `SEGMENT_MIN_BYTES`, `SEGMENT_MIN_RECORDS` | 8 MiB of records' own bytes (their trailer shares out, so a seal is never short of the least: review N4, at the production limits 11,999 small messages sealed at 8,489 records, encoded past 8 MiB), or 25,000 records | when a segment is sealed | nothing: a move waits for a segment's worth of acked mail | technical ceiling | A fence row costs the owner-bound guard about 2.5 KB at its worst fill; 0.5 TB of tier in 4 MiB segments took 317.5 MB, past STORE's quarter of the room under the half (166.3 MB). At 8 MiB: 151.4 MB. 25,000 records of at least `MIN_RECORD_BYTES` (336, the least mail's three rows, tested) pass 8 MiB too, so every sealed segment holds at least `SEGMENT_LEAST_BYTES` (8 MiB). A body is stored raw, never escaped (review N3), so a record is its body's bytes and its lines'. |
+| `owner/src/segments.ts` `ARCHIVE_SEGMENTS_MAX`, `TIER_STORAGE_MAX` | 59,606 fence rows; 500,002,979,840 bytes (about 0.5 TB) | the archive's fence rows; the most storage a tier record may give | a tier record past it refused (`parseTiers`): a larger tier needs larger segments first, a redesign | technical ceiling | The guard's `archive_segments` term at its rows is 151.4 MB, within STORE's quarter (`limits-audit.test.ts`); the rows are at most the storage over 8 MiB, plus one: every segment holds at least 8 MiB but a lone one (a move seals at it; a straggler's merge only grows a segment, within a byte budget a pass (`MOVE_BYTES` less the segment, at least one straggler); a rewrite left small takes in its neighbours by key; `pack` cuts only where both sides hold at least it, else makes one piece), and no two overlap in key range (the schema refuses it). Paid's 250 GB is half of it. |
+| `owner/src/ledger.ts` `STORAGE_BUSY_RETRY_S`; `owner/src/owner-do.ts` `ARCHIVE_RETRY_S`, `ARCHIVE_FAILS_TOLD` | 30 s; 60 s; 3 | a busy post's retry; a failed archive pass's hold; failed passes in a row before the owner is told once | nothing refused: a retry, a hold, one notice (`storage_busy_long`), quoting the last error or saying the passes stopped before they could say why | technical ceiling | About one lane pass (`LANE_PASS_S` 45 s); an R2 outage holds the lane a minute a try. The count is a row (`ledger_usage.archive_fails`), raised as a pass begins and cleared as it ends, so passes killed with their isolate count too (review N3). |
+| `owner/src/segments.ts` `MOVE_BYTES` | 32 MiB (4 × `SEGMENT_LEAST_BYTES`) | the records' bytes one merge rewrites in a pass: its segment and its stragglers | the stragglers past it merge on the next passes (always at least one a pass) | technical ceiling | Work a pass, not memory (the move is streamed: `moveTableUnits`, `MOVE_PASS_UNITS`): it bounds each pass's reads, hashing and calls. `pack`'s largest piece (twice the least and a record) and the one straggler always taken fit it but for their lines (`limits-audit.test.ts`). |
+| `owner/src/holds.ts` `MOVE_RECORD_BYTES`, `moveTableUnits`, `MOVE_PASS_UNITS` | 256 bytes a record, an aggregate bound over a move's records (at `MOVE_RECORDS`, 5 units); 3 units a pass | what one archive move or rewrite holds on the isolate's pool (ADR-037, `MoveHold`): its records' units, taken before they arrive and held to its end (their bytes are in hand throughout), grown as a rewrite takes in a neighbour; each pass's (a scan, the hashing pass, the sending pass) beside them, taken before its first chunk arrives and released once its last is gone, its waits each bringing or sending its bytes, never a begin or a commit | refused `busy` (the pool's one admission rule, one lease (`SlotPool.lease`) grown and shrunk back; inside the alarm a growth is taken now or refused, never waited for, so the object's other lanes never wait on it): the pass ends with nothing changed and is not counted as a failure; the lane holds for `SLOT_WAIT_MS` (the term a full queue turns over within) and tries again; the owner is told only when storage is at risk, the hot set at its ceiling (the next post refused `storage_busy`) with the moves blocked, once a blocked spell | technical ceiling | A record's most, from the structure the code builds, each array at twice what it holds (they grow by doubling): its table's typed arrays (53 bytes, 106 doubled), its chain's name in the table's pool (a message id, 36, 72 doubled), its plan's arrays (42) and the move's lists of its keys and indices (36): 256 (`limits-audit.test.ts`). An aggregate bound, not each record's own: a record with a placed body adds its content's entry (about 81 bytes, 162 doubled), but it is at least `PLACE_BYTES`, so `MOVE_BYTES` bounds such records to about 16,000 a move, and the worst mix (a piece of the least records and placed stragglers) is about 11.4 MiB, within the 5 units. The most records a move holds, `MOVE_RECORDS`, take 5 units, with a pass's 3 within the pool's 11 beside its reserve (`memory-counts.test.ts`). A pass: the source chunk in hand (`MoveReader`, detached as the next arrives and as the pass ends), the chunk made from it (detached once hashed or sent) and the put's copy, as an edit's making step. Measured in one run of the workerd memory leg (the memory leg run of 2026-11-04 17:30 UTC on `5063ed66f` with round 11's Lows A and B (`x_memory.log`)): a move's records built by its own code at `MOVE_RECORDS` (74,933, which no real mail reaches: a real record is past twice `MIN_RECORD_BYTES`) 12.98 MiB in their 5 units, 182 bytes a record; and, the object's own lane running each, the merge of the most records real mail reaches (round 5's: the muse's 8 MiB seal, Dot's 7,700 merged into it, Pat's into that up to `MOVE_BYTES`, 32,568 records) 13.29 MiB at its worst checkpoint in 5 units and 4.80 MiB at its passes' ends (155 bytes a record); a tail seal of 8,489 small messages 5.69 MiB at its worst checkpoint and 1.68 MiB live at its passes' ends (208 bytes a record, its arrays near the doubling's worst); a move of two bodies 8.07 MiB at its worst at 8 MiB each and at 4 MiB (the least of two runs equal: O(1) in their size); a purge's rewrite of one of them 8.04 MiB; every checkpoint inside a hold within the units held. Round 5's figures (the move with the most records one merge took, 32,568, grew the live heap by 32.2 MiB) were taken before the source chunk was detached and the store's chunks were their own buffers (`memory/probe.ts`). |
+| `owner/src/segments.ts` `MOVE_RECORDS`; `owner/src/owner-do.ts` `#archiveRewrite` | 74,933 records; a rewrite pass's neighbours within `MOVE_RECORDS` kept and `MOVE_BYTES` scanned | the records one move holds; what one purge rewrite pass takes in | `MoveTable` refuses past it, loudly (a counted, told failure, never a silent cut); a pass stops taking in neighbours at its bound | technical ceiling | Review N7: a purge's rewrite scans each segment with the purge's filter, so only kept records enter the move's table, and a pass takes in a neighbour only while what it keeps and the neighbour's records fit `MOVE_RECORDS` and the neighbours it scans fit `MOVE_BYTES` (a merge's work). The compaction rule across passes: a pass stopped by its bound while still under the least places what it kept as one small segment; the next pass, finding a segment under the least that is not the only one (derived from the fences alone through the partial index `archive_segments_small`, one entry at most, so a restore keeps it), takes it back as its target and goes on taking in its neighbours, until it holds the least or stands alone. Every pass leaves the archive whole and disjoint (`archive_segments_disjoint`), with at most one segment under the least, only less compacted until the last; the first neighbour always fits, so every pass makes progress. The purges' cursors are no longer moved past the replaced segments' ids (that skipped the segments between them). A pass runs a move whenever mail is due (the hot set past half), a rewrite or not (review N8), so a long purge never holds new mail at `storage_busy`; a rewrite that fails is counted and told at three. Tested at the production segment sizes: nine in ten of a run's mail deleted (each rewrite at most its target and three neighbours, several compacting passes, Dot's mail byte-exact), and 19 in 20 (completes, what is left standing alone). Measured in workerd: the purge of most of the small-record merge's records (16,175 kept) grew the live heap by at most 14.9 MiB in round 5; each pass is now held within its records' units and its own (`MoveHold`). |
+| `owner/src/ledger.ts` `CHAIN_SEGMENTS`; `owner/src/owner-do.ts` `ARCHIVED_WHOLE_BYTES`, `ARCHIVED_HEAD_BYTES` | 8 segments; 64 KiB; 16 KiB | segments one chain page reads; an archived record read in one range; the first read of a larger one's head | the page answers `more`, the next goes on after its last message | technical ceiling | A page's R2 reads bounded within one call. A chain page fits one answer (`RESULT_CHARS`, PR 1) like every read: its archived records are read by the verified ranges they span (a small one whole, a larger one its two head lines, its recipients' lines and its body's window of at most `PAGE_BYTES` from `body_offset`), the windows stopping at `WINDOWS_BYTES` past the first, so no archived body is ever read whole and a cut one reads on by its message id and offset. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxReceipts` | 50,000 | read and reply receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_receipts`, 309.6 MB. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxSettledWakes` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_wakes`. |
 | `owner/src/ledger.ts` `WAKE_SETTINGS` | 9,007,199,254,740,991 | the owner's cap and batch window | a larger number refused | technical ceiling | JavaScript's largest exact whole number (`Number.MAX_SAFE_INTEGER`): the cap's state is one column whatever its value. |
@@ -228,8 +240,11 @@ reason; none refuses a write.
 | `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s. |
 | `owner/src/egress.ts` `EGRESS_PATH_MAX` | 2,048 characters | a sandbox request's path and query | a longer path refused | technical ceiling | The 10 GB: each egress row keeps its path, costed at it in `egress_reservations`. |
 | `owner/src/network.ts` host | 253 characters | an egress destination's host | a longer host refused | technical ceiling | DNS's own bound (RFC 1035). |
-| `owner/src/network.ts` `EGRESS_BODY_MAX` | 16 MiB | one sandbox model request's body | refused `egress_too_large` | technical ceiling | One request body a Worker reads whole: the text (16 MiB, at most twice that as UTF-16), its parsed copy and its serialized copy to the next hop come to 80 MiB at worst, within the isolate's 128 MB (Workers limits) with room for the rest; one ceiling for the egress door, the gateway, the API and the owner surface (`network.ts`). Live memory probe owed to slice L. Providers take more (Anthropic's Messages API, 128 MB), past what an isolate holds. |
-| `gateway/src/forward.ts` `BODY_MAX` | 16 MiB | a metered call's body | as `EGRESS_BODY_MAX` | technical ceiling | As `EGRESS_BODY_MAX`. |
+| `owner/src/network.ts` `EGRESS_BODY_MAX` | 16 MiB | one sandbox model request's body | refused `egress_too_large` | technical ceiling | The egress door streams the body and holds none of it; the gateway, which parses a metered call once, weighs it by its bytes and its tokens in its pool's slots (`gateway/src/held.ts`), so an ASCII body of 16 MiB fits and one with a non-ASCII character fits to 15 MiB. One ceiling for the egress door, the API and the owner surface (`network.ts`). Providers take more (Anthropic's Messages API, 128 MB), past what one pool holds. |
+| `gateway/src/held.ts` `BODY_MAX` | 16 MiB | a metered call's declared length | refused `invalid_request` | technical ceiling | As `EGRESS_BODY_MAX`; within it each call is weighed (below). |
+| `gateway/src/held.ts` `GATEWAY_POOL_SLOTS` | 16 slots of 4 MiB | what the gateway's metered calls hold at once | a call waits its turn (owners round-robin), `busy` past the pool's wait | technical ceiling | 64 MiB beside the gateway's 12 MiB idle set, within the isolate's 128 MB (egress shape research §2). |
+| `gateway/src/held.ts` `TEXT_COST`, `BYTE_COST`, `ASCII_BYTE_COST`, `TOKEN_COST` | 2.25, 4.25, 2.25 a byte; 32 B a token | a metered call's weight in slots | a call weighing more than the pool refused `egress_too_large` | technical ceiling | Measured in workerd over 19 body shapes (the text 2.01 times the bytes; the parse's most 4.00 times for non-ASCII text, 2.00 for ASCII, plus up to 30 B a structural token), and asserted after each phase by the memory leg (review H1). |
+| `gateway/src/held.ts` `MIN_RATE`, `heldDeadlineMs` | each unit's worth of body (1.78 MiB) within 10 s of its grant, about 0.18 MiB/s; the upload 10 s plus the body at it (100 s for 16 MiB) | how long a metered call holds a unit while it waits on its sender, and its upload | refused `invalid_request`, its units let go | technical ceiling | Derived from the pool: no unit is held longer than a waiter waits for one (`SLOT_WAIT_MS`); a wait for a unit is never counted. A sandbox's real upload rate is owed live. |
 | `doors/src/routing-mac.ts` `LEASE_LIVED` | none of their own | the egress and sync tokens' life | a token lives while its lease's heartbeat renews it | technical ceiling | The lease's life (`LEASE_TTL_S` without a renewal); no run meets a fixed deadline. |
 | `owner/src/cron.ts` `CRON_MIN_GAP_MIN` | 1 minute | the shortest gap between a schedule's runs | nothing below cron's own minute | technical ceiling | Cron's resolution; the tier's runs bound what a schedule starts. |
 | `owner/src/cron.ts` `CRON_MAX_ITEMS` | 60 | values in one cron field's list | a longer list refused | technical ceiling | A minute field's every value. |
@@ -265,7 +280,7 @@ reason; none refuses a write.
 | `owner/src/socket-shape.ts` `SOCKET_TICKETS` | 1,024 | socket tickets outstanding | refused `socket_tickets_full` until one is used or expires | technical ceiling | Guard term `socket_tickets`. |
 | `owner/src/socket-shape.ts` ticket life | 30 s | a socket ticket's life | the app asks again | technical ceiling | A single-use credential in a URL, which servers and proxies log; it lives only for the connect. |
 | `owner/src/relay.ts` sockets | 1,024 | the owner app's sockets open at once | another refused `sockets_full` | technical ceiling | The isolate's 128 MB (memory guard). |
-| `owner/src/relay.ts` tails | 4 Mi UTF-16 units | the live runs' tails, together | a late joiner sees fewer old frames | technical ceiling | The isolate's 128 MB. Frames are never committed. |
+| `owner/src/relay.ts` `TAIL_BYTES` | 4 Mi UTF-16 units (8 MiB) | the live runs' tails of every owner object in the isolate, together (`slots.ts` `SharedBudget`, review M5) | a late joiner sees fewer old frames; past it the object holding the most drops its oldest | technical ceiling | The isolate's 128 MB, one term of the counts test (`guards/memory-counts.test.ts`). Frames are never committed. |
 | `owner/src/relay.ts` one frame kept | 256 Ki units | one frame in a tail | relayed live, not kept | technical ceiling | As above. |
 | `owner/src/run-events.ts` `EVENTS_BODY_MAX` | 64 KiB | a runner's events post | refused `events_too_large`; the runner posts more often | technical ceiling | The isolate's 128 MB (memory guard). |
 | `owner/src/run-events.ts` `EVENTS_IN_FLIGHT` | 8 | events posts held at once | `events_busy` (503), posted again | technical ceiling | As above. |
@@ -313,6 +328,92 @@ itself is bounded by structure (chunks, streams and a slot pool), not by these f
 |---|---|---|---|---|---|
 | `owner/src/encoded.ts` `RESULT_CHARS` | 50,000 bytes of JSON text | one tool answer: every read's page (mail, a chain, collection rows, history, digests, `file_read`, `fetch`, `file_list`, `file_history`, `search`, a run's view, a `code` answer) | the page ends before an item that would pass it, always answering its first; a body cut to fit says so (`body_bytes`, `body_next_offset`, `truncated`) and the rest is read by range (`body_offset`), so nothing is out of reach | technical ceiling | The strictest documented client default: Claude Code keeps a tool's text result inline up to 50,000 characters and saves a longer one to a file the model reads by reference (`code.claude.com/docs/en/mcp`, retrieved 2026-11-04; memory_research.md §3). A character is at least one byte, so 50,000 bytes is within 50,000 characters. ChatGPT documents none (`developers.openai.com/apps-sdk/reference`). Raising it through a client's own metadata (`anthropic/maxResultSizeChars`) would be provider-specific (Direction 2). |
 | `doors/src/mcp.ts` `MCP_BODY_MAX` | 4 MiB | one JSON-RPC request on `/mcp` | `413` | technical ceiling | The MCP SDK's own `maxRequestBodySize`, kept: the SDK materializes a message whole, so its ceiling is what the doors' isolate holds a few at a time; models do not emit multi-MiB arguments, and bodies up to `BODY_BYTES_MAX` (8 MiB) go by `/api` (memshape_research.md §4). |
+
+## Memory bounded by structure (the platform memory fix, PR 2)
+
+What an isolate holds live is counts the code enforces times costs the code constructs
+(ADR-037): large data moves only as streams or 4 MiB chunks, and a path takes units of its
+isolate's one pool (`owner/src/slots.ts`, a unit `UNIT_BYTES`, one chunk) for what it holds
+while its bytes are in hand, weighted by what it holds. The counts test
+(`owner/guards/memory-counts.test.ts`) holds the live terms within the isolate's 128 MB; the
+workerd memory leg (`npm run test:memory -w owner`) runs each real path at its worst and holds
+its peak within its declared units, whatever its data's size. The figures below are the
+leg's run of 2026-11-04 in this sandbox; it prints them each run.
+
+| Where | Value | Bounds | A user hits | Class | Reason |
+|---|---|---|---|---|---|
+| `owner/src/holds.ts` `OWNER_POOL_UNITS` | 12 units (48 MiB) | the chunk-holding steps one owner isolate runs at once (an edit's reads and makings, an append, a body's read or windows) | a step past it waits its turn, first come first served in its size class | technical ceiling | The pool's term: three edits' making steps beside the reserve, or a whole two-chunk body's read beside a making step. The counts test holds it with the isolate's other live terms (below); production's `memoryUsageBytes` resets it in a one-line change. |
+| `owner/src/holds.ts` `OWNER_RESERVE_UNITS` | 1 unit | the units only one-unit holds (a window) take | a co-tenant's small read never waits behind edits (review M1); it waits only on other one-unit holds | technical ceiling | A one-unit hold is a page's window: one unit kept for them means no larger hold can keep one waiting. And no larger hold is starved by them (review M-b): while one waits, a new one-unit hold takes only the reserve. |
+| `owner/src/slots.ts` `SLOT_WAIT_MS` | 10 s | how long a step waits for units | refused `busy` before it changes anything: `503` with `Retry-After: 1` on `/api`, the same refusal on `/mcp`; retried, never a lost write | technical ceiling | The queue's own term. Neither Claude's nor ChatGPT's connectors document how long they wait for a tool call (users report about 60 s to 5 minutes, searched 2026-11-04); the MCP SDK's default request timeout (`DEFAULT_REQUEST_TIMEOUT_MSEC`, 60 s) is the shortest a client is known to keep. A sixth of it: the refusal is told while the client still waits, the rest left to the call's own work. At the leg's measured step (18.5 ms a chunk) a full queue of larger waiters turns over in about 34 ms, and a full queue of one-unit waiters, a window at a time (1.7 ms), in about 110 ms; the leg fails past the wait. Production's step (R2's round trips) is owed live. |
+| `owner/src/holds.ts` `OWNER_WAITERS` | 3 | the larger holds waiting for units at once | one more refused `busy` at once | technical ceiling | The memory a waiter holds (review L-b): no units, but its own request's arguments, which no unit counts yet (PR 3b), as large as the largest body a door takes, `/api`'s 16 MiB (`API_BODY_MAX`; `/mcp`'s `MCP_BODY_MAX` is 4 MiB). Three keep what they hold to the pool's own size again; four would pass it (the counts test holds this derivation from the sources). |
+| `owner/src/holds.ts` `OWNER_SMALL_WAITERS` | 64 | the one-unit holds (windows) waiting at once, capped apart from the larger ones | one more refused `busy` at once; larger holds waiting never refuse one (review L-a) | technical ceiling | The queue's turnover: a one-unit hold is a read's, its arguments ids, cursors and limits the door checked first; the reserve serves them a window at a time, and 64 turn over in about 110 ms at the leg's measured window, well inside `SLOT_WAIT_MS` (the leg fails past it). |
+| `owner/src/owner-do.ts` `EDIT_BYTES_MAX` | 500 chunks (2,000 MiB) | the largest file one `file_edit` edits | refused `Invalid`, naming the size; a larger file is rewritten by upload | technical ceiling | ADR-037 ruling 2: no longer `WHOLE_BYTES`; its tightest bound is time. The leg times the worst edit (the first chunk's, longer, so every chunk is read twice, remade and put; the files Worker's own hashing left out) on the real path: 18.5 ms a chunk of wall time at 96 MiB, at least its CPU. A request has 30 s of CPU; two thirds are left for a slower host (a CI runner among them), so 500 chunks, about 9 s measured. The leg fails if the measured time passes 30 s at this figure. About five subrequests a chunk, 2,500 at most. Production's wall time a chunk is owed live; an edit commits whole or not at all. |
+
+**Each path's units, and the leg's measured peak at its worst** (heap and backing stores
+over the isolate at rest, sampled at every chunk call and at the end of every hold while the
+path is suspended, after a swept collection; distinct content in every chunk; each size run
+twice). At every checkpoint inside a hold the leg also holds what is live to the units the
+pool holds then, beside a quarter chunk of the steps' own objects: each step on its own, the
+reading step's among them (review M-a). A chunk-wise edit lets each source chunk go as its
+pieces are taken (`edit.ts`'s `letGo`, its buffer detached) and each made chunk once it is
+put: before that, a dead source chunk was now and then read live a collection longer, 12 MiB
+in a making step (review M-a's 12.07 MiB); now 8 MiB in every run.
+
+| Path | Declared | Measured | O(1) in size |
+|---|---|---|---|
+| `file_edit`'s reading step (`EDIT_READ_UNITS`) | 2 units: the source chunk in hand, the call's copy as it arrives | within its units at every checkpoint | |
+| `file_edit`'s making step (`EDIT_MAKE_UNITS`) | 3 units: the chunk made, the source chunk in hand, the put's copy | 8.04 / 8.05 / 8.01 / 8.02 MiB at 8 / 32 / 96 / 192 MiB, the worst of two runs; two at once +8.06 MiB | 192 against 96 MiB: +0.06 MiB |
+| `file_append` (`APPEND_UNITS`) | 5 units: the last chunk, the text, the two joined, slack | 16.00 MiB (a last chunk a KiB short of whole, a whole chunk of text) | 32 against 8 MiB: +0.02 MiB |
+| a body's windows (`WINDOW_UNITS`) | 1 unit | 0.06 MiB | 8 against 2 MiB body: +0.06 MiB |
+| a whole body (`bodyUnits`) | 3 units a chunk: its bytes, its text, slack | 4.02 MiB (one chunk), 8.01 MiB (two) | by design O(body), at most `BODY_BYTES_MAX` |
+| an archive move's pass (`MOVE_PASS_UNITS`), beside its records' units (`moveTableUnits`) | 3 units: the source chunk in hand, the chunk made, the put's copy; 256 bytes a record | one run (2026-11-04 17:30 UTC, `5063ed66f` with round 11's A and B): its records at `MOVE_RECORDS` 12.98 MiB (182 B a record); the merge of 32,568 records 13.29 MiB (4.80 at its passes' ends, 155 B a record); a tail seal of 8,489 small messages 5.69 MiB (1.68 at its passes' ends, 208 B a record); two 8 MiB bodies 8.07 MiB; a purge's rewrite 8.04 MiB | two 8 against two 4 MiB bodies: +0.00 MiB |
+| the control (keeps every chunk) | | +24.01 MiB, 32 against 8 MiB | grows, as it must |
+
+**The live terms** (the counts test, from the source constants):
+- the pool: 12 units, 48 MiB;
+- the relay's tails, every object's in the isolate together (`TAIL_BYTES`): 8 MiB;
+- each owner object's relay terms (its events posts, its sockets' attachments, its told
+  sign-outs, its tails' own objects: `guards/relay-memory.ts`): 6.79 MiB an object;
+- the owner Worker's resting baseline (`OWNER_BASELINE_BYTES`), 8 MiB: the leg measures the
+  isolate at rest with an owner object built, its SQLite migrated, one request served
+  (6.0 to 6.4 MiB) and fails past the figure. The doors' and files Worker's figures are
+  module-load floors only (7.28 and 0.73 MiB, `owner/memory/baselines.mjs`), for their own
+  pools in PR 3b and PR 4.
+
+With one owner object, 70.8 MiB of 122.07 MiB: 51.3 MiB left, uncounted.
+
+**Uncounted, named, never fitted:**
+- **Garbage V8 has not collected yet.** Sampled in production by the memory probe
+  (`rpcretain-probe.yml` run 41869764034, 2026-11-04, on main at `4b0aaaa60`; Durable Object
+  analytics, `max.memoryUsageBytes` and `exceededMemoryErrors`):
+  - no form that only makes garbage drew a memory error or a reset, each churning up to
+    1 GiB in 4 MiB chunks in one call: sampled peaks plain allocation 34 MiB, arrays over
+    RPC 10 MiB, byte streams over RPC 6.1 MiB, `exceededMemoryErrors` 0 on every row. The
+    metric does count garbage (plain allocation read 18 to 34 MiB holding one 4 MiB chunk
+    live), but production's V8 collected it long before any threshold;
+  - the control (`retain`, every chunk kept) read 130 MiB at 128 held, was counted over
+    (`exceededMemoryErrors` 2) at 258 MiB held without a reset, and was reset at about
+    286 MiB: so 128 MB is a soft, counted limit, and the counts test keeps it. By the probe's
+    own validity rule (fail near 128 MB) the control did not qualify, so the run settles no
+    verdict on garbage; the figures above are what it sampled;
+  - still open, unsampled in production: arrays across two isolates, returned arrays, and
+    `r2Put`. In workerd, as high-water RSS over resting RSS with no forced collection: arrays
+    across two isolates 141.7 MiB, returned arrays 101.9 MiB, `r2Put` 235.5 MiB (and, now
+    sampled above, arrays in one isolate 78.9 MiB, plain allocation 65.2 to 76.0, byte
+    streams 112 to 177). No pool size changes on this reading.
+- **Holds not yet under a unit**, each owed:
+  - a call's RPC arguments (up to `MCP_BODY_MAX` on `/mcp`, `API_BODY_MAX` on `/api`), the
+    waiting calls' among them (at most `OWNER_WAITERS` x `API_BODY_MAX`, the pool's own size,
+    for the larger holds): PR 3b;
+  - `file_write`'s whole bytes (`WHOLE_BYTES`): PR 3b;
+  - `file_upload_chunks`' two chunks, as arguments, and `file_read_chunks`' two, as its
+    answer: PR 3b;
+  - a placed body as `room_post` or `collection_write` sends it (`BODY_BYTES_MAX`): PR 3b;
+  - an export's chunks, as its answer; sync's raw chunk bytes; an inbound event's body
+    (`INBOUND_BODY_MAX`): PR 4.
+- `/api`'s 16 MiB JSON body stays (ADR-037 ruling 3), weighted in the doors' units, one large
+  call at a time an isolate, with the raw streamed body, in PR 3b; MCP keeps the SDK's 4 MiB
+  (`MCP_BODY_MAX`, above).
 
 ## Slice P's bounds
 

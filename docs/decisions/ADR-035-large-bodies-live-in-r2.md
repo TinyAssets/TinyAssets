@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (founder, 2026-11-03: where large data lives is an architecture rule, built in and automatic, not a decision he makes).
+Accepted (founder, 2026-11-03: where large data lives is an architecture rule, built in and automatic, not a decision he makes). Decision 5 superseded for mail by ADR-036 (2026-11-04): acked mail is never let go at the quota.
 - **It amends** ADR-032 decision 1: the owner's object holds the ledger's bodies and the collections, but a body past the threshold below lives in R2, with its reference in the object.
 - **It extends** ADR-032 decision 5: the files plane's bucket and manifest also hold those bodies.
 - **Per ADR-005**, ADR-032's body is not edited. Only its Status line gains "amended by ADR-035".

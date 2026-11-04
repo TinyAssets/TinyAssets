@@ -31,6 +31,7 @@
  */
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
+import { TIER_STORAGE_MAX } from "./segments";
 
 export const TIER_NAMES = Object.freeze(["free", "paid"] as const);
 export type TierName = (typeof TIER_NAMES)[number];
@@ -70,8 +71,12 @@ export function parseTiers(value: unknown): Tiers {
     const { runs, storage_bytes: bytes } = tier;
     if (typeof runs !== "number" || !Number.isSafeInteger(runs) || runs < 1
         || runs > RUNS_CEILING || typeof bytes !== "number" || !Number.isSafeInteger(bytes)
-        || bytes < 1) {
-      throw new Invalid(`a tier's runs are 1 to ${RUNS_CEILING}, its storage whole bytes`);
+        || bytes < 1 || bytes > TIER_STORAGE_MAX) {
+      // The storage a tier may give at most (`TIER_STORAGE_MAX`, about 0.5 TB): the archive's
+      // fence rows the owner-bound guard holds, each a sealed segment's least bytes. A larger
+      // tier needs larger segments first (`limits-audit.md`).
+      throw new Invalid(`a tier's runs are 1 to ${RUNS_CEILING}, its storage whole bytes up ` +
+                        `to ${TIER_STORAGE_MAX}`);
     }
     return Object.freeze({ runs, storage_bytes: bytes });
   };

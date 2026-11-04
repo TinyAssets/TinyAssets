@@ -19,9 +19,8 @@
  *   a server-side tool the provider bills beyond tokens. A call enabling one, which pi-ai's
  *   price does not cover, is refused `egress_unmetered_tool`.
  * - `model`: the top-level body key the call names its model in (pi-ai's own call must name
- *   it there), or null when the path names it. The egress door reads it (`HINT_KEYS`) so
- *   the owner's object reserves the call for that model; the gateway refuses a body naming
- *   another.
+ *   it there), or null when the path names it. The gateway reads it from its one parse of
+ *   the body and asks the owner's object to reserve the call for that model (`reserve`).
  * - `tier`: a top-level option that multiplies the price and that pi-ai prices from the
  *   answer (so the settle is right): the call is reserved at its value's multiplier, the
  *   highest pi-ai can apply for it, and a value not listed is refused. Absent, the provider
@@ -48,6 +47,17 @@
  *   page does not say is free is never here, so it is refused `unmetered`. Gemini's
  *   `countTokens` is not here: its page (ai.google.dev) could not be read when this list
  *   was made, so no page says it is free.
+ *
+ * Every key the rules read is read under its one spelling, so a body that spells one another
+ * way is refused `egress_aliased_key` (`aliased`): ProtoJSON parsers take
+ * `generation_config.max_output_tokens` as `generationConfig.maxOutputTokens` ("Parsers
+ * accept both the lowerCamelCase name ... and the original proto field name"), and Go's
+ * `encoding/json` v1 matches a key case-blind, so an unread spelling the gateway forwards
+ * could set a cap it never clamped. Go folds Unicode case as well (U+017F, `ſ`, is `s`), and
+ * every provider's schema is ASCII, so a key past ASCII at a level the rules read is refused
+ * too; so is a body's `model` where the path names the model. Derived, not invented: the
+ * gateway sends its own parse, so an alias is the one way a body could say what the rules did
+ * not read.
  */
 
 /** A call the provider does not bill, with the page that says so (`free`). */
@@ -100,9 +110,6 @@ export interface ApiRules {
   /** Calls the provider does not bill, each on its cited page: forwarded unmetered. */
   readonly free: readonly FreeCall[];
 }
-
-/** The top-level body keys the egress door reads for the owner's object: model and tier. */
-export const HINT_KEYS: readonly string[] = Object.freeze(["model", "service_tier"]);
 
 const COMPLETIONS: ApiRules = Object.freeze({
   outputs: Object.freeze([Object.freeze(["max_tokens"]), Object.freeze(["max_completion_tokens"])]),
@@ -340,6 +347,62 @@ export function unpricedOption(rules: ApiRules, body: unknown): boolean {
     const values = Array.isArray(value) ? value : [value];
     return values.some((item) => typeof item !== "string" || !allowed.includes(item));
   });
+}
+
+/** A key with any character past ASCII. */
+const NOT_ASCII = /[^\x00-\x7f]/;
+
+/** A key as a spelling-blind parser matches it: ASCII case and snake/camel folded together. */
+function folded(key: string): string {
+  return key.replace(/_/g, "").toLowerCase();
+}
+
+/** Every body path the rules read, the call's own (`model`, `tier`) among them. */
+function readPaths(rules: ApiRules): (readonly string[])[] {
+  return [...rules.outputs, ...rules.counts, ...(rules.stream === null ? [] : [rules.stream]),
+          ...rules.usage.map(([path]) => path), rules.tools.list, ...rules.paid,
+          ...rules.fallbacks, ...(rules.model === null ? [] : [[rules.model]]),
+          ...(rules.tier === null ? [] : [[rules.tier.key]]),
+          ...rules.unpriced.map(({ path }) => path)];
+}
+
+/**
+ * Whether the body spells a key the rules read another way (see the header): at each level a
+ * read path passes through, and in each tool entry, a key that is not a read key but folds
+ * to one (`folded`), or any key that is not ASCII (every provider's schema is ASCII, and a
+ * parser that folds Unicode case reads `max_tokenſ`, U+017F, as `max_tokens`); and, for an
+ * API whose path names the model, a body key that names one, in any spelling (a transcoder
+ * that binds the path's field may read the body's).
+ */
+export function aliased(rules: ApiRules, body: unknown): boolean {
+  if (rules.model === null && typeof body === "object" && body !== null && !Array.isArray(body)
+      && Object.keys(body).some((key) => NOT_ASCII.test(key) || folded(key) === "model")) {
+    return true;
+  }
+  const levels = new Map<string, { at: readonly string[]; names: Set<string> }>();
+  for (const path of readPaths(rules)) {
+    for (let depth = 0; depth < path.length; depth++) {
+      const at = path.slice(0, depth);
+      const level = levels.get(at.join("\0")) ?? { at, names: new Set<string>() };
+      level.names.add(path[depth]!);
+      levels.set(at.join("\0"), level);
+    }
+  }
+  const spelledOtherwise = (value: unknown, names: ReadonlySet<string>) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return false;
+    }
+    const read = new Set([...names].map(folded));
+    return Object.keys(value).some((key) => NOT_ASCII.test(key)
+      || (!names.has(key) && read.has(folded(key))));
+  };
+  if ([...levels.values()].some(({ at, names }) => spelledOtherwise(valueAt(body, at), names))) {
+    return true;
+  }
+  const kind = rules.tools.kind;
+  const tools = valueAt(body, rules.tools.list);
+  return kind !== undefined && Array.isArray(tools)
+    && tools.some((tool) => spelledOtherwise(tool, new Set([kind.field])));
 }
 
 /**

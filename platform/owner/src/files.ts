@@ -78,6 +78,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 
+import { letGo } from "./edit";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
 import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
@@ -645,6 +646,11 @@ export class Files {
   readonly #full: Full;
   /** The chunk bytes the change in hand moved to `uploading` itself (`begin`), for `#bounds`. */
   #moved = 0;
+  /**
+   * Whether the change in hand may pass the storage figure: an archive move's placement
+   * (`begin`'s `pastFigure`), which frees at least the bytes it places in its second unit.
+   */
+  #pastFigure = false;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, full: Full, reclaim: Reclaim = () => false,
@@ -738,6 +744,24 @@ export class Files {
     }
   }
 
+  /** The owner's stored bytes and the storage figure (null when the tier is unread). A read. */
+  storedNow(): { stored: number; figure: number | null } {
+    return { stored: this.#space().stored, figure: this.#limits().max_bytes };
+  }
+
+  /**
+   * The one wall's refusal for a change that needs `needed` bytes, with what is stored and
+   * held as they stand (`storage_full`): what an archive that cannot move answers. A read.
+   */
+  fullMessage(needed: number): string {
+    const space = this.#space();
+    const held = this.#sql.exec<{ bytes: number }>(
+      "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = 'uploading'")
+      .one().bytes;
+    const limit = this.#limits().max_bytes ?? space.stored;
+    return this.#full(Math.max(0, space.stored - held), needed, held, limit);
+  }
+
   /** One share row's counters (`file_shares`, kept by the schema's triggers), or zeros. */
   #share(who: string): Counters {
     return this.#sql.exec<Counters>(
@@ -797,6 +821,9 @@ export class Files {
         if (bound === null) {
           throw new Refused(TIER_UNREAD);  // the tier's storage is not known: no guess
         }
+        if (setting === "max_bytes" && this.#pastFigure) {
+          continue;  // an archive move's placement: its second unit frees what it places
+        }
         if (after[counter] > shareOf(bound, scope.percent)) {
           // The owner's whole storage is the one wall a user meets: `storage_full`, or
           // `uploads_open` when open uploads alone leave no room. A client's share of it, and
@@ -837,7 +864,7 @@ export class Files {
       // Retention kept in R2 makes room first (ADR-035): past the byte quota, the scope's
       // oldest placed history and acked mail go before the change is held to it.
       const bytes = limits.max_bytes;
-      while (bytes !== null && scope.now().stored > Math.max(
+      while (bytes !== null && !this.#pastFigure && scope.now().stored > Math.max(
                shareOf(bytes, scope.percent), scope.before.stored)
              && this.#reclaim(scope.filer)) {
         // one entry or message a step, until the scope fits or nothing is left
@@ -1394,6 +1421,48 @@ export class Files {
   }
 
   /**
+   * Write a file of `size` bytes whose chunks are `hashes` (cut at 4 MiB), made one at a time
+   * by `make` (a chunk-wise edit, `edit.ts`): only the chunks the files plane lacks are made
+   * and sent, each checked against its hash; the chunks `readable` names were read by the
+   * caller (its old file's), so they are kept, never sent again. Each chunk is made and put
+   * in a step of its own (`hold`, the caller's making units, ADR-037), its bytes gone as the
+   * step ends; the begin and the commit hold none.
+   */
+  async writeChunks(path: unknown, size: number, hashes: readonly string[],
+                    make: (index: number) => Promise<Uint8Array>,
+                    options: { expected: unknown; mode?: unknown; writer: string;
+                               readable: readonly string[]; authorize?: () => void;
+                               hold?: <T>(work: () => Promise<T>) => Promise<T> }):
+      Promise<Entry> {
+    const at = storedPath(path);
+    const expected = expectedEtag(options.expected);
+    const mode = modeOf(options.mode);
+    const authorize = options.authorize ?? (() => undefined);
+    const { intent_id, missing } = await this.#write(() => {
+      authorize();
+      return this.begin(size, hashes, options.writer, options.readable);
+    });
+    try {
+      const hold = options.hold ?? ((work) => work());
+      for (const sha256 of new Set(missing)) {
+        await hold(async () => {
+          const bytes = await make(hashes.indexOf(sha256));
+          await this.#put([{ sha256, bytes }], intent_id);
+          letGo(bytes);  // sent: its step ends holding nothing of it
+        });
+      }
+      return await this.#write(() => {
+        authorize();
+        return this.commit(intent_id, at, { expected, mode, writer: options.writer,
+                                            parents: true, op: "write" });
+      });
+    } catch (error) {
+      await this.#write(() => this.abort(intent_id));
+      throw error;
+    }
+  }
+
+  /**
    * Put chunks through `FILES`, then, in a unit once it accepted them, record them stored
    * and sent for `intentId`: its writer has shown it holds their bytes.
    */
@@ -1520,7 +1589,7 @@ export class Files {
    * reserve leaves. Every bound is checked here, before any byte is sent.
    */
   begin(size: unknown, chunks: unknown, writer: string, readable: readonly string[] = [],
-        placing = false, lease: string | null = null):
+        placing = false, lease: string | null = null, pastFigure = false):
       { intent_id: string; missing: string[]; expires_at: number } {
     refuseErasing(this.#storage);
     // A placed body (ADR-035) is no file: any size past its threshold, its own short life.
@@ -1544,6 +1613,9 @@ export class Files {
       wanted.set(sha256, plan[index]!);
     });
     const intentId = randomBytes(16).toString("hex");
+    const outerPast = this.#pastFigure;
+    this.#pastFigure = pastFigure;
+    try {
     return this.#change(writer, (now) => {
       const sql = this.#sql;
       const space = this.#space();
@@ -1586,6 +1658,9 @@ export class Files {
                (chunks as string[]).join(""), expiresAt, writer, missing.join(""), lease);
       return { intent_id: intentId, missing, expires_at: expiresAt };
     });
+    } finally {
+      this.#pastFigure = outerPast;
+    }
   }
 
   /**
@@ -2448,9 +2523,11 @@ export class Files {
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.
     const due = await this.#write(() => this.#storage.transactionSync(() => {
+      // Oldest first, a tie by hash: the order `file_chunks_due` holds (its key, then the
+      // table's), so the same chunks are taken whatever the plan.
       const rows = sql.exec<{ sha256: string; size: number; state: string }>(
         "SELECT sha256, size, state FROM file_chunks WHERE gc_after IS NOT NULL AND " +
-          "gc_after <= ? ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray();
+          "gc_after <= ? ORDER BY gc_after, sha256 LIMIT ?", now, DELETE_BATCH).toArray();
       const found = rows.map((row) => row.sha256);
       // Garbage past the owner's figure, oldest first, as far as covers it: due now; none the
       // newest manifest names.
@@ -2460,7 +2537,7 @@ export class Files {
       if (over > 0 && found.length < DELETE_BATCH) {
         for (const row of sql.exec<{ sha256: string; size: number }>(
                "SELECT sha256, size FROM file_chunks WHERE state = 'garbage' AND gc_after > ? " +
-                 "AND gc_after < ? ORDER BY gc_after LIMIT ?", now,
+                 "AND gc_after < ? ORDER BY gc_after, sha256 LIMIT ?", now,
                Number.isFinite(before) ? before : Number.MAX_VALUE,
                DELETE_BATCH - found.length).toArray()) {
           if (over <= 0) {

@@ -1,8 +1,9 @@
 /**
  * Sandbox egress at the owner's object (gateway research §5.4 step 4; tasks 4 G4): each
- * model call the sandbox's clients send to the egress door is admitted and reserved here,
- * at open, and settled here once its bytes stopped flowing. The door (the binder) streams
- * the bytes through the gateway's metered `forward` in between. The object does no work
+ * model call the sandbox's clients send to the egress door is admitted here at open,
+ * reserved here once the gateway parsed its body (egress shape research, A′), and settled
+ * here once its bytes stopped flowing. The door (the binder) streams the bytes through the
+ * gateway's metered `forward` in between, and the gateway asks for the reserve through it. The object does no work
  * meanwhile, but it stays resident while it holds a stream's end signal (an open stream it
  * returned), so it is billed duration for the stream's length.
  *
@@ -30,14 +31,23 @@
  * - at most `openPerRun` open at once for each of the tier's simultaneous runs
  *   (`egress_rate`; the tier's numbers as kept, `tier.ts`): each open call is a row the
  *   owner-bound guard costs;
- * - and a model call's charge (`#reserve`), by `usage.ts`'s rules but on counters of its
- *   own: its run's requests, tokens and cost (on its `runs` row; the model policy's per-run
- *   limits are its caps), and the owner's and the source's day and month (shared with the
- *   model reservations) (`egress_spend_refused`, the binding cap its `rule`). Its input is held
- *   at the largest context window, so the charge bounds the call's cost.
- *   Then one open row, the blob at its version, the output cap the charge leaves (the
- *   gateway clamps the request's own to it) and the stream's end signal. A refusal is kept
- *   as a receipt row, the newest `refusalsKept` of them.
+ * - and a model call's API has the rules the gateway meters it by (`egress_unmetered`).
+ *   Then one open row, uncharged, the blob at its version and the stream's end signal. A
+ *   refusal is kept as a receipt row, the newest `refusalsKept` of them.
+ *
+ * **Reserve** (`reserve`, in the door's unit, once the gateway parsed the admitted model
+ * call's body; its model and tier are what that one parse read, since the model may be a
+ * body's last key): the model one the connection lists (and, for an API whose path names
+ * it, the path's) (`egress_unknown_model`), the tier one its rules price
+ * (`egress_unpriced_option`), and the call's charge (`#reserve`), by `usage.ts`'s rules but
+ * on counters of its own: its run's requests, tokens and cost (on its `runs` row; the model
+ * policy's per-run limits are its caps), and the owner's and the source's day and month
+ * (shared with the model reservations) (`egress_spend_refused`, the binding cap its
+ * `rule`). Its input is held at the largest context window, so the charge bounds the call's
+ * cost. Then the open row charged and the output cap the charge leaves (the gateway clamps
+ * the request's own to it); or the row a refusal receipt and its stream ended. Until it is
+ * reserved an admitted call is open as any other (it counts to the rate, is beaten, and
+ * settled lost when its beats stop), charged nothing.
  *
  * **Ending** (`end`): a policy write, a suspension, the owner's erasure, the connection's
  * revoke and the lease's close or replacement each end the in-flight streams they cover,
@@ -144,12 +154,34 @@ export interface EgressRequest {
   readonly path: string;
   /** The request body's declared length, or null. */
   readonly bytes_hint: number | null;
-  /**
-   * What the egress door read of the body for the reservation (`HINT_KEYS`): the model the
-   * body names (its top-level `model`), and its tier option's value; null when absent.
-   */
-  readonly model: string | null;
+}
+
+/**
+ * An admitted model call's reserve, as the gateway's one parse of its body read it: the
+ * model the body (or the path) names, and its tier option's value, or null when absent.
+ */
+export interface ReserveRequest {
+  readonly reservation: string;
+  readonly model: string;
   readonly tier: string | null;
+}
+
+/**
+ * What a model call is held to: the output cap its charge leaves, which the gateway clamps
+ * the call to; the body length it was admitted by, which the gateway refuses past; and the
+ * model and tier it was reserved for.
+ */
+export interface EgressMetering {
+  readonly max_output_tokens: number;
+  readonly input_bytes: number;
+  readonly model: string;
+  readonly tier: string | null;
+}
+
+/** A reserved model call: its metering. */
+export interface EgressReserved {
+  readonly ok: true;
+  readonly metering: EgressMetering;
 }
 
 /** An admitted call: what the door forwards with, and the object's end signal. */
@@ -161,12 +193,10 @@ export interface EgressOpened {
   readonly version: number;
   readonly generation: number;
   /**
-   * The call's metering, for a model call: the output cap its charge leaves, which the
-   * gateway clamps the call to, and the body's length it was reserved for, which the
-   * gateway refuses past. Null for a free call (a read), which the gateway sends unmetered.
+   * Whether it is a model call, its charge then reserved once the gateway parsed its body
+   * (`reserve`); false for a free call (a read), which the gateway sends unmetered.
    */
-  readonly metering: { readonly max_output_tokens: number; readonly input_bytes: number;
-                        readonly model: string; readonly tier: string | null } | null;
+  readonly metered: boolean;
   /** Closed (or errored) when the object ends the stream; the door watches it. */
   readonly ended: ReadableStream<Uint8Array>;
 }
@@ -296,7 +326,7 @@ const CONNECTION = /^c[0-9a-f]{24}$/;
 const RUN = /^run_[0-9a-f]{32}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
-/** A model id or a tier value the door read: visible ASCII. */
+/** A model id or a tier value the gateway read: visible ASCII. */
 const HINT = /^[\x21-\x7e]{1,256}$/;
 /** A served model's id, as a receipt keeps it: visible ASCII. */
 const SERVED = /^[\x21-\x7e]{1,256}$/;
@@ -314,7 +344,7 @@ interface Charged {
 }
 
 type Row = {
-  id: string; lease_id: string | null; epoch: number | null; token: string;
+  id: string; lease_id: string | null; epoch: number | null; run: string; token: string;
   source: string | null; charge: Charge | null; rule: string | null;
   max_output_tokens: number | null; est_tokens: number | null; est_cost: number | null;
   tokens: number | null; cost: number | null; served: string | null;
@@ -332,21 +362,32 @@ function plain(value: unknown, keys: string): value is Record<string, unknown> {
 
 /** The request's fields, exactly, or `Invalid`. */
 export function egressRequest(value: unknown): EgressRequest {
-  if (!plain(value, "bytes_hint,connection,method,model,path,run,tier")) {
+  if (!plain(value, "bytes_hint,connection,method,path,run")) {
     throw new Invalid("invalid egress request");
   }
-  const { run, connection, method, path, bytes_hint: hint, model, tier } = value;
-  const named = (text: unknown) => text === null || (typeof text === "string" && HINT.test(text));
+  const { run, connection, method, path, bytes_hint: hint } = value;
   if (typeof run !== "string" || !RUN.test(run)
       || typeof connection !== "string" || !CONNECTION.test(connection)
       || typeof method !== "string" || !METHODS.includes(method)
       || typeof path !== "string" || !PATH.test(path) || path.length > EGRESS_PATH_MAX
-      || (hint !== null && (typeof hint !== "number" || !Number.isSafeInteger(hint) || hint < 0))
-      || !named(model) || !named(tier)) {
+      || (hint !== null && (typeof hint !== "number" || !Number.isSafeInteger(hint) || hint < 0))) {
     throw new Invalid("invalid egress request");
   }
-  return { run, connection, method, path, bytes_hint: hint, model: model as string | null,
-           tier: tier as string | null };
+  return { run, connection, method, path, bytes_hint: hint };
+}
+
+/** A reserve's fields, exactly, or `Invalid`. */
+export function reserveRequest(value: unknown): ReserveRequest {
+  if (!plain(value, "model,reservation,tier")) {
+    throw new Invalid("invalid egress reserve");
+  }
+  const { reservation, model, tier } = value;
+  if (typeof reservation !== "string" || !HEX32.test(reservation)
+      || typeof model !== "string" || !HINT.test(model)
+      || (tier !== null && (typeof tier !== "string" || !HINT.test(tier)))) {
+    throw new Invalid("invalid egress reserve");
+  }
+  return { reservation, model, tier: tier as string | null };
 }
 
 /** The binding's sandbox fields, exactly, or `Invalid`. */
@@ -422,7 +463,9 @@ export class Egress {
   readonly #limits: EgressLimits;
   /** Each open reservation's end signal, by reservation, with what it covers. */
   readonly #live = new Map<string, LiveStream & {
-    readonly end: WritableStreamDefaultWriter<Uint8Array> }>();
+    readonly end: WritableStreamDefaultWriter<Uint8Array>;
+    /** An admitted model call whose charge waits for the gateway's parse (`reserve`). */
+    reserving: boolean }>();
 
   constructor(storage: OwnerStorage, deps: EgressDeps, limits: EgressLimits = EGRESS_LIMITS) {
     this.#storage = storage;
@@ -451,11 +494,9 @@ export class Egress {
     this.#recover(now);
     const lease = this.lease(sandbox, now);
     const generation = this.#deps.generation();
-    const refuse = (code: EgressCode, rule?: string): EgressRefusal => {
-      return { ok: false, code,
-               receipt: this.#record(sandbox, request, lease, generation, now,
-                                     { code, ...(rule === undefined ? {} : { rule }) }) };
-    };
+    const refuse = (code: EgressCode): EgressRefusal =>
+      ({ ok: false, code, receipt: this.#record(sandbox, request, lease, generation, now,
+                                                { code }) });
     if (lease === null || sandbox.kind !== "egress") {
       return refuse("egress_lease_closed");
     }
@@ -502,47 +543,78 @@ export class Egress {
           >= this.#limits.openPerRun * runs) {
       return refuse("egress_rate");
     }
-    let charge: Charged | null = null;
-    let named: { readonly model: string; readonly tier: string | null } | null = null;
-    if (!free) {
-      // The model the call names, where its API's rules read it (the body's top-level key
-      // the door read, or the path), and its tier: the call is reserved for them alone.
-      const rules = apiRules(connection.scope.api);
-      const meter = connection.scope.meter!;
-      if (rules === null || (rules.model !== null && rules.model !== "model")) {
-        return refuse("egress_unmetered");
-      }
-      const id = rules.model === null
-        ? meteredModel(meter, request.method, request.path.split("?")[0]!, {})
-        : request.model;
-      const model = connection.models.find((entry) => entry.id === id);
-      if (model === undefined) {
-        return refuse("egress_unknown_model");
-      }
-      const multiplier = tierMultiplier(rules, request.tier);
-      if (multiplier === null) {
-        return refuse("egress_unpriced_option");
-      }
-      this.#deps.pruned(now);
-      const reserved = this.#reserve(request.run, connection.source, model, multiplier, now);
-      if (!reserved.ok) {
-        return refuse("egress_spend_refused", reserved.rule);
-      }
-      charge = reserved;
-      named = { model: model.id, tier: rules.tier === null ? null : request.tier };
+    // A model call's API must have rules the gateway meters it by; its charge waits for the
+    // gateway's parse of its body (`reserve`).
+    if (!free && apiRules(connection.scope.api) === null) {
+      return refuse("egress_unmetered");
     }
     const reservation = this.#record(sandbox, request, lease, generation, now,
-                                     { version: credential.version,
-                                       ...(charge === null ? {} : { charge }) });
+                                     { version: credential.version });
     const { readable, writable } = new IdentityTransformStream();
     this.#live.set(reservation, { connection: request.connection, lease: lease.lease_id,
-                                  run: request.run, end: writable.getWriter() });
+                                  run: request.run, end: writable.getWriter(),
+                                  reserving: !free });
     return { ok: true, reservation, connection: request.connection, blob: credential.blob,
-             version: credential.version, generation,
-             metering: charge === null || named === null ? null
-               : { max_output_tokens: charge.max_output_tokens, input_bytes: request.bytes_hint!,
-                   model: named.model, tier: named.tier },
-             ended: readable };
+             version: credential.version, generation, metered: !free, ended: readable };
+  }
+
+  /**
+   * In the door's unit, once the gateway parsed the admitted call's body: its charge, for
+   * the model and tier that parse read (`#reserve`), set on its open row, and the metering
+   * the gateway holds the call to; or refused, the row a refusal receipt with its code and
+   * its stream ended. The model must be one the connection lists, and, where its API's
+   * path names it, the path's; the tier one its rules price. Only an admitted model call
+   * still streaming, never reserved, by the egress token that opened it, is reserved, once;
+   * anything else is `Invalid`.
+   */
+  reserve(sandbox: SandboxBinding, request: ReserveRequest, now: number):
+      EgressReserved | EgressRefusal {
+    this.#recover(now);
+    const row = this.#sql.exec<Row>("SELECT * FROM egress_reservations WHERE id = ?",
+                                    request.reservation).toArray()[0];
+    const live = this.#live.get(request.reservation);
+    if (row === undefined || row.state !== "open" || row.charge !== null
+        || sandbox.kind !== "egress" || row.token !== sandbox.token
+        || live === undefined || !live.reserving) {
+      throw new Invalid("invalid egress reserve: no admitted call awaits its charge");
+    }
+    live.reserving = false;
+    const refuse = (code: EgressCode, rule?: string): EgressRefusal => {
+      this.#sql.exec("UPDATE egress_reservations SET state = 'refused', code = ?, rule = ?, " +
+                       "settled_at = ? WHERE id = ?", code, rule ?? null, now, row.id);
+      this.#release(row.id);
+      this.#prune();
+      return { ok: false, code, receipt: row.id };
+    };
+    const connection = this.#deps.connection(row.connection_id);
+    const rules = connection === null ? null : apiRules(connection.scope.api);
+    if (connection === null || rules === null || connection.scope.meter === null) {
+      return refuse("egress_connection_refused");
+    }
+    // The model the call names, where its API's rules read it (the body, as the gateway's
+    // parse read it, or the path), and its tier: the call is reserved for them alone.
+    const path = rules.model === null
+      ? meteredModel(connection.scope.meter, row.method, row.path.split("?")[0]!, {}) : null;
+    const model = connection.models.find((entry) => entry.id === request.model);
+    if (model === undefined || (rules.model === null && path !== request.model)) {
+      return refuse("egress_unknown_model");
+    }
+    const tier = rules.tier === null ? null : request.tier;
+    const multiplier = tierMultiplier(rules, tier);
+    if (multiplier === null) {
+      return refuse("egress_unpriced_option");
+    }
+    this.#deps.pruned(now);
+    const charge = this.#reserve(row.run, connection.source, model, multiplier, now);
+    if (!charge.ok) {
+      return refuse("egress_spend_refused", charge.rule);
+    }
+    this.#sql.exec("UPDATE egress_reservations SET charge = 'held', source = ?, " +
+                     "max_output_tokens = ?, est_tokens = ?, est_cost = ?, day = ?, month = ? " +
+                     "WHERE id = ? AND charge IS NULL", charge.source, charge.max_output_tokens,
+                   charge.est_tokens, charge.est_cost, charge.day, charge.month, row.id);
+    return { ok: true, metering: { max_output_tokens: charge.max_output_tokens,
+                                   input_bytes: row.bytes_hint!, model: model.id, tier } };
   }
 
   /**
@@ -682,19 +754,14 @@ export class Egress {
 
   #record(sandbox: SandboxBinding, request: EgressRequest, lease: SandboxLease | null,
           generation: number, now: number,
-          fields: { code?: EgressCode; rule?: string; version?: number; charge?: Charged }):
-      string {
+          fields: { code?: EgressCode; version?: number }): string {
     const id = randomBytes(16).toString("hex");
-    const charge = fields.charge;
+    // Uncharged: a model call's charge is set once the gateway's parse reserved it.
     this.#sql.exec(
-      "INSERT INTO egress_reservations (id, lease_id, epoch, run, token, source, charge, rule, " +
-        "max_output_tokens, est_tokens, est_cost, day, month, connection_id, version, method, " +
-        "path, generation, bytes_hint, opened_at, state, code, settled_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO egress_reservations (id, lease_id, epoch, run, token, connection_id, " +
+        "version, method, path, generation, bytes_hint, opened_at, state, code, settled_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       id, lease?.lease_id ?? null, lease?.epoch ?? null, request.run, sandbox.token,
-      charge?.source ?? null, charge === undefined ? null : "held", fields.rule ?? null,
-      charge?.max_output_tokens ?? null, charge?.est_tokens ?? null, charge?.est_cost ?? null,
-      charge?.day ?? null, charge?.month ?? null,
       request.connection, fields.version ?? null, request.method, request.path, generation,
       request.bytes_hint, now, fields.code === undefined ? "open" : "refused",
       fields.code ?? null, fields.code === undefined ? null : now);

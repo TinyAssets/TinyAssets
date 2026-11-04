@@ -59,9 +59,19 @@ async function control(owners: readonly string[], outside: "on" | "off" = "on"):
   }));
 }
 
+/**
+ * How long `rings` waits for its rings before it fails with the wake states: the slowest run
+ * measured of the longest test that waits on it (a revoke landing mid-pass, 1.3 s with 16
+ * busy loops on 4 cores; 0.11 to 0.16 s alone) with more than twice that again for margin,
+ * so it fails with its diagnostic well inside the test's own 5 s timeout, never as a bare
+ * timeout.
+ */
+const RINGS_BOUND_MS = 3_000;
+
 /** Run the object's alarm until `n` rings were asked and no wake is due. */
 async function rings(r: Rung, n: number): Promise<Rang[]> {
-  for (let tries = 0; tries < 300; tries++) {
+  const until = Date.now() + RINGS_BOUND_MS;
+  while (Date.now() < until) {
     await runDurableObjectAlarm(r.stub);
     const asked = await r.rang();
     const open = await r.sql("SELECT 1 FROM ledger_wakes WHERE state IN ('pending', 'sending') " +
@@ -71,8 +81,9 @@ async function rings(r: Rung, n: number): Promise<Rang[]> {
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("the wakes were not rung: " + JSON.stringify([
-    (await r.rang()).length, await r.sql("SELECT state, due, receipt_json FROM ledger_wakes"),
+  throw new Error(`the wakes were not rung within ${RINGS_BOUND_MS} ms: ` + JSON.stringify([
+    (await r.rang()).length,
+    await r.sql("SELECT agent_id, state, due, marked, receipt_json FROM ledger_wakes"),
     await r.wakesAt(), clock()]));
 }
 

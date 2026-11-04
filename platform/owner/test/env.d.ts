@@ -11,6 +11,10 @@ declare namespace Cloudflare {
     GATED: DurableObjectNamespace<import("./worker").GatedOwnerDO>;
     BARE: DurableObjectNamespace<import("./worker").UnboundOwnerDO>;
     BOUNDED: DurableObjectNamespace<import("./worker").BoundedOwnerDO>;
+    ARCHIVING: DurableObjectNamespace<import("./worker").ArchivingOwnerDO>;
+    BIGARCHIVING: DurableObjectNamespace<import("./worker").BigArchivingOwnerDO>;
+    DIVERGING: DurableObjectNamespace<import("./worker").DivergingOwnerDO>;
+    PURGING: DurableObjectNamespace<import("./worker").PurgingOwnerDO>;
     SWITCHED: DurableObjectNamespace<import("./worker").SwitchedOwnerDO>;
     CACHED: DurableObjectNamespace<import("./worker").CachedOwnerDO>;
     SANDBOX: import("../src/sandbox").SandboxService;
@@ -26,6 +30,8 @@ declare namespace Cloudflare {
     TEST_KEYRING: string;
     /** The files Worker's ring, test-only: a test wraps a data key under its older kid. */
     FILES_TEST_RING: string;
+    /** The files Worker's bucket, test-only: a test tampers a chunk's bytes. */
+    BLOBS: R2Bucket;
     ROUTING_MAC_KEY: string;
   }
 }

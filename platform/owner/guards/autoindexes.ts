@@ -7,6 +7,7 @@
  */
 export const AUTOINDEXES: readonly string[] = Object.freeze([
   "sqlite_autoindex_agent_cards_1", "sqlite_autoindex_agent_cards_2",
+  "sqlite_autoindex_archive_moves_1", "sqlite_autoindex_archive_purges_1",
   "sqlite_autoindex_collection_history_1",
   "sqlite_autoindex_collection_rows_1", "sqlite_autoindex_collection_rows_2",
   "sqlite_autoindex_collection_seqs_1",

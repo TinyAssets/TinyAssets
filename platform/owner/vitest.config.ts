@@ -208,6 +208,10 @@ export default defineConfig({
                 GATED: { className: "GatedOwnerDO", useSQLite: true },
                 BARE: { className: "UnboundOwnerDO", useSQLite: true },
                 BOUNDED: { className: "BoundedOwnerDO", useSQLite: true },
+                ARCHIVING: { className: "ArchivingOwnerDO", useSQLite: true },
+                BIGARCHIVING: { className: "BigArchivingOwnerDO", useSQLite: true },
+                DIVERGING: { className: "DivergingOwnerDO", useSQLite: true },
+                PURGING: { className: "PurgingOwnerDO", useSQLite: true },
                 RUNG: { className: "RungOwnerDO", useSQLite: true },
                 SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
                 CACHED: { className: "CachedOwnerDO", useSQLite: true },
@@ -215,6 +219,9 @@ export default defineConfig({
               },
               bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
                           ROUTING_MAC_KEY: ROUTING_KEY },
+              // The files Worker's bucket, test-only: a test changes a chunk's bytes under
+              // its key, as storage failing would, and sees a verified read refuse them.
+              r2Buckets: ["BLOBS"],
               serviceBindings: { CONNECT: { name: "tinyassets-gateway",
                                             entrypoint: "ConnectGateway" } },
               outboundService: "fake-upstream",

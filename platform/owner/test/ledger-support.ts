@@ -216,7 +216,7 @@ export async function wakeReceipts(r: Rig): Promise<string[]> {
 /** Every counter the ledger's bounds read, and the same numbers counted from the rows. */
 export async function counters(r: Rig): Promise<[Row, Row]> {
   const [usage] = await r.sql(
-    "SELECT agents, enabled_agents, messages, settled_wakes, " +
+    "SELECT agents, enabled_agents, messages, settled_wakes, unacked, acked_bytes, " +
       "(SELECT json_group_object(reader, unacked) FROM " +
       "(SELECT * FROM ledger_readers WHERE unacked > 0 ORDER BY reader)) AS mailboxes, " +
       "(SELECT json_group_object(agent_id, unacked_to_owner) " +
@@ -230,6 +230,9 @@ export async function counters(r: Rig): Promise<[Row, Row]> {
     "SELECT (SELECT COUNT(*) FROM outside_agents) AS agents, " +
       "(SELECT COUNT(*) FROM outside_agents WHERE disabled_reason IS NULL) AS enabled_agents, " +
       "(SELECT COUNT(*) FROM ledger_messages) AS messages, " +
+      "(SELECT COUNT(*) FROM ledger_messages WHERE unacked > 0) AS unacked, " +
+      "(SELECT coalesce(SUM(line_bytes), 0) FROM ledger_messages WHERE unacked = 0) " +
+      "AS acked_bytes, " +
 
       "(SELECT COUNT(*) FROM ledger_wakes WHERE settled_at IS NOT NULL) AS settled_wakes, " +
       "(SELECT json_group_object(agent_id, n) FROM (SELECT r.agent_id, " +

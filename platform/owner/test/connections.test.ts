@@ -81,8 +81,7 @@ function leaseOf(r: Gated): Promise<Binding> {
 
 /** A sandbox's free read of `connection`'s model list, as the egress door opens it. */
 function listing(connection: string) {
-  return { run: RUN, connection, method: "GET", path: "/v1/models", bytes_hint: null,
-           model: null, tier: null };
+  return { run: RUN, connection, method: "GET", path: "/v1/models", bytes_hint: null };
 }
 
 /**

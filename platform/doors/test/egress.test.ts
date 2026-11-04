@@ -21,7 +21,7 @@ import type { Binding } from "../../owner/src/owner-do";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import type { Bound } from "../src/binder";
 import { type DoorsEnv, EGRESS_ORIGIN } from "../src/config";
-import { EGRESS_DEADLINE_MS, hintsOf, serveEgress } from "../src/egress";
+import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../src/routing-mac";
 import worker, { type OwnerDO } from "./entry";
 import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
@@ -147,6 +147,20 @@ function egressRequest(box: Pick<Sandbox, "token" | "connection" | "model" | "ru
     },
     body,
   });
+}
+
+/**
+ * A gateway that reserves the call for the box's model, as the real one does once its parse
+ * read it, then gives `answer`.
+ */
+function reservingGateway(box: Pick<Sandbox, "model">,
+                          answer: () => { response: Response;
+                                          outcome: ReadableStream<Uint8Array> }): DoorsEnv {
+  return { ...doorsEnv, EGRESS: {
+    forward: async (_owner, _connection, _version, _blob, _request, reserve) => {
+      await reserve!({ model: box.model, tier: null });
+      return answer();
+    } } };
 }
 
 /** What the fake providers received at Groq's chat completions. */
@@ -356,57 +370,125 @@ describe("the egress door", () => {
     expect(await spends(other.owner)).toMatchObject([{ state: "unknown", cost: null }]);
   });
 
-  it("reads the model the body names for the object's reservation, and refuses one the " +
-     "connection lacks, or a body too large to read, before any forward", async () => {
+  it("reserves the model the gateway's parse read through the door's callback, and refuses " +
+     "one the connection lacks, or a body too large, before any forward", async () => {
     const box = await sandbox();
     let metered: unknown;
     const watching: DoorsEnv = { ...doorsEnv, EGRESS: {
-      forward: async (_owner, _connection, _version, _blob, _request, metering) => {
-        metered = metering;
+      forward: async (_owner, _connection, _version, _blob, _request, reserve) => {
+        metered = await reserve!({ model: box.model, tier: null });
         return { response: new Response("ok"),
                  outcome: new Response("{\"state\":\"unknown\"}\n").body! };
       } } };
     const response = await send(egressRequest(box), watching);
     expect(await response.text()).toBe("ok");
-    expect(metered).toMatchObject({ model: box.model, tier: null });
+    expect(metered).toMatchObject({ metering: { model: box.model, tier: null } });
     await settledOf(box.owner);
+    expect(await spends(box.owner)).toMatchObject([{ state: "unknown" }]);
     const other = await sandbox();
+    // The object's own refusal and receipt, though the gateway answered its own code.
     const unknown = await send(egressRequest(other, COMPLETIONS, {
-      body: bodyOf(other, { model: "no-such-model" }) }));
-    expect([unknown.status, await codeOf(unknown)]).toEqual([404, "egress_unknown_model"]);
+      body: bodyOf(other, { stream: false, model: "no-such-model" }) }), { ...doorsEnv,
+      EGRESS: { forward: async (_owner, _connection, _version, _blob, _request, reserve) => {
+        await reserve!({ model: "no-such-model", tier: null });
+        return { response: Response.json({ error: { code: "egress_reserve_refused" } },
+                                         { status: 403 }),
+                 outcome: new Response("{\"state\":\"failed\"}\n").body! };
+      } } });
+    const answer = await unknown.json<{ error: { code: string }; receipt: string }>();
+    expect([unknown.status, answer.error.code]).toEqual([404, "egress_unknown_model"]);
+    expect((await sqlIn(other.owner, "SELECT id, state, code FROM egress_reservations"))[0])
+      .toEqual({ id: answer.receipt, state: "refused", code: "egress_unknown_model" });
     const large = await send(egressRequest(other, COMPLETIONS, {
       headers: { "content-length": String(EGRESS_BODY_MAX + 1) } }));
     expect([large.status, await codeOf(large)]).toEqual([413, "egress_too_large"]);
     expect(await forwarded()).toEqual([]);
   });
 
-  it("passes the object the tier the body names, beside its model", async () => {
+  it("admits a call with no hint and reserves it with what the real gateway's parse read, " +
+     "wherever the body put its model", async () => {
     const box = await sandbox();
-    const asked: unknown[] = [];
+    const asked: { open: unknown[]; reserve: unknown[] } = { open: [], reserve: [] };
     const getByName = doorsEnv.OWNER.getByName.bind(doorsEnv.OWNER);
     vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation((name: string) => {
       const real = getByName(name);
       return { egressOpen: (binding: Binding, request: unknown) => {
-                 asked.push(request);
+                 asked.open.push(request);
                  return real.egressOpen(binding, request);
                },
+               egressReserve: (binding: Binding, request: unknown) => {
+                 asked.reserve.push(request);
+                 return real.egressReserve(binding, request);
+               },
+               egressBeat: (binding: Binding, request: { reservation: string }) =>
+                 real.egressBeat(binding, request),
                egressSettle: (binding: Binding, request: Record<string, unknown>) =>
                  real.egressSettle(binding, request) } as unknown as typeof real;
     });
-    const response = await send(egressRequest(box, COMPLETIONS, {
-      body: bodyOf(box, { service_tier: "flex" }) }));
+    // The model the last key, after the messages, as JSON allows anywhere in an object.
+    const body = `{"messages":[{"role":"user","content":"hi"}],"stream":true,` +
+      `"max_completion_tokens":10,"model":${JSON.stringify(box.model)}}`;
+    const response = await send(egressRequest(box, COMPLETIONS, { body }));
+    expect(response.status).toBe(200);
     await response.text();
-    expect(asked).toMatchObject([{ model: box.model, tier: "flex" }]);
+    vi.restoreAllMocks();
+    expect(asked.open).toEqual([{ run: box.run, connection: box.connection, method: "POST",
+                                  path: COMPLETIONS,
+                                  bytes_hint: new TextEncoder().encode(body).byteLength }]);
+    expect(asked.reserve).toMatchObject([{ model: box.model, tier: null }]);
+    await settledOf(box.owner);
+    expect(await spends(box.owner)).toMatchObject([{ state: "succeeded" }]);
   });
 
-  it("hands the object the body's model and tier as the body names them, or none", () => {
-    expect(hintsOf(JSON.stringify({ model: "m-1", service_tier: "priority", input: "x" })))
-      .toEqual({ model: "m-1", tier: "priority" });
-    for (const text of ["", "not json", "[1]", JSON.stringify({ model: 1, service_tier: {} }),
-                        JSON.stringify({ model: "a b", service_tier: "x".repeat(300) })]) {
-      expect(hintsOf(text)).toEqual({ model: null, tier: null });
-    }
+  it("answers an admission refusal before any of the body is read", async () => {
+    const box = await sandbox();
+    let called = false;
+    let pulled = 0;
+    const watching: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: async () => {
+        called = true;
+        return { response: new Response("ok"), outcome: new ReadableStream() };
+      } } };
+    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
+    const counted = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(new Uint8Array(1024));
+      },
+    }, { highWaterMark: 0 });
+    const response = await send(new Request(egressRequest(box), {
+      body: counted, headers: { ...Object.fromEntries(egressRequest(box).headers),
+                                "content-length": String(8 * 1024 * 1024) } }), watching);
+    expect([response.status, await codeOf(response)]).toEqual([401, "egress_lease_closed"]);
+    expect(called).toBe(false);
+    expect(pulled).toBe(0);
   });
+
+  it("streams a 16 MiB body to the gateway byte-exact, unread", async () => {
+    const box = await sandbox();
+    let received: Uint8Array | null = null;
+    let declared: string | null = null;
+    const watching: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: async (_owner, _connection, _version, _blob, request) => {
+        declared = request.headers.get("content-length");
+        received = new Uint8Array(await request.arrayBuffer());
+        return { response: new Response("ok"),
+                 outcome: new Response("{\"state\":\"unknown\"}\n").body! };
+      } } };
+    const bytes = new Uint8Array(EGRESS_BODY_MAX);
+    for (let at = 0; at < bytes.length; at += 4096) {
+      bytes[at] = (at / 4096) % 251;
+    }
+    const response = await send(new Request(egressRequest(box), {
+      body: new Blob([bytes]).stream(),
+      headers: { ...Object.fromEntries(egressRequest(box).headers),
+                 "content-length": String(bytes.length) } }), watching);
+    expect(await response.text()).toBe("ok");
+    expect(declared).toBe(String(bytes.length));
+    expect(received!.length).toBe(bytes.length);
+    expect(Buffer.compare(Buffer.from(received!), Buffer.from(bytes))).toBe(0);
+    await settledOf(box.owner);
+  }, 60_000);
 
   it("holds a call to the model policy's caps alone: a purchase threshold refuses nothing",
      async () => {
@@ -448,11 +530,10 @@ describe("the egress door", () => {
   it("keeps the gateway's own header from the sandbox, and settles despite a bad one",
      async () => {
     const box = await sandbox();
-    const resealing: DoorsEnv = { ...doorsEnv, EGRESS: {
-      forward: async () => ({
-        response: new Response("ok", { headers: { "x-ta-resealed": "{\"blob\":1}",
-                                                  "x-upstream": "fake" } }),
-        outcome: new Response("{\"state\":\"unknown\"}\n").body! }) } };
+    const resealing = reservingGateway(box, () => ({
+      response: new Response("ok", { headers: { "x-ta-resealed": "{\"blob\":1}",
+                                                "x-upstream": "fake" } }),
+      outcome: new Response("{\"state\":\"unknown\"}\n").body! }));
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const response = await send(egressRequest(box), resealing);
     expect(response.headers.get("x-ta-resealed")).toBeNull();
@@ -716,16 +797,15 @@ describe("settlement", () => {
   it("trusts the meter only for an answer that completed: a cut one keeps its whole charge",
      async () => {
     const box = await sandbox();
-    const claiming: DoorsEnv = { ...doorsEnv, EGRESS: {
-      forward: async () => ({
-        response: new Response(new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode("data: one\n\n"));
-          },
-        })),
-        // A meter that claims a cost however the stream ended.
-        outcome: new Response("{\"state\":\"succeeded\",\"tokens\":1,\"cost\":0.000001}\n")
-          .body! }) } };
+    const claiming = reservingGateway(box, () => ({
+      response: new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: one\n\n"));
+        },
+      })),
+      // A meter that claims a cost however the stream ended.
+      outcome: new Response("{\"state\":\"succeeded\",\"tokens\":1,\"cost\":0.000001}\n")
+        .body! }));
     const response = await send(egressRequest(box), claiming);
     const reader = response.body!.getReader();
     await reader.read();
@@ -791,7 +871,31 @@ describe("settlement", () => {
     expect([response.status, await codeOf(response)]).toEqual([503, "egress_ended"]);
     await until(async () => stopped, "the stop");
     await settledOf(box.owner);
-    expect(await spends(box.owner)).toMatchObject([{ state: "unknown" }]);
+    // The gateway never asked for the reserve: nothing was held, so nothing is charged.
+    expect(await spends(box.owner)).toMatchObject([{ state: "settled", est_cost: null }]);
+  });
+
+  it("never reserves a call it stopped: the gateway's late reserve is refused at the door",
+     async () => {
+    const box = await sandbox();
+    let late: unknown = null;
+    const holding: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: (_owner, _connection, _version, _blob, _request, reserve, stop) => {
+        // The gateway's parse ends after the door stopped the call, then asks to reserve it.
+        stop.getReader().read().then(async () => {
+          late = await reserve!({ model: box.model, tier: null });
+        }, () => undefined);
+        return new Promise(() => undefined);
+      } } };
+    const pending = send(egressRequest(box), holding);
+    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
+    const response = await pending;
+    expect([response.status, await codeOf(response)]).toEqual([503, "egress_ended"]);
+    await until(async () => late !== null, "the late reserve");
+    expect(late).toEqual({ refused: "egress_ended" });
+    await settledOf(box.owner);
+    expect(await spends(box.owner)).toMatchObject([{ state: "settled", est_cost: null }]);
   });
 
   it("settles a call whose client left before any answer at once (its request's signal)",
@@ -825,7 +929,7 @@ describe("settlement", () => {
     await settledOf(box.owner);
     expect(await reservations(box.owner)).toMatchObject([{ state: "settled", outcome: "failed",
                                                            status: null, bytes: 0 }]);
-    expect(await spends(box.owner)).toMatchObject([{ state: "unknown" }]);
+    expect(await spends(box.owner)).toMatchObject([{ state: "settled", est_cost: null }]);
   });
 
   it("records the door's deadline", async () => {

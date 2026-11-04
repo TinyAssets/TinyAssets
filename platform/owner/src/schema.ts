@@ -287,6 +287,10 @@ const SHARE_USAGE = (scopes: Scopes, sign: "+" | "-",
 const INLINE = (row: string, sign: "+" | "-") =>
   `UPDATE file_space SET body_bytes = body_bytes ${sign} ${row}.body_bytes; ${
     SHARE_USAGE(WRITER(row, "filer"), sign, { body_bytes: `${row}.body_bytes` })}`;
+/** A message body row's bytes past its body, counted as inline bodies are (`INLINE`). */
+const META = (row: string, sign: "+" | "-") =>
+  `UPDATE file_space SET body_bytes = body_bytes ${sign} ${row}.meta_bytes; ${
+    SHARE_USAGE(WRITER(row, "filer"), sign, { body_bytes: `${row}.meta_bytes` })}`;
 /** A row's writer's scopes, by the column naming its files scope writer. */
 const WRITER = (row: string, column = "writer"): Scopes => SCOPES(`${row}.${column}`);
 /**
@@ -473,6 +477,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // Whether a person sent it (the owner's own call): a run it starts is attended. A
       // run's mail and a client's are not.
       "attended INTEGER NOT NULL DEFAULT 0 CHECK (attended IN (0, 1)), " +
+      // The bytes its rows take as export lines, its body's included (slice STORE item 2):
+      // what it takes in an archive segment, and what the one number counts it at.
+      "line_bytes INTEGER NOT NULL CHECK (line_bytes >= body_bytes), " +
       "UNIQUE (sender_id, client_message_id))",
     // The messages no recipient holds, oldest first: what eviction takes.
     "CREATE INDEX messages_done ON ledger_messages (seq) WHERE unacked = 0",
@@ -576,12 +583,29 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "message_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, " +
       `body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= ${PLACE_BYTES}), ` +
       "created_at REAL NOT NULL, body_bytes INTEGER NOT NULL CHECK (body_bytes >= 1), " +
-      `content_id TEXT, ${FILER}, ${PLACEMENT("body")})`,
+      // Its message's lines' bytes past the body (`line_bytes` less `body_bytes`), counted in
+      // the one number with the body, in the writer's files scope (slice STORE item 2, D2).
+      `content_id TEXT, ${FILER}, meta_bytes INTEGER NOT NULL CHECK (meta_bytes >= 0), ` +
+      `${PLACEMENT("body")})`,
     // The owner-wide counters the ledger's bounds read.
     "CREATE TABLE ledger_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "agents INTEGER NOT NULL, enabled_agents INTEGER NOT NULL, messages INTEGER NOT NULL, " +
-      "settled_wakes INTEGER NOT NULL)",
-    "INSERT INTO ledger_usage VALUES (1, 0, 0, 0, 0)",
+      "settled_wakes INTEGER NOT NULL, " +
+      // Messages some recipient still holds, the acked ones' lines' bytes (what the archive
+      // lane may move), and the last seq given, which a message's id carries.
+      "unacked INTEGER NOT NULL DEFAULT 0 CHECK (unacked >= 0), " +
+      "acked_bytes INTEGER NOT NULL DEFAULT 0 CHECK (acked_bytes >= 0), " +
+      "last_seq INTEGER NOT NULL DEFAULT 0, " +
+      // Whether the archive's last move was refused for the storage figure (a post at the
+      // hot ceiling is then `storage_full`, never a busy that cannot clear).
+      "archive_blocked INTEGER NOT NULL DEFAULT 0 CHECK (archive_blocked IN (0, 1)), " +
+      // The archive lane's passes begun and not ended well, and the last one's error (null
+      // when it stopped before it could say, as an isolate killed for memory does): counted
+      // as a pass begins, so the owner is told after three however they ended (review N3).
+      "archive_fails INTEGER NOT NULL DEFAULT 0 CHECK (archive_fails >= 0), " +
+      "archive_error TEXT CHECK (archive_error IS NULL OR length(archive_error) <= 200))",
+    "INSERT INTO ledger_usage (only, agents, enabled_agents, messages, settled_wakes) " +
+      "VALUES (1, 0, 0, 0, 0)",
     "CREATE TRIGGER outside_agents_added AFTER INSERT ON outside_agents BEGIN " +
       "UPDATE ledger_usage SET agents = agents + 1, " +
       "enabled_agents = enabled_agents + (NEW.disabled_reason IS NULL); END",
@@ -593,9 +617,18 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE ledger_usage SET agents = agents - 1, " +
       "enabled_agents = enabled_agents - (OLD.disabled_reason IS NULL); END",
     "CREATE TRIGGER ledger_messages_added AFTER INSERT ON ledger_messages BEGIN " +
-      "UPDATE ledger_usage SET messages = messages + 1; END",
+      "UPDATE ledger_usage SET messages = messages + 1, unacked = unacked + (NEW.unacked > 0), " +
+      "acked_bytes = acked_bytes + CASE WHEN NEW.unacked = 0 THEN NEW.line_bytes ELSE 0 END; " +
+      "END",
     "CREATE TRIGGER ledger_messages_removed AFTER DELETE ON ledger_messages BEGIN " +
-      "UPDATE ledger_usage SET messages = messages - 1; END",
+      "UPDATE ledger_usage SET messages = messages - 1, unacked = unacked - (OLD.unacked > 0), " +
+      "acked_bytes = acked_bytes - CASE WHEN OLD.unacked = 0 THEN OLD.line_bytes ELSE 0 END; " +
+      "END",
+    "CREATE TRIGGER ledger_messages_held AFTER UPDATE OF unacked ON ledger_messages " +
+      "WHEN (OLD.unacked = 0) != (NEW.unacked = 0) BEGIN UPDATE ledger_usage SET " +
+      "unacked = unacked + CASE WHEN NEW.unacked = 0 THEN -1 ELSE 1 END, " +
+      "acked_bytes = acked_bytes + CASE WHEN NEW.unacked = 0 THEN NEW.line_bytes " +
+      "ELSE -NEW.line_bytes END; END",
     // A recipient row holds its message until it is acked or released: the message's
     // `unacked` and the reader's mailbox counters move with it. Its bytes are read from
     // its message, so a recipient row goes before its message (a NULL fails loudly).
@@ -1231,8 +1264,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // A connection keeps where its credential may be forwarded (`egress`: its sealed base
     // URL, endpoints and pi-ai's metered call, no secret), from its setup check. Each sandbox
     // call the object admits is an open row until the egress door settles it; a refused one
-    // is kept as its receipt. A model call's row carries its own charge (`charge`, held to
-    // settled once, as a model reservation's states), which the triggers alone count: into
+    // is kept as its receipt. A model call's row is opened uncharged and carries its own
+    // charge once the gateway's parse reserved it (`charge`, null to held once, on an open row,
+    // then held to settled once, as a model reservation's states), which the triggers alone
+    // count: into
     // `model_spend`, its source's day and month, the counters the model reservations move
     // too, and (migration 12) into its run's own requests, tokens and cost on its `runs` row.
     // Each row names the run its path named. The newest `EGRESS_LIMITS.receiptsKept`
@@ -1281,16 +1316,23 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK ((charge IN ('succeeded', 'failed')) = (tokens IS NOT NULL)))",
     "CREATE INDEX egress_reservations_by_state ON egress_reservations (state, opened_at)",
     "CREATE INDEX egress_reservations_by_time ON egress_reservations (opened_at)",
-    "CREATE TRIGGER egress_reservations_charged AFTER INSERT ON egress_reservations " +
-      `WHEN NEW.charge IS NOT NULL BEGIN ${SPEND("NEW", CHARGED("NEW"))} END`,
+    "CREATE TRIGGER egress_reservations_charged AFTER UPDATE OF charge ON egress_reservations " +
+      `WHEN OLD.charge IS NULL AND NEW.charge IS NOT NULL BEGIN ${
+        SPEND("NEW", CHARGED("NEW"))} END`,
     "CREATE TRIGGER egress_reservations_recharged AFTER UPDATE OF charge, tokens, cost " +
       "ON egress_reservations WHEN NEW.charge IS NOT NULL AND OLD.charge IS NOT NULL " +
       `AND ${CHARGED("NEW")} != ${CHARGED("OLD")} BEGIN ${
         SPEND("NEW", `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} END`,
     "CREATE TRIGGER egress_reservations_kept BEFORE UPDATE OF id, lease_id, epoch, run, token, " +
-      "source, max_output_tokens, est_tokens, est_cost, day, month, connection_id " +
-      "ON egress_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes what " +
-      "it reserved'); END",
+      "connection_id ON egress_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never " +
+      "changes what it reserved'); END",
+    "CREATE TRIGGER egress_reservations_charge_kept BEFORE UPDATE OF source, max_output_tokens, " +
+      "est_tokens, est_cost, day, month ON egress_reservations WHEN OLD.charge IS NOT NULL " +
+      "BEGIN SELECT RAISE(ABORT, 'a reservation never changes what it reserved'); END",
+    "CREATE TRIGGER egress_reservations_reserved_once BEFORE UPDATE OF charge " +
+      "ON egress_reservations WHEN OLD.charge IS NULL AND NEW.charge IS NOT NULL " +
+      "AND (NEW.charge != 'held' OR OLD.state != 'open') " +
+      "BEGIN SELECT RAISE(ABORT, 'a call is reserved once, held, while it is open'); END",
     "CREATE TRIGGER egress_reservations_settled_once BEFORE UPDATE OF charge " +
       "ON egress_reservations WHEN OLD.charge IS NOT NULL AND OLD.charge != 'held' " +
       "BEGIN SELECT RAISE(ABORT, 'a charge is settled once'); END",
@@ -1489,9 +1531,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "BEGIN SELECT RAISE(ABORT, 'socket_tickets_full: as many socket tickets are " +
       "outstanding as may be; use one or wait for one to expire'); END",
     // A sandbox call's charge counts to its run, as it counts to its source's day and month.
-    "CREATE TRIGGER egress_reservations_run_charged AFTER INSERT ON egress_reservations " +
-      `WHEN NEW.charge IS NOT NULL BEGIN ${RUN("NEW", "1", CHARGED_TOKENS("NEW"),
-                                               CHARGED("NEW"))} END`,
+    "CREATE TRIGGER egress_reservations_run_charged AFTER UPDATE OF charge " +
+      "ON egress_reservations WHEN OLD.charge IS NULL AND NEW.charge IS NOT NULL " +
+      `BEGIN ${RUN("NEW", "1", CHARGED_TOKENS("NEW"), CHARGED("NEW"))} END`,
     "CREATE TRIGGER egress_reservations_run_recharged AFTER UPDATE OF charge, tokens, cost " +
       "ON egress_reservations WHEN NEW.charge IS NOT NULL AND OLD.charge IS NOT NULL " +
       `AND (${CHARGED("NEW")} != ${CHARGED("OLD")} OR ${CHARGED_TOKENS("NEW")} != ${
@@ -1719,12 +1761,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     `${LOGGED("native_agents", "agent_id agent created_at retired_at unacked_to_owner", "agent_id", "INSERT")}`,
     `${LOGGED("native_agents", "agent_id agent created_at retired_at unacked_to_owner", "agent_id", "UPDATE")}`,
     `${LOGGED("native_agents", "agent_id agent created_at retired_at unacked_to_owner", "agent_id", "DELETE")}`,
-    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended", "seq", "INSERT")}`,
-    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended", "seq", "UPDATE")}`,
-    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended", "seq", "DELETE")}`,
-    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer", "message_id", "INSERT")}`,
-    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer", "message_id", "UPDATE")}`,
-    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer", "message_id", "DELETE")}`,
+    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended line_bytes", "seq", "INSERT")}`,
+    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended line_bytes", "seq", "UPDATE")}`,
+    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended line_bytes", "seq", "DELETE")}`,
+    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer meta_bytes", "message_id", "INSERT")}`,
+    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer meta_bytes", "message_id", "UPDATE")}`,
+    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer meta_bytes", "message_id", "DELETE")}`,
     `${LOGGED("ledger_recipients", "message_id agent_id seq state changed_at unacked", "message_id agent_id", "INSERT")}`,
     `${LOGGED("ledger_recipients", "message_id agent_id seq state changed_at unacked", "message_id agent_id", "UPDATE")}`,
     `${LOGGED("ledger_recipients", "message_id agent_id seq state changed_at unacked", "message_id agent_id", "DELETE")}`,
@@ -1782,6 +1824,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
     `CREATE TRIGGER message_bodies_inline_went AFTER UPDATE OF body_bytes, content_id, filer ON message_bodies ` +
       `WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
+    // A message's lines past its body (slice STORE item 2, D2): the one number counts mail at
+    // its real bytes, hot as archived.
+    `CREATE TRIGGER message_bodies_meta_added AFTER INSERT ON message_bodies WHEN NEW.meta_bytes > 0 ` +
+      `BEGIN ${META("NEW", "+")} END`,
+    `CREATE TRIGGER message_bodies_meta_removed AFTER DELETE ON message_bodies WHEN OLD.meta_bytes > 0 ` +
+      `BEGIN ${META("OLD", "-")} END`,
     // Part 16: the doors' records in the owner's object (slice L). `owner_keys`, the key store
     // (`keys.ts`): each API key's id, name, mint time, last use and revoke, its row only while
     // its owner-set grant row stands (its `client`), so the owner's list and its erasure can
@@ -1832,6 +1880,61 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE platform_signins (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       `engines TEXT NOT NULL CHECK (length(engines) <= ${SIGNIN_LIST_CHARS} ` +
       "AND engines NOT GLOB '*[^a-z0-9_,-]*'), read_at REAL NOT NULL)",
+    // Part 18: the archive (slice STORE item 2, `segments.ts`). `archive_segments`: one row a
+    // segment, its fence: the stream, its key range and time, its records, its content (a
+    // files-plane content the row names, counted as a placed body is), its trailer's range,
+    // and a bloom of the agents its rooms name; a segment never changes, a rewrite makes a
+    // new one. `archive_moves`: a stream's move in flight, between its two units.
+    // `archive_purges`: an agent deleted while segments may hold its mail, until the lane has
+    // rewritten each; reads and the export drop its rooms at once. `ledger_ids`: the key a
+    // message's id carries its seq under.
+    "CREATE TABLE archive_segments (segment INTEGER PRIMARY KEY AUTOINCREMENT, " +
+      "stream TEXT NOT NULL CHECK (stream IN ('mail')), first_key INTEGER NOT NULL, " +
+      "last_key INTEGER NOT NULL CHECK (last_key >= first_key), first_at REAL NOT NULL, " +
+      "last_at REAL NOT NULL, records INTEGER NOT NULL CHECK (records >= 1), " +
+      "bytes INTEGER NOT NULL CHECK (bytes >= 1), " +
+      "content_id TEXT NOT NULL CHECK (length(content_id) = 64), " +
+      `filer TEXT NOT NULL CHECK (filer = '${OWNER_SCOPE}'), ` +
+      "trailer_offset INTEGER NOT NULL CHECK (trailer_offset >= 0), " +
+      "trailer_bytes INTEGER NOT NULL CHECK (trailer_bytes >= 1), " +
+      "members TEXT NOT NULL CHECK (length(members) = 128 AND members NOT GLOB " +
+      "'*[^0-9a-f]*'), made_at REAL NOT NULL)",
+    "CREATE INDEX archive_segments_by_last ON archive_segments (stream, last_key)",
+    // The segments under the least (`SEGMENT_LEAST_BYTES`), found at once: at most one
+    // stands at a time, the lone one or the one a bounded rewrite left for the next pass
+    // (review N7: compaction across passes, derived from the fences alone).
+    "CREATE INDEX archive_segments_small ON archive_segments (bytes) WHERE bytes < 8388608",
+    "CREATE TRIGGER archive_segments_placed AFTER INSERT ON archive_segments " +
+      `BEGIN ${PLACED("NEW", "+")} END`,
+    "CREATE TRIGGER archive_segments_unplaced AFTER DELETE ON archive_segments " +
+      `BEGIN ${PLACED("OLD", "-")} END`,
+    "CREATE TRIGGER archive_segments_kept BEFORE UPDATE ON archive_segments " +
+      "BEGIN SELECT RAISE(ABORT, 'a segment never changes; a rewrite makes a new one'); END",
+    // No two segments of a stream overlap in key range: a lookup by key finds at most one,
+    // and the chain read's frontier is the next segment's first key (review H1).
+    "CREATE TRIGGER archive_segments_disjoint BEFORE INSERT ON archive_segments " +
+      "WHEN EXISTS (SELECT 1 FROM archive_segments WHERE stream = NEW.stream AND " +
+      "last_key >= NEW.first_key AND first_key <= NEW.last_key) BEGIN SELECT RAISE(ABORT, " +
+      "'archive segments never overlap in key range'); END",
+    "CREATE TABLE archive_moves (stream TEXT PRIMARY KEY CHECK (stream IN ('mail', " +
+      "'rewrite')), intent_id TEXT NOT NULL CHECK (length(intent_id) = 32), " +
+      "digest TEXT NOT NULL CHECK (length(digest) = 64), started_at REAL NOT NULL, " +
+      // The stored figure before the move, which its second unit may not leave it above.
+      "stored_before INTEGER NOT NULL CHECK (stored_before >= 0))",
+    "CREATE TABLE archive_purges (agent_id TEXT PRIMARY KEY CHECK (length(agent_id) " +
+      "BETWEEN 1 AND 64), at REAL NOT NULL, " +
+      "next_segment INTEGER NOT NULL DEFAULT 0 CHECK (next_segment >= 0))",
+    "CREATE TABLE ledger_ids (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "id_key TEXT NOT NULL CHECK (length(id_key) = 64 AND id_key NOT GLOB '*[^0-9a-f]*'))",
+    `${LOGGED("archive_segments", "segment stream first_key last_key first_at last_at records bytes content_id filer trailer_offset trailer_bytes members made_at", "segment", "INSERT")}`,
+    `${LOGGED("archive_segments", "segment stream first_key last_key first_at last_at records bytes content_id filer trailer_offset trailer_bytes members made_at", "segment", "UPDATE")}`,
+    `${LOGGED("archive_segments", "segment stream first_key last_key first_at last_at records bytes content_id filer trailer_offset trailer_bytes members made_at", "segment", "DELETE")}`,
+    `${LOGGED("archive_purges", "agent_id at next_segment", "agent_id", "INSERT")}`,
+    `${LOGGED("archive_purges", "agent_id at next_segment", "agent_id", "UPDATE")}`,
+    `${LOGGED("archive_purges", "agent_id at next_segment", "agent_id", "DELETE")}`,
+    `${LOGGED("ledger_ids", "only id_key", "only", "INSERT")}`,
+    `${LOGGED("ledger_ids", "only id_key", "only", "UPDATE")}`,
+    `${LOGGED("ledger_ids", "only id_key", "only", "DELETE")}`,
   ]),
   // 2, after the baseline: a sandbox sync's own uploads name their lease (`files.ts`
   // `#endUploads`), so a lease that ends lets go of its sync's open uploads alone, never its
