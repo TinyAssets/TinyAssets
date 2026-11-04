@@ -3,6 +3,9 @@
  * in session as grant-then-entry, use bound to the key's origin and mint time, a wrong
  * key never reaching an object, and the revoke and delete orders.
  */
+import { BUSY, SlotBusy } from "../../owner/src/slots";
+import { refusal } from "../src/tools";
+import { BUSY_ONCE } from "./entry";
 import { createHash } from "node:crypto";
 
 import { env } from "cloudflare:workers";
@@ -85,6 +88,18 @@ beforeEach(async () => {
 });
 
 describe("the key format", () => {
+  it("answers a call the owner's slots refuse busy 503 with Retry-After, and the next lands",
+     async () => {
+    const o = await signedIn();
+    const { key } = await mint(o);
+    BUSY_ONCE.add(o.owner);
+    const busy = await api(key, "agents_list", {});
+    expect([busy.status, busy.headers.get("Retry-After")]).toEqual([503, "1"]);
+    expect(await busy.json()).toEqual({ error: BUSY });
+    expect(refusal(new SlotBusy())).toEqual({ status: 503, message: BUSY });
+    expect((await api(key, "agents_list", {})).status).toBe(200);
+  });
+
   it("is the Python's: ta_key_<16 hex>_<43 urlsafe>", () => {
     for (let i = 0; i < 20; i++) {
       const { key, keyId, secret } = newKey();

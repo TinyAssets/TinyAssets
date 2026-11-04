@@ -1213,6 +1213,17 @@ Every byte of user content the owner stores SHALL count toward the tier's storag
 - **WHEN** an owner whose tier stores 8,000 bytes keeps writing 1,500-byte collection rows
 - **THEN** old history entries go first, and once only live rows and their own entries are left the next write is refused `file_quota`, and the used bytes stay at or under 8,000
 
+### Requirement: An owner isolate's memory is bounded by structure
+Large data SHALL move through the owner's object only as streams or 4 MiB chunks, never whole (ADR-037). A path that holds chunks SHALL take units of its isolate's one pool (`UNIT_BYTES` a unit, `OWNER_POOL_UNITS` of them) for what it holds while its bytes are in hand, and only then: a chunk-wise `file_edit` SHALL take and release them for each chunk it reads and each chunk it makes and puts, never across the edit, its begin or its commit; a chunked `file_append` for its one join and write; a placed body's windows one unit, a whole body's read its chunks' units. A step SHALL wait for units first come first served within its size class for at most `SLOT_WAIT_MS`, with at most `OWNER_WAITERS` larger and `OWNER_SMALL_WAITERS` one-unit holds waiting, each class capped apart; past either it SHALL be refused `busy` before it changes anything, which the doors answer `503` with `Retry-After`. A one-unit hold SHALL never wait behind a larger one: larger holds SHALL leave `OWNER_RESERVE_UNITS` free. A larger hold SHALL never be starved by one-unit holds: while one waits, a new one-unit hold SHALL take only the reserve. The relay's tails SHALL be one budget an isolate (`TAIL_BYTES`), the object holding the most dropping its oldest first. `file_edit` SHALL edit a file of at most `EDIT_BYTES_MAX`, a bound derived from the worst edit's measured time, no longer `WHOLE_BYTES`. The workerd memory leg SHALL run each such path on the real code at its worst and hold its peak within its declared units at every size; the counts test SHALL hold the pool, the tails, each object's relay terms and the measured resting baseline within the isolate's 128 MB, and name what it does not count.
+
+#### Scenario: A co-tenant's small read never waits behind edits
+- **WHEN** edits' making steps hold every unit of the isolate's pool but the reserve, and another waits
+- **THEN** another owner's read of a placed message's window takes the reserve at once and answers, and the waiting step is still waiting
+
+#### Scenario: An edit's memory does not depend on its file's size
+- **WHEN** the leg edits a 32 MiB and a 96 MiB file of distinct content at their first chunk, longer, so every chunk is remade
+- **THEN** each reads and puts every chunk, their peaks differ by at most a quarter chunk, and each is within `EDIT_MAKE_UNITS`
+
 ### Requirement: The key store and the inbound bindings are the object's own rows
 The object SHALL keep each API key's id, name, mint time, last use and revoke, written with its grant in one unit that counts live keys strictly. It SHALL keep each inbound binding's agent, revision, route, owner-held proof and breaker. `inboundAccept` SHALL take only an inbound route's binding, and post the event as the owner's mail to its agent, keyed by binding, revision and event id.
 

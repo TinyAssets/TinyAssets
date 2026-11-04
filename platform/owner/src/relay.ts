@@ -30,8 +30,9 @@
  * socket's authority first, and anything else closes it `frame_refused`.
  *
  * **The tail.** Frames are never committed: the object keeps, in memory only, a tail of each
- * live run's frames for late joiners, at most `TAIL_BYTES` in all (the oldest frame of the
- * longest tail goes first, so every run keeps its newest), and drops a run's at its settle,
+ * live run's frames for late joiners, at most `TAIL_BYTES` in all, every object's in the
+ * isolate together (the oldest frame of the longest tail of the object holding the most goes
+ * first, so every run keeps its newest), and drops a run's at its settle,
  * when its result is the receipt's. A frame longer than `TAIL_FRAME_MAX` is relayed and
  * never kept. The memory guard counts both.
  *
@@ -48,6 +49,7 @@ import {
 import { type WebSocketHandlers, WebSockets } from "agents/websockets";
 
 import { Invalid, Refused } from "./errors";
+import { isolateTails, type Sharer } from "./slots";
 import type { Frame } from "./run-events";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SHAPE_HEADERS, SOCKET_FAILED, SOCKET_URL,
@@ -62,7 +64,11 @@ const EXPIRE_FN = "expire";
 
 /** App sockets an owner holds open at once: a technical ceiling of the isolate's memory. */
 export const OWNER_SOCKETS = 1024;
-/** The frames' tail kept for late joiners, in UTF-16 code units, every run's together. */
+/**
+ * The frames' tails kept for late joiners, in UTF-16 code units, every run's of every object
+ * in the isolate together (`slots.ts`' `SharedBudget`, review M5): the object holding the
+ * most drops its oldest frame past it.
+ */
 export const TAIL_BYTES = 4_194_304;
 /** A frame longer than this is relayed but never kept in the tail. */
 export const TAIL_FRAME_MAX = 262_144;
@@ -313,18 +319,30 @@ export class Relay extends LifecycleCapability {
     tail.frames.push(text);
     tail.bytes += text.length;
     this.#tailBytes += text.length;
-    while (this.#tailBytes > TAIL_BYTES) {
+    const tails = isolateTails(TAIL_BYTES);
+    tails.join(this.#sharer);
+    tails.trim();
+  }
+
+  /** This relay as a member of the isolate's tails: what it holds, and its oldest dropped. */
+  readonly #sharer: Sharer = {
+    held: () => this.#tailBytes,
+    drop: () => {
       let longest: Tail | undefined;
       for (const each of this.#tails.values()) {
         if (longest === undefined || each.bytes > longest.bytes) {
           longest = each;
         }
       }
-      const dropped = longest!.frames.shift()!;
+      const dropped = longest?.frames.shift();
+      if (dropped === undefined) {
+        return 0;
+      }
       longest!.bytes -= dropped.length;
       this.#tailBytes -= dropped.length;
-    }
-  }
+      return dropped.length;
+    },
+  };
 
   /** A run settled: its tail goes (its result is its receipt's). */
   settled(run: string): void {
@@ -332,6 +350,9 @@ export class Relay extends LifecycleCapability {
     if (tail !== undefined) {
       this.#tailBytes -= tail.bytes;
       this.#tails.delete(run);
+    }
+    if (this.#tails.size === 0) {
+      isolateTails(TAIL_BYTES).leave(this.#sharer);
     }
   }
 
