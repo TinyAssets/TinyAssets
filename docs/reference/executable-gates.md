@@ -1,8 +1,9 @@
 # Executable gates
 
-Builder done-check: touched tests and `ruff`; after a red CI job, rerun only its
-failing tests, then push. `python scripts/linux_oracle.py --ci` reproduces all
-of CI in Linux (structural guards, four PR shards, six queue shards, the queue
+Builder done-check: touched tests and `ruff` (in `platform/`: `npm ci`,
+`npm run typecheck`, then `npm test -w <workspace>`); after a red CI job, rerun
+only its failing tests, then push. `python scripts/linux_oracle.py --ci`
+reproduces the old stack's CI in Linux (structural guards, four PR shards, six queue shards, the queue
 aggregate; digests match CI `affected-tests` and `select`): for a CI failure that
 will not reproduce, never per push.
 

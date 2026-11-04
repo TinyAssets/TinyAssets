@@ -1,7 +1,7 @@
 """Squash-merge-aware "is this branch already merged?" detection.
 
 Part of the branch lifecycle automation; see
-``docs/reference/worktree-discipline.md``.
+AGENTS.md Fact 13.
 
 GitHub squash-merges (this repo's default — ``delete_branch_on_merge=true``)
 rewrite history: the merged change lands as a brand-new commit on main, so

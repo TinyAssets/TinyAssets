@@ -83,6 +83,10 @@ def main() -> int:
         return 0
     if _truthy(os.environ.get("TINYASSETS_DEV_HYGIENE_DISABLE", "")):
         return 0
+    # The Windows dev box's hygiene. A Linux session is a cloud container whose
+    # parallel builders would race its unconditional toolcache purge (npm, pip).
+    if os.name != "nt":
+        return 0
 
     project = _project_dir(payload)
     script = project / "scripts" / "dev_hygiene.py"

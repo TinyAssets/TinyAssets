@@ -18,7 +18,7 @@ def _no_ambient_ci_event(monkeypatch, request):
     if request.node.name == "test_shape_registry":
         return  # the live registry check runs against the real event
     for name in ("GITHUB_ACTIONS", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH",
-                 "GITHUB_SHA", "MERGE_GROUP_BASE_SHA"):
+                 "GITHUB_SHA", "MERGE_GROUP_BASE_SHA", "ORACLE_SOURCE_HEAD"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -529,6 +529,167 @@ def test_git_added_uses_the_pr_diff_not_untracked_files():
         patch.object(check_shapes.subprocess, "run", side_effect=git_diff_only),
     ):
         assert check_shapes.git_added() == {"tinyassets/new.py"}
+
+
+def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, "tinyassets/attribution/core.py", "x\n", "code")
+    _commit_file(repo, "AGENTS.md", "10. Ship-time attribution: `tinyassets/attribution/`.\n"
+                 "Codex reads CODEX.md; deploy with care.\n"
+                 "See docs/getting-started for setup. Run scripts/old_tool.py.\n", "a")
+    _commit_file(repo, "CODEX.md", "x\n", "codex")
+    _commit_file(repo, "docs/getting-started" + "/README.md", "x\n", "folder")
+    _commit_file(repo, "scripts/old_tool.py", "x\n", "renamed below")
+    _commit_file(repo, "docs/ops/launch.md", "Read [the handoff](gone.md) first.\n", "rel")
+    _commit_file(repo, ".agents/skills/s/references/gone.md", "x\n", "ref")
+    _commit_file(repo, ".agents/skills/s/SKILL.md", "See [it](references/gone.md).\n", "s")
+    _commit_file(repo, ".github/workflows/w.yml",
+                 "# deploys tinyassets/attribution/core.py\n"
+                 "run: echo tinyassets/attribution\n", "w")
+    _commit_file(repo, "tinyassets/other.py", "# tinyassets/attribution/core.py\n", "code2")
+    _commit_file(repo, "openspec/changes/archive/old/tasks.md", "docs/ops/gone.md\n", "arch")
+    _commit_file(repo, "openspec/changes/the-build/tasks.md", "Run `scripts/old_tool.py`.\n", "b")
+    _commit_file(repo, "openspec/changes/old-plan/proposal.md",
+                 "# Old plan\n\n**Superseded by ADR-032.**\n", "sup")
+    _commit_file(repo, "openspec/changes/old-plan/tasks.md", "Run scripts/old_tool.py.\n", "sup2")
+    _commit_file(repo, "deploy/x.sh", "x\n", "a folder named like a prose word")
+    base = _commit_file(repo, "docs/ops/gone.md", "x\n", "doc")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base)
+    _git(repo, "rm", "-q", "-r", "tinyassets/attribution", ".agents/skills/s/references",
+         "docs/ops/gone.md", "CODEX.md", "deploy/x.sh", "docs/getting-started")
+    _git(repo, "mv", "scripts/old_tool.py", "scripts/new_tool.py")
+    _git(repo, "commit", "-q", "-m", "head")
+
+    assert check_shapes.deleted_doc_references(repo) == [
+        "deleted-path-reference: .agents/skills/s/SKILL.md cites "
+        ".agents/skills/s/references/gone.md",
+        "deleted-path-reference: .github/workflows/w.yml cites tinyassets/attribution/core.py",
+        "deleted-path-reference: AGENTS.md cites CODEX.md",
+        "deleted-path-reference: AGENTS.md cites docs/getting-started",
+        "deleted-path-reference: AGENTS.md cites scripts/old_tool.py",
+        "deleted-path-reference: AGENTS.md cites tinyassets/attribution",
+        "deleted-path-reference: docs/ops/launch.md cites docs/ops/gone.md",
+        "deleted-path-reference: openspec/changes/the-build/tasks.md cites scripts/old_tool.py",
+    ]
+
+
+def test_a_tracked_ignored_path_missing_from_the_tree_is_not_deleted(
+    tmp_path: Path, monkeypatch
+):
+    """The oracle snapshot drops tracked-but-ignored files; only a commit deletes a path."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, ".gitignore", "output/\n", "ignore")
+    (repo / "output").mkdir()
+    (repo / "output/log.md").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "-f", "output/log.md")
+    _git(repo, "commit", "-q", "-m", "tracked though ignored")
+    base = _commit_file(repo, "AGENTS.md", "Append to `output/log.md`.\n", "cite")
+    head = _commit_file(repo, "README.md", "x\n", "the branch")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base)
+
+    # A local work tree without the file: not committed, so not deleted.
+    (repo / "output/log.md").unlink()
+    assert check_shapes.deleted_doc_references(repo) == []
+
+    # The oracle's snapshot: a fresh index from the copied tree, committed on the head.
+    snapshot = tmp_path / "work"
+    snapshot.mkdir()
+    for name in (".gitignore", "AGENTS.md", "README.md"):
+        (snapshot / name).write_text((repo / name).read_text(encoding="utf-8"), encoding="utf-8")
+    _init_repo_at(snapshot)
+    info = snapshot / ".git/objects/info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "alternates").write_text(f"{(repo / '.git/objects').as_posix()}\n", encoding="utf-8")
+    _git(snapshot, "update-ref", "HEAD", head)
+    _git(snapshot, "update-ref", "refs/remotes/origin/main", base)
+    _git(snapshot, "add", "-A")
+    _git(snapshot, "commit", "-q", "-m", "linux oracle snapshot")
+    assert _git(snapshot, "ls-files", "output") == ""
+    monkeypatch.setenv("ORACLE_SOURCE_HEAD", head)
+    assert check_shapes.deleted_doc_references(snapshot) == []
+
+    # A real deletion on the branch still fails.
+    _git(repo, "checkout", "-q", "--", ".")
+    _git(repo, "rm", "-q", "output/log.md")
+    _git(repo, "commit", "-q", "-m", "delete it")
+    monkeypatch.delenv("ORACLE_SOURCE_HEAD")
+    assert check_shapes.deleted_doc_references(repo) == [
+        "deleted-path-reference: AGENTS.md cites output/log.md"
+    ]
+
+
+def _init_repo_at(repo: Path) -> None:
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "shape@localhost")
+    _git(repo, "config", "user.name", "shape")
+
+
+def test_the_gate_runs_both_new_checks():
+    with (
+        patch.object(check_shapes, "adr_superseded_open", return_value=["adr-sentinel"]),
+        patch.object(check_shapes, "deleted_doc_references", return_value=["path-sentinel"]),
+    ):
+        problems = check_shapes.check()
+    assert "adr-sentinel" in problems
+    assert "path-sentinel" in problems
+
+
+def _adr(root: Path, status: str, body: str) -> None:
+    path = root / "docs/decisions/ADR-099-test.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# ADR-099: Test\n\n## Status\n\n{status}\n\n## Decision\n\nx\n\n{body}",
+                    encoding="utf-8")
+
+
+def _proposal(root: Path, name: str, text: str) -> None:
+    path = root / "openspec/changes" / name / "proposal.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_a_change_an_adr_supersedes_must_be_archived_or_marked(tmp_path: Path):
+    _adr(tmp_path, "Accepted. supersedes `openspec/changes/by-status`. Build order:\n"
+         "`openspec/changes/the-build/`.",
+         "## What this supersedes\n\n- `openspec/changes/by-section` D10.\n"
+         "- `bare-name`, by name alone.\n"
+         "- `openspec/changes/archived-already`.\n\n## Consequences\n\n"
+         "`openspec/changes/later-section`.\n")
+    (tmp_path / "openspec/changes/archive/2026-01-01-archived-already").mkdir(parents=True)
+    for name in ("by-status", "by-section", "bare-name", "the-build", "later-section"):
+        _proposal(tmp_path, name, f"# {name}\n\n## Why\n")
+    assert check_shapes.adr_superseded_open(tmp_path) == [
+        f"superseded-open: ADR-099 supersedes {name}; archive it or put "
+        "'Superseded by ADR-099' in its proposal's first lines"
+        for name in ("bare-name", "by-section", "by-status")
+    ]
+    for name in ("by-status", "by-section", "bare-name"):
+        _proposal(tmp_path, name, f"# {name}\n\n**Superseded by ADR-099.**\n\n## Why\n")
+    assert check_shapes.adr_superseded_open(tmp_path) == []
+    _proposal(tmp_path, "by-status", "# by-status\n\n**Superseded by ADR-098.**\n")
+    assert len(check_shapes.adr_superseded_open(tmp_path)) == 1
+
+
+def test_a_superseded_change_never_seen_fails_and_a_deleted_one_is_gone(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, "openspec/changes/deleted-one/proposal.md", "# Deleted one\n", "c")
+    _git(repo, "rm", "-q", "-r", "openspec/changes/deleted-one")
+    _git(repo, "commit", "-q", "-m", "delete the change, without archiving it")
+    _adr(repo, "Accepted.", "## Supersedes\n\n- `openspec/changes/typo-name`.\n"
+         "- `openspec/changes/deleted-one`.\n")
+    (repo / "openspec/changes").mkdir(parents=True)
+    assert check_shapes.adr_superseded_open(repo) == [
+        "superseded-unknown: ADR-099 supersedes typo-name, "
+        "which no open, archived or deleted change ever had as its name"
+    ]
+
+
+def test_a_proposed_adr_supersedes_nothing_yet(tmp_path: Path):
+    _adr(tmp_path, "Proposed.", "## What it supersedes\n\n- `openspec/changes/open-one`.\n")
+    _proposal(tmp_path, "open-one", "# open-one\n")
+    assert check_shapes.adr_superseded_open(tmp_path) == []
 
 
 pytestmark = pytest.mark.verifies('shape-convergence:C1')

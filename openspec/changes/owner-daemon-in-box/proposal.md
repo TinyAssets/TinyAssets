@@ -1,5 +1,7 @@
 # The owner's daemon runs in the owner's box (C6, built correctly)
 
+**Superseded by ADR-032 (2026-10-27).** Kept only for its evidence; do not build from it.
+
 ## Why
 
 The founder ruled on 2026-10-16: C6 does not go live until it is built in the

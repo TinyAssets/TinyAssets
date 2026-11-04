@@ -232,7 +232,7 @@ SHAPES: dict[str, Shape] = {
     "S21": Shape(
         ("openspec/changes/**",),
         (("openspec/changes/*/proposal.md", r"(?i)\bsuperseded by\b"),),
-        ceiling=3,
+        ceiling=2,
     ),
     "S22": Shape(
         (
@@ -466,25 +466,135 @@ def vendor_file_count(root: Path = ROOT) -> int:
 
 
 HISTORY_FILES = frozenset({".agents/activity.log"})
+# Archived changes are history: they cite what existed when they landed.
+HISTORY_DIRS = ("openspec/changes/archive/",)
+# Where an agent takes instructions from. Any path deleted in this diff that one
+# of them still cites fails, so a deletion carries its docs, skills and rules.
+INSTRUCTION_FILES = frozenset({
+    "AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md",
+    "openspec/config.yaml",
+})
+INSTRUCTION_DIRS = (
+    ".claude/", ".agents/skills/", "openspec/specs/", "openspec/changes/", "docs/",
+)
+PATH_TOKEN = re.compile(r"[\w.-]+(?:/[\w.*-]+)*/?")
+SUPERSEDED_MARK = re.compile(r"Superseded by ADR-\d+")
+
+
+def superseded_changes(root: Path = ROOT) -> set[str]:
+    """Open changes whose proposal says, in its first five lines, that an ADR superseded it."""
+    out = set()
+    for proposal in files("openspec/changes/*/proposal.md", root):
+        head = "\n".join(proposal.read_text(encoding="utf-8").splitlines()[:5])
+        if SUPERSEDED_MARK.search(head):
+            out.add(proposal.parent.name)
+    return out
+
+
+def instruction_text(rel: str, source: str, superseded: set[str] = frozenset()) -> str | None:
+    """The part of ``rel`` that instructs an agent, or None when it is not an instruction file."""
+    if rel.startswith(".github/workflows/"):
+        return "\n".join(line for line in source.splitlines() if line.lstrip().startswith("#"))
+    if re.fullmatch(r"docs/decisions/ADR-\d+[\w.-]*\.md", rel):
+        return None  # an ADR body is a dated record (ADR-005)
+    if rel.startswith("openspec/changes/") and rel.split("/")[2] in superseded:
+        return None  # kept only for its evidence; nobody builds from it
+    if (
+        rel in INSTRUCTION_FILES
+        or rel.startswith(INSTRUCTION_DIRS)
+        or (rel.startswith("platform/") and rel.endswith(".md"))
+    ):
+        return source
+    return None
+
+
+def cited_paths(rel: str, text: str) -> set[str]:
+    """Each repo path ``text`` names, read as written and relative to ``rel``'s folder."""
+    out: set[str] = set()
+    folder = PurePosixPath(rel).parent
+    for token in PATH_TOKEN.findall(text):
+        token = token.split("*", 1)[0].rstrip(".,;:)").rstrip("/")
+        token = token.removeprefix("./")
+        if "/" not in token and "." not in token.strip("."):
+            continue  # a bare word names no file: `deploy` is prose, `CODEX.md` a file
+        out.add(token)
+        out.add(os.path.normpath(str(folder / token)).replace(os.sep, "/"))
+    return out
+
+
+def _head_commit(root: Path) -> str:
+    """The commit under review: the oracle snapshot's source commit, else HEAD.
+
+    The linux oracle commits its copied work tree as a snapshot on top of the source
+    head and passes that head as ``ORACLE_SOURCE_HEAD``. The snapshot's own tree
+    lacks every tracked-but-ignored file, so it is not the tree to diff.
+    """
+    source = os.environ.get("ORACLE_SOURCE_HEAD", "").strip()
+    if _COMMIT_RE.fullmatch(source):
+        sha = _commit_sha(root, source)
+        if sha:
+            return sha
+    if _on_actions() and _checkout_git_dir() is not None and _commit_sha(root, "HEAD~1") is None:
+        borrowed = _borrow_commit(root, "HEAD")  # a history-free snapshot: the mount's HEAD
+        if borrowed:
+            return borrowed
+    sha = _commit_sha(root, "HEAD")
+    if sha is None:
+        raise RuntimeError("deleted-path check needs a HEAD commit")
+    return sha
 
 
 def deleted_doc_references(root: Path = ROOT) -> list[str]:
+    """A path this diff deletes (or renames away) that is still cited.
+
+    A deleted ``docs/`` path fails wherever the tracked tree cites it. Any other
+    deleted path, or a folder the diff emptied, fails where an instruction file
+    cites it (``instruction_text``). Archived and superseded changes are history.
+
+    It does not see: a path in a workflow's ``run:`` lines (only comments are
+    instructions there); a path inside a URL (``.../blob/main/CODEX.md``); and a
+    citation added by a later diff of a path an earlier diff deleted, since each
+    run sees only its own deletions.
+
+    A path counts as deleted only when it is gone from the head commit, compared
+    commit to commit (``_head_commit``), never because the work tree lacks it: the
+    linux oracle's snapshot drops tracked-but-ignored files (``.claude/settings.json``,
+    ``output/``), and an uncommitted local deletion is not yet a deletion.
+    """
     base = _merge_base(root)
     if base is None:
         return []
-    deleted = set(
-        subprocess.check_output(
-            ["git", "diff", "--diff-filter=D", "--name-only", base], cwd=root, text=True
+    head = _head_commit(root)
+
+    def in_head(path: str) -> bool:
+        return _git(root, "cat-file", "-e", f"{head}:{path}").returncode == 0
+
+    deleted = {
+        path
+        for path in subprocess.check_output(
+            ["git", "diff", "--no-renames", "--diff-filter=D", "--name-only", base, head],
+            cwd=root,
+            text=True,
         ).splitlines()
-    )
-    deleted = {path for path in deleted if path.startswith("docs/")}
+        if not in_head(path)
+    }
     if not deleted:
         return []
+    deleted_docs = {path for path in deleted if path.startswith("docs/")}
+    # A folder counts as deleted when the diff emptied it.
+    deleted_dirs = {
+        str(parent)
+        for path in deleted
+        for parent in PurePosixPath(path).parents
+        if str(parent) != "." and not in_head(str(parent))
+    }
+    gone = deleted | deleted_dirs
+    superseded = superseded_changes(root)
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().split("\0")
-    problems = []
+    problems = set()
     for rel in tracked:
         # Append-only history no PR may edit (scripts/check_forbidden_pr_paths.py).
-        if rel in HISTORY_FILES:
+        if rel in HISTORY_FILES or rel.startswith(HISTORY_DIRS):
             continue
         path = root / rel
         if not path.is_file():
@@ -493,9 +603,95 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
             source = path.read_text(encoding="utf-8")
         except (UnicodeError, OSError):
             continue
-        for ref in {item.rstrip(".,;") for item in re.findall(r"docs/[\w./-]+", source)} & deleted:
-            problems.append(f"deleted-doc-reference: {rel} cites {ref}")
+        cited_docs = {item.rstrip(".,;") for item in re.findall(r"docs/[\w./-]+", source)}
+        for ref in cited_docs & deleted_docs:
+            problems.add(f"deleted-doc-reference: {rel} cites {ref}")
+        text = instruction_text(rel, source, superseded)
+        if text is None:
+            continue
+        for ref in cited_paths(rel, text) & gone:
+            if ref not in cited_docs & deleted_docs:  # reported above
+                problems.add(f"deleted-path-reference: {rel} cites {ref}")
     return sorted(problems)
+
+
+def _change_in_history(root: Path, name: str) -> bool:
+    """True when git history holds a change of this name that was later deleted."""
+    found = subprocess.run(
+        ["git", "log", "-1", "--format=%H", "--", f"openspec/changes/{name}/"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    return found.returncode == 0 and bool(found.stdout.strip())
+
+
+def adr_superseded_open(root: Path = ROOT) -> list[str]:
+    """A change an accepted ADR supersedes is archived, or its proposal says so at its head.
+
+    The ADR names the change in its "What it (or this) supersedes" section, or in a
+    Status sentence with "supersedes", as `openspec/changes/<name>` or as a
+    backticked `<name>` of an open or archived change. A prefixed name that no
+    change ever had (open, archived, or deleted in git history) fails, so a typo
+    cannot pass; a deleted change is gone, which is what superseding asks. Superseding one
+    decision of a change counts as superseding the change.
+    """
+    changes = root / "openspec/changes"
+    archive = changes / "archive"
+    open_names = (
+        {p.name for p in changes.iterdir() if p.is_dir()} - {"archive"}
+        if changes.is_dir()
+        else set()
+    )
+    archived = (
+        {re.sub(r"^\d{4}-\d{2}-\d{2}-", "", p.name) for p in archive.iterdir() if p.is_dir()}
+        if archive.is_dir()
+        else set()
+    )
+    problems = []
+    for adr in files("docs/decisions/ADR-*.md", root):
+        number = re.match(r"ADR-(\d+)", adr.name)
+        source = adr.read_text(encoding="utf-8")
+        status = re.search(r"(?ims)^## Status\s*\n(.*?)(?:^\s*$|^## )", source)
+        if not number or not status or not status.group(1).lstrip().startswith("Accepted"):
+            continue
+        scope = [
+            s for s in re.split(r"(?<=\.)\s+", status.group(1))
+            if re.search(r"(?i)\bsupersedes\b", s)
+        ]
+        section = re.search(
+            r"(?ims)^## (?:what (?:it|this) )?supersedes\b[^\n]*\n(.*?)(?=^## |\Z)", source
+        )
+        if section:
+            scope.append(section.group(1))
+        text = "\n".join(scope)
+        adr_id = f"ADR-{number.group(1)}"
+        marker = f"Superseded by {adr_id}"
+        prefixed = set(re.findall(r"openspec/changes/([a-z0-9][a-z0-9-]*)", text)) - {"archive"}
+        bare = {
+            name for name in re.findall(r"`([a-z0-9][a-z0-9-]*)/?`", text)
+            if name in open_names or name in archived
+        }
+        for name in sorted(prefixed | bare):
+            if name not in open_names:
+                if name not in archived and not _change_in_history(root, name):
+                    problems.append(
+                        f"superseded-unknown: {adr_id} supersedes {name}, "
+                        "which no open, archived or deleted change ever had as its name"
+                    )
+                continue
+            proposal = changes / name / "proposal.md"
+            head = (
+                "\n".join(proposal.read_text(encoding="utf-8").splitlines()[:5])
+                if proposal.is_file()
+                else ""
+            )
+            if marker not in head:
+                problems.append(
+                    f"superseded-open: {adr_id} supersedes {name}; archive it "
+                    f"or put '{marker}' in its proposal's first lines"
+                )
+    return problems
 
 
 def recorded_shapes(
@@ -952,6 +1148,7 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
         for name in re.findall(r"(?i)\bsupersedes?\s*:?\s*[`'\"]?([a-z][a-z0-9-]+)", source):
             if (root / "openspec/changes" / name).exists():
                 problems.append(f"superseded-open: {proposal.parent.name} supersedes {name}")
+    problems.extend(adr_superseded_open(root))
     problems.extend(deleted_doc_references(root))
     return problems
 

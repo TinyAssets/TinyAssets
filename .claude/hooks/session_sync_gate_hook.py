@@ -5,11 +5,13 @@ Runs scripts/session_sync_gate.py and, if the primary checkout is off-main or
 behind origin/main, injects the warning into session context so the drift is
 seen at the top of the session instead of discovered as a "1,209 behind" mess.
 
-Heals the PRIMARY checkout (session_sync_gate --heal): a non-main branch or
-uncommitted edits are saved to a local backup branch, then main fast-forwards,
-so no session ever loads a stale AGENTS.md. Never touches linked worktrees;
-never blocks the session.
-See docs/reference/worktree-discipline.md.
+On Windows it heals the PRIMARY checkout (session_sync_gate --heal): a
+non-main branch or uncommitted edits are saved to a local backup branch, then
+main fast-forwards, so no session ever loads a stale AGENTS.md. Off Windows the
+gate only reports how far behind it is: a cloud session's own branch in the
+primary checkout is never switched or committed. Never touches linked
+worktrees; never blocks the session.
+See AGENTS.md Fact 13 and scripts/wt.py.
 """
 
 from __future__ import annotations

@@ -6,8 +6,8 @@ from the starter's skills and `platform/doors/apps.json`. Don't edit them by han
 
 ## Before either submission
 
-1. **The doors are live.** The go-ahead deploy is done, and `https://tinyassets.io/mcp`
-   answers a signed-in client.
+1. **The doors are live.** Mode `routes` has run (the go-ahead deploy, mode `dark`, moves
+   no route), and `https://tinyassets.io/mcp` answers a signed-in client.
 2. **Dynamic registration is decided.** `DCR_ENABLED` is `"true"` if Grok, Muse or Gemini
    are to connect, and each one's redirect URIs are recorded in `apps.json`
    (`match.redirects`). Until they are, its registration is refused. Claude and ChatGPT use

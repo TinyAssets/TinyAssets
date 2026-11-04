@@ -37,13 +37,10 @@ Preflight: `references/preflight-and-setup.md`.
 
 Rule: cross-client MCP alignment is a project prerequisite. ChatGPT (Apps SDK strict surface)
 requires `structuredContent` + `content` + `_meta` on a substrate-changing call;
-Claude.ai (Anthropic MCP) tolerates `content` alone. Divergence is OUR bug. Before an
-`@mcp.tool` shape change merges, run the same call through both clients: no wedge,
+Claude.ai (Anthropic MCP) tolerates `content` alone. Divergence is OUR bug. Before a
+door tool's shape (`platform/doors`) changes, run the same call through both clients: no wedge,
 no 424, no silent timeout. "Direct MCP call works fine" is INSUFFICIENT; so is one
 client. No both-client verification, no merge: stop and say so.
-
-New tools wrap the function with `_register_structured_tool(...)` and declare `-> dict`
-on the adapter so FastMCP fills `structuredContent`.
 
 ## Identity: incognito is not anonymous
 
@@ -138,10 +135,10 @@ chatbot already handles stress nothing this architecture was built for.
 
 ## Sound like a user
 
-Good: "hows my story going", "whats the daemon doing", "is anything broken", "why
+Good: "whats my agent doing", "is anything broken", "why
 isnt it writing". Cheating: naming tools, actions, parameters, or internals ("work
-targets", "bounded reflection", "ledger") the bot has not used first. Premise,
-status, activity, story, universe are user-facing and fine. Never coach the bot
+targets", "bounded reflection", "ledger") the bot has not used first. Status and
+activity are user-facing and fine. Never coach the bot
 around a UX failure; log it.
 
 Judge each reply: understood, right tool, useful, no hallucinated state, no leaked
@@ -162,8 +159,9 @@ three lines per action to `output/user_sim_session.md`, the shared log with the 
 and read its tail for `LEAD DIRECTION` or `LEAD STOP` first. Every `ask` spends the
 host's quota: one prompt, one new question.
 
-Read-only is the default. Write intents (`set_premise`, `give_direction`,
-`add_canon`, pause/resume, `create_universe`) need authorization in
+Read-only is the default. Write intents (live until the cutover: `write_graph`,
+`write_page`, `run_graph`; from it: `file_write`, `room_post`, `agent_register`,
+`run_graph`) need authorization in
 `output/mcp_test_plan.md` or a `LEAD DIRECTION`, still phrased as a user would.
 
 Stop only for `LEAD STOP`, no route that keeps the live tab visible, an unavailable
