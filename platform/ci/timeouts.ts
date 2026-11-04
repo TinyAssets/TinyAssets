@@ -3,8 +3,7 @@
  *
  * A test's time budget is its size class's, set once per project (`classes.ts`), never a
  * number beside the test. Tests are held at run time, whatever the syntax: every test's
- * effective timeout must be its class's (`ClassTimeouts` in `classes.ts`, a reporter every
- * config carries). What a run cannot see is held here, by parsing the file as TypeScript:
+ * effective timeout must be its class's (`class-check.ts`, every project's setup file). What a run cannot see is held here, by parsing the file as TypeScript:
  * - a hook's own timeout: any argument after a hook's first (`beforeAll(setup, 30_000)`,
  *   `vitest.beforeEach(fn, LONG)`), since the hook's budget is its project's `hookTimeout`;
  * - a hook under another name (`const before = beforeAll`), which would dodge the above;

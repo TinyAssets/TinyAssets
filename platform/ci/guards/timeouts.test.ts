@@ -12,7 +12,8 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { BUDGETS, budget, classProblems, derived, LARGE, medium, SMALL_MS } from "../classes";
+import { classProblem } from "../class-rule";
+import { BUDGETS, budget, CLASS_CHECK, derived, LARGE, medium, SMALL_MS } from "../classes";
 import { largeTests, timeoutLiterals } from "../timeouts";
 import { json, REPO } from "../workflows";
 
@@ -74,7 +75,7 @@ describe("size classes", () => {
       const text = readFileSync(join(REPO, file), "utf8");
       expect(text, file).toMatch(/from "(?:\.\.\/ci|\.)\/classes"/);
       expect(text, file).toMatch(/tags: \[LARGE\]/);
-      expect(text, file).toMatch(/reporters: \[\.\.\.REPORTERS\]/);
+      expect(text, file).not.toMatch(/reporters?\s*:/);
       expect(text, file).not.toMatch(/(?:testTimeout|hookTimeout|strictTags)\s*:/);
       const projects = [...text.matchAll(/test: \{\s*name: "([\w-]+)"/g)].map((match) => match[1]);
       expect(projects.length, file).toBeGreaterThan(0);
@@ -87,24 +88,31 @@ describe("size classes", () => {
 });
 
 describe("the run-time check", () => {
-  // A module as a reporter sees it: what Vitest resolved, whatever the test's syntax.
-  const module = (timeouts: { timeout: number; tags?: string[] }[], config = medium("ci/guards")) => ({
-    moduleId: "/x/ci/guards/a.test.ts",
-    project: { name: "guards", config: { root: "/x/ci", ...config } },
-    children: { allTests: () => timeouts.map((t, i) => ({
-      fullName: `t${i}`, options: { timeout: t.timeout, tags: t.tags ?? [] } })) },
-  }) as never;
+  const want = { project: "ci/guards", medium: medium("ci/guards").testTimeout,
+                 large: LARGE.timeout };
 
   it("passes tests at their class's timeout", () => {
-    const budget = medium("ci/guards").testTimeout;
-    expect(classProblems([module([{ timeout: budget },
-                                  { timeout: LARGE.timeout, tags: ["large"] }])])).toEqual([]);
+    expect(classProblem({ name: "a", timeout: want.medium, tags: [] }, want)).toBeNull();
+    expect(classProblem({ name: "b", timeout: LARGE.timeout, tags: ["large"] }, want)).toBeNull();
   });
 
-  it("refuses any other timeout, and a project off its budget", () => {
-    expect(classProblems([module([{ timeout: 60_000 }])])).toHaveLength(1);
-    expect(classProblems([module([{ timeout: medium("ci/guards").testTimeout, tags: ["large"] }])]))
-      .toHaveLength(1);
-    expect(classProblems([module([], { testTimeout: 1, hookTimeout: 1 })])).toHaveLength(1);
+  it("refuses any other timeout, and a project that provides none", () => {
+    expect(classProblem({ name: "a", timeout: 60_000, tags: [] }, want)).toMatch(/60000 ms/);
+    expect(classProblem({ name: "b", timeout: want.medium, tags: ["large"] }, want))
+      .toMatch(/large/);
+    expect(classProblem({ name: "c", timeout: want.medium }, undefined)).toMatch(/provides no/);
+  });
+
+  it("is every project's setup file, carried by medium()", () => {
+    expect(medium("ci/guards").setupFiles).toEqual([CLASS_CHECK]);
+    expect(medium("ci/guards").provide.classTimeouts).toEqual(want);
+    const owner = readFileSync(join(REPO, "platform", "owner", "vitest.config.ts"), "utf8");
+    expect(owner).toContain('setupFiles: [CLASS_CHECK, "./test/admitted.ts"]');
+    for (const file of tracked("platform/*/vitest.config.ts")) {
+      const text = readFileSync(join(REPO, file), "utf8");
+      for (const match of text.matchAll(/setupFiles:\s*\[([^\]]*)\]/g)) {
+        expect(match[1], file).toMatch(/^CLASS_CHECK\b/);
+      }
+    }
   });
 });

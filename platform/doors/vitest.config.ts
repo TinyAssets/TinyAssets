@@ -10,7 +10,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium, REPORTERS } from "../ci/classes";
+import { LARGE, medium } from "../ci/classes";
 
 const DOORS = dirname(fileURLToPath(import.meta.url));
 const GATEWAY = join(DOORS, "..", "gateway");
@@ -146,7 +146,6 @@ const KEYRING = JSON.stringify({ active: "k1", keys: { k1: randomBytes(32).toStr
 export default defineConfig({
   test: {
     tags: [LARGE],
-    reporters: [...REPORTERS],
     projects: [
       {
         // Runs in workerd, against the config's own KV namespaces, flags and GATEWAY
