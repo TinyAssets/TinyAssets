@@ -93,6 +93,15 @@ const alarmOf = (who: string) => runInDurableObject(stub(who), (_instance, state
   state.storage.getAlarm());
 
 /**
+ * The retry schedule as the design states it, written here rather than read from the code:
+ * the first retry after the slowest full request measured to E2B, 480 ms
+ * (`e2b-resume-measurement.md`), doubling after, and never longer than a lease's TTL
+ * (a run the owner has not heard from in `LEASE_TTL_S` is settled lost).
+ */
+const RETRY_SCHEDULE_MS = [480, 960, 1_920, 3_840] as const;
+const RETRY_CEILING_MS = 60_000;
+
+/**
  * What `act` armed, against the delay the code means: an alarm `delay` on from the moment
  * the code read its clock, which lies between the two reads around `act`. Never a reading
  * of time passed since, which a loaded runner stretches.
@@ -628,13 +637,14 @@ describe("the look before the runtime ceiling", () => {
     const id = (await seen()).sandboxes[0]!.id;
     await e2b("/age", { id, s: CEILING + 5 });  // past its edge: E2B's own timeout's now
     await e2b("/script", { down: 1_000_000 });
-    // Each failed look arms the next at its back-off, doubling: the delay the code
-    // schedules, read against the clock around the alarm, never time passed since.
-    expect(backoff(2)).toBe(2 * backoff(1));
-    for (let tries = 1; tries <= 4; tries += 1) {
-      await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who),
-                       backoff(tries));
+    // Each try arms the next at the schedule's wait, read against the clock around the
+    // alarm, never time passed since; the code's own back-off is held to the same schedule.
+    for (const [index, wait] of RETRY_SCHEDULE_MS.entries()) {
+      expect(backoff(index + 1)).toBe(wait);
+      await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who), wait);
     }
+    expect(backoff(8)).toBe(RETRY_CEILING_MS);
+    expect(backoff(1_000)).toBe(RETRY_CEILING_MS);
     await e2b("/script", { down: 0 });
   });
 
@@ -646,12 +656,14 @@ describe("the look before the runtime ceiling", () => {
     const id = (await seen()).sandboxes[0]!.id;
     await e2b("/pause", { id });
     await e2b("/script", { refuseResume: true });
-    // Asked at once the first time (the pause), then each refusal arms the next try at
-    // its back-off: the delay the code schedules, never time passed since.
-    for (let tries = 1; tries <= 4; tries += 1) {
-      await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who),
-                       backoff(tries));
+    // Each try arms the next at the schedule's wait, read against the clock around the
+    // alarm, never time passed since; the code's own back-off is held to the same schedule.
+    for (const [index, wait] of RETRY_SCHEDULE_MS.entries()) {
+      expect(backoff(index + 1)).toBe(wait);
+      await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who), wait);
     }
+    expect(backoff(8)).toBe(RETRY_CEILING_MS);
+    expect(backoff(1_000)).toBe(RETRY_CEILING_MS);
     await e2b("/script", { refuseResume: false });
     await runDurableObjectAlarm(stub(who));
     expect((await seen()).sandboxes[0]!.state).toBe("running");
