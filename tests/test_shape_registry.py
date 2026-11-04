@@ -619,12 +619,18 @@ def test_a_change_an_adr_supersedes_must_be_archived_or_marked(tmp_path: Path):
     assert len(check_shapes.adr_superseded_open(tmp_path)) == 1
 
 
-def test_a_superseded_change_that_does_not_exist_fails_loudly(tmp_path: Path):
-    _adr(tmp_path, "Accepted.", "## Supersedes\n\n- `openspec/changes/typo-name`.\n")
-    (tmp_path / "openspec/changes").mkdir(parents=True)
-    assert check_shapes.adr_superseded_open(tmp_path) == [
+def test_a_superseded_change_never_seen_fails_and_a_deleted_one_is_gone(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, "openspec/changes/deleted-one/proposal.md", "# Deleted one\n", "c")
+    _git(repo, "rm", "-q", "-r", "openspec/changes/deleted-one")
+    _git(repo, "commit", "-q", "-m", "delete the change, without archiving it")
+    _adr(repo, "Accepted.", "## Supersedes\n\n- `openspec/changes/typo-name`.\n"
+         "- `openspec/changes/deleted-one`.\n")
+    (repo / "openspec/changes").mkdir(parents=True)
+    assert check_shapes.adr_superseded_open(repo) == [
         "superseded-unknown: ADR-099 supersedes typo-name, "
-        "which is neither an open nor an archived change"
+        "which no open, archived or deleted change ever had as its name"
     ]
 
 

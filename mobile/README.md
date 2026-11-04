@@ -24,7 +24,8 @@ on every change and a signed IPA when the Apple signing assets are provided.
 - Signing identities that the account owner creates and keeps secret.
 - Legal/privacy declarations and the final submissions for review.
 
-Owner-only asks live in `docs/host-actions.md`.
+Current launch state and exact owner-only asks live in
+`docs/ops/mobile-launch-handoff.md` and `docs/host-actions.md`.
 
 ## Prerequisites (on your build machine)
 

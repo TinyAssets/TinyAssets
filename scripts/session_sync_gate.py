@@ -160,7 +160,9 @@ def main(argv: list[str]) -> int:
         )
     if behind and behind > 0:
         warnings.append(
-            f"⚠ {behind} commit(s) behind {args.base_ref}. Run `git pull` (on {main_name}) to sync."
+            f"⚠ {behind} commit(s) behind {args.base_ref}. "
+            + (f"Run `git pull` (on {main_name}) to sync." if dev_box
+               else f"Merge {args.base_ref} into this branch (never rebase).")
         )
 
     if warnings:

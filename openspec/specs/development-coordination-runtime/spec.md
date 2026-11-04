@@ -5,7 +5,7 @@ Define the repository's cross-provider orientation, claim, worktree, context, dr
 ## Requirements
 ### Requirement: Session Orientation Reports Repository Freshness Without Mutating Work
 
-The session sync gate SHALL fetch the configured remote with pruning unless invoked with `--no-fetch`, identify the primary checkout, and report whether that checkout is on `main` and how many commits it trails the configured base reference. Its default mode MUST be advisory and MUST NOT switch branches, pull, reset, clean, or otherwise modify tracked work. In strict mode it SHALL return non-zero when the primary checkout is off `main` or behind the base reference. Off Windows the primary checkout is a session's own branch, so the gate MUST NOT report it as off `main`, and `--heal` MUST do nothing there.
+The session sync gate SHALL fetch the configured remote with pruning unless invoked with `--no-fetch`, identify the primary checkout, and report whether that checkout is on `main` and how many commits it trails the configured base reference. Its default mode MUST be advisory and MUST NOT switch branches, pull, reset, clean, or otherwise modify tracked work. In strict mode it SHALL return non-zero when the primary checkout is behind the base reference, and, on Windows only, when it is off `main`. Off Windows the primary checkout is a session's own branch, so the gate MUST NOT report it as off `main`, MUST tell it to merge the base reference rather than pull, and `--heal` MUST do nothing there.
 
 #### Scenario: A Linux session's branch survives every session start
 
@@ -20,7 +20,7 @@ The session sync gate SHALL fetch the configured remote with pruning unless invo
 
 #### Scenario: Strict mode exposes stale orientation to automation
 
-- **WHEN** `--strict` is supplied and the primary checkout is off `main` or behind the configured base
+- **WHEN** `--strict` is supplied and the primary checkout is behind the configured base, or, on Windows, off `main`
 - **THEN** the gate exits non-zero after reporting the condition
 
 ### Requirement: Worktree Inspection Preserves Lane Intent

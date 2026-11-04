@@ -581,13 +581,25 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
     return sorted(problems)
 
 
+def _change_in_history(root: Path, name: str) -> bool:
+    """True when git history holds a change of this name that was later deleted."""
+    found = subprocess.run(
+        ["git", "log", "-1", "--format=%H", "--", f"openspec/changes/{name}/"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    return found.returncode == 0 and bool(found.stdout.strip())
+
+
 def adr_superseded_open(root: Path = ROOT) -> list[str]:
     """A change an accepted ADR supersedes is archived, or its proposal says so at its head.
 
     The ADR names the change in its "What it (or this) supersedes" section, or in a
     Status sentence with "supersedes", as `openspec/changes/<name>` or as a
-    backticked `<name>` of an open or archived change. A prefixed name that is
-    neither open nor archived fails, so a typo cannot pass. Superseding one
+    backticked `<name>` of an open or archived change. A prefixed name that no
+    change ever had (open, archived, or deleted in git history) fails, so a typo
+    cannot pass; a deleted change is gone, which is what superseding asks. Superseding one
     decision of a change counts as superseding the change.
     """
     changes = root / "openspec/changes"
@@ -628,10 +640,10 @@ def adr_superseded_open(root: Path = ROOT) -> list[str]:
         }
         for name in sorted(prefixed | bare):
             if name not in open_names:
-                if name not in archived:
+                if name not in archived and not _change_in_history(root, name):
                     problems.append(
                         f"superseded-unknown: {adr_id} supersedes {name}, "
-                        "which is neither an open nor an archived change"
+                        "which no open, archived or deleted change ever had as its name"
                     )
                 continue
             proposal = changes / name / "proposal.md"

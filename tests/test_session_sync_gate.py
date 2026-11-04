@@ -64,3 +64,4 @@ def test_a_dirty_session_branch_survives_a_compact_session_start(tmp_path: Path)
     assert (session / "notes.md").read_text(encoding="utf-8") == "one\nin-flight edit\n"
     assert _git(session, "branch", "--list", "backup/*") == ""
     assert "git switch" not in proc.stdout
+    assert "Merge origin/main into this branch" in proc.stdout

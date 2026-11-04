@@ -181,7 +181,7 @@ box_archive() {  # $1 = archive path; $2 = remote name
 }
 
 # ----- 2b. cutover snapshot (BACKUP_MODE=snapshot) ----------------------
-# The owner-split window's rollback point (archived change 2026-10-10-per-role-uid-split):
+# The owner-split window's rollback point (docs/ops/owner-split-cutover-runbook.md):
 # a full-volume tar taken with every writer stopped, numeric owners, ACLs and
 # xattrs kept, a local copy and an upload, then its id, sha256, size and name
 # count. The count must match a fresh census of the volume.
