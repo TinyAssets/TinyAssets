@@ -21,8 +21,8 @@
  * range, its records), so a read by key is the fence, one ranged read of the trailer, one of
  * the record. A segment is sealed at `SEGMENT_MIN_BYTES` of lines or `SEGMENT_MIN_RECORDS`
  * records, and no record is smaller than `MIN_RECORD_BYTES` (the tests hold the smallest),
- * so every segment but the newest small one a purge's rewrite may leave holds at least
- * `SEGMENT_LEAST_BYTES` of counted storage, and the fence's rows are at most the storage over
+ * so every segment but a lone one holds at least `SEGMENT_LEAST_BYTES` of counted storage
+ * (a rewrite left small takes in its neighbour by key; a split makes two halves past it), and the fence's rows are at most the storage over
  * that, plus one: no count, the one number bounds them.
  */
 import { Buffer } from "node:buffer";
@@ -49,8 +49,8 @@ export const MIN_RECORD_BYTES = 336;
  */
 export const SEGMENT_LEAST_BYTES = 8 * 1024 * 1024;
 /**
- * The fence's rows at most: the owner-bound guard's term for `archive_segments`, the one
- * small segment a rewrite may leave among them. A technical ceiling on what a tier may offer
+ * The fence's rows at most: the owner-bound guard's term for `archive_segments`, a lone
+ * small segment among them. A technical ceiling on what a tier may offer
  * (`TIER_STORAGE_MAX`), never on what a user stores.
  */
 export const ARCHIVE_SEGMENTS_MAX = 59_606;
@@ -60,6 +60,34 @@ export const ARCHIVE_SEGMENTS_MAX = 59_606;
  * first: a redesign, recorded in `limits-audit.md`.
  */
 export const TIER_STORAGE_MAX = (ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES;
+/**
+ * A record's share of its segment's trailer and suffix, counted with its lines in the one
+ * number (a message's `line_bytes`): its key's and its chain's places (three numbers each,
+ * at most 52 bytes), its chain root's name (40), and its share of the trailer's head and the
+ * suffix (about 170 a segment), so a move frees at least the bytes it places (review M1).
+ */
+export const RECORD_TRAILER_BYTES = 320;
+
+/**
+ * Records in key order cut into the pieces one rewrite or merge places: one, or two halves
+ * when they pass twice `least` (so each is still at least `least`), never a piece smaller
+ * unless all of them are.
+ */
+export function pack<T extends SegmentRecord>(records: readonly T[], least: number): T[][] {
+  const sizes = records.map((record) => bytesOf(recordText(record)));
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  if (total <= 2 * least || records.length < 2) {
+    return [records.slice()];
+  }
+  let at = 0;
+  let bytes = 0;
+  while (at < records.length - 1 && bytes + sizes[at]! <= total / 2) {
+    bytes += sizes[at]!;
+    at++;
+  }
+  return [records.slice(0, Math.max(1, at)), records.slice(Math.max(1, at))];
+}
+
 /** The 16 digits after the trailer that give its offset. */
 const SUFFIX_BYTES = 16;
 

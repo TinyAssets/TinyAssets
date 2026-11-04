@@ -595,7 +595,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // lane may move), and the last seq given, which a message's id carries.
       "unacked INTEGER NOT NULL DEFAULT 0 CHECK (unacked >= 0), " +
       "acked_bytes INTEGER NOT NULL DEFAULT 0 CHECK (acked_bytes >= 0), " +
-      "last_seq INTEGER NOT NULL DEFAULT 0)",
+      "last_seq INTEGER NOT NULL DEFAULT 0, " +
+      // Whether the archive's last move was refused for the storage figure (a post at the
+      // hot ceiling is then `storage_full`, never a busy that cannot clear).
+      "archive_blocked INTEGER NOT NULL DEFAULT 0 CHECK (archive_blocked IN (0, 1)))",
     "INSERT INTO ledger_usage (only, agents, enabled_agents, messages, settled_wakes) " +
       "VALUES (1, 0, 0, 0, 0)",
     "CREATE TRIGGER outside_agents_added AFTER INSERT ON outside_agents BEGIN " +
@@ -1889,9 +1892,17 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `BEGIN ${PLACED("OLD", "-")} END`,
     "CREATE TRIGGER archive_segments_kept BEFORE UPDATE ON archive_segments " +
       "BEGIN SELECT RAISE(ABORT, 'a segment never changes; a rewrite makes a new one'); END",
+    // No two segments of a stream overlap in key range: a lookup by key finds at most one,
+    // and the chain read's frontier is the next segment's first key (review H1).
+    "CREATE TRIGGER archive_segments_disjoint BEFORE INSERT ON archive_segments " +
+      "WHEN EXISTS (SELECT 1 FROM archive_segments WHERE stream = NEW.stream AND " +
+      "last_key >= NEW.first_key AND first_key <= NEW.last_key) BEGIN SELECT RAISE(ABORT, " +
+      "'archive segments never overlap in key range'); END",
     "CREATE TABLE archive_moves (stream TEXT PRIMARY KEY CHECK (stream IN ('mail', " +
       "'rewrite')), intent_id TEXT NOT NULL CHECK (length(intent_id) = 32), " +
-      "digest TEXT NOT NULL CHECK (length(digest) = 64), started_at REAL NOT NULL)",
+      "digest TEXT NOT NULL CHECK (length(digest) = 64), started_at REAL NOT NULL, " +
+      // The stored figure before the move, which its second unit may not leave it above.
+      "stored_before INTEGER NOT NULL CHECK (stored_before >= 0))",
     "CREATE TABLE archive_purges (agent_id TEXT PRIMARY KEY CHECK (length(agent_id) " +
       "BETWEEN 1 AND 64), at REAL NOT NULL, " +
       "next_segment INTEGER NOT NULL DEFAULT 0 CHECK (next_segment >= 0))",

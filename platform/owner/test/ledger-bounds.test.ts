@@ -36,8 +36,12 @@ function tight(unread: number, hot: number, agents = 3): Partial<LedgerLimits> {
            maxMessages: hot };
 }
 
-const FULL = (n: number) => `ledger_full: too much mail is unread (${n} message${
-  n === 1 ? " waits" : "s wait"} for their readers); reading and acking mail makes room`;
+/** `ledger_full`, naming the readers holding the most unread mail (`most`). */
+const FULL = (n: number, most: string) => `ledger_full: too much mail is unread (${n} message${
+  n === 1 ? " waits" : "s wait"} for their readers; the most for ${most}); reading and ` +
+  "acking mail makes room";
+const ANY_FULL = new RegExp("^ledger_full: too much mail is unread \\(\\d+ messages? waits? " +
+  "for their readers; the most for .+\\); reading and acking mail makes room$");
 const BUSY = "storage_busy: your storage is catching up, moving older mail out; try again in " +
   '30 seconds. {"retry_after_s":30}';
 
@@ -73,7 +77,8 @@ describe("the ledger's limits", () => {
       ledger.post(null, muse, "c1", "for muse", null);
       ledger.post(null, muse, "c2", "for muse too", null);
       // Dot's own mailbox is empty, but two messages wait for their reader.
-      expect(refusal(() => ledger.post(null, dot, "c3", "for dot", null))).toBe(FULL(2));
+      expect(refusal(() => ledger.post(null, dot, "c3", "for dot", null)))
+        .toBe(FULL(2, "Muse (2)"));
       ledger.ack(MUSE, 1);
       ledger.post(null, dot, "c3", "for dot", null);
     });
@@ -112,9 +117,11 @@ describe("the ledger's bounds", () => {
       for (const n of [1, 2, 3]) {
         ledger.post(null, room, `c${n}`, `body ${n}`, null);
       }
-      expect(refusal(() => ledger.post(null, room, "c4", "body 4", null))).toBe(FULL(3));
+      expect(refusal(() => ledger.post(null, room, "c4", "body 4", null)))
+        .toBe(FULL(3, "Muse (3)"));
       // Mail to the owner waits on the same one ceiling: no mailbox has its own.
-      expect(refusal(() => ledger.post(MUSE, room, "m1", "to the owner", null))).toBe(FULL(3));
+      expect(refusal(() => ledger.post(MUSE, room, "m1", "to the owner", null)))
+        .toBe(FULL(3, "Muse (3)"));
       ledger.ack(MUSE, 1);
       ledger.post(MUSE, room, "m1", "to the owner", null);
     });
@@ -128,7 +135,7 @@ describe("the ledger's bounds", () => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       ledger.post(null, room, "c1", "x".repeat(PLACE_BYTES), null);
       ledger.post(null, room, "c2", "y".repeat(PLACE_BYTES), null);
-      expect(refusal(() => ledger.post(null, room, "c3", "1", null))).toBe(FULL(2));
+      expect(refusal(() => ledger.post(null, room, "c3", "1", null))).toBe(FULL(2, "Muse (2)"));
     });
     // A segment's seal, not a bound: the one byte count the ledger keeps.
     expect(Object.keys(LEDGER_LIMITS).filter((key) => key.endsWith("Bytes")))
@@ -323,7 +330,7 @@ describe("the ledger's bounds", () => {
       const people: Origin[] = [MUSE, DOT, origin(3), origin(4), origin(5)];
       const refusals = new Map<string, number>();
       const allowed = new Set([
-        FULL(4), BUSY, "room is not an enabled agent's dm",
+        "FULL", BUSY, "room is not an enabled agent's dm",
         "this outside identity is not one enabled agent",
         "the owner's enabled agents are at their limit",
         "the owner's agent registry is full; delete a disabled agent to make room",
@@ -354,7 +361,8 @@ describe("the ledger's bounds", () => {
             ledger.remove(idOf(who));
           }
         } catch (error) {
-          const message = (error as Error).message;
+          const said = (error as Error).message;
+          const message = ANY_FULL.test(said) ? "FULL" : said;
           if (!allowed.has(message)) {
             throw error;  // the invariant's own loud error among them
           }
@@ -364,7 +372,7 @@ describe("the ledger's bounds", () => {
       return refusals;
     });
     // The exchange really pressed both ceilings, and deleted nothing to get past them.
-    expect(seen.get(FULL(4)) ?? 0).toBeGreaterThan(0);
+    expect(seen.get("FULL") ?? 0).toBeGreaterThan(0);
     expect(seen.get(BUSY) ?? 0).toBeGreaterThan(0);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);

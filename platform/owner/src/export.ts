@@ -35,12 +35,17 @@
  * **Archive segments (version 3; slice STORE item 2, `segments.ts`).** An `archive_segments`
  * row names a content whose bytes are export lines of this same grammar: each archived record's
  * `row` lines (a message, its body inline whatever its size, its recipients), then one
- * `{"t":"segment",...}` trailer line, then 16 ASCII digits (the trailer's offset). A reader
- * fetches the segment's chunks as any content's and reads its `row` lines as base lines of
- * their tables, before the log (last line per key still wins: an archived row is gone from
- * its table, so nothing later names its key). It drops the lines of a room naming an agent in
- * `archive_purges` (deleted, its segments not yet rewritten). Segments ship as they are, so a
- * generation never reads the archive back.
+ * `{"t":"segment",...}` trailer line, then 16 ASCII digits (the trailer's offset). A reader,
+ * having read the base and the log to E, fetches the chunks of each `archive_segments` row
+ * standing at E as any content's and applies its `row` lines **after the log**, over it: a
+ * move deletes its rows from their tables (the log names them `gone`) in the same unit that
+ * names the segment, and a moved row never returns to its table (its key, a message's seq and
+ * id, is never given again), so a key a segment at E holds is the owner's at E as the segment
+ * holds it. A segment that a rewrite replaced before E has no row at E and is not read. The
+ * reader drops the lines of a room naming an agent in `archive_purges` at E (deleted, its
+ * segments not yet rewritten). Segments ship as they are, so a generation never reads the
+ * archive back. The id key (`ledger_ids`) rides along, so whoever holds an export can read
+ * the seq (and so the volume) a message id carries; it gates no access.
  *
  * A file's bytes are its content's: `file_entries` and `file_history` name a `content_id`;
  * `file_contents` holds a small one `inline`, else `file_content_chunks` lists its chunks

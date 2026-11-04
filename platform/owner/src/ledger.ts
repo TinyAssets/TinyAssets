@@ -99,7 +99,8 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import {
   bloomHas, bloomOf, bytesOf, idKey, idOrder, imageDigest, orderedId, parseRecord, recordText,
-  roomMembers, SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord,
+  RECORD_TRAILER_BYTES, roomMembers, SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS,
+  type SegmentRecord,
 } from "./segments";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 import {
@@ -222,9 +223,11 @@ export const WAKE_SETTINGS = Object.freeze({
  * 2, the founder's one wall): `maxMessages` hot messages, the acked ones moved to archive
  * segments by the `archive` lane from half of it, and a post at it answered `storage_busy`
  * (retryable) while the lane catches up, never a delete; and `maxUnacked` messages unread
- * owner-wide, the hot ceiling less one segment's records (so at the hot ceiling there is
- * always a segment to move), past which a post is refused `ledger_full`: too much mail is
- * unread, and reading or acking makes room. Disabling an agent releases its unacked mail,
+ * owner-wide, derived from the hot mail's honest share of the room under half the 10 GB
+ * (each unread message holds its three hot rows; `limits-audit.md`), less one segment's
+ * records so at the hot ceiling there is always a segment to move, past which a post is
+ * refused `ledger_full`: too much mail is unread, the readers holding the most named, and
+ * reading or acking makes room. Being owner-wide, one noisy sender can fill it. Disabling an agent releases its unacked mail,
  * and deleting one purges it, archived mail included (`archive_purges`).
  *
  * How they were chosen (ADR-035; `limits-audit.md`). Bodies past `PLACE_BYTES` live in R2,
@@ -805,7 +808,7 @@ function mailLineBytes(message: Readonly<Record<string, unknown>>,
     const next = bytesOf(recordText(mailRecord(
       { ...message, line_bytes: bytes },
       { ...body, meta_bytes: Math.max(0, bytes - (body["body_bytes"] as number)) },
-      [recipient])));
+      [recipient]))) + RECORD_TRAILER_BYTES;
     if (next === bytes) {
       return bytes;
     }
@@ -844,6 +847,11 @@ export function archivedRecord(key: number, rows: [string, Record<string, unknow
   }
   return { key, chain: message["chain_root"] as string, rows,
            room: message["room_id"] as string };
+}
+
+/** When an archived record's message was posted. */
+export function archivedAt(record: SegmentRecord): number {
+  return record.rows.find(([table]) => table === "ledger_messages")![1]["created_at"] as number;
 }
 
 /** A fence row's members bloom, as bytes. */
@@ -1530,22 +1538,18 @@ export class Ledger {
 
   /**
    * The segments a chain read past `after` reads next: those whose keys run past it (and
-   * past the root's seq), at most `CHAIN_SEGMENTS`, and the least first key of the rest
-   * (the frontier: no archived message of the chain below it is unread), null for none.
+   * past the root's seq), at most `CHAIN_SEGMENTS`, in key order, and the frontier: the next
+   * segment's first key (no archived message of the chain below it is unread), null for
+   * none. Segments never overlap in key range (`archive_segments_disjoint`), so key order is
+   * one order.
    */
   chainFences(rootSeq: number, after: number): { fences: Fence[]; frontier: number | null } {
     const from = Math.max(after, rootSeq - 1);
     const fences = this.#sql.exec<Fence>(
       "SELECT * FROM archive_segments WHERE stream = 'mail' AND last_key > ? " +
-        "ORDER BY last_key, segment LIMIT ?", from, CHAIN_SEGMENTS + 1).toArray();
-    if (fences.length <= CHAIN_SEGMENTS) {
-      return { fences, frontier: null };
-    }
-    const taken = fences.slice(0, CHAIN_SEGMENTS);
-    const frontier = this.#sql.exec<{ least: number | null }>(
-      "SELECT min(first_key) AS least FROM archive_segments WHERE stream = 'mail' AND " +
-        "last_key > ?", taken.at(-1)!.last_key).one().least;
-    return { fences: taken, frontier };
+        "ORDER BY last_key LIMIT ?", from, CHAIN_SEGMENTS + 1).toArray();
+    return fences.length <= CHAIN_SEGMENTS ? { fences, frontier: null }
+      : { fences: fences.slice(0, CHAIN_SEGMENTS), frontier: fences[CHAIN_SEGMENTS]!.first_key };
   }
 
   /**
@@ -1656,26 +1660,57 @@ export class Ledger {
       || usage.acked_bytes >= this.#limits.archiveBytes;
   }
 
-  /** Whether the `archive` lane has a move to make: hot mail past half the ceiling. A read. */
-  archiveDue(): boolean {
-    const usage = this.#usage();
-    return usage.messages > this.#limits.maxMessages / 2 && this.#sealable(usage);
+  /**
+   * The oldest acked hot message whose seq is below the archive's last key: acked after the
+   * mail around it moved, so it goes into the segment its key falls in (`archivePick`), never
+   * a new one that would overlap. A read of one index range.
+   */
+  #straggler(): number | null {
+    return this.#sql.exec<{ seq: number | null }>(
+      "SELECT min(seq) AS seq FROM ledger_messages WHERE unacked = 0 AND seq < (SELECT " +
+        "coalesce(max(last_key), 0) FROM archive_segments WHERE stream = 'mail')").one().seq;
   }
 
   /**
-   * The next segment's batch: the oldest acked messages in seq order, up to a seal (its
-   * lines' bytes or its records), and the placed bodies to read for it; null when no
-   * segment's worth waits. A read.
+   * Whether the `archive` lane has a move to make: hot mail past half the ceiling, and a
+   * straggler to merge or a segment's worth of acked mail. A read.
    */
-  archivePick(): { seqs: number[]; contents: string[] } | null {
-    if (!this.#sealable(this.#usage())) {
-      return null;
-    }
+  archiveDue(): boolean {
+    const usage = this.#usage();
+    return usage.messages > this.#limits.maxMessages / 2
+      && (this.#straggler() !== null || this.#sealable(usage));
+  }
+
+  /**
+   * The next move's batch and the placed bodies to read for it; null when none waits. A
+   * straggler's: every acked hot message whose key falls in the segment that holds the
+   * oldest straggler's range or lies just past it (`into`), merged into it, so no two
+   * segments ever overlap. Else the tail's: the oldest acked messages, every one past the
+   * archive's last key, up to a seal (its lines' bytes or its records). A read.
+   */
+  archivePick(): { seqs: number[]; contents: string[]; into: Fence | null } | null {
     const limits = this.#limits;
-    const rows = this.#sql.exec<{ seq: number; line_bytes: number; content_id: string | null }>(
-      "SELECT m.seq, m.line_bytes, b.content_id FROM ledger_messages m JOIN message_bodies b " +
-        "ON b.message_id = m.message_id WHERE m.unacked = 0 ORDER BY m.seq LIMIT ?",
-      limits.archiveRecords).toArray();
+    const sql = this.#sql;
+    const straggler = this.#straggler();
+    let into: Fence | null = null;
+    let rows: { seq: number; line_bytes: number; content_id: string | null }[];
+    if (straggler !== null) {
+      into = sql.exec<Fence>(
+        "SELECT * FROM archive_segments WHERE stream = 'mail' AND last_key >= ? " +
+          "ORDER BY last_key LIMIT 1", straggler).one();
+      rows = sql.exec<{ seq: number; line_bytes: number; content_id: string | null }>(
+        "SELECT m.seq, m.line_bytes, b.content_id FROM ledger_messages m JOIN message_bodies b " +
+          "ON b.message_id = m.message_id WHERE m.unacked = 0 AND m.seq >= ? AND m.seq <= ? " +
+          "ORDER BY m.seq LIMIT ?", straggler, into.last_key, limits.archiveRecords).toArray();
+    } else {
+      if (!this.#sealable(this.#usage())) {
+        return null;
+      }
+      rows = sql.exec<{ seq: number; line_bytes: number; content_id: string | null }>(
+        "SELECT m.seq, m.line_bytes, b.content_id FROM ledger_messages m JOIN message_bodies b " +
+          "ON b.message_id = m.message_id WHERE m.unacked = 0 ORDER BY m.seq LIMIT ?",
+        limits.archiveRecords).toArray();
+    }
     const seqs: number[] = [];
     const contents: string[] = [];
     let bytes = 0;
@@ -1685,11 +1720,11 @@ export class Ledger {
         contents.push(row.content_id);
       }
       bytes += row.line_bytes;
-      if (bytes >= limits.archiveBytes) {
+      if (into === null && bytes >= limits.archiveBytes) {
         break;
       }
     }
-    return seqs.length === 0 ? null : { seqs, contents };
+    return seqs.length === 0 ? null : { seqs, contents, into };
   }
 
   /** The batch's rows as the object holds them, in seq order: what the two units compare. */
@@ -1741,24 +1776,45 @@ export class Ledger {
   }
 
   /**
-   * In a move's second unit, its segment's content adopted: the batch, unchanged since it
-   * was read (its digest), gone from the hot set, and its segment's fence row named. Refused
-   * `archive_changed` when the batch changed (an agent's purge, a release), so the unit
-   * rolls back whole and the next pass picks again.
+   * In a move's second unit, its pieces' contents adopted: the segments it `replaced` (a
+   * merge's or a rewrite's), each still held as read, gone; the batch (`seqs`), unchanged
+   * since it was read (its digest), gone from the hot set; and each piece's fence named, the
+   * schema holding no two to overlap. The purges' cursors move past what it replaced, and a
+   * blocked archive is unblocked. Refused `archive_changed` when anything changed, so the
+   * unit rolls back whole and the next pass picks again.
    */
-  archiveApply(seqs: readonly number[], expected: string, contentId: string,
-               fence: Omit<Fence, "segment" | "content_id">, now: number): number {
-    const images = this.#images(seqs);
-    if (images === null || imageDigest(images) !== expected) {
-      throw new Refused("archive_changed: the batch changed between the move's units");
+  archiveCommit(seqs: readonly number[], expected: string, replaced: readonly Fence[],
+                pieces: readonly { content_id: string;
+                                   fence: Omit<Fence, "segment" | "content_id"> }[],
+                now: number): void {
+    for (const old of replaced) {
+      if (this.#sql.exec("DELETE FROM archive_segments WHERE segment = ? AND content_id = ? " +
+                           "RETURNING segment", old.segment, old.content_id)
+        .toArray().length === 0) {
+        throw new Refused("archive_changed: a replaced segment went between the units");
+      }
     }
-    const list = JSON.stringify(images.map((image) => image.message.message_id));
-    const inList = "IN (SELECT value FROM json_each(?))";
-    // Recipients before their messages: their triggers read the message's size.
-    this.#sql.exec(`DELETE FROM ledger_recipients WHERE message_id ${inList}`, list);
-    this.#sql.exec(`DELETE FROM message_bodies WHERE message_id ${inList}`, list);
-    this.#sql.exec(`DELETE FROM ledger_messages WHERE message_id ${inList}`, list);
-    return this.#fence(contentId, fence, now);
+    if (seqs.length > 0) {
+      const images = this.#images(seqs);
+      if (images === null || imageDigest(images) !== expected) {
+        throw new Refused("archive_changed: the batch changed between the move's units");
+      }
+      const list = JSON.stringify(images.map((image) => image.message.message_id));
+      const inList = "IN (SELECT value FROM json_each(?))";
+      // Recipients before their messages: their triggers read the message's size.
+      this.#sql.exec(`DELETE FROM ledger_recipients WHERE message_id ${inList}`, list);
+      this.#sql.exec(`DELETE FROM message_bodies WHERE message_id ${inList}`, list);
+      this.#sql.exec(`DELETE FROM ledger_messages WHERE message_id ${inList}`, list);
+    }
+    for (const piece of pieces) {
+      this.#fence(piece.content_id, piece.fence, now);
+    }
+    if (replaced.length > 0) {
+      const last = Math.max(...replaced.map((old) => old.segment));
+      this.#sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
+                     last, last);
+    }
+    this.#sql.exec("UPDATE ledger_usage SET archive_blocked = 0");
   }
 
   /** A segment's fence row, its content named (counted as a placed body's). In a unit. */
@@ -1772,11 +1828,32 @@ export class Ledger {
       .one().segment;
   }
 
-  /** The segments whose keys span `seq`, newest first: where an archived message may be. */
-  archiveFences(seq: number, limit = 4): Fence[] {
+  /** A segment's neighbour by key: the one just past it, else the one just before it. */
+  fenceBeside(fence: Fence): Fence | null {
+    return this.#sql.exec<Fence>(
+      "SELECT * FROM archive_segments WHERE stream = 'mail' AND first_key > ? " +
+        "ORDER BY first_key LIMIT 1", fence.last_key).toArray()[0]
+      ?? this.#sql.exec<Fence>(
+        "SELECT * FROM archive_segments WHERE stream = 'mail' AND last_key < ? " +
+          "ORDER BY last_key DESC LIMIT 1", fence.first_key).toArray()[0] ?? null;
+  }
+
+  /** Whether the archive's last move was refused for the storage figure. A read. */
+  archiveBlocked(): boolean {
+    return this.#sql.exec<{ blocked: number }>(
+      "SELECT archive_blocked AS blocked FROM ledger_usage").one().blocked === 1;
+  }
+
+  /** In a unit: the archive's move refused for the storage figure, so posts say so. */
+  blockArchive(): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_blocked = 1");
+  }
+
+  /** The segment whose key range holds `seq`, if any: segments never overlap, so one. */
+  archiveFences(seq: number): Fence[] {
     return this.#sql.exec<Fence>(
       "SELECT * FROM archive_segments WHERE stream = 'mail' AND last_key >= ? AND " +
-        "first_key <= ? ORDER BY segment DESC LIMIT ?", seq, seq, limit).toArray();
+        "first_key <= ? ORDER BY last_key LIMIT 1", seq, seq).toArray();
   }
 
   /** A segment's fence row, if it is still held. A read. */
@@ -1790,7 +1867,7 @@ export class Ledger {
    * cursors moved past every segment whose bloom names none of them; null when none is left,
    * each purge then done. In a unit.
    */
-  purgeNext(): { fence: Fence; next: Fence | null } | null {
+  purgeNext(): { fence: Fence } | null {
     const sql = this.#sql;
     for (let batch = 0; batch < 64; batch++) {
       const purges = sql.exec<{ agent_id: string; next_segment: number }>(
@@ -1806,12 +1883,9 @@ export class Ledger {
         const bloom = fenceBloom(fence);
         if (purges.some((purge) => purge.next_segment < fence.segment
                         && bloomHas(bloom, purge.agent_id))) {
-          const next = sql.exec<Fence>(
-            "SELECT * FROM archive_segments WHERE segment > ? ORDER BY segment LIMIT 1",
-            fence.segment).toArray()[0] ?? null;
           sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
                    fence.segment - 1, fence.segment - 1);
-          return { fence, next };
+          return { fence };
         }
       }
       if (fences.length === 0) {
@@ -1824,36 +1898,20 @@ export class Ledger {
     return null;
   }
 
-  /**
-   * In a rewrite's second unit: the segments `replaced`, each still held as read, gone, and
-   * the rewritten one's fence named (none when every record went); the purges' cursors past
-   * them. Refused `archive_changed` when one went meanwhile.
-   */
-  archiveReplace(replaced: readonly Fence[], contentId: string | null,
-                 fence: Omit<Fence, "segment" | "content_id"> | null, now: number,
-                 past: number | null = null): void {
-    for (const old of replaced) {
-      if (this.#sql.exec("DELETE FROM archive_segments WHERE segment = ? AND content_id = ? " +
-                           "RETURNING segment", old.segment, old.content_id)
-        .toArray().length === 0) {
-        throw new Refused("archive_changed: a rewritten segment went between the units");
-      }
-    }
-    if (contentId !== null && fence !== null) {
-      this.#fence(contentId, fence, now);
-    }
-    // `past`: a segment whose bloom named a purged agent but whose records held none.
-    const last = Math.max(past ?? 0, ...replaced.map((old) => old.segment));
+  /** In a unit: past a segment whose bloom named a purged agent but held none of its mail. */
+  purgeSkip(segment: number): void {
     this.#sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
-                   last, last);
+                   segment, segment);
   }
 
   /** A move begun (its first unit): its upload and its batch's digest, until it ends. */
-  moveBegun(stream: "mail" | "rewrite", intentId: string, expected: string, now: number): void {
-    this.#sql.exec("INSERT INTO archive_moves (stream, intent_id, digest, started_at) VALUES " +
-                     "(?, ?, ?, ?) ON CONFLICT (stream) DO UPDATE SET intent_id = " +
-                     "excluded.intent_id, digest = excluded.digest, started_at = " +
-                     "excluded.started_at", stream, intentId, expected, now);
+  moveBegun(stream: "mail" | "rewrite", intentId: string, expected: string, now: number,
+            storedBefore: number): void {
+    this.#sql.exec("INSERT INTO archive_moves (stream, intent_id, digest, started_at, " +
+                     "stored_before) VALUES (?, ?, ?, ?, ?) ON CONFLICT (stream) DO UPDATE SET " +
+                     "intent_id = excluded.intent_id, digest = excluded.digest, started_at = " +
+                     "excluded.started_at, stored_before = excluded.stored_before", stream,
+                   intentId, expected, now, storedBefore);
   }
 
   /** A move ended, adopted or given up: its row gone (only its own, when `intentId`). */
@@ -2000,6 +2058,17 @@ export class Ledger {
    * owner past its `share` of the owner's mailbox (see {@link LedgerLimits}). Bytes are the
    * tier's storage's to bound: a body past `PLACE_BYTES` is in R2.
    */
+  /** The readers holding the most unread mail, at most three, as the owner knows them. */
+  #holders(): string {
+    return this.#sql.exec<{ reader: string; unacked: number; name: string | null }>(
+      "SELECT r.reader, r.unacked, coalesce(o.display_name, n.agent) AS name FROM " +
+        "ledger_readers r LEFT JOIN outside_agents o ON o.agent_id = r.reader LEFT JOIN " +
+        "native_agents n ON n.agent_id = r.reader WHERE r.unacked > 0 " +
+        "ORDER BY r.unacked DESC, r.reader LIMIT 3").toArray()
+      .map((row) => `${row.reader === OWNER ? "you" : row.name ?? row.reader} (${row.unacked})`)
+      .join(", ");
+  }
+
   /**
    * Room for one more message, never by a delete: too much unread mail owner-wide is
    * `ledger_full`, and the hot ceiling, with acked mail the `archive` lane has to move,
@@ -2011,8 +2080,8 @@ export class Ledger {
     if (usage.unacked + 1 > limits.maxUnacked) {
       const most = limits.maxUnacked;
       throw new Refused(`${LEDGER_FULL}: too much mail is unread (${most} message${
-        most === 1 ? " waits" : "s wait"} for their readers); reading and acking mail makes ` +
-                        "room");
+        most === 1 ? " waits" : "s wait"} for their readers; the most for ${this.#holders()}); ` +
+                        "reading and acking mail makes room");
     }
     if (usage.messages + 1 > limits.maxMessages) {
       throw new Refused(`${STORAGE_BUSY}: your storage is catching up, moving older mail ` +

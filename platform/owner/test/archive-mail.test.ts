@@ -16,9 +16,13 @@ import type { OwnerDO } from "../src/owner-do";
 import { parseTiers } from "../src/tier";
 import {
   bytesOf, encodeSegment, idKey, idOrder, MIN_RECORD_BYTES, orderedId, parseRecord,
-  parseTrailer, recordText, TIER_STORAGE_MAX,
+  parseTrailer, recordText, segmentChunks, TIER_STORAGE_MAX,
 } from "../src/segments";
-import { DOT, MUSE, rig } from "./ledger-support";
+import { exported } from "../src/export";
+import { storageFullOf } from "../src/storage-full";
+import type { ChunkStore } from "../src/files";
+import { digest, generate, replay } from "./generation-support";
+import { DOT, ledgerOn, MUSE, rig } from "./ledger-support";
 import { drainDue, failure, sqlIn } from "./support";
 
 const ARCHIVING = env.ARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
@@ -46,23 +50,48 @@ async function sentAndAcked(r: Rig, reader: typeof MUSE, room: string, n: number
   return ids;
 }
 
+/** The lane's work as the ledger reads it (`archiveDue`), and any purge or move left. */
+const BUSY_SQL = "SELECT (SELECT COUNT(*) FROM archive_moves) + (SELECT COUNT(*) FROM " +
+  "archive_purges) + (SELECT CASE WHEN u.messages > ? AND (u.messages - u.unacked >= 2 OR " +
+  "EXISTS (SELECT 1 FROM ledger_messages WHERE unacked = 0 AND seq < (SELECT " +
+  "coalesce(max(last_key), 0) FROM archive_segments))) THEN 1 ELSE 0 END FROM ledger_usage u) " +
+  "AS n";
+
 /** Drive the object's lanes until the archive has nothing due. */
 async function settle(r: Rig): Promise<void> {
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 60; i++) {
     await drainDue(r.stub);
-    const [{ n }] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_moves") as
-      [{ n: number }];
-    const due = await runInDurableObject(r.stub, (_i: OwnerDO, state) =>
-      state.storage.sql.exec<{ messages: number; unacked: number }>(
-        "SELECT messages, unacked FROM ledger_usage").one());
-    const purges = await sqlIn(r.stub, "SELECT 1 FROM archive_purges");
-    if (n === 0 && purges.length === 0
-        && !(due.messages > LIMITS.maxMessages / 2 && due.messages - due.unacked >= 2)) {
+    const [{ n }] = await sqlIn(r.stub, BUSY_SQL, LIMITS.maxMessages / 2) as [{ n: number }];
+    if (n === 0) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("the archive lane did not settle");
+}
+
+/** Any two segments whose key ranges overlap: none, ever (review H1). */
+async function overlaps(r: Rig): Promise<unknown[]> {
+  return sqlIn(r.stub, "SELECT a.segment, b.segment FROM archive_segments a JOIN " +
+               "archive_segments b ON a.segment < b.segment AND a.last_key >= b.first_key " +
+               "AND a.first_key <= b.last_key");
+}
+
+/** A chain read, paged by its `after` cursor until `id` shows or it ends: its body, or null. */
+async function chained(r: Rig, id: string): Promise<string | null> {
+  let after = 0;
+  for (let page = 0; page < 20; page++) {
+    const chain = await r.stub.mailChain(r.bind(null), { message_id: id, limit: 10, after });
+    const found = chain.messages.find((m) => m.message_id === id);
+    if (found !== undefined) {
+      return found.body;
+    }
+    if (!chain.more || chain.after <= after) {
+      return null;
+    }
+    after = chain.after;
+  }
+  return null;
 }
 
 describe("segments", () => {
@@ -170,10 +199,12 @@ describe("the archive lane", () => {
       .toMatch(/^storage_busy:/);
     await settle(r);
     await r.post(null, room, { cmid: "c8", body: "body 8" });
-    const kept = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM ledger_messages");
-    const archived = await sqlIn(r.stub, "SELECT coalesce(SUM(records), 0) AS n " +
-                                         "FROM archive_segments");
-    expect((kept[0]!["n"] as number) + (archived[0]!["n"] as number)).toBe(9);
+    await settle(r);  // the post rang the lane: let any move it started land first
+    // Both counts in one read, so no move can land between them (review M2).
+    const [held] = await sqlIn(r.stub, "SELECT (SELECT COUNT(*) FROM ledger_messages) + " +
+                                       "(SELECT coalesce(SUM(records), 0) FROM " +
+                                       "archive_segments) AS n");
+    expect(held!["n"]).toBe(9);
   });
 
   it("lets a reply name an archived parent, and the chain reads it with the reply",
@@ -214,9 +245,9 @@ describe("the archive lane", () => {
       // Between the units: the agent deleted, its mail with it.
       ledger.remove(muse);
       try {
-        ledger.archiveApply(pick.seqs, batch.digest, "e".repeat(64), {
-          first_key: 1, last_key: 2, first_at: 1, last_at: 1, records: 2, bytes: 1,
-          trailer_offset: 0, trailer_bytes: 1, members: "0".repeat(128) }, 1);
+        ledger.archiveCommit(pick.seqs, batch.digest, [], [{ content_id: "e".repeat(64),
+          fence: { first_key: 1, last_key: 2, first_at: 1, last_at: 1, records: 2, bytes: 1,
+                   trailer_offset: 0, trailer_bytes: 1, members: "0".repeat(128) } }], 1);
         return "applied";
       } catch (error) {
         return (error as Error).message;
@@ -341,6 +372,222 @@ describe("the export, version 3", () => {
       expect(rows["message_bodies"]).toMatchObject({ body: `m ${n}`, content_id: null });
       expect(rows["ledger_recipients"]).toMatchObject({ agent_id: MUSE_ID(rows), unacked: 0 });
     }
+  });
+});
+
+describe("segments never overlap in key range (review H1)", () => {
+  it("are refused by the schema when two would", async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
+    await settle(r);
+    const [fence] = await sqlIn(r.stub, "SELECT * FROM archive_segments ORDER BY first_key");
+    const [first0, last0] = [fence!["first_key"] as number, fence!["last_key"] as number];
+    const insert = (first: number, last: number) => runInDurableObject(r.stub,
+      (_i: OwnerDO, state) => state.storage.sql.exec(
+        "INSERT INTO archive_segments (stream, first_key, last_key, first_at, last_at, " +
+          "records, bytes, content_id, filer, trailer_offset, trailer_bytes, members, " +
+          "made_at) VALUES ('mail', ?, ?, 1, 1, 1, 1, ?, 'owner', 0, 1, ?, 1)", first, last,
+        fence!["content_id"] as string, "0".repeat(128)));
+    for (const [first, last] of [[first0, first0], [last0, last0 + 5], [0, first0],
+                                 [0, last0 + 100]] as const) {
+      expect((await failure(() => insert(first, last))).message)
+        .toMatch(/archive segments never overlap in key range/);
+    }
+    await insert(10_000, 10_001);  // past every key: disjoint, taken
+    expect(await overlaps(r)).toEqual([]);
+  }, 60_000);
+
+  it("stay disjoint, and every message readable by its chain, through two deletions " +
+     "(the reviewer's case)", async () => {
+    const r = await rig(ARCHIVING);
+    const eve = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
+    const x = await r.register(MUSE, "Muse");
+    const y = await r.register(DOT, "Dot");
+    const a = await r.register(eve, "Eve");
+    const who = (seq: number) => seq === 1 ? [MUSE, x] as const
+      : seq === 23 ? [DOT, y] as const : [eve, a] as const;
+    const ids: string[] = [];
+    for (let seq = 1; seq <= 28; seq++) {
+      const [origin, agent] = who(seq);
+      const posted = await r.post(null, `dm:${agent}`, { body: `m${seq}`, cmid: `c${seq}` });
+      ids.push(posted.message_id);
+      const page = await r.read(origin);
+      await r.ack(origin, page.messages.at(-1)!.seq);
+      if (seq % 2 === 0) {
+        await settle(r);
+      }
+    }
+    await settle(r);
+    expect(await overlaps(r)).toEqual([]);
+    await r.stub.deleteAgent(r.session(null), { agent_id: x });
+    await settle(r);
+    expect(await overlaps(r)).toEqual([]);
+    await r.stub.deleteAgent(r.session(null), { agent_id: y });
+    await settle(r);
+    expect(await overlaps(r)).toEqual([]);
+    for (let seq = 2; seq <= 28; seq++) {
+      if (seq !== 23) {
+        expect(await chained(r, ids[seq - 1]!), `seq ${seq}`).toBe(`m${seq}`);
+      }
+    }
+    for (const seq of [1, 23]) {
+      expect((await failure(() => r.stub.mailChain(r.bind(null), {
+        message_id: ids[seq - 1]!, limit: 10 }))).message).toBe("no such message held");
+    }
+  }, 120_000);
+
+  it("merges a straggler (acked after the mail around it moved) into the segment its key " +
+     "falls in", async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    const dot = await r.register(DOT, "Dot");
+    // Seq 1 to Muse, left unread; Dot's mail after it is acked and moves.
+    const first = await r.post(null, `dm:${muse}`, { body: "late", cmid: "late" });
+    await sentAndAcked(r, DOT, `dm:${dot}`, 6, "d");
+    await settle(r);
+    const before = await sqlIn(r.stub, "SELECT first_key, last_key FROM archive_segments " +
+                                       "ORDER BY first_key");
+    expect(before.length).toBeGreaterThan(0);
+    expect(before[0]!["first_key"]).toBeGreaterThan(1);
+    // Muse acks it now: it is below the archive's last key, so it merges, never overlaps.
+    await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
+    await sentAndAcked(r, DOT, `dm:${dot}`, 3, "e");  // over half the ceiling again
+    await settle(r);
+    expect(await overlaps(r)).toEqual([]);
+    const held = await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
+                             first.message_id);
+    expect(held).toEqual([]);
+    expect(await chained(r, first.message_id)).toBe("late");
+  }, 60_000);
+});
+
+describe("an export across a move (review H2)", () => {
+  it("replays exactly the owner at E by v3's reading: segments' rows after the log",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    const ids = await r.inLedger(LIMITS, (ledger: Ledger) => {
+      const sent: string[] = [];
+      for (let i = 0; i < 6; i++) {
+        sent.push(ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}`, null).message_id);
+        ledger.read(MUSE, 10);
+        ledger.ack(MUSE, i + 1);
+      }
+      return sent;
+    });
+    // A generation, with one archive move made inside its window (after its first unit, so
+    // after S and before E): the move's deletes are logged `gone`, its fence logged too.
+    let moved = false;
+    const generated = await generate(r.stub, { afterUnit: async ({ files, gate }) => {
+      if (moved) {
+        return;
+      }
+      moved = true;
+      const ledger = ledgerOn(gate.storage as unknown as DurableObjectStorage, LIMITS);
+      const pick = await gate.write(() => ledger.archivePick())!;
+      const batch = await gate.write(() => ledger.archiveBatch(pick!.seqs, new Map()))!;
+      const encoded = encodeSegment("mail", batch!.records);
+      const chunks = segmentChunks(encoded.bytes);
+      const begun = await gate.write(() => files.begin(encoded.bytes.byteLength,
+        chunks.map((chunk) => chunk.sha256), "owner", [], true, null, true));
+      await files.upload(begun.intent_id, chunks);
+      await gate.write(() => files.adopt(begun.intent_id, "owner", (contentId) =>
+        ledger.archiveCommit(pick!.seqs, batch!.digest, [], [{ content_id: contentId, fence: {
+          first_key: encoded.trailer.first, last_key: encoded.trailer.last, first_at: 1,
+          last_at: 1, records: encoded.trailer.records, bytes: encoded.bytes.byteLength,
+          trailer_offset: encoded.trailer_offset, trailer_bytes: encoded.trailer_bytes,
+          members: "0".repeat(128) } }], 1)));
+    }, sizes: { page: 256, part: 32 * 1024, gather: 64 * 1024 } });
+    expect(moved).toBe(true);
+    const lines = generated.lines as unknown as Record<string, unknown>[];
+    expect(lines.filter((line) => line["t"] === "gone" && line["table"] === "ledger_messages")
+      .length).toBeGreaterThan(0);  // the move ran inside the window
+    // Base and log, last line per key: exactly the owner's rows at E (hot and fences).
+    const atE = replay(generated.lines);
+    expect(digest(atE)).toBe(generated.atE);
+    // Then each segment standing at E, its rows applied over that, after the log.
+    const tables = exported();
+    const fences = Object.values(atE["archive_segments"]!).map((row) =>
+      JSON.parse(row) as Record<string, unknown>);
+    expect(fences.length).toBe(1);
+    for (const fence of fences) {
+      const shas = (await sqlIn(r.stub, "SELECT sha256 FROM file_content_chunks WHERE " +
+                                        "content_id = ? ORDER BY idx",
+                                fence["content_id"] as string)).map((row) => row["sha256"]);
+      const whole = Buffer.from(await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
+        const space = state.storage.sql.exec<{ ns: string; data_key: string }>(
+          "SELECT ns, data_key FROM file_space").one();
+        const parts = await (env.FILES as ChunkStore).getChunks(space.ns, space.data_key,
+          shas.map((sha) => ({ sha256: sha as string })));
+        return Buffer.concat(parts.map((part) => Buffer.from(part))).toString("base64");
+      }), "base64");
+      const trailer = parseTrailer(whole.subarray(fence["trailer_offset"] as number,
+        (fence["trailer_offset"] as number) + (fence["trailer_bytes"] as number)).toString());
+      for (const [key, offset, length] of trailer.keys) {
+        for (const [table, row] of archivedRecord(key, parseRecord(
+          whole.subarray(offset, offset + length).toString())).rows) {
+          atE[table]![JSON.stringify(tables[table]!.key.map((column) => row[column]))] =
+            JSON.stringify(row);
+        }
+      }
+    }
+    // Every message the owner held at E, once: the moved ones from their segment.
+    const read = Object.values(atE["ledger_messages"]!).map((row) =>
+      (JSON.parse(row) as Record<string, unknown>)["message_id"]);
+    expect(read.sort()).toEqual([...ids].sort());
+    const bodies = Object.values(atE["message_bodies"]!).map((row) =>
+      (JSON.parse(row) as Record<string, unknown>)["body"]).sort();
+    expect(bodies).toEqual(ids.map((_id, i) => `body ${i}`).sort());
+  }, 60_000);
+});
+
+describe("a full owner's archive (review M1)", () => {
+  it("still drains: a move may place past the figure, since it frees what it places",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    await r.inLedger(LIMITS, (ledger: Ledger) => {
+      for (let i = 0; i < 8; i++) {
+        ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}`, null);
+        ledger.read(MUSE, 10);
+        ledger.ack(MUSE, i + 1);
+      }
+    });
+    // The owner's own figure: exactly what is stored, so no segment fits beside the mail.
+    const { stored } = await r.stub.storageUsage(r.bind(null)).then((usage) =>
+      ({ stored: usage.used_bytes }));
+    const { generation, policy } = await r.stub.policyRead(r.bind(null));
+    await r.stub.policyWrite(r.session(null), {
+      expected_generation: generation,
+      policy: { ...policy, files: { max_bytes: stored } } as never });
+    await r.stub.mailboxAck(r.bind(MUSE), { through: 8 });  // rings the schedule
+    await settle(r);
+    const [moved] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments");
+    expect(moved!["n"]).toBeGreaterThan(0);
+    const after = (await r.stub.storageUsage(r.bind(null))).used_bytes;
+    expect(after).toBeLessThanOrEqual(stored);
+    expect(await sqlIn(r.stub, "SELECT archive_blocked AS b FROM ledger_usage"))
+      .toEqual([{ b: 0 }]);
+  });
+
+  it("makes a post at the hot ceiling storage_full, the one wall, when a move cannot land",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    await r.inLedger(LIMITS, (ledger: Ledger) => {
+      for (let i = 0; i < 8; i++) {
+        ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}`, null);
+        ledger.read(MUSE, 10);
+        ledger.ack(MUSE, i + 1);
+      }
+    });
+    // A move refused for the figure leaves the archive blocked (the lane's own mark).
+    await sqlIn(r.stub, "UPDATE ledger_usage SET archive_blocked = 1");
+    const refused = await failure(() => r.post(null, `dm:${muse}`, { cmid: "c8",
+                                                                     body: "body 8" }));
+    expect(refused.message).toMatch(/^storage_full: your storage is full/);
+    expect(storageFullOf(refused.message)).toMatchObject({ limit_bytes: expect.any(Number) });
   });
 });
 

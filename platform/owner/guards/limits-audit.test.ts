@@ -83,6 +83,28 @@ describe("slice STORE's archive (item 2)", () => {
     expect(HALF - total(others)).toBeGreaterThanOrEqual(DERIVED_ROOM * (1 - LOG_SHARE));
   });
 
+  it("derives the unread ceiling from the hot mail's honest share of the room under half",
+     () => {
+    // Unread mail cannot move (phase 1 archives acked mail only), so each unread message
+    // holds all three of its hot rows: its honest cost is the three ledger terms a row, not
+    // the recipients term's row alone (2.2 KB: that reading would claim 50,000 unread). The
+    // three terms at `maxMessages` are the hot mail's share of the room under half (the hot
+    // size a chosen 50,000; the room left under half is STARTER's and BRAIN's quarters, so it
+    // cannot grow). Of that share, a segment's records stay acked at the hot ceiling so the
+    // lane always has one to move; the unread ceiling is the rest.
+    const L = LEDGER_LIMITS;
+    const hot = ["ledger_messages", "message_bodies", "ledger_recipients"]
+      .reduce((sum, table) => sum + termBytes(table, TERMS[table]!), 0);
+    const perMessage = hot / L.maxMessages;
+    expect(perMessage).toBeGreaterThan(14_000);  // 14,535 B at the validators' widest
+    const derived = Math.floor((hot - SEGMENT_MIN_RECORDS * perMessage) / perMessage);
+    expect(L.maxUnacked).toBe(derived);
+    expect(L.archiveRecords).toBe(SEGMENT_MIN_RECORDS);
+    // The hot share fits under half beside every other term (the guard's own check), and the
+    // room left is no more than STARTER's and BRAIN's quarters and a little.
+    expect(HALF - total(TERMS)).toBeLessThan(DERIVED_ROOM * 2 * LOG_SHARE + 50e6);
+  });
+
   it("lets a tier offer about 0.5 TB: the fence rows, each a sealed segment's least bytes",
      () => {
     expect(TIER_STORAGE_MAX).toBe((ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES);

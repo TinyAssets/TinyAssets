@@ -528,7 +528,7 @@ describe("the ledger's binding", () => {
     }
     expect(await r.table("ledger_usage")).toEqual([
       { only: 1, agents: 0, enabled_agents: 0, messages: 0, settled_wakes: 0, unacked: 0,
-        acked_bytes: 0, last_seq: 0 }]);
+        acked_bytes: 0, last_seq: 0, archive_blocked: 0 }]);
   });
 });
 

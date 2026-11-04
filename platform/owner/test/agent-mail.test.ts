@@ -229,7 +229,8 @@ describe("the ledger's bounds on identities", () => {
     expect(seen.outside).toBe("the owner's enabled agents are at their limit");
     expect(seen.names).toEqual([["b", false], ["c", false], ["d", true], ["e", true]]);
     expect(seen.share).toBe("ledger_full: too much mail is unread (1 message waits for " +
-                            "their readers); reading and acking mail makes room");
+                            "their readers; the most for you (1)); reading and acking mail " +
+                            "makes room");
   });
 });
 
