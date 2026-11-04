@@ -96,7 +96,7 @@ describe("the key format", () => {
     const busy = await api(key, "agents_list", {});
     expect([busy.status, busy.headers.get("Retry-After")]).toEqual([503, "1"]);
     expect(await busy.json()).toEqual({ error: BUSY });
-    expect(refusal(new SlotBusy())).toEqual({ status: 503, message: BUSY });
+    expect(refusal(new SlotBusy())).toEqual({ status: 503, message: BUSY, retry_after_s: 1 });
     expect((await api(key, "agents_list", {})).status).toBe(200);
   });
 
