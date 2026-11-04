@@ -207,7 +207,10 @@ def test_startup_refuses_a_negative_relay_answer(tmp_path, monkeypatch):
                     assert rf.read_frame_blocking(channel).control() == {"op": "WHOAMI"}
                     channel.sendall(rf.control(rf.CONNECTION, {"op": "REFUSED"}))
 
-            thread = threading.Thread(target=refuse)
+            # Daemon: when start() fails before connecting, the thread stays blocked in
+            # accept(), and a non-daemon one would hold the whole run's exit forever.
+            # The assertion below still fails the test.
+            thread = threading.Thread(target=refuse, daemon=True)
             thread.start()
             try:
                 with pytest.raises(PermissionError, match="refused startup admission"):
