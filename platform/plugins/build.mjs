@@ -25,7 +25,7 @@ export const BUNDLED = Object.freeze(["shared-brain", "onboarding", "goals", "kn
 export const PROMPTS = Object.freeze([
   "Set me up on TinyAssets",
   "What do you know about my goals?",
-  "Remember that I prefer short answers",
+  "Tell my other assistants I prefer short answers",
 ]);
 const NAME = "tinyassets";
 const DESCRIPTION = "Your own workspace, shared by every AI assistant you connect: what you " +

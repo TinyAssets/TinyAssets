@@ -34,7 +34,7 @@
         "defaultPrompt": [
           "Set me up on TinyAssets",
           "What do you know about my goals?",
-          "Remember that I prefer short answers"
+          "Tell my other assistants I prefer short answers"
         ]
       }
     }

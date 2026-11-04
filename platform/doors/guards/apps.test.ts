@@ -5,8 +5,8 @@
  * source.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -14,8 +14,41 @@ import { PLATFORM } from "../../owner/guards/sources";
 import raw from "../apps.json" with { type: "json" };
 import { appList, checkedApps, connectUrl, registrationRefusal, vendorOf } from "../src/apps";
 import { MCP_RESOURCE } from "../src/config";
+import { CLIENT_INSTRUCTIONS } from "../src/instructions";
+import { toolTable } from "../src/tools";
 
 const PLUGINS = join(PLATFORM, "plugins");
+/**
+ * An ask to save to an agent's own memory or to install something: what text TinyAssets serves
+ * to an agent never holds (every directory's rules), and what the user's own connect sentence
+ * may.
+ */
+const ASKS = /\binstall|\bsave (a|the|this)\b[^.]{0,40}\bskill|\b(save|store|keep|write|add)\b[^.]{0,40}\b(your|its) (own )?(app's )?memory|\bremember (this|that)\b/i;
+
+/** Every text TinyAssets serves to an outside agent, by where it is served. */
+function served(): [string, string][] {
+  const out: [string, string][] = [["CLIENT_INSTRUCTIONS", CLIENT_INSTRUCTIONS]];
+  for (const tool of toolTable()) {
+    out.push([`${tool.name}'s description`, tool.description]);
+    for (const [field, schema] of Object.entries(
+      (tool.input["properties"] ?? {}) as Record<string, { description?: string }>)) {
+      out.push([`${tool.name}.${field}`, schema.description ?? ""]);
+    }
+  }
+  const walk = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    return statSync(path).isDirectory() ? walk(path) : [path];
+  });
+  for (const plugin of ["chatgpt", "claude"]) {
+    for (const file of walk(join(PLUGINS, plugin))) {
+      // The OKF spec is the vendored standard, not our text.
+      if (!file.endsWith("okf-spec.md")) {
+        out.push([relative(PLUGINS, file), readFileSync(file, "utf8")]);
+      }
+    }
+  }
+  return out;
+}
 
 describe("apps.json", () => {
   it("holds each app to its shape: an id, its registration, match data, a connect step " +
@@ -27,15 +60,33 @@ describe("apps.json", () => {
     for (const app of apps) {
       expect(app.connect.steps.length, app.id).toBeGreaterThan(0);
       expect(app.source, app.id).toMatch(/^https:\/\//);
-      // A vendor whose connect is a chat act gives the sentence; it asks nothing of the
-      // vendor's agent but to connect (no save to its memory, no install).
+      // A vendor whose connect is a chat act gives the sentence the user sends: their own
+      // request, in their own chat, so it may ask their agent to save the skill.
       if (app.connect.say !== undefined) {
         expect(app.connect.say).toContain(MCP_RESOURCE);
-        expect(app.connect.say).not.toMatch(/memory|remember|install|skill/i);
+        expect(app.connect.say).toMatch(ASKS);
       }
     }
     expect(apps.filter((app) => app.registration === "dcr").map((app) => app.id))
       .toEqual(["grok", "muse", "gemini", "cursor"]);
+  });
+
+  it("keeps the split: the user's own connect sentence may ask their agent to save the " +
+     "skill; nothing TinyAssets serves to an agent asks it to save to its memory or install " +
+     "anything", () => {
+    const texts = served();
+    expect(texts.length).toBeGreaterThan(toolTable().length);
+    for (const [where, text] of texts) {
+      expect(text, where).not.toMatch(ASKS);
+    }
+    // The pattern sees each kind of ask, and lets the skills' own words about memory be.
+    for (const ask of ["Install the TinyAssets plugin.", "and save the TinyAssets skill",
+                       "Save this to your memory.", "add it to your app's memory",
+                       "Remember this for next time."]) {
+      expect(ask).toMatch(ASKS);
+    }
+    expect("A newer entry in TinyAssets is the source over your own memory or your app's " +
+           "memory: use it").not.toMatch(ASKS);
   });
 
   it("refuses a file out of shape, loudly", () => {

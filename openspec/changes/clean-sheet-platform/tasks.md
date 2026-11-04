@@ -2175,6 +2175,10 @@ R, S, M and W.
     and copy text, its vendor page and the date read. ChatGPT's steps are the current
     "Plugins, +, Add custom MCP server" (read 2026-11-04). The public `/connect` page is
     built from it (`WebSite/site-react/app/connect`, its deploy triggered by the file).
+    Grok's and Muse's `say` sentence asks their agent to save the TinyAssets skill: it is the
+    user's own request, sent in their own chat as the connect act. Nothing TinyAssets serves to
+    an agent (the instructions, every tool's text, the plugins) asks it to save to its memory
+    or install anything; `doors/guards/apps.test.ts` holds that split.
   - DCR (founder ruling): served only with `DCR_ENABLED`, and then a registration is taken
     only when its `client_name` names a `dcr` vendor (Grok, Muse, Gemini, Cursor); a CIMD
     vendor's name or none is refused `invalid_client_metadata`. Production stays
