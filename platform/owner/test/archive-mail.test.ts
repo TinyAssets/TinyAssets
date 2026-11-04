@@ -7,16 +7,19 @@
  * once and rewritten out; export version 3 shipping the segments as they are. The object
  * here (`ArchivingOwnerDO`) holds eight messages hot, four unread, and seals a segment at two.
  */
+import { createHash } from "node:crypto";
+
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { archivedRecord, LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
+import { BODY_BYTES_MAX } from "../src/bodies";
+import { LEDGER_LIMITS, type Ledger, mailRecord } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { parseTiers } from "../src/tier";
 import {
-  bytesOf, encodeSegment, idKey, idOrder, MIN_RECORD_BYTES, orderedId, parseRecord,
-  parseTrailer, recordText, segmentChunks, TIER_STORAGE_MAX,
+  encodeSegment, idKey, idOrder, MIN_RECORD_BYTES, orderedId, parseRecord, parseTrailer,
+  recordBytes, recordRows, segmentBytes, SegmentReader, TIER_STORAGE_MAX,
 } from "../src/segments";
 import { exported } from "../src/export";
 import { storageFullOf } from "../src/storage-full";
@@ -77,6 +80,60 @@ async function overlaps(r: Rig): Promise<unknown[]> {
                "AND a.first_key <= b.last_key");
 }
 
+/**
+ * The owner's export, paged to its end, and its archived records read by v3's rule: each
+ * `archive_segments` row's chunks from the export, each record's rows with its raw body
+ * decoded back into its column. Its lines, and the archived records' rows by table.
+ */
+async function exportArchived(r: Rig): Promise<{
+    lines: Record<string, unknown>[];
+    archived: Record<string, Record<string, unknown>>[] }> {
+  const lines: Record<string, unknown>[] = [];
+  let exportId: string | undefined;
+  for (let next: string | null = null, waits = 0; ;) {
+    const page = await r.stub.ownerExport(r.session(null), next === null ? { cursor: null }
+      : { cursor: next, export_id: exportId! });
+    exportId = page.export_id;
+    if (page.pending) {
+      if (++waits > 400) {
+        throw new Error("the export's generation did not go on");
+      }
+      await drainDue(r.stub);
+      next = page.next;
+      continue;
+    }
+    lines.push(...page.lines.map((line: string) => JSON.parse(line)));
+    if (page.next === null) {
+      break;
+    }
+    next = page.next;
+  }
+  const chunkNames = new Set(lines.filter((line) => line["t"] === "chunk")
+    .map((line) => line["sha256"]));
+  const archived: Record<string, Record<string, unknown>>[] = [];
+  for (const fence of lines.filter((line) => line["t"] === "row"
+                                   && line["table"] === "archive_segments")) {
+    const row = fence["row"] as Record<string, unknown>;
+    const shas = (await sqlIn(r.stub, "SELECT sha256 FROM file_content_chunks WHERE " +
+                                      "content_id = ? ORDER BY idx", row["content_id"] as string))
+      .map((chunk) => chunk["sha256"] as string);
+    const parts: Uint8Array[] = [];
+    for (const sha of shas) {
+      expect(chunkNames.has(sha)).toBe(true);
+      const { chunks } = await r.stub.exportChunks(r.session(null), {
+        export_id: exportId!, sha256s: [sha] });
+      parts.push(Uint8Array.from(Buffer.from(chunks[0]!.data, "base64")));
+    }
+    const reader = new SegmentReader(parts);
+    const trailer = parseTrailer(new TextDecoder().decode(reader.slice(
+      row["trailer_offset"] as number, row["trailer_bytes"] as number)));
+    for (const [, offset, length] of trailer.keys) {
+      archived.push(Object.fromEntries(recordRows(reader.slice(offset, length))));
+    }
+  }
+  return { lines, archived };
+}
+
 /** A chain read, paged by its `after` cursor until `id` shows or it ends: its body, or null. */
 async function chained(r: Rig, id: string): Promise<string | null> {
   let after = 0;
@@ -99,19 +156,42 @@ describe("segments", () => {
     const records = [1, 2, 5].map((key) => ({ key, chain: key === 5 ? "root" : null,
       rows: [["t", { k: key, é: "\u0000" }]] as [string, Record<string, unknown>][] }));
     const encoded = encodeSegment("mail", records);
-    const text = new TextDecoder().decode(encoded.bytes);
-    const suffix = text.slice(-16);
-    expect(Number(suffix)).toBe(encoded.trailer_offset);
-    const trailer = parseTrailer(new TextDecoder().decode(encoded.bytes.subarray(
+    const whole = segmentBytes(encoded);
+    expect(whole.byteLength).toBe(encoded.size);
+    expect(Number(new TextDecoder().decode(whole.subarray(-16)))).toBe(encoded.trailer_offset);
+    const trailer = parseTrailer(new TextDecoder().decode(whole.subarray(
       encoded.trailer_offset, encoded.trailer_offset + encoded.trailer_bytes)));
     expect(trailer).toMatchObject({ stream: "mail", first: 1, last: 5, records: 3 });
     expect(trailer.chains).toEqual({ root: [trailer.keys[2]] });
     for (const [key, offset, length] of trailer.keys) {
-      const rows = parseRecord(new TextDecoder().decode(encoded.bytes.subarray(offset,
-                                                                               offset + length)));
-      expect(rows).toEqual([["t", { k: key, é: "\u0000" }]]);
+      expect(parseRecord(whole.subarray(offset, offset + length)))
+        .toEqual([["t", { k: key, é: "\u0000" }]]);
     }
     expect(() => encodeSegment("mail", [records[1]!, records[0]!])).toThrow(/key order/);
+  });
+
+  it("hold a body raw, never escaped: a record is its body's bytes and its lines' (N3)", () => {
+    // The reviewer's body: 8 MiB of control characters, which JSON escapes six times over.
+    const body = "\u0001".repeat(8 * 1024 * 1024);
+    const raw = new TextEncoder().encode(body);
+    const id = `msg_${"0".repeat(32)}`;
+    const record = mailRecord(
+      { seq: 7, message_id: id, room_id: "dm:x", chain_root: id, created_at: 1,
+        body_bytes: raw.byteLength },
+      { message_id: id, room_id: "dm:x", body, body_bytes: raw.byteLength, content_id: null,
+        meta_bytes: 0 },
+      [{ message_id: id, agent_id: "x", seq: 7, state: "read", changed_at: 1, unacked: 0 }],
+      [raw.subarray(0, 3 << 20), raw.subarray(3 << 20)]);
+    expect(recordBytes(record)).toBeLessThan(raw.byteLength + 2048);
+    const encoded = encodeSegment("mail", [record]);
+    expect(encoded.size).toBeLessThan(raw.byteLength + 4096);
+    // Read back across chunk boundaries, as R2 hands the chunks: the body byte-exact.
+    const chunks = encoded.hashes.map((_hash, n) => encoded.chunk(n));
+    const reader = new SegmentReader(chunks);
+    const [, offset, length] = encoded.trailer.keys[0]!;
+    const rows = recordRows(reader.slice(offset, length));
+    expect(rows.find(([table]) => table === "message_bodies")![1]["body"] === body).toBe(true);
+    expect(reader.views(offset, length).length).toBeGreaterThan(1);  // never joined
   });
 
   it("hold no record smaller than MIN_RECORD_BYTES: the least mail's three rows", () => {
@@ -124,8 +204,8 @@ describe("segments", () => {
       { message_id: `msg_${"0".repeat(32)}`, room_id: "dm:x", body: "x", created_at: 1,
         body_bytes: 1, content_id: null, filer: "owner", meta_bytes: 0 },
       [{ message_id: `msg_${"0".repeat(32)}`, agent_id: "owner", seq: 1, state: "read",
-         changed_at: 1, unacked: 0 }]);
-    expect(bytesOf(recordText(least))).toBeGreaterThanOrEqual(MIN_RECORD_BYTES);
+         changed_at: 1, unacked: 0 }], [new TextEncoder().encode("x")]);
+    expect(recordBytes(least)).toBeGreaterThanOrEqual(MIN_RECORD_BYTES);
   });
 
   it("give ids that carry their seq, opaque without the object's key", () => {
@@ -229,6 +309,37 @@ describe("the archive lane", () => {
       .message).toBe("parent is not a message to this sender in this room");
   });
 
+  it("pages a chain of large bodies by their bytes, archived and hot, never all at once",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    const room = `dm:${muse}`;
+    const big = (c: string) => c.repeat(5 * 1024 * 1024);
+    const root = await r.post(null, room, { cmid: "b0", body: big("a") });
+    await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
+    const second = await r.post(MUSE, room, { cmid: "b1", body: big("b"),
+                                              parent: root.message_id });
+    await r.ack(null, (await r.read(null)).messages.at(-1)!.seq);
+    const third = await r.post(null, room, { cmid: "b2", body: big("c"),
+                                             parent: second.message_id });
+    await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
+    await sentAndAcked(r, MUSE, room, 4);
+    await settle(r);
+    expect(await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
+                       root.message_id)).toEqual([]);  // archived
+    // Each page one 5 MiB body (two pass `READ_PAGE_BYTES`), its cursor going on.
+    const pages: string[][] = [];
+    for (let after = 0, more = true; more && pages.length < 10;) {
+      const page = await r.stub.mailChain(r.bind(null), { message_id: third.message_id,
+                                                          limit: 10, after });
+      pages.push(page.messages.map((m) => m.message_id));
+      expect(page.messages.length).toBeLessThanOrEqual(1);
+      expect(page.messages.every((m) => m.body?.length === 5 * 1024 * 1024)).toBe(true);
+      ({ after, more } = page);
+    }
+    expect(pages.flat()).toEqual([root.message_id, second.message_id, third.message_id]);
+  }, 120_000);
+
   it("aborts a move whose batch changed between its units, the mail kept hot", async () => {
     const r = await rig(ARCHIVING);
     const muse = await r.register(MUSE);
@@ -314,53 +425,10 @@ describe("the export, version 3", () => {
     const fences = await sqlIn(r.stub, "SELECT * FROM archive_segments ORDER BY segment");
     expect(fences.length).toBeGreaterThan(0);
     // The export's pages: the fence rows among its tables, the segment's chunks named.
-    const lines: Record<string, unknown>[] = [];
-    let exportId: string | undefined;
-    for (let next: string | null = null, waits = 0; ;) {
-      const page = await r.stub.ownerExport(r.session(null), next === null ? { cursor: null }
-        : { cursor: next, export_id: exportId! });
-      exportId = page.export_id;
-      if (page.pending) {
-        if (++waits > 400) {
-          throw new Error("the export's generation did not go on");
-        }
-        await drainDue(r.stub);
-        next = page.next;
-        continue;
-      }
-      lines.push(...page.lines.map((line: string) => JSON.parse(line)));
-      if (page.next === null) {
-        break;
-      }
-      next = page.next;
-    }
+    const { lines, archived } = await exportArchived(r);
     expect(lines[0]).toMatchObject({ t: "header", version: 3 });
-    const fenceLines = lines.filter((line) => line["t"] === "row"
-      && line["table"] === "archive_segments");
-    expect(fenceLines.length).toBe(fences.length);
-    const chunkNames = new Set(lines.filter((line) => line["t"] === "chunk")
-      .map((line) => line["sha256"]));
-    const archived: Record<string, Record<string, unknown>>[] = [];
-    for (const fence of fences) {
-      const shas = (await sqlIn(r.stub, "SELECT sha256 FROM file_content_chunks WHERE " +
-                                        "content_id = ? ORDER BY idx",
-                                fence["content_id"] as string)).map((row) => row["sha256"]);
-      const parts: Buffer[] = [];
-      for (const sha of shas) {
-        expect(chunkNames.has(sha)).toBe(true);
-        const { chunks } = await r.stub.exportChunks(r.session(null), {
-          export_id: exportId!, sha256s: [sha as string] });
-        parts.push(Buffer.from(chunks[0]!.data, "base64"));
-      }
-      const whole = Buffer.concat(parts);
-      const trailer = parseTrailer(whole.subarray(fence["trailer_offset"] as number,
-        (fence["trailer_offset"] as number) + (fence["trailer_bytes"] as number)).toString());
-      for (const [key, offset, length] of trailer.keys) {
-        const record = archivedRecord(key, parseRecord(whole.subarray(offset, offset + length)
-          .toString()));
-        archived.push(Object.fromEntries(record.rows));
-      }
-    }
+    expect(lines.filter((line) => line["t"] === "row" && line["table"] === "archive_segments")
+      .length).toBe(fences.length);
     // Each archived message is the owner's mail whole: its row, its body inline, its acked
     // recipient; with the hot ones, every message sent, once.
     const hot = (await sqlIn(r.stub, "SELECT message_id FROM ledger_messages"))
@@ -462,7 +530,7 @@ describe("segments never overlap in key range (review H1)", () => {
   }, 60_000);
 });
 
-describe("a merge's byte budget (review N1)", () => {
+describe("a merge's byte budget (reviews N1 and N3)", () => {
   it("merges large late-acked mail a budget at a pass, never all at once, every message kept",
      async () => {
     const big = env.BIGARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
@@ -470,9 +538,9 @@ describe("a merge's byte budget (review N1)", () => {
     const r = await rig(big);
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
-    // Three messages near 7 MiB each to Muse, left unread; Dot's small mail after them moves.
+    // Five messages near 7 MiB each to Muse, left unread; Dot's small mail after them moves.
     const large: string[] = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       large.push((await r.post(null, `dm:${muse}`, {
         cmid: `big${i}`, body: `${i}`.padEnd(7 * 1024 * 1024, "x") })).message_id);
     }
@@ -483,14 +551,14 @@ describe("a merge's byte budget (review N1)", () => {
     const [{ n: segments }] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM " +
                                                   "archive_segments") as [{ n: number }];
     expect(segments).toBe(1);
-    // Muse acks them now (a read pages at 8 MiB of bodies, so a page each): three stragglers,
-    // about 21 MiB, inside that segment's keys.
-    for (let i = 0; i < 3; i++) {
+    // Muse acks them now (a read pages at 8 MiB of bodies, so a page each): five stragglers,
+    // about 35 MiB, inside that segment's keys.
+    for (let i = 0; i < 5; i++) {
       await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
     }
     const pick = await r.inLedger(bigLimits, (ledger: Ledger) => ledger.archivePick());
     expect(pick!.into).not.toBeNull();
-    expect(pick!.seqs).toHaveLength(2);  // 14 MiB within the 16 MiB budget; the third waits
+    expect(pick!.seqs).toHaveLength(4);  // 28 MiB within MOVE_BYTES (32 MiB); the fifth waits
     // Past half the ceiling until both merges have run: each pass merges one budget.
     await sentAndAcked(r, DOT, `dm:${dot}`, 8, "e");
     for (let i = 0; i < 40; i++) {
@@ -539,14 +607,14 @@ describe("an export across a move (review H2)", () => {
       const pick = await gate.write(() => ledger.archivePick())!;
       const batch = await gate.write(() => ledger.archiveBatch(pick!.seqs, new Map()))!;
       const encoded = encodeSegment("mail", batch!.records);
-      const chunks = segmentChunks(encoded.bytes);
-      const begun = await gate.write(() => files.begin(encoded.bytes.byteLength,
-        chunks.map((chunk) => chunk.sha256), "owner", [], true, null, true));
+      const chunks = encoded.hashes.map((sha256, n) => ({ sha256, bytes: encoded.chunk(n) }));
+      const begun = await gate.write(() => files.begin(encoded.size, encoded.hashes, "owner",
+        [], true, null, true));
       await files.upload(begun.intent_id, chunks);
       await gate.write(() => files.adopt(begun.intent_id, "owner", (contentId) =>
         ledger.archiveCommit(pick!.seqs, batch!.digest, [], [{ content_id: contentId, fence: {
           first_key: encoded.trailer.first, last_key: encoded.trailer.last, first_at: 1,
-          last_at: 1, records: encoded.trailer.records, bytes: encoded.bytes.byteLength,
+          last_at: 1, records: encoded.trailer.records, bytes: encoded.size,
           trailer_offset: encoded.trailer_offset, trailer_bytes: encoded.trailer_bytes,
           members: "0".repeat(128) } }], 1)));
     }, sizes: { page: 256, part: 32 * 1024, gather: 64 * 1024 } });
@@ -575,9 +643,8 @@ describe("an export across a move (review H2)", () => {
       }), "base64");
       const trailer = parseTrailer(whole.subarray(fence["trailer_offset"] as number,
         (fence["trailer_offset"] as number) + (fence["trailer_bytes"] as number)).toString());
-      for (const [key, offset, length] of trailer.keys) {
-        for (const [table, row] of archivedRecord(key, parseRecord(
-          whole.subarray(offset, offset + length).toString())).rows) {
+      for (const [, offset, length] of trailer.keys) {
+        for (const [table, row] of recordRows(whole.subarray(offset, offset + length))) {
           atE[table]![JSON.stringify(tables[table]!.key.map((column) => row[column]))] =
             JSON.stringify(row);
         }
@@ -591,6 +658,202 @@ describe("an export across a move (review H2)", () => {
       (JSON.parse(row) as Record<string, unknown>)["body"]).sort();
     expect(bodies).toEqual(ids.map((_id, i) => `body ${i}`).sort());
   }, 60_000);
+});
+
+describe("a body of control characters (review N3)", () => {
+  it("moves as its own bytes, reads back byte-exact by its chain, and exports whole",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    // The reviewer's message: a body at the cap, every byte a control character (which JSON
+    // escapes six times over), placed in R2 as any large body is.
+    const body = "\u0001".repeat(BODY_BYTES_MAX);
+    const posted = await r.post(null, `dm:${muse}`, { cmid: "ctl", body });
+    await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
+    await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
+    await settle(r);
+    const fences = await sqlIn(r.stub, "SELECT first_key, last_key, bytes FROM " +
+                                       "archive_segments");
+    const seq = (await r.inLedger(LIMITS, (ledger: Ledger) =>
+      ledger.seqOf(posted.message_id)))!;
+    const holding = fences.find((fence) => (fence["first_key"] as number) <= seq
+      && seq <= (fence["last_key"] as number));
+    expect(holding).toBeDefined();
+    // The segment is the body's own bytes and its lines', never its escapes.
+    expect(holding!["bytes"] as number).toBeLessThan(BODY_BYTES_MAX + 64 * 1024);
+    expect(await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
+                       posted.message_id)).toEqual([]);
+    expect((await chained(r, posted.message_id)) === body).toBe(true);
+    const { archived } = await exportArchived(r);
+    const exported = archived.find((rows) =>
+      rows["ledger_messages"]!["message_id"] === posted.message_id);
+    expect(exported!["message_bodies"]!["body"] === body).toBe(true);
+    expect(exported!["message_bodies"]).toMatchObject({ body_bytes: BODY_BYTES_MAX,
+                                                       content_id: null });
+  }, 120_000);
+});
+
+describe("the worst merge (review N3)", () => {
+  it("merges a straggler into pack's largest piece, every body control characters, intact",
+     async () => {
+    const big = env.BIGARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
+    const r = await rig(big);
+    const muse = await r.register(MUSE);
+    const dot = await r.register(DOT, "Dot");
+    const MIB = 1024 * 1024;
+    const near = "\u0001".repeat(8 * MIB - 100 * 1024);  // short of the least: no cut beside it
+    const cap = "\u0001".repeat(BODY_BYTES_MAX);
+    /** Read and ack `who`'s mail a page at a time (a page holds 8 MiB of bodies). */
+    const drain = async (who: typeof MUSE, through = Number.MAX_SAFE_INTEGER) => {
+      for (let page = await r.read(who); page.messages.length > 0; page = await r.read(who)) {
+        const last = page.messages.filter((m) => m.seq <= through).at(-1);
+        if (last === undefined) {
+          return;
+        }
+        await r.ack(who, last.seq);
+      }
+    };
+    const k1 = await r.post(null, `dm:${muse}`, { cmid: "k1", body: near });
+    await drain(MUSE);
+    const k2 = await r.post(null, `dm:${dot}`, { cmid: "k2", body: cap });
+    const k2b = await r.post(null, `dm:${dot}`, { cmid: "k2b", body: cap });
+    const k3 = await r.post(null, `dm:${muse}`, { cmid: "k3", body: near });
+    await drain(MUSE);
+    for (let i = 0; i < 3; i++) {
+      await r.post(null, `dm:${dot}`, { cmid: `u${i}`, body: `u ${i}` });
+      await r.post(null, `dm:${muse}`, { cmid: `a${i}`, body: `a ${i}` });
+      await drain(MUSE);
+    }
+    const segments = () => sqlIn(r.stub, "SELECT first_key, last_key, bytes FROM " +
+                                         "archive_segments ORDER BY first_key");
+    const moved = async (n: number) => {
+      for (let i = 0; i < 40 && (await segments()).length < n; i++) {
+        await drainDue(r.stub);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    };
+    // The tail's seal: k1 and k3 (k2 and k2b still Dot's unread), one piece.
+    await moved(1);
+    expect((await segments()).map((fence) => fence["bytes"] as number))
+      .toEqual([expect.any(Number)]);
+    // k2 acked: merged into it, pack's largest piece (no cut leaves both sides the least).
+    const seqOf = (id: string) => r.inLedger(LEDGER_LIMITS, (ledger: Ledger) =>
+      ledger.seqOf(id)!);
+    await drain(DOT, await seqOf(k2.message_id));
+    for (let i = 0; i < 40; i++) {
+      await drainDue(r.stub);
+      if ((await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
+                       k2.message_id)).length === 0) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const [piece] = await segments();
+    expect(piece!["bytes"] as number).toBeGreaterThan(2 * 8 * MIB + 7 * MIB);
+    // k2b acked: the worst merge, that piece and one straggler at the cap (the measured one).
+    await drain(DOT, await seqOf(k2b.message_id));
+    await moved(2);
+    const after = await segments();
+    expect(after).toHaveLength(2);
+    expect(after.every((fence) => (fence["bytes"] as number) >= 8 * MIB)).toBe(true);
+    expect(await overlaps(r)).toEqual([]);
+    for (const [id, body] of [[k1.message_id, near], [k2.message_id, cap],
+                              [k2b.message_id, cap], [k3.message_id, near]] as const) {
+      expect((await chained(r, id)) === body).toBe(true);
+    }
+  }, 300_000);
+});
+
+describe("the archive lane's failures (review N3)", () => {
+  /** The lane's job made due now (a failed pass holds it a minute), then run. */
+  const passAgain = async (r: Rig) => {
+    await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
+                        "'owner-schedule/archive'");
+    await drainDue(r.stub);
+  };
+  const notices = (r: Rig) => sqlIn(r.stub, "SELECT detail FROM owner_notices WHERE type = " +
+                                            "'storage_busy_long'");
+
+  it("are counted in storage as a pass begins: passes killed with their isolate still tell",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    // Three passes begun that never ended or said why (an isolate killed for memory runs no
+    // catch): the count is the row's, not the isolate's.
+    await sqlIn(r.stub, "UPDATE ledger_usage SET archive_fails = 3, archive_error = NULL");
+    await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
+    await settle(r);
+    const told = await notices(r);
+    expect(told).toHaveLength(1);
+    expect(told[0]!["detail"]).toMatch(/stopped before they could say why/);
+    // The pass that told them went on, moved the mail, and cleared the count.
+    expect(await sqlIn(r.stub, "SELECT archive_fails AS n FROM ledger_usage"))
+      .toEqual([{ n: 0 }]);
+  });
+
+  it("tell the owner once at three in a row, quoting the error, and clear on success",
+     async () => {
+    const r = await rig(ARCHIVING);
+    const muse = await r.register(MUSE);
+    await r.inLedger(LIMITS, (ledger: Ledger) => {
+      for (let i = 0; i < 6; i++) {
+        ledger.post(null, `dm:${muse}`, `c${i}`, `body ${i}`, null);
+        ledger.read(MUSE, 10);
+        ledger.ack(MUSE, i + 1);
+      }
+    });
+    // The oldest acked message's hash no longer matches its body: every move fails.
+    await sqlIn(r.stub, "UPDATE ledger_messages SET body_sha256 = ? WHERE seq = 1",
+                "0".repeat(64));
+    await r.stub.mailboxAck(r.bind(MUSE), { through: 6 });  // rings the schedule
+    for (let pass = 0; pass < 5; pass++) {
+      await passAgain(r);
+    }
+    const [{ n }] = await sqlIn(r.stub, "SELECT archive_fails AS n FROM ledger_usage") as
+      [{ n: number }];
+    expect(n).toBeGreaterThanOrEqual(3);
+    const told = await notices(r);
+    expect(told).toHaveLength(1);
+    expect(told[0]!["detail"]).toMatch(/an archived body is not the body its message holds/);
+    // Mended, the next pass moves the mail and clears the count.
+    await sqlIn(r.stub, "UPDATE ledger_messages SET body_sha256 = ? WHERE seq = 1",
+                createHash("sha256").update("body 0").digest("hex"));
+    await passAgain(r);
+    await settle(r);
+    expect(await sqlIn(r.stub, "SELECT archive_fails AS n FROM ledger_usage"))
+      .toEqual([{ n: 0 }]);
+    expect(await notices(r)).toHaveLength(1);
+  });
+});
+
+describe("the tail's seal at the production limits (review N4)", () => {
+  it("counts records' own bytes, never their trailer shares: a sealed segment holds the least",
+     async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    const seen = await r.inLedger(LEDGER_LIMITS, (ledger: Ledger) => {
+      const room = `dm:${muse}`;
+      const post = (from: number, to: number) => {
+        for (let n = from; n < to; n++) {
+          ledger.post(null, room, `c${n}`, "x", null);
+        }
+        ledger.read(MUSE, 1);
+        ledger.ack(MUSE, to);
+      };
+      // The reviewer's case: 11,999 small messages acked, then the real pick and batch.
+      post(0, 11_999);
+      const pick = ledger.archivePick()!;
+      const batch = ledger.archiveBatch(pick.seqs, new Map())!;
+      const encoded = encodeSegment("mail", batch.records);
+      const largest = Math.max(...batch.records.map(recordBytes));
+      return { picked: pick.seqs.length, size: encoded.size, largest,
+               records: batch.records.reduce((sum, record) => sum + recordBytes(record), 0) };
+    });
+    expect(seen.picked).toBeLessThan(11_999);
+    expect(seen.size).toBeGreaterThanOrEqual(LEDGER_LIMITS.archiveBytes);
+    expect(seen.records).toBeGreaterThanOrEqual(LEDGER_LIMITS.archiveBytes);
+    expect(seen.records).toBeLessThan(LEDGER_LIMITS.archiveBytes + seen.largest);
+  }, 300_000);
 });
 
 describe("a full owner's archive (review M1)", () => {

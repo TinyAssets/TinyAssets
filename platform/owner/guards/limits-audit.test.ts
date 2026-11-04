@@ -12,16 +12,19 @@ import { describe, expect, it } from "vitest";
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { checkLimits, LEDGER_LIMITS } from "../src/ledger";
-import { PLACE_BYTES } from "../src/manifest";
+import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
 import { WORST_FILL } from "../src/manifest";
 import {
   DATABASE_BYTES, IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES, RUNTIME, SHARE, type Term, termBytes,
   TERMS, worstCase,
 } from "./owner-bound.test";
 import {
-  ARCHIVE_SEGMENTS_MAX, bytesOf, MIN_RECORD_BYTES, pack, recordText, SEGMENT_LEAST_BYTES,
+  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, MOVE_BYTES, pack, recordBytes, SEGMENT_LEAST_BYTES,
   SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS, type SegmentRecord, TIER_STORAGE_MAX,
 } from "../src/segments";
+
+/** The isolate's memory (Workers limits), as the memory guard counts it. */
+const ISOLATE_BYTES = 128 * 1000 * 1000;
 
 const HALF = SHARE * DATABASE_BYTES;
 /**
@@ -105,7 +108,7 @@ describe("slice STORE's archive (item 2)", () => {
     const message = (key: number, body: string): SegmentRecord => ({
       key, chain: `msg_${String(key).padStart(32, "0")}`,
       rows: [["ledger_messages", { seq: key, body }]] });
-    const size = (record: SegmentRecord) => bytesOf(recordText(record));
+    const size = recordBytes;
     // One small message, a straggler with a body at the cap, then small mail just short of
     // the two: past twice the least, where the old cut left a 698-byte first half.
     const first = message(0, "x".repeat(400));
@@ -132,6 +135,19 @@ describe("slice STORE's archive (item 2)", () => {
     expect(cut.flat().length).toBe(many.length);
     // At most twice the least, one piece, whatever is in it (a lone one may be small).
     expect(pack([first], SEGMENT_LEAST_BYTES)).toEqual([[first]]);
+  });
+
+  it("holds a move within the isolate: MOVE_BYTES of records and its chunks (review N3)", () => {
+    // The worst merge, measured in workerd (round 3, `limits-audit.md`): its live heap grew
+    // 39.8 MiB at 31.8 MiB of records, two chunks being sent.
+    const MEASURED = 39.8 * 1024 * 1024;
+    // `pack`'s largest piece (twice the least and a record) and the one straggler always
+    // taken: the forced merge is within the budget but for two records' lines.
+    expect(MOVE_BYTES).toBeGreaterThanOrEqual(2 * SEGMENT_LEAST_BYTES + 2 * BODY_BYTES_MAX);
+    // Its records, the two chunks being sent and the service binding's copy of them, and
+    // the measured peak with that copy, each within half the isolate.
+    expect(MOVE_BYTES + 4 * CHUNK_BYTES).toBeLessThanOrEqual(ISOLATE_BYTES / 2);
+    expect(MEASURED + 2 * CHUNK_BYTES).toBeLessThanOrEqual(ISOLATE_BYTES / 2);
   });
 
   it("lets a tier offer about 0.5 TB: the fence rows, each a sealed segment's least bytes",

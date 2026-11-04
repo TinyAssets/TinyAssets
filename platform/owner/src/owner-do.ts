@@ -137,7 +137,9 @@ import { proves } from "./inbound-proof";
 import {
   keepTiers, keptTiers, PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers,
 } from "./tier";
-import { Bodies, type Located, PLACE_BYTES, type Placed, placedAs, type Placing } from "./bodies";
+import {
+  Bodies, type Located, PLACE_BYTES, type Placed, placedAs, type Placing, READ_PAGE_BYTES,
+} from "./bodies";
 import {
   type Changed, type Changes, checkBody, Collections, Conflict, type History,
   type HistoryEntry, type Page, type Row,
@@ -160,7 +162,7 @@ import {
   CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
 } from "./codemode";
 import {
-  type Actor, type Agent, archivedAt, type ArchivedMail, archivedMail, archivedRecord,
+  type Actor, type Agent, type ArchivedMail, archivedMail, type ArchiveRecord, heldRecord,
   type ChainMail,
   checkMessage, clock,
   type Delivery, type Fence, Ledger, type LedgerLimits, STORAGE_BUSY,
@@ -170,8 +172,8 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import {
-  bytesOf, chunkReads, encodeSegment, pack, parseRecord, parseTrailer, recordText, roomMembers,
-  SEGMENT_LEAST_BYTES, segmentChunks, type SegmentRecord,
+  chunkReads, encodeSegment, joined, pack, parseTrailer, recordBytes, roomMembers,
+  SEGMENT_LEAST_BYTES, SegmentReader,
 } from "./segments";
 import { Erasure } from "./erase";
 import {
@@ -1381,20 +1383,16 @@ function eventsRequest(request: unknown): {
   return { frames: frames as PostedFrame[], end };
 }
 
-/** The `archive` lane's failed passes in a row past which the owner is told, once. */
+/** The `archive` lane's failed passes in a row at which the owner is told, once. */
 const ARCHIVE_FAILS_TOLD = 3;
 /** How long a failed `archive` pass holds its lane. */
 const ARCHIVE_RETRY_S = 60;
 
-/** Byte arrays joined into one. */
-function joined(parts: readonly Uint8Array[]): Uint8Array {
-  const whole = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-  let at = 0;
-  for (const part of parts) {
-    whole.set(part, at);
-    at += part.byteLength;
-  }
-  return whole;
+/** The owner's notice that the archive keeps failing: its last error as it said it, if any. */
+function archiveFailing(said: string | null): string {
+  return `Older mail could not be moved out (${said ?? "the last tries stopped before they " +
+    "could say why"}), so new mail may wait at the hot ceiling; the archive tries again ` +
+    "every minute.";
 }
 
 /** What the object's lanes run over: its stores, its in-process callers and the passes. */
@@ -1620,8 +1618,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The sandbox's lease, owner-internal: the runs slice calls it in process. */
   readonly #sandbox: SandboxLeases;
   readonly #schedule: Schedule;
-  /** The `archive` lane's failed passes in a row (in memory: a restart begins counting again). */
-  #archiveFails = 0;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
@@ -3586,17 +3582,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } else {
       ({ root, root_seq: rootSeq } = start);
     }
-    // Its archived messages past `after`: the next segments' chain maps, then their records.
-    const { fences, frontier } = await this.#door(() => this.#ledger.chainFences(rootSeq, after));
+    // Its archived messages past `after`: the next segments' chain maps, then their records,
+    // in key order, a page's worth (the first always, then each while the records fit
+    // `READ_PAGE_BYTES`, as a mailbox read pages its bodies); the first left unread is the
+    // frontier, so the page stops below it and its cursor goes on from there.
+    const fenced = await this.#door(() => this.#ledger.chainFences(rootSeq, after));
+    let frontier = fenced.frontier;
+    const most = typeof r["limit"] === "number" ? r["limit"] : 1;
     const mail: ArchivedMail[] = [];
-    for (const fence of fences) {
-      const trailer = parseTrailer(await this.#segmentText(fence.content_id,
-                                                           fence.trailer_offset,
-                                                           fence.trailer_bytes));
+    let bytes = 0;
+    read: for (const fence of fenced.fences) {
+      const trailer = await this.#trailer(fence);
       for (const [key, offset, length] of trailer.chains[root] ?? []) {
-        if (key > after) {
-          mail.push(archivedMail(await this.#segmentText(fence.content_id, offset, length)));
+        if (key <= after) {
+          continue;
         }
+        if (mail.length >= most || (mail.length > 0 && bytes + length > READ_PAGE_BYTES)) {
+          frontier = key;
+          break read;
+        }
+        mail.push(archivedMail(await this.#segmentBytes(fence.content_id, offset, length)));
+        bytes += length;
       }
     }
     // Its hot messages' placed bodies (ADR-035) are read from R2 between its units.
@@ -3612,26 +3618,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   // -- THE ARCHIVE (slice STORE item 2, `segments.ts`) --------------------------------------
 
-  /** A byte range of a segment's content, read from R2 outside any unit, as its UTF-8. */
-  async #segmentText(contentId: string, offset: number, length: number): Promise<string> {
+  /** A byte range of a segment's content, read from R2 outside any unit. */
+  async #segmentBytes(contentId: string, offset: number, length: number): Promise<Uint8Array> {
     const located = await this.#door(() => this.#bodies.locate([contentId]));
-    const parts = await this.#files.fetch(chunkReads(located.get(contentId)!, offset, length));
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(joined(parts));
+    return joined(await this.#files.fetch(chunkReads(located.get(contentId)!, offset, length)));
+  }
+
+  /** A segment's trailer, read alone by its fence's range. */
+  async #trailer(fence: Fence): Promise<ReturnType<typeof parseTrailer>> {
+    return parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      await this.#segmentBytes(fence.content_id, fence.trailer_offset, fence.trailer_bytes)));
   }
 
   /** An archived message by the seq its id carries, from its segment; null when none. */
   async #archived(seq: number, messageId: string): Promise<ArchivedMail | null> {
     const fences = await this.#door(() => this.#ledger.archiveFences(seq));
     for (const fence of fences) {
-      const trailer = parseTrailer(await this.#segmentText(fence.content_id,
-                                                           fence.trailer_offset,
-                                                           fence.trailer_bytes));
-      const placement = trailer.keys.find(([key]) => key === seq);
+      const placement = (await this.#trailer(fence)).keys.find(([key]) => key === seq);
       if (placement === undefined) {
         continue;
       }
-      const mail = archivedMail(await this.#segmentText(fence.content_id, placement[1],
-                                                        placement[2]));
+      const mail = archivedMail(await this.#segmentBytes(fence.content_id, placement[1],
+                                                         placement[2]));
       const purged = await this.#door(() => this.#ledger.purgedAgents());
       return mail.message.message_id === messageId
         && !roomMembers(mail.message.room_id).some((member) => purged.includes(member))
@@ -3660,26 +3668,36 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * that would leave the storage figure higher than it found it is refused for the figure
    * (`archive_full`): the archive is then blocked, and a post at the hot ceiling is the one
    * wall, `storage_full`, until the owner frees space (review M1). A failure outside (the
-   * storage service down) holds the lane a while; past `ARCHIVE_FAILS_TOLD` in a row the
-   * owner is told once, in words that say what clears it.
+   * storage service down) holds the lane a while. Each pass is counted in storage as it
+   * begins and cleared as it ends (review N3), so a pass killed with its isolate (for memory,
+   * say) still counts: at `ARCHIVE_FAILS_TOLD` in a row the owner is told once, with the last
+   * error as it said it, or that the passes stopped before they could say.
    */
   async #archivePass(): Promise<unknown> {
+    let begun: { fails: number; error: string | null } | null = null;
     try {
       // Blocked and still full: nothing to try until the owner frees space.
-      const blocked = await this.#door(() => {
+      begun = await this.#door(() => {
         const { stored, figure } = this.#files.storedNow();
-        return this.#ledger.archiveBlocked() && figure !== null && stored >= figure;
+        return this.#ledger.archiveBlocked() && figure !== null && stored >= figure ? null
+          : this.#ledger.archiveBegin();
       });
-      if (blocked) {
+      if (begun === null) {
         return { hold: clock() + ARCHIVE_RETRY_S };
+      }
+      if (begun.fails === ARCHIVE_FAILS_TOLD && begun.error === null) {
+        // The third failed pass never reached its catch: it went with its isolate.
+        await this.#door(() => this.#notices.add("storage_busy_long", archiveFailing(null),
+                                                 clock()));
       }
       if (!await this.#archiveRewrite()) {
         await this.#archiveMove();
       }
-      this.#archiveFails = 0;
+      await this.#door(() => this.#ledger.archiveEnded());
       return undefined;
     } catch (error) {
       if (error instanceof Refused && error.message.startsWith("archive_changed")) {
+        await this.#door(() => this.#ledger.archiveEnded());
         return undefined;  // the batch moved under it: the next pass picks again
       }
       if (error instanceof Refused && (error.message.startsWith("archive_full")
@@ -3687,6 +3705,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         const first = await this.#door(() => {
           const was = this.#ledger.archiveBlocked();
           this.#ledger.blockArchive();
+          this.#ledger.archiveEnded();  // its own cause, told in its own words
           return !was;
         });
         if (first) {
@@ -3696,15 +3715,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         return { hold: clock() + ARCHIVE_RETRY_S };
       }
-      this.#archiveFails++;
       console.error("the archive lane's pass failed", error);
-      if (this.#archiveFails === ARCHIVE_FAILS_TOLD) {
+      if (begun !== null) {
         // What failed, as it said it, never a cause it did not give (review N1).
-        const said = error instanceof Error ? error.message.split("\n")[0]!.slice(0, 200)
-          : String(error).slice(0, 200);
-        await this.#door(() => this.#notices.add("storage_busy_long",
-          `Older mail could not be moved out (${said}), so new mail may wait at the hot ` +
-            "ceiling; the archive tries again every minute.", clock()));
+        const said = (error instanceof Error ? error.message.split("\n")[0]! : String(error))
+          .slice(0, 200);
+        const fails = begun.fails + 1;
+        await this.#door(() => {
+          this.#ledger.archiveFailed(said);
+          if (fails === ARCHIVE_FAILS_TOLD) {
+            this.#notices.add("storage_busy_long", archiveFailing(said), clock());
+          }
+        });
       }
       return { hold: clock() + ARCHIVE_RETRY_S };
     }
@@ -3720,15 +3742,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return;
     }
     const located = await this.#door(() => this.#bodies.locate(pick.contents));
-    const bodies = await this.#bodies.fetch(located);
+    const bodies = await this.#bodies.fetchParts(located);
     const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, bodies));
     if (batch === null) {
       return;
     }
-    const kept = pick.into === null ? [] : await this.#segmentRecords(pick.into);
-    const records = [...kept, ...batch.records.map((record) =>
-      archivedRecord(record.key, record.rows as [string, Record<string, unknown>][]))]
-      .sort((a, b) => a.key - b.key);
+    const kept = pick.into === null ? [] : (await this.#segmentRecords(pick.into)).kept;
+    const records = [...kept, ...batch.records].sort((a, b) => a.key - b.key);
     await this.#placePieces(records, pick.into === null ? [] : [pick.into], pick.seqs,
                             batch.digest, "mail");
   }
@@ -3745,19 +3765,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return false;
     }
     const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
-    const kept = async (fence: Fence) => {
-      const all = await this.#segmentRecords(fence);
-      return { all: all.length, kept: all.filter((record) =>
-        !roomMembers(record.room).some((member) => purged.has(member))) };
-    };
-    const first = await kept(target.fence);
+    // A segment's kept records: as views when they bring the rewrite to the least (it then
+    // reads no further), else copied out, so what it carries to the next is only its mail.
+    const kept = (fence: Fence, size: number) => this.#segmentRecords(fence, (record) =>
+      !roomMembers(record.room).some((member) => purged.has(member)), SEGMENT_LEAST_BYTES - size);
+    const first = await kept(target.fence, 0);
     if (first.kept.length === first.all) {
       await this.#door(() => this.#ledger.purgeSkip(target.fence.segment));
       return true;
     }
     const replaced = [target.fence];
     let records = first.kept;
-    let size = records.reduce((sum, record) => sum + bytesOf(recordText(record)), 0);
+    let size = records.reduce((sum, record) => sum + recordBytes(record), 0);
     // Left small, it takes in its neighbours by key (a neighbour a purge also thinned may
     // not be enough alone), until it holds the least or none is left: never by id.
     while (size < SEGMENT_LEAST_BYTES) {
@@ -3769,25 +3788,49 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         break;
       }
       replaced.push(beside);
-      const more = (await kept(beside)).kept;
+      const more = (await kept(beside, size)).kept;
       records = [...records, ...more];
-      size += more.reduce((sum, record) => sum + bytesOf(recordText(record)), 0);
+      size += more.reduce((sum, record) => sum + recordBytes(record), 0);
     }
     records.sort((a, b) => a.key - b.key);
     await this.#placePieces(records, replaced, [], "0".repeat(64), "rewrite");
     return true;
   }
 
-  /** A segment's records, read whole from R2, each with its room. */
-  async #segmentRecords(fence: Fence): Promise<(SegmentRecord & { room: string })[]> {
+  /**
+   * A segment's records, read from R2 as its chunks, each with its room, never parsed past
+   * its first line (review N3); `keep` says which stay (a purge's). Kept all, or at least
+   * `views` bytes of them, they are views of the chunks, never joined. Kept fewer, each kept
+   * one is copied out in key order and each chunk let go once read past, so the read holds
+   * the chunks or the copies, never both whole, and the dropped mail's bytes are not held
+   * past it. So a move holds at most the records it places and two chunks (`MOVE_BYTES`,
+   * `limits-audit.md`). The count read, and those kept.
+   */
+  async #segmentRecords(fence: Fence, keep: (record: ArchiveRecord) => boolean = () => true,
+                        views = 0): Promise<{ all: number; kept: ArchiveRecord[] }> {
     const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
-    const whole = joined(await this.#files.fetch(located.get(fence.content_id)!
+    const reader = new SegmentReader(await this.#files.fetch(located.get(fence.content_id)!
       .map((sha256) => ({ sha256 }))));
-    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-    const trailer = parseTrailer(decoder.decode(whole.subarray(
-      fence.trailer_offset, fence.trailer_offset + fence.trailer_bytes)));
-    return trailer.keys.map(([key, offset, length]) =>
-      archivedRecord(key, parseRecord(decoder.decode(whole.subarray(offset, offset + length)))));
+    const trailer = parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+      .decode(reader.slice(fence.trailer_offset, fence.trailer_bytes)));
+    const read: (ArchiveRecord | null)[] = trailer.keys.map(([key, offset, length]) =>
+      heldRecord(key, reader.views(offset, length)));
+    const keeps = read.map((record) => keep(record!));
+    const keptBytes = trailer.keys.reduce((sum, [, , length], n) =>
+      sum + (keeps[n] ? length : 0), 0);
+    if (keeps.every(Boolean) || keptBytes >= views) {
+      return { all: read.length, kept: read.filter((_record, n) => keeps[n]) as ArchiveRecord[] };
+    }
+    const kept: ArchiveRecord[] = [];
+    for (const [n, [, offset, length]] of trailer.keys.entries()) {
+      const record = read[n]!;
+      read[n] = null;
+      if (keeps[n]) {
+        kept.push({ ...record, held: [joined(record.held!)] });
+      }
+      reader.release(offset + length);
+    }
+    return { all: read.length, kept };
   }
 
   /**
@@ -3796,35 +3839,37 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * uploads that may pass the storage figure, then named in one unit, which may not leave the
    * stored figure above both the figure and where the move found it: `archive_full`).
    */
-  async #placePieces(records: readonly (SegmentRecord & { room: string })[],
+  async #placePieces(records: readonly ArchiveRecord[],
                      replaced: readonly Fence[], seqs: readonly number[], digest: string,
                      stream: "mail" | "rewrite"): Promise<void> {
     const pieces = records.length === 0 ? [] : pack(records, SEGMENT_LEAST_BYTES).map((part) => {
       const encoded = encodeSegment("mail", part);
       const members = new Set(part.flatMap((record) => roomMembers(record.room)));
-      const times = part.map(archivedAt);
-      return { encoded, chunks: segmentChunks(encoded.bytes), fence: {
+      const times = part.map((record) => record.at);
+      return { encoded, fence: {
         first_key: encoded.trailer.first, last_key: encoded.trailer.last,
         first_at: Math.min(...times), last_at: Math.max(...times),
-        records: encoded.trailer.records, bytes: encoded.bytes.byteLength,
+        records: encoded.trailer.records, bytes: encoded.size,
         trailer_offset: encoded.trailer_offset, trailer_bytes: encoded.trailer_bytes,
         members: Ledger.members(members) } };
     });
     const begun = await this.#door(() => {
       const before = this.#files.storedNow().stored;
       const started = pieces.map((piece) => this.#files.begin(
-        piece.encoded.bytes.byteLength, piece.chunks.map((chunk) => chunk.sha256), "owner",
-        [], true, null, true));
+        piece.encoded.size, piece.encoded.hashes, "owner", [], true, null, true));
       this.#ledger.moveBegun(stream, started[0]?.intent_id ?? "0".repeat(32), digest, clock(),
                              before);
       return { started, before };
     });
     try {
+      // Each chunk made as it is sent, two a call (a `FILES` call's most), so a move holds
+      // its records and two chunks, never a segment's second copy.
       for (const [n, piece] of pieces.entries()) {
         const wanted = new Set(begun.started[n]!.missing);
-        const puts = piece.chunks.filter((chunk) => wanted.delete(chunk.sha256));
+        const puts = piece.encoded.hashes.flatMap((sha256, k) => wanted.delete(sha256) ? [k] : []);
         for (let at = 0; at < puts.length; at += 2) {
-          await this.#files.upload(begun.started[n]!.intent_id, puts.slice(at, at + 2));
+          await this.#files.upload(begun.started[n]!.intent_id, puts.slice(at, at + 2).map((k) =>
+            ({ sha256: piece.encoded.hashes[k]!, bytes: piece.encoded.chunk(k) })));
         }
       }
       await this.#door(() => {

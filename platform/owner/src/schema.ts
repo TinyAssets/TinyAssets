@@ -598,7 +598,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "last_seq INTEGER NOT NULL DEFAULT 0, " +
       // Whether the archive's last move was refused for the storage figure (a post at the
       // hot ceiling is then `storage_full`, never a busy that cannot clear).
-      "archive_blocked INTEGER NOT NULL DEFAULT 0 CHECK (archive_blocked IN (0, 1)))",
+      "archive_blocked INTEGER NOT NULL DEFAULT 0 CHECK (archive_blocked IN (0, 1)), " +
+      // The archive lane's passes begun and not ended well, and the last one's error (null
+      // when it stopped before it could say, as an isolate killed for memory does): counted
+      // as a pass begins, so the owner is told after three however they ended (review N3).
+      "archive_fails INTEGER NOT NULL DEFAULT 0 CHECK (archive_fails >= 0), " +
+      "archive_error TEXT CHECK (archive_error IS NULL OR length(archive_error) <= 200))",
     "INSERT INTO ledger_usage (only, agents, enabled_agents, messages, settled_wakes) " +
       "VALUES (1, 0, 0, 0, 0)",
     "CREATE TRIGGER outside_agents_added AFTER INSERT ON outside_agents BEGIN " +

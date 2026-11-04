@@ -34,10 +34,13 @@
  *
  * **Archive segments (version 3; slice STORE item 2, `segments.ts`).** An `archive_segments`
  * row names a content whose bytes are export lines of this same grammar: each archived record's
- * `row` lines (a message, its body inline whatever its size, its recipients), then one
- * `{"t":"segment",...}` trailer line, then 16 ASCII digits (the trailer's offset). A reader,
- * having read the base and the log to E, fetches the chunks of each `archive_segments` row
- * standing at E as any content's and applies its `row` lines **after the log**, over it: a
+ * `row` lines (a message, its body's row, its recipients), then one `{"t":"segment",...}`
+ * trailer line, then 16 ASCII digits (the trailer's offset). A body is raw, never escaped: its
+ * row holds `"body":null` and its line adds `"raw":"body","raw_bytes":<n>`, and the line's
+ * newline is followed by the body's `n` bytes (its UTF-8) and a newline; a reader puts them,
+ * decoded, back in the row's `body` (`recordRows`). A reader, having read the base and the
+ * log to E, fetches the chunks of each `archive_segments` row standing at E as any content's
+ * and applies its `row` lines **after the log**, over it: a
  * move deletes its rows from their tables (the log names them `gone`) in the same unit that
  * names the segment, and a moved row never returns to its table (its key, a message's seq and
  * id, is never given again), so a key a segment at E holds is the owner's at E as the segment

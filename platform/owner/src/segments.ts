@@ -7,10 +7,13 @@
  * chunks to `FILES`, `Files.adopt` in the unit that names it), so it is under the owner's
  * data key (SSE-C), its bytes count in the one storage number (`chunk_bytes`), and the GC
  * grace, the generation's protection and the erasure's prefix delete cover it as any content.
- * Its bytes, all UTF-8:
- * 1. one line a record's row, **in the export's own grammar** (`export.ts`):
- *    `{"t":"row","table":"<name>","row":{<column>:<value>,...}}`, a record's lines together,
- *    records in key order; a placed body is copied in, so the segment names no other content;
+ * Its bytes (review N3: a body is never escaped, so a record's size is its bytes):
+ * 1. a record's rows, each one line in the export's own grammar (`export.ts`):
+ *    `{"t":"row","table":"<name>","row":{<column>:<value>,...}}`, records in key order; a
+ *    row that carries a body (a message's) holds `"body":null` and its line adds
+ *    `"raw":"body","raw_bytes":<n>`, and the line's newline is followed by exactly `n` bytes
+ *    (the body's own UTF-8, copied in unescaped, so the segment names no other content and a
+ *    record is its body's size and its lines') and a newline;
  * 2. the trailer, one line: `{"t":"segment","stream":"mail","first":<key>,"last":<key>,
  *    "records":<n>,"keys":[[<key>,<offset>,<length>],...],"chains":{"<root>":[[<key>,
  *    <offset>,<length>],...]}}`, each record's byte range by its key, and for mail each
@@ -19,7 +22,7 @@
  *
  * The object keeps the segment's fence (`archive_segments`: its key range, its trailer's
  * range, its records), so a read by key is the fence, one ranged read of the trailer, one of
- * the record. A segment is sealed at `SEGMENT_MIN_BYTES` of lines or `SEGMENT_MIN_RECORDS`
+ * the record. A segment is sealed at `SEGMENT_MIN_BYTES` of records or `SEGMENT_MIN_RECORDS`
  * records, and no record is smaller than `MIN_RECORD_BYTES` (the tests hold the smallest),
  * so every segment but a lone one holds at least `SEGMENT_LEAST_BYTES` of counted storage
  * (a rewrite left small takes in its neighbours by key; `pack` cuts only where both sides
@@ -32,7 +35,8 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { CHUNK_BYTES } from "./manifest";
 
 /**
- * A segment is sealed once its lines reach this: two chunks. Not one: a fence row costs the
+ * A segment is sealed once its records' own bytes reach this (never their trailer shares,
+ * review N4): two chunks. Not one: a fence row costs the
  * owner-bound guard about 2.5 KB at its worst fill, so 0.5 TB of tier in 4 MiB segments
  * would pass STORE's quarter of the room under the half (`limits-audit.test.ts`).
  */
@@ -40,8 +44,8 @@ export const SEGMENT_MIN_BYTES = 8 * 1024 * 1024;
 /** Or once it holds this many records, however small: half the hot mail's ceiling. */
 export const SEGMENT_MIN_RECORDS = 25_000;
 /**
- * The fewest bytes a record's lines take: a mail's three rows at their narrowest (the tests
- * build the smallest message the ledger takes and hold its lines to it).
+ * The fewest bytes a record takes: a mail's three rows at their narrowest (the tests build
+ * the smallest message the ledger takes and hold its bytes to it).
  */
 export const MIN_RECORD_BYTES = 336;
 /**
@@ -62,6 +66,15 @@ export const ARCHIVE_SEGMENTS_MAX = 59_606;
  */
 export const TIER_STORAGE_MAX = (ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES;
 /**
+ * The most records' bytes one move holds in the isolate at once (review N3): a merge's
+ * segment and its stragglers (it takes stragglers while the two fit, and always one). A move
+ * holds its records once and the two chunks it is sending: the worst merge, measured in
+ * workerd, at 50.1 MB of the isolate's 128 MB with the call's copy (`limits-audit.md`).
+ * `pack`'s largest piece (twice the least and a record) and the one straggler always taken
+ * fit it but for their lines, so the always-one rule passes it by a few KB at most.
+ */
+export const MOVE_BYTES = 32 * 1024 * 1024;
+/**
  * A record's share of its segment's trailer and suffix, counted with its lines in the one
  * number (a message's `line_bytes`): its key's and its chain's places (three numbers each,
  * at most 52 bytes), its chain root's name (40), and its share of the trailer's head and the
@@ -78,7 +91,7 @@ export const RECORD_TRAILER_BYTES = 320;
  * and the largest record, which the moves' byte budget bounds.
  */
 export function pack<T extends SegmentRecord>(records: readonly T[], least: number): T[][] {
-  const sizes = records.map((record) => bytesOf(recordText(record)));
+  const sizes = records.map(recordBytes);
   const total = sizes.reduce((sum, size) => sum + size, 0);
   if (total <= 2 * least) {
     return [records.slice()];
@@ -106,12 +119,25 @@ export function pack<T extends SegmentRecord>(records: readonly T[], least: numb
 /** The 16 digits after the trailer that give its offset. */
 const SUFFIX_BYTES = 16;
 
-/** A record as a stream hands it to a segment: its key, its chain, its rows' lines. */
+/**
+ * A record's row: its table, its columns, and the raw bytes of its one raw column (`body`)
+ * when it carries one (as the views they came in, never joined), the column then null.
+ */
+export type SegmentRow = readonly [table: string, row: Readonly<Record<string, unknown>>,
+                                   raw?: readonly Uint8Array[]];
+
+/** A record as a stream hands it to a segment: its key, its chain, its rows. */
 export interface SegmentRecord {
   readonly key: number;
   readonly chain: string | null;
-  /** The record's rows, each `[table, row]`, written as export lines in this order. */
-  readonly rows: readonly (readonly [string, Readonly<Record<string, unknown>>])[];
+  /** The record's rows, written in this order. */
+  readonly rows: readonly SegmentRow[];
+  /**
+   * Its bytes as a segment already holds them, as views of the chunks they were read in: a
+   * record a merge or a rewrite keeps is placed as it was, never parsed nor copied (its
+   * `rows` then empty).
+   */
+  readonly held?: readonly Uint8Array[];
 }
 
 /** One record's place in its segment. */
@@ -127,22 +153,56 @@ export interface Trailer {
   readonly chains: Readonly<Record<string, readonly Placement[]>>;
 }
 
-/** A segment encoded: its bytes, and its fence. */
+/**
+ * A segment encoded, never joined whole: its parts in order (each line's bytes, each raw
+ * body as the view it came as), its size, its trailer's range, and its chunks made one at a
+ * time on demand, so a move holds its inputs and a chunk or two, never a second copy.
+ */
 export interface Encoded {
-  readonly bytes: Uint8Array;
   readonly trailer: Trailer;
   readonly trailer_offset: number;
   readonly trailer_bytes: number;
+  readonly size: number;
+  /** Each chunk's hash, in order (`FILES` names chunks by them). */
+  readonly hashes: readonly string[];
+  /** Chunk `n`'s bytes, made afresh. */
+  chunk(n: number): Uint8Array;
 }
 
-/** A row as its export line (`export.ts`'s grammar), with its newline. */
-export function rowLine(table: string, row: Readonly<Record<string, unknown>>): string {
-  return `${JSON.stringify({ t: "row", table, row })}\n`;
+/** A row as its export line (`export.ts`'s grammar), with its newline; a raw one's marked. */
+export function rowLine(table: string, row: Readonly<Record<string, unknown>>,
+                        rawBytes?: number): string {
+  return `${JSON.stringify(rawBytes === undefined ? { t: "row", table, row }
+    : { t: "row", table, row, raw: "body", raw_bytes: rawBytes })}\n`;
 }
 
-/** A record's lines, as a segment holds them. */
-export function recordText(record: SegmentRecord): string {
-  return record.rows.map(([table, row]) => rowLine(table, row)).join("");
+/** Byte arrays' total length. */
+function lengthOf(parts: readonly Uint8Array[]): number {
+  return parts.reduce((sum, part) => sum + part.byteLength, 0);
+}
+
+/**
+ * A record's bytes as parts: a held record's as it holds them; else each row's line, and a
+ * raw row's bytes and their newline.
+ */
+export function recordParts(record: SegmentRecord): Uint8Array[] {
+  if (record.held !== undefined) {
+    return [...record.held];
+  }
+  const encoder = new TextEncoder();
+  const parts: Uint8Array[] = [];
+  for (const [table, row, raw] of record.rows) {
+    parts.push(encoder.encode(rowLine(table, row, raw === undefined ? undefined : lengthOf(raw))));
+    if (raw !== undefined) {
+      parts.push(...raw, Uint8Array.of(0x0a));
+    }
+  }
+  return parts;
+}
+
+/** A record's bytes in its segment. */
+export function recordBytes(record: SegmentRecord): number {
+  return lengthOf(recordParts(record));
 }
 
 /** The UTF-8 bytes of `text`. */
@@ -150,24 +210,24 @@ export function bytesOf(text: string): number {
   return new TextEncoder().encode(text).byteLength;
 }
 
-/** A stream's records, in key order, encoded as one segment. */
+/** A stream's records, in key order, encoded as one segment (`Encoded`). */
 export function encodeSegment(stream: string, records: readonly SegmentRecord[]): Encoded {
   if (records.length === 0) {
     throw new Error("a segment holds at least one record");
   }
-  const parts: string[] = [];
+  const parts: Uint8Array[] = [];
   const keys: Placement[] = [];
   const chains: Record<string, Placement[]> = {};
   let offset = 0;
   for (const record of records) {
-    const text = recordText(record);
-    const length = bytesOf(text);
+    const own = recordParts(record);
+    const length = lengthOf(own);
     const placement: Placement = [record.key, offset, length];
     keys.push(placement);
     if (record.chain !== null) {
       (chains[record.chain] ??= []).push(placement);
     }
-    parts.push(text);
+    parts.push(...own);
     offset += length;
   }
   for (let i = 1; i < keys.length; i++) {
@@ -177,10 +237,128 @@ export function encodeSegment(stream: string, records: readonly SegmentRecord[])
   }
   const trailer: Trailer = { stream, first: keys[0]![0], last: keys.at(-1)![0],
                              records: keys.length, keys, chains };
-  const line = `${JSON.stringify({ t: "segment", ...trailer })}\n`;
-  const suffix = String(offset).padStart(SUFFIX_BYTES, "0");
-  const bytes = new TextEncoder().encode(parts.join("") + line + suffix);
-  return { bytes, trailer, trailer_offset: offset, trailer_bytes: bytesOf(line) };
+  const line = new TextEncoder().encode(`${JSON.stringify({ t: "segment", ...trailer })}\n`);
+  parts.push(line, new TextEncoder().encode(String(offset).padStart(SUFFIX_BYTES, "0")));
+  const size = offset + line.byteLength + SUFFIX_BYTES;
+  // Chunk `n` as the views of the parts it spans: hashed from them in place, and copied
+  // into one array only when sent, so a segment is never held twice (review N3).
+  const spans = (n: number): Uint8Array[] => {
+    const from = n * CHUNK_BYTES;
+    const until = Math.min(from + CHUNK_BYTES, size);
+    const out: Uint8Array[] = [];
+    let at = 0;
+    for (const part of parts) {
+      const end = at + part.byteLength;
+      if (end > from && at < until) {
+        out.push(part.subarray(Math.max(from, at) - at, Math.min(until, end) - at));
+      }
+      at = end;
+    }
+    return out;
+  };
+  const count = Math.ceil(size / CHUNK_BYTES);
+  const hashes = Array.from({ length: count }, (_, n) => {
+    const hash = createHash("sha256");
+    for (const view of spans(n)) {
+      hash.update(view);
+    }
+    return hash.digest("hex");
+  });
+  return { trailer, trailer_offset: offset, trailer_bytes: line.byteLength, size, hashes,
+           chunk: (n) => joined(spans(n)) };
+}
+
+/** A segment encoded, as one array of bytes (for tests and small segments). */
+export function segmentBytes(encoded: Encoded): Uint8Array {
+  const whole = new Uint8Array(encoded.size);
+  for (let n = 0; n * CHUNK_BYTES < encoded.size; n++) {
+    whole.set(encoded.chunk(n), n * CHUNK_BYTES);
+  }
+  return whole;
+}
+
+/**
+ * A segment's bytes as the chunks they came in, read by range without joining them: a range
+ * is the views of the chunks it spans (`views`), or one array (`slice`, a copy only when it
+ * spans two, for the small reads: a trailer, one record). A reader that copies records out
+ * lets go of each chunk once it has read past it (`release`), so it never holds the copy and
+ * the whole beside it.
+ */
+export class SegmentReader {
+  readonly #parts: (Uint8Array | null)[];
+  readonly #sizes: number[];
+
+  constructor(parts: readonly Uint8Array[]) {
+    this.#parts = [...parts];
+    this.#sizes = parts.map((part) => part.byteLength);
+  }
+
+  views(offset: number, length: number): Uint8Array[] {
+    const out: Uint8Array[] = [];
+    let at = 0;
+    let left = length;
+    for (const [n, part] of this.#parts.entries()) {
+      const end = at + this.#sizes[n]!;
+      if (left > 0 && offset < end) {
+        if (part === null) {
+          throw new Error("a segment's range was let go");
+        }
+        const from = Math.max(0, offset - at);
+        const take = Math.min(left, part.byteLength - from);
+        out.push(part.subarray(from, from + take));
+        offset += take;
+        left -= take;
+      }
+      at = end;
+    }
+    if (left > 0) {
+      throw new Error("a segment's range runs past its content");
+    }
+    return out;
+  }
+
+  /** Let go of every chunk that ends at or before `offset`: no later read reaches it. */
+  release(offset: number): void {
+    let at = 0;
+    for (const [n, size] of this.#sizes.entries()) {
+      at += size;
+      if (at > offset) {
+        return;
+      }
+      this.#parts[n] = null;
+    }
+  }
+
+  slice(offset: number, length: number): Uint8Array {
+    const views = this.views(offset, length);
+    return views.length === 1 ? views[0]! : joined(views);
+  }
+}
+
+/** Byte arrays joined into one. */
+export function joined(parts: readonly Uint8Array[]): Uint8Array {
+  const whole = new Uint8Array(lengthOf(parts));
+  let at = 0;
+  for (const part of parts) {
+    whole.set(part, at);
+    at += part.byteLength;
+  }
+  return whole;
+}
+
+/** A record's first row (its key's own: a message's), read from its views' first line. */
+export function firstRow(views: readonly Uint8Array[]): [string, Record<string, unknown>] {
+  const line: Uint8Array[] = [];
+  for (const view of views) {
+    const end = view.indexOf(0x0a);
+    if (end >= 0) {
+      line.push(view.subarray(0, end + 1));
+      const [row] = parseRecord(joined(line));
+      return [row![0], row![1]];
+    }
+    line.push(view);
+  }
+  throw new Error("a segment's record line has no end");
 }
 
 /** A trailer's line, parsed and checked. */
@@ -193,16 +371,53 @@ export function parseTrailer(text: string): Trailer {
   return parsed as unknown as Trailer;
 }
 
-/** A record's lines, parsed: each row by its table, in order. */
-export function parseRecord(text: string): [string, Record<string, unknown>][] {
-  return text.split("\n").filter((line) => line !== "").map((line) => {
-    const parsed = JSON.parse(line) as { t?: unknown; table?: unknown; row?: unknown };
+/** A parsed record's row: as `SegmentRow`, a raw row's bytes one view. */
+export type ParsedRow = [table: string, row: Record<string, unknown>, raw?: [Uint8Array]];
+
+/**
+ * A record's bytes, parsed: each row by its table, a raw row with its raw bytes as a view of
+ * `bytes` (never decoded nor copied here).
+ */
+export function parseRecord(bytes: Uint8Array): ParsedRow[] {
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const rows: ParsedRow[] = [];
+  let at = 0;
+  while (at < bytes.byteLength) {
+    const end = bytes.indexOf(0x0a, at);
+    if (end < 0) {
+      throw new Error("a segment's record line has no end");
+    }
+    const parsed = JSON.parse(decoder.decode(bytes.subarray(at, end))) as {
+      t?: unknown; table?: unknown; row?: unknown; raw?: unknown; raw_bytes?: unknown };
     if (parsed.t !== "row" || typeof parsed.table !== "string" || typeof parsed.row !== "object"
         || parsed.row === null) {
       throw new Error("a segment's record is not export rows");
     }
-    return [parsed.table, parsed.row as Record<string, unknown>];
-  });
+    at = end + 1;
+    if (parsed.raw === undefined) {
+      rows.push([parsed.table, parsed.row as Record<string, unknown>]);
+      continue;
+    }
+    const length = parsed.raw_bytes;
+    if (parsed.raw !== "body" || typeof length !== "number" || !Number.isSafeInteger(length)
+        || length < 0 || at + length >= bytes.byteLength || bytes[at + length] !== 0x0a) {
+      throw new Error("a segment's raw body is not as its line says");
+    }
+    rows.push([parsed.table, parsed.row as Record<string, unknown>,
+               [bytes.subarray(at, at + length)]]);
+    at += length + 1;
+  }
+  return rows;
+}
+
+/**
+ * Export version 3's reading rule for a record (`export.ts`): its rows as the owner held
+ * them, a raw row's bytes decoded (UTF-8, as written) back into its `body` column.
+ */
+export function recordRows(bytes: Uint8Array): [string, Record<string, unknown>][] {
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  return parseRecord(bytes).map(([table, row, raw]) =>
+    [table, raw === undefined ? row : { ...row, body: decoder.decode(raw[0]) }]);
 }
 
 /** A byte range of a segment's content, as reads of its chunks (each `CHUNK_BYTES`). */
@@ -225,19 +440,17 @@ export function chunkReads(chunks: readonly string[], offset: number, length: nu
   return reads;
 }
 
-/** The digest the two units of a move compare: the batch's rows as the object holds them. */
+/**
+ * The digest the two units of a move compare: the batch's rows as the object holds them,
+ * hashed one row's JSON at a time (review N3: never the batch's JSON whole, which escapes
+ * an inline body of control characters six times over).
+ */
 export function imageDigest(images: readonly unknown[]): string {
-  return createHash("sha256").update(JSON.stringify(images)).digest("hex");
-}
-
-/** A segment's bytes cut into chunks with their hashes, as `FILES` names them. */
-export function segmentChunks(bytes: Uint8Array): { sha256: string; bytes: Uint8Array }[] {
-  const chunks: { sha256: string; bytes: Uint8Array }[] = [];
-  for (let at = 0; at < bytes.byteLength; at += CHUNK_BYTES) {
-    const piece = bytes.subarray(at, Math.min(at + CHUNK_BYTES, bytes.byteLength));
-    chunks.push({ sha256: createHash("sha256").update(piece).digest("hex"), bytes: piece });
+  const hash = createHash("sha256");
+  for (const image of images) {
+    hash.update(JSON.stringify(image)).update("\n");
   }
-  return chunks;
+  return hash.digest("hex");
 }
 
 /**

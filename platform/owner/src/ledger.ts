@@ -90,6 +90,7 @@
  * them around the ledger.
  */
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 
 import { AGENT_DIR } from "./authority";
 import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
@@ -98,9 +99,9 @@ import { exported } from "./export";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import {
-  bloomHas, bloomOf, bytesOf, idKey, idOrder, imageDigest, orderedId, parseRecord, recordText,
-  RECORD_TRAILER_BYTES, roomMembers, SEGMENT_MIN_BYTES, SEGMENT_MIN_RECORDS,
-  type SegmentRecord,
+  bloomHas, bloomOf, bytesOf, firstRow, idKey, idOrder, imageDigest, MOVE_BYTES, orderedId,
+  parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_MIN_BYTES,
+  SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 import {
@@ -784,31 +785,38 @@ function exportRow(table: string, row: Readonly<Record<string, unknown>>):
     [column, row[column] ?? null]));
 }
 
-/** A message's record, as a segment holds it: its row, its body inline, its recipients. */
+/**
+ * A message's record, as a segment holds it: its row, its body's row with the body's bytes
+ * raw beside it (never escaped, review N3), its recipients.
+ */
 export function mailRecord(message: Readonly<Record<string, unknown>>,
                            body: Readonly<Record<string, unknown>>,
-                           recipients: readonly Readonly<Record<string, unknown>>[]):
-    SegmentRecord {
+                           recipients: readonly Readonly<Record<string, unknown>>[],
+                           raw: readonly Uint8Array[]): SegmentRecord {
   return { key: message["seq"] as number, chain: message["chain_root"] as string,
            rows: [["ledger_messages", exportRow("ledger_messages", message)],
-                  ["message_bodies", exportRow("message_bodies", body)],
+                  ["message_bodies", { ...exportRow("message_bodies", body), body: null }, raw],
                   ...recipients.map((each) =>
                     ["ledger_recipients", exportRow("ledger_recipients", each)] as const)] };
 }
 
 /**
- * The bytes a new message's lines take as its segment will hold them, its body inline (D2):
- * its own `line_bytes` and its body's `meta_bytes` are in them, so settled to a fixed point.
+ * The bytes a new message takes as its segment will hold it (D2): its lines, its body raw
+ * (`body_bytes`) and its newline, and its trailer share. Its own `line_bytes` and its body's
+ * `meta_bytes` are in its lines, so settled to a fixed point; the body is never copied here.
  */
 function mailLineBytes(message: Readonly<Record<string, unknown>>,
                        body: Readonly<Record<string, unknown>>,
                        recipient: Readonly<Record<string, unknown>>): number {
+  const size = body["body_bytes"] as number;
+  const of = (rows: readonly SegmentRow[]): number => rows.reduce((sum, [table, row, raw]) =>
+    sum + (raw === undefined ? bytesOf(rowLine(table, row))
+      : bytesOf(rowLine(table, row, size)) + size + 1), 0);
   let bytes = 0;
   for (let i = 0; i < 6; i++) {
-    const next = bytesOf(recordText(mailRecord(
-      { ...message, line_bytes: bytes },
-      { ...body, meta_bytes: Math.max(0, bytes - (body["body_bytes"] as number)) },
-      [recipient]))) + RECORD_TRAILER_BYTES;
+    const next = of(mailRecord({ ...message, line_bytes: bytes },
+                               { ...body, meta_bytes: Math.max(0, bytes - size) },
+                               [recipient], []).rows) + RECORD_TRAILER_BYTES;
     if (next === bytes) {
       return bytes;
     }
@@ -817,16 +825,16 @@ function mailLineBytes(message: Readonly<Record<string, unknown>>,
   return bytes;
 }
 
-/** An archived record's text, read back as its message. */
-export function archivedMail(text: string): ArchivedMail {
+/** An archived record's bytes, read back as its message, its raw body decoded. */
+export function archivedMail(bytes: Uint8Array): ArchivedMail {
   let message: StoredMessage | undefined;
   let body: string | undefined;
   const recipients: { agent_id: string; state: string }[] = [];
-  for (const [table, row] of parseRecord(text)) {
+  for (const [table, row, raw] of parseRecord(bytes)) {
     if (table === "ledger_messages") {
       message = row as unknown as StoredMessage;
-    } else if (table === "message_bodies") {
-      body = row["body"] as string;
+    } else if (table === "message_bodies" && raw !== undefined) {
+      body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw[0]);
     } else if (table === "ledger_recipients") {
       recipients.push({ agent_id: row["agent_id"] as string, state: row["state"] as string });
     }
@@ -838,20 +846,33 @@ export function archivedMail(text: string): ArchivedMail {
   return { message, body, recipients };
 }
 
-/** An archived record's rows, read back as a segment record with its room. */
-export function archivedRecord(key: number, rows: [string, Record<string, unknown>][]):
-    SegmentRecord & { room: string } {
-  const message = rows.find(([table]) => table === "ledger_messages")?.[1];
+/** A record a move places, with its room and when its message was posted. */
+export type ArchiveRecord = SegmentRecord & { readonly room: string; readonly at: number };
+
+/** A record's message row, which carries its room, its chain and its time. */
+function archiveRecordOf(record: SegmentRecord, message: Record<string, unknown> | undefined):
+    ArchiveRecord {
   if (message === undefined) {
     throw new Error("an archived mail record lacks its message");
   }
-  return { key, chain: message["chain_root"] as string, rows,
-           room: message["room_id"] as string };
+  return { ...record, chain: message["chain_root"] as string,
+           room: message["room_id"] as string, at: message["created_at"] as number };
 }
 
-/** When an archived record's message was posted. */
-export function archivedAt(record: SegmentRecord): number {
-  return record.rows.find(([table]) => table === "ledger_messages")![1]["created_at"] as number;
+/** A record made from its rows (a hot message's, as `mailRecord` built it), with its room. */
+export function archivedRecord(key: number, rows: readonly SegmentRow[]): ArchiveRecord {
+  return archiveRecordOf({ key, chain: null, rows },
+                         rows.find(([table]) => table === "ledger_messages")?.[1]);
+}
+
+/**
+ * A record a segment holds, kept as it is (its bytes the views it was read in, review N3):
+ * only its first line, its message's row, is parsed, for its room, its chain and its time.
+ */
+export function heldRecord(key: number, views: readonly Uint8Array[]): ArchiveRecord {
+  const [table, row] = firstRow(views);
+  return archiveRecordOf({ key, chain: null, rows: [], held: views },
+                         table === "ledger_messages" ? row : undefined);
 }
 
 /** A fence row's members bloom, as bytes. */
@@ -1556,8 +1577,10 @@ export class Ledger {
    * The owner's view of a mail chain: the chain rooted at `root`, oldest first, past
    * `after`, each message with its recipients and how far each took it, its archived
    * messages (read from their segments by the door, `archived`) merged with the hot ones by
-   * seq, below `frontier` when the door has more segments to read. A read. `after` is the
-   * cursor for the next page.
+   * seq, below `frontier` when the door has more to read. A page holds at most `limit`
+   * messages and, past its first, no more than `READ_PAGE_BYTES` of bodies, as a mailbox
+   * read does (so a chain of large bodies is paged, never held whole). A read. `after` is
+   * the cursor for the next page.
    */
   chain(root: string, after: unknown, limit: unknown,
         placed: ReadonlyMap<string, string> = new Map(),
@@ -1573,8 +1596,31 @@ export class Ledger {
     const rows = sql.exec<StoredMessage>(
       "SELECT * FROM ledger_messages WHERE seq > ? AND seq < ? AND chain_root = ? " +
         "ORDER BY seq LIMIT ?", after, below, root, (limit as number) + 1).toArray();
+    const cold = archived.mail.filter((mail) => mail.message.seq > (after as number)
+      && mail.message.seq < below && mail.message.chain_root === root
+      && !this.#purged(mail.message.room_id));
+    // The page, by seq, before any placed body is read: `limit` messages, and past the
+    // first only while their bodies fit `READ_PAGE_BYTES`.
+    const merged = [...rows.map((row) => ({ seq: row.seq, bytes: row.body_bytes, row })),
+                    ...cold.map((mail) => ({ seq: mail.message.seq,
+                                             bytes: mail.message.body_bytes, mail }))]
+      .sort((a, b) => a.seq - b.seq);
+    const page: typeof merged = [];
+    let bytes = 0;
+    for (const item of merged) {
+      if (page.length >= (limit as number)
+          || (page.length > 0 && bytes + item.bytes > READ_PAGE_BYTES)) {
+        break;
+      }
+      page.push(item);
+      bytes += item.bytes;
+    }
     const unread: string[] = [];
-    const hot = rows.map((row): ChainMail => {
+    const messages = page.map((item): ChainMail => {
+      if ("mail" in item) {
+        return this.#chainMail(item.mail.message, item.mail.body, item.mail.recipients);
+      }
+      const row = item.row;
       const stored = sql.exec<{ body: string; content_id: string | null }>(
         "SELECT body, content_id FROM message_bodies WHERE message_id = ?", row.message_id)
         .toArray()[0];
@@ -1587,12 +1633,6 @@ export class Ledger {
         "SELECT agent_id, state FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
         row.message_id).toArray());
     });
-    const cold = archived.mail.filter((mail) => mail.message.seq > (after as number)
-      && mail.message.seq < below && mail.message.chain_root === root
-      && !this.#purged(mail.message.room_id))
-      .map((mail) => this.#chainMail(mail.message, mail.body, mail.recipients));
-    const merged = [...hot, ...cold].sort((a, b) => a.seq - b.seq);
-    const messages = merged.slice(0, limit as number);
     const more = merged.length > messages.length || archived.frontier !== null;
     const cursor = messages.length === merged.length && archived.frontier !== null
       ? Math.max(after as number, archived.frontier - 1)
@@ -1654,10 +1694,15 @@ export class Ledger {
       .toArray().map((row) => row.agent_id);
   }
 
-  /** Whether a segment's worth of acked mail waits to move. A read of the counters. */
+  /**
+   * Whether a segment's worth of acked mail waits to move: its records, or their own bytes
+   * (`line_bytes` less each one's trailer share, as `pack` and the segment count them, so a
+   * seal is never short of the least, review N4). A read of the counters.
+   */
   #sealable(usage: Usage): boolean {
-    return usage.messages - usage.unacked >= this.#limits.archiveRecords
-      || usage.acked_bytes >= this.#limits.archiveBytes;
+    const acked = usage.messages - usage.unacked;
+    return acked >= this.#limits.archiveRecords
+      || usage.acked_bytes - acked * RECORD_TRAILER_BYTES >= this.#limits.archiveBytes;
   }
 
   /**
@@ -1711,25 +1756,25 @@ export class Ledger {
           "ON b.message_id = m.message_id WHERE m.unacked = 0 ORDER BY m.seq LIMIT ?",
         limits.archiveRecords).toArray();
     }
-    // The byte budget (review N1). A tail move seals once its lines reach the seal (so it
-    // holds the least). A merge holds its segment and its stragglers in the isolate at once,
-    // so it takes stragglers only while they fit twice the seal less its segment's bytes, and
-    // always at least one (so the oldest straggler always moves); the rest merge on the next
-    // passes, whatever their sizes.
-    const budget = into === null ? limits.archiveBytes
-      : Math.max(0, 2 * limits.archiveBytes - into.bytes);
+    // The byte budget, in records' own bytes (their trailer shares out, review N4). A tail
+    // move seals once they reach the seal (so it holds the least). A merge holds its segment
+    // and its stragglers in the isolate at once, so it takes stragglers only while the two
+    // fit `MOVE_BYTES` (review N3: the measured move's bound), and always at least one (so
+    // the oldest straggler always moves); the rest merge on the next passes.
+    const budget = into === null ? limits.archiveBytes : Math.max(0, MOVE_BYTES - into.bytes);
     const seqs: number[] = [];
     const contents: string[] = [];
     let bytes = 0;
     for (const row of rows) {
-      if (into !== null && seqs.length > 0 && bytes + row.line_bytes > budget) {
+      const own = row.line_bytes - RECORD_TRAILER_BYTES;
+      if (into !== null && seqs.length > 0 && bytes + own > budget) {
         break;
       }
       seqs.push(row.seq);
       if (row.content_id !== null) {
         contents.push(row.content_id);
       }
-      bytes += row.line_bytes;
+      bytes += own;
       if (into === null && bytes >= budget) {
         break;
       }
@@ -1759,11 +1804,12 @@ export class Ledger {
   }
 
   /**
-   * A batch's records (its placed bodies handed in, copied in), the digest of its rows as
-   * held, and the agents its rooms name; null when it changed since it was picked. A read.
+   * A batch's records (its placed bodies handed in as the chunks they were read in, each
+   * checked against its message's hash), the digest of its rows as held, and the agents its
+   * rooms name; null when it changed since it was picked. A read.
    */
-  archiveBatch(seqs: readonly number[], bodies: ReadonlyMap<string, string>):
-      { records: SegmentRecord[]; digest: string; members: string[]; first_at: number;
+  archiveBatch(seqs: readonly number[], bodies: ReadonlyMap<string, readonly Uint8Array[]>):
+      { records: ArchiveRecord[]; digest: string; members: string[]; first_at: number;
         last_at: number } | null {
     const images = this.#images(seqs);
     if (images === null) {
@@ -1772,14 +1818,20 @@ export class Ledger {
     const members = new Set<string>();
     const records = images.map(({ message, body, recipients }) => {
       const contentId = body["content_id"] as string | null;
-      const text = contentId === null ? body["body"] as string : bodies.get(contentId);
-      if (text === undefined || digest(text) !== message.body_sha256) {
+      const raw = contentId === null ? [new TextEncoder().encode(body["body"] as string)]
+        : bodies.get(contentId);
+      const hash = createHash("sha256");
+      for (const part of raw ?? []) {
+        hash.update(part);
+      }
+      if (raw === undefined || hash.digest("hex") !== message.body_sha256) {
         throw new Error("an archived body is not the body its message holds");
       }
       for (const member of roomMembers(message.room_id)) {
         members.add(member);
       }
-      return mailRecord(message, { ...body, body: text, content_id: null }, recipients);
+      const record = mailRecord(message, { ...body, content_id: null }, recipients, raw);
+      return archivedRecord(record.key, record.rows);
     });
     return { records, digest: imageDigest(images), members: [...members],
              first_at: images[0]!.message.created_at, last_at: images.at(-1)!.message.created_at };
@@ -1857,6 +1909,30 @@ export class Ledger {
   /** In a unit: the archive's move refused for the storage figure, so posts say so. */
   blockArchive(): void {
     this.#sql.exec("UPDATE ledger_usage SET archive_blocked = 1");
+  }
+
+  /**
+   * In a unit, as an `archive` pass begins: the passes before it that never ended well and
+   * the last one's error (null when it stopped before it could say), then this one counted
+   * among them until it ends (review N3: kept in storage, so a pass killed with its isolate
+   * still counts).
+   */
+  archiveBegin(): { fails: number; error: string | null } {
+    const was = this.#sql.exec<{ fails: number; error: string | null }>(
+      "SELECT archive_fails AS fails, archive_error AS error FROM ledger_usage").one();
+    this.#sql.exec("UPDATE ledger_usage SET archive_fails = archive_fails + 1, " +
+                     "archive_error = NULL");
+    return was;
+  }
+
+  /** In a unit: an `archive` pass ended well (or for a cause it handles), so none failed. */
+  archiveEnded(): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_fails = 0, archive_error = NULL");
+  }
+
+  /** In a unit: an `archive` pass failed, as `error` says; it stays counted. */
+  archiveFailed(error: string): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_error = ?", error);
   }
 
   /** The segment whose key range holds `seq`, if any: segments never overlap, so one. */
