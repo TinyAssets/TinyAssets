@@ -108,7 +108,9 @@ describe("the MCP door's tool profiles", () => {
 
   it("serves search, fetch and file_read in ChatGPT's shape to a directory client", async () => {
     const o = await signedIn();
-    await o.stub.fileWrite(o.own, { path: "/workspace/plumber.md", expected_etag: null,
+    // The owner's own write, as its app binds it: with the tier's numbers (STORE's wall).
+    await o.stub.fileWrite({ ...o.own, tiers: OPEN.tiers }, { path: "/workspace/plumber.md",
+                                    expected_etag: null,
                                     content: new TextEncoder().encode(
                                       "---\ntype: Person\ntitle: Bo\n---\nBo fixes boilers.\n") });
     const registered = await registerClient("Listed");
