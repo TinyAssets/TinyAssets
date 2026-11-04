@@ -1,0 +1,36 @@
+name: review-signal
+
+# A PR review was submitted, edited or dismissed: tell review.yml which PR, so it
+# re-decides the `review` check. Nothing else.
+#
+# `pull_request_review` runs the PR's OWN copy of this file (GITHUB_REF is the PR's
+# merge ref), so it gets no permissions and decides nothing. The decision runs in
+# review.yml on `workflow_run`, the default branch's copy (GitHub Security Lab,
+# "Preventing pwn requests"). A PR that edits this file can only name a different
+# PR, which review.yml then decides from GitHub's data alone, or send no signal, which
+# leaves the check pending.
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions: {}
+
+jobs:
+  signal:
+    name: signal
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Name the PR
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p signal
+          printf '%s\n' "$PR" > signal/pr
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-signal
+          path: signal/
+          retention-days: 1
+          if-no-files-found: error

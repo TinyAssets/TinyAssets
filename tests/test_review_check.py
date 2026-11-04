@@ -1,0 +1,268 @@
+"""The `review` check: a PR review on a commit, carried to later heads only by `carries`."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from scripts import drain_review_gate as gate
+
+_ROOT = Path(__file__).resolve().parents[1]
+_ENV = {
+    **os.environ,
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+_SENSITIVE = gate.release_critical(
+    (_ROOT / ".github" / "workflows" / "pr-scope-guard.yml").read_text(encoding="utf-8")
+)
+A = "a" * 40
+B = "b" * 40
+
+
+def _review(body: str, commit: str = A, *, ident: int = 1, when: str = "2026-11-04T10:00:00Z",
+            association: str = "OWNER", state: str = "COMMENTED") -> dict:
+    return {"id": ident, "body": body, "commit_id": commit, "submitted_at": when,
+            "author_association": association, "state": state,
+            "html_url": f"https://github.com/o/r/pull/1#pullrequestreview-{ident}"}
+
+
+def test_the_latest_trusted_verdict_wins():
+    approve = _review("APPROVE\n\nread it all", ident=1)
+    block = _review("BLOCK\n\nthe lock is wrong", ident=2, when="2026-11-04T11:00:00Z")
+    assert gate.latest_verdict([approve]) == gate.Verdict("APPROVE", A, approve["html_url"])
+    assert gate.latest_verdict([block, approve]).verdict == "BLOCK"
+    later = _review("APPROVE", B, ident=3, when="2026-11-04T12:00:00Z")
+    assert gate.latest_verdict([approve, block, later]) == gate.Verdict(
+        "APPROVE", B, later["html_url"])
+
+
+@pytest.mark.parametrize("review", [
+    _review("APPROVE", association="CONTRIBUTOR"),
+    _review("APPROVE", association="NONE"),
+    _review("APPROVE", state="DISMISSED"),
+    _review("APPROVE", state="PENDING"),
+    _review("approve"),
+    _review("APPROVE."),
+    _review("APPROVE with nits"),
+    _review("Drain-Review-Verdict: APPROVE"),
+    _review("looks fine\nAPPROVE"),
+    _review(""),
+])
+def test_what_is_not_a_verdict(review):
+    assert gate.latest_verdict([review]) is None
+
+
+def test_leading_whitespace_before_the_verdict_is_accepted():
+    assert gate.latest_verdict([_review("\n\n   APPROVE  \n\nevidence")]).verdict == "APPROVE"
+
+
+def test_an_ordinary_review_after_a_verdict_changes_nothing():
+    approve = _review("APPROVE", ident=1)
+    chat = _review("one question about line 4", ident=2, when="2026-11-04T11:00:00Z")
+    assert gate.latest_verdict([approve, chat]).verdict == "APPROVE"
+
+
+@pytest.mark.parametrize("review", [
+    "not a review",
+    {"id": 1, "body": "APPROVE", "author_association": "OWNER", "state": "COMMENTED",
+     "submitted_at": "2026-11-04T10:00:00Z", "commit_id": "short"},
+    {"id": 1, "body": "APPROVE", "state": "COMMENTED"},
+])
+def test_an_unreadable_review_list_refuses(review):
+    with pytest.raises(ValueError):
+        gate.latest_verdict([review])
+
+
+# ---- carries(), on real throwaway repositories ----------------------------------------
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=repo, env=_ENV, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _commit(repo: Path, files: dict[str, str | None], message: str = "c") -> str:
+    for name, text in files.items():
+        path = repo / name
+        if text is None:
+            _git(repo, "rm", "-q", name)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        _git(repo, "add", name)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def repo(tmp_path: Path):
+    """main has code and docs; the PR's reviewed commit A edits the code."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    base = _commit(tmp_path, {"tinyassets/x.py": "x = 1\n", "tinyassets/y.py": "y = 1\n",
+                              "docs/a.md": "# a\n", "README.md": "hi\n"})
+    _git(tmp_path, "checkout", "-q", "-b", "pr")
+    approved = _commit(tmp_path, {"tinyassets/x.py": "x = 2\n"})
+    return tmp_path, base, approved
+
+
+def _carries(repo: Path, base: str, approved: str, head: str) -> str | None:
+    return gate.carries(base, approved, head, sensitive=_SENSITIVE, cwd=repo)
+
+
+def test_the_reviewed_head_and_the_same_change_carry(repo):
+    path, base, approved = repo
+    assert "this head" in _carries(path, base, approved, approved)
+    _git(path, "checkout", "-q", "main")
+    moved = _commit(path, {"tinyassets/y.py": "y = 2\n"})
+    _git(path, "checkout", "-q", "pr")
+    _git(path, "merge", "-q", "--no-edit", "main")
+    merged = _git(path, "rev-parse", "HEAD")
+    assert "the same change" in _carries(path, moved, approved, merged)
+
+
+def test_a_prose_delta_carries(repo):
+    path, base, approved = repo
+    head = _commit(path, {"docs/b.md": "# b\n", "openspec/changes/c/notes.md": "n\n",
+                          "README.md": "hello\n"})
+    why = _carries(path, base, approved, head)
+    assert why is not None and why.startswith("only prose changed")
+    assert "docs/b.md" in why and "README.md" in why
+
+
+@pytest.mark.parametrize("files", [
+    {"tinyassets/x.py": "x = 3\n"},
+    {"docs/a.md": "# a2\n", "tinyassets/z.py": "z = 1\n"},
+    {"docs/tool.py": "print(1)\n"},
+    {"docs/data.json": "{}\n"},
+    {"AGENTS.md": "# rules\n"},
+    {"CLAUDE.md": "# rules\n"},
+    {"tinyassets/notes.md": "not top-level prose\n"},
+    {"docs/a.md": "# a2\n", ".github/workflows/tests.yml": "on: push\n"},
+    {"docs/a.md": "# a2\n", "Dockerfile": "FROM x\n"},
+])
+def test_a_code_or_gate_delta_does_not_carry(repo, files):
+    path, base, approved = repo
+    assert _carries(path, base, approved, _commit(path, files)) is None
+
+
+def test_a_release_critical_prose_path_does_not_carry(repo):
+    path, base, approved = repo
+    head = _commit(path, {"docs/gates.md": "# g\n"})
+    strict = re.compile(r"^docs/gates\.md$")
+    assert gate.carries(base, approved, head, sensitive=strict, cwd=path) is None
+
+
+def test_a_rename_into_docs_counts_both_paths(repo):
+    path, base, approved = repo
+    _git(path, "mv", "tinyassets/y.py", "docs/y.md")
+    _git(path, "commit", "-q", "-m", "move")
+    assert _carries(path, base, approved, _git(path, "rev-parse", "HEAD")) is None
+
+
+def test_a_mode_change_and_a_gitlink_do_not_carry(repo):
+    path, base, approved = repo
+    _git(path, "update-index", "--chmod=+x", "docs/a.md")
+    _git(path, "commit", "-q", "-m", "mode")
+    executable = _git(path, "rev-parse", "HEAD")
+    assert _carries(path, base, approved, executable) is None
+    _git(path, "reset", "-q", "--hard", approved)
+    _git(path, "update-index", "--add", "--cacheinfo", f"160000,{approved},docs/sub.md")
+    _git(path, "commit", "-q", "-m", "gitlink")
+    assert _carries(path, base, approved, _git(path, "rev-parse", "HEAD")) is None
+
+
+def test_merging_main_that_touched_a_pr_file_does_not_carry(repo):
+    path, base, approved = repo
+    _git(path, "checkout", "-q", "main")
+    moved = _commit(path, {"tinyassets/x.py": "x = 1\n# main's note\n"})
+    _git(path, "checkout", "-q", "pr")
+    subprocess.run(["git", "merge", "-q", "--no-edit", "main"], cwd=path, env=_ENV,
+                   capture_output=True)
+    (path / "tinyassets" / "x.py").write_text("x = 2\n# main's note\n", encoding="utf-8")
+    _git(path, "add", "tinyassets/x.py")
+    _git(path, "commit", "-q", "--no-edit")
+    assert _carries(path, moved, approved, _git(path, "rev-parse", "HEAD")) is None
+
+
+def test_an_unreadable_commit_does_not_carry(repo):
+    path, base, approved = repo
+    assert _carries(path, base, approved, "c" * 40) is None
+    assert _carries(path, base, "not-a-sha", approved) is None
+
+
+# ---- the check run's state --------------------------------------------------------------
+
+
+def _state(reviews, carry=lambda commit: None, head=B):
+    return gate.review_check(reviews, base="0" * 40, head=head, carry=carry)
+
+
+def test_no_review_is_pending_not_red():
+    state = _state([])
+    assert state.conclusion is None and state.title == f"waiting for review of {B}"
+
+
+def test_an_approve_that_carries_passes_and_one_that_does_not_waits():
+    reviews = [_review("APPROVE", A)]
+    assert _state(reviews, lambda commit: "only prose").conclusion == "success"
+    waiting = _state(reviews)
+    assert waiting.conclusion is None and "delta review" in waiting.title
+
+
+def test_a_block_fails_where_it_carries_and_waits_after_a_new_change():
+    reviews = [_review("APPROVE", A, ident=1), _review("BLOCK", A, ident=2)]
+    assert _state(reviews, lambda commit: "this head").conclusion == "failure"
+    assert _state(reviews).conclusion is None
+
+
+def test_the_cli_prints_the_check_run(tmp_path, repo):
+    path, base, approved = repo
+    reviews = tmp_path / "reviews.json"
+    reviews.write_text(json.dumps([_review("APPROVE", approved)]), encoding="utf-8")
+    guard = _ROOT / ".github" / "workflows" / "pr-scope-guard.yml"
+    out = subprocess.run(
+        [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
+         "--reviews-file", str(reviews), "--base", base, "--head", approved,
+         "--scope-guard", str(guard)],
+        cwd=path, capture_output=True, text=True, check=True)
+    run = json.loads(out.stdout)
+    assert run["name"] == "review" and run["head_sha"] == approved
+    assert run["status"] == "completed" and run["conclusion"] == "success"
+    reviews.write_text("{}", encoding="utf-8")
+    refused = subprocess.run(
+        [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
+         "--reviews-file", str(reviews), "--base", base, "--head", approved,
+         "--scope-guard", str(guard)], cwd=path, capture_output=True, text=True)
+    assert refused.returncode == 2
+
+
+# ---- the merge group ---------------------------------------------------------------------
+
+
+def test_the_merge_group_ref_names_its_pr():
+    assert gate.queued_pr(f"refs/heads/gh-readonly-queue/main/pr-5416-{A}") == 5416
+    assert gate.queued_pr(f"gh-readonly-queue/main/pr-7-{A}") == 7
+    for ref in ("refs/heads/main", f"gh-readonly-queue/main/pr-0-{A}",
+                "gh-readonly-queue/main/pr-7-abc", f"x/gh-readonly-queue/main/pr-7-{A}"):
+        assert gate.queued_pr(ref) is None
+
+
+def test_only_a_latest_successful_review_run_passes_the_group():
+    done = {"id": 1, "name": "review", "status": "completed", "conclusion": "success"}
+    waiting = {"id": 2, "name": "review", "status": "in_progress", "conclusion": None}
+    failed = {"id": 3, "name": "review", "status": "completed", "conclusion": "failure"}
+    assert gate.review_run_passed([done])
+    assert not gate.review_run_passed([])
+    assert not gate.review_run_passed(None)
+    assert not gate.review_run_passed([done, waiting])
+    assert not gate.review_run_passed([failed, done])
+    assert not gate.review_run_passed([{**done, "name": "required-tests"}])
