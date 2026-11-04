@@ -248,9 +248,35 @@ def test_git_inside_the_checkout_reads_every_tree_unless_it_reads_nothing(
         assert audit._git_reads(argv, here, None), argv
     for argv in harmless:
         assert not audit._git_reads(argv, here, None), argv
-    assert not audit._git_reads(["git", "status"], here, {"GIT_DIR": "/tmp/elsewhere/.git"})
+    # A git dir alone leaves the working directory as the work tree: still a read.
+    assert audit._git_reads(["git", "status"], here, {"GIT_DIR": "/tmp/elsewhere/.git"})
+    assert audit._git_reads(["git", "--git-dir=/tmp/elsewhere/.git", "status"], here, None)
+    assert not audit._git_reads(["git", "status"], here, {
+        "GIT_DIR": "/tmp/elsewhere/.git", "GIT_WORK_TREE": "/tmp/elsewhere"})
     assert not audit._git_reads(["git", "http-backend"], here, {"GIT_PROJECT_ROOT": "/tmp/x"})
     assert audit._git_reads(["git", "init", "-b", "main"], here, None)
+
+
+def test_a_dir_fd_resolves_on_each_host_and_reads_everything_when_it_cannot(
+        tmp_path, monkeypatch) -> None:
+    import fcntl
+
+    root = _fixture_repo(tmp_path / "repo")
+    audit = _audit(root, monkeypatch)
+    fd = os.open(root / "docs", os.O_RDONLY)
+    try:
+        assert list(audit._path("a.md", dir_fd=fd)) == [("docs", "docs/a.md")]  # /proc
+        audit.PROC_FD = str(tmp_path / "no-proc")
+        monkeypatch.delattr(fcntl, "F_GETPATH", raising=False)
+        unresolved = list(audit._path("a.md", dir_fd=fd))
+        assert {tree for tree, _ in unresolved} == set(audit.every), unresolved
+        # macOS names the fd with fcntl(F_GETPATH).
+        monkeypatch.setattr(fcntl, "F_GETPATH", 50, raising=False)
+        monkeypatch.setattr(fcntl, "fcntl",
+                            lambda fd, cmd, buf: os.fsencode(root / "docs") + bytes(8))
+        assert list(audit._path("a.md", dir_fd=fd)) == [("docs", "docs/a.md")]
+    finally:
+        os.close(fd)
 
 
 def test_shell_strings_and_sqlite_are_read_as_paths(tmp_path, monkeypatch) -> None:
@@ -299,7 +325,31 @@ def test_the_audit_sees_existence_checks_helpers_and_its_own_errors(tmp_path) ->
         # The wrapped os calls still answer os.supports_* as the originals did.
         "tests/test_capability.py": (
             "import os\n"
-            "def test_it(): assert os.open in os.supports_dir_fd and os.stat in os.supports_fd\n"),
+            "def test_it():\n"
+            "    assert os.open in os.supports_dir_fd and os.stat in os.supports_fd\n"
+            "    assert os.stat.__name__ == 'stat' and os.open.__doc__\n"),
+        # A broader-scoped fixture's read is judged by every file that loads the fixture.
+        "tests/fx.py": (
+            "import pytest\nfrom pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+            "@pytest.fixture(scope='session')\n"
+            "def shared():\n"
+            "    return (ROOT / ('plat' + 'form') / 'owner' / 'x.json').read_text()\n"),
+        "tests/test_fx_a.py": (
+            "from tests.fx import shared\n"
+            "def test_it(shared): assert shared and 'platform/owner/x.json'\n"),
+        "tests/test_fx_b.py": "from tests.fx import shared\ndef test_it(shared): assert shared\n",
+        # A test that deletes its working directory: no path there is the checkout's.
+        "tests/test_gone_cwd.py": (
+            "import os, subprocess\n"
+            "def test_it(tmp_path, monkeypatch):\n"
+            "    gone = tmp_path / 'gone'\n"
+            "    gone.mkdir(); monkeypatch.chdir(gone); gone.rmdir()\n"
+            "    try:\n"
+            "        open('x.md')\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "    subprocess.run(['true'], check=False)\n"
+            "    assert not os.path.exists('platform')\n"),
         # A listing of the checkout's root sees the top-level .md files.
         "tests/test_lists_root.py": (
             "import os\nfrom pathlib import Path\n"
@@ -324,6 +374,9 @@ def test_the_audit_sees_existence_checks_helpers_and_its_own_errors(tmp_path) ->
     assert "docs: docs/a.md" in outcomes["test_os_open"]
     assert outcomes["test_imports"] == "passed", outcomes["test_imports"]
     assert outcomes["test_capability"] == "passed", outcomes["test_capability"]
+    assert outcomes["test_gone_cwd"] == "passed", outcomes["test_gone_cwd"]
+    fixture = outcomes["test_fx_a"]  # the mapped test that set the fixture up
+    assert "read once by tests/fx.py" in fixture and "tests/test_fx_b.py" in fixture, fixture
     assert "*.md: ." in outcomes["test_lists_root"]
     assert "audit error" in outcomes["test_audit_error"]
     # Loaded alone, the helper's unmapped user still fails: no order decides it.
