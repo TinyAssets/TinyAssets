@@ -1,64 +1,112 @@
 /**
- * The counts test (ADR-037, memshape_research.md §2): an owner isolate's memory is bounded by
- * structure, so the bound is a sum of counts the code enforces times costs the code
- * constructs, read from the sources: its chunk slots (`OWNER_CHUNK_SLOTS` x
- * `CHUNK_SLOT_BYTES`), the relay's tails (`TAIL_BYTES` UTF-16 units, every object's in the
- * isolate together), the Worker's resting baseline and what no unit models, all within the
- * isolate's 128 MB. The slot's cost is the workerd memory leg's to prove (`memory/leg.mjs`:
- * a slot's path holds at most it, whatever its data's size); the baseline and the unmodeled
- * gap are workerd's figures until production's replace them. The relay's per-object terms
- * (its sockets' attachments, its events posts) are bounded per object (`memory-bound.test.ts`).
+ * The counts test (ADR-037): an owner isolate's memory is bounded by structure, so what it
+ * holds live is a sum of counts the code enforces times costs the code constructs, read from
+ * the sources, within the isolate's 128 MB:
+ * - its pool's units (`OWNER_POOL_UNITS` x `UNIT_BYTES`): every path that holds chunks takes
+ *   them while its bytes are in hand, each path's cost its declared units, which the workerd
+ *   memory leg holds each path's measured peak within (`memory/leg.mjs`);
+ * - the relay's tails (`TAIL_BYTES` UTF-16 units, every object's in the isolate together);
+ * - the relay's per-object terms (each object's events posts, its sockets' attachments, its
+ *   told sign-outs, its tails' own objects: `relay-memory.ts`), once for each owner object
+ *   the isolate holds;
+ * - the Worker's resting baseline (`OWNER_BASELINE_BYTES`), which the leg measures with an
+ *   owner object built and served and holds within its figure.
+ *
+ * It asserts only what is derived. What it does not count is named here, never fitted:
+ * garbage V8 has not collected yet, unmeasured in production (`UNCOUNTED.garbage`, workerd's
+ * figures recorded), and the holds not yet under a unit, each owed by a named PR.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import * as holds from "../src/holds";
+import { UNIT_BYTES } from "../src/slots";
+import { ISOLATE_BYTES, memoryTerms } from "./relay-memory";
 import { PLATFORM } from "./sources";
 
 const MIB = 1024 * 1024;
-const UNITS: Record<string, number> = { MIB, UNIT_BYTES: 4 * MIB };
 
-/** A module's `export const NAME = <sum of products>;`, its factors numbers or `UNITS`. */
-function constant(path: string, name: string): number {
-  const found = new RegExp(`export const ${name} = ([^;]+);`)
-    .exec(readFileSync(join(PLATFORM, path), "utf8"));
-  if (found === null) {
-    throw new Error(`${path} holds no ${name}`);
-  }
-  return found[1]!.split("+").reduce((sum, term) => sum + term.split("*").reduce(
-    (product, factor) => product * (UNITS[factor.trim()] ?? Number(factor.trim().replace(/_/g, ""))),
-    1), 0);
-}
+/**
+ * What the counts leave out, and where each is owed: never summed, never fitted. The garbage
+ * figures are workerd's (`rpcretain_research.md` §2, review H1): the high-water RSS over the
+ * resting RSS, with no forced collection, in MiB.
+ */
+export const UNCOUNTED = Object.freeze({
+  garbage: Object.freeze({
+    owed: "the production probe (rr_prod_probe): whether the 128 MB counts it, then how much",
+    workerd_mib: Object.freeze({ arrays_one_isolate: 78.9, plain_allocation: [65.2, 76.0],
+                                 returned_arrays: 101.9, byte_streams: [112, 177],
+                                 arrays_two_isolates: 141.7, r2_put: 235.5 }),
+  }),
+  holds: Object.freeze({
+    "a call's RPC arguments (up to MCP_BODY_MAX on /mcp, API_BODY_MAX on /api)": "PR 3b",
+    "the waiting calls' own arguments (OWNER_WAITERS of them)": "PR 3b",
+    "file_write's whole bytes (WHOLE_BYTES)": "PR 3b",
+    "file_upload_chunks' two chunks, as arguments": "PR 3b",
+    "file_read_chunks' two chunks, as its answer": "PR 3b",
+    "a placed body's bytes as room_post or collection_write sends them (BODY_BYTES_MAX)": "PR 3b",
+    "an export's chunks, as its answer": "PR 4",
+    "sync's raw chunk bytes": "PR 4",
+    "an inbound event's body (INBOUND_BODY_MAX)": "PR 4",
+    "the archive's move": "STORE item 2",
+  }),
+});
 
-export const ISOLATE_BYTES = 128_000_000;
-
-export function counts(): Record<string, number> {
+/** The live terms, in bytes, for `objects` owner objects in the isolate. */
+export function counts(objects = 1): Record<string, number> {
+  const relay = memoryTerms();
+  const tailUnits = Number(/export const TAIL_BYTES = ([0-9_]+);/
+    .exec(readFileSync(join(PLATFORM, "owner", "src", "relay.ts"), "utf8"))![1]!
+    .replace(/_/g, ""));
   return {
-    slots: constant("owner/src/holds.ts", "OWNER_CHUNK_SLOTS")
-      * constant("owner/src/slots.ts", "CHUNK_SLOT_BYTES"),
-    tails: 2 * constant("owner/src/relay.ts", "TAIL_BYTES"),
-    baseline: constant("owner/src/holds.ts", "OWNER_BASELINE_BYTES"),
-    unmodeled: constant("owner/src/holds.ts", "UNMODELED_BYTES"),
+    pool: holds.OWNER_POOL_UNITS * UNIT_BYTES,
+    tails: 2 * tailUnits,
+    relay_per_object: objects * (relay.events! + relay.attachments! + relay.signed_out!
+                                 + relay.tails! - 2 * tailUnits),
+    baseline: holds.OWNER_BASELINE_BYTES,
   };
 }
 
+const sum = (terms: Record<string, number>) =>
+  Object.values(terms).reduce((total, bytes) => total + bytes, 0);
+
 describe("an owner isolate's counts", () => {
-  it("holds its slots, its tails, its baseline and what no unit models within 128 MB", () => {
+  it("holds its live terms within 128 MB, and names the room left as uncounted", () => {
     const terms = counts();
-    const total = Object.values(terms).reduce((sum, bytes) => sum + bytes, 0);
-    console.log(`an owner isolate's counts: ${total} bytes of ${ISOLATE_BYTES}: ` +
-                JSON.stringify(terms));
-    expect(terms).toEqual({ slots: 4 * 12 * MIB, tails: 8 * MIB, baseline: 8 * MIB,
-                            unmodeled: 24 * MIB });
+    const total = sum(terms);
+    const room = ISOLATE_BYTES - total;
+    const perObject = counts(2).relay_per_object! - terms.relay_per_object!;
+    console.log(`an owner isolate's live counts: ${total} bytes (${(total / MIB).toFixed(1)} ` +
+                `MiB) of ${ISOLATE_BYTES}: ${JSON.stringify(terms)}; ${(room / MIB).toFixed(1)} ` +
+                `MiB left, ${Math.floor(room / perObject) + 1} owner objects' relay terms in ` +
+                `all; uncounted: ${JSON.stringify(UNCOUNTED)}`);
     expect(total).toBeLessThanOrEqual(ISOLATE_BYTES);
+  });
+
+  it("lets every declared hold run: each fits the pool beside its reserve", () => {
+    const larger = holds.OWNER_POOL_UNITS - holds.OWNER_RESERVE_UNITS;
+    for (const units of [holds.EDIT_READ_UNITS, holds.EDIT_MAKE_UNITS, holds.APPEND_UNITS,
+                         holds.WINDOW_UNITS, holds.bodyUnits(1), holds.bodyUnits(2)]) {
+      expect(units === 1 || units <= larger).toBe(true);
+    }
+    expect(holds.WINDOW_UNITS).toBe(1);  // a window takes the reserve, never waits on edits
+    expect(holds.OWNER_RESERVE_UNITS).toBeGreaterThanOrEqual(1);
+    expect(holds.OWNER_WAITERS).toBe(holds.OWNER_POOL_UNITS);
   });
 
   it("sees a pool that would pass the isolate", () => {
     const terms = counts();
-    const others = terms.tails! + terms.baseline! + terms.unmodeled!;
-    const room = Math.floor((ISOLATE_BYTES - others) / (12 * MIB));
-    expect(room).toBeGreaterThanOrEqual(4);
-    expect(others + (room + 1) * 12 * MIB).toBeGreaterThan(ISOLATE_BYTES);
+    const room = ISOLATE_BYTES - sum(terms);
+    const passing = { ...terms, pool: terms.pool! + (Math.floor(room / UNIT_BYTES) + 1) *
+                      UNIT_BYTES };
+    expect(sum(passing)).toBeGreaterThan(ISOLATE_BYTES);
+  });
+
+  it("names every uncounted hold's owner", () => {
+    for (const owed of Object.values(UNCOUNTED.holds)) {
+      expect(owed).toMatch(/^(PR 3b|PR 4|STORE item 2)$/);
+    }
   });
 });

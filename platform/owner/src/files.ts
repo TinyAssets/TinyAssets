@@ -1397,12 +1397,15 @@ export class Files {
    * Write a file of `size` bytes whose chunks are `hashes` (cut at 4 MiB), made one at a time
    * by `make` (a chunk-wise edit, `edit.ts`): only the chunks the files plane lacks are made
    * and sent, each checked against its hash; the chunks `readable` names were read by the
-   * caller (its old file's), so they are kept, never sent again. One chunk in hand at a time.
+   * caller (its old file's), so they are kept, never sent again. Each chunk is made and put
+   * in a step of its own (`hold`, the caller's making units, ADR-037), its bytes gone as the
+   * step ends; the begin and the commit hold none.
    */
   async writeChunks(path: unknown, size: number, hashes: readonly string[],
                     make: (index: number) => Promise<Uint8Array>,
                     options: { expected: unknown; mode?: unknown; writer: string;
-                               readable: readonly string[]; authorize?: () => void }):
+                               readable: readonly string[]; authorize?: () => void;
+                               hold?: <T>(work: () => Promise<T>) => Promise<T> }):
       Promise<Entry> {
     const at = storedPath(path);
     const expected = expectedEtag(options.expected);
@@ -1413,9 +1416,11 @@ export class Files {
       return this.begin(size, hashes, options.writer, options.readable);
     });
     try {
+      const hold = options.hold ?? ((work) => work());
       for (const sha256 of new Set(missing)) {
-        const bytes = await make(hashes.indexOf(sha256));
-        await this.#put([{ sha256, bytes }], intent_id);
+        await hold(async () => {
+          await this.#put([{ sha256, bytes: await make(hashes.indexOf(sha256)) }], intent_id);
+        });
       }
       return await this.#write(() => {
         authorize();
@@ -2483,9 +2488,11 @@ export class Files {
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.
     const due = await this.#write(() => this.#storage.transactionSync(() => {
+      // Oldest first, a tie by hash: the order `file_chunks_due` holds (its key, then the
+      // table's), so the same chunks are taken whatever the plan.
       const rows = sql.exec<{ sha256: string; size: number; state: string }>(
         "SELECT sha256, size, state FROM file_chunks WHERE gc_after IS NOT NULL AND " +
-          "gc_after <= ? ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray();
+          "gc_after <= ? ORDER BY gc_after, sha256 LIMIT ?", now, DELETE_BATCH).toArray();
       const found = rows.map((row) => row.sha256);
       // Garbage past the owner's figure, oldest first, as far as covers it: due now; none the
       // newest manifest names.
@@ -2495,7 +2502,7 @@ export class Files {
       if (over > 0 && found.length < DELETE_BATCH) {
         for (const row of sql.exec<{ sha256: string; size: number }>(
                "SELECT sha256, size FROM file_chunks WHERE state = 'garbage' AND gc_after > ? " +
-                 "AND gc_after < ? ORDER BY gc_after LIMIT ?", now,
+                 "AND gc_after < ? ORDER BY gc_after, sha256 LIMIT ?", now,
                Number.isFinite(before) ? before : Number.MAX_VALUE,
                DELETE_BATCH - found.length).toArray()) {
           if (over <= 0) {

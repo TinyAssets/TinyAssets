@@ -165,7 +165,7 @@ export class Hold {
 
   /** At least `units` slots held, or `egress_too_large`, `busy`, or the stop's reason. */
   async grow(units: number): Promise<void> {
-    if (units > this.#pool.capacity) {
+    if (units > Math.max(1, this.#pool.capacity - this.#pool.reserve)) {
       throw new HeldRefusal("egress_too_large");
     }
     while (!this.#released && this.#units < units) {

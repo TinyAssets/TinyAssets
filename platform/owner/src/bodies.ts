@@ -28,7 +28,7 @@ import { Invalid } from "./errors";
 import { windowEnd } from "./file-search";
 import type { Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
-import { ownerSlots } from "./holds";
+import { bodyUnits, ownerSlots, WINDOW_UNITS } from "./holds";
 import { CHUNK_BYTES, PLACE_BYTES } from "./manifest";
 import { slotted } from "./slots";
 
@@ -275,8 +275,9 @@ export class Bodies {
   async fetch(located: Located): Promise<Map<string, string>> {
     const bodies = new Map<string, string>();
     for (const [contentId, { chunks }] of located) {
-      // A body of at most two chunks (`BODY_BYTES_MAX`), read under one slot (`holds.ts`).
-      bodies.set(contentId, await slotted(ownerSlots(), 1, async () => {
+      // A body of at most two chunks (`BODY_BYTES_MAX`), its bytes and its text held in a
+      // step weighted by its chunks (`bodyUnits`, `holds.ts`).
+      bodies.set(contentId, await slotted(ownerSlots(), bodyUnits(chunks.length), async () => {
         const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
         const parts = await this.#files.fetch(chunks.map((sha256) => ({ sha256 })));
         let text = "";
@@ -302,9 +303,10 @@ export class Bodies {
     if (located.size === 0) {
       return windows;
     }
-    // The windows read under one slot (`holds.ts`): each is at most a page, its chunks read
-    // by verified ranges, so a slot is far more than they hold.
-    return slotted(ownerSlots(), 1, async () => {
+    // The windows read in one step of `WINDOW_UNITS` (`holds.ts`): each is at most a page,
+    // its chunks read by verified ranges (the files Worker holds the whole chunk), so a unit
+    // is more than they hold, and a one-unit hold never waits behind larger ones.
+    return slotted(ownerSlots(), WINDOW_UNITS, async () => {
       let held = 0;
       for (const [contentId, { chunks, size }] of located) {
         if (windows.size > 0 && held >= WINDOWS_BYTES) {

@@ -80,9 +80,9 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 13
-- **technical ceiling**: 166
+- **technical ceiling**: 168
 - **default**: 1
-- **total**: 195
+- **total**: 197
 
 Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-04.
 
@@ -169,7 +169,7 @@ reason; none refuses a write.
 | `owner/src/files.ts` `MAX_HELD_CHUNKS` | 20,000 | chunks all open uploads hold | a new upload refused while they hold it | technical ceiling | The 10 GB, inside `file_intents`. |
 | `owner/src/files.ts` open uploads' bytes | the storage figure, its most | bytes all open uploads hold before they commit | an upload's begin refused `uploads_open` (409 at the doors) when what is stored fits but what open uploads hold leaves no room: reported apart from stored bytes, never "full", never an upgrade | technical ceiling | Their chunks count in the storage figure from begin, so they can never hold more than it. An upload the sync agent gives up is aborted at once (`upload_abort`), and a sync lease's open uploads are aborted when the lease ends, so none waits out `INTENT_TTL_S` holding room. |
 | `owner/src/files.ts` `INTENT_TTL_S` | 86,400 s | how long a file upload may stay open | a large upload over a slow link must finish within a day | technical ceiling | An open upload holds its chunks in `file_intents` and the quota until it ends; a 40 GiB file at 1 MB/s takes 11 hours. |
-| `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. `file_edit` is no longer bound by it (ADR-037, ruling 2): it edits chunk by chunk (`EDIT_BYTES_MAX`, below). |
+| `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. `file_edit` is no longer bound by it (ADR-037, ruling 2): it edits chunk by chunk (`EDIT_BYTES_MAX`, below). A whole write's bytes are not yet under a unit (PR 3b). |
 | `owner/src/files.ts` `MAX_SYNC_OPS` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short in the object's request CPU. |
 | `owner/src/files.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The 10 GB, inside the manifest's bytes. |
 | `owner/src/files.ts` `tempDir` | 239 bytes | a temporary directory's prefix | a longer prefix refused | technical ceiling | One path component, `MAX_NAME_BYTES` 255, with its 16 hex. |
@@ -320,38 +320,69 @@ itself is bounded by structure (chunks, streams and a slot pool), not by these f
 
 ## Memory bounded by structure (the platform memory fix, PR 2)
 
-An isolate's memory is bounded by counts the code enforces times costs the code constructs
-(ADR-037, `memshape_research.md` §2): large data moves only as streams or 4 MiB chunks, and a
-path holding chunks takes one slot of an isolate's pool (`owner/src/slots.ts`) while it holds
-them. The counts test (`owner/guards/memory-counts.test.ts`) holds the sum within the
-isolate's 128 MB; the workerd memory leg (`npm run test:memory -w owner`) proves each path's
-cost does not depend on its data's size.
+What an isolate holds live is counts the code enforces times costs the code constructs
+(ADR-037): large data moves only as streams or 4 MiB chunks, and a path takes units of its
+isolate's one pool (`owner/src/slots.ts`, a unit `UNIT_BYTES`, one chunk) for what it holds
+while its bytes are in hand, weighted by what it holds. The counts test
+(`owner/guards/memory-counts.test.ts`) holds the live terms within the isolate's 128 MB; the
+workerd memory leg (`npm run test:memory -w owner`) runs each real path at its worst and holds
+its peak within its declared units, whatever its data's size. The figures below are the
+leg's run of 2026-11-04 in this sandbox; it prints them each run.
 
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
-| `owner/src/holds.ts` `OWNER_CHUNK_SLOTS` | 4 slots | the chunk-holding calls (an edit's pass, an append's tail, a body's window) one owner isolate runs at once | a fifth waits its turn, first come first served | technical ceiling | The counts test: 4 x `CHUNK_SLOT_BYTES` (48 MiB) + `TAIL_BYTES` (8 MiB) + `OWNER_BASELINE_BYTES` (8 MiB) + `UNMODELED_BYTES` (24 MiB) = 88 MiB of 128,000,000 bytes; a sixth slot would pass it. Production's `memoryUsageBytes` resets it in a one-line change. |
-| `owner/src/slots.ts` `SLOT_WAIT_MS`, `waiters` | 10 s; 4 x the pool's capacity waiting | how long, and how many, wait for a slot | refused `busy` before it changes anything: `503` with `Retry-After: 1` on `/api`, the same refusal on `/mcp`; retried, never a lost write | technical ceiling | ADR-037 ruling 1: rarely exceeded, loud and retryable, no acknowledged write lost. A slot's work is chunk reads and puts in the same colo, well under a second, so 10 s queues ordinary contention; a bounded queue keeps an overload from holding requests open without end. |
-| `owner/src/owner-do.ts` `EDIT_BYTES_MAX` | 2,000 chunks (8,000 MiB) | the largest file one `file_edit` edits | refused `Invalid`, naming the size; a larger file is rewritten by upload | technical ceiling | ADR-037 ruling 2: no longer `WHOLE_BYTES`, since a chunk-wise edit holds one slot whatever the file's size. An edit reads each chunk up to three times and puts each changed one, at most 4n subrequests of the 10,000 an invocation has; its worst case (the first chunk's edit, longer, so every chunk is remade and hashed) measured in workerd at about 5 ms a chunk (2026-11-04), about 10 s at 2,000 chunks, inside a request's 30 s of CPU. |
+| `owner/src/holds.ts` `OWNER_POOL_UNITS` | 12 units (48 MiB) | the chunk-holding steps one owner isolate runs at once (an edit's reads and makings, an append, a body's read or windows) | a step past it waits its turn, first come first served in its size class | technical ceiling | The pool's term: three edits' making steps beside the reserve, or a whole two-chunk body's read beside one. The counts test holds it with the isolate's other live terms (below); production's `memoryUsageBytes` resets it in a one-line change. |
+| `owner/src/holds.ts` `OWNER_RESERVE_UNITS` | 1 unit | the units only one-unit holds (a window) take | a co-tenant's small read never waits behind edits (review M1); it waits only on other one-unit holds | technical ceiling | A one-unit hold is a page's window: one unit kept for them means no larger hold can keep one waiting. |
+| `owner/src/slots.ts` `SLOT_WAIT_MS` | 10 s | how long a step waits for units | refused `busy` before it changes anything: `503` with `Retry-After: 1` on `/api`, the same refusal on `/mcp`; retried, never a lost write | technical ceiling | The queue's own term: a sixth of the MCP SDK's default request timeout (`DEFAULT_REQUEST_TIMEOUT_MSEC`, 60 s), so the refusal is told while the client still waits, the rest left to the call's own work. At the leg's measured step (18.6 ms a chunk), a full queue of `OWNER_WAITERS` making steps turns over in about 79 ms; the leg fails past the wait. Production's step (R2's round trips) is owed live. |
+| `owner/src/holds.ts` `OWNER_WAITERS` | 12 | the steps waiting for units at once | one more refused `busy` at once | technical ceiling | The memory a waiter holds: no units, but its own request's arguments, which no unit counts yet (PR 3b), at most a unit each by the MCP door (`MCP_BODY_MAX`, 4 MiB); as many waiters as the pool's units keeps what they hold to the pool's own size again. |
+| `owner/src/owner-do.ts` `EDIT_BYTES_MAX` | 500 chunks (2,000 MiB) | the largest file one `file_edit` edits | refused `Invalid`, naming the size; a larger file is rewritten by upload | technical ceiling | ADR-037 ruling 2: no longer `WHOLE_BYTES`; its tightest bound is time. The leg times the worst edit (the first chunk's, longer, so every chunk is read twice, remade and put; the files Worker's own hashing left out) on the real path: 18.6 ms a chunk of wall time at 96 MiB, at least its CPU. A request has 30 s of CPU; two thirds are left for a slower host (a CI runner among them), so 500 chunks, about 9 s measured. The leg fails if the measured time passes 30 s at this figure. About five subrequests a chunk, 2,500 at most. Production's wall time a chunk is owed live; an edit commits whole or not at all. |
 
-Unit costs, the counts test's terms (not bounds a user meets):
-- `owner/src/slots.ts` `UNIT_BYTES`, 4 MiB: a slot's unit, the files plane's chunk
-  (`manifest.ts` `CHUNK_BYTES`).
-- `owner/src/slots.ts` `CHUNK_SLOT_BYTES`, 3 units (12 MiB): what a slot's path holds at
-  most, two chunks in hand and the files plane's copy of one. The workerd leg measures it:
-  an edit's peak 8.05 MiB, a window read's 4.01 MiB, the increment per concurrent edit
-  10.01 MiB, and a difference of 0 MiB between 8 and 32 MiB edits and between 4 and 16 MiB
-  bodies (2026-11-04).
-- `owner/src/holds.ts` `OWNER_BASELINE_BYTES`, 8 MiB: the owner Worker's resting isolate in
-  workerd, 5.47 MiB of heap and backing stores after a swept collection
-  (`owner/memory/baselines.mjs`; the doors' 7.28 MiB, the files Worker's 0.73 MiB), rounded
-  up, until production's `memoryUsageBytes` replaces it.
-- `owner/src/holds.ts` `UNMODELED_BYTES`, 24 MiB: garbage not yet collected and the
-  runtime's own buffers, from the measured gap between workerd's RSS with chunks made and
-  dropped and no forced collection (78.9 MiB) and its resting RSS (55.7 MiB), rounded up,
-  until production's replaces it.
-- `/api`'s 16 MiB JSON body stays (ADR-037 ruling 3), to be weighted in the doors' slots, one
-  large call at a time an isolate, with the raw streamed body, in PR 3b; MCP keeps the SDK's
-  4 MiB (`MCP_BODY_MAX`, above).
+**Each path's units, and the leg's measured peak at its worst** (heap and backing stores
+over the isolate at rest, sampled at every chunk call while the path is suspended, after a
+swept collection; distinct content in every chunk):
+
+| Path | Declared | Measured | O(1) in size |
+|---|---|---|---|
+| `file_edit`'s reading step (`EDIT_READ_UNITS`) | 1 unit: one source chunk | within the making step's | |
+| `file_edit`'s making step (`EDIT_MAKE_UNITS`) | 3 units: the chunk made, a source chunk, the put's copy | 7.83 / 8.06 / 8.02 MiB at 8 / 32 / 96 MiB; two at once +8.0 MiB | 96 against 32 MiB: −0.04 MiB |
+| `file_append` (`APPEND_UNITS`) | 5 units: the last chunk, the text, the two joined, slack | 16.02 MiB (a last chunk a KiB short of whole, a whole chunk of text) | 32 against 8 MiB: 0 MiB |
+| a body's windows (`WINDOW_UNITS`) | 1 unit | 0.06 MiB | 8 against 2 MiB body: 0 MiB |
+| a whole body (`bodyUnits`) | 3 units a chunk: its bytes, its text, slack | 4.01 MiB (one chunk), 8.01 MiB (two) | by design O(body), at most `BODY_BYTES_MAX` |
+| the control (keeps every chunk) | | +24.01 MiB, 32 against 8 MiB | grows, as it must |
+
+**The live terms** (the counts test, from the source constants):
+- the pool: 12 units, 48 MiB;
+- the relay's tails, every object's in the isolate together (`TAIL_BYTES`): 8 MiB;
+- each owner object's relay terms (its events posts, its sockets' attachments, its told
+  sign-outs, its tails' own objects: `guards/relay-memory.ts`): 6.79 MiB an object;
+- the owner Worker's resting baseline (`OWNER_BASELINE_BYTES`), 8 MiB: the leg measures the
+  isolate at rest with an owner object built, its SQLite migrated, one request served
+  (6.0 to 6.4 MiB) and fails past the figure. The doors' and files Worker's figures are
+  module-load floors only (7.28 and 0.73 MiB, `owner/memory/baselines.mjs`), for their own
+  pools in PR 3b and PR 4.
+
+With one owner object, 70.8 MiB of 122.07 MiB: 51.3 MiB left, uncounted.
+
+**Uncounted, named, never fitted:**
+- **Garbage V8 has not collected yet.** Unmeasured in production: whether the 128 MB counts it
+  is what the production probe answers. In workerd, as high-water RSS over resting RSS with
+  no forced collection: arrays in one isolate 78.9 MiB (it levels off), plain allocation 65.2
+  to 76.0 MiB, returned arrays 101.9 MiB, byte streams 112 to 177 MiB (no plateau within
+  2 GiB), arrays across two isolates 141.7 MiB, `r2Put` 235.5 MiB. Most would not fit in
+  the room left; if production counts it, the pool shrinks to fit.
+- **Holds not yet under a unit**, each owed:
+  - a call's RPC arguments (up to `MCP_BODY_MAX` on `/mcp`, `API_BODY_MAX` on `/api`), the
+    waiting calls' among them: PR 3b;
+  - `file_write`'s whole bytes (`WHOLE_BYTES`): PR 3b;
+  - `file_upload_chunks`' two chunks, as arguments, and `file_read_chunks`' two, as its
+    answer: PR 3b;
+  - a placed body as `room_post` or `collection_write` sends it (`BODY_BYTES_MAX`): PR 3b;
+  - an export's chunks, as its answer; sync's raw chunk bytes; an inbound event's body
+    (`INBOUND_BODY_MAX`): PR 4;
+  - the archive's move: STORE item 2.
+- `/api`'s 16 MiB JSON body stays (ADR-037 ruling 3), weighted in the doors' units, one large
+  call at a time an isolate, with the raw streamed body, in PR 3b; MCP keeps the SDK's 4 MiB
+  (`MCP_BODY_MAX`, above).
 
 ## Slice P's bounds
 

@@ -94,7 +94,7 @@
  * `admissionSet`, the one door that caller reaches.
  */
 import { type Edited, planEdit, type Refusal } from "./edit";
-import { ownerSlots } from "./holds";
+import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
 import { slotted } from "./slots";
 import { createHash, randomBytes } from "node:crypto";
 
@@ -1449,25 +1449,27 @@ interface Shown<T> {
 
 /**
  * The most bytes one `file_edit` edits (ADR-037's ruling 2): no longer `WHOLE_BYTES`, since a
- * chunk-wise edit's memory does not depend on the file; the reads and the time one call
- * holds. An edit reads each source chunk up to three times (scan, hash, make) and puts each
- * changed one, so a file of n chunks makes at most 4n subrequests of the 10,000 an invocation
- * has (Workers limits, internal services included); and its CPU, measured in workerd for the
- * worst edit (the first chunk's, longer, so every chunk is remade and hashed: about 5 ms a
- * chunk, 2026-11-04), is about 10 s at 2,000 chunks, inside the 30 s a request has.
+ * chunk-wise edit's memory does not depend on the file, but the time one call takes, its
+ * tightest bound. The workerd memory leg times the worst edit (the first chunk's, longer, so
+ * every chunk is read, remade and put) on the real path, with the files Worker's own hashing
+ * left out: about 17 ms a chunk of wall time, at least the CPU it spent (2026-11-04, its log
+ * in `limits-audit.md`); a request has 30 s of CPU, and two thirds are left for a slower
+ * host, so 500 chunks (about 9 s). The leg fails if the measured time passes 30 s at this
+ * figure. Its subrequests, about five a chunk, are 2,500 at most. Production's wall time a
+ * chunk (R2's round trips) is owed live; an edit commits whole or not at all.
  */
-export const EDIT_BYTES_MAX = 2000 * CHUNK_BYTES;
+export const EDIT_BYTES_MAX = 500 * CHUNK_BYTES;
 
-/** An edit's output small enough to keep inline, made whole (at most `INLINE_BYTES`). */
-async function inlineOf(plan: Edited): Promise<Uint8Array> {
-  const parts = await Promise.all(plan.sizes.map((_, index) => plan.make(index)));
-  const out = new Uint8Array(plan.size);
-  let at = 0;
-  for (const part of parts) {
-    out.set(part, at);
-    at += part.byteLength;
+/**
+ * An edit's output small enough to keep inline (at most `INLINE_BYTES`, under one chunk):
+ * its one chunk made, in a making step (`hold`).
+ */
+function inlineOf(plan: Edited, hold: <T>(work: () => Promise<T>) => Promise<T>):
+    Promise<Uint8Array> {
+  if (plan.sizes.length !== 1) {
+    throw new Error("an inline edit's output is one chunk");
   }
-  return out;
+  return hold(() => plan.make(0));
 }
 
 /** A written row as its write answers it: everything but its body, and the body's bytes. */
@@ -4876,9 +4878,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           return { entry: read.done };
         }
         const now = read.now;
-        // The file's last chunk and the text, joined and written, held under one slot
-        // (`holds.ts`, ADR-037): at most two chunks, whatever the file's size.
-        const wrote = await slotted(ownerSlots(), 1, async () => {
+        // The file's last chunk and the text, joined and written, in one step of
+        // `APPEND_UNITS` (`holds.ts`, ADR-037): what it holds is the same whatever the
+        // file's size.
+        const wrote = await slotted(ownerSlots(), APPEND_UNITS, async () => {
           let bytes = added;
           let prefix: ChunkRef[] = [];
           if (now !== null) {
@@ -4920,7 +4923,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
    * place). Text that occurs nowhere, or more than once, is refused with how many times, so
    * the caller gives more of the text around it. A chunked file is edited chunk by chunk
-   * under one slot (`edit.ts`, ADR-037), at most `EDIT_BYTES_MAX`; a small one, whole.
+   * (`edit.ts`, ADR-037), each chunk read or made in a step of the isolate's units of its
+   * own, at most `EDIT_BYTES_MAX`; a small one, whole.
    */
   async fileEdit(binding: Binding, request: FileEditRequest):
       Promise<{ entry: Entry } | FileConflicted> {
@@ -4993,28 +4997,30 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             authorize }),
         }));
       }
-      // A chunked file, edited chunk by chunk under one slot (`edit.ts`, ADR-037): its
-      // memory does not depend on its size.
+      // A chunked file, edited chunk by chunk (`edit.ts`, ADR-037): each chunk read in a
+      // reading step, each chunk made and put in a making step, the units taken as its
+      // bytes come and released as they go, never across the begin, the commit or the
+      // other chunks. Its memory does not depend on its size.
       const chunks = content.chunks ?? [];
-      return await slotted(ownerSlots(), 1, async () => {
-        const plan = await planEdit({
-          size: content.entry.size, chunks,
-          read: async (index) => (await this.#files.fetch([{ sha256: chunks[index]!.sha256 }]))[0]!,
-        }, old, replacement, CHUNK_BYTES);
-        if ("refused" in plan) {
-          return refused(plan.refused);
-        }
-        return fileConflictedAfter(async () => ({
-          entry: plan.size <= INLINE_BYTES
-            ? await this.#files.write(path, await inlineOf(plan), {
-              expected: content.entry.etag, mode: content.entry.mode,
-              writer: fileWriter(account), authorize })
-            : await this.#files.writeChunks(path, plan.size, plan.hashes, plan.make, {
-              expected: content.entry.etag, mode: content.entry.mode,
-              writer: fileWriter(account), readable: chunks.map(({ sha256 }) => sha256),
-              authorize }),
-        }));
-      });
+      const pool = ownerSlots();
+      const make = <T>(work: () => Promise<T>) => slotted(pool, EDIT_MAKE_UNITS, work);
+      const plan = await planEdit({
+        size: content.entry.size, chunks,
+        read: async (index) => (await this.#files.fetch([{ sha256: chunks[index]!.sha256 }]))[0]!,
+      }, old, replacement, CHUNK_BYTES, (work) => slotted(pool, EDIT_READ_UNITS, work));
+      if ("refused" in plan) {
+        return refused(plan.refused);
+      }
+      return await fileConflictedAfter(async () => ({
+        entry: plan.size <= INLINE_BYTES
+          ? await this.#files.write(path, await inlineOf(plan, make), {
+            expected: content.entry.etag, mode: content.entry.mode,
+            writer: fileWriter(account), authorize })
+          : await this.#files.writeChunks(path, plan.size, plan.hashes, plan.make, {
+            expected: content.entry.etag, mode: content.entry.mode,
+            writer: fileWriter(account), readable: chunks.map(({ sha256 }) => sha256),
+            authorize, hold: make }),
+      }));
     } finally {
       await this.#schedule.sync();
     }

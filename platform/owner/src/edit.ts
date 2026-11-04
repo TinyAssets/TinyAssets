@@ -15,8 +15,12 @@
  *    chunks (`make`). Sources are content-addressed, so it is the bytes hashed; one that
  *    differs fails loudly (Fact 8).
  *
- * It holds at most two source chunks and one output chunk at once, the caller's one slot
- * (`slots.ts`). Its cost is reads: two or three a changed chunk.
+ * **Steps.** Each pass reads one source chunk at a time, in a step of its own (`step`, the
+ * caller's units: `EDIT_READ_UNITS`, `holds.ts`), its bytes dropped as the step ends, so
+ * nothing chunk-sized is held between steps: only the scan's carry (under `|old|` bytes) and
+ * the hashes' states. `make` builds one output chunk from the source chunks it spans, read
+ * one at a time; the caller holds its making step's units around it and the put that sends
+ * it (`Files.writeChunks`). Its cost is reads: about four a changed chunk.
  */
 import { createHash } from "node:crypto";
 
@@ -29,6 +33,11 @@ export interface Source {
 
 /** An edit's refusal: why, as today's whole-file editor refuses it. */
 export type Refusal = "ill_formed" | "not_utf8" | "absent" | { readonly times: number };
+
+/** A step of an edit's reading: `work` run while the caller holds its units. */
+export type Step = <T>(work: () => Promise<T>) => Promise<T>;
+
+const direct: Step = (work) => work();
 
 /** The edited file: its size and chunk hashes, and each chunk made on demand. */
 export interface Edited {
@@ -55,9 +64,13 @@ function indexOfBytes(hay: Uint8Array, needle: Uint8Array, from: number): number
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-/** Plan the edit of `source` (chunks of `chunk` bytes, the last shorter), or its refusal. */
+/**
+ * Plan the edit of `source` (chunks of `chunk` bytes, the last shorter), or its refusal, each
+ * source chunk read in a step of its own (`step`).
+ */
 export async function planEdit(source: Source, old: string, replacement: string,
-                               chunk: number): Promise<Edited | { refused: Refusal }> {
+                               chunk: number, step: Step = direct):
+    Promise<Edited | { refused: Refusal }> {
   if (!old.isWellFormed() || !replacement.isWellFormed()) {
     return { refused: "ill_formed" };
   }
@@ -72,45 +85,52 @@ export async function planEdit(source: Source, old: string, replacement: string,
   let first = -1;
   let offset = 0;
   for (let index = 0; index < source.chunks.length; index++) {
-    const bytes = await source.read(index);
-    try {
-      for (let at = 0; at < bytes.byteLength; at += SCAN_SLICE) {
-        decoder.decode(bytes.subarray(at, Math.min(at + SCAN_SLICE, bytes.byteLength)),
-                       { stream: true });
+    // One step: the chunk read, scanned and dropped; only the carry goes on.
+    const refused = await step(async (): Promise<Refusal | null> => {
+      const bytes = await source.read(index);
+      try {
+        for (let at = 0; at < bytes.byteLength; at += SCAN_SLICE) {
+          decoder.decode(bytes.subarray(at, Math.min(at + SCAN_SLICE, bytes.byteLength)),
+                         { stream: true });
+        }
+      } catch {
+        return "not_utf8";
       }
-    } catch {
-      return { refused: "not_utf8" };
-    }
-    if (carry.byteLength > 0) {
-      // Matches that begin in the carry end in this chunk: the carry and this chunk's head.
-      const head = bytes.subarray(0, Math.min(k - 1, bytes.byteLength));
-      const seam = new Uint8Array(carry.byteLength + head.byteLength);
-      seam.set(carry, 0);
-      seam.set(head, carry.byteLength);
-      for (let at = indexOfBytes(seam, oldBytes, 0); at >= 0 && at < carry.byteLength;
-           at = indexOfBytes(seam, oldBytes, at + 1)) {
+      if (carry.byteLength > 0) {
+        // Matches that begin in the carry end in this chunk: the carry and this chunk's head.
+        const head = bytes.subarray(0, Math.min(k - 1, bytes.byteLength));
+        const seam = new Uint8Array(carry.byteLength + head.byteLength);
+        seam.set(carry, 0);
+        seam.set(head, carry.byteLength);
+        for (let at = indexOfBytes(seam, oldBytes, 0); at >= 0 && at < carry.byteLength;
+             at = indexOfBytes(seam, oldBytes, at + 1)) {
+          times += 1;
+          first = first < 0 ? carryAt + at : first;
+        }
+      }
+      for (let at = indexOfBytes(bytes, oldBytes, 0); at >= 0;
+           at = indexOfBytes(bytes, oldBytes, at + 1)) {
         times += 1;
-        first = first < 0 ? carryAt + at : first;
+        first = first < 0 ? offset + at : first;
       }
+      const keep = Math.max(0, k - 1);
+      if (keep === 0) {
+        carry = new Uint8Array(0);
+      } else if (bytes.byteLength >= keep) {
+        carry = bytes.slice(bytes.byteLength - keep);
+      } else {
+        const joined = new Uint8Array(carry.byteLength + bytes.byteLength);
+        joined.set(carry, 0);
+        joined.set(bytes, carry.byteLength);
+        carry = joined.slice(Math.max(0, joined.byteLength - keep));
+      }
+      offset += bytes.byteLength;
+      carryAt = offset - carry.byteLength;
+      return null;
+    });
+    if (refused !== null) {
+      return { refused };
     }
-    for (let at = indexOfBytes(bytes, oldBytes, 0); at >= 0;
-         at = indexOfBytes(bytes, oldBytes, at + 1)) {
-      times += 1;
-      first = first < 0 ? offset + at : first;
-    }
-    const keep = Math.max(0, k - 1);
-    if (keep === 0) {
-      carry = new Uint8Array(0);
-    } else if (bytes.byteLength >= keep) {
-      carry = bytes.slice(bytes.byteLength - keep);
-    } else {
-      const joined = new Uint8Array(carry.byteLength + bytes.byteLength);
-      joined.set(carry, 0);
-      joined.set(bytes, carry.byteLength);
-      carry = joined.slice(Math.max(0, joined.byteLength - keep));
-    }
-    offset += bytes.byteLength;
-    carryAt = offset - carry.byteLength;
   }
   try {
     decoder.decode();
@@ -135,24 +155,25 @@ export async function planEdit(source: Source, old: string, replacement: string,
     starts.push(at);
     at += source.chunks[index]!.size;
   }
-  // A source reader by byte range, holding one source chunk at a time.
-  let held: { index: number; bytes: Uint8Array | null } = { index: -1, bytes: null };
-  const sourceRange = async (from: number, to: number, sink: (piece: Uint8Array) => void) => {
+  // A source reader by byte range: each chunk it spans read once, in `gate`'s step, and
+  // dropped once its pieces are sunk; nothing is cached across steps.
+  const sourceRange = async (from: number, to: number, sink: (piece: Uint8Array) => void,
+                             gate: Step) => {
     while (from < to) {
       const index = Math.floor(from / chunk);
-      if (held.index !== index) {
-        held = { index, bytes: null };
-        held.bytes = await source.read(index);
-      }
-      const lo = from - starts[index]!;
-      const hi = Math.min(to - starts[index]!, held.bytes!.byteLength);
-      sink(held.bytes!.subarray(lo, hi));
-      from = starts[index]! + hi;
+      from = await gate(async () => {
+        const bytes = await source.read(index);
+        const lo = from - starts[index]!;
+        const hi = Math.min(to - starts[index]!, bytes.byteLength);
+        sink(bytes.subarray(lo, hi));
+        return starts[index]! + hi;
+      });
     }
   };
-  const outRange = async (from: number, to: number, sink: (piece: Uint8Array) => void) => {
+  const outRange = async (from: number, to: number, sink: (piece: Uint8Array) => void,
+                          gate: Step) => {
     if (from < m) {
-      await sourceRange(from, Math.min(to, m), sink);
+      await sourceRange(from, Math.min(to, m), sink, gate);
     }
     const newStart = Math.max(from, m);
     const newEnd = Math.min(to, m + newBytes.byteLength);
@@ -161,32 +182,46 @@ export async function planEdit(source: Source, old: string, replacement: string,
     }
     const tail = Math.max(from, m + newBytes.byteLength);
     if (tail < to) {
-      await sourceRange(tail - newBytes.byteLength + k, to - newBytes.byteLength + k, sink);
+      await sourceRange(tail - newBytes.byteLength + k, to - newBytes.byteLength + k, sink,
+                        gate);
     }
   };
-  // Pass 2: the changed chunks' hashes.
+  // Pass 2: the changed chunks' hashes, the output streamed once from the first changed
+  // chunk to the last, each source chunk read once, cut into its chunks as it goes.
   const hashes = source.chunks.slice(0, changedFrom).map((each) => each.sha256);
-  let at = changedFrom * chunk;
-  for (let index = changedFrom; index < sizes.length; index++) {
-    if (index > changedTo) {
-      hashes.push(source.chunks[index]!.sha256);
-    } else {
-      const hash = createHash("sha256");
-      await outRange(at, at + sizes[index]!, (piece) => hash.update(piece));
-      hashes.push(hash.digest("hex"));
+  const from = changedFrom * chunk;
+  const to = sizes.slice(0, changedTo + 1).reduce((sum, each) => sum + each, 0);
+  let hash = createHash("sha256");
+  let left = sizes[changedFrom] ?? 0;
+  await outRange(from, Math.max(from, to), (piece) => {
+    for (let at = 0; at < piece.byteLength;) {
+      const take = Math.min(left, piece.byteLength - at);
+      hash.update(piece.subarray(at, at + take));
+      at += take;
+      left -= take;
+      if (left === 0) {
+        hashes.push(hash.digest("hex"));
+        hash = createHash("sha256");
+        left = sizes[hashes.length] ?? 0;
+      }
     }
-    at += sizes[index]!;
+  }, step);
+  if (hashes.length !== Math.max(changedFrom, changedTo + 1)) {
+    throw new Error("an edit's hashes did not cover its changed chunks");
   }
-  held = { index: -1, bytes: null };
+  for (let index = changedTo + 1; index < sizes.length; index++) {
+    hashes.push(source.chunks[index]!.sha256);
+  }
   return {
     size, hashes, sizes,
     make: async (index) => {
       const out = new Uint8Array(sizes[index]!);
       let written = 0;
+      // Inside the caller's making step, which holds this chunk and its sources' units.
       await outRange(index * chunk, index * chunk + sizes[index]!, (piece) => {
         out.set(piece, written);
         written += piece.byteLength;
-      });
+      }, direct);
       if (sha(out) !== hashes[index]) {
         throw new Error("a file's source changed between an edit's passes");
       }
