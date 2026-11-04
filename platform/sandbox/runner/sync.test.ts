@@ -255,7 +255,7 @@ describe("the sync-ignore", () => {
 });
 
 describe("memory, whatever the tree holds", () => {
-  it("sync-in streams a file larger than the sandbox's memory (1 GiB) to disk", async () => {
+  it("sync-in streams a file larger than the sandbox's memory (1 GiB) to disk", { tags: ["large"] }, async () => {
     const { place: p, local } = place();
     const CHUNK = 4 * 1024 * 1024;
     const CHUNKS = 320;  // 1.25 GiB
@@ -284,9 +284,9 @@ describe("memory, whatever the tree holds", () => {
     // stand-in door's own copies among them), never by the file: it is 1.25 GiB.
     expect(peak - base).toBeLessThan(384 * 1024 * 1024);
     rmSync(join(local, "video.bin"));
-  }, 300_000);
+  });
 
-  it("sync-out over many paths holds about what it holds over few", async () => {
+  it("sync-out over many paths holds about what it holds over few", { tags: ["large"] }, async () => {
     const heap = async (files: number) => {
       const { place: p, local, root } = place();
       for (let d = 0; d < files / 100; d++) {
@@ -315,7 +315,7 @@ describe("memory, whatever the tree holds", () => {
     // mirror and the removals are read a page at a time).
     expect(many).toBeLessThan(few * 3 + 32 * 1024 * 1024);
     expect(many).toBeLessThan(96 * 1024 * 1024);
-  }, 600_000);
+  });
 });
 
 it("reads its legacy JSON mirror once, into the database", () => {
@@ -471,7 +471,7 @@ describe("names that are not UTF-8", () => {
 });
 
 describe("a list larger than the sandbox's heap would hold whole", () => {
-  it("is cut at `LIST_BYTES` in a sync agent given the sandbox's heap, which completes", () => {
+  it("is cut at `LIST_BYTES` in a sync agent given the sandbox's heap, which completes", { tags: ["large"] }, () => {
     // The sync, bundled as the template bundles the runner, run in a Node given the heap a
     // sync agent has in the sandbox (`SANDBOX_HEAP`), over a 20 MiB list of `*.x` lines (the
     // list that crashed the agent before `LIST_BYTES`).
@@ -514,5 +514,5 @@ describe("a list larger than the sandbox's heap would hold whole", () => {
     const out = JSON.parse(run.stdout) as { committed: number; past: number };
     expect(out.committed).toBeGreaterThan(0);
     expect(out.past).toBeGreaterThan(10 * 1024 * 1024);
-  }, 300_000);
+  });
 });

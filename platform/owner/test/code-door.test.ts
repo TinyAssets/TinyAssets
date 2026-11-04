@@ -161,7 +161,7 @@ describe("the code door", () => {
     expect(looped.calls.ok).toBeGreaterThan(1);
     // Which writes landed before the stop; the reads are only counted.
     expect(looped.landed).toEqual([{ name: "collection_write", status: "ok", count: 3 }]);
-  }, 30_000);
+  });
 
   it("stops a script past its compute", async () => {
     const r = await rig(env.BOUNDED as unknown as DurableObjectNamespace<OwnerDO>);
@@ -169,7 +169,7 @@ describe("the code door", () => {
     expect(await r.stub.codeRun(r.bind(null), { script: "let n = 0; for (;;) { n++; }" }))
       .toMatchObject({ ok: false, error: { kind: "timeout",
         message: "Execution exceeded its interrupt budget of 2000" } });
-  }, 30_000);
+  });
 
   it("takes the owner's custom tools only as distinct names of the door's tools", () => {
     const base = { entries: [], egress: { mode: "open", destinations: [] },
@@ -249,5 +249,5 @@ describe("the code door", () => {
       `return 'x'.repeat(${PAGE_BYTES - 1000}).length;` });
     expect(within).toMatchObject({ ok: true, value: PAGE_BYTES - 1000 });
     expect(within).not.toHaveProperty("output_cut");
-  }, 120_000);
+  });
 });

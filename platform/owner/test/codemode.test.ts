@@ -144,5 +144,5 @@ describe("P11: pi's remote sandbox over the HOOKS service binding", () => {
     const result = await sandbox.execute("let n = 0; for (;;) { n++; }");
     expect(result).toMatchObject({ ok: false, error: { kind: "timeout" } });
     await sandbox.close();
-  }, 30_000);
+  });
 });

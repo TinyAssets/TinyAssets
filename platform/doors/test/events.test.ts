@@ -177,7 +177,7 @@ describe("an agent's own subscriptions", () => {
     expect((await subscribe(tokens, "echo/chat-0"))["result"]).toBeDefined();
     expect(await sqlIn(alice, "SELECT 1 FROM wake_callbacks")).toHaveLength(
       SUBSCRIPTIONS_PER_AGENT);
-  }, 60_000);
+  });
 });
 
 describe("the owner surface's doorbell", () => {

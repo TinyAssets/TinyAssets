@@ -154,7 +154,7 @@ describe("a digest's placed bodies (ADR-035)", () => {
       .toEqual([{ body_json: "", content_id: null }]);
     const after = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: board.cursor });
     expect(after.rows.map((m) => [m.row_id, m.deleted])).toEqual([["task", true]]);
-  }, 60_000);
+  });
 });
 
 describe("the board digest", () => {

@@ -602,7 +602,7 @@ describe("a client's schedule (review H-3)", () => {
 
 describe("the runs' rows (review M-1)", () => {
   it("stay within RUNS_KEPT and the live ones however inputs are queued and cancelled",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const { run } = await ownerRun(r.stub, r.bind(), undefined, "main");
@@ -618,11 +618,11 @@ describe("the runs' rows (review M-1)", () => {
     expect(n).toBeLessThanOrEqual(RUNS_KEPT + 1);
     expect(await r.sql("SELECT state FROM runs WHERE id = ?", run.run_id))
       .toEqual([{ state: "running" }]);
-  }, 300_000);
+  });
 });
 
 describe("a long run's receipt (review round 2, M1)", () => {
-  it("outlives its settle however many other runs settled meanwhile", async () => {
+  it("outlives its settle however many other runs settled meanwhile", { tags: ["large"] }, async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
@@ -649,7 +649,7 @@ describe("a long run's receipt (review round 2, M1)", () => {
     const [{ n }] = await r.sql("SELECT COUNT(*) AS n FROM runs WHERE settled_at IS NOT NULL") as
       [{ n: number }];
     expect(n).toBe(RUNS_KEPT);
-  }, 300_000);
+  });
 });
 
 describe("a run's cancel and its heartbeat (review M-2, M-3)", () => {

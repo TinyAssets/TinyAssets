@@ -419,7 +419,7 @@ describe("a full history", () => {
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history " +
                                  "WHERE prune_after IS NULL"))
       .toEqual([{ n: 600 }]);
-  }, 60_000);  // 600 versions written: past the default timeout under load (slice D)
+  });  // 600 versions written: past the default timeout under load (slice D)
 
   it("never wedges housekeeping: a pass at every bound still expires, prunes and collects",
      async () => {

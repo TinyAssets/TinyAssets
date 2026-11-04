@@ -63,7 +63,7 @@ describe("the owner's holds", () => {
       .toHaveProperty("entry");
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
     expect(pool.state().peak).toBeLessThanOrEqual(EDIT_MAKE_UNITS);
-  }, 120_000);
+  });
 
   it("reads each source chunk of an edit inside a step of its own", async () => {
     const chunk = 16;

@@ -489,7 +489,7 @@ describe("an egress call", () => {
     await fill(5_000, now - 10, "settled");
     await fill(30, now - 30, "refused");
     await admitted(r, lease, connection);
-  }, 120_000);
+  });
 
   it("receipts every refusal, keeping the newest refusalsKept, apart from the admitted",
      async () => {
@@ -509,7 +509,7 @@ describe("an egress call", () => {
       .toEqual([{ n: 9 }]);
     expect(await r.sql("SELECT state FROM egress_reservations WHERE id = ?", opened.reservation))
       .toEqual([{ state: "settled" }]);
-  }, 120_000);
+  });
 
   it("of a suspended owner is refused, and settled still, but not under abuse", async () => {
     const r = await gated();

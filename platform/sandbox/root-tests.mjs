@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const vitest = join(dirname(createRequire(import.meta.url).resolve("vitest/package.json")),
                     "vitest.mjs");
-const args = [vitest, "run", "--project", "runner"];
+// Arguments after the script go to vitest: the class filter, and a sizes shard.
+const args = [vitest, "run", "--project", "runner", ...process.argv.slice(2)];
 
 function giveBack(path, uid, gid) {
   const stat = lstatSync(path);
@@ -50,6 +51,7 @@ if (spawnSync("sudo", ["-n", "true"], { stdio: "ignore" }).status !== 0) {
     "sudo. They are not skipped: a skip is not a pass.\n");
   process.exit(2);
 }
-const run = spawnSync("sudo", ["-n", "--", process.execPath, join(here, "root-tests.mjs")],
+const run = spawnSync("sudo", ["-n", "--", process.execPath, join(here, "root-tests.mjs"),
+                               ...process.argv.slice(2)],
                       { cwd: here, stdio: "inherit" });
 process.exit(run.status ?? 1);
