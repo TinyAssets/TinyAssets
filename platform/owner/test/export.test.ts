@@ -119,7 +119,7 @@ describe("the owner export", () => {
     await o.stub.collectionWrite(o.bind(), { collection: "board", row_id: "t1", body: "hello",
                                              expected_etag: "", private: false });
     const { lines, exportId } = await exportFrom(o, null);
-    expect(lines[0]).toMatchObject({ t: "header", format: "tinyassets-export", version: 2,
+    expect(lines[0]).toMatchObject({ t: "header", format: "tinyassets-export", version: 3,
                                      schema: MIGRATIONS.length, owner: o.name });
     expect(lines[0]!["gen"]).toMatch(/^[0-9a-f]{16}$/);
     expect(lines.at(-1)).toMatchObject({ t: "end" });

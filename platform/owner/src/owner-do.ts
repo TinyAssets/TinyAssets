@@ -159,12 +159,18 @@ import {
   CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
 } from "./codemode";
 import {
-  type Actor, type Agent, type ChainMail, checkMessage, clock, type Delivery, Ledger,
+  type Actor, type Agent, type ArchivedMail, archivedMail, archivedRecord, type ChainMail,
+  checkMessage, clock,
+  type Delivery, type Fence, Ledger, type LedgerLimits, STORAGE_BUSY,
   type MailAuthority, type MailPage, RUN_NO_MAILBOX,
   apiKeyOrigin, MAIL_HEADER_BYTES, mailInput, type NativeAgent, nativeId, type Origin,
   outsideOrigin, type Posted, registrant, type Source,
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
+import {
+  bytesOf, chunkReads, encodeSegment, parseRecord, parseTrailer, recordText, roomMembers,
+  SEGMENT_LEAST_BYTES, segmentChunks, type SegmentRecord,
+} from "./segments";
 import { Erasure } from "./erase";
 import {
   ERASE_RETRY_MS, ERASING, erasing, markOutside, outsideDone, PUT_GRACE_MS, wiped,
@@ -1300,6 +1306,22 @@ function eventsRequest(request: unknown): {
   return { frames: frames as PostedFrame[], end };
 }
 
+/** The `archive` lane's failed passes in a row past which the owner is told, once. */
+const ARCHIVE_FAILS_TOLD = 3;
+/** How long a failed `archive` pass holds its lane. */
+const ARCHIVE_RETRY_S = 60;
+
+/** Byte arrays joined into one. */
+function joined(parts: readonly Uint8Array[]): Uint8Array {
+  const whole = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+  let at = 0;
+  for (const part of parts) {
+    whole.set(part, at);
+    at += part.byteLength;
+  }
+  return whole;
+}
+
 /** What the object's lanes run over: its stores, its in-process callers and the passes. */
 export interface LaneDeps {
   readonly ledger: Ledger;
@@ -1326,6 +1348,11 @@ export interface LaneDeps {
     next(now: number): number | null;
     run(now: number, until: number): Promise<void>;
   };
+  /** The `archive` lane: one move or one rewrite a pass (`segments.ts`). */
+  readonly archive: {
+    next(now: number): number | null;
+    run(now: number, until: number): Promise<unknown>;
+  };
   /** The doorbell (`wakes.ts`), or null for none: read at each use, never kept. */
   readonly sender: () => WakeSender | null;
   /** Whether the owner is admitted (`require_work`): read at each use. */
@@ -1344,7 +1371,8 @@ export interface LaneDeps {
  * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
  */
 export function ownerLanes(deps: LaneDeps):
-    Readonly<Record<"wakes" | "files" | "connections" | "runs" | "manifest" | "sandbox", Lane>> {
+    Readonly<Record<"wakes" | "files" | "connections" | "runs" | "manifest" | "sandbox"
+                    | "archive", Lane>> {
   return {
     // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell, and
     // only while the owner is admitted (`require_work`): a suspended owner's wait.
@@ -1370,6 +1398,10 @@ export function ownerLanes(deps: LaneDeps):
     // Sandbox time: a settled run not yet metered, or an open span's next look.
     sandbox: { next: (now) => deps.sandbox.next(now),
                run: (now, until) => deps.sandbox.run(now, until) },
+    // The archive (slice STORE item 2): acked mail moved to segments from half the hot
+    // ceiling, and a deleted agent's mail rewritten out of them; never a poll.
+    archive: { next: (now) => deps.archive.next(now),
+               run: (now, until) => deps.archive.run(now, until) },
   };
 }
 
@@ -1385,6 +1417,11 @@ export interface Internals {
   readonly codemode?: CodemodeBounds;
   /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
   readonly controlFreshMs?: number;
+  /**
+   * The ledger's ceilings, smaller in a test than production's (`LEDGER_LIMITS`), so the
+   * `archive` lane's moves are seen with a handful of messages.
+   */
+  readonly ledgerLimits?: LedgerLimits;
 }
 
 /** A model's cost record with its input at its dearest rate: what a token can cost at most. */
@@ -1493,6 +1530,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The sandbox's lease, owner-internal: the runs slice calls it in process. */
   readonly #sandbox: SandboxLeases;
   readonly #schedule: Schedule;
+  /** The `archive` lane's failed passes in a row (in memory: a restart begins counting again). */
+  #archiveFails = 0;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
@@ -1532,7 +1571,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
       (stored, needed, held, limit) => storageFullMessage(storageFull(
         stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
-      (filer) => this.#collections.reclaim(filer) || this.#ledger.reclaim(filer),
+      // Mail is never let go at the figure (ADR-036): the owner deletes what it chooses.
+      (filer) => this.#collections.reclaim(filer),
       // Each agent's ledger identity follows its `agent.json`, in the file change's own unit.
       (path, present, now, change) => {
         const agent = AGENT_FILE.exec(path)?.[1];
@@ -1564,7 +1604,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                         () => fileLimits(this.#policy.read().document, null));
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted,
+    this.#ledger = new Ledger(storage, this.#grants, internals.ledgerLimits, admitted,
                               () => this.#collections.clock(), this.#bodies.adopt);
     this.#backups = new Backups({
       storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
@@ -1730,6 +1770,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                   run: (now, until) => this.#backups.run(now, until) },
       sandbox: { next: (now) => this.#sandboxTime.next(now),
                  run: (now, until) => this.#meterPass(until) },
+      archive: { next: (now) => this.#ledger.archiveDue()
+                   || this.#ledger.purgedAgents().length > 0 ? now : null,
+                 run: () => this.#archivePass() },
       sender: () => this.#sender, admitted, clock, write, runWakes,
     }), clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
@@ -2699,11 +2742,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * An inbound event the agent's mail refused: a full mailbox counts toward a shared app's
-   * breaker (and its trip is the owner's notice); the rest are the event's own refusals.
+   * An inbound event the agent's mail refused: too much unread mail (`ledger_full`) counts
+   * toward a shared app's breaker (and its trip is the owner's notice); the hot ceiling while
+   * older mail moves out (`storage_busy`) is retried and counts nothing; the rest are the
+   * event's own refusals.
    */
   #inboundRefused(row: InboundRow, error: unknown, now: number): InboundAnswer {
-    if (error instanceof Refused && /mailbox is full|mail is full/.test(error.message)) {
+    if (error instanceof Refused && error.message.startsWith(`${STORAGE_BUSY}:`)) {
+      return { state: "refused", error: "mailbox_full", retry: true };
+    }
+    if (error instanceof Refused && error.message.startsWith("ledger_full:")) {
       if (row.kind === "shared" && this.#inbound.failed(row, Math.floor(now))) {
         this.#notices.add("inbound", `An inbound app's events to ${row.agent} were paused: ` +
                           "its mailbox was full. Change the binding to resume.", now);
@@ -2929,22 +2977,43 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * lane, which this door's unit rings), so its caller holds `converse` there too, as a
    * `converse` call would.
    */
-  roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
-    return this.#placing((): { body: unknown; writer: string } | { done: Posted } => {
+  async roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
+    // A parent archived (acked, moved to a segment) is read from R2 before the units: its
+    // seq, from its id, in the gate; then its record, outside.
+    const parent = await this.#door(() => {
+      this.#account(binding, "work");
+      return this.#archivedParent(request);
+    });
+    const archived = parent === null ? null : await this.#archived(parent.seq, parent.id);
+    return this.#busyRings(() => this.#placing((): { body: unknown; writer: string }
+                                                  | { done: Posted } => {
       const account = this.#account(binding, "work");
       this.#scope(account, "write_graph");
       const { r, actor } = this.#poster(account, binding, request);
       // The room, the sender, the parent, the caps and a resend, before any byte is placed.
       const resend = this.#ledger.prepare(actor, r["room_id"], r["client_message_id"],
-                                          r["body"], r["parent_id"]);
+                                          r["body"], r["parent_id"], archived);
       return resend !== null ? { done: resend } : { body: r["body"], writer: filerOf(account) };
     }, (placed) => {
       const account = this.#account(binding, "work");
       this.#scope(account, "write_graph");
       const { r, actor, authority } = this.#poster(account, binding, request);
       return this.#ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
-                               r["parent_id"], clock(), authority, placed, filerOf(account));
-    }, { synced: true });
+                               r["parent_id"], clock(), authority, placed, filerOf(account),
+                               archived);
+    }, { synced: true }));
+  }
+
+  /** A post held at the hot ceiling (`storage_busy`) rings the schedule: the lane moves. */
+  async #busyRings<T>(act: () => Promise<T>): Promise<T> {
+    try {
+      return await act();
+    } catch (error) {
+      if (error instanceof Refused && error.message.startsWith(`${STORAGE_BUSY}:`)) {
+        await this.#schedule.sync();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -3150,7 +3219,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   mailboxAck(binding: Binding, request: AckRequest): Promise<{ reader: string; through: number }> {
-    return this.#door(() => {
+    return this.#synced(() => {
       const account = this.#account(binding, "reduce");
       const r = ledgerFields(request, ["through"]);
       this.#noMailbox(account);
@@ -3369,19 +3438,241 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * messages, such as the mail a run's receipt names: oldest first, after `after`.
    */
   async mailChain(binding: Binding, request: ChainRequest):
-      Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
-    // Its placed bodies (ADR-035) are read from R2 between its units, as a mailbox read's.
-    const { root, messages, more } = await this.#rereading(
-      () => this.#chain(this.#owner(binding, "read", CHAINS), request, new Map()).placed,
-      (bodies) => this.#chain(this.#owner(binding, "read", CHAINS), request, bodies),
-      (page) => page.placed.length > 0);
-    return { root, messages, more };
+      Promise<{ root: string; messages: ChainMail[]; more: boolean; after: number }> {
+    const r = await this.#door(() => {
+      this.#owner(binding, "read", CHAINS);
+      return ledgerFields(request, ["message_id", "limit"], ["after"]);
+    });
+    const after = r["after"] ?? 0;
+    if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
+      throw new Invalid("a chain read's after is a seq");
+    }
+    // Its root: the hot message's, or the archived one's, read from its segment.
+    const start = await this.#door(() => this.#ledger.chainStart(r["message_id"]));
+    let root: string;
+    let rootSeq: number;
+    if ("archived" in start) {
+      const found = await this.#archived(start.archived, r["message_id"] as string);
+      if (found === null) {
+        throw new Refused("no such message held");
+      }
+      root = found.message.chain_root;
+      rootSeq = await this.#door(() => this.#ledger.seqOf(root)) ?? 0;
+    } else {
+      ({ root, root_seq: rootSeq } = start);
+    }
+    // Its archived messages past `after`: the next segments' chain maps, then their records.
+    const { fences, frontier } = await this.#door(() => this.#ledger.chainFences(rootSeq, after));
+    const mail: ArchivedMail[] = [];
+    for (const fence of fences) {
+      const trailer = parseTrailer(await this.#segmentText(fence.content_id,
+                                                           fence.trailer_offset,
+                                                           fence.trailer_bytes));
+      for (const [key, offset, length] of trailer.chains[root] ?? []) {
+        if (key > after) {
+          mail.push(archivedMail(await this.#segmentText(fence.content_id, offset, length)));
+        }
+      }
+    }
+    // Its hot messages' placed bodies (ADR-035) are read from R2 between its units.
+    const page = await this.#rereading(
+      () => this.#ledger.chain(root, after, r["limit"], new Map(), { mail, frontier }).placed,
+      (bodies) => {
+        this.#owner(binding, "read", CHAINS);
+        return this.#ledger.chain(root, after, r["limit"], bodies, { mail, frontier });
+      },
+      (read) => read.placed.length > 0);
+    return { root: page.root, messages: page.messages, more: page.more, after: page.after };
   }
 
-  /** A chain page as the owner reads it, handed the placed bodies read so far. */
-  #chain(_owner: Account, request: ChainRequest, bodies: ReadonlyMap<string, string>) {
-    const r = ledgerFields(request, ["message_id", "limit"], ["after"]);
-    return this.#ledger.chain(r["message_id"], r["after"] ?? 0, r["limit"], bodies);
+  // -- THE ARCHIVE (slice STORE item 2, `segments.ts`) --------------------------------------
+
+  /** A byte range of a segment's content, read from R2 outside any unit, as its UTF-8. */
+  async #segmentText(contentId: string, offset: number, length: number): Promise<string> {
+    const located = await this.#door(() => this.#bodies.locate([contentId]));
+    const parts = await this.#files.fetch(chunkReads(located.get(contentId)!, offset, length));
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(joined(parts));
+  }
+
+  /** An archived message by the seq its id carries, from its segment; null when none. */
+  async #archived(seq: number, messageId: string): Promise<ArchivedMail | null> {
+    const fences = await this.#door(() => this.#ledger.archiveFences(seq));
+    for (const fence of fences) {
+      const trailer = parseTrailer(await this.#segmentText(fence.content_id,
+                                                           fence.trailer_offset,
+                                                           fence.trailer_bytes));
+      const placement = trailer.keys.find(([key]) => key === seq);
+      if (placement === undefined) {
+        continue;
+      }
+      const mail = archivedMail(await this.#segmentText(fence.content_id, placement[1],
+                                                        placement[2]));
+      const purged = await this.#door(() => this.#ledger.purgedAgents());
+      return mail.message.message_id === messageId
+        && !roomMembers(mail.message.room_id).some((member) => purged.includes(member))
+        ? mail : null;
+    }
+    return null;
+  }
+
+  /** In a unit: a post's parent's seq, when it is archived (not hot, and the object's). */
+  #archivedParent(request: PostRequest): { id: string; seq: number } | null {
+    const parentId = (request as { parent_id?: unknown } | null)?.parent_id;
+    if (typeof parentId !== "string") {
+      return null;
+    }
+    try {
+      const start = this.#ledger.chainStart(parentId);
+      return "archived" in start ? { id: parentId, seq: start.archived } : null;
+    } catch {
+      return null;  // not one the object gave: the post refuses it as no parent
+    }
+  }
+
+  /**
+   * One pass of the `archive` lane: a deleted agent's mail rewritten out of a segment, or
+   * else one move of acked mail to a new segment. A failure outside (R2 down, the storage
+   * figure reached) holds the lane a while; past `ARCHIVE_FAILS_TOLD` in a row the owner is
+   * told once, since posts then wait at the hot ceiling (`storage_busy`).
+   */
+  async #archivePass(): Promise<unknown> {
+    try {
+      if (!await this.#archiveRewrite()) {
+        await this.#archiveMove();
+      }
+      this.#archiveFails = 0;
+      return undefined;
+    } catch (error) {
+      if (error instanceof Refused && error.message.startsWith("archive_changed")) {
+        return undefined;  // the batch moved under it: the next pass picks again
+      }
+      this.#archiveFails++;
+      console.error("the archive lane's pass failed", error);
+      if (this.#archiveFails === ARCHIVE_FAILS_TOLD) {
+        const reason = error instanceof Refused ? error.message.split(":")[0]! : "unavailable";
+        await this.#door(() => this.#notices.add("storage_busy_long",
+          `Older mail could not be moved out (${reason}), so new mail may wait; it goes on ` +
+            "by itself once the move lands.", clock()));
+      }
+      return { hold: clock() + ARCHIVE_RETRY_S };
+    }
+  }
+
+  /** One move: the oldest acked mail to a new segment, in the move's two units. */
+  async #archiveMove(): Promise<void> {
+    const pick = await this.#door(() => this.#ledger.archivePick());
+    if (pick === null) {
+      return;
+    }
+    const located = await this.#door(() => this.#bodies.locate(pick.contents));
+    const bodies = await this.#bodies.fetch(located);
+    const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, bodies));
+    if (batch === null) {
+      return;
+    }
+    const encoded = encodeSegment("mail", batch.records);
+    const fence = {
+      first_key: encoded.trailer.first, last_key: encoded.trailer.last,
+      first_at: batch.first_at, last_at: batch.last_at, records: encoded.trailer.records,
+      bytes: encoded.bytes.byteLength, trailer_offset: encoded.trailer_offset,
+      trailer_bytes: encoded.trailer_bytes, members: Ledger.members(batch.members) };
+    await this.#placeSegment(encoded.bytes, "mail", batch.digest, (contentId) => {
+      this.#ledger.archiveApply(pick.seqs, batch.digest, contentId, fence, clock());
+    });
+  }
+
+  /**
+   * One rewrite: the next segment a deleted agent's mail may be in, without that mail; one
+   * left under `SEGMENT_LEAST_BYTES` takes in its next segment, so at most the newest is
+   * small. False when no purge waits.
+   */
+  async #archiveRewrite(): Promise<boolean> {
+    const target = await this.#door(() => this.#ledger.purgeNext());
+    if (target === null) {
+      return false;
+    }
+    const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
+    const kept = async (fence: Fence) => {
+      const all = await this.#segmentRecords(fence);
+      return { all: all.length, kept: all.filter((record) =>
+        !roomMembers(record.room).some((member) => purged.has(member))) };
+    };
+    const first = await kept(target.fence);
+    const replaced = [target.fence];
+    let records = first.kept;
+    if (first.kept.length === first.all) {
+      await this.#door(() => this.#ledger.archiveReplace([], null, null, clock(),
+                                                         target.fence.segment));
+      return true;
+    }
+    const size = records.reduce((sum, record) => sum + bytesOf(recordText(record)), 0);
+    if (size < SEGMENT_LEAST_BYTES && target.next !== null) {
+      replaced.push(target.next);
+      records = [...records, ...(await kept(target.next)).kept];
+    }
+    records.sort((a, b) => a.key - b.key);
+    if (records.length === 0) {
+      await this.#door(() => this.#ledger.archiveReplace(replaced, null, null, clock()));
+      return true;
+    }
+    const encoded = encodeSegment("mail", records);
+    const members = new Set(records.flatMap((record) => roomMembers(record.room)));
+    const fence = {
+      first_key: encoded.trailer.first, last_key: encoded.trailer.last,
+      first_at: Math.min(...replaced.map((old) => old.first_at)),
+      last_at: Math.max(...replaced.map((old) => old.last_at)),
+      records: encoded.trailer.records, bytes: encoded.bytes.byteLength,
+      trailer_offset: encoded.trailer_offset, trailer_bytes: encoded.trailer_bytes,
+      members: Ledger.members(members) };
+    await this.#placeSegment(encoded.bytes, "rewrite", "0".repeat(64), (contentId) => {
+      this.#ledger.archiveReplace(replaced, contentId, fence, clock());
+    });
+    return true;
+  }
+
+  /** A segment's records, read whole from R2, each with its room. */
+  async #segmentRecords(fence: Fence): Promise<(SegmentRecord & { room: string })[]> {
+    const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
+    const whole = joined(await this.#files.fetch(located.get(fence.content_id)!
+      .map((sha256) => ({ sha256 }))));
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    const trailer = parseTrailer(decoder.decode(whole.subarray(
+      fence.trailer_offset, fence.trailer_offset + fence.trailer_bytes)));
+    return trailer.keys.map(([key, offset, length]) => {
+      return archivedRecord(key, parseRecord(decoder.decode(whole.subarray(offset,
+                                                                           offset + length))));
+    });
+  }
+
+  /**
+   * A segment's bytes placed as files-plane content (ADR-035's order: the bytes to R2 first,
+   * held by an upload, then named in one unit with `name`), its move recorded between.
+   */
+  async #placeSegment(bytes: Uint8Array, stream: "mail" | "rewrite", digest: string,
+                      name: (contentId: string) => void): Promise<void> {
+    const chunks = segmentChunks(bytes);
+    const begun = await this.#door(() => {
+      const started = this.#files.begin(bytes.byteLength, chunks.map((chunk) => chunk.sha256),
+                                        "owner", [], true);
+      this.#ledger.moveBegun(stream, started.intent_id, digest, clock());
+      return started;
+    });
+    try {
+      const wanted = new Set(begun.missing);
+      const puts = chunks.filter((chunk) => wanted.delete(chunk.sha256));
+      for (let at = 0; at < puts.length; at += 2) {
+        await this.#files.upload(begun.intent_id, puts.slice(at, at + 2));
+      }
+      await this.#door(() => this.#files.adopt(begun.intent_id, "owner", (contentId) => {
+        name(contentId);
+        this.#ledger.moveEnded(stream);
+      }));
+    } finally {
+      await this.#door(() => {
+        this.#files.abort(begun.intent_id);
+        this.#ledger.moveEnded(stream, begun.intent_id);
+      });
+    }
   }
 
   /**

@@ -192,8 +192,8 @@ describe("the ledger's bounds on identities", () => {
   it("count the owner's live agents among the reserved mailboxes and its rows in the " +
      "registry, forgetting the oldest retired one first", async () => {
     const r = await rig();
-    const seen = await r.inLedger({ maxAgents: 2, maxAgentRows: 4, maxAgentUnacked: 2,
-                                    maxOwnerUnacked: 1, maxSenderUnacked: 1, maxMessages: 5 },
+    const seen = await r.inLedger({ maxAgents: 2, maxAgentRows: 4, maxUnacked: 1,
+                                    archiveRecords: 1, maxMessages: 5 },
                                   (ledger: Ledger) => {
       const refused = (act: () => unknown) => {
         try {
@@ -217,7 +217,7 @@ describe("the ledger's bounds on identities", () => {
       ledger.retire("c");
       ledger.appear("e");  // the registry's fourth row: the oldest retired, a, is forgotten
       const names = ledger.natives(true).map((n) => [n.agent, n.retired_at === null]);
-      // An agent's mail to the owner is held to its share of the owner's mailbox.
+      // An agent's mail to the owner waits on the one unread ceiling (no mailbox's own).
       const d = ledger.natives(false).find((n) => n.agent === "d")!.agent_id;
       ledger.post({ native: "d" }, `dm:${d}`, "m1", "hello owner", null);
       const share = refused(() => ledger.post({ native: "d" }, `dm:${d}`, "m2", "again",
@@ -228,7 +228,8 @@ describe("the ledger's bounds on identities", () => {
                            "enabled agents, each a reserved mailbox");
     expect(seen.outside).toBe("the owner's enabled agents are at their limit");
     expect(seen.names).toEqual([["b", false], ["c", false], ["d", true], ["e", true]]);
-    expect(seen.share).toBe("this agent's unacked mail to the owner is full");
+    expect(seen.share).toBe("ledger_full: too much mail is unread (1 message waits for " +
+                            "their readers); reading and acking mail makes room");
   });
 });
 
@@ -299,7 +300,7 @@ describe("mail to an agent", () => {
       .toEqual([[ping.message_id, answer, "ok"]]);
     const chain = await r.stub.mailChain(r.bind(), { message_id: ping.message_id, limit: 10 });
     expect(chain.messages.map((m) => m.body)).toEqual([long, answer]);
-    expect(Object.keys(chain)).toEqual(["root", "messages", "more"]);
+    expect(Object.keys(chain)).toEqual(["root", "messages", "more", "after"]);
     // Placed before the settle's unit, posted by reference in it: no upload is left open.
     expect(await r.sql("SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
   });

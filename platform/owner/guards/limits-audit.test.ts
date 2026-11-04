@@ -18,6 +18,10 @@ import {
   DATABASE_BYTES, IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES, RUNTIME, SHARE, type Term, termBytes,
   TERMS, worstCase,
 } from "./owner-bound.test";
+import {
+  ARCHIVE_SEGMENTS_MAX, MIN_RECORD_BYTES, SEGMENT_LEAST_BYTES, SEGMENT_MIN_BYTES,
+  SEGMENT_MIN_RECORDS, TIER_STORAGE_MAX,
+} from "../src/segments";
 
 const HALF = SHARE * DATABASE_BYTES;
 /**
@@ -73,6 +77,23 @@ describe("the change log's bound", () => {
   });
 });
 
+describe("slice STORE's archive (item 2)", () => {
+  it("takes at most STORE's quarter of the room LOG_BYTES was derived from", () => {
+    const { change_log: _log, ...others } = TERMS;
+    expect(HALF - total(others)).toBeGreaterThanOrEqual(DERIVED_ROOM * (1 - LOG_SHARE));
+  });
+
+  it("lets a tier offer about 0.5 TB: the fence rows, each a sealed segment's least bytes",
+     () => {
+    expect(TIER_STORAGE_MAX).toBe((ARCHIVE_SEGMENTS_MAX - 1) * SEGMENT_LEAST_BYTES);
+    expect(TIER_STORAGE_MAX).toBeGreaterThanOrEqual(0.5e12);
+    expect(TIER_STORAGE_MAX).toBeLessThan(0.51e12);
+    expect(SEGMENT_LEAST_BYTES).toBe(Math.min(SEGMENT_MIN_BYTES,
+                                              SEGMENT_MIN_RECORDS * MIN_RECORD_BYTES));
+    expect(TERMS["archive_segments"]!.rows).toBe(ARCHIVE_SEGMENTS_MAX);
+  });
+});
+
 describe("the limits that ship", () => {
   it("hold the owner's worst case at or under half the 10 GB, the real ceiling", () => {
     expect(total(TERMS)).toBe(worstCase());
@@ -87,9 +108,9 @@ describe("the limits that ship", () => {
     for (const [change, without] of Object.entries(WITHOUT)) {
       expect(total(without()), change).toBeGreaterThan(HALF);
     }
-    // The mailboxes' caps, reserved out of the ceilings as before, would fail the check.
+    // The unread ceiling leaves the hot ceiling a segment to move (slice STORE item 2).
     const L = LEDGER_LIMITS;
-    expect(L.maxAgents * L.maxAgentUnacked + L.maxOwnerUnacked).toBeGreaterThan(L.maxMessages);
+    expect(L.maxUnacked + L.archiveRecords).toBeLessThanOrEqual(L.maxMessages);
   });
 
   it("move no term for a body's own size, or for the bytes R2 holds", () => {

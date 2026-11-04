@@ -408,6 +408,12 @@ describe("the object's lanes", () => {
       }, run: async (now: number, until: number) => {
         seen.push(["sandbox.run", now, until]);
       } },
+      archive: { next: (now: number) => {
+        seen.push(["archive.next", now]);
+        return null;
+      }, run: async (now: number, until: number) => {
+        seen.push(["archive.run", now, until]);
+      } },
       runWakes: async (...args) => {
         seen.push(["runWakes", ...args]);
         return 0;
@@ -420,7 +426,7 @@ describe("the object's lanes", () => {
     const { seen, deps, ledger, clock, write } = recorded(() => null, () => true);
     const lanes = ownerLanes(deps);
     expect(Object.keys(lanes)).toEqual(["wakes", "files", "connections", "runs", "manifest",
-                                        "sandbox"]);
+                                        "sandbox", "archive"]);
     for (const lane of Object.values(lanes)) {
       await lane.run(100, 123_456);
     }
@@ -431,6 +437,7 @@ describe("the object's lanes", () => {
       ["runs.run", 100, 123_456],
       ["manifest.run", 100, 123_456],
       ["sandbox.run", 100, 123_456],
+      ["archive.run", 100, 123_456],
     ]);
   });
 
@@ -443,14 +450,15 @@ describe("the object's lanes", () => {
     for (const [ringing, ask] of [[false, true], [true, true], [false, false]] as const) {
       admitted = ask;
       expect([lanes.wakes.next(7), lanes.files.next(7), lanes.connections.next(7),
-              lanes.runs.next(7), lanes.manifest.next(7), lanes.sandbox.next(7)])
-        .toEqual([8, 10, 11, null, 86_407, null]);
+              lanes.runs.next(7), lanes.manifest.next(7), lanes.sandbox.next(7),
+              lanes.archive.next(7)])
+        .toEqual([8, 10, 11, null, 86_407, null, null]);
       expect(seen).toEqual([["ledger.nextDue", 7, ringing], ["files.nextAlarm", 7],
                             ["connections.nextDue", 7], ["runs.next", 7],
-                            ["manifest.next", 7], ["sandbox.next", 7]]);
+                            ["manifest.next", 7], ["sandbox.next", 7], ["archive.next", 7]]);
       seen.length = 0;
       void Promise.all(Object.values(lanes).map((lane) => lane.run(1, 2)));
-      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2, 2, 2, 2]);
+      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2, 2, 2, 2, 2]);
       seen.length = 0;
       // The object gains its doorbell after the lanes were made.
       sender = {} as WakeSender;

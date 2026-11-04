@@ -1914,9 +1914,15 @@ R, S, M and W.
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".
+- [x] Slice STORE item 2, phase 1 (`history_research.md` §4; ADR-036): acked mail moves to archive segments (files-plane content in the export's line grammar with a trailing index, under the owner's data key, one fence row a segment, `segments.ts`) instead of being evicted: the `archive` lane from half the hot ceiling, the two-unit move, `storage_busy` (503, `Retry-After`) at the hot ceiling and never a delete; message ids carry their seq, so the chain read and a reply find archived mail with no row for it; an agent's deletion drops its archived mail at once and the lane rewrites it out; export version 3 ships the segments as they are; mail counted at its real bytes; at full storage new mail is `storage_full` and acked mail is never let go (superseding ADR-035 decision 5 for mail); one owner-wide unread ceiling (`maxUnacked`, the hot ceiling less a segment's records) in place of the three mailbox caps; a tier's storage held to `TIER_STORAGE_MAX` (about 0.5 TB, the fence rows' guard term at 8 MiB a segment).
 - [ ] Owed by slice STORE:
   - **Option B of the latency probe** (R2 get, put, list from an owner-shaped object) needs a token with Workers R2 Storage: Edit. The index decision (shards or R2 trees) waits on it, and the count caps stay until then. Its `probe-latency-run` branch is made again only for that run; afterwards the probe's workflow and scripts are removed.
-  - **Old versions, collection history and read mail moved to R2 segments** (mail never evicted silently), encrypted under slice P's per-owner key: after P lands. Its schema baseline and its key are the base.
+  - **Later phases of item 2, each a silent loss to remove:**
+    - collection history's `maxHistoryCharge` pruning (phase 2, on the same segments);
+    - the ledger's newest-`maxReceipts` (50,000) receipts, the older ones let go;
+    - `CONVERSATIONS_KEPT` (10,000) making the oldest idle conversation forget its resume id (`run-rows.ts`);
+    - file versions, with the index decision (`history_research.md` §4);
+    - **unread mail archived too** (found by seq, the hot set bounded by bytes): it needs its own research first, since an unread message's recipient state and mail in a run's hands change after a segment is sealed.
   - **Sync-in of the working set alone** (today it materializes the whole workspace), held for the scratch design.
   - **The starter package's agent instructions** naming `$TA_SCRATCH`: slice STARTER carries the scratch guidance, in its `AGENTS.md` and its scratch skill (the run door's MCP instructions carry it today).
   - **`linux_oracle.py`** for the scratch modes and the reserve: no Docker daemon in the build session. The runner's root tests cover the modes.

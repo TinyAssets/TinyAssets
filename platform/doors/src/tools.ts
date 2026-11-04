@@ -305,15 +305,28 @@ export function callDoor(stub: DurableObjectStub<OwnerDO>, binding: Binding, too
  * An owner object's refusal or invalid request, as opposed to a bug. A refusal at the
  * owner's storage figure (`storage_full`, `owner/src/storage-full.ts`) is 507 Insufficient
  * Storage, so a client tells the one wall from a permission; one only open uploads cause
- * (`uploads_open`) is 409, since it clears as they finish or are cancelled.
+ * (`uploads_open`) is 409, since it clears as they finish or are cancelled. A post at the
+ * hot mail ceiling while older mail moves out (`storage_busy`, `owner/src/ledger.ts`) is 503
+ * with its `Retry-After`, never the wall.
  */
 export function refusal(error: unknown):
-    { status: 400 | 403 | 409 | 507; message: string } | null {
+    { status: 400 | 403 | 409 | 503 | 507; message: string; retry_after_s?: number } | null {
   if (error instanceof Error && (error.name === "Refused" || error.name === "Invalid")) {
+    if (error.name === "Refused" && error.message.startsWith("storage_busy:")) {
+      const found = /"retry_after_s":(\d+)/.exec(error.message);
+      return { status: 503, message: error.message,
+               retry_after_s: found === null ? 30 : Number(found[1]) };
+    }
     return { status: error.name === "Invalid" ? 400
                : error.message.startsWith("storage_full:") ? 507
                : error.message.startsWith("uploads_open:") ? 409 : 403,
              message: error.message };
   }
   return null;
+}
+
+/** The headers a refusal's answer carries: `Retry-After` for a busy one. */
+export function refusalHeaders(refused: { retry_after_s?: number }): Record<string, string> {
+  return refused.retry_after_s === undefined ? {}
+    : { "Retry-After": String(refused.retry_after_s) };
 }

@@ -44,8 +44,12 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,498,844,030.5 bytes, 44.99% of the 10 GB: 501.2 MB under
-half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`),
+**The worst case that ships is 4,651,436,472.25 bytes, 46.51% of the 10 GB: 348.6 MB under
+half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
+Slice STORE item 2 took 152.6 MB of the room under half the change log's bound was derived
+from (665.1 MB), within its quarter (166.3 MB, held by the guard): the archive's fence rows
+(`archive_segments`, 151.4 MB at 59,606 rows), its moves and purges, and a message's two byte
+counts. Before it,
 slice ID's agent identities and mail
 authority, slice M's change orders, slice W's doorbell subscriptions (`wake_callbacks`,
 423.6 MB at 1,000 agents and their widest), slice S's sandbox wait, slice L's keys and
@@ -78,13 +82,15 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 13
-- **technical ceiling**: 154
-- **total**: 182
+- **technical ceiling**: 156
+- **total**: 184
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
 Removed by this slice, since only the tier's storage bounds what they bounded, or no
 platform fact stood behind them:
+- the ledger's mailbox caps (`maxOwnerUnacked`, `maxAgentUnacked`, `maxSenderUnacked`), slice
+  STORE item 2: one owner-wide unread ceiling, `maxUnacked`, in their place;
 - the collections' byte caps (`maxOwnerBytes`, `maxCollectionBytes`, `maxWriterBytes`,
   `maxHistoryBytes`) and their writer and row counts (`maxWriterRows`, `maxRows`,
   `maxOwnerRows`), now one charge of the rows as SQLite lays them out;
@@ -180,10 +186,12 @@ reason; none refuses a write.
 | `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries, erased keys' last entries among them | the oldest entries pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows`. A message has one recipient, so no term moves with it. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, disabled agents included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_usage`. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held | the oldest acked message evicted; refused `ledger_full` if every one is unread | technical ceiling | The 10 GB: guard terms `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxOwnerUnacked` | 10,000 | messages unread by the owner | a post to the owner refused past it | technical ceiling | Within `maxMessages` (`checkLimits`), so no mailbox holds the whole ledger. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentUnacked` | 1,000 | messages unread in one agent's mailbox | a post to that agent refused | technical ceiling | As above. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxSenderUnacked` | 5,000 | one sender's messages unread by the owner | a sender's post refused past it | technical ceiling | Within `maxOwnerUnacked`, so no agent fills the owner's mailbox. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held hot | never a delete (ADR-036): the `archive` lane moves acked mail to segments from half of it, and a post at it is `storage_busy` (503, `Retry-After` 30 s) until a move lands | technical ceiling | The 10 GB: guard terms `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB, each at 50,000 rows. Slice STORE item 2: the hot set, not the owner's mail; archived mail is bounded by the tier's storage alone. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxUnacked` | 25,000 | messages some recipient has not acked, owner-wide, whoever they are to | a post refused `ledger_full`: too much mail is unread; reading and acking makes room (never an upgrade) | technical ceiling | The 10 GB: unread mail is hot (phase 1 archives acked mail only), so the guard's `ledger_recipients` term (rows at `maxMessages`) bounds it, less one segment's records (`archiveRecords`), so that at the hot ceiling the lane always has a segment to move (`checkLimits`). It replaces the owner's 10,000, each agent's 1,000 and each sender's 5,000, which no platform fact forced. |
+| `owner/src/segments.ts` `SEGMENT_MIN_BYTES`, `SEGMENT_MIN_RECORDS` | 8 MiB of lines, or 25,000 records | when a segment is sealed | nothing: a move waits for a segment's worth of acked mail | technical ceiling | A fence row costs the owner-bound guard about 2.5 KB at its worst fill; 0.5 TB of tier in 4 MiB segments took 317.5 MB, past STORE's quarter of the room under the half (166.3 MB). At 8 MiB: 151.4 MB. 25,000 records of at least `MIN_RECORD_BYTES` (336, the least mail's three rows, tested) pass 8 MiB too, so every sealed segment holds at least `SEGMENT_LEAST_BYTES` (8 MiB). |
+| `owner/src/segments.ts` `ARCHIVE_SEGMENTS_MAX`, `TIER_STORAGE_MAX` | 59,606 fence rows; 500,002,979,840 bytes (about 0.5 TB) | the archive's fence rows; the most storage a tier record may give | a tier record past it refused (`parseTiers`): a larger tier needs larger segments first, a redesign | technical ceiling | The guard's `archive_segments` term at its rows is 151.4 MB, within STORE's quarter (`limits-audit.test.ts`); the rows are at most the storage over 8 MiB, plus the one small segment a purge's rewrite may leave. Paid's 250 GB is half of it. |
+| `owner/src/ledger.ts` `STORAGE_BUSY_RETRY_S`; `owner/src/owner-do.ts` `ARCHIVE_RETRY_S`, `ARCHIVE_FAILS_TOLD` | 30 s; 60 s; 3 | a busy post's retry; a failed archive pass's hold; failed passes in a row before the owner is told once | nothing refused: a retry, a hold, one notice (`storage_busy_long`) | technical ceiling | About one lane pass (`LANE_PASS_S` 45 s); an R2 outage holds the lane a minute a try. |
+| `owner/src/ledger.ts` `CHAIN_SEGMENTS` | 8 | segments one chain page reads | the page answers `more` and an `after` cursor | technical ceiling | A page's R2 reads bounded within one call. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxReceipts` | 50,000 | read and reply receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_receipts`, 309.6 MB. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxSettledWakes` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_wakes`. |
 | `owner/src/ledger.ts` `WAKE_SETTINGS` | 9,007,199,254,740,991 | the owner's cap and batch window | a larger number refused | technical ceiling | JavaScript's largest exact whole number (`Number.MAX_SAFE_INTEGER`): the cap's state is one column whatever its value. |

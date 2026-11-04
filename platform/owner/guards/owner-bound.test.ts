@@ -46,6 +46,7 @@ import { describe, expect, it } from "vitest";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { exported } from "../src/export";
 import { LEDGER_LIMITS } from "../src/ledger";
+import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES } from "../src/segments";
 import {
   CHUNK_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES,
   RECORD_FIXED, recordLayout, TABLE_KEPT, WORST_FILL,
@@ -419,10 +420,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_messages: { rows: L.maxMessages,
                        bytes: ROW + MESSAGE_ID + 4 * UNIVERSE_CHARS + 4 * ROOM_CHARS + AGENT_ID
                          + 4 * CMID_CHARS + 64 + 4 * PARENT_CHARS + MESSAGE_ID + 7
-                         + AUTHORITY_CHARS + 8,
-                       by: "maxMessages, each its ids, universe, room, client message id, " +
-                         "body hash, parent, authority (visible ASCII) and whether a person " +
-                         "sent it, at the validators' widest",
+                         + AUTHORITY_CHARS + 8 + 8,
+                       by: "maxMessages (the hot ceiling: acked mail moves to archive " +
+                         "segments), each its ids, universe, room, client message id, " +
+                         "body hash, parent, authority (visible ASCII), whether a person " +
+                         "sent it and its lines' bytes, at the validators' widest",
                        indexes: { sqlite_autoindex_ledger_messages_1: key(MESSAGE_ID),
                                   sqlite_autoindex_ledger_messages_2: key(AGENT_ID,
                                                                           4 * CMID_CHARS),
@@ -430,7 +432,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // A body past PLACE_BYTES is placed in R2 (ADR-035): the row keeps at most that much.
     message_bodies: { rows: L.maxMessages,
                       bytes: ROW + MESSAGE_ID + 4 * ROOM_CHARS + PLACE_BYTES + CONTENT_ID
-                        + FILER,
+                        + FILER + 8,
                       by: "maxMessages, each its room and its body inline up to PLACE_BYTES " +
                         "(a larger one placed in R2) or its content id, and its files scope",
                       indexes: { sqlite_autoindex_message_bodies_1: key(MESSAGE_ID) } },
@@ -454,6 +456,23 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                wakes_open: key(NUMBER), wakes_sending: key(NUMBER),
                                wakes_settled: key(NUMBER) } },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
+    // The archive (slice STORE item 2): one fence row a segment, every sealed segment at least
+    // `SEGMENT_LEAST_BYTES` of the owner's counted storage, so the rows are at most a tier's
+    // storage over it, plus the one small segment a rewrite may leave; the tier record's
+    // storage is held to `TIER_STORAGE_MAX` so that this many fit.
+    archive_segments: { rows: ARCHIVE_SEGMENTS_MAX,
+                        bytes: ROW + 10 * NUMBER + 8 + CONTENT_ID + FILER + 2 * BLOOM_BYTES,
+                        by: "ARCHIVE_SEGMENTS_MAX: TIER_STORAGE_MAX over SEGMENT_LEAST_BYTES, " +
+                          "plus one; each its keys, times, sizes, content id and bloom",
+                        indexes: { archive_segments_by_last: key(8, NUMBER) } },
+    archive_moves: { rows: 2, bytes: ROW + 16 + 32 + 64 + NUMBER,
+                     by: "one move in flight a stream, mail and a rewrite",
+                     indexes: { sqlite_autoindex_archive_moves_1: key(16) } },
+    archive_purges: { rows: L.maxAgentRows, bytes: ROW + AGENT_ID + 2 * NUMBER,
+                      by: "an agent deleted while segments may hold its mail, at most " +
+                        "maxAgentRows waiting (a deletion past them is refused)",
+                      indexes: { sqlite_autoindex_archive_purges_1: key(AGENT_ID) } },
+    ledger_ids: { rows: 1, bytes: ROW + 64, by: "one row: the key ids carry their seq under" },
     // Slice W's doorbell subscriptions: `WITHOUT ROWID`, keyed by the server's id, each its
     // fields at the schema's widest (its sealed blobs visible ASCII, a byte a character; its
     // arguments any text, four bytes a character), and its by-agent index entry.

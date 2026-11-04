@@ -110,7 +110,7 @@ import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "./sources";
-import { callDoor, refusal, toolTable } from "./tools";
+import { callDoor, refusal, refusalHeaders, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../owner/src/agent-file";
@@ -146,8 +146,8 @@ function surfaced(answer: Response): Response {
                                      headers });
 }
 
-function failure(status: number, message: string): Response {
-  return json(status, { error: message });
+function failure(status: number, message: string, headers: HeadersInit = {}): Response {
+  return json(status, { error: message }, headers);
 }
 
 export function bearer(request: Request): string | null {
@@ -601,7 +601,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
     }
     const refused = refusal(error);
     if (refused !== null) {
-      return failure(refused.status, refused.message);
+      return failure(refused.status, refused.message, refusalHeaders(refused));
     }
     throw error;
   }

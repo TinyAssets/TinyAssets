@@ -13,6 +13,7 @@ import { type OwnerEnv, OwnerDO, type SandboxLeases } from "../src/owner-do";
 import { RecordingErasures } from "./erasure-fake";
 import { RecordingSandbox } from "./sandbox-fake";
 import { PLATFORM_CALLER } from "../src/admission";
+import { LEDGER_LIMITS } from "../src/ledger";
 
 export { OwnerDO } from "../src/owner-do";
 
@@ -51,6 +52,18 @@ export class FauxOwnerDO extends OwnerDO {
 export class BoundedOwnerDO extends OwnerDO {
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     super(ctx, env, { codemode: { timeoutMs: 2_000, interruptBudget: 2_000 } });
+  }
+}
+
+/**
+ * The owner object as production builds it but for the ledger's ceilings: eight messages
+ * hot, four unread, a segment sealed at two records, so a test sees the `archive` lane move
+ * acked mail, a post wait at the hot ceiling, and a purge rewrite, with a handful of posts.
+ */
+export class ArchivingOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, { ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4,
+                                      archiveRecords: 2 } });
   }
 }
 

@@ -559,9 +559,8 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
     const bindingId = await slackInstall(who, team);
     expect((await call(slackRequest(slackEvent(team, "EvB0")))).status).toBe(202);
-    // The agent's mailbox, full.
-    await sqlIn(who, "UPDATE ledger_readers SET unacked = 1000000 WHERE reader = ?",
-                nativeId("main"));
+    // Too much mail unread, owner-wide (slice STORE item 2: one ceiling, no mailbox's own).
+    await sqlIn(who, "UPDATE ledger_usage SET unacked = 1000000");
     for (let i = 1; i <= BREAKER_FAILURES; i++) {
       const refused = await call(slackRequest(slackEvent(team, `EvB${i}`)));
       expect(refused.status).toBe(429);
@@ -574,7 +573,8 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     const { notices } = await env.OWNER.getByName(who).noticeList(ownerBinding(who));
     expect(notices.map((notice) => notice.type)).toContain("inbound");
     // The owner's change re-arms it, at a new revision its route now carries.
-    await sqlIn(who, "UPDATE ledger_readers SET unacked = 0 WHERE reader = ?", nativeId("main"));
+    await sqlIn(who, "UPDATE ledger_usage SET unacked = (SELECT COUNT(*) FROM " +
+                     "ledger_messages WHERE unacked > 0)");
     const set = await appPost("hooks/set", app.access_token, app.session,
                               { binding_id: bindingId, expected_revision: 1, enabled: true });
     expect(set.status).toBe(200);
