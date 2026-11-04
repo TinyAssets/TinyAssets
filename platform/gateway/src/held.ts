@@ -23,8 +23,8 @@
  * so a slow sender holds only what it sent. Once the body is in, its weight's units
  * (`weightSlots`) are taken before the parse. A call is refused `egress_too_large` as soon as
  * its weight so far passes what one call may hold (the ceiling the costs derive: 15 MiB of a
- * body with a non-ASCII character, 28 MiB of an ASCII one, the egress door's 16 MiB first),
- * and before a byte is read when even its declared length as ASCII would. Each wait for a unit
+ * body with a non-ASCII character, 28 MiB of an ASCII one, the egress door's 16 MiB first).
+ * Each wait for a unit
  * is the pool's own (`busy` past it, the owners waiting taking turns and sharing the pool
  * under contention), and a holder that cannot grow at once and is not the oldest holder gives
  * everything back, `busy`, before its reserve, so nothing is charged.
@@ -243,11 +243,6 @@ export async function readHeld(request: Request, length: number, hold: Hold | nu
     return { text: "", bytes: 0, tokens };
   }
   const most = hold?.most ?? Number.POSITIVE_INFINITY;
-  // The least the body can weigh is its bytes as ASCII text with no tokens: past the pool,
-  // refused before a byte is read.
-  if (weightSlots(ASCII_BYTE_COST * length) > most) {
-    throw new HeldRefusal("egress_too_large");
-  }
   const reader = request.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
   let text = "";

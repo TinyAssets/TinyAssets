@@ -2491,6 +2491,10 @@ R, S, M and W.
   leaves the queue at once; the reserve waits at most the pool's wait (`busy`); a body is
   refused `egress_too_large` as soon as its weight passes the pool. A stop racing a reserve
   already in flight may still be charged whole, as before A′.
+  Owed, the verification's Lows (recorded, no code): a slow sender can game "oldest", holding
+  its first unit early so wait-die favours it (measured 16 % lower throughput at
+  saturation); a user-defined endpoint that reads its upload slowly holds the call's units
+  through the upload, bounded by `heldDeadlineMs`.
   The memory leg's egress cases (`owner/memory/egress.mjs`, run by `leg.mjs`: the real door
   and gateway in isolates of their own, sampled at the provider's checkpoints), measured in
   workerd: the door at 16 against 4 MiB held -0.38 MiB, the gateway -0.01 MiB (each at most a
