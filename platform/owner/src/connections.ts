@@ -69,7 +69,7 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
 import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
-import { codePoints, isPrintable, SOURCE_ID } from "./text";
+import { codePoints, isPrintable, SOURCE_ID, utf8Bytes } from "./text";
 
 export interface ConnectionLimits {
   readonly maxConnections: number;
@@ -223,13 +223,13 @@ const FAILURE = /^[a-z][a-z_]{0,63}$/;
 const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
 const BLOB_MAX = 64 * 1024;
 /**
- * The models a connection keeps, as JSON: the schema's own ceiling. The largest record of
+ * The models a connection keeps, as JSON, in bytes: the schema's own ceiling. The largest record of
  * pi-ai 1.4.0's built-in catalogs, whole, is 607 bytes, so `maxModels` of the largest are
  * about 607 KiB (the largest catalog is about 142 KB for its 386 models).
  */
 export const MODELS_JSON_MAX = 640 * 1024;
 /**
- * Where a connection's credential may be forwarded, as JSON: the schema's own ceiling. A
+ * Where a connection's credential may be forwarded, as JSON, in bytes: the schema's own ceiling. A
  * source record's endpoints are a few short paths (the largest bundled one is under 1 KiB),
  * so a scope past it is refused at commit, loudly, rather than kept half.
  */
@@ -392,7 +392,7 @@ function scopeJson(value: unknown): string {
     throw new Invalid("invalid connection egress scope");
   }
   const json = JSON.stringify(scope);
-  if (json.length > EGRESS_JSON_MAX) {
+  if (utf8Bytes(json) > EGRESS_JSON_MAX) {
     throw new Invalid("invalid connection egress scope");
   }
   return json;
@@ -547,7 +547,7 @@ export class Connections {
     }
     const checked = models.map(modelInfo);
     if (new Set(checked.map((model) => model.id)).size !== checked.length
-        || JSON.stringify(checked).length > MODELS_JSON_MAX) {
+        || utf8Bytes(JSON.stringify(checked)) > MODELS_JSON_MAX) {
       throw new Invalid("invalid connection models");
     }
     const row = this.#row(id);

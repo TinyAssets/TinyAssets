@@ -44,24 +44,42 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,449,862,167.75 bytes, 44.50% of the 10 GB: 550.1 MB under
-half**, slice ID's agent identities and mail authority, slice M's change orders and slice W's
-doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+**The worst case that ships is 4,498,844,030.5 bytes, 44.99% of the 10 GB: 501.2 MB under
+half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`),
+slice ID's agent identities and mail
+authority, slice M's change orders, slice W's doorbell subscriptions (`wake_callbacks`,
+423.6 MB at 1,000 agents and their widest), slice S's sandbox wait, slice L's keys and
+inbound bindings (`inbound_bindings` 23.0 MB, `owner_keys` 2.9 MB), slice SIGNIN's sign-ins,
+and slice P's tables (`sandbox_billed` 29.7 MB with its index by age,
+`change_log` 164.0 MB, `sandbox_live` 3.8 MB, `sandbox_spans` 3.1 MB, `owner_backups` 1.8 MB
+and its kept rows 0.02 MB, `schema_digests` 1.0 MB, `sandbox_days` 0.4 MB) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
 424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
 46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.
 
+**The ceiling is the half, and only the half** (coordinator's ruling, 2026-11-03). The guard
+holds the worst case at or under half the 10 GB. Slice LIM's 500 MB `MARGIN` past it was a
+cushion ("no thin margin") that no platform fact derives, so it is gone: an underived
+headroom is an invented limit. What is under the half is room, given out by stated shares:
+the change log's `LOG_BYTES` takes a quarter of the room as it stood at its derivation
+(665.1 MB with every other term at its worst, main at `8161540c1` with slice P, a
+connection's models and egress counted in bytes since review L5-1), an equal
+share with each of the three slices still to land (STORE, STARTER, BRAIN). Their terms take
+the rest, 501.2 MB; the day a slice's terms would pass the half, the guard fails loudly and
+the shares are decided again.
+
 The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
 604.0 MB, `wake_callbacks` 423.6 MB, `ledger_messages` 399.2 MB, `ledger_receipts` 309.6 MB, `collection_history`
-302.0 MB, `connections` 269.3 MB, `message_bodies` 219.7 MB, `ledger_recipients` 107.9 MB.
+302.0 MB, `message_bodies` 219.7 MB, `change_log` 164.0 MB, `ledger_recipients` 107.9 MB;
+`connections` 67.8 MB.
 
 ## Summary
 
 - **tier**: 3
 - **owner setting**: 12
-- **vendor limit**: 10
-- **technical ceiling**: 118
-- **total**: 143
+- **vendor limit**: 13
+- **technical ceiling**: 154
+- **total**: 182
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -116,7 +134,7 @@ reason; none refuses a write.
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
 | control record `tiers` (`owner/src/tier.ts`) | free 5, paid 10 | simultaneous runs | a run past them refused `tier_runs` | tier | ADR-034 decision 8, edited in the record with no deploy. |
-| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | the owner's file bytes, live and in history, and the placed bodies of collections and mail | placed history and acked mail let go first, then refused `storage_full` (used, total, what to free, the upgrade; 507 at the doors; `storage-full.ts`); with no tier numbers kept, `tier_unread` | tier | The control record's figure, kept from every door's binding. |
+| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | every byte of user content the owner stores, wherever it lives (slice P, the founder's one storage number of 2026-11-03): file chunks live and in history, small files kept inline, and the collections' rows, their history and mail, inline or placed in R2 (`file_space.stored`); never the platform's bookkeeping (indexes, receipts, counters) | history entries the rows no longer are and acked mail let go first, oldest first, then refused `storage_full` (used, total, what to free, the upgrade; 507 at the doors; `storage-full.ts`; `file_share` past an outside writer's share); with no tier numbers kept, `tier_unread`. The owner reads used and left (`storageUsage`, the app's `storage`) | tier | The control record's figure, kept from every door's binding. |
 | `owner/src/egress.ts` `EGRESS_LIMITS.openPerRun` | 16 a run (free 80, paid 160) | sandbox model calls streaming at once | a call refused `egress_rate` | tier | Scaled by the tier's runs. Guard term `egress_reservations`, 89.4 MB, costed at `RUNS_CEILING`. |
 | `owner/src/policy.ts` files `max_bytes` | none (the owner may set 0 to 1 PiB) | the owner's own file quota | only below the tier's storage | owner setting | Off by default: the tier's figure binds. |
 | `owner/src/policy.ts` `FILE_DEFAULTS.max_file_bytes` | 40 GiB, its most | one file's size | only the owner's own lower cap | owner setting | Off by default: the most one upload holds (`MAX_INTENT_CHUNKS`). |
@@ -191,12 +209,12 @@ reason; none refuses a write.
 | `owner/src/sessions.ts` `SESSION_LIMITS.maxSessions` | 64 | signed-in devices at once | the oldest session closed | technical ceiling | The 10 GB, each session a row the guard costs. |
 | `owner/src/sessions.ts` `SESSION_LIMITS` life | 8 hours | the owner's protected session | the owner signs in again for a widening | technical ceiling | A credential's life: NIST SP 800-63B's reauthentication at AAL2, at most 12 hours. The cookie's `Max-Age`. |
 | `owner/src/sessions.ts` `SESSION_LIMITS` freshness | 600 s | how fresh a sign-in must be to open a session | the owner signs in again | technical ceiling | S30: a widening needs a sign-in the owner just made. |
-| `owner/src/connections.ts` `CONNECTION_LIMITS.maxConnections` | 50 | live model connections | the 51st refused | technical ceiling | The 10 GB: guard terms `connections` 269.3 MB, `connection_secrets`. A connection's models list is read in every egress admission unit, so it stays in its row (ADR-035 decision 9). |
+| `owner/src/connections.ts` `CONNECTION_LIMITS.maxConnections` | 50 | live model connections | the 51st refused | technical ceiling | The 10 GB: guard terms `connections` 67.8 MB (its models and egress scope in bytes, review L5-1), `connection_secrets`. A connection's models list is read in every egress admission unit, so it stays in its row (ADR-035 decision 9). |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxOpenFlows` | 10 | OAuth connect flows open at once | an 11th refused | technical ceiling | The 10 GB: guard term `connection_flows`; each holds a PKCE verifier for `flowTtlS`. |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.flowTtlS` | 600 s | an OAuth flow's life | the owner starts the connect again | technical ceiling | An authorization code's most recommended life, 10 minutes (RFC 6749 §4.1.2). |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxModels` | 1,024 | models one connection lists | models past it refused at commit | technical ceiling | Inside `connections`; the largest built-in catalog has 386. |
-| `owner/src/connections.ts` `MODELS_JSON_MAX` | 640 KiB | a connection's models, as JSON | a larger list refused at commit | technical ceiling | As above. |
-| `owner/src/connections.ts` `EGRESS_JSON_MAX` | 16 KiB | a connection's egress scope | many custom paths refused at commit | technical ceiling | As above. |
+| `owner/src/connections.ts` `MODELS_JSON_MAX` | 640 KiB | a connection's models, as JSON, in bytes (the schema's check too, review L5-1) | a larger list refused at commit | technical ceiling | As above. |
+| `owner/src/connections.ts` `EGRESS_JSON_MAX` | 16 KiB | a connection's egress scope, in bytes (review L5-1) | many custom paths refused at commit | technical ceiling | As above. |
 | `owner/src/connections.ts` `BLOB_MAX` | 64 KiB | a connection's sealed blob | a credential past it refused | technical ceiling | Guard term `connection_secrets`; the gateway's own bound too. |
 | `owner/src/connections.ts` model numbers | $1,000,000 a million tokens; 100,000,000 tokens; 16 tiers | a model record's prices, windows and tiers | a record past them refused | technical ceiling | A charge, price times tokens, stays an exact integer in a JavaScript number (2^53). Far past every catalog's. |
 | `owner/src/connections.ts` redirect | 2,048 characters | an OAuth redirect URI | a longer URI refused | technical ceiling | The 10 GB: inside `connection_flows`' 4 KiB a flow. |
@@ -273,3 +291,37 @@ reason; none refuses a write.
 | `doors/src/inbound.ts` headers | 64 headers, 8 KiB each | an inbound event's headers carried to the object | refused `400` | technical ceiling | The RPC to the object; Cloudflare's own request header bound is larger. |
 | `doors/src/config.ts` `INBOUND_BODY_MAX` | 16 MiB | an inbound event's body | refused `413` | technical ceiling | The platform's one request ceiling (`API_BODY_MAX`), held equal by a test; a body past 2 KiB is placed in R2 as mail's is. |
 | `doors/src/oidc.ts` token and JWKS sizes | 16 KiB ID token (64 KiB answer), 64 KiB JWKS | what the doors read from the owner issuer | the sign-in fails loudly | technical ceiling | The issuer's answers are read whole into memory; real ones are a few KiB. |
+
+## Slice P's bounds
+
+Slice P (before real data) invented no limit a user meets: the one it changed is the tier's
+storage, which now counts every byte of user content (the `fileLimits` row above). Its other
+bounds are technical ceilings or retentions of the platform's own records, none refusing what
+a user does:
+
+| Where | Value | Bounds | A user hits | Class | Reason |
+|---|---|---|---|---|---|
+| `files/src/keys.ts` `MANIFEST_PARTS` | 16,384 objects of 4 MiB (64 GiB) | one generation's base parts and log segments together | nothing: the base's worst case is 22.2 GB; past the ceiling the generation is given up once and the owner told (`manifest_ceiling`), never retried in a loop | technical ceiling | Measured, JSON's escaping included: the owner-bound guard's "the nightly manifest's stream" puts every exported table at its bound, each line its frame and its values at 6 bytes a byte (a control character's `\u00XX`), a charged term as rows of 48 bytes each, and holds the sum under the parts. Its lists, 106 bytes a segment at most, fit one SQLite row's 2 MB with its cursor (1.8 MB). |
+| `owner/src/changelog.ts` `LOG_BYTES` | 68 MiB | the change log's unshipped images the object holds while a generation runs | nothing the owner writes: the write always lands; past it capture stops, the generation fails with one notice (`manifest_log_overflow`), and the next change begins a new one | technical ceiling | Derived from the room under the half: a quarter of the 665.1 MB left with every other term at its worst, an equal share with each of the three slices still to land, as the largest whole MiB at `WORST_FILL` with one image past it (`limits-audit.test.ts` "the change log's bound" holds it equal). The room is there so a generation's held changes survive an R2 outage: the log ships after every base part, so it binds only when R2 refuses puts for a while, or when one outside call's worth of writes outruns it; the owner's sustained write rate against the ship rate is owed to slice L's live probe. |
+| `owner/src/changelog.ts` `IMAGE_MAX` | 1.5 MiB | one row image in the change log | nothing the owner writes: every exported row's image fits, so no change, a token refresh's included, fails a generation; a wider image (only a later column the guard has not yet caught) is logged as a mark, the generation fails with the same notice, and the write lands | technical ceiling | Derived from the widest real row (review L5-1): the owner-bound guard's widest image, a connection at its models' 640 KiB and egress scope's 16 KiB in bytes, each escaped at JSON's worst (twice), 1,344,621 bytes, rounded up to a quarter MiB; under a Durable Object row's 2 MB, which one change log row is. |
+| `owner/src/backup.ts` `GATHER_BYTES` | 8 MiB | the stream one burst reads, with no outside call, before it puts its parts | nothing: the manifest goes on in the next burst | technical ceiling | The isolate's 128 MB: the burst's text as UTF-16, then its bytes, about 24 MiB at its peak. No other unit runs in the object during a burst. |
+| `owner/src/backup.ts` | the newest finished generation, the one being written, and each an open export pins | the generations kept | nothing: an older one is deleted once a new one finishes and no export pins it | technical ceiling | A recovery copy of the object, and the owner's exports; Durable Objects' own point-in-time recovery covers 30 days. Each is the platform's, not counted in the owner's storage; at most `EXPORTS_OPEN` pinned. |
+| `owner/src/export.ts` `CURSOR_CHARS` | 16,384 characters | an export cursor | nothing: a cursor past it was never handed out | technical ceiling | The widest key a cursor holds (a path of 4 KiB and its name) as base64url JSON. |
+| `doors/src/app.ts` `EXPORT_PAGES` | 64 objects a response | one export response | the stream ends with its cursor line (and the export's id); the client asks again from it | technical ceiling | One request's work in the doors Worker: a generation's objects are at most 4 MiB each, 256 MiB a response. An object not yet written ends the response early. |
+| `owner/src/sandbox-time.ts` `SPANS_KEPT` | 1,000 closed spans | the sandbox meter's spans kept for runs not yet metered | nothing: a run older than every kept span is metered from what is kept | technical ceiling | The 10 GB: guard term `sandbox_spans`, with one open span an authority. Years of an always-renewing sandbox. |
+| `owner/src/export.ts` `EXPORT_LIFE_S` | 7 days | an export's life from its first page, pinning its generation that long; it holds no chunk | past it, its id names nothing: the owner begins the export again | technical ceiling | Under `GC_GRACE_S` (a test holds it), so every chunk its generation names is still in the bucket: a week to fetch every chunk of a 250 GB owner. |
+| `owner/src/export.ts` `EXPORT_PAGE_BYTES` | 1 MiB of rows a page | one export or manifest page's rows | nothing: the next page goes on from the cursor | technical ceiling | One page read in one unit, well inside one RPC's 32 MiB and the isolate's memory. |
+| `owner/src/export.ts` `EXPORTS_OPEN` | 16 | exports open at once | a 17th ends the oldest | technical ceiling | The 10 GB: guard term `owner_exports`; far past one owner's devices. |
+| `owner/src/files.ts` `GC_GRACE_S` | 30 days | how long a garbage chunk waits before it is deleted | nothing: deleted bytes leave the owner's number at once; the app says "Deleted files are kept up to 30 days, within your storage; past that the oldest go first." | technical ceiling | Durable Objects' point-in-time recovery, 30 days: a restored object, or a manifest, never names a swept chunk. |
+| `owner/src/files.ts` garbage past the owner's storage figure (`garbage_bytes` over `max_bytes`) | the owner's storage figure: the lower of its own setting (off by default) and its tier's (free 25 GB, paid 250 GB) | the garbage in its grace the platform keeps uncounted for one owner (a chunk being deleted counts no more) | nothing: past it, the oldest garbage is collected early, never a chunk the newest finished generation names while it is a recovery point; a lower setting shortens recovery, which the storage view shows (`deleted_content`, "deleted content") | technical ceiling | Recovery against cost: uncounted bytes are the platform's cost, so they are bounded by what the owner's figure counts; the owner's own number, not a new one. Garbage the newest generation names waits for the next (a night), so a recovery point never loses a chunk. |
+| `owner/src/backup.ts` `MANIFEST_PROTECT_S` | 2 days | how long a finished generation protects the garbage it names from early collection | nothing: past it the owner's figure holds again | technical ceiling | Derived: a changing owner has a new generation each night, one `DAY_S` after the last began; one more night covers a generation that failed once and ran the next night. The longest generation, the worst base (22.2 GB) at the lowest read rate measured (10 MB/s) and the lane's duty cycle (45 s a pass, 5 s between), is under 42 minutes, inside it. A generation older than that is no recovery point to keep garbage for. |
+| `owner/src/sandbox-time.ts` `BILLED_WINDOW_S` | 1 day | how old an E2B event, by its signed time, may be and still count; each counted execution is kept as long | nothing: a later event leaves the Worker's log as that execution's time | technical ceiling | E2B's signature carries no time: the window refuses a late replay, and the ids kept for it refuse an early one. Past E2B's three delivery attempts. |
+| `owner/src/sandbox-time.ts` `BILLED_SKEW_S` | 5 minutes | how far ahead of the object's clock an event's time may be | nothing: the Worker's log stands | technical ceiling | Clock drift between E2B and the platform. |
+| `owner/src/sandbox-time.ts` `BILLED_KEPT` | 100,000 executions | E2B executions kept inside the window to count each once, by 8 bytes of their id's SHA-256 | nothing: past it a new one is counted anyway and tallied `unverified_executions` on its day, which the view shows; none inside the window is forgotten | technical ceiling | The 10 GB: guard term `sandbox_billed`, 29.7 MB with its index. One execution every 0.86 s all day; the digests' birthday chance at 10^5 is about 3·10^-10. |
+| `owner/src/sandbox-time.ts` `LIVE_KEPT` | 2,001 sandboxes | live sandboxes whose last execution is kept until their kill | nothing: one sandbox an authority, and an owner has at most 2,001 authorities (itself, 1,000 free and 1,000 owner-set clients); a test holds it there | technical ceiling | The authority bound, `GRANT_LIMITS`. The 10 GB: guard term `sandbox_live`, 3.8 MB. |
+| `owner/src/backup.ts` `MANIFEST_CONTINUE_S` | 5 s | when a generation a pass did not finish goes on | nothing | technical ceiling | The schedule's contract: a lane never sets itself due at once; short, so the change log ships between passes too. |
+| `owner/src/sandbox-time.ts` `METER_BATCH` | 1,000 entries | the sandbox Worker's log entries one read takes | nothing: the lane reads again from the cursor | technical ceiling | One read's answer over RPC and one unit's work, well inside 32 MiB. |
+| `files/src/datakey.ts` `KIDS_MAX` | 64 kids | the files keyring's kids | a ring past it fails every call loudly (`files_keyring_unavailable`) | technical ceiling | The secret's 5 KiB: 64 keys of 44 characters each, far past any rotation schedule. |
+| `files/src/cipher.ts` AES-GCM, one data key | at most 2^32 seals a key (NIST SP 800-38D §8.3, random 96-bit nonces) | objects sealed under one owner's data key in the `aes-gcm` fallback | nothing: an owner's chunks are created once each, far fewer than 4 billion (a 250 GB owner at 4 MiB a chunk is 60,000; tiny files are inline) | technical ceiling | The nonce-collision bound of random IVs; the default (SSE-C) seals nothing here. Range reads under `aes-gcm` are charged a whole chunk each against `BATCH_BYTES`. |
+| `doors/src/e2b-hooks.ts` `HOOK_BODY_MAX` | 64 KiB | one E2B lifecycle event | an oversized one refused `413` | technical ceiling | An event is a few hundred bytes, its metadata ours. |
+| `owner/src/sandbox-time.ts` `DAYS_KEPT` | 400 days | the sandbox seconds a day kept | nothing: an older day's sum leaves the object (the nightly manifest holds it while kept) | technical ceiling | The 10 GB: guard term `sandbox_days`. Past a year of the founder's cost view, which limits nothing. |

@@ -44,6 +44,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { LIMITS as COLLECTIONS } from "../src/collections";
+import { exported } from "../src/export";
 import { LEDGER_LIMITS } from "../src/ledger";
 import {
   CHUNK_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES,
@@ -52,6 +53,7 @@ import {
 import { AUTOINDEXES } from "./autoindexes";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
+import { MANIFEST_PARTS } from "../../files/src/keys";
 import { USAGE_LIMITS } from "../src/usage";
 import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "../src/wake-kinds";
 import { PLATFORM } from "./sources";
@@ -173,6 +175,18 @@ const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SIGNIN_URL_MAX = constant("run-rows", "SIGNIN_URL_MAX");
 const SIGNIN_CODE_MAX = constant("run-rows", "SIGNIN_CODE_MAX");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+const CURSOR_CHARS = constant("export", "CURSOR_CHARS");
+const PART_ENTRY = constant("backup", "PART_ENTRY");
+const EXPORTS_OPEN = constant("export", "EXPORTS_OPEN");
+const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");
+const DAYS_KEPT = constant("sandbox-time", "DAYS_KEPT");
+const BILLED_KEPT = constant("sandbox-time", "BILLED_KEPT");
+const LIVE_KEPT = constant("sandbox-time", "LIVE_KEPT");
+export const LOG_BYTES = constant("changelog", "LOG_BYTES");
+export const LOG_ROW_BYTES = constant("changelog", "LOG_ROW_BYTES");
+const INLINE_FILE = constant("files", "INLINE_BYTES");
+const SEGMENT_ENTRY = constant("backup", "SEGMENT_ENTRY");
+export const IMAGE_MAX = constant("changelog", "IMAGE_MAX");
 /** The doors' records in the object (slice L): the key store and the inbound bindings. */
 const MAX_KEYS = constant("keys", "MAX_KEYS");
 const KEY_NAME_MAX = constant("keys", "KEY_NAME_MAX");
@@ -188,11 +202,12 @@ const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length
 /** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
 const ORIGIN_CHARS = inline("schema", /origin TEXT CHECK \(origin IS NULL OR \(length\(origin\) <= ([0-9]+) /);
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
-/** A connection's models, and its sealed blob, as the schema's checks hold them, in characters. */
-const MODELS_CHARS = inline("schema", /length\(models\) <= ([0-9]+)/);
+/** A connection's models, as the schema's check holds them, in bytes (review L5-1). */
+const MODELS_BYTES = inline("schema", /length\(CAST\(models AS BLOB\)\) <= ([0-9]+)/);
+/** A connection's sealed blob, as the schema's check holds it, in characters. */
 const BLOB_CHARS = inline("schema", /length\(blob\) <= ([0-9]+)/);
-/** A connection's egress scope (migration 11), as the schema's check holds it, in characters. */
-const EGRESS_CHARS = inline("schema", /length\(egress\) <= ([0-9]+)/);
+/** A connection's egress scope (migration 11), as the schema's check holds it, in bytes. */
+const EGRESS_BYTES = inline("schema", /length\(CAST\(egress AS BLOB\)\) <= ([0-9]+)/);
 /** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
 const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
 /** A grant's scopes, as the schema's check holds their JSON, in bytes. */
@@ -350,9 +365,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     file_space: { rows: 1, bytes: ROW + MAX_PATH_BYTES + 4 * KIB,
                   by: "one row; its retention cursor a path" },
     file_intents: { rows: MAX_OPEN_INTENTS,
-                    bytes: ROW + 2 * MAX_INTENT_CHUNKS * 64,
+                    bytes: ROW + 64 + 2 * MAX_INTENT_CHUNKS * 64,
                     by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
-                      "ids, and as many still to send",
+                      "ids, and as many still to send, and a sync's lease (slice STORE, 32 " +
+                      "hex characters, a column's 64 at most)",
                     indexes: { file_intents_due: key(NUMBER, 32) } },
     owner_policy: { rows: 1, bytes: ROW + P.maxDocument * 4,
                     by: "one document of maxDocument code points" },
@@ -476,7 +492,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                               agent_cards_by_age: key(NUMBER) } },
     owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },
     connections: { rows: CN.maxConnections + CN.maxRevokedKept,
-                   bytes: ROW + 4 * MODELS_CHARS + 4 * EGRESS_CHARS,
+                   bytes: ROW + MODELS_BYTES + EGRESS_BYTES,
                    by: "connections and revoked kept, the schema's models and egress scope " +
                      "ceilings each",
                    indexes: { connections_pending: key(NUMBER, 25),
@@ -509,10 +525,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
             bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16
-              + 1 + MESSAGE_ID_CHARS,
+              + 1 + MESSAGE_ID_CHARS + 9,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
               "its result, error, stamp, model, ids, counters, lease, heartbeat, whether it " +
-              "waits for a sandbox (slice S) and mail at their widest",
+              "waits for a sandbox (slice S), mail and sandbox time at their widest",
             indexes: { sqlite_autoindex_runs_1: key(RUN_ID_CHARS), runs_by_request: key(64),
                        runs_live: key(9), runs_by_conversation: key(CONVERSATION_ID_CHARS,
                                                                    NUMBER),
@@ -563,6 +579,43 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
                       by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
     owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+    // Each applied migration's digest (`migrate`): one row a migration of the code's list.
+    schema_digests: { rows: 1024, bytes: ROW + 8 + 64,
+                      by: "one a migration; 1,024 past any list the code will hold" },
+    // Slice P: the generations (`backup.ts`): the one being written, its cursor and its lists
+    // of at most MANIFEST_PARTS base parts and log segments together; and the newest finished
+    // and each one an open export pins, their lists cleared (their roots hold them).
+    owner_backups: { rows: 1, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * SEGMENT_ENTRY + 16 * 8,
+                     by: "the generation being written, its cursor and its lists" },
+    owner_backups_kept: { rows: 1 + EXPORTS_OPEN, bytes: ROW + 16 + 8 + 6 + 16 * 8,
+                          tables: [],
+                          by: "the newest finished generation and EXPORTS_OPEN pinned ones" },
+    // Slice P: the sandbox meter (`sandbox-time.ts`).
+    sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
+    owner_backup_state: { rows: 1, bytes: ROW + 2 * 8,
+                          by: "one row: changed since the manifest, and told" },
+    owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 16 + 2 * 8,
+                     by: "EXPORTS_OPEN, each its id, opening, end and generation" },
+    // The change log (`changelog.ts`, review R4): its capture's one row, and its unshipped
+    // images, charged as its trigger counts them (each its text and LOG_ROW_BYTES), held under
+    // LOG_BYTES, and one image past it at its widest.
+    log_capture: { rows: 1, bytes: ROW + 16 + 9 * 8, by: "one row" },
+    change_log: { rows: 1, bytes: LOG_BYTES + IMAGE_MAX + LOG_ROW_BYTES, charged: true,
+                  by: "LOG_BYTES of unshipped images and one past it, at WORST_FILL" },
+    sandbox_spans: { rows: SPANS_KEPT + 1 + G.maxFreeClients + G.maxOwnerClients,
+                     bytes: ROW + 64 + 2 * 8,
+                     by: "SPANS_KEPT closed spans, and one open an authority (the owner's " +
+                       "and each client's)" },
+    // Keyed by an 8-byte digest (review N5): a record of its key, its time and their header.
+    sandbox_billed: { rows: BILLED_KEPT, bytes: 8 + NUMBER + 8,
+                      by: "BILLED_KEPT E2B executions inside the window, each 8 bytes of " +
+                        "its id's digest and the event's time",
+                      indexes: { sandbox_billed_by_age: key(8) } },
+    sandbox_live: { rows: LIVE_KEPT, bytes: ROW + 128 + 8 + NUMBER,
+                    by: "LIVE_KEPT live sandboxes, each its id and its last execution's digest",
+                    indexes: { sandbox_live_by_age: key(128) } },
+    sandbox_days: { rows: DAYS_KEPT, bytes: ROW + 8 + 5 * 8,
+                    by: "DAYS_KEPT days of sandbox seconds" },
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.
     owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
@@ -683,6 +736,107 @@ export function worstCase(terms: Readonly<Record<string, Term>> = { ...TERMS, ..
   return Object.entries(terms).reduce((sum, [name, term]) => sum + termBytes(name, term), 0);
 }
 
+/**
+ * A row line's most text past its values' own (`export.ts`): its frame, each column's name
+ * and punctuation, and `JSON_VALUE` a value (a number's longest text, `null`, a string's
+ * quotes or the `$base64` wrapper), each value's bytes counted apart at `JSON_POINT`.
+ */
+const JSON_VALUE = 24;
+/** A chunk's line in the stream (`{"t":"chunk","sha256":...,"size":...}`), at its widest. */
+const CHUNK_LINE = 128;
+
+/**
+ * The nightly manifest's stream at its worst (`backup.ts`, review L7): every exported
+ * table's rows at their bound, each line its frame (`frameBytes`) plus its values' bytes
+ * escaped at JSON's worst (`JSON_POINT`, a control character's `\u00XX`; base64's 4/3 is
+ * less); a term charged in bytes (the file manifest, the collections) as its charge in rows
+ * of `RECORD_FIXED` each, the least any charged row costs, each at its tables' widest
+ * frame, and a chunk's line for each of the file manifest's.
+ */
+export function worstStream(terms: Readonly<Record<string, Term>> = TERMS): number {
+  const tables = exported();
+  const frameBytes = (table: string) => `{"t":"row","table":"${table}","row":{}}\n`.length
+    + tables[table]!.columns.reduce((sum, column) => sum + column.length + 4 + JSON_VALUE, 0);
+  let total = 0;
+  for (const [name, term] of Object.entries(terms)) {
+    const covers = name === "file_manifest" ? Object.keys(MANIFEST_TABLES)
+      : [name, ...(term.tables ?? [])];
+    const streamed = [...new Set(covers)].filter((table) => table in tables);
+    if (streamed.length === 0) {
+      continue;
+    }
+    if (term.charged === true) {
+      const rows = term.rows * term.bytes / RECORD_FIXED;
+      const widest = Math.max(...streamed.map(frameBytes))
+        + (name === "file_manifest" ? CHUNK_LINE : 0);
+      total += rows * widest + JSON_POINT * term.rows * term.bytes;
+    } else {
+      total += term.rows * (frameBytes(name) + JSON_POINT * term.bytes);
+    }
+  }
+  return total;
+}
+
+/** The exported tables no term covers: none, or the stream's worst case misses them. */
+function unstreamed(terms: Readonly<Record<string, Term>> = TERMS): string[] {
+  const covered = new Set(Object.entries(terms).flatMap(([name, term]) =>
+    name === "file_manifest" ? Object.keys(MANIFEST_TABLES) : [name, ...(term.tables ?? [])]));
+  return Object.keys(exported()).filter((table) => !covered.has(table));
+}
+
+describe("the nightly manifest's stream", () => {
+  it("fits MANIFEST_PARTS at its worst, JSON's escaping included", () => {
+    expect(unstreamed()).toEqual([]);
+    const worst = worstStream();
+    expect(worst).toBeGreaterThan(DATABASE_BYTES * SHARE);  // escaping is counted
+    expect(worst).toBeLessThan(MANIFEST_PARTS * CHUNK_BYTES);
+    // Its lists fit one SQLite row (2 MB, Durable Objects' limits), its parts and segments
+    // together (a segment's entry the wider), with its cursor.
+    expect(MANIFEST_PARTS * PART_ENTRY).toBeLessThan(2_000_000);
+    expect(MANIFEST_PARTS * SEGMENT_ENTRY + CURSOR_CHARS + ROW).toBeLessThan(2_000_000);
+  });
+});
+
+/**
+ * Tables whose wide columns are JSON text the object writes itself (`JSON.stringify`: no raw
+ * control character), so escaping one at most doubles an ASCII byte (a quote or a
+ * backslash) and leaves any other as it is: at most twice its bytes as the term counts them.
+ */
+const JSON_TEXT: ReadonlySet<string> = new Set(["connections", "owner_policy"]);
+/** The step `IMAGE_MAX` is derived in: the widest image, rounded up to a quarter MiB. */
+const IMAGE_STEP = 256 * 1024;
+/** A Durable Object's SQLite row, at most: one change log row holds one image. */
+const ROW_MAX = 2_000_000;
+
+/** The widest row image one change writes (`schema.ts` `LOGGED`), every exported table's. */
+export function widestImage(terms: Readonly<Record<string, Term>> = TERMS): number {
+  const tables = exported();
+  const frame = (table: string) => `{"t":"row","table":"${table}","row":{}}`.length
+    + tables[table]!.columns.reduce((sum, column) => sum + column.length + 4 + JSON_VALUE, 0);
+  // A table charged in bytes has rows of its own widths: a path, a small file's bytes as
+  // hex, a placed body's inline part, and their ids, each escaped at JSON's worst.
+  const charged = JSON_POINT * (MAX_PATH_BYTES + 255 * 4 + PLACE_BYTES + 4 * KIB)
+    + 2 * INLINE_FILE;
+  return Math.max(...Object.keys(tables).map((table) => {
+    const term = terms[table];
+    return frame(table) + (term === undefined || term.charged === true ? charged
+      : (JSON_TEXT.has(table) ? 2 : JSON_POINT) * term.bytes);
+  }));
+}
+
+describe("the change log's images", () => {
+  it("are each at most IMAGE_MAX, derived from the widest real row, under a row's 2 MB " +
+     "(review L5-1)", () => {
+    const widest = widestImage();
+    expect(widest).toBeGreaterThan(100_000);
+    // Every exported table's widest row, a connection's models at their ceiling among them:
+    // no change, a token refresh's included, writes the wide mark.
+    expect(IMAGE_MAX).toBe(Math.ceil(widest / IMAGE_STEP) * IMAGE_STEP);
+    expect(IMAGE_MAX + LOG_ROW_BYTES).toBeLessThan(ROW_MAX);
+    expect(widest).toBeGreaterThan(TERMS["connections"]!.bytes);
+  });
+});
+
 describe("the owner's database bound", () => {
   it("covers every table the owner's schema makes, with no exceptions", () => {
     const tables = ownerTables();
@@ -768,7 +922,7 @@ describe("the owner's database bound", () => {
   it("counts the bounds the sources hold", () => {
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
-    expect([CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
+    expect([CALLS_OPEN, SPEND_KEPT, MODELS_BYTES, BLOB_CHARS])
       .toEqual([1000, 4300, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME]).toEqual([512, 80]);
     // A grant's scopes are counted in bytes: the module's bound is the schema's ceiling.
@@ -776,12 +930,12 @@ describe("the owner's database bound", () => {
     expect([PLACE_BYTES, ROOM_CHARS, UNIVERSE_CHARS, CMID_CHARS, PROPOSAL_ID_CHARS])
       .toEqual([2048, 128, 512, 128, 128]);
     expect(TERMS["file_intents"]).toMatchObject({
-      rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * 640_000 });
+      rows: MAX_OPEN_INTENTS, bytes: 256 + 64 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
     expect(TERMS["model_spend"]!.rows).toBe(4300);
     expect(TERMS["wake_callbacks"]!.rows).toBe(LEDGER_LIMITS.maxAgents * 16);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
-    expect(TERMS["connections"]!.bytes).toBe(256 + 4 * 655_360 + 4 * 16_384);
+    expect(TERMS["connections"]!.bytes).toBe(256 + 655_360 + 16_384);  // in bytes (review L5-1)
     expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 16 * 1_000);
     expect(EGRESS_PATH_MAX).toBe(2048);
     // The path is visible ASCII, so a character is a byte (the schema's CHECK).

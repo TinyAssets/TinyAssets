@@ -17,14 +17,16 @@ import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
   tombstoned, writeTombstone,
 } from "../src/admission";
-import { ERASE_RETRY_MS, ERASING } from "../src/erasure";
+import {
+  ERASE_RETRY_MS, ERASING, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S,
+} from "../src/erasure";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, Ledger } from "../src/ledger";
 import { type Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
-import { alarmOf, failure, sqlIn } from "./support";
+import { alarmOf, failure, sqlIn, TIERS } from "./support";
 import type { FauxOwnerDO } from "./worker";
 
 /** An owner of its own on the class whose erasure is in reach, signed in, with a row. */
@@ -33,7 +35,7 @@ async function rig() {
   const stub = (): DurableObjectStub<FauxOwnerDO> => env.AGENT.getByName(owner);
   const at = signedIn();
   const bind = (origin: typeof MUSE | null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner, caller: owner, origin,
+    ({ owner, caller: owner, origin, tiers: TIERS,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }), ...extra });
   const { session: cookie } = await stub().sessionOpen(bind(null, { authenticated_at: at }));
   const session = (): Binding => bind(null, { session: cookie });
@@ -53,7 +55,7 @@ type Rig = Awaited<ReturnType<typeof rig>>;
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
   .filter((door) => !["constructor", "alarm", "admissionSet", "tierSet", "fetch",
                       "webSocketMessage", "webSocketClose", "webSocketError",
-                      "sandboxRung", "erasureOutside", "erasureOutsideDone"].includes(door));
+                      "sandboxRung", "sandboxBilled", "dataKeyRewrap", "erasureOutside", "erasureOutsideDone"].includes(door));
 const call = (r: Rig, door: string, binding: Binding) =>
   (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(
     binding, {});
@@ -420,4 +422,21 @@ describe("the erasure's tombstone", () => {
     expect(await sqlIn(other.stub(), "SELECT state FROM owner_admission"))
       .toEqual([{ state: "admitted" }]);
   }, 30_000);
+});
+
+describe("the account-erase answer", () => {
+  it("names when erasure is complete: the mark, its put grace, then 30 days of recovery",
+     () => {
+    expect(RECOVERY_WINDOW_S).toBe(30 * 86_400);
+    const grace = PUT_GRACE_MS / 1000;
+    // Answered at the mark, before the wipe: not erased yet, complete at its earliest.
+    expect(erasureAnswer(1_000, null)).toMatchObject({
+      erased: false, complete_at: 1_000 + grace + 30 * 86_400 });
+    // Wiped on time: the same moment.
+    expect(erasureAnswer(1_000, 1_000 + grace)).toMatchObject({
+      erased: true, complete_at: 1_000 + grace + 30 * 86_400 });
+    // A retry that wiped later: later.
+    expect(erasureAnswer(1_000, 1_000 + grace + 600).complete_at)
+      .toBe(1_000 + grace + 600 + 30 * 86_400);
+  });
 });

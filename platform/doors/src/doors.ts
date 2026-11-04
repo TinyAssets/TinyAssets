@@ -34,6 +34,7 @@
  * caller's: `index.ts` passes `UNWIRED` until the AuthKit slice and the bundled records,
  * and the tests a fake sign-in and the records with a test source beside them.
  */
+import { E2B_HOOK_PATH, e2bLifecycle } from "./e2b-hooks";
 import { serveApi } from "./api";
 import { serveApp } from "./app";
 import { serveEgress } from "./egress";
@@ -120,6 +121,9 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   }
   if (path.startsWith("/api/")) {
     return serveApi(withoutCookie(request), env);
+  }
+  if (path === E2B_HOOK_PATH) {
+    return e2bLifecycle(withoutCookie(request), env);
   }
   if (path.startsWith(INBOUND_PATH)) {
     return serveInbound(withoutCookie(request), env);

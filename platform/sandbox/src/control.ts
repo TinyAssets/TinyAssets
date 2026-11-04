@@ -52,6 +52,7 @@ import { bundledSources } from "../../doors/src/sources";
 import { LEASE_TTL_S } from "../../owner/src/files";
 import { DNS_SERVERS, EGRESS_HOST } from "../../owner/src/network";
 import type { SandboxSignin, SandboxStart, Started } from "../../owner/src/sandbox";
+import { METER_BATCH, type MeterEvent } from "../../owner/src/sandbox-time";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
 import { SLOTS, type SandboxSlots } from "./slots";
@@ -225,7 +226,7 @@ function httpsDoors(urls: Readonly<Record<string, string>>): boolean {
  * the control record's scratch retention (`scratch_retention_days`, null when it names none).
  */
 function startDocument(start: SandboxStart, retentionDays: number | null): unknown {
-  const { tokens: _tokens, network: _network, ...rest } = start;
+  const { tokens: _tokens, network: _network, route: _route, ...rest } = start;
   return { ...rest, scratch_retention_days: retentionDays };
 }
 
@@ -270,6 +271,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("CREATE TABLE IF NOT EXISTS launched (run TEXT PRIMARY KEY, " +
                      "authority TEXT NOT NULL, lease_id TEXT NOT NULL)");
     // The control record's sandbox numbers as last read, and the looks failed in a row.
+    // The meter's log (slice P): each sandbox started, resumed, paused or killed, as this
+    // object did it or saw it, for the owner's object to read after its cursor (`meter`).
+    this.#sql.exec("CREATE TABLE IF NOT EXISTS meter_log (seq INTEGER PRIMARY KEY " +
+                     "AUTOINCREMENT, authority TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN " +
+                     "('start', 'resume', 'pause', 'kill')), at INTEGER NOT NULL)");
     this.#sql.exec("CREATE TABLE IF NOT EXISTS known (only INTEGER PRIMARY KEY CHECK " +
                      "(only = 1), runtime_s INTEGER NOT NULL, concurrency INTEGER NOT NULL, " +
                      "window_s INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0)");
@@ -369,13 +375,32 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       .length > 0;
   }
 
-  /** What E2B told of it now: when its timeout ends it, and whether it is paused. */
+  /** One more entry of the meter's log, now. */
+  #log(authority: string, kind: "start" | "resume" | "pause" | "kill"): void {
+    this.#sql.exec("INSERT INTO meter_log (authority, kind, at) VALUES (?, ?, ?)", authority,
+                   kind, Date.now());
+  }
+
+  /**
+   * What E2B told of it now: when its timeout ends it, and whether it is paused. A pause E2B
+   * made on its own (its timeout) is logged as it is first seen.
+   */
   #ended(found: SandboxInfo): void {
+    const row = this.#sql.exec<{ authority: string; paused: number }>(
+      "SELECT authority, paused FROM sandboxes WHERE sandbox_id = ?", found.sandboxID)
+      .toArray()[0];
+    const paused = found.state === "paused" ? 1 : 0;
+    if (row !== undefined && row.paused !== paused) {
+      this.#log(row.authority, paused === 1 ? "pause" : "resume");
+    }
     this.#sql.exec("UPDATE sandboxes SET end_at = ?, paused = ? WHERE sandbox_id = ?",
-                   Date.parse(found.endAt), found.state === "paused" ? 1 : 0, found.sandboxID);
+                   Date.parse(found.endAt), paused, found.sandboxID);
   }
 
   #paused(authority: string): void {
+    if (this.#row(authority)?.paused === 0) {
+      this.#log(authority, "pause");
+    }
     this.#sql.exec("UPDATE sandboxes SET paused = 1 WHERE authority = ?", authority);
   }
 
@@ -403,6 +428,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async #resume(row: Row, found: SandboxInfo, network: E2bNetwork | null,
                 ceilings: SandboxCeilings): Promise<Handle | null> {
     const e2b = this.#e2b();
+    this.#ended(found);  // a pause E2B made on its own is logged before the resume
     const resumed = await e2b.connect(found.sandboxID, ceilings.runtime_ceiling_s);
     if (resumed === null) {
       return null;
@@ -418,6 +444,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       await this.#run(handle, ["renewed"]);
     }
     const after = await e2b.info(resumed.sandboxID);
+    if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
+      this.#log(row.authority, "resume");
+    }
     this.#sql.exec("UPDATE sandboxes SET renewing = 0, paused = 0, retry_at = NULL, tries = 0, " +
                      "end_at = ? WHERE authority = ?",
                    after === null ? Date.now() : Date.parse(after.endAt), row.authority);
@@ -433,7 +462,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * none.
    */
   async #ensure(owner: string, authority: string, network: E2bNetwork | null,
-                ceilings: SandboxCeilings): Promise<{ handle: Handle } | "waiting" | "lost"> {
+                ceilings: SandboxCeilings, route?: string):
+      Promise<{ handle: Handle } | "waiting" | "lost"> {
     const e2b = this.#e2b();
     const row = this.#row(authority);
     const found = row === null ? null : await e2b.info(row.sandbox_id);
@@ -485,7 +515,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         network: network!,
         // Opaque names, so E2B's own list shows whose it is to us and to no one else.
         metadata: { ta_sandbox: await opaque(`${owner}\n${authority}`),
-                    ta_owner: await ownerTag(owner) },
+                    ta_owner: await ownerTag(owner),
+                    // Sealed, so only the doors open it: the route of E2B's lifecycle events.
+                    ...(route === undefined ? {} : { ta_route: route }) },
       });
       const info = await e2b.info(created.sandboxID);
       this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at) VALUES " +
@@ -493,6 +525,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                        "excluded.sandbox_id, lease_id = NULL, end_at = excluded.end_at, " +
                        "renewing = 0, releasing = 0, paused = 0", authority, created.sandboxID,
                      info === null ? Date.now() : Date.parse(info.endAt));
+      this.#log(authority, "start");
       await slots.took(owner);
       await this.#prepare(created, network!);
       return { handle: created };
@@ -507,6 +540,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async start(owner: string, start: SandboxStart): Promise<Started> {
     if (!RUN.test(start.run) || !AUTHORITY.test(start.authority)
         || !LEASE.test(start.lease.lease_id) || (start.tokens === null) !== (start.network === null)
+        || typeof start.route !== "string" || !/^[A-Za-z0-9_-]{40,2048}$/.test(start.route)
         || !httpsDoors(start.urls)) {
       throw new Error("a sandbox start names its run, its authority, its lease and its " +
                       "https doors on the egress host");
@@ -520,7 +554,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const network = start.network === null ? null : e2bNetwork(start.network.network);
       const hosts = vendorHosts(start);
       const first = network === null ? null : widened(network, hosts) ?? network;
-      const got = await this.#ensure(owner, start.authority, first, ceilings);
+      const got = await this.#ensure(owner, start.authority, first, ceilings, start.route);
       if (got === "waiting") {
         return { started: false, code: CODES.waiting };
       }
@@ -790,6 +824,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   #forget(authority: string): void {
     const row = this.#row(authority);
+    if (row !== null && row.paused === 0) {
+      this.#log(authority, "kill");  // gone while it ran: its time ended here at the latest
+    }
     if (row !== null) {
       // A renewal's slot it held is the line's again.
       this.ctx.waitUntil(this.#slots().unreserve(row.sandbox_id).catch(() => undefined));
@@ -1051,6 +1088,24 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       console.error("sandbox_renewal_refused: E2B refused a renewal's resume; asked again");
     }
+  }
+
+  /**
+   * The meter's log after `after` (slice P, `owner/src/sandbox-time.ts`): at most
+   * `METER_BATCH` entries and the cursor past them. What the cursor passed is dropped: the
+   * owner's object read it.
+   */
+  async meter(_owner: string, request: { after: number }):
+      Promise<{ events: MeterEvent[]; next: number }> {
+    const after = request?.after;
+    if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
+      throw new Error("a meter read names its cursor");
+    }
+    this.#sql.exec("DELETE FROM meter_log WHERE seq <= ?", after);
+    const events = this.#sql.exec<MeterEvent & Record<string, SqlStorageValue>>(
+      "SELECT seq, authority, kind, at FROM meter_log WHERE seq > ? ORDER BY seq LIMIT ?", after,
+      METER_BATCH).toArray().map(({ seq, authority, kind, at }) => ({ seq, authority, kind, at }));
+    return { events, next: events.at(-1)?.seq ?? after };
   }
 
   /**

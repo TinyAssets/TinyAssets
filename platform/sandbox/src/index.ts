@@ -22,6 +22,7 @@ import { principal } from "../../owner/src/text";
 import type {
   SandboxService, SandboxSignin, SandboxStart, Started,
 } from "../../owner/src/sandbox";
+import type { MeterEvent } from "../../owner/src/sandbox-time";
 
 import type { SandboxControl, SandboxEnv } from "./control";
 import { SLOTS } from "./slots";
@@ -76,6 +77,11 @@ export class Sandbox extends WorkerEntrypoint<Env> implements SandboxService {
 
   async erase(owner: string): Promise<{ killed: number }> {
     return this.#owner(owner).erase(principal(owner));
+  }
+
+  async meter(owner: string, request: { after: number }):
+      Promise<{ events: MeterEvent[]; next: number }> {
+    return this.#owner(owner).meter(owner, request);
   }
 }
 

@@ -15,7 +15,7 @@ import { canonical, DEFAULT_POLICY_JSON, FILE_DEFAULTS, FILE_SETTINGS } from "..
 import type { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/tier";
-import { failure, fileCounters, inFiles, sqlIn, text, TIERS } from "./support";
+import { failure, fileCounters, inFiles, laneAt, sqlIn, text, TIERS } from "./support";
 
 const W = "/workspace";
 
@@ -365,8 +365,9 @@ describe("a full history", () => {
   it("is armed at once by a policy write that changes retention", async () => {
     const r = await rig();
     await write(r, `${W}/a`, "1");
+    // Only the nightly manifest's job: nothing of the files' is due.
     expect(await runInDurableObject(r.stub, (_instance: OwnerDO, state) =>
-      state.storage.getAlarm())).toBe(null);
+      state.storage.getAlarm())).toBe((await laneAt(r.stub, "manifest"))! * 1000);
     await setPolicy(r, { keep_recent: 5 });
     // Due at once, the alarm runs by itself and re-marks the rows under the new policy.
     const retained = async () => (await sqlIn(r.stub, "SELECT retained_recent FROM file_space"))[0];

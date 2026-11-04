@@ -713,7 +713,7 @@ describe("the tier numbers (review L-1)", () => {
     expect((await failure(() => r.stub.agentSubmit(r.bind({ tiers: null }), {
       message: "x", client_send_id: "t-2" }))).message).toBe(TIER_UNREAD);
     expect(await r.sql("SELECT tiers FROM platform_tiers")).toEqual([]);
-    expect((await failure(() => r.stub.agentSubmit(r.bind(), {
+    expect((await failure(() => r.stub.agentSubmit(r.bind({ tiers: undefined }), {
       message: "x", client_send_id: "t-3" }))).message).toBe(TIER_UNREAD);
   });
 
@@ -835,7 +835,7 @@ describe("the reviewer's untested cases (review M-6)", () => {
     // The object with no `SANDBOX` bound.
     const owner = `owner-${crypto.randomUUID()}`;
     const stub = env.BARE.getByName(owner);
-    const bind: Binding = { owner, caller: owner, origin: null };
+    const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
     await defineAgent(stub, bind, "main", SIGNED_IN);
     const run = `run_${"a".repeat(32)}`;
     await sqlIn(stub, "INSERT INTO runs (id, agent, conversation, source, credential, state, " +

@@ -14,8 +14,8 @@ name: Platform deploy (manual, founder-approved)
 # a branch's copy of this file never reaches them
 # (tests/test_workflow_production_environment.py), and never from a host
 # (Direction 8). The kit never prints a value and never makes one in a
-# deploy; GATEWAY_KEYRING is made once with `keyring-new` and rotated with
-# `keyring-add` (both local), then stored here.
+# deploy; GATEWAY_KEYRING and FILES_KEYRING are each made once with `keyring-new`
+# and rotated with `keyring-add` (both local), then stored here.
 #
 # Modes:
 #   plan    - the plan job alone
@@ -34,7 +34,7 @@ on:
         type: choice
         options: [plan, dark, routes, h2]
       rotate:
-        description: 'Secrets to set again, comma-separated (GATEWAY_KEYRING only as an addition)'
+        description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
         default: ''
         type: string
@@ -102,6 +102,8 @@ jobs:
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       ROUTING_MAC_KEY: ${{ secrets.ROUTING_MAC_KEY }}
       GATEWAY_KEYRING: ${{ secrets.GATEWAY_KEYRING }}
+      FILES_KEYRING: ${{ secrets.FILES_KEYRING }}
+      E2B_WEBHOOK_SECRET: ${{ secrets.E2B_WEBHOOK_SECRET }}
       INBOUND_SLACK_SIGNING_SECRET: ${{ secrets.INBOUND_SLACK_SIGNING_SECRET }}
       TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
       TA_PROBE_KEY: ${{ secrets.TA_PROBE_KEY }}

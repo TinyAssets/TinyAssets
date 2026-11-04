@@ -438,6 +438,12 @@ The MCP door SHALL advertise `events` in its `initialize` and `server/discover` 
 - **WHEN** the callback answers another challenge, or `404`
 - **THEN** the subscribe answers `-32015` with `challenge_failed` or `http_4xx`, and nothing is stored
 
+### Requirement: The owner export is an owner-surface stream
+`POST /app/api/export`, with at most a `cursor`, SHALL answer the owner's export as newline-delimited JSON (`application/x-ndjson`): its generation's objects in order, up to `EXPORT_PAGES` a response (a technical ceiling on one request's work), every response but the last ending with a `{"t":"cursor"}` line that carries the cursor and the export's id, so a client resumes from the last cursor it read; an object its generation has not yet written SHALL end the response early with that cursor, never wait or answer a partial object. The first object SHALL be read before the response begins, so a refusal is the door's status.
+
+#### Scenario: The owner takes its data
+- **WHEN** the owner's app posts `{}` with its session, and posts again from each cursor it reads
+- **THEN** the lines begin with the header and end with `{"t":"end"}`
 
 ### Requirement: The owner's sign-in is the configured issuer's OpenID Connect flow
 The doors SHALL sign the owner in with the code flow and PKCE against `OWNER_ISSUER`, its endpoints and client the `UPSTREAM` record, both unset as checked in and filled at deploy from the issuer's discovery, which must name `OWNER_ISSUER` exactly. The ID token SHALL be RS256 under a key of the issuer's JWKS, its issuer, audience, nonce (the flow's challenge), times, subject and `auth_time` checked; a token without `auth_time` SHALL be refused, with no clock fallback.
@@ -472,7 +478,7 @@ The doors SHALL count or cap no caller's requests, authenticated or not, and SHA
 - **THEN** a valid key and a live refresh from that address still succeed
 
 ### Requirement: The binder streams an upload's bytes to FILES
-The owner surface's upload SHALL take one chunk a `PUT`, in any order and again after any failure, put it to `FILES` when the intent still needs it, refuse bytes that are not that declared chunk or a body shorter or longer than it, and answer the chunk's SHA-256 as `Content-Digest`; a file SHALL be bounded by the owner's policy, never by one request, and a refusal mid-upload SHALL answer its fixed code.
+The owner surface's upload SHALL take one chunk a `PUT`, in any order and again after any failure, put it to `FILES` when the intent still needs it, through the files Worker's upload entrypoint alone (`FilesUpload`, `putChunks` and nothing that reads a chunk, a generation or a key), refuse bytes that are not that declared chunk or a body shorter or longer than it, and answer the chunk's SHA-256 as `Content-Digest`; a file SHALL be bounded by the owner's policy, never by one request, and a refusal mid-upload SHALL answer its fixed code.
 
 #### Scenario: A tampered chunk
 - **WHEN** an upload's body differs from its declared chunk

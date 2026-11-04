@@ -22,6 +22,8 @@ declare namespace Cloudflare {
     HOOKS: import("../src/codemode").HooksService;
     CONTROL: KVNamespace;
     TEST_KEYRING: string;
+    /** The files Worker's ring, test-only: a test wraps a data key under its older kid. */
+    FILES_TEST_RING: string;
     ROUTING_MAC_KEY: string;
   }
 }

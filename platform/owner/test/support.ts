@@ -59,6 +59,36 @@ export function faulty(write: Write, fails: (n: number) => boolean): Write {
  * over its gate's view; a test that calls their synchronous changes directly passes the
  * storage itself.
  */
+/**
+ * The files Worker as the `FILES` binding reaches it, with `overrides` in place of some of
+ * its methods: a store that fails or records one call and passes the rest through.
+ */
+export function through(overrides: Partial<ChunkStore>): ChunkStore {
+  const files = env.FILES;
+  return {
+    mintKey: (ns) => files.mintKey(ns),
+    putChunks: (ns, key, chunks) => files.putChunks(ns, key, chunks),
+    getChunks: (ns, key, reads) => files.getChunks(ns, key, reads),
+    deleteChunks: (ns, key, sha256s) => files.deleteChunks(ns, key, sha256s),
+    rewrapKey: (ns, key) => files.rewrapKey(ns, key),
+    rewrapManifestRoot: (ns, day) => files.rewrapManifestRoot(ns, day),
+    deleteNamespace: (ns) => files.deleteNamespace(ns),
+    putManifestPart: (ns, key, day, part, bytes) =>
+      files.putManifestPart(ns, key, day, part, bytes),
+    putManifestSegment: (ns, key, gen, a, b, bytes) =>
+      files.putManifestSegment(ns, key, gen, a, b, bytes),
+    putManifestRoot: (ns, key, gen, parts, segments, span) =>
+      files.putManifestRoot(ns, key, gen, parts, segments, span),
+    getManifestRoot: (ns, gen) => files.getManifestRoot(ns, gen),
+    getManifestPart: (ns, key, gen, part, sha256) =>
+      files.getManifestPart(ns, key, gen, part, sha256),
+    getManifestSegment: (ns, key, gen, a, b, sha256) =>
+      files.getManifestSegment(ns, key, gen, a, b, sha256),
+    deleteManifest: (ns, gen, parts, segments) => files.deleteManifest(ns, gen, parts, segments),
+    ...overrides,
+  };
+}
+
 export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore = env.FILES,
                         limits: Partial<FileLimits> = {}): Files {
   return new Files(storage, store, () => ({ ...FILE_DEFAULTS,

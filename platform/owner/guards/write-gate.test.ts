@@ -8,8 +8,9 @@
  * source shaped so the view is the only storage the object's code writes through, and so
  * every write in an awaiting context is inside a unit:
  * - every door of `OwnerDO` (a public method taking the binding) begins in the gate: its
- *   first statement returns, or awaits, `this.#door`, `this.#synced` or `this.#filing`,
- *   and those three are the gate (`#door` is `this.#gate.write`, the others call `#door`);
+ *   first statement returns, or awaits, `this.#door`, `this.#synced`, `this.#filing` or
+ *   `this.#quiet`, and those are the gate (`#door` is `this.#gate.write`, `#quiet` its
+ *   `quiet`, the others call `#door`);
  * - the object names `ctx.storage` once, to make the gate, and its modules are handed the
  *   gate's view, and no other source names a `ctx.storage`; no source builds a SQLite
  *   adapter (`DurableObjectSqliteDatabase`) over the owner's storage, and no source opens an
@@ -41,9 +42,9 @@ const GATE = "owner/src/gate.ts";
 /** The gate's own helpers in the object, and what each must call. */
 const ENTRIES: ReadonlySet<string> = new Set(["this.#door", "this.#synced", "this.#filing",
                                               "this.#placing", "this.#reading",
-                                              "this.#rereading"]);
+                                              "this.#rereading", "this.#quiet"]);
 /** The calls whose arrow argument is a unit. */
-const UNITS = /(^|\.)(#?write|unit|#door|#synced|#filing|#placing|#reading|#rereading)$/;
+const UNITS = /(^|\.)(#?write|unit|#door|#synced|#filing|#placing|#reading|#rereading|#quiet)$/;
 /** By module, the calls that write: each must be in a unit wherever a function awaits. */
 const WRITES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "owner/src/wakes.ts": new Set(["recover", "defer", "claim", "mark", "settle"]),
@@ -213,7 +214,7 @@ function helpers(source: string): Record<string, string> {
   const found: Record<string, string> = {};
   const visit = (node: ts.Node): void => {
     if (ts.isMethodDeclaration(node) && ts.isPrivateIdentifier(node.name)
-        && ["#door", "#synced", "#filing", "#placing", "#reading", "#rereading"]
+        && ["#door", "#synced", "#filing", "#placing", "#reading", "#rereading", "#quiet"]
           .includes(node.name.text)) {
       found[node.name.text] = node.body?.getText(file) ?? "";
     }
@@ -265,12 +266,15 @@ describe("write-gate guard", () => {
     expect(source.match(/return this\.#(door|synced|filing)\(/g)?.length).toBeGreaterThan(50);
     const bodies = helpers(source);
     expect(bodies["#door"]).toBe("{\n    return this.#gate.write(act);\n  }");
+    // A quiet unit is a unit of the same gate, which marks nothing changed (`gate.ts`).
+    expect(bodies["#quiet"]).toBe("{\n    return this.#gate.quiet(act);\n  }");
     expect(bodies["#synced"]).toContain("await this.#door(act)");
     expect(bodies["#filing"]).toContain("await this.#door(act)");
     // The doors with a body (ADR-035): each begins in a unit, and every step that writes is
     // one, the R2 calls between them.
     expect(bodies["#placing"]).toContain("first = await this.#door(");
-    expect(bodies["#placing"]).toContain("done = await this.#door(() => located(act(placed)));");
+    expect(bodies["#placing"]).toContain(
+      "done = await this.#door(() => located(this.#files.held(writer, () => act(placed))));");
     expect(bodies["#reading"]).toMatch(/^\{\n    const \{ value, located \} = await this\.#door\(/);
     expect(bodies["#rereading"]).toContain("const located = await this.#door(");
     expect(bodies["#rereading"]).toContain("const value = await this.#door(() => read(bodies));");

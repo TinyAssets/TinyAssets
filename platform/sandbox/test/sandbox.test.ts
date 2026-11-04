@@ -72,7 +72,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
-    unattended: false, authority: "owner", lease: LEASE,
+    unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
     tokens: { egress_token: "egress", sync_token: "sync", runner_token: hex(64, "d") },
     network: NETWORK as never,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
@@ -674,6 +674,28 @@ describe("the look before the runtime ceiling", () => {
     await stub(who).start(who, start());
     await stub(who).release(who, { lease_id: LEASE.lease_id });
     expect(await alarmOf(who)).toBeNull();
+  });
+});
+
+describe("the meter's log (slice P)", () => {
+  it("logs the create, the pause and the resume, and drops what a read's cursor passed",
+     async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    const who = owner();
+    const before = Date.now();
+    await stub(who).start(who, start());
+    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    await stub(who).start(who, start({ run: `run_${hex(32, "3")}`,
+                                       lease: { lease_id: hex(32, "f"), epoch: 2 } }));
+    const read = await stub(who).meter(who, { after: 0 });
+    expect(read.events.map((event) => [event.authority, event.kind]))
+      .toEqual([["owner", "start"], ["owner", "pause"], ["owner", "resume"]]);
+    expect(read.events.every((event) => event.at >= before && event.at <= Date.now()))
+      .toBe(true);
+    expect(read.next).toBe(read.events.at(-1)!.seq);
+    // Read past: dropped, and nothing new.
+    expect(await stub(who).meter(who, { after: read.next }))
+      .toEqual({ events: [], next: read.next });
   });
 });
 

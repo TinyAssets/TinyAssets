@@ -19,10 +19,13 @@
  *   `src/connect.ts` names it (the binder guard).
  * - `EGRESS`: the gateway Worker's `EgressGateway` entrypoint, whose class serves exactly
  *   `forward` (G4's egress door). Only `src/egress.ts` names it.
- * - Two secrets, declared by name (`secrets.required`, which binds nothing):
+ * - Three secrets, declared by name (`secrets.required`, which binds nothing):
  *   `ROUTING_MAC_KEY`, the routing key sandbox tokens are MAC'd under, the owner Worker's
- *   too; and `WORKOS_API_KEY`, the upstream's client secret.
- * - `FILES`: the files Worker, whose `putChunks` the file door's bytes call (slice L); only
+ *   too; `WORKOS_API_KEY`, the upstream's client secret; and `E2B_WEBHOOK_SECRET`, E2B's
+ *   lifecycle webhook's signature secret (slice P).
+ * - `FILES`: the files Worker's `FilesUpload` entrypoint, whose class serves exactly
+ *   `putChunks`, what the file door's bytes call (slice L), and nothing that reads a chunk,
+ *   a generation or a key (review M5-1: the doors carry an owner's wrapped key); only
  *   `src/file-bytes.ts` names it.
  * - No `ratelimits`: no number of ours bounds any caller (the founder's rule, slice L's
  *   review); Cloudflare's own DDoS protection is in front of every Worker.
@@ -60,11 +63,16 @@ const KEYS: ReadonlySet<string> = new Set([
 ]);
 /** The sandbox tokens' routing key (`routing-mac.ts`), the owner's one secret too. */
 const OWNER_SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
-/** The doors' secrets: the routing key, and the upstream's client secret (`oidc.ts`). */
-const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY",
-                                                         "WORKOS_API_KEY"]) });
+/**
+ * The doors' secrets: the routing key, the upstream's client secret (`oidc.ts`), and E2B's
+ * lifecycle webhook's signature secret (`e2b-hooks.ts`).
+ */
+const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY", "WORKOS_API_KEY",
+                                                         "E2B_WEBHOOK_SECRET"]) });
 /** The files Worker, for the file door's bytes. */
-const FILES = Object.freeze({ binding: "FILES", service: "tinyassets-files" });
+const FILES = Object.freeze({ binding: "FILES", service: "tinyassets-files",
+                             entrypoint: "FilesUpload" });
+const UPLOAD_METHODS: readonly string[] = Object.freeze(["putChunks"]);
 /** The owner app's files, served only through the Worker (`src/pages.ts`). */
 const ASSETS = Object.freeze({ directory: "./app", binding: "ASSETS", run_worker_first: true,
                                html_handling: "none", not_found_handling: "none" });
@@ -138,9 +146,29 @@ export function exportedMethods(source: string): Map<string, string[]> {
   return found;
 }
 
+/**
+ * What the exported class `name` of `source` extends, its type arguments left out, or null:
+ * an entrypoint must extend `WorkerEntrypoint` itself, since RPC serves inherited methods
+ * too (review L6-1).
+ */
+export function extendsOf(source: string, name: string): string | null {
+  const file = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true);
+  let found: string | null = null;
+  file.forEachChild((node) => {
+    if (ts.isClassDeclaration(node) && node.name?.text === name) {
+      const clause = node.heritageClauses?.find((each) =>
+        each.token === ts.SyntaxKind.ExtendsKeyword);
+      found = clause === undefined || clause.types.length !== 1 ? null
+        : clause.types[0]!.expression.getText(file);
+    }
+  });
+  return found;
+}
+
 /** Each way `config` binds more than the doors need, or could deploy. */
 export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string, Config>,
-                                    gatewaySource: string): string[] {
+                                    gatewaySource: string,
+                                    filesSource: string = FILES_SOURCE): string[] {
   const problems: string[] = [];
   for (const key of Object.keys(config)) {
     if (!KEYS.has(key)) {
@@ -156,7 +184,8 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
     problems.push(`compatibility_flags are exactly ${FLAGS.join(", ")}`);
   }
   if (JSON.stringify(config["secrets"]) !== JSON.stringify(SECRETS)) {
-    problems.push("secrets declares exactly ROUTING_MAC_KEY and WORKOS_API_KEY");
+    problems.push("secrets declares exactly ROUTING_MAC_KEY, WORKOS_API_KEY and " +
+                  "E2B_WEBHOOK_SECRET");
   }
   const ownerConfig = platform.get("tinyassets-owner");
   if (JSON.stringify(ownerConfig?.["secrets"]) !== JSON.stringify(OWNER_SECRETS)) {
@@ -187,7 +216,7 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
       || JSON.stringify(services[1]) !== JSON.stringify(EGRESS)
       || JSON.stringify(services[2]) !== JSON.stringify(FILES)) {
     problems.push("services binds exactly GATEWAY to tinyassets-gateway's ConnectGateway, " +
-                  "EGRESS to its EgressGateway and FILES to tinyassets-files");
+                  "EGRESS to its EgressGateway and FILES to tinyassets-files' FilesUpload");
   } else if (platform.get(GATEWAY.service) === undefined
              || platform.get(FILES.service) === undefined) {
     problems.push("GATEWAY's or FILES's service is not the platform's own Worker");
@@ -197,6 +226,12 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
           !== JSON.stringify(methods)) {
         problems.push(`the gateway's ${service.entrypoint} serves exactly ${methods.join(", ")}`);
       }
+    }
+    if (JSON.stringify(exportedMethods(filesSource).get(FILES.entrypoint))
+        !== JSON.stringify(UPLOAD_METHODS)
+        || extendsOf(filesSource, FILES.entrypoint) !== "WorkerEntrypoint") {
+      problems.push(`the files Worker's ${FILES.entrypoint} extends WorkerEntrypoint and ` +
+                    "serves exactly putChunks");
     }
   }
   if (JSON.stringify(config["assets"]) !== JSON.stringify(ASSETS)) {
@@ -221,6 +256,7 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
 const config = parseConfig(readFileSync(join(DOORS, CONFIG), "utf8"));
 const platform = platformConfigs();
 const gatewaySource = readFileSync(join(PLATFORM, "gateway", "src", "index.ts"), "utf8");
+const FILES_SOURCE = readFileSync(join(PLATFORM, "files", "src", "index.ts"), "utf8");
 
 describe("doors Worker config", () => {
   it("binds OWNER, the gateway's connect and egress entrypoints, OAUTH_KV, DIRECTORY and " +
@@ -230,6 +266,7 @@ describe("doors Worker config", () => {
     expect(exportedMethods(gatewaySource).get("ConnectGateway"))
       .toEqual(["exchange", "seal", "sealDoorbell", "verify", "verifyDoorbell"]);
     expect(exportedMethods(gatewaySource).get("EgressGateway")).toEqual(["forward"]);
+    expect(exportedMethods(FILES_SOURCE).get("FilesUpload")).toEqual(["putChunks"]);
   });
 
   it("is the only wrangler config in the doors Worker", () => {
@@ -263,6 +300,10 @@ describe("doors Worker config", () => {
                                                     FILES] }],
     ["FILES to another Worker", { services: [GATEWAY, EGRESS, { ...FILES,
                                                                 service: "tinyassets-owner" }] }],
+    ["the files Worker's whole surface (review M5-1)", { services: [GATEWAY, EGRESS,
+      { binding: "FILES", service: "tinyassets-files" }] }],
+    ["the files Worker's default entrypoint", { services: [GATEWAY, EGRESS,
+      { ...FILES, entrypoint: "FilesService" }] }],
     ["a fourth service", { services: [GATEWAY, EGRESS, FILES, { binding: "HOOKS",
                                                                 service: "tinyassets-hooks" }] }],
     ["no app files", { assets: undefined }],
@@ -339,5 +380,27 @@ describe("doors Worker config", () => {
     const grown = gatewaySource.replace(head, `${head}\n  ${member}`);
     expect(grown).not.toBe(gatewaySource);
     expect(doorsConfigProblems(config, platform, grown)).not.toEqual([]);
+  });
+
+  it.each([
+    ["a chunk read", "getChunks() { return 1; }"],
+    ["a generation's read", "async getManifestPart() { return 1; }"],
+    ["a key call", "rewrapKey = () => 1;"],
+  ])("sees the upload entrypoint grow %s (review M5-1)", (_what, member) => {
+    const head = "export class FilesUpload extends WorkerEntrypoint<FilesEnv> {";
+    const grown = FILES_SOURCE.replace(head, `${head}\n  ${member}`);
+    expect(grown).not.toBe(FILES_SOURCE);
+    expect(doorsConfigProblems(config, platform, gatewaySource, grown)).not.toEqual([]);
+  });
+
+  it("sees the upload entrypoint inherit the whole service, its own members unchanged " +
+     "(review L6-1)", () => {
+    const head = "export class FilesUpload extends WorkerEntrypoint<FilesEnv> {";
+    expect(FILES_SOURCE.includes(head)).toBe(true);
+    expect(extendsOf(FILES_SOURCE, "FilesUpload")).toBe("WorkerEntrypoint");
+    const inherits = FILES_SOURCE.replace(head, "export class FilesUpload extends FilesService {");
+    // Its own members are still putChunks alone; RPC would serve every inherited method.
+    expect(exportedMethods(inherits).get("FilesUpload")).toEqual(["putChunks"]);
+    expect(doorsConfigProblems(config, platform, gatewaySource, inherits)).not.toEqual([]);
   });
 });

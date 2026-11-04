@@ -49,7 +49,7 @@ beforeEach(async () => {
 
 /** The owner's own binding, as the object's file doors take it in a test. */
 function ownerBinding(who: string): Binding {
-  return { owner: who, caller: who, origin: null };
+  return { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
 }
 
 /** A signed-in owner whose `main` agent is Claude Code on its own sign-in. */

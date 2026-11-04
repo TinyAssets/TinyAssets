@@ -18,6 +18,8 @@
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes --migrate owner
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
+ *   (for each keyring: `GATEWAY_KEYRING`, the gateway's, and `FILES_KEYRING`, the files
+ *   Worker's data keys' ring; each its own secret)
  *
  * A Worker's first deploy is `wrangler deploy`, with no route and no workers.dev; later
  * ones upload a version and then deploy it (Cloudflare's staged path), so a deploy never
@@ -36,7 +38,7 @@
  * "absent". So:
  * - a namespace, bucket or queue is created only when its listing answered and lacks it;
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that
- *   the API says does not exist yet; the kit never makes a secret's value. `GATEWAY_KEYRING`
+ *   the API says does not exist yet; the kit never makes a secret's value. The keyrings
  *   and `ROUTING_MAC_KEY` come from the secret store like the rest (`keyring-new` makes the
  *   first keyring locally, for the founder to store); a held one is never replaced, unless
  *   `--rotate` names it, and a keyring is rotated only by adding a key (the new keyring
@@ -44,7 +46,11 @@
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
- *   POST; never a delete).
+ *   POST; never a delete);
+ * - the owner Worker is deployed only when the migration lock (`owner/migrations.json`)
+ *   marks the first deploy and pins every migration the code ships, in order
+ *   (`lockRefusal`): pin with `PIN_MIGRATIONS=<commit>` (`owner/guards/migrations.test.ts`)
+ *   and commit the lock with the code first, so a deployed migration is never edited.
  *
  * Before anything is changed it checks, live: the owner issuer's discovery names
  * `OWNER_ISSUER` exactly and declares its token endpoint auth methods, and one real
@@ -79,11 +85,15 @@ export const NAMESPACES: Readonly<Record<string, string>> = Object.freeze({
 export const BUCKET = "tinyassets-files";
 /** Each Worker's secrets. */
 export const SECRETS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "INBOUND_SLACK_SIGNING_SECRET"],
+  doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+          "INBOUND_SLACK_SIGNING_SECRET"],
   owner: ["ROUTING_MAC_KEY"],
   gateway: ["GATEWAY_KEYRING"],
   sandbox: ["E2B_API_KEY"],
+  files: ["FILES_KEYRING"],
 });
+/** The keyrings: each rotated only by adding a key. */
+export const KEYRINGS: readonly string[] = Object.freeze(["GATEWAY_KEYRING", "FILES_KEYRING"]);
 /** The one secret two Workers hold: set on both or neither. */
 const SHARED = "ROUTING_MAC_KEY";
 /** Set when given; without it that door refuses loudly. */
@@ -105,7 +115,8 @@ export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
   "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
 /** What only the apply job holds: the production environment's secrets. */
 export const SECRET_INPUTS: readonly string[] = Object.freeze([
-  "WORKOS_API_KEY", "E2B_API_KEY", "ROUTING_MAC_KEY", "GATEWAY_KEYRING"]);
+  "WORKOS_API_KEY", "E2B_API_KEY", "ROUTING_MAC_KEY", "GATEWAY_KEYRING", "FILES_KEYRING",
+  "E2B_WEBHOOK_SECRET"]);
 const WORKOS_API = "https://api.workos.com";
 const CF_API = "https://api.cloudflare.com/client/v4";
 /** E2B's platform API (`sandbox/src/e2b.ts`'s), its OpenAPI spec read 2026-11-03. */
@@ -154,6 +165,52 @@ function wrangler(args: string[], stdin?: string): string {
                     `${result.stderr.trim()}`);
   }
   return result.stdout;
+}
+
+/**
+ * Why the owner Worker may not deploy under `lock` (the migration lock as
+ * `owner/migrations.json` holds it) with the code's migrations' `digests`, or null: the
+ * first deploy is marked, and the lock pins exactly the code's migrations, element for
+ * element (tasks "Append-only migrations from the first deploy").
+ */
+export function lockRefusal(lock: unknown, digests: readonly string[]): string | null {
+  const pin = "pin them with PIN_MIGRATIONS=<commit> npx vitest run --project guards " +
+    "guards/migrations.test.ts in platform/owner, and commit the lock with the code";
+  const held = lock as { first_deploy?: unknown; deployed?: unknown } | null;
+  if (typeof held !== "object" || held === null || !Array.isArray(held.deployed)
+      || !("first_deploy" in held)) {
+    return "owner/migrations.json is out of shape";
+  }
+  if (held.first_deploy === null) {
+    return `the migration lock marks no first deploy: ${pin}`;
+  }
+  if (held.deployed.length !== digests.length
+      || held.deployed.some((digest, index) => digest !== digests[index])) {
+    return `the migration lock pins ${held.deployed.length} migrations and the code ships ` +
+      `${digests.length}, or one differs: ${pin}`;
+  }
+  return null;
+}
+
+/** The code's migrations' digests, as the owner's guards project evaluates its schema. */
+export function codeDigests(): string[] {
+  const dir = mkdtempSync(join(tmpdir(), "ta-migrations-"));
+  const out = join(dir, "digests.json");
+  try {
+    const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
+    const result = spawnSync(process.execPath, [vitest, "run", "--project", "guards",
+                                                "guards/migrations.test.ts"], {
+      cwd: join(PLATFORM, "owner"), encoding: "utf8",
+      env: { ...process.env, MIGRATION_DIGESTS: out, PIN_MIGRATIONS: "" },
+    });
+    if (result.status !== 0) {
+      throw new Error(`the migration lock's guard failed (exit ${result.status}): ` +
+                      `${result.stdout.slice(-2000)}`);
+    }
+    return JSON.parse(readFileSync(out, "utf8")) as string[];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Cloudflare's API answer: its status and its parsed body, or a throw on no answer. */
@@ -502,25 +559,26 @@ export async function registerRedirect(key: string, apply: boolean, fetcher: Fet
   return "registered";
 }
 
-/** A keyring as the gateway holds it: `{active, keys}`, the active key among the keys. */
-export function keyring(text: string | undefined): { active: string; keys: Record<string, string> } {
+/** A keyring as the gateway and the files Worker hold it: `{active, keys}`, the active key among the keys. */
+export function keyring(text: string | undefined, name = "GATEWAY_KEYRING"):
+    { active: string; keys: Record<string, string> } {
   let value: unknown;
   try {
     value = JSON.parse(text ?? "");
   } catch {
-    throw new Error("GATEWAY_KEYRING is {active, keys} as JSON");
+    throw new Error(`${name} is {active, keys} as JSON`);
   }
   const ring = value as { active?: unknown; keys?: unknown };
   if (typeof ring.active !== "string" || typeof ring.keys !== "object" || ring.keys === null
       || !Object.hasOwn(ring.keys, ring.active)) {
-    throw new Error("GATEWAY_KEYRING is {active, keys}, its active key among its keys");
+    throw new Error(`${name} is {active, keys}, its active key among its keys`);
   }
   return ring as { active: string; keys: Record<string, string> };
 }
 
 /**
  * What to set: each Worker's missing secrets, and those `rotate` names (the shared routing
- * key on both or neither; the keyring only as an addition). `held` is each Worker's listing,
+ * key on both or neither; a keyring only as an addition). `held` is each Worker's listing,
  * null for a Worker the API says does not exist.
  */
 export function secretPlan(held: Readonly<Record<string, readonly string[] | null>>,
@@ -533,11 +591,13 @@ export function secretPlan(held: Readonly<Record<string, readonly string[] | nul
                     `${SHARED} to set both again`);
   }
   // `values` null: the plan job, which holds no secret; the apply job checks the ring.
-  if (rotate.has("GATEWAY_KEYRING") && values !== null) {
-    const ring = keyring(values("GATEWAY_KEYRING"));
-    if (Object.keys(ring.keys).length < 2) {
-      throw new Error("a keyring is rotated by adding a key: the new GATEWAY_KEYRING holds " +
-                      "the old keys and a new active one (keyring-add)");
+  for (const name of KEYRINGS) {
+    if (rotate.has(name) && values !== null) {
+      const ring = keyring(values(name), name);
+      if (Object.keys(ring.keys).length < 2) {
+        throw new Error(`a keyring is rotated by adding a key: the new ${name} holds ` +
+                        "the old keys and a new active one (keyring-add)");
+      }
     }
   }
   const plan: { worker: string; name: string }[] = [];
@@ -601,7 +661,8 @@ function deployWorker(worker: string, config: string, exists: boolean,
 function keyringNew(file: string): void {
   writeFileSync(file, JSON.stringify({ active: "k1", keys: {
     k1: randomBytes(32).toString("base64") } }), { mode: 0o600, flag: "wx" });
-  console.log(`wrote a new keyring to ${file}; store it as GATEWAY_KEYRING`);
+  console.log(`wrote a new keyring to ${file}; store it as ${KEYRINGS.join(" or ")}, ` +
+              "one ring each");
 }
 
 /** `keyring-add <file>`: the keyring in `file` with one more key, made active; the old kept. */
@@ -610,8 +671,8 @@ function keyringAdd(file: string): void {
   const next = `k${Object.keys(ring.keys).length + 1}`;
   writeFileSync(file, JSON.stringify({ active: next, keys: {
     ...ring.keys, [next]: randomBytes(32).toString("base64") } }), { mode: 0o600 });
-  console.log(`added ${next} to ${file}, active; store it as GATEWAY_KEYRING, then run with ` +
-              "--rotate GATEWAY_KEYRING");
+  console.log(`added ${next} to ${file}, active; store it as the keyring it was, then run ` +
+              "with --rotate naming that keyring");
 }
 
 async function main(): Promise<void> {
@@ -659,8 +720,19 @@ async function main(): Promise<void> {
   }
   const later = "checked by the apply job before any change";
   if (!open) {
-    keyring(input("GATEWAY_KEYRING"));
+    for (const name of KEYRINGS) {
+      keyring(input(name), name);
+    }
   }
+  // The migration lock, before anything is changed: the owner Worker never deploys a
+  // migration the lock does not pin.
+  const refused = lockRefusal(JSON.parse(readFileSync(join(PLATFORM, "owner",
+                                                           "migrations.json"), "utf8")),
+                              codeDigests());
+  if (refused !== null) {
+    throw new Error(refused);
+  }
+  plan.push("the migration lock pins every migration the owner Worker ships");
   const account = input("CLOUDFLARE_ACCOUNT_ID")!;
   const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
   // The live checks, before anything is changed.
