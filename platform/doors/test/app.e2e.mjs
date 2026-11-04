@@ -580,6 +580,11 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
   const open = () => page.evaluate(() => window.__sockets
     .filter((socket) => socket.url.includes("/app/api/agent/socket")
                         && socket.readyState === WebSocket.OPEN).length);
+  // The link can come from the sign-in's row, read while its socket still connects: wait
+  // for the socket to open rather than read it once.
+  for (let i = 0; i < 100 && await open() !== 1; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   assert.equal(await open(), 1);
   const made = await page.evaluate(() => window.__sockets.length);
   // The connection drops, as a network drops it: the app never closed it.
