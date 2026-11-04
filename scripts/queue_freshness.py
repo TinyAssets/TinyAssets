@@ -211,8 +211,8 @@ def candidates(repo: str) -> list[dict]:
                   else len(order))
 
 
-def reviewed(repo: str, head: str) -> bool:
-    """True if ``head``'s `review` check passes NOW (review.yml's decision).
+def reviewed(repo: str, number: int, head: str) -> bool:
+    """True if PR ``number``'s `review` check passes at ``head`` NOW (review.yml's decision).
 
     Read from GitHub's check runs by default-branch code. Any failure to read is
     "not reviewed".
@@ -220,7 +220,7 @@ def reviewed(repo: str, head: str) -> bool:
     from drain_review_gate import review_passed_at
 
     try:
-        return review_passed_at(repo, head)
+        return review_passed_at(repo, head, number)
     except (subprocess.SubprocessError, ValueError):
         return False
 
@@ -452,7 +452,7 @@ def main() -> int:
         for cand in candidates(args.repo):
             if len(picked) == MAX_PROBES:
                 break
-            if reviewed(args.repo, cand["head"]):
+            if reviewed(args.repo, cand["number"], cand["head"]):
                 picked.append(cand)
         print(json.dumps(picked))
         return 0

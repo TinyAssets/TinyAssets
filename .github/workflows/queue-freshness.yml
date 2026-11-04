@@ -60,6 +60,7 @@ jobs:
       - id: list
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_APP_ID: ${{ vars.REVIEW_APP_ID }}
           REPO: ${{ github.repository }}
         run: |
           echo "main=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

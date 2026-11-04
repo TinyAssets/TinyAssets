@@ -29,12 +29,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.drain_review_gate import review_passed_at  # noqa: E402
+
 REQUIRED_CHECKS = (
     "Diff scope declared",
     "required-tests",
     "invariants",
-    "review",
 )
+# The review check is the review App's, and made for one PR: read it with
+# drain_review_gate.review_passed_at, never from the head's rollup, where a job
+# named `review` in any workflow would stand in for it.
+_ACTIONS_APP_ID = 15368
 # Every required check runs on the pull request; a skip means it did not run.
 
 _PR_QUERY = """query($owner:String!,$name:String!,$number:Int!){
@@ -44,7 +49,7 @@ headRepository { nameWithOwner }
 mergeQueueEntry { state }
 commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
 __typename
-... on CheckRun { name conclusion startedAt completedAt }
+... on CheckRun { name conclusion startedAt completedAt checkSuite { app { databaseId } } }
 ... on StatusContext { context state createdAt }
 }}}}}}
 }}}"""
@@ -70,6 +75,9 @@ def latest_conclusions(nodes: list[dict] | None) -> dict[str, str]:
             continue
         name = node.get("name") or node.get("context")
         if name not in REQUIRED_CHECKS:
+            continue
+        app = ((node.get("checkSuite") or {}).get("app") or {}).get("databaseId")
+        if node.get("__typename") == "CheckRun" and app != _ACTIONS_APP_ID:
             continue
         # A run still in progress has no completedAt: its start orders it, so a pending
         # decision posted after a pass is the newest, and is not green.
@@ -188,6 +196,14 @@ def _capped(repo: str, number: int) -> bool:
     return proc.returncode == 3
 
 
+def _reviewed(repo: str, head: str, number: int) -> bool:
+    try:
+        return review_passed_at(repo, head, number)
+    except (subprocess.SubprocessError, ValueError) as exc:
+        print(f"PR #{number}: could not read its review check ({exc}).", file=sys.stderr)
+        return False
+
+
 def _benign_enqueue_error(detail: str) -> bool:
     text = detail.lower()
     return any(
@@ -229,7 +245,7 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         same_repo=head_repo == repo,
         in_queue=pr.get("mergeQueueEntry") is not None,
         capped=False,
-        green=checks_green(conclusions),
+        green=checks_green(conclusions) and _reviewed(repo, head, number),
         head_matches=not expect_head or expect_head == head,
     )
     if reason is None and _capped(repo, number):

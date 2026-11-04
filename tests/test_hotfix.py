@@ -171,8 +171,9 @@ def test_eligible_paths(path):
 @pytest.mark.parametrize("approved,head_matches", [(False, True), (True, False), (True, True)])
 def test_floor_review_bound_to_exact_head(monkeypatch, approved, head_matches):
     head = "b" * 40
-    check = {"id": 1, "name": "review", "status": "completed", "app": {"id": 15368},
-             "conclusion": "success" if approved else "failure"}
+    monkeypatch.setenv("REVIEW_APP_ID", "777")
+    check = {"id": 1, "name": "review", "status": "completed", "app": {"id": 777},
+             "external_id": "pr-12", "conclusion": "success" if approved else "failure"}
 
     def fake_run(*args):
         if args[1:3] == ("pr", "view"):
@@ -557,6 +558,7 @@ def test_merged_pr_without_hotfix_bytes_cannot_archive(legacy, monkeypatch):
     ],
 )
 def test_canonical_gate_requires_receipt_without_private_path_exemptions(monkeypatch, path):
+    monkeypatch.setenv("REVIEW_APP_ID", "777")
     monkeypatch.setattr(
         hotfix,
         "run",

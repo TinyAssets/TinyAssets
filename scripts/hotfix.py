@@ -54,15 +54,16 @@ def eligible(path):
 def require_review(branch, commit, paths):
     # Every PR needs a passing `review` check (review.yml: an APPROVE PR review that
     # carries to the head). There is no selective floor path list; use that gate.
-    from scripts.drain_review_gate import _ACTIONS_APP_ID, review_run_passed
+    from scripts.drain_review_gate import review_app_id, review_run_passed
 
     pr = json.loads(run("gh", "pr", "view", branch, "--json", "number,headRefOid"))
     repo = json.loads(run("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
     runs = json.loads(run(
         "gh", "api", f"repos/{repo}/commits/{commit}/check-runs?check_name=review&per_page=100"))
+    app = review_app_id()
     ours = [r for r in runs.get("check_runs") or []
-            if isinstance(r, dict) and (r.get("app") or {}).get("id") == _ACTIONS_APP_ID]
-    if pr["headRefOid"] != commit or not review_run_passed(ours):
+            if isinstance(r, dict) and (r.get("app") or {}).get("id") == app]
+    if pr["headRefOid"] != commit or not review_run_passed(ours, pr["number"]):
         raise ValueError(
             "floor-class hotfix requires a passing `review` check (an APPROVE PR review) "
             "for the branch head"

@@ -1,36 +1,24 @@
 name: review (merge queue)
 
-# The merge group's `review`: the queued PR's own `review` check, read at its head
-# from GitHub's data (scripts/drain_review_gate.py --queue-review). Missing, pending
-# or failed fails the group. A file of its own, with no other trigger, so no skipped
-# job named `review` ever reports on a PR head.
+# A merge group was made: tell review.yml, which posts the group's `review` (its PR's
+# own check, read at the PR's head) as the review App. Nothing else.
 #
 # A merge_group run takes this file from the group commit, which includes the PR's
-# edits, so it checks out the group's base (main, already merged) for the script.
-# A PR that edits this file is code, never prose, so it never carries a review.
+# edits, so it holds no permission and no secret and decides nothing; review.yml
+# reads the group's branch and commit from the workflow_run GitHub writes. A PR that
+# edits this file is code, never prose, so it never carries a review. Its job is not
+# named `review`, so no Actions check run of that name lands on the group.
 
 on:
   merge_group:
     types: [checks_requested]
 
-permissions:
-  contents: read
-  checks: read
-  pull-requests: read
+permissions: {}
 
 jobs:
-  review:
-    name: review
+  signal:
+    name: signal the review
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.event.merge_group.base_sha }}
-          persist-credentials: false
-      - name: Require the queued PR's review check at its head
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          REF: ${{ github.event.merge_group.head_ref }}
-        run: python scripts/drain_review_gate.py --queue-review --repo "$REPO" --ref "$REF"
+      - run: echo "review.yml posts this merge group's review"

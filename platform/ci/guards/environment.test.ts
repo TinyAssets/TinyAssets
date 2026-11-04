@@ -73,6 +73,17 @@ const NON_PRODUCTION_SECRETS: Record<string, string> = {
   TOKEN_HEX: "python `secrets.token_hex(...)` in a run script",
 };
 
+/**
+ * Secrets held by a main-only environment of their own, never by `production` (whose
+ * required reviewer would hold every use): a job that reads one declares that
+ * environment, and nothing else may read it.
+ */
+const ENVIRONMENT_SECRETS: Record<string, string> = {
+  // The review App's key: the only identity that may post the required `review` check
+  // (review.yml). Its environment is deployable from main alone, with no reviewer.
+  REVIEW_APP_PRIVATE_KEY: "review",
+};
+
 /** Workflows known to hold production jobs: guards the scan against matching nothing. */
 const KNOWN_PRODUCTION_WORKFLOWS = [
   "apply-daemon-env.yml", "box-preflight.yml", "cloud-only-preflight.yml", "deploy-prod.yml",
@@ -117,7 +128,8 @@ function secretNames(text: string): Set<string> {
 }
 
 function productionSecretNames(text: string): string[] {
-  return [...secretNames(text)].filter((name) => !(name.toUpperCase() in NON_PRODUCTION_SECRETS))
+  return [...secretNames(text)].filter((name) => !(name.toUpperCase() in NON_PRODUCTION_SECRETS)
+                                                 && !(name.toUpperCase() in ENVIRONMENT_SECRETS))
     .sort();
 }
 
@@ -245,6 +257,27 @@ describe("production workflows", () => {
                     "host with a one-line justification").toEqual([]);
   });
 
+  it("every job reading an environment's own secret declares that environment", () => {
+    const wrong: string[] = [];
+    let seen = 0;
+    for (const file of workflowNames()) {
+      const data = workflow(file);
+      for (const [name, job] of Object.entries<Data>(data.jobs ?? {})) {
+        for (const secret of secretNames(`${workflowLevelText(data)}\n${strings(job)}`)) {
+          const wanted = ENVIRONMENT_SECRETS[secret.toUpperCase()];
+          if (wanted !== undefined) {
+            seen++;
+            if (environmentName(job) !== wanted) {
+              wrong.push(`${file} job \`${name}\` reads secrets.${secret} outside ${wanted}`);
+            }
+          }
+        }
+      }
+    }
+    expect(seen, "review.yml reads the review App's key").toBeGreaterThan(0);
+    expect(wrong).toEqual([]);
+  });
+
   it("reusable-workflow callers forward no production secrets", () => {
     expect(jobs.filter((each) => "uses" in each.job).flatMap((each) =>
       reusableCallerProblems(each.workflow, each.name, each.job, each.reasons))).toEqual([]);
@@ -269,7 +302,8 @@ describe("production workflows", () => {
     }
     expect(Object.keys(NON_PRODUCTION_SECRETS).filter((name) => !used.has(name)),
            "allowlisted secrets no workflow reads any more: delete them").toEqual([]);
-    expect(PRODUCTION_SECRETS.filter((name) => name in NON_PRODUCTION_SECRETS)).toEqual([]);
+    expect(PRODUCTION_SECRETS.filter((name) => name in NON_PRODUCTION_SECRETS
+                                               || name in ENVIRONMENT_SECRETS)).toEqual([]);
     expect(Object.values(NON_PRODUCTION_SECRETS).every((why) => why.trim())).toBe(true);
   });
 });
