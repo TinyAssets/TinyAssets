@@ -1,0 +1,37 @@
+name: review (merge queue)
+
+# The merge group's `review`: the queued PR's own `review` check, read at its head
+# from GitHub's data (scripts/drain_review_gate.py --queue-review). Missing, pending
+# or failed fails the group. A file of its own, with no other trigger, so no skipped
+# job named `review` ever reports on a PR head.
+#
+# A merge_group run takes this file from the group commit, which includes the PR's
+# edits, so it checks out the group's base (main, already merged) for the script.
+# A PR that edits this file is a release-critical change, which never carries a
+# review.
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  review:
+    name: review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          persist-credentials: false
+      - name: Require the queued PR's review check at its head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.event.merge_group.head_ref }}
+        run: python scripts/drain_review_gate.py --queue-review --repo "$REPO" --ref "$REF"
