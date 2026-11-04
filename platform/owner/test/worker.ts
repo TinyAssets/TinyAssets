@@ -78,9 +78,13 @@ export class FauxOwnerDO extends OwnerDO {
  * here (production's are `CODEMODE_TIMEOUT_MS` and the hooks Worker's own budget), so a
  * test sees a script stopped past each.
  */
+/** `BoundedOwnerDO`'s code mode wall time, which its tests hold the stop to. */
+export const BOUNDED_TIMEOUT_MS = 2_000;
+
 export class BoundedOwnerDO extends OwnerDO {
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    super(ctx, env, { codemode: { timeoutMs: 2_000, interruptBudget: 2_000 } });
+    super(ctx, env, { codemode: { timeoutMs: BOUNDED_TIMEOUT_MS,
+                                  interruptBudget: BOUNDED_TIMEOUT_MS } });
   }
 }
 
