@@ -9,7 +9,7 @@ Heals the PRIMARY checkout (session_sync_gate --heal): a non-main branch or
 uncommitted edits are saved to a local backup branch, then main fast-forwards,
 so no session ever loads a stale AGENTS.md. Never touches linked worktrees;
 never blocks the session.
-See docs/reference/worktree-discipline.md.
+See AGENTS.md Fact 13 and scripts/wt.py.
 """
 
 from __future__ import annotations

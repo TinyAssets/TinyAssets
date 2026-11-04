@@ -471,11 +471,11 @@ HISTORY_DIRS = ("openspec/changes/archive/",)
 # Where an agent takes instructions from. Any path deleted in this diff that one
 # of them still cites fails, so a deletion carries its docs, skills and rules.
 INSTRUCTION_FILES = frozenset({
-    "AGENTS.md", "CLAUDE.md", "CODEX.md", "README.md", "CONTRIBUTING.md",
+    "AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md",
     "openspec/config.yaml",
 })
 INSTRUCTION_DIRS = (".claude/", ".agents/skills/", "openspec/specs/", "docs/")
-PATH_TOKEN = re.compile(r"[\w.-]+(?:/[\w.*-]+)+/?")
+PATH_TOKEN = re.compile(r"[\w.-]+(?:/[\w.*-]+)*/?")
 
 
 def instruction_text(rel: str, source: str) -> str | None:
@@ -483,7 +483,7 @@ def instruction_text(rel: str, source: str) -> str | None:
     if rel.startswith(".github/workflows/"):
         return "\n".join(line for line in source.splitlines() if line.lstrip().startswith("#"))
     if re.fullmatch(r"docs/decisions/ADR-\d+[\w.-]*\.md", rel):
-        return None  # an ADR body is a dated record (ADR-005); its Status line is checked apart
+        return None  # an ADR body is a dated record (ADR-005)
     if (
         rel in INSTRUCTION_FILES
         or rel.startswith(INSTRUCTION_DIRS)
@@ -500,8 +500,8 @@ def cited_paths(rel: str, text: str) -> set[str]:
     for token in PATH_TOKEN.findall(text):
         token = token.split("*", 1)[0].rstrip(".,;:)").rstrip("/")
         token = token.removeprefix("./")
-        if "/" not in token:
-            continue
+        if "/" not in token and "." not in token.strip("."):
+            continue  # a bare word names no file: `deploy` is prose, `CODEX.md` a file
         out.add(token)
         out.add(os.path.normpath(str(folder / token)).replace(os.sep, "/"))
     return out
@@ -547,7 +547,7 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
         if text is None:
             continue
         for ref in cited_paths(rel, text) & gone:
-            if ref not in deleted_docs:
+            if ref not in cited_docs:
                 problems.add(f"deleted-path-reference: {rel} cites {ref}")
     return sorted(problems)
 

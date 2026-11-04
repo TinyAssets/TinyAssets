@@ -25,13 +25,18 @@ Map, why: `docs/architecture.md`, `docs/decisions/`.
 (`tinyassets/`, `deploy/`, the droplet) is retiring: fixes only, deleted at the
 cutover.
 
-## Facts (numbers are cited repo-wide)
+## Facts (numbers are cited repo-wide and never reused)
 
+1. `SqliteSaver`, never `AsyncSqliteSaver`.
+2. Reuse the LanceDB connection; never recreate it.
 4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
    for new spending, irreversible acts, or outward-facing acts outside the
    agreed work (host-only: a host-actions row that blocks nothing).
+5. Accumulating state needs `Annotated[list, operator.add]`.
+6. `FactWithContext` carries truth-value typing.
 8. Fail loudly; a real-looking mock fallback is worse than a crash.
 9. Uploads are verbatim.
+10. Ship-time attribution — `tinyassets/attribution/`.
 11. Doors: `tinyassets.io/mcp`, `/api` (keyed), `/hooks/inbound`. Until the
     cutover's `routes` run, the old proxy serves them (`mcp.` internal); after
     it, the doors Worker does (`platform/deploy/deploy.ts` `ROUTES`), and
@@ -39,12 +44,16 @@ cutover.
     connector edits, run the handles canary.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
-14. Research comes before building, as its own step. How to do a thing is never
-    decided before its research, nor left to a builder to settle: the design
-    is chosen from the research, checked against the intent, then built.
-    Research again when a build grows past its plan, or when it needs patches
-    that suggest a bad shape (founder, 2026-11-03).
+14. Research comes before building, as its own step: the design is chosen from
+    the research and checked against the intent, then built. Research again when
+    a build grows past its plan or keeps needing patches (founder, 2026-11-03).
+15. The only limits: the tier's simultaneous runs and storage (the platform
+    control record), the owner's own settings (off by default), vendors' limits,
+    and recorded technical ceilings, each with its reason. Every path honours the
+    owner's limits.
 
-Sandbox proof: `npm run test:root -w sandbox`; memory proof: `npm run
-test:memory -w owner` (in `platform/`). A skip is not a pass. Platform secrets live
-only in the GitHub `production` environment; its tests need none.
+Python-stack sandbox, filesystem or process-limit work needs
+`scripts/linux_oracle.py`; in `platform/`, `npm run test:root -w sandbox` and
+`npm run test:memory -w owner`. A skip is not a pass. Secrets: `set -a; source
+scripts/load_secrets.sh; set +a`; platform secrets live only in the GitHub
+`production` environment.

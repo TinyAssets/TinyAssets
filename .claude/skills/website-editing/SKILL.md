@@ -12,17 +12,14 @@ description: "Conventions for editing the TinyAssets public site (WebSite/site-r
 `confirm: deploy` rolls back. The Svelte rollback tree was retired
 on 2026-09-02; do not recreate a second tree or a parity step.
 
-These are project-level website rules for every provider; `AGENTS.md` only
-points here.
-
 ## Before you edit anything
 
 1. **Read `WebSite/PREVIEW.md`** (the preview loop) and, if you might ship,
    `WebSite/DEPLOY.md`.
-2. **Know what the site is for.** One sentence the whole site serves: *your own
-   AI universe: a cloud agent that runs on your subscription, builds any
-   automation to any platform from primitives, learns you continuously, and
-   runs 24/7 under your control.* Every page has one job; the map is in
+2. **Know what the site is for.** One sentence the whole site serves: *an agent
+   of your own in the chat bubble: a starter package of agent files that runs
+   on your own engine (your provider's CLI on your subscription or key, or your
+   own main agent), which you customize to build anything.* Every page has one job; the map is in
    `openspec/specs/public-website-surface/spec.md`.
 3. **Tokens live in the design system.** Colour, type, spacing, and the
    vocabulary classes (`.sheet`, `.rule`, `.ledger`, `.receipt`, `.ev`,
@@ -35,15 +32,7 @@ points here.
    listing) and `python WebSite/brand/render_og.py` renders the OG card.
    Never hand-edit an exported PNG or ICO.
 
-## The iteration loop
-
-```
-cd WebSite/site-react && npm run dev     # http://localhost:3000, live /mcp proxied
-```
-
-Edit, the tab updates (HMR). If a tab ever needs F5, investigate; do not
-normalise the workaround. Copy and tokens are reviewed in the browser, not in
-the diff.
+Copy and tokens are reviewed in the browser (`npm run dev`), not in the diff.
 
 ## Copy rules
 
@@ -90,58 +79,16 @@ Every retired route is a soft-landing alias through `app/_components/Moved.tsx`
 (`NAV`); canonical URLs in `SITE`. Adding a nav item updates desktop and the
 phone drawer together.
 
-## Build, test, sweep, ship
+## Done and shipped
 
-From the repo root (paths written in full so they resolve the same for you and
-for the doc checker):
-
-```
-cd WebSite/design-system && npm run build   # after any token/component change
-cd ../site-react && npm test                # contract + boundary
-npm run build                               # out/<route>/index.html for every route
-```
-
-Then, still in `WebSite/site-react`:
-
-- `python WebSite/site-react/scripts/sweep.py --shots ../../out-shots` — every
-  route and alias at 390 px and 1280 px; requires errs 0, warns 0, no overflow.
-- `node WebSite/site-react/scripts/snapshot-public.mjs` — refresh
-  `lib/mcp-snapshot.json` when it is stale.
-
-Before declaring done: the sweep is clean, the screenshots were looked at,
+Before declaring done: `npm test` passes, the sweep
+(`WebSite/site-react/scripts/sweep.py`, 390 px and 1280 px, errs 0, warns 0, no
+overflow) is clean, the screenshots were looked at,
 and protected live surfaces render an explicit signed-in state while snapshots
 retain their date and provenance. Reject raw placeholders such as `{}`, `[]`,
-`undefined`, or epoch numbers.
+`undefined`, or epoch numbers. Refresh a stale `lib/mcp-snapshot.json` with
+`node WebSite/site-react/scripts/snapshot-public.mjs`.
 
 Ship through the normal pull-request path. A site-source merge runs
 `deploy-site-react.yml`, then the canary and `deployed_sha.py` checks in
 `WebSite/DEPLOY.md`.
-
-## Auto-iterate on recurring website failures
-
-| Recurrence | Ratchet |
-|---|---|
-| 1st | Fix in place. Note it in the relevant doc. |
-| 2nd | Add the rule to **this** SKILL.md and PREVIEW.md / DEPLOY.md. |
-| 3rd | Build a runnable check under the site's `scripts/` directory (node test or the sweep). |
-| 4th | Wire it as a hook; runnable from any provider. |
-| Next | Pre-commit / CI gate. |
-
-Ratchets already in place: cross-provider drift (`cross-provider-drift`
-invariant); the public-read boundary (node tests); the rendered sweep
-(`WebSite/site-react/scripts/sweep.py`).
-
-## Files involved
-
-| File | What it is |
-|---|---|
-| `WebSite/site-react/` | The site source |
-| `WebSite/site-react/lib/site.ts` | Canonical URLs and the nav |
-| `WebSite/site-react/lib/live.ts` | Browser authentication boundary for live reads |
-| `WebSite/site-react/scripts/` | Tests, snapshot baker, sweep |
-| `WebSite/design-system/` | `@tiny/design-system`: tokens, base, components, `DESIGN.md` |
-| `WebSite/brand/` | The mark's SVGs and exporters |
-| `WebSite/shared/mcp/public-read-contract.js` | Public read contract shared by site and baker |
-| `WebSite/PREVIEW.md`, `WebSite/DEPLOY.md` | Preview loop; deploy and verify |
-| `.github/workflows/deploy-site-react.yml` | Publishes site-source pushes; manual rollback |
-| `openspec/specs/public-website-surface/spec.md` | As-built spec of the public site |

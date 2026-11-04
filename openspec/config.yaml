@@ -1,34 +1,5 @@
 schema: spec-driven
 
-# Project context — shown to AI when creating artifacts.
 context: |
-  TinyAssets: the default bubble agent is a starter package of agent files
-  run on the user's own unmodified engine (README.md § Direction). The build
-  is the TypeScript platform in `platform/` on Cloudflare Workers, Durable
-  Objects, R2 and E2B (ADR-032 to ADR-037); its plan, specs and owed findings
-  are `openspec/changes/clean-sheet-platform/`. `tinyassets/` and `deploy/`
-  are the retiring stack: fixes only, no new feature (ADR-032), deleted at
-  the cutover; `openspec/specs/` is that stack's as-built baseline and is
-  replaced at the cutover.
-
-  Conventions that constrain every change:
-  - AGENTS.md owns process, README.md § Direction owns direction,
-    docs/decisions/ (ADRs) own why, docs/architecture.md is the map.
-  - Fail loudly; a real-looking mock fallback is worse than a crash; uploads
-    are verbatim; research comes before building (AGENTS.md Facts 8, 9, 14).
-  - No provider-specific code: engine and source differences are data.
-  - Platform gates: `cd platform && npm ci && npm run typecheck && npm test`.
-  - Public-surface changes need the handles canary and a rendered-chatbot
-    ui-test.
-
-rules:
-  proposal:
-    - Always include capability names in kebab-case; check openspec/specs/ for existing capabilities before adding new ones.
-    - One delivery change has one intent expressible in one sentence, one owner, one branch, one PR, and no full-product/vision bulk conversion. Reference ADRs/architecture/audits and park unrelated findings instead.
-    - After scaffolding a change and before claim/build, run `python scripts/openspec_flow.py check-change <name> --provider <exact-session-provider>`.
-  specs:
-    - Requirements use SHALL language, with SHALL/MUST in the first line of each requirement body; every requirement has at least one "#### Scenario:" block.
-    - Ground requirements in actual as-built behavior (cite the owning module in prose when helpful; the platform's live specs are under `openspec/changes/clean-sheet-platform/specs/`); do not spec aspirations.
-  tasks:
-    - Order tasks by dependency; each task is landable and verifiable on its own.
-    - Use at most 12 total task checkboxes with explicit acceptance and verification. This is the 2026-07-28 v1 ceiling, reviewed on 2026-08-11; legacy oversized changes are diagnostic and must not be mechanically fanned out.
+  The build is the TypeScript platform in `platform/` (ADR-032 to ADR-037); its plan and specs are `openspec/changes/clean-sheet-platform/`.
+  `tinyassets/` and `deploy/` are the retiring stack, and `openspec/specs/` is its as-built record; both go at the cutover.

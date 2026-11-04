@@ -852,9 +852,7 @@ failed. A working conversation plus supported browser speech must render `Voice`
 `Voice · Connect`; the first tap may show the browser-speech disclosure but must stop before
 microphone permission for Jonathan's explicit bounded physical-device proof. An unsupported
 browser must name that browser/device limitation while typed chat remains usable. No host file,
-developer bypass, new credential, provider switch, or platform-funded usage counts. The proof
-order, stop conditions, and evidence packet are in
-`docs/ops/realtime-voice-mobile-handoff.md`.
+developer bypass, new credential, provider switch, or platform-funded usage counts.
 
 Stop for Jonathan at the rendered disclosure or honest unsupported-browser state before starting
 microphone acceptance. The app must derive the current binding; do not ask him to name it or
