@@ -1452,8 +1452,9 @@ interface Shown<T> {
  * chunk-wise edit's memory does not depend on the file; the reads and the time one call
  * holds. An edit reads each source chunk up to three times (scan, hash, make) and puts each
  * changed one, so a file of n chunks makes at most 4n subrequests of the 10,000 an invocation
- * has (Workers limits, internal services included); and its CPU, measured in workerd
- * (`memory/leg.mjs`), stays well inside the 30 s a request has at this size.
+ * has (Workers limits, internal services included); and its CPU, measured in workerd for the
+ * worst edit (the first chunk's, longer, so every chunk is remade and hashed: about 5 ms a
+ * chunk, 2026-11-04), is about 10 s at 2,000 chunks, inside the 30 s a request has.
  */
 export const EDIT_BYTES_MAX = 2000 * CHUNK_BYTES;
 

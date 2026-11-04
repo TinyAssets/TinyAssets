@@ -80,10 +80,11 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 13
-- **technical ceiling**: 156
-- **total**: 184
+- **technical ceiling**: 166
+- **default**: 1
+- **total**: 195
 
-Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
+Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-04.
 
 Removed by this slice, since only the tier's storage bounds what they bounded, or no
 platform fact stood behind them:
@@ -168,7 +169,7 @@ reason; none refuses a write.
 | `owner/src/files.ts` `MAX_HELD_CHUNKS` | 20,000 | chunks all open uploads hold | a new upload refused while they hold it | technical ceiling | The 10 GB, inside `file_intents`. |
 | `owner/src/files.ts` open uploads' bytes | the storage figure, its most | bytes all open uploads hold before they commit | an upload's begin refused `uploads_open` (409 at the doors) when what is stored fits but what open uploads hold leaves no room: reported apart from stored bytes, never "full", never an upgrade | technical ceiling | Their chunks count in the storage figure from begin, so they can never hold more than it. An upload the sync agent gives up is aborted at once (`upload_abort`), and a sync lease's open uploads are aborted when the lease ends, so none waits out `INTENT_TTL_S` holding room. |
 | `owner/src/files.ts` `INTENT_TTL_S` | 86,400 s | how long a file upload may stay open | a large upload over a slow link must finish within a day | technical ceiling | An open upload holds its chunks in `file_intents` and the quota until it ends; a 40 GiB file at 1 MB/s takes 11 hours. |
-| `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. |
+| `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. `file_edit` is no longer bound by it (ADR-037, ruling 2): it edits chunk by chunk (`EDIT_BYTES_MAX`, below). |
 | `owner/src/files.ts` `MAX_SYNC_OPS` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short in the object's request CPU. |
 | `owner/src/files.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The 10 GB, inside the manifest's bytes. |
 | `owner/src/files.ts` `tempDir` | 239 bytes | a temporary directory's prefix | a longer prefix refused | technical ceiling | One path component, `MAX_NAME_BYTES` 255, with its 16 hex. |
@@ -265,7 +266,7 @@ reason; none refuses a write.
 | `owner/src/socket-shape.ts` `SOCKET_TICKETS` | 1,024 | socket tickets outstanding | refused `socket_tickets_full` until one is used or expires | technical ceiling | Guard term `socket_tickets`. |
 | `owner/src/socket-shape.ts` ticket life | 30 s | a socket ticket's life | the app asks again | technical ceiling | A single-use credential in a URL, which servers and proxies log; it lives only for the connect. |
 | `owner/src/relay.ts` sockets | 1,024 | the owner app's sockets open at once | another refused `sockets_full` | technical ceiling | The isolate's 128 MB (memory guard). |
-| `owner/src/relay.ts` tails | 4 Mi UTF-16 units | the live runs' tails, together | a late joiner sees fewer old frames | technical ceiling | The isolate's 128 MB. Frames are never committed. |
+| `owner/src/relay.ts` `TAIL_BYTES` | 4 Mi UTF-16 units (8 MiB) | the live runs' tails of every owner object in the isolate, together (`slots.ts` `SharedBudget`, review M5) | a late joiner sees fewer old frames; past it the object holding the most drops its oldest | technical ceiling | The isolate's 128 MB, one term of the counts test (`guards/memory-counts.test.ts`). Frames are never committed. |
 | `owner/src/relay.ts` one frame kept | 256 Ki units | one frame in a tail | relayed live, not kept | technical ceiling | As above. |
 | `owner/src/run-events.ts` `EVENTS_BODY_MAX` | 64 KiB | a runner's events post | refused `events_too_large`; the runner posts more often | technical ceiling | The isolate's 128 MB (memory guard). |
 | `owner/src/run-events.ts` `EVENTS_IN_FLIGHT` | 8 | events posts held at once | `events_busy` (503), posted again | technical ceiling | As above. |
@@ -313,6 +314,41 @@ itself is bounded by structure (chunks, streams and a slot pool), not by these f
 |---|---|---|---|---|---|
 | `owner/src/encoded.ts` `RESULT_CHARS` | 50,000 bytes of JSON text | one tool answer: every read's page (mail, a chain, collection rows, history, digests, `file_read`, `fetch`, `file_list`, `file_history`, `search`, a run's view, a `code` answer) | the page ends before an item that would pass it, always answering its first; a body cut to fit says so (`body_bytes`, `body_next_offset`, `truncated`) and the rest is read by range (`body_offset`), so nothing is out of reach | technical ceiling | The strictest documented client default: Claude Code keeps a tool's text result inline up to 50,000 characters and saves a longer one to a file the model reads by reference (`code.claude.com/docs/en/mcp`, retrieved 2026-11-04; memory_research.md §3). A character is at least one byte, so 50,000 bytes is within 50,000 characters. ChatGPT documents none (`developers.openai.com/apps-sdk/reference`). Raising it through a client's own metadata (`anthropic/maxResultSizeChars`) would be provider-specific (Direction 2). |
 | `doors/src/mcp.ts` `MCP_BODY_MAX` | 4 MiB | one JSON-RPC request on `/mcp` | `413` | technical ceiling | The MCP SDK's own `maxRequestBodySize`, kept: the SDK materializes a message whole, so its ceiling is what the doors' isolate holds a few at a time; models do not emit multi-MiB arguments, and bodies up to `BODY_BYTES_MAX` (8 MiB) go by `/api` (memshape_research.md §4). |
+
+## Memory bounded by structure (the platform memory fix, PR 2)
+
+An isolate's memory is bounded by counts the code enforces times costs the code constructs
+(ADR-037, `memshape_research.md` §2): large data moves only as streams or 4 MiB chunks, and a
+path holding chunks takes one slot of an isolate's pool (`owner/src/slots.ts`) while it holds
+them. The counts test (`owner/guards/memory-counts.test.ts`) holds the sum within the
+isolate's 128 MB; the workerd memory leg (`npm run test:memory -w owner`) proves each path's
+cost does not depend on its data's size.
+
+| Where | Value | Bounds | A user hits | Class | Reason |
+|---|---|---|---|---|---|
+| `owner/src/holds.ts` `OWNER_CHUNK_SLOTS` | 4 slots | the chunk-holding calls (an edit's pass, an append's tail, a body's window) one owner isolate runs at once | a fifth waits its turn, first come first served | technical ceiling | The counts test: 4 x `CHUNK_SLOT_BYTES` (48 MiB) + `TAIL_BYTES` (8 MiB) + `OWNER_BASELINE_BYTES` (8 MiB) + `UNMODELED_BYTES` (24 MiB) = 88 MiB of 128,000,000 bytes; a sixth slot would pass it. Production's `memoryUsageBytes` resets it in a one-line change. |
+| `owner/src/slots.ts` `SLOT_WAIT_MS`, `waiters` | 10 s; 4 x the pool's capacity waiting | how long, and how many, wait for a slot | refused `busy` before it changes anything: `503` with `Retry-After: 1` on `/api`, the same refusal on `/mcp`; retried, never a lost write | technical ceiling | ADR-037 ruling 1: rarely exceeded, loud and retryable, no acknowledged write lost. A slot's work is chunk reads and puts in the same colo, well under a second, so 10 s queues ordinary contention; a bounded queue keeps an overload from holding requests open without end. |
+| `owner/src/owner-do.ts` `EDIT_BYTES_MAX` | 2,000 chunks (8,000 MiB) | the largest file one `file_edit` edits | refused `Invalid`, naming the size; a larger file is rewritten by upload | technical ceiling | ADR-037 ruling 2: no longer `WHOLE_BYTES`, since a chunk-wise edit holds one slot whatever the file's size. An edit reads each chunk up to three times and puts each changed one, at most 4n subrequests of the 10,000 an invocation has; its worst case (the first chunk's edit, longer, so every chunk is remade and hashed) measured in workerd at about 5 ms a chunk (2026-11-04), about 10 s at 2,000 chunks, inside a request's 30 s of CPU. |
+
+Unit costs, the counts test's terms (not bounds a user meets):
+- `owner/src/slots.ts` `UNIT_BYTES`, 4 MiB: a slot's unit, the files plane's chunk
+  (`manifest.ts` `CHUNK_BYTES`).
+- `owner/src/slots.ts` `CHUNK_SLOT_BYTES`, 3 units (12 MiB): what a slot's path holds at
+  most, two chunks in hand and the files plane's copy of one. The workerd leg measures it:
+  an edit's peak 8.05 MiB, a window read's 4.01 MiB, the increment per concurrent edit
+  10.01 MiB, and a difference of 0 MiB between 8 and 32 MiB edits and between 4 and 16 MiB
+  bodies (2026-11-04).
+- `owner/src/holds.ts` `OWNER_BASELINE_BYTES`, 8 MiB: the owner Worker's resting isolate in
+  workerd, 5.47 MiB of heap and backing stores after a swept collection
+  (`owner/memory/baselines.mjs`; the doors' 7.28 MiB, the files Worker's 0.73 MiB), rounded
+  up, until production's `memoryUsageBytes` replaces it.
+- `owner/src/holds.ts` `UNMODELED_BYTES`, 24 MiB: garbage not yet collected and the
+  runtime's own buffers, from the measured gap between workerd's RSS with chunks made and
+  dropped and no forced collection (78.9 MiB) and its resting RSS (55.7 MiB), rounded up,
+  until production's replaces it.
+- `/api`'s 16 MiB JSON body stays (ADR-037 ruling 3), to be weighted in the doors' slots, one
+  large call at a time an isolate, with the raw streamed body, in PR 3b; MCP keeps the SDK's
+  4 MiB (`MCP_BODY_MAX`, above).
 
 ## Slice P's bounds
 
