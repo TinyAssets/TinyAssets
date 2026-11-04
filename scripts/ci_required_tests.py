@@ -309,13 +309,34 @@ def pytest_addoption(parser) -> None:  # pragma: no cover - exercised via pytest
 
 
 class TreeAudit:
-    """Records which tree each running test file touches; reports the unmapped ones."""
+    """Records which tree each running test touches; reports the touches its map lacks.
+
+    Seen: opens (``open``, ``os.open``, ``sqlite3.connect``), listings
+    (``os.listdir``, ``os.scandir``, so ``os.walk`` and ``Path.glob``), existence
+    checks (``os.stat``, ``os.lstat``, ``os.access``, so ``Path.exists`` and
+    ``os.path.isdir``), and child processes: each argument word, a shell's command
+    string split as the shell would, and git, which run inside the checkout reads
+    every tree unless its subcommand reads nothing. The one residual: a native
+    extension that opens a file itself (lxml, pyarrow, lancedb) raises no event.
+    """
 
     EVENTS = frozenset({"open", "os.listdir", "os.scandir", "subprocess.Popen",
-                        "os.system", "os.posix_spawn", "os.exec"})
-    #: git subcommands that read the checkout; any of them sees every tree.
-    GIT_READS = frozenset({"diff", "ls-files", "ls-tree", "status", "log", "show", "grep",
-                           "archive", "blame", "stash", "add", "commit"})
+                        "os.system", "os.posix_spawn", "os.exec", "sqlite3.connect"})
+    #: The git subcommands that read nothing of the checkout. Any other git run
+    #: inside it, or pointed at it, sees every tree.
+    GIT_HARMLESS = frozenset({"rev-parse", "config", "--version", "version", "var", "help"})
+    #: git's global options that take the next word as their value.
+    GIT_VALUED = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                            "--super-prefix", "--config-env"})
+    #: `init` and `clone` options that take the next word as their value.
+    GIT_TARGET_VALUED = frozenset({
+        "-b", "--initial-branch", "--branch", "--template", "--separate-git-dir",
+        "--object-format", "--ref-format", "--depth", "-o", "--origin", "--reference",
+        "-c", "--config", "-u", "--upload-pack", "--shallow-since", "--shallow-exclude",
+        "-j", "--jobs", "--filter", "--bundle-uri", "--server-option"})
+    SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+    #: Existence checks raise no audit event, so these are wrapped.
+    WRAPPED = ("stat", "lstat", "access", "open")
 
     def __init__(self, root: Path) -> None:
         import threading
@@ -324,30 +345,108 @@ class TreeAudit:
 
         self.at = affected_tests
         self.root = root
-        self._map: tuple[dict[str, set[str]], set[str]] | None = None
         self.every = (*affected_tests.TREES, affected_tests.TOP_MD)
         self.roots = tuple(sorted({os.path.abspath(root), os.path.realpath(root)}))
+        self.plugin = os.path.realpath(__file__)
         self.current: str | None = None
-        self.touches: dict[str, list[tuple[str, str]]] = {}
+        #: The file of the broader-scoped fixture being set up, if one is.
+        self.fixture: str | None = None
+        #: key -> [(tree, path, file that reads it once, innermost repo frame)]
+        self.touches: dict[str, list[tuple[str, str, str | None, str | None]]] = {}
         self._local = threading.local()
+        self._map = None
+        self._users: dict[str, set[str]] = {}
 
     # -- recording ----------------------------------------------------------------
     def __call__(self, event: str, args: tuple) -> None:
         if event not in self.EVENTS or self.current is None or getattr(
                 self._local, "busy", False):
             return
+        if event == "open" and getattr(self._local, "wrapped_open", False):
+            return  # the os.open wrapper already saw this call, with its dir_fd
         self._local.busy = True
         try:
-            for tree, path in self._trees(event, args):
-                self.touches.setdefault(self.current, []).append((tree, path))
+            self._record(list(self._trees(event, args)))
         except Exception as exc:  # never raise into the audited call; fail the test instead
-            self.touches.setdefault(self.current, []).append(("?", f"audit error {exc!r}"))
+            self._record([("?", f"audit error {exc!r}")])
         finally:
             self._local.busy = False
 
+    def wrap(self, name: str, original):
+        """`os.<name>` that records the tree its path lies in, then calls through."""
+        def audited(path, *args, **kwargs):
+            if self.current is not None and not getattr(self._local, "busy", False):
+                self._local.busy = True
+                try:
+                    self._record(list(self._path(path, kwargs.get("dir_fd"))))
+                except Exception as exc:
+                    self._record([("?", f"audit error {exc!r}")])
+                finally:
+                    self._local.busy = False
+            if name != "open":
+                return original(path, *args, **kwargs)
+            self._local.wrapped_open = True
+            try:
+                return original(path, *args, **kwargs)
+            finally:
+                self._local.wrapped_open = False
+
+        audited.__wrapped__ = original
+        return audited
+
+    def _record(self, found: list[tuple[str, str]]) -> None:
+        if not found:
+            return
+        once, inner = self._owner()
+        for tree, path in found:
+            self.touches.setdefault(self.current, []).append((tree, path, once, inner))
+
+    def _repo_file(self, filename: str) -> str | None:
+        if not filename.endswith(".py"):
+            return None
+        path = os.path.realpath(filename)
+        if path == self.plugin:
+            return None
+        for root in self.roots:
+            if path.startswith(root + os.sep):
+                return path[len(root) + 1:].replace(os.sep, "/")
+        return None
+
+    def _owner(self) -> tuple[str | None, str | None]:
+        """(the file that makes this read once for all its users, the innermost repo frame).
+
+        A read during a module's import is that module's; one in a broader-scoped
+        fixture's setup is the fixture file's. Either way it is judged by the file's
+        users, not by whichever test happened to trigger it first.
+        """
+        once = inner = None
+        frame = sys._getframe(2)
+        while frame is not None and once is None:
+            rel = self._repo_file(frame.f_code.co_filename)
+            if rel:
+                inner = inner or rel
+                if frame.f_code.co_name == "<module>":
+                    once = rel
+            frame = frame.f_back
+        return once or self.fixture, inner
+
+    def _import_system_listing(self) -> bool:
+        """Whether the audited call's own caller is the import system (it lists sys.path)."""
+        frame = sys._getframe(1)
+        while frame is not None and os.path.realpath(frame.f_code.co_filename) == self.plugin:
+            frame = frame.f_back
+        name = frame.f_code.co_filename if frame is not None else ""
+        return name.startswith("<frozen importlib") or f"{os.sep}importlib{os.sep}" in name
+
     def _relative(self, raw, base: str | None = None) -> str | None:
         """`raw` relative to the checkout ("" for its root), or None outside it."""
-        path = os.path.normpath(os.path.join(base or os.getcwd(), os.fsdecode(raw)))
+        raw = os.fsdecode(raw)
+        if not os.path.isabs(raw) and base is None:
+            try:
+                base = os.getcwd()
+            except FileNotFoundError:
+                return None  # a deleted working directory holds no checkout path
+        path = os.path.normpath(os.path.join(base or "", raw))
         for root in self.roots:
             if path == root:
                 return ""
@@ -355,98 +454,204 @@ class TreeAudit:
                 return path[len(root) + 1:].replace(os.sep, "/")
         return None
 
-    @staticmethod
-    def _importing() -> bool:
-        frame = sys._getframe(2)
-        while frame is not None:
-            name = frame.f_code.co_filename
-            if name.startswith("<frozen importlib") or f"{os.sep}importlib{os.sep}" in name:
-                return True
-            frame = frame.f_back
-        return False
+    def _path(self, path, dir_fd=None):
+        """The tree a path (relative to `dir_fd`, else the working directory) lies in."""
+        if path is None or isinstance(path, int):
+            return
+        base = None
+        if dir_fd is not None and not os.path.isabs(os.fsdecode(path)):
+            base = os.readlink(f"/proc/self/fd/{dir_fd}")
+        rel = self._relative(path, base)
+        if rel and self.at.tree_of(rel):
+            yield self.at.tree_of(rel), rel
 
     def _trees(self, event: str, args: tuple):
         """(tree, path) for each tree this event touches."""
+        if event == "sqlite3.connect":
+            database = args[0] if args else None
+            if isinstance(database, (str, bytes, os.PathLike)):
+                name = os.fsdecode(database)
+                if name.startswith("file:"):
+                    name = name[5:].split("?", 1)[0]
+                if name and name != ":memory:":
+                    yield from self._path(name)
+            return
         if event in ("open", "os.listdir", "os.scandir"):
             path = args[0] if args else None
             if event != "open" and path is None:
                 path = "."
-            # An fd names no path, and os.open (mode None) may be relative to a
-            # dir_fd the event does not carry.
-            if isinstance(path, int) or path is None or (
-                    event == "open" and args[1] is None
-                    and not os.path.isabs(os.fsdecode(path))):
+            if path is None or isinstance(path, int):
                 return
-            rel = self._relative(path)
-            if rel == "":
+            if self._relative(path) == "":
                 # Listing the root sees which top-level .md files exist. (A tree's own
                 # directory is never deleted by a tree-only diff: gate_selection runs
                 # the whole suite for that.) Opening the root is no listing, and the
                 # import system lists every sys.path entry, the checkout among them.
-                if event != "open" and not self._importing():
+                if event != "open" and not self._import_system_listing():
                     yield self.at.TOP_MD, "."
-            elif rel is not None and self.at.tree_of(rel):
-                yield self.at.tree_of(rel), rel
+                return
+            yield from self._path(path)
             return
+        env = None
         if event == "subprocess.Popen":
-            argv, cwd = args[1], args[2]
+            argv, cwd, env = args[1], args[2], args[3]
         elif event == "os.system":
-            argv, cwd = os.fsdecode(args[0]).split(), None
+            argv, cwd = ["/bin/sh", "-c", os.fsdecode(args[0])], None
         else:
-            argv, cwd = args[1], None
+            argv, cwd, env = args[1], None, args[2]
         argv = [argv] if isinstance(argv, (str, bytes, os.PathLike)) else list(argv or ())
         words = [os.fsdecode(w) for w in argv if isinstance(w, (str, bytes, os.PathLike))]
-        here = os.path.join(os.getcwd(), os.fsdecode(cwd)) if cwd else os.getcwd()
-        for word in (here, *words):
-            if word and not word.startswith("-") and "\n" not in word:
-                rel = self._relative(word, here)
-                if rel and self.at.tree_of(rel):
-                    yield self.at.tree_of(rel), rel
-        if words and os.path.basename(words[0]) == "git":
-            where, rest = here, words[1:]
-            while rest and rest[0].startswith("-"):
-                if rest[0] == "-C" and len(rest) > 1:
-                    where, rest = os.path.join(here, rest[1]), rest[2:]
-                else:
-                    rest = rest[1:]
-            # git run anywhere inside the checkout sees every tree.
-            if rest and rest[0] in self.GIT_READS and self._relative(where) is not None:
-                yield from ((tree, "git " + " ".join(words[1:4])) for tree in self.every)
+        try:
+            here = os.path.join(os.getcwd(), os.fsdecode(cwd)) if cwd else os.getcwd()
+        except FileNotFoundError:
+            here = os.fsdecode(cwd) if cwd else ""
+        yield from self._path(here)
+        for command in self._commands(words):
+            for word in command:
+                if word and not word.startswith("-") and "\n" not in word:
+                    yield from self._path(os.path.join(here, word))
+            if self._git_reads(command, here, env):
+                yield from ((tree, "git " + " ".join(command[1:4])) for tree in self.every)
+
+    def _commands(self, words: list[str]) -> list[list[str]]:
+        """The argv of each command a child runs: a shell's ``-c`` string, split."""
+        import shlex
+
+        if len(words) > 2 and os.path.basename(words[0]) in self.SHELLS and words[1] == "-c":
+            try:
+                lexer = shlex.shlex(words[2], posix=True, punctuation_chars=True)
+                lexer.whitespace_split = True
+                tokens = list(lexer)
+            except ValueError:
+                tokens = words[2].split()
+            commands, command = [], []
+            for token in tokens:
+                if token and set(token) <= set(";&|()<>"):
+                    commands.append(command)
+                    command = []
+                elif command or "=" not in token or token.startswith(("-", "/", ".")):
+                    command.append(token)
+            commands.append(command)
+            return [c for c in commands if c] + [words]
+        return [words]
+
+    def _git_reads(self, argv: list[str], here: str, env) -> bool:
+        """git run inside the checkout (or pointed at it) with a subcommand that reads it."""
+        if not argv:
+            return False
+        program = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if program.removesuffix(".exe") != "git":
+            return False
+        where, pointed, i = here, [], 1
+        while i < len(argv) and argv[i].startswith("-"):
+            option = argv[i]
+            if option in self.GIT_HARMLESS:
+                return False
+            if option.startswith(("--git-dir=", "--work-tree=")):
+                pointed.append(option.split("=", 1)[1])
+            elif option in self.GIT_VALUED and i + 1 < len(argv):
+                if option == "-C":
+                    where = os.path.join(where, argv[i + 1])
+                elif option in ("--git-dir", "--work-tree"):
+                    pointed.append(argv[i + 1])
+                i += 1
+            i += 1
+        if i >= len(argv) or argv[i] in self.GIT_HARMLESS:
+            return False
+        sub, rest = argv[i], argv[i + 1:]
+        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_PROJECT_ROOT"):
+            value = env.get(name) if hasattr(env, "get") else None
+            if value:
+                pointed.append(os.fsdecode(value))
+        targets = [os.path.join(where, p) for p in pointed] or [where]
+        if sub in ("init", "clone"):
+            # These read only the paths they are given; with none, the working directory.
+            named, j = [], 0
+            while j < len(rest):
+                if rest[j] in self.GIT_TARGET_VALUED:
+                    j += 2
+                    continue
+                if not rest[j].startswith("-"):
+                    named.append(os.path.join(where, rest[j]))
+                j += 1
+            targets = named or targets
+        return any(self._relative(t) is not None for t in targets)
 
     # -- reporting ----------------------------------------------------------------
-    def unmapped(self, nodeid: str) -> list[tuple[str, str]]:
-        rel = nodeid.split("::", 1)[0]
-        seen = self.touches.pop(nodeid, []) + self.touches.get(rel, [])
-        if seen and self._map is None:
+    def _load(self):
+        if self._map is None:
             # Built on the first touch (about 6 s on this repo), not per process start,
             # and unaudited: its own reads are nobody's test.
+            busy = getattr(self._local, "busy", False)
             self._local.busy = True
             try:
-                self._map = self.at.tree_readers(self.at.Graph(self.root))
+                graph = self.at.Graph(self.root)
+                readers, shared = self.at.tree_readers(graph)
+                tests = {rel for rel, src in graph.files.items()
+                         if self.at.is_test_file(rel) and self.at.defines_tests(src)}
+                conftest = set()
+                for rel in graph.files:
+                    if rel.endswith("conftest.py"):
+                        conftest |= {rel} | graph.closure(rel)
+                self._map = (graph, readers, shared, tests, conftest)
             finally:
-                self._local.busy = False
-        readers, shared = self._map or ({}, set())
+                self._local.busy = busy
+        return self._map
+
+    def users(self, rel: str) -> set[str]:
+        """The test files that load `rel`: all of them for a conftest's closure."""
+        graph, _, _, tests, conftest = self._load()
+        if rel not in self._users:
+            self._users[rel] = set(tests) if rel in conftest else {
+                test for test in tests if test == rel or rel in graph.closure(test)}
+        return self._users[rel]
+
+    def unmapped(self, nodeid: str) -> list[tuple[str, str, str, str]]:
+        """(tree, path, file to fix, note) for each touch the map does not give its reader."""
+        rel = nodeid.split("::", 1)[0]
+        seen = self.touches.pop(nodeid, []) + self.touches.get(rel, [])
+        if not seen:
+            return []
+        _, readers, shared, _, _ = self._load()
         missed, shown = [], set()
-        for tree, path in seen:
-            if tree in shared or rel in readers.get(tree, ()) or (tree, path) in shown:
+        for tree, path, once, inner in seen:
+            if tree == "?":
+                found = (tree, path, inner or rel, "")
+            elif tree in shared:
                 continue
-            shown.add((tree, path))
-            missed.append((tree, path))
+            elif once and self.users(once):
+                users = self.users(once)
+                bad = sorted(test for test in users if test not in readers.get(tree, ()))
+                if not bad:
+                    continue
+                found = (tree, path, once, f"read once by {once} for its {len(users)} "
+                         f"test file(s); not mapped: {', '.join(bad[:3])}")
+            elif rel in readers.get(tree, ()):
+                continue
+            else:
+                found = (tree, path, inner or rel, "")
+            if found[:3] not in shown:
+                shown.add(found[:3])
+                missed.append(found)
         return missed
 
 
-def _audit_message(rel: str, missed: list[tuple[str, str]]) -> str:
+def _audit_message(rel: str, missed: list[tuple[str, str, str, str]]) -> str:
     lines = [f"{rel} read a tree the merge gate's map does not give it, so a change to "
-             "that tree alone would skip this test (scripts/affected_tests.py tree_readers):"]
-    lines += [f"  {tree}: {path}" for tree, path in missed[:10]]
-    lines.append("Fix: name the path in this test file in path form (a string starting "
-                 "'<tree>/', or ROOT / '<tree>'), so the map sees the read.")
+             "that tree alone would skip it (scripts/affected_tests.py tree_readers):"]
+    for tree, path, where, note in missed[:10]:
+        lines.append(f"  {tree}: {path}" + (f" ({note})" if note else ""))
+    places = sorted({where for _, _, where, _ in missed})
+    lines.append(f"Fix: name the path in {', '.join(places)} in path form (a string "
+                 "starting '<tree>/', or ROOT / '<tree>'), so the map sees the read.")
     return "\n".join(lines)
 
 
 def pytest_configure(config) -> None:  # pragma: no cover - exercised via pytest -p
     if not config.getoption("--ci-tree-audit", default=False):
         return
+    import inspect
+
     import pytest
 
     audit = TreeAudit(Path(config.rootpath))
@@ -471,6 +676,20 @@ def pytest_configure(config) -> None:  # pragma: no cover - exercised via pytest
                 audit.current = None
 
         @pytest.hookimpl(hookwrapper=True)
+        def pytest_fixture_setup(self, fixturedef, request):
+            previous = audit.fixture
+            if fixturedef.scope != "function":
+                try:
+                    source = inspect.getsourcefile(fixturedef.func) or ""
+                except TypeError:
+                    source = ""
+                audit.fixture = audit._repo_file(source) or previous
+            try:
+                yield
+            finally:
+                audit.fixture = previous
+
+        @pytest.hookimpl(hookwrapper=True)
         def pytest_runtest_makereport(self, item, call):
             outcome = yield
             report = outcome.get_result()
@@ -481,8 +700,47 @@ def pytest_configure(config) -> None:  # pragma: no cover - exercised via pytest
                 report.outcome = "failed"
                 report.longrepr = _audit_message(item.nodeid.split("::", 1)[0], missed)
 
+    for name in TreeAudit.WRAPPED:
+        original = getattr(os, name)
+        wrapper = audit.wrap(name, original)
+        # Callers ask `os.open in os.supports_dir_fd`; the wrapper must answer the same.
+        for supported in (os.supports_dir_fd, os.supports_fd, os.supports_follow_symlinks,
+                          os.supports_effective_ids):
+            if original in supported:
+                supported.add(wrapper)
+        setattr(os, name, wrapper)
     sys.addaudithook(audit)
     config.pluginmanager.register(_Plugin(), "ci-tree-audit")
+
+
+#: The exit code of a pytest whose run finished but whose process would not end.
+HUNG_AFTER_RUN = 70
+#: How long a finished run may take to exit (TA_CI_EXIT_GRACE overrides it).
+EXIT_GRACE_SECONDS = 60
+
+
+def pytest_unconfigure(config) -> None:  # pragma: no cover - exercised via pytest -p
+    """A finished run must end. A thread a test leaves running (non-daemon, blocked)
+    holds the interpreter's exit forever, and the shard then hangs until the job's
+    timeout with no word of why. A daemon watchdog ends it instead, naming the threads."""
+    import faulthandler
+    import threading
+    import time
+
+    grace = float(os.environ.get("TA_CI_EXIT_GRACE", EXIT_GRACE_SECONDS))
+
+    def watchdog() -> None:
+        time.sleep(grace)
+        alive = [thread.name for thread in threading.enumerate()
+                 if thread.is_alive() and not thread.daemon
+                 and thread is not threading.main_thread()]
+        sys.stderr.write(f"\npytest finished but did not exit within {grace:g} s; still "
+                         f"running: {', '.join(alive) or 'no non-daemon thread'}\n")
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        sys.stderr.flush()
+        os._exit(HUNG_AFTER_RUN)
+
+    threading.Thread(target=watchdog, name="ci-exit-watchdog", daemon=True).start()
 
 
 def pytest_ignore_collect(collection_path, config):
@@ -1558,6 +1816,16 @@ def main() -> int:
         # know this shard ran and how pytest exited even when the junit is
         # missing or this shard's own verdict is red.
         _write_shard_manifest(manifest, args, selection, proc.returncode)
+
+    if proc.returncode == HUNG_AFTER_RUN:
+        summarise([
+            "### Required tests — DID NOT EXIT",
+            "",
+            f"pytest finished but its process did not end within {EXIT_GRACE_SECONDS} s:",
+            "a test left a thread running (its stack is in the log). Failing rather than",
+            "hanging the shard until the job's timeout.",
+        ])
+        return 1
 
     # Exit 3 = INTERNALERROR (e.g. a crashed xdist worker). When that happens the
     # run is TRUNCATED: tests are silently dropped from the report, so a

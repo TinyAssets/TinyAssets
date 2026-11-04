@@ -2356,7 +2356,9 @@ R, S, M and W.
   `tinyassets/`; widen that one list if the cutover deletes more. The same change deletes
   any other test that fails only because the code it checked is gone. None is skipped,
   quarantined or rewritten to pass. A test that also reaches kept code keeps its cases
-  for that code. Until then, each runs whenever a Python change could reach it, and never
+  for that code. A listed structural guard (`scripts/ci_structural_guards.py` `GUARDS`)
+  is deleted only once this line names the platform guard that replaces it, or the
+  recorded decision that retires its principle. Until then, each runs whenever a Python change could reach it, and never
   for a `platform/` or prose change it cannot read (the merge gate's tree selection,
   `affected_tests.provable_shape`).
 
