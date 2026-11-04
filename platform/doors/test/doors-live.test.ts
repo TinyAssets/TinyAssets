@@ -384,10 +384,11 @@ describe("/hooks/inbound, a capability URL", () => {
     return { who, app, ...made };
   }
 
+  /** An event to a capability URL: its id, its bytes, and its own time (by default, now). */
   function event(hookUrl: string, id: string, body = "{\"x\":1}",
-                 headers: Record<string, string> = {}): Request {
+                 headers: Record<string, string> = {}, at: number = now()): Request {
     return new Request(hookUrl, { method: "POST", body, headers: {
-      "Idempotency-Key": id, "X-Event-Timestamp": String(now()), ...headers } });
+      "Idempotency-Key": id, "X-Event-Timestamp": String(at), ...headers } });
   }
 
   it("is shown once, routed by its token's hash, and mails the binding's agent verbatim",
@@ -409,12 +410,17 @@ describe("/hooks/inbound, a capability URL", () => {
 
   it("answers a replayed event deduped, with its receipt, and mails once", async () => {
     const { who, url: hookUrl } = await hooked();
-    const first = await json<{ receipt: string }>(await call(event(hookUrl, "evt-r")));
-    const replay = await call(event(hookUrl, "evt-r"));
+    // A replay is the same event: its id, its bytes and its own time. (Stamped afresh, a
+    // second's tick between the two calls made it another event under the same id, so
+    // `event_conflict`, 409: the envelope the object dedupes on carries the event's time.)
+    const at = now();
+    const first = await json<{ receipt: string }>(await call(event(hookUrl, "evt-r",
+                                                                   undefined, {}, at)));
+    const replay = await call(event(hookUrl, "evt-r", undefined, {}, at));
     expect(replay.status).toBe(202);
     expect(await replay.json()).toMatchObject({ receipt: first.receipt, deduped: true });
     expect(await mail(who)).toHaveLength(1);
-    const conflict = await call(event(hookUrl, "evt-r", "{\"other\":true}"));
+    const conflict = await call(event(hookUrl, "evt-r", "{\"other\":true}", {}, at));
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toMatchObject({ error: "event_conflict" });
   });
