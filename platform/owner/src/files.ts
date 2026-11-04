@@ -2466,9 +2466,11 @@ export class Files {
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.
     const due = await this.#write(() => this.#storage.transactionSync(() => {
+      // Oldest first, a tie by hash: the order `file_chunks_due` holds (its key, then the
+      // table's), so the same chunks are taken whatever the plan.
       const rows = sql.exec<{ sha256: string; size: number; state: string }>(
         "SELECT sha256, size, state FROM file_chunks WHERE gc_after IS NOT NULL AND " +
-          "gc_after <= ? ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray();
+          "gc_after <= ? ORDER BY gc_after, sha256 LIMIT ?", now, DELETE_BATCH).toArray();
       const found = rows.map((row) => row.sha256);
       // Garbage past the owner's figure, oldest first, as far as covers it: due now; none the
       // newest manifest names.
@@ -2478,7 +2480,7 @@ export class Files {
       if (over > 0 && found.length < DELETE_BATCH) {
         for (const row of sql.exec<{ sha256: string; size: number }>(
                "SELECT sha256, size FROM file_chunks WHERE state = 'garbage' AND gc_after > ? " +
-                 "AND gc_after < ? ORDER BY gc_after LIMIT ?", now,
+                 "AND gc_after < ? ORDER BY gc_after, sha256 LIMIT ?", now,
                Number.isFinite(before) ? before : Number.MAX_VALUE,
                DELETE_BATCH - found.length).toArray()) {
           if (over <= 0) {

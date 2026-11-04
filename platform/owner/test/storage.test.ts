@@ -96,27 +96,44 @@ describe("the one storage number", () => {
     const r = await rig();
     const figure = 3 * (INLINE_BYTES + 1000);
     const small = r.bind(null, { tiers: tiers(figure) });
-    const shas: string[] = [];
+    const letGo: { sha256: string; at: number }[] = [];
     for (let i = 0; i < 4; i++) {
       const path = `/workspace/g${i}.bin`;
       await r.stub.fileWrite(small, { path, expected_etag: null,
                                       content: new Uint8Array(INLINE_BYTES + 1000).fill(i + 1) });
       const [row] = await sqlIn(r.stub, "SELECT c.sha256 FROM file_entries e JOIN " +
         "file_content_chunks c ON c.content_id = e.content_id WHERE e.name = ?", `g${i}.bin`);
-      shas.push(row!["sha256"] as string);
+      const sha256 = row!["sha256"] as string;
       await r.stub.fileRemove(small, { path, expected_etag: null, recursive: false });
       await r.stub.fileHistoryPurge(small, { path });
+      // When it was let go, read before any early collection can touch it (none can until
+      // the fourth: only then is the garbage past the figure).
+      const [held] = await sqlIn(r.stub, "SELECT gc_after FROM file_chunks WHERE sha256 = ?",
+                                 sha256);
+      letGo.push({ sha256, at: held!["gc_after"] as number });
       // Deleted: out of the owner's number at once, kept 30 days for recovery uncounted.
       expect((await r.stub.storageUsage(small)).used_bytes).toBe(0);
     }
-    // In grace, none is due for 30 days; but four files' garbage passes the figure of three.
-    const due = await sqlIn(r.stub, "SELECT MIN(gc_after) AS due FROM file_chunks");
+    // In grace, none is due for 30 days; but four files' garbage passes the figure of three,
+    // so the files lane may already be collecting the oldest early (the fourth delete rang
+    // it): that chunk is then `deleting`, its R2 delete in flight, and the rest still wait.
+    const due = await sqlIn(r.stub, "SELECT MIN(gc_after) AS due FROM file_chunks WHERE " +
+                                    "state = 'garbage'");
     expect(due[0]!["due"] as number).toBeGreaterThan(Date.now() / 1000 + GC_GRACE_S - 3600);
     await r.stub.fileMkdir(small, { path: "/workspace/x", expected_etag: null });
     await drainDue(r.stub);
-    // The oldest goes early; the rest, within the figure, wait out their grace.
-    const left = await sqlIn(r.stub, "SELECT sha256, state FROM file_chunks ORDER BY gc_after");
-    expect(left).toEqual(shas.slice(1).map((sha256) => ({ sha256, state: "garbage" })));
+    // Until the early delete, wherever it began, has landed.
+    for (let i = 0; i < 100 && (await sqlIn(r.stub, "SELECT 1 FROM file_chunks WHERE " +
+                                                    "state = 'deleting'")).length > 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    // The oldest goes early (by when it was let go, a tie by hash, as the lane takes them);
+    // the rest, within the figure, wait out their grace.
+    const oldest = [...letGo].sort((a, b) => a.at - b.at
+      || (a.sha256 < b.sha256 ? -1 : a.sha256 > b.sha256 ? 1 : 0));
+    const left = await sqlIn(r.stub, "SELECT sha256, state FROM file_chunks ORDER BY " +
+                                     "gc_after, sha256");
+    expect(left).toEqual(oldest.slice(1).map(({ sha256 }) => ({ sha256, state: "garbage" })));
     expect(await sqlIn(r.stub, "SELECT garbage_bytes FROM file_space"))
       .toEqual([{ garbage_bytes: figure }]);
     // The owner reads what is kept for recovery, and for how long at most.
