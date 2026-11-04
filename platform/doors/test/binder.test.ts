@@ -20,6 +20,7 @@ import {
   appCallback,
   appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient, rpcBody,
   serveFirstPartyDocument, setControl, sqlIn, url,
+  answerOf,
 } from "./support";
 
 function owner(): string {
@@ -118,7 +119,7 @@ describe("an MCP binding", () => {
         method: "tools/call", params: { name: "agent_register", arguments: {
           command_center_id: "cc", display_name: `port ${port}`, delivery_method: "pull",
           recipe_id: null } } });
-      expect(await rpcBody(filed)).toMatchObject({ result: { structuredContent: {} } });
+      expect(answerOf((await rpcBody(filed))["result"])).toMatchObject({});
     }
     const origin = await mcpOrigin(registered.clientId, "http://127.0.0.1:7777/callback");
     expect(await sqlIn(alice, "SELECT client, family FROM agent_cards")).toEqual([origin]);
@@ -287,7 +288,7 @@ describe("a forged owner, caller or origin in the request", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {
         name: "agents_list", arguments: {}, owner: bob, _meta: { owner: bob } } }),
     }));
-    expect(await rpcBody(response)).toMatchObject({ result: { structuredContent: { agents: [] } } });
+    expect(answerOf((await rpcBody(response))["result"])).toMatchObject({ agents: [] });
     expect(await reached(alice)).toBe(true);
     expect(await reached(bob)).toBe(false);
   });
@@ -345,7 +346,7 @@ describe("one owner's credential", () => {
         method: "tools/call", params: { name: "agent_register", arguments: {
           command_center_id: "cc", display_name: who, delivery_method: "pull",
           recipe_id: null } } });
-      expect(await rpcBody(response)).toMatchObject({ result: { structuredContent: {} } });
+      expect(answerOf((await rpcBody(response))["result"])).toMatchObject({});
     }
     const cards = async (who: string) =>
       (await sqlIn(who, "SELECT request FROM agent_cards")).map((row) =>

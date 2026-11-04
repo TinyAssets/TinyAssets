@@ -2411,6 +2411,35 @@ R, S, M and W.
   `public-website-surface` spec's `/connect` line. Then `connect_url` reaches every app's
   section, Grok's, Muse's and Gemini's among them.
 
+- [x] MEMORY The platform memory fix, before the go-ahead deploy (the research:
+  `memory_research.md`, PR 1 and the CI rule): each tool result sent once, as one text block
+  of its JSON, no `structuredContent` (no tool declares an `outputSchema`); every read paged
+  by its answer's encoded size, counted exactly without building it, to `RESULT_CHARS`
+  (50,000, Claude Code's inline default, `limits-audit.md`): mailbox, inbox and board
+  digests, mail chains, `collection_get`/`collection_list`/`collection_history`, a
+  conflict's answer, `file_read`, `fetch`, `file_list`, `file_history`, `search`, run views,
+  `code` answers; a cut body says `body_bytes`, `body_next_offset` and `truncated`, and
+  `body_offset` reads it through, byte-exact (the 8 MiB control-character body in about a
+  thousand pages); a placed body past one page read by its byte ranges, never held whole by
+  a read. One isolate-wide memory guard (`owner/src/memory.ts`, the module-state guard's
+  second pinned exemption): grants before anything large is held, refused `busy` (`503`,
+  `Retry-After`), the relay's share a reservation, the budget the isolate less a recorded
+  baseline (32 MiB, workerd); owner reads and placed writes, run inputs read whole, and the
+  doors' tool calls (`doors/src/answers.ts`) under it. CI: `memory-bound.test.ts` is the
+  ledger, `memory-scan.test.ts` the source scan, and the workerd memory leg
+  (`npm run test:memory -w owner`, its own `platform-tests` leg) measures each path's live
+  peak, several objects in one isolate at once among them.
+  Owed: production's baseline per Worker from the Memory usage chart, replacing
+  `BASELINE_BYTES` in a one-line change, after the deploy; the live check (`ui-test`, Claude
+  and ChatGPT reading a long message through to its end); the archive's streamed move and
+  its grant (STORE item 2's PR, with this guard); grants for file writes (`file_write`,
+  `file_append`, `file_edit`), the sync agent's chunk reads, export pages, the egress door's
+  bodies and the files Worker's own guard (each named in `memory-scan.test.ts`); RPC bodies
+  as byte streams, so an object reads a large argument under its grant (each call's
+  argument is the residual the guard cannot see, measured in the leg's several-objects
+  path); the relay's per-object tails beyond its one reserved share; whether the "32
+  service-binding calls" comment in `files/src/index.ts` still holds.
+
 ## 10. The plan's later slices
 
 - [ ] Rooms and status (S4), app manifest and agent players (S6), device runner

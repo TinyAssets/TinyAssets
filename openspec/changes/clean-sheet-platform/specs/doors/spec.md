@@ -62,6 +62,14 @@ The owner's revoke of an MCP client SHALL be made in the owner's object first, t
 - **WHEN** each lists the tools and calls one
 - **THEN** both see the same table and reach the same door
 
+
+### Requirement: Each tool result is sent once, as text, within one answer
+A tool's result SHALL be one `text` content block holding its JSON, with no `structuredContent` (no tool declares an `outputSchema`, so none is required, and every client reads text), on `/mcp` and as `/api`'s body alike. Its JSON SHALL be measured before it is built; past `RESULT_CHARS` it is a bug, logged and failed as `internal error`, never cut. Each tool call on `/mcp`, `/api` and the owner app's tool routes SHALL be served under one grant of the isolate's memory, taken before its body is read (its door's ceiling, or its declared `Content-Length`, times `REQUEST_FACTOR`, and `ANSWER_GRANT`), and answered `503` with `Retry-After: 1`, unread, when it does not fit now.
+
+#### Scenario: A result past one answer
+- **WHEN** a door answers a result whose JSON passes `RESULT_CHARS`
+- **THEN** the call fails as `internal error` and the size is logged, and no truncated text is sent
+
 ### Requirement: One external tool per outside-callable owner door
 Each external tool SHALL call exactly one owner door an outside client can reach, with that door's capability and arguments, a title, and explicit `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. No tool SHALL select an operation by a field, and an engine's own tools (`read`, `write`, `edit`, `bash`, `ta`) SHALL never be served as ours. Each outside-callable door without a tool SHALL be named with the slice that owes it, or as the doors' own (`toolProfile`).
 
@@ -89,7 +97,7 @@ A profile SHALL be data (`doors/profiles.json`) listing table tools in the table
 
 #### Scenario: A directory client searches the owner's files
 - **WHEN** a client served the directory profile calls `search` with a word in a file's text, then `fetch` with the id it answered
-- **THEN** `search` answers `{results: [{id, title, url}], next_cursor: null}` as structured content and the same JSON as text, and `fetch` the file's id, title, text, url and metadata
+- **THEN** `search` answers `{results: [{id, title, url}], next_cursor: null}` as one text block of its JSON, and `fetch` the file's id, title, text, url and metadata
 
 #### Scenario: A revoked client lists its tools
 - **WHEN** a revoked client sends `tools/list`

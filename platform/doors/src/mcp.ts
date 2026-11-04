@@ -18,11 +18,20 @@
  * An owner refusal or invalid request is the tool's error result, with its reason;
  * anything else is a bug, logged in full and failing the call as `internal error`. The `Origin` and token checks run before this
  * (`index.ts`, `oauth.ts`); the handler is deliberately validation-free.
+ *
+ * **Each result is sent once, as text** (memory_research.md §3): one `text` block holding
+ * the result's JSON, and no `structuredContent`. No tool declares an `outputSchema`, so the
+ * spec asks for no structured copy (its SHOULD is text beside structured content, for older
+ * clients), and both ChatGPT and Claude read text; a second copy doubled what the isolate
+ * held and what ChatGPT's model read. The owner pages every read to `RESULT_CHARS`
+ * (`owner/src/pages.ts`); a result past it here is a bug, failed loudly, never cut. Each
+ * request is served under one grant of the isolate's memory (`answers.ts`).
  */
 import {
   type CallToolResult, createMcpHandler, fromJsonSchema, McpServer,
 } from "@modelcontextprotocol/server";
 
+import { answered, resultText } from "./answers";
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
 import { serveEvents } from "./events";
@@ -47,8 +56,7 @@ async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallTool
     }
     return { isError: true, content: [{ type: "text", text: refused.message }] };
   }
-  return { content: [{ type: "text", text: JSON.stringify(result) }],
-           structuredContent: result as Record<string, unknown> };
+  return { content: [{ type: "text", text: resultText(tool.name, result) }] };
 }
 
 /**
@@ -108,7 +116,14 @@ export async function serveMcp(request: Request, bound: Bound, env: DoorsEnv):
     return got;
   }
   const instructions = got.profile === "run" ? RUN_INSTRUCTIONS : CLIENT_INSTRUCTIONS;
-  return createMcpHandler(() => server(bound, got.tools, env, instructions), { legacy: "stateless",
-                                                      responseMode: "auto" })
-    .fetch(request);
+  return answered(request, MCP_BODY_MAX, () =>
+    createMcpHandler(() => server(bound, got.tools, env, instructions), {
+      legacy: "stateless", responseMode: "auto", maxRequestBodySize: MCP_BODY_MAX,
+    }).fetch(request));
 }
+
+/**
+ * A request's body on the MCP door: the MCP SDK's own default (`maxRequestBodySize`, 4 MiB),
+ * named so the memory grant (`answers.ts`) and the SDK's `413` hold the same figure.
+ */
+export const MCP_BODY_MAX = 4 * 1024 * 1024;

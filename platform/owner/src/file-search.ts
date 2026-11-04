@@ -23,8 +23,9 @@
  *   after the last entry it read, so no match is ever out of reach. It stops at whichever
  *   comes first of `SEARCH_SCAN` entries read and `SEARCH_ANSWER_BYTES` of results.
  */
-import { EGRESS_BODY_MAX } from "./network";
-import { nameOf } from "./paths";
+import { escapedBytes, fitted, jsonBytes } from "./encoded";
+import { PAGE_BYTES } from "./pages";
+import { MAX_PATH_BYTES, nameOf } from "./paths";
 
 /**
  * The most manifest entries one search reads, a technical ceiling: the object runs one call
@@ -35,23 +36,16 @@ import { nameOf } from "./paths";
  */
 export const SEARCH_SCAN = 5000;
 /**
- * What one answer holds beside its results, with room to spare: the JSON-RPC envelope, the
- * MCP result's keys, the server-sent event's framing, `note`, and `next_cursor` (a stored
- * path of at most 4,096 bytes, at most 6 bytes a byte as JSON, in both copies, the text
- * copy's escaping doubling it: about 74 KiB at worst).
+ * What one answer holds beside its results, at its widest: `next_cursor` (a stored path of
+ * at most `MAX_PATH_BYTES`, at most 6 bytes a byte as JSON), `note`, and the keys.
  */
-export const SEARCH_ENVELOPE_BYTES = 128 * 1024;
+export const SEARCH_ENVELOPE_BYTES = 6 * MAX_PATH_BYTES + 2 + 1024;
 /**
- * The most bytes of results, as JSON, one answer holds, a technical ceiling: the whole
- * answer stays within the platform's one body ceiling (`EGRESS_BODY_MAX`, 16 MiB). The MCP
- * door answers the results twice, as structured content (their JSON, once) and as a text
- * copy of that JSON escaped into a string, which at worst doubles it (each `"` and `\`
- * becomes two bytes; nothing else grows); so the answer is at most three times the results'
- * JSON plus `SEARCH_ENVELOPE_BYTES`. A search counts each result's JSON in UTF-8 bytes as it
- * adds it. Past it, `next_cursor` continues.
+ * The most bytes of results, as JSON, one answer holds: one tool answer (`PAGE_BYTES`,
+ * `pages.ts`, answered once as text) less `SEARCH_ENVELOPE_BYTES`. A search counts each
+ * result's JSON in UTF-8 bytes as it adds it. Past it, `next_cursor` continues.
  */
-/** `(EGRESS_BODY_MAX - SEARCH_ENVELOPE_BYTES) / 3`, rounded down (a test holds the two equal). */
-export const SEARCH_ANSWER_BYTES = 5_548_714;
+export const SEARCH_ANSWER_BYTES = PAGE_BYTES - SEARCH_ENVELOPE_BYTES;
 /**
  * The most UTF-8 bytes a query holds, a technical ceiling of the isolate's 128 MB (Workers
  * limits): a query's set of words takes about 15 bytes of heap a query byte (measured,
@@ -304,12 +298,16 @@ export function searchPage(entries: readonly Scanned[], more: boolean, query: Re
     if (found[0] === 0) {
       continue;
     }
-    const title = titleOf(entry.path, front);
-    const size = new TextEncoder().encode(JSON.stringify({ id: entry.path, title,
-                                                           url: url(entry.path) })).byteLength + 1;
-    if (bytes + size > answerBytes && hits.length > 0) {
-      resume = hits.at(-1)!.path;  // the last match answered: the next page starts after it
-      break;
+    let title = titleOf(entry.path, front);
+    let size = jsonBytes({ id: entry.path, title, url: url(entry.path) }) + 1;
+    if (bytes + size > answerBytes) {
+      if (hits.length > 0) {
+        resume = hits.at(-1)!.path;  // the last match answered: the next page starts after it
+        break;
+      }
+      // The first match is always answered: its title, display text, cut to fit.
+      title = fitted(title, Math.max(2, answerBytes - bytes - size + escapedBytes(title))).text;
+      size = jsonBytes({ id: entry.path, title, url: url(entry.path) }) + 1;
     }
     bytes += size;
     hits.push({ path: entry.path, title, score: found });

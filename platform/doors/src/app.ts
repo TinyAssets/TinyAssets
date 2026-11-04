@@ -88,6 +88,7 @@
  * Sign-out tells the object first, whether or not a session cookie came, so the sockets
  * opened under the device's grant close before the grant is revoked (`socketsEnd`).
  */
+import { answered, answerJson } from "./answers";
 import {
   type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
   socketRequest, withTiers,
@@ -282,7 +283,7 @@ async function ownerTool(name: string, { binding, stub }: Bound,
   if (tool === undefined) {
     return failure(404, "no such tool");
   }
-  return json(200, await callDoor(stub, binding, tool, request));
+  return answerJson(tool.name, await callDoor(stub, binding, tool, request));
 }
 
 /**
@@ -564,45 +565,48 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   if (mediaType(request) !== "application/json") {
     return failure(415, "the owner surface takes application/json");
   }
-  const parsed = await jsonObject(request, APP_BODY_MAX);
-  if (parsed instanceof Response) {
-    return parsed;
-  }
-  const unread = bindOwner(env, token, session);
-  const gated = await ownerRead(env, unread.binding.owner);
-  if (gated instanceof Response) {
-    return gated;
-  }
-  const owner = withTiers(unread, gated);
-  try {
-    if (registering) {
-      const { key_id: id, ...register } = parsed;
-      const { keyId, entry } = await registeringEntry(env, owner.binding.owner, id);
-      const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, session);
-      return json(200, await stub.registerAgent(binding, register as never));
+  // The body, its parse, the call and the answer, under one grant (`answers.ts`).
+  return answered(request, APP_BODY_MAX, async () => {
+    const parsed = await jsonObject(request, APP_BODY_MAX);
+    if (parsed instanceof Response) {
+      return parsed;
     }
-    if (ticketing) {
-      return await socketTicket(env, token, presented!, parsed);
+    const unread = bindOwner(env, token, session);
+    const gated = await ownerRead(env, unread.binding.owner);
+    if (gated instanceof Response) {
+      return gated;
     }
-    if (connect !== undefined) {
-      return await connect({ env, bound: owner, body: parsed, request, sources });
+    const owner = withTiers(unread, gated);
+    try {
+      if (registering) {
+        const { key_id: id, ...register } = parsed;
+        const { keyId, entry } = await registeringEntry(env, owner.binding.owner, id);
+        const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, session);
+        return json(200, await stub.registerAgent(binding, register as never));
+      }
+      if (ticketing) {
+        return await socketTicket(env, token, presented!, parsed);
+      }
+      if (connect !== undefined) {
+        return await connect({ env, bound: owner, body: parsed, request, sources });
+      }
+      if (listing) {
+        return shaped(parsed, []) ? json(200, sourceList(sources, gated.signins))
+          : failure(400, NO_FIELDS);
+      }
+      if (tool !== null) {
+        return await ownerTool(tool, owner, parsed);
+      }
+      return await route!(env, owner, parsed, presented!);
+    } catch (error) {
+      if (error instanceof KeyRefused || error instanceof ConnectRefused) {
+        return failure(error.status, error.message);
+      }
+      const refused = refusal(error);
+      if (refused !== null) {
+        return failure(refused.status, refused.message);
+      }
+      throw error;
     }
-    if (listing) {
-      return shaped(parsed, []) ? json(200, sourceList(sources, gated.signins))
-        : failure(400, NO_FIELDS);
-    }
-    if (tool !== null) {
-      return await ownerTool(tool, owner, parsed);
-    }
-    return await route!(env, owner, parsed, presented!);
-  } catch (error) {
-    if (error instanceof KeyRefused || error instanceof ConnectRefused) {
-      return failure(error.status, error.message);
-    }
-    const refused = refusal(error);
-    if (refused !== null) {
-      return failure(refused.status, refused.message);
-    }
-    throw error;
-  }
+  });
 }

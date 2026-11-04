@@ -89,10 +89,14 @@
  * them around the ledger.
  */
 import { AGENT_DIR } from "./authority";
-import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
+import {
+  type Adopt, adopted, BODY_BYTES_MAX, inlineWindow, type Placed, type Window,
+} from "./bodies";
 import { digest, FILERS } from "./collections";
+import { jsonBytes } from "./encoded";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
+import { bodied, type Cut, fitPage, PAGE_BYTES, whole } from "./pages";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 import {
   admittedMethods, type Change, CHANGES, type Follows, follows, kindFor, ringingMethods,
@@ -364,7 +368,7 @@ export interface Delivery {
 }
 
 /** A message of a mail chain, as the owner reads the chain: who it went to, and how far. */
-export type ChainMail = Mail & {
+export type ChainMail = ReadMail & {
   readonly recipients: readonly { readonly agent_id: string; readonly state: string }[];
 };
 
@@ -420,10 +424,13 @@ export interface Mail {
   readonly integrity: Integrity;
 }
 
+/** A message as a read answers it: its body cut to fit the answer says so (`pages.ts`). */
+export type ReadMail = Mail & Partial<Cut>;
+
 export interface MailPage {
   readonly reader: string;
   readonly cursor: number;
-  readonly messages: Mail[];
+  readonly messages: ReadMail[];
   readonly more: boolean;
 }
 
@@ -728,6 +735,23 @@ export function retryAfter(value: number | null | undefined, attempts: number): 
 /** Whether an outside client's grant still stands: the object's grants (`grants.ts`). */
 export interface GrantReader {
   live(client: string): boolean;
+}
+
+/**
+ * A message's body as a read shows it, and its integrity: a body its row keeps is checked
+ * whole against the message's hash; a placed one read whole likewise, and a placed one read
+ * by window is its chunks, each rechecked against its hash as `FILES` read it.
+ */
+function checked(row: { body_sha256: string },
+                 stored: { body: string; content_id: string | null } | undefined,
+                 window: Window | undefined): [Window | null, Integrity] {
+  if (stored === undefined || window === undefined) {
+    return [null, "missing"];
+  }
+  const whole = stored.content_id === null ? stored.body
+    : window.offset === 0 && window.end === window.size ? window.text : null;
+  return whole !== null && digest(whole) !== row.body_sha256 ? [null, "tampered"]
+    : [window, "ok"];
 }
 
 export class Ledger {
@@ -1350,10 +1374,9 @@ export class Ledger {
    * messages by their sequence (at most the ledger's `maxMessages`).
    */
   chain(messageId: unknown, after: unknown, limit: unknown,
-        placed: ReadonlyMap<string, string> = new Map()): { root: string;
-                                                             messages: ChainMail[];
-                                                             more: boolean;
-                                                             placed: string[] } {
+        placed: ReadonlyMap<string, Window> = new Map(), offset = 0): {
+      root: string; messages: ChainMail[]; more: boolean; placed: string[]; first: string | null;
+    } {
     const maxRead = this.#limits.maxRead;
     if (typeof messageId !== "string" || !count(after, 0, Number.MAX_SAFE_INTEGER)
         || !count(limit, 1, maxRead)) {
@@ -1369,31 +1392,43 @@ export class Ledger {
       "SELECT * FROM ledger_messages WHERE seq > ? AND chain_root = ? ORDER BY seq LIMIT ?",
       after, root.chain_root, (limit as number) + 1).toArray();
     const unread: string[] = [];
-    const messages = rows.slice(0, limit as number).map((row): ChainMail => {
-      const stored = sql.exec<{ body: string; content_id: string | null }>(
-        "SELECT body, content_id FROM message_bodies WHERE message_id = ?", row.message_id)
-        .toArray()[0];
-      const kept = stored === undefined ? undefined
-        : stored.content_id === null ? stored.body : placed.get(stored.content_id);
-      if (stored?.content_id != null && kept === undefined) {
+    let first: string | null = null;
+    const shown = rows.slice(0, limit as number).map((row, index) => {
+      const stored = sql.exec<{ body: string; content_id: string | null; body_bytes: number }>(
+        "SELECT body, content_id, body_bytes FROM message_bodies WHERE message_id = ?",
+        row.message_id).toArray()[0];
+      if (index === 0 && stored?.content_id != null) {
+        first = stored.content_id;
+      }
+      const window = stored === undefined ? undefined : stored.content_id === null
+        ? inlineWindow(stored.body, index === 0 ? offset : 0) : placed.get(stored.content_id);
+      if (stored?.content_id != null && window === undefined) {
         unread.push(stored.content_id);
       }
-      const [body, integrity]: [string | null, Integrity] = kept === undefined
-        ? [null, "missing"]
-        : digest(kept) !== row.body_sha256 ? [null, "tampered"] : [kept, "ok"];
+      const [text, integrity] = checked(row, stored, window);
       return {
-        seq: row.seq, message_id: row.message_id, room_id: row.room_id,
-        sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
-        chain_depth: row.chain_depth, created_at: row.created_at, reply_s: null, body,
-        integrity,
-        recipients: sql.exec<{ agent_id: string; state: string }>(
-          "SELECT agent_id, state FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
-          row.message_id).toArray(),
+        mail: {
+          seq: row.seq, message_id: row.message_id, room_id: row.room_id,
+          sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
+          chain_depth: row.chain_depth, created_at: row.created_at, reply_s: null, body: null,
+          integrity,
+          recipients: sql.exec<{ agent_id: string; state: string }>(
+            "SELECT agent_id, state FROM ledger_recipients WHERE message_id = ? " +
+              "ORDER BY agent_id", row.message_id).toArray(),
+        } as ChainMail,
+        text, unread: stored?.content_id != null && window === undefined,
       };
     });
-    // A placed body (ADR-035) the door did not hand in is named, for it to read and ask again.
-    return { root: root.chain_root, messages, more: rows.length > messages.length,
-             placed: unread };
+    // The page ends before a placed body (ADR-035) the door did not hand in, and fits the
+    // answer (`pages.ts`); the bodies not handed are named, for it to read and ask again.
+    const stop = shown.findIndex((m) => m.unread);
+    const readable = stop < 0 ? shown : shown.slice(0, stop);
+    const fixed = jsonBytes({ root: root.chain_root, messages: [], more: true });
+    const messages = readable.length === 0 ? [] : fitPage(fixed, readable,
+      (m, room, isFirst) => m.text === null ? whole(m.mail, room)
+        : bodied(m.mail, m.text, room, isFirst));
+    return { root: root.chain_root, messages,
+             more: rows.length > messages.length, placed: unread, first };
   }
 
   // -- MAIL TO THE OWNER'S OWN AGENTS: what the `runs` lane delivers -------------
@@ -1599,18 +1634,20 @@ export class Ledger {
   /**
    * Messages to this reader past its cursor; a reread returns the same message_ids.
    *
-   * `maxBytes` bounds the page: whole messages (each measured as returned, plus
-   * `padBytes` for the caller's own wrapping) while they fit, and at least one; a body is
-   * never cut. Past its first message a page holds at most `READ_PAGE_BYTES` of bodies. A
-   * body
-   * placed in R2 (ADR-035) is the door's to read first (`placedNext`), handed in `placed`
-   * by content id; the page ends before a placed body it was not handed, even its first
-   * (an empty page, `more`, which the door reads again). Only a returned
-   * message is marked read and receipted, so a held-back one stays unread until a read
-   * returns it.
+   * A page fits one answer (`pages.ts`): whole messages while their JSON fits `pageBytes`,
+   * and at least one, the first's body cut at a character to fit when it does not, saying
+   * so (`body_bytes`, `body_next_offset`, `truncated`); `bodyOffset` reads the first's body
+   * from that byte, so a read by range returns the rest. `maxBytes` bounds it further:
+   * whole messages (each measured as returned, plus `padBytes` for the caller's own
+   * wrapping) while they fit, and at least one. A body placed in R2 (ADR-035) is the door's
+   * to read first (`placedNext`), handed in `placed` by content id as its window; the page
+   * ends before a placed body it was not handed, even its first (an empty page, `more`,
+   * which the door reads again). Only a returned message is marked read and receipted, so
+   * a held-back one stays unread until a read returns it.
    */
   read(origin: Actor, limit: unknown, maxBytes: unknown = null, padBytes: unknown = 0,
-       now: number = clock(), placed: ReadonlyMap<string, string> = new Map()): MailPage {
+       now: number = clock(), placed: ReadonlyMap<string, Window> = new Map(),
+       bodyOffset = 0, pageBytes: number = PAGE_BYTES): MailPage {
     const maxRead = this.#limits.maxRead;
     if (!count(limit, 1, maxRead)) {
       throw new Invalid(`limit is 1 to ${maxRead}`);
@@ -1632,44 +1669,57 @@ export class Ledger {
       ).toArray();
       const ids = JSON.stringify(rows.map((r) => r.message_id));
       const stored = new Map(sql.exec<{ message_id: string; body: string;
-                                        content_id: string | null }>(
-        "SELECT message_id, body, content_id FROM message_bodies WHERE message_id IN " +
-          "(SELECT value FROM json_each(?))", ids,
+                                        content_id: string | null; body_bytes: number }>(
+        "SELECT message_id, body, content_id, body_bytes FROM message_bodies WHERE " +
+          "message_id IN (SELECT value FROM json_each(?))", ids,
       ).toArray().map((b) => [b.message_id, b]));
       // A reply's own receipt already holds its time to reply; show it, never recompute.
       const replied = new Map(sql.exec<{ ref: string; detail_json: string }>(
         "SELECT ref, detail_json FROM ledger_receipts WHERE kind = 'reply' AND ref IN " +
           "(SELECT value FROM json_each(?))", ids,
       ).toArray().map((r) => [r.ref, JSON.parse(r.detail_json).reply_s as number]));
-      const messages: Mail[] = [];
-      let used = 0;
+      const messages: ReadMail[] = [];
+      let used = jsonBytes({ reader, cursor, messages: [], more: true });
+      let padded = 0;
       let bodyBytes = 0;
       let cut = false;
       for (const row of rows) {
         const kept = stored.get(row.message_id);
-        const text = kept === undefined ? undefined
-          : kept.content_id === null ? kept.body : placed.get(kept.content_id);
+        const window = kept === undefined ? undefined : kept.content_id === null
+          ? inlineWindow(kept.body, messages.length === 0 ? bodyOffset : 0)
+          : placed.get(kept.content_id);
         bodyBytes += row.body_bytes;
         // A placed body the door did not read first ends the page there: it reads again.
-        if ((messages.length && bodyBytes > READ_PAGE_BYTES)
-            || (text === undefined && kept !== undefined)) {
+        // Past the first, a body larger than the page cannot fit it whole.
+        if ((messages.length && bodyBytes > pageBytes)
+            || (window === undefined && kept !== undefined)) {
           cut = true;
           break;
         }
-        const [body, integrity]: [string | null, Integrity] = text === undefined
-          ? [null, "missing"]
-          : digest(text) !== row.body_sha256 ? [null, "tampered"] : [text, "ok"];
+        const [text, integrity] = checked(row, kept, window);
         const message: Mail = {
           seq: row.seq, message_id: row.message_id, room_id: row.room_id,
           sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
           chain_depth: row.chain_depth, created_at: row.created_at,
-          reply_s: replied.get(row.message_id) ?? null, body, integrity,
+          reply_s: replied.get(row.message_id) ?? null, body: null, integrity,
         };
-        used += (padBytes as number) + utf8Bytes(JSON.stringify(message));
-        if (messages.length && maxBytes !== null && used > (maxBytes as number)) {
+        const comma = messages.length ? 1 : 0;
+        const room = pageBytes - used - comma;
+        const fit = room <= 0 ? null : text === null ? whole(message, room)
+          : bodied(message, text, room, messages.length === 0);
+        if (fit === null || fit.bytes > room) {
+          if (messages.length === 0) {
+            throw new Error("a page's first message is always answered");
+          }
+          cut = true;
           break;
         }
-        messages.push(message);
+        padded += (padBytes as number) + fit.bytes;
+        if (messages.length && maxBytes !== null && padded > (maxBytes as number)) {
+          break;
+        }
+        used += comma + fit.bytes;
+        messages.push(fit.item);
         if (["queued", "held_cap", "woken"].includes(row.state)) {
           sql.exec("UPDATE ledger_recipients SET state = 'read', changed_at = ? " +
                      "WHERE message_id = ? AND agent_id = ?", now, row.message_id, reader);
@@ -1682,10 +1732,13 @@ export class Ledger {
 
   /**
    * The placed bodies (ADR-035) the next read of `limit` would return, by content id, in
-   * order, while their bytes fit a page: a read, for the door to fetch them from R2 before
-   * its read's unit (`Bodies.locate` in the same turn).
+   * order, while their bytes fit a page (`pageBytes`; the first always), and the first
+   * message's own when it is placed (the one `body_offset` reads from): a read, for the
+   * door to read their windows from R2 before its read's unit (`Bodies.locate` in the same
+   * turn).
    */
-  placedNext(origin: Actor, limit: unknown): string[] {
+  placedNext(origin: Actor, limit: unknown, pageBytes: number = PAGE_BYTES):
+      { contents: string[]; first: string | null } {
     const maxRead = this.#limits.maxRead;
     if (!count(limit, 1, maxRead)) {
       throw new Invalid(`limit is 1 to ${maxRead}`);
@@ -1698,16 +1751,16 @@ export class Ledger {
     ).toArray();
     const wanted: string[] = [];
     let bytes = 0;
-    for (const row of rows) {
+    for (const [index, row] of rows.entries()) {
       bytes += row.body_bytes;
-      if (bytes > READ_PAGE_BYTES && (wanted.length > 0 || bytes > row.body_bytes)) {
+      if (index > 0 && bytes > pageBytes) {
         break;
       }
       if (row.content_id !== null) {
         wanted.push(row.content_id);
       }
     }
-    return wanted;
+    return { contents: wanted, first: rows[0]?.content_id ?? null };
   }
 
   #cursor(reader: string): number {

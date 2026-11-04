@@ -43,7 +43,8 @@ const GATE = "owner/src/gate.ts";
 /** The gate's own helpers in the object, and what each must call. */
 const ENTRIES: ReadonlySet<string> = new Set(["this.#door", "this.#synced", "this.#filing",
                                               "this.#placing", "this.#reading",
-                                              "this.#rereading", "this.#quiet",
+                                              "this.#rereading", "this.#rereadingPage",
+                                              "this.#quiet",
                                               "this.#seededFor"]);
 /** The calls whose arrow argument is a unit. */
 const UNITS = /(^|\.)(#?write|unit|#door|#synced|#filing|#placing|#reading|#rereading|#quiet)$/;
@@ -218,7 +219,8 @@ function helpers(source: string): Record<string, string> {
   const found: Record<string, string> = {};
   const visit = (node: ts.Node): void => {
     if (ts.isMethodDeclaration(node) && ts.isPrivateIdentifier(node.name)
-        && ["#door", "#synced", "#filing", "#placing", "#reading", "#rereading", "#quiet",
+        && ["#door", "#synced", "#filing", "#placing", "#reading", "#rereading",
+            "#rereadingPage", "#quiet",
             "#seededFor"].includes(node.name.text)) {
       found[node.name.text] = node.body?.getText(file) ?? "";
     }
@@ -280,7 +282,7 @@ describe("write-gate guard", () => {
     expect(bodies["#placing"]).toContain("first = await this.#door(");
     expect(bodies["#placing"]).toContain(
       "done = await this.#door(() => located(this.#files.held(writer, () => act(placed))));");
-    expect(bodies["#reading"]).toMatch(/^\{\n    const \{ value, located \} = await this\.#door\(/);
+    expect(bodies["#reading"]).toContain("const { value, located, wants } = await this.#door(");
     expect(bodies["#rereading"]).toContain("const located = await this.#door(");
     expect(bodies["#rereading"]).toContain("const value = await this.#door(() => read(bodies));");
   });

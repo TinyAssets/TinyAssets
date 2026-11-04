@@ -8,7 +8,7 @@
  * grant; a revoked client and another owner's binding refused; a script past its wall time
  * or its compute stopped (`BoundedOwnerDO`, its bounds small; production's are
  * `CODEMODE_TIMEOUT_MS` and the hooks Worker's interrupt budget), saying which calls
- * landed; an answer past what the RPC carries refused `answer_too_large`.
+ * landed; an answer past what one tool answer holds refused `answer_too_large`.
  */
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -17,10 +17,9 @@ import { OUTSIDE_OFF } from "../../doors/src/control";
 
 import { profileNames } from "../../doors/src/tools";
 import type { Origin } from "../src/ledger";
-import {
-  CODE_ANSWER_MAX, CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, type OwnerDO,
-  serializedBytes,
-} from "../src/owner-do";
+import { jsonBytes } from "../src/encoded";
+import { CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, type OwnerDO } from "../src/owner-do";
+import { PAGE_BYTES } from "../src/pages";
 import { customTools, validate } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure } from "./support";
@@ -228,54 +227,23 @@ describe("the code door", () => {
     expect(await env.CACHED.getByName(r.owner).controlReads()).toBe(1);
   });
 
-  it("measures an answer as V8 serializes it: a string two bytes a unit if any unit is " +
-     "wide", async () => {
-    expect(serializedBytes("x".repeat(100))).toBe(110);
-    expect(serializedBytes("x".repeat(99) + String.fromCharCode(0x4e00))).toBe(210);
-    expect(serializedBytes("x".repeat(99) + String.fromCharCode(0xe9))).toBe(110);
-    expect(serializedBytes({ ab: ["c"] })).toBe(10 + 12 + 10 + 11);
+  it("refuses an answer past what one tool answer holds, keeping what landed", async () => {
     const r = await rig();
-    // The review's X1: 15 items of (1 Mi - 1) ASCII and one U+4E00, and 3 Mi of ASCII:
-    // about 18 MiB of UTF-8 JSON, about 33 MiB as V8 serializes it, past the RPC.
-    const x1 = await r.stub.codeRun(r.bind(null), { script: lines(
-      "const chunk = 'x'.repeat(1024 * 1024 - 1) + String.fromCharCode(0x4e00);",
-      "for (let n = 0; n < 15; n++) { text(chunk); await tools.agents_list({}); }",
-      "return 'y'.repeat(3 * 1024 * 1024);") });
-    expect(x1).toEqual({ ok: false, error: { kind: "answer_too_large",
-                                             message: CODE_ANSWER_TOO_LARGE },
-                         output: [], calls: { ok: 15, error: 0, cancelled: 0 }, landed: [] });
-    // Twice as much ASCII alone, one byte a unit, crosses whole.
-    const ascii = await r.stub.codeRun(r.bind(null), { script: lines(
-      "const chunk = 'x'.repeat(1024 * 1024);",
-      "for (let n = 0; n < 15; n++) { text(chunk); await tools.agents_list({}); }",
-      "return 'y'.repeat(3 * 1024 * 1024).length;") });
-    expect(ascii).toMatchObject({ ok: true, value: 3 * 1024 * 1024 });
-    expect(serializedBytes(ascii)).toBeLessThan(CODE_ANSWER_MAX);
-  }, 120_000);
-
-  it("refuses an answer past what the RPC carries, keeping what landed", async () => {
-    const r = await rig();
-    // 16 Mi - 16 characters of a two-byte character: 32 MiB as V8 serializes it, past
-    // CODE_ANSWER_MAX and within pi's own output bound; each tool call carries its output.
-    const output = await r.stub.codeRun(r.bind(null), { script: lines(
-      "const chunk = String.fromCharCode(0x4e00).repeat(1024 * 1024 - 1);",
-      "for (let n = 0; n < 16; n++) { text(chunk); await tools.agents_list({}); }",
-      "return 1;") });
-    expect(output).toEqual({ ok: false, error: { kind: "answer_too_large",
-                                                 message: CODE_ANSWER_TOO_LARGE },
-                             output: [], calls: { ok: 16, error: 0, cancelled: 0 },
-                             landed: [] });
     const value = await r.stub.codeRun(r.bind(null), { script: lines(
-      "const chunk = String.fromCharCode(0x4e00).repeat(1024 * 1024);",
-      "for (let n = 0; n < 12; n++) { text(chunk); await tools.agents_list({}); }",
       "await tools.collection_write({ collection: 'board', row_id: 'big', body: 'b',",
       "  expected_etag: '', private: false });",
-      "return chunk.repeat(4);") });
-    expect(value).toMatchObject({ ok: false, error: { kind: "answer_too_large" },
-      landed: [{ name: "collection_write", status: "ok", count: 1 }] });
-    // Within it, an answer of the same characters crosses whole.
+      `return '\\u0001'.repeat(${Math.ceil(PAGE_BYTES / 6)});`) });
+    expect(value).toEqual({ ok: false, error: { kind: "answer_too_large",
+                                                message: CODE_ANSWER_TOO_LARGE },
+                            output: [], calls: { ok: 1, error: 0, cancelled: 0 },
+                            landed: [{ name: "collection_write", status: "ok", count: 1 }] });
+    // Output counts as the value does; within it, an answer crosses whole.
+    const output = await r.stub.codeRun(r.bind(null), { script: lines(
+      `text('x'.repeat(${PAGE_BYTES}));`, "return 1;") });
+    expect(output).toMatchObject({ ok: false, error: { kind: "answer_too_large" } });
     const within = await r.stub.codeRun(r.bind(null), { script:
-      "return String.fromCharCode(0x4e00).repeat(4 * 1024 * 1024).length;" });
-    expect(within).toMatchObject({ ok: true, value: 4 * 1024 * 1024 });
+      `return 'x'.repeat(${PAGE_BYTES - 1000}).length;` });
+    expect(within).toMatchObject({ ok: true, value: PAGE_BYTES - 1000 });
+    expect(jsonBytes(within)).toBeLessThanOrEqual(PAGE_BYTES);
   }, 120_000);
 });

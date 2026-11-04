@@ -300,41 +300,56 @@ export function moduleState(fileName: string, source: string): string[] {
 }
 
 /**
- * The one exemption: the gateway's global-fetch interposer (`gateway/src/egress.ts`).
- * pi-ai's Google adapters take no custom fetch, so the gateway replaces the global
- * `fetch`, once, by a function that is the current call's endpoint guard inside that
- * call's `AsyncLocalStorage` scope and the runtime's own fetch outside any. That needs a
- * module-level scope, the captured runtime fetch and one write of the global, and
- * nothing else: no owner's data lives in any of them (gateway spec, "Every adapter
- * request goes through the call's guard"). The exemption is pinned to exactly those three
- * findings in that one file and to the file's SHA-256, so it can neither widen nor
- * outlive a change to the file without a review here.
+ * The two exemptions, each pinned to exactly its findings in its one file and to the file's
+ * SHA-256, so neither can widen nor outlive a change to its file without a review here:
+ * - the gateway's global-fetch interposer (`gateway/src/egress.ts`). pi-ai's Google
+ *   adapters take no custom fetch, so the gateway replaces the global `fetch`, once, by a
+ *   function that is the current call's endpoint guard inside that call's
+ *   `AsyncLocalStorage` scope and the runtime's own fetch outside any. That needs a
+ *   module-level scope, the captured runtime fetch and one write of the global, and nothing
+ *   else: no owner's data lives in any of them (gateway spec, "Every adapter request goes
+ *   through the call's guard");
+ * - the isolate's memory budget (`owner/src/memory.ts`): its one guard is module state by
+ *   design, since the budget is the isolate's, shared by every object and request in it;
+ *   what it holds is a count of bytes in flight and the reservations, never an owner's data.
  */
-const EXEMPT = Object.freeze({
-  path: "gateway/src/egress.ts",
-  sha256: "182b30616a0fbd97818bbc8577fbc59d255c2e54b302866852871ba7a86fb37a",
-  problems: Object.freeze([
-    "gateway/src/egress.ts:26: SCOPE holds a mutable value",
-    "gateway/src/egress.ts:27: NATIVE holds a mutable value",
-    "gateway/src/egress.ts:42: writes through globalThis: an assignment",
-  ]),
-});
+const EXEMPTIONS = Object.freeze([
+  Object.freeze({
+    path: "gateway/src/egress.ts",
+    sha256: "182b30616a0fbd97818bbc8577fbc59d255c2e54b302866852871ba7a86fb37a",
+    problems: Object.freeze([
+      "gateway/src/egress.ts:26: SCOPE holds a mutable value",
+      "gateway/src/egress.ts:27: NATIVE holds a mutable value",
+      "gateway/src/egress.ts:42: writes through globalThis: an assignment",
+    ]),
+  }),
+  Object.freeze({
+    path: "owner/src/memory.ts",
+    sha256: "e26d143ac1085c1b03412e66e2eeddbc677c0d9e20fdff504b324f51a3859647",
+    problems: Object.freeze(["owner/src/memory.ts:149: ISOLATE holds a mutable value"]),
+  }),
+]);
+const [EXEMPT, MEMORY] = EXEMPTIONS as unknown as [typeof EXEMPTIONS[0], typeof EXEMPTIONS[0]];
 
-/** Every finding in `sources` the exemption does not cover, and every way it is off. */
+/** Every finding in `sources` the exemptions do not cover, and every way one is off. */
 export function unexempted(sources: ReadonlyMap<string, string>): string[] {
-  const problems = [...sources].flatMap(([path, source]) => moduleState(path, source));
-  const exempt = sources.get(EXEMPT.path);
-  if (exempt === undefined) {
-    return problems;
+  let problems = [...sources].flatMap(([path, source]) => moduleState(path, source));
+  const off: string[] = [];
+  for (const exemption of EXEMPTIONS) {
+    const exempt = sources.get(exemption.path);
+    if (exempt === undefined) {
+      continue;
+    }
+    const digest = createHash("sha256").update(exempt).digest("hex");
+    const pinned = problems.filter((problem) => problem.startsWith(`${exemption.path}:`)).sort();
+    problems = problems.filter((problem) => !exemption.problems.includes(problem));
+    off.push(
+      ...(digest === exemption.sha256 ? []
+        : [`${exemption.path} changed (sha256 ${digest}): review its exemption`]),
+      ...(JSON.stringify(pinned) === JSON.stringify(exemption.problems) ? []
+        : [`${exemption.path} findings ${JSON.stringify(pinned)} are not the pinned ones`]));
   }
-  const digest = createHash("sha256").update(exempt).digest("hex");
-  const pinned = problems.filter((problem) => problem.startsWith(`${EXEMPT.path}:`)).sort();
-  return [
-    ...problems.filter((problem) => !EXEMPT.problems.includes(problem)),
-    ...(digest === EXEMPT.sha256 ? [] : [`${EXEMPT.path} changed (sha256 ${digest}): review its exemption`]),
-    ...(JSON.stringify(pinned) === JSON.stringify(EXEMPT.problems)
-      ? [] : [`${EXEMPT.path} findings ${JSON.stringify(pinned)} are not the pinned three`]),
-  ];
+  return [...problems, ...off];
 }
 
 describe("module-state guard", () => {
@@ -349,7 +364,7 @@ describe("module-state guard", () => {
     const sources = workerSources();
     const exempt = sources.get(EXEMPT.path)!;
     expect([...sources].flatMap(([path, source]) => moduleState(path, source)).sort())
-      .toEqual([...EXEMPT.problems]);
+      .toEqual([...EXEMPT.problems, ...MEMORY.problems].sort());
     // A fourth finding in the file, or any edit to it, is refused.
     expect(unexempted(new Map([[EXEMPT.path, `${exempt}\nexport let calls = 0;\n`]])))
       .toHaveLength(3);
@@ -360,6 +375,14 @@ describe("module-state guard", () => {
     // And the file without its global write is a change, refused too.
     expect(unexempted(new Map([[EXEMPT.path,
       exempt.replace("globalThis.fetch = interposed;", "void interposed;")]]))).not.toEqual([]);
+  });
+
+  it("exempts the memory guard's one budget, in that one file, at that one hash", () => {
+    const guard = workerSources().get(MEMORY.path)!;
+    expect(unexempted(new Map([[MEMORY.path, guard]]))).toEqual([]);
+    expect(unexempted(new Map([[MEMORY.path, `${guard}\nexport let spare = 0;\n`]])))
+      .toHaveLength(3);
+    expect(unexempted(new Map([["owner/src/other.ts", guard]]))).toHaveLength(1);
   });
 
   it.each([
