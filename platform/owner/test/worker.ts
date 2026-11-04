@@ -10,11 +10,13 @@
 import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
 import {
-  type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO, type SandboxLeases,
+  type ChainStep, type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO,
+  type SandboxLeases,
 } from "../src/owner-do";
 import { RecordingErasures } from "./erasure-fake";
 import { RecordingSandbox } from "./sandbox-fake";
 import { PLATFORM_CALLER } from "../src/admission";
+import { LEDGER_LIMITS } from "../src/ledger";
 
 /**
  * The owner object as production builds it but with no starter package, so the tests of
@@ -79,6 +81,115 @@ export class FauxOwnerDO extends OwnerDO {
 export class BoundedOwnerDO extends OwnerDO {
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     super(ctx, env, { codemode: { timeoutMs: 2_000, interruptBudget: 2_000 } });
+  }
+}
+
+/** One chain read held at a step once a test arms it (`Internals.chainStep`). */
+class ChainHold {
+  #armed: ChainStep | null = null;
+  #reached: () => void = () => {};
+  #release: () => void = () => {};
+  reached: Promise<void> = Promise.resolve();
+
+  arm(step: ChainStep): void {
+    this.#armed = step;
+    this.reached = new Promise((resolve) => { this.#reached = resolve; });
+  }
+
+  async pass(step: ChainStep): Promise<void> {
+    if (this.#armed !== step) {
+      return;
+    }
+    this.#armed = null;
+    const released = new Promise<void>((resolve) => { this.#release = resolve; });
+    this.#reached();
+    await released;
+  }
+
+  release(): void {
+    this.#release();
+  }
+}
+
+/**
+ * The owner object as production builds it but for the ledger's ceilings: eight messages
+ * hot, four unread, a segment sealed at two records, so a test sees the `archive` lane move
+ * acked mail, a post wait at the hot ceiling, and a purge rewrite, with a handful of posts.
+ * A test may hold its next chain read at a step (`holdChain`: after its fences unit, or
+ * before its hot unit), change the archive there, and let it go on (`releaseChain`).
+ */
+export class ArchivingOwnerDO extends OwnerDO {
+  readonly #hold: ChainHold;
+
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const hold = new ChainHold();
+    super(ctx, env, { ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4,
+                                      archiveRecords: 2 },
+                      chainStep: (step) => hold.pass(step) });
+    this.#hold = hold;
+  }
+
+  /** Hold the next chain read at `step`. */
+  holdChain(step: ChainStep): void {
+    this.#hold.arm(step);
+  }
+
+  /** Answered once the held chain read waits there. */
+  async chainHeld(): Promise<void> {
+    await this.#hold.reached;
+  }
+
+  /** Let the held chain read go on. */
+  releaseChain(): void {
+    this.#hold.release();
+  }
+}
+
+/**
+ * As `ArchivingOwnerDO`, but between each move's two passes the oldest hot message's
+ * recipient row is changed (its time's last bit, so its line keeps its length), so the
+ * second pass makes other bytes than the first hashed: R2's check of the chunk's hash must
+ * refuse them.
+ */
+export class DivergingOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, {
+      ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 8, maxUnacked: 4, archiveRecords: 2 },
+      archiveBetweenPasses: (storage) => {
+        storage.sql.exec("UPDATE ledger_recipients SET changed_at = changed_at + 1 - " +
+                           "2 * (changed_at % 2) " +
+                           "WHERE seq = (SELECT min(seq) FROM ledger_messages)");
+      } });
+  }
+}
+
+/**
+ * The owner object with the production segment sizes (sealed at 8 MiB of records) but a
+ * small hot set: forty hot, twenty unread, a seal of twenty records, so a test of a purge
+ * across a run of real-sized segments builds them with a few hundred large posts.
+ */
+export class PurgingOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, {
+      ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 40, maxUnacked: 20, archiveRecords: 20 },
+      // Each move as it saw itself between its passes, kept in a table of the test's own.
+      archiveBetweenPasses: (storage, move) => {
+        storage.sql.exec("CREATE TABLE IF NOT EXISTS test_moves (stream TEXT, replaced " +
+                           "INTEGER, records INTEGER)");
+        storage.sql.exec("INSERT INTO test_moves VALUES (?, ?, ?)", move.stream,
+                         move.replaced, move.records);
+      } });
+  }
+}
+
+/**
+ * As `ArchivingOwnerDO`, but a segment sealed at six records (or 8 MiB), twelve hot and six
+ * unread: a straggler merge meets its byte budget before its record cap (review N1).
+ */
+export class BigArchivingOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, { ledgerLimits: { ...LEDGER_LIMITS, maxMessages: 12, maxUnacked: 6,
+                                      archiveRecords: 6 } });
   }
 }
 

@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { storageFull, storageFullMessage } from "../../owner/src/storage-full";
-import { refusal } from "../src/tools";
+import { refusal, refusalHeaders } from "../src/tools";
 
 function named(name: string, message: string): Error {
   const error = new Error(message);
@@ -32,5 +32,16 @@ describe("open uploads alone", () => {
   it("answer 409, never the full storage's 507", () => {
     const message = storageFullMessage(storageFull(0, 6, 8, 10, null, null));
     expect(refusal(named("Refused", message))).toEqual({ status: 409, message });
+  });
+});
+
+describe("a post at the hot mail ceiling (slice STORE item 2)", () => {
+  it("answers storage_busy 503 with its Retry-After, never the wall's 507", () => {
+    const message = "storage_busy: your storage is catching up, moving older mail out; try " +
+      'again in 30 seconds. {"retry_after_s":30}';
+    const answer = refusal(named("Refused", message))!;
+    expect(answer).toEqual({ status: 503, message, retry_after_s: 30 });
+    expect(refusalHeaders(answer)).toEqual({ "Retry-After": "30" });
+    expect(refusalHeaders(refusal(named("Refused", "file_quota: x"))!)).toEqual({});
   });
 });

@@ -261,6 +261,47 @@ describe("a pool of units", () => {
     expect(pool.state().held).toBe(0);
   });
 
+  it("lets a larger lease hold one unit outside the reserve, grow a step and give it back, " +
+     "still the oldest holder (the archive's move)", async () => {
+    const pool = new SlotPool(7, 1000, 8, 1);
+    const move = pool.lease("", true);
+    await move.grow(1);  // its records': the larger class, never the reserve
+    const edit = await pool.acquire(5);
+    expect(pool.state()).toMatchObject({ held: 6 });
+    // A one-unit read still takes the reserve: the move's unit is not in it.
+    const read = await pool.acquire(1);
+    read.release();
+    // Its pass: grown past what is free, it waits as the oldest holder; a newcomer takes
+    // nothing past the reserve meanwhile.
+    const pass = move.grow(4);
+    await tick();
+    const order: string[] = [];
+    const newcomer = pool.acquire(3).then((slot) => { order.push("newcomer"); return slot; });
+    await tick();
+    edit.release();
+    await pass;
+    expect([move.units, order]).toEqual([4, []]);
+    // The pass given back: the records' unit kept, and the newcomer lands.
+    move.shrink(1);
+    expect(move.units).toBe(1);
+    (await newcomer).release();
+    expect(order).toEqual(["newcomer"]);
+    // Still the oldest holder: growing past what is free it waits, and a younger lease's
+    // growth meanwhile gives way, everything it held given back.
+    const younger = pool.lease("", true);
+    await younger.grow(2);
+    const blocker = await pool.acquire(2);
+    const growing = move.grow(4);
+    await tick();
+    expect(await younger.grow(4).catch((error: Error) => error.message)).toBe(BUSY);
+    expect(younger.units).toBe(0);
+    await growing;
+    expect(move.units).toBe(4);
+    blocker.release();
+    move.release();
+    expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
+  });
+
   it("is one pool an isolate, its capacity and reserve its Worker's one figure", () => {
     const pool = isolatePool(7, 1, 7);
     expect(isolatePool(7, 1, 7)).toBe(pool);

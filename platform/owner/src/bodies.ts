@@ -75,11 +75,13 @@ export const BODY_OFFSET_INSIDE =
  * range it needs, which `FILES` reads whole, rechecks and answers alone (review L7).
  */
 export function windowReads(chunks: readonly string[], size: number, offset: number,
-                            end: number):
+                            end: number, base = 0):
     { sha256: string; offset: number; length: number; verify: true }[] {
   const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
   for (const [index, sha256] of chunks.entries()) {
-    const at = index * CHUNK_BYTES;
+    // The chunk's bytes as the body's: content byte `x` is body byte `x - base` (0 for a
+    // placed body; an archived one's place in its segment).
+    const at = index * CHUNK_BYTES - base;
     const from = Math.max(offset, at);
     const to = Math.min(end, at + CHUNK_BYTES, size);
     if (from < to) {
@@ -312,7 +314,8 @@ export class Bodies {
         if (windows.size > 0 && held >= WINDOWS_BYTES) {
           break;
         }
-        const window = await this.#window(chunks, size, offsetOf(contentId), maxOf(contentId));
+        const window = await this.windowAt(chunks, 0, size, offsetOf(contentId),
+                                           maxOf(contentId));
         held += window.end - window.offset;
         windows.set(contentId, window);
       }
@@ -320,8 +323,14 @@ export class Bodies {
     });
   }
 
-  async #window(chunks: readonly string[], size: number, offset: number, max: number):
-      Promise<Window> {
+  /**
+   * A window of a body of `size` bytes that starts `base` bytes into the content its
+   * chunks make (0 for a placed body; an archived one's place in its segment): its text from
+   * `offset`, at most `max` bytes, cut back to a character, read by the verified ranges it
+   * spans. Outside any unit.
+   */
+  async windowAt(chunks: readonly string[], base: number, size: number, offset: number,
+                 max: number): Promise<Window> {
     if (offset > size) {
       throw new Invalid("body_offset is past the body's end");
     }
@@ -332,7 +341,7 @@ export class Bodies {
     // Each chunk the window spans read by the range it needs, verified: `FILES` reads the
     // whole chunk, rechecks its hash and answers the range alone (review L7), so a window
     // holds only itself and its bytes are still the content's.
-    const parts = await this.#files.fetch(windowReads(chunks, size, offset, end));
+    const parts = await this.#files.fetch(windowReads(chunks, size, offset, end, base));
     const bytes = new Uint8Array(end - offset);
     let put = 0;
     for (const part of parts) {

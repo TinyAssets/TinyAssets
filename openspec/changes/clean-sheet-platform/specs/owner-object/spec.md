@@ -19,7 +19,7 @@ An owner's file bytes are content, not trusted state: they SHALL sit as immutabl
 - **THEN** each object's manifest names its own chunks under its own namespace, and neither object holds the other's namespace
 
 ### Requirement: A large body lives in R2, its row a reference
-A collection row's body, a collection history entry's and a message's body of more than `PLACE_BYTES` (2,048) UTF-8 bytes SHALL never be stored in the object's SQLite (ADR-035): it SHALL be content of the files plane in the shared bucket, its row keeping an empty body, its byte count and the content's id, and each row naming it SHALL count a reference on the content, and on its writer's files scope, by the schema's triggers. A body of `PLACE_BYTES` or less SHALL stay in its row. The bytes SHALL be put to R2 first, held by a placement upload whose chunk rows are recorded before any byte is sent and which expires in `PLACE_TTL_S`; the row's reference SHALL be committed after, in one unit with the row, so no row names bytes R2 does not hold. Placed bytes SHALL count in the files byte quota (`max_bytes`, the tier's storage), charged to the writer's scope: the owner's, an outside client's own, or a visiting owner's own, so `client_share` and `owner_reserve` hold. At the quota, the oldest placed history entries and acked messages of the full scope SHALL be let go before a write is refused. Every read, a conflict's answer and a mail chain among them, SHALL return the body as one answer's page holds it (below), read from R2 outside any unit after a unit located it, by the verified ranges its window spans: the files Worker reads each whole chunk, rechecks its hash and answers the range alone. A mail run's input SHALL read the body whole; a waiting mail run's input SHALL keep only its mail's reference and read the body as the run starts, and a mail run's reply past `PLACE_BYTES` SHALL be placed before its settle's unit and posted in it by reference.
+A collection row's body, a collection history entry's and a message's body of more than `PLACE_BYTES` (2,048) UTF-8 bytes SHALL never be stored in the object's SQLite (ADR-035): it SHALL be content of the files plane in the shared bucket, its row keeping an empty body, its byte count and the content's id, and each row naming it SHALL count a reference on the content, and on its writer's files scope, by the schema's triggers. A body of `PLACE_BYTES` or less SHALL stay in its row. The bytes SHALL be put to R2 first, held by a placement upload whose chunk rows are recorded before any byte is sent and which expires in `PLACE_TTL_S`; the row's reference SHALL be committed after, in one unit with the row, so no row names bytes R2 does not hold. Placed bytes SHALL count in the files byte quota (`max_bytes`, the tier's storage), charged to the writer's scope: the owner's, an outside client's own, or a visiting owner's own, so `client_share` and `owner_reserve` hold. At the quota, the oldest placed history entries of the full scope SHALL be let go before a write is refused; mail SHALL never be let go there (ADR-036): a new message is refused `storage_full`, and the owner deletes what it chooses. Every read, a conflict's answer and a mail chain among them, SHALL return the body as one answer's page holds it (below), read from R2 outside any unit after a unit located it, by the verified ranges its window spans: the files Worker reads each whole chunk, rechecks its hash and answers the range alone. A mail run's input SHALL read the body whole; a waiting mail run's input SHALL keep only its mail's reference and read the body as the run starts, and a mail run's reply past `PLACE_BYTES` SHALL be placed before its settle's unit and posted in it by reference.
 
 #### Scenario: A large row read back
 - **WHEN** a row of 8,192 bytes is written and then read by get, pull and history
@@ -152,33 +152,48 @@ Rows SHALL be bounded by what they take as SQLite lays them out, each with its i
 - **WHEN** many keys are written and deleted, and none is made again
 - **THEN** their tombstones count in the history's charge and are pruned oldest first, and seqs and revisions never go back
 
-### Requirement: The ledger's mailboxes are bounded within its ceilings
-The ledger SHALL bound each mailbox's unacked messages (its bodies' bytes are the tier's storage), the owner's and each enabled agent's, and an agent's share of the owner's, by trigger-kept counters, each cap within the ceiling it is part of, never reserved out of it. A message SHALL have one recipient, which the key holds, so the recipients are bounded by the messages. A post SHALL be refused when its own mailbox, or its sender's share of the owner's, is full; past a ceiling the oldest acked message is evicted, and when the ledger holds only unread mail the post SHALL be refused `ledger_full` until a reader acks.
+### Requirement: Mail is bounded by two technical ceilings, and never deleted to make room
+The ledger SHALL hold at most `maxMessages` messages hot and at most `maxUnacked` unacked messages owner-wide, whoever they are to, by trigger-kept counters; no mailbox SHALL have a count of its own. A message SHALL have one recipient, which the key holds. Past `maxUnacked` a post SHALL be refused `ledger_full`, saying too much mail is unread, naming the readers that hold the most (so the owner can act), and that reading and acking makes room, never offering an upgrade. The ceiling is owner-wide, so one sender (an outside agent, or an inbound app) can fill it and hold back everyone's mail until the readers read and ack, or the owner disables or deletes that sender. `maxUnacked` SHALL leave the hot ceiling at least one segment's records (`checkLimits`). No message SHALL ever be evicted: the `archive` lane SHALL move the oldest acked messages, from half the hot ceiling, into archive segments, and a post at the hot ceiling SHALL be refused `storage_busy` (the doors' 503 with `Retry-After`), retryable, and ring the lane; when the archive's last move was refused for the storage figure, it SHALL be the one wall, `storage_full`, with its facts, never a busy that cannot clear. Unread mail and mail in a run's hands SHALL stay hot.
 
-#### Scenario: An agent that never acks
-- **WHEN** the owner's mail to one agent fills that agent's mailbox
-- **THEN** the owner's next post to that agent is refused and posts to every other mailbox still succeed while the ledger has room
-
-#### Scenario: A ledger full of unread mail
-- **WHEN** the ledger is at its ceiling and every message it holds is unread
+#### Scenario: Too much unread mail
+- **WHEN** `maxUnacked` messages wait for their readers
 - **THEN** a post to any mailbox is refused `ledger_full`, and lands once a reader acks
 
+#### Scenario: The hot ceiling
+- **WHEN** the ledger holds `maxMessages` messages and acked ones wait to move
+- **THEN** a post is refused `storage_busy` with a retry time, nothing is deleted, and the post lands once the lane has moved a segment
+
+### Requirement: Acked mail moves to archive segments, found by its id
+An archive segment SHALL be files-plane content (ADR-035's placement, under the owner's data key), its records each message's rows as export lines (its body's row marking its body raw: the body's own bytes, copied in whatever its size and never escaped, follow its line; its recipients), in seq order, then a trailer line naming each record's byte range and each chain's records, then 16 digits giving the trailer's offset. The object SHALL keep one fence row a segment (its key range, its content, its trailer's range, a members bloom) and none an item. No two segments SHALL overlap in key range (the schema refuses it): an acked message whose seq falls below the archive's last key SHALL be merged into the segment its key falls in, and a rewrite left small SHALL take in its neighbour by key. A move SHALL be two units: the batch picked and its bytes placed outside (which may pass the storage figure, since the move frees what it places; a message's counted bytes include its share of its segment's trailer), then, in one unit, the batch's rows checked unchanged by their digest, deleted, the segments it replaces gone, and each new segment's fence row named, the unit refused when it would leave the stored figure above both the figure and where the move found it; a batch changed between them SHALL abort with nothing moved, and a crash SHALL leave only an upload that expires. A segment SHALL be sealed on its records' own bytes (never their trailer shares) or its records, and a move SHALL be streamed, planned from its records' lengths and each 4 MiB chunk made from just the source ranges it covers, in two passes (hash, then send), so it holds its records' units and one pass's on the isolate's pool (ADR-037) whatever its records' bytes, each pass's units only while its chunks are in hand, and a chunk that differs between the passes SHALL be refused by its hash; a sealed segment SHALL hold at least `SEGMENT_LEAST_BYTES` (8 MiB) of counted storage, so the fence rows are at most `ARCHIVE_SEGMENTS_MAX`, and a tier record SHALL give at most `TIER_STORAGE_MAX` (about 0.5 TB). A message's id SHALL carry its seq under a key the object keeps (opaque without it), so the chain read and a reply SHALL find an archived message by its id through the fence and the trailer, read outside any unit; a chain page SHALL merge hot and archived messages by seq, fit one answer as every read's page does (`RESULT_CHARS`), its first body cut to fit and read on by `body_offset` and `body_message_id` hot or archived alike, an archived record read by the verified ranges its window spans and never its body whole. Mail SHALL count in the one number at its real bytes, hot as its rows' export lines and archived as its segment.
+
+#### Scenario: An export across a move
+- **WHEN** acked mail moves while an export's generation runs, so its log names the moved rows gone
+- **THEN** the export read by version 3's rule (base and log, then each segment standing at E applied after the log) is exactly the owner at E, every message once
+
+#### Scenario: A reply to archived mail
+- **WHEN** an agent replies to a message that was acked and moved to a segment
+- **THEN** the reply lands with the parent's chain, and the owner's chain read returns both
+
 ### Requirement: A disabled agent holds no mail, and only the owner deletes one
-Disabling an agent SHALL release its unacked mail, so it no longer holds the ledger; the owner may disable any agent, and the ledger an outside caller only its own. Only the owner, in its own session, SHALL delete an agent, which purges its mail with their bodies, its cursor, wakes, rings and receipts. While a revoke of its callbacks is pending its row SHALL stay as a tombstone that the registry bound counts, gone when the revoke settles. The enabled-agent bound SHALL count enabled agents only.
+Disabling an agent SHALL release its unacked mail, so it no longer holds the unread ceiling; the owner may disable any agent, and the ledger an outside caller only its own. Only the owner, in its own session, SHALL delete an agent, which purges its mail with their bodies, its cursor, wakes, rings and receipts; its archived mail SHALL be dropped from every read and export at once (`archive_purges`) and rewritten out of each segment that may hold it by the `archive` lane, a rewrite left under `SEGMENT_LEAST_BYTES` taking in the next segment. While a revoke of its callbacks is pending its row SHALL stay as a tombstone that the registry bound counts, gone when the revoke settles. The enabled-agent bound SHALL count enabled agents only.
 
 #### Scenario: A disabled agent's unread mail
 - **WHEN** an agent holding unacked mail is disabled
-- **THEN** its mail no longer holds the ledger, and later posts evict it as they need room
+- **THEN** its mail no longer holds the unread ceiling, and it is kept
 
-### Requirement: A resend is deduplicated while its message is held
-A post with a sender's client message id and body hash the ledger holds SHALL return the original message, and another hash, room or parent SHALL be a conflict. The window SHALL be the held message's life: a message is evicted only once every recipient has acked it and the ledger is at a ceiling, after which the same client message id is a new message. No tombstone of evicted ids is kept.
+#### Scenario: A deleted agent's archived mail
+- **WHEN** the owner deletes an agent whose mail is in segments
+- **THEN** no read finds it from that moment, and the lane rewrites each segment without it, keeping every other agent's mail
 
-#### Scenario: A resend after eviction
-- **WHEN** a message every recipient acked has been evicted and its sender resends it
+### Requirement: A resend is deduplicated while its message is hot
+A post with a sender's client message id and body hash the ledger holds hot SHALL return the original message, and another hash, room or parent SHALL be a conflict. The window SHALL be the message's time in the hot set: it leaves it only once every recipient has acked it, moved to a segment, after which the same client message id is a new message. No tombstone of moved ids is kept.
+
+#### Scenario: A resend after the move
+- **WHEN** a message every recipient acked has moved to a segment and its sender resends it
 - **THEN** the ledger records it as a new message
 
 #### Scenario: A retried ack
-- **WHEN** a reader acks at or behind its cursor, even after its acked mail was evicted
+- **WHEN** a reader acks at or behind its cursor, even after its acked mail moved
 - **THEN** the ack succeeds and changes nothing
 
 ### Requirement: The object's timed work is lanes on the Lifecycle job queue

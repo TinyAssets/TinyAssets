@@ -18,7 +18,7 @@ import { outsideRead } from "./control";
 import { withTiers } from "./binder";
 import { mediaType } from "./session";
 import { profiled } from "./mcp";
-import { callDoor, refusal } from "./tools";
+import { callDoor, refusal, refusalHeaders } from "./tools";
 
 const TOOL_PATH = /^\/api\/tools\/([a-z_]{1,64})$/;
 
@@ -64,7 +64,6 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
     if (refused === null) {
       throw error;
     }
-    return failure(refused.status, refused.message,
-                   refused.status === 503 ? { "Retry-After": "1" } : {});
+    return failure(refused.status, refused.message, refusalHeaders(refused));
   }
 }

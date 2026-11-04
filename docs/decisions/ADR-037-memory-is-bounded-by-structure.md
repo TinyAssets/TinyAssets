@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (founder, 2026-11-03: "where large data lives is an architecture rule, built in and automatic, not a decision he makes", the standing ruling ADR-035 records; how much of it an isolate holds at once falls under it).
+Accepted (founder, 2026-11-03: "where large data lives is an architecture rule, built in and automatic, not a decision he makes", the standing ruling ADR-035 records; how much of it an isolate holds at once falls under it). Owed list (decision 6), 2026-11-04: the archive's move and rewrite (STORE item 2) are now under units and in the memory leg (`limits-audit.md`).
 - **It replaces** the byte guard and its grants that the platform memory fix's first design used; PR 1 (#5407) removed them.
 - **It extends** ADR-035: a large body already lives in R2 as the files plane's chunks. This ADR says how much of one an isolate may hold at once.
 

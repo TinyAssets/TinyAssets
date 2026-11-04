@@ -48,8 +48,14 @@ describe("the one storage number", () => {
     await r.stub.fileWrite(r.bind(null), { path: "/workspace/n.txt", expected_etag: null,
                                            content: new Uint8Array(100) });
     const after = await r.stub.storageUsage(r.bind(null));
-    expect(after.breakdown).toEqual({ files: 100, messages: 11, collections });
-    expect(after.used_bytes).toBe(100 + 11 + collections);
+    // Mail counts at its real bytes (slice STORE item 2, D2): its rows' lines, its body in
+    // them, as its archive segment will hold it.
+    const [mail] = await sqlIn(r.stub, "SELECT line_bytes, body_bytes FROM ledger_messages");
+    expect(mail!["body_bytes"]).toBe(11);
+    const messages = mail!["line_bytes"] as number;
+    expect(messages).toBeGreaterThan(11);
+    expect(after.breakdown).toEqual({ files: 100, messages, collections });
+    expect(after.used_bytes).toBe(100 + messages + collections);
     expect(after.limit_bytes).toBe(TIERS.free.storage_bytes);
     // An outside client reads none of it.
     expect((await failure(() => r.stub.storageUsage(r.bind(MUSE)))).message)
@@ -229,8 +235,10 @@ describe("the one storage number", () => {
         refused = error as Error;
       }
     }
-    // Unacked mail is never let go: it is the recipient's still.
+    // Mail is never let go at the figure (ADR-036): the post is refused, the mail held kept.
     expect(storageFullOf(refused!.message)).toMatchObject({ limit_bytes: 3000, tier: "free" });
-    expect((await r.stub.storageUsage(small)).breakdown.messages).toBe(3000);
+    const held = (await r.stub.storageUsage(small)).breakdown.messages;
+    expect(held).toBeGreaterThan(1500);
+    expect(held).toBeLessThanOrEqual(3000);
   });
 });

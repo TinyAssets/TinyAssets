@@ -16,12 +16,13 @@
  *   returns the original; another hash is a `conflict`. One transaction writes the
  *   message, its body, its recipient, the parent's `replied` state, the `reply` receipt
  *   and the recipient's wake.
- * - The idempotency window: a resend is matched against the messages the ledger holds.
- *   A message is evicted only once every recipient has acked it and the ledger is at a
- *   ceiling, so a resend is deduplicated at least until its recipient acks; after its
- *   eviction the same client message id is a new message. There is no tombstone: a
- *   ledger of evicted keys would need its own ceiling and eviction, which only moves the
- *   same window.
+ * - The idempotency window: a resend is matched against the messages the ledger holds hot.
+ *   A message leaves the hot set only once every recipient has acked it, moved to an
+ *   archive segment (`segments.ts`, slice STORE item 2), so a resend is deduplicated at
+ *   least until its recipient acks; once archived, the same client message id is a new
+ *   message. Nothing is ever evicted: an archived message is the owner's until the owner
+ *   deletes its agent, and the chain read and a reply find it by its id, which carries its
+ *   seq (`orderedId`).
  * - MAILBOX_RECEIPT: a read pages whole messages by bytes, at least one, and marks and
  *   receipts only the ones it returns; an ack never moves back and never passes the
  *   reader's own newest message, and an ack at or behind the cursor is a no-op, so a
@@ -88,15 +89,25 @@
  * object's (`owner-do.ts`, `sessions.ts`, `policy.ts`), as the Python's router op ran
  * them around the ledger.
  */
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+
 import { AGENT_DIR } from "./authority";
 import {
   type Adopt, adopted, BODY_BYTES_MAX, inlineWindow, type Placed, type Window,
 } from "./bodies";
 import { digest, FILERS } from "./collections";
 import { jsonBytes } from "./encoded";
+import { exported } from "./export";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { bodied, type Cut, fitPage, PAGE_BYTES, whole } from "./pages";
+import {
+  bloomHas, bloomOf, bytesOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
+  parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_LEAST_BYTES,
+  SEGMENT_MIN_BYTES,
+  SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
+} from "./segments";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 import {
   admittedMethods, type Change, CHANGES, type Follows, follows, kindFor, ringingMethods,
@@ -214,14 +225,16 @@ export const WAKE_SETTINGS = Object.freeze({
  * the schema's triggers keep (`ledger_usage`, `ledger_readers`, `outside_agents`) or an
  * index range, never a scan.
  *
- * The mailboxes' caps are within the ceilings, not reserved out of them (`checkLimits`):
- * the owner's mailbox holds at most `maxOwnerUnacked` messages unacked, each enabled
- * agent's at most `maxAgentUnacked`, one agent's share of the owner's mailbox
- * `maxSenderUnacked` (an outside agent's, or one of the owner's own agents'), and each is
- * at most the ceiling it is a part of. A post past its own mailbox's cap is refused;
- * past a ceiling the oldest acked message is evicted, and when the ledger holds nothing
- * acked (every message held unread), the post is refused `ledger_full` until a reader
- * acks. Disabling an agent releases its unacked mail, and deleting one purges it.
+ * Mail is bounded by two technical ceilings, never by a mailbox's count (slice STORE item
+ * 2, the founder's one wall): `maxMessages` hot messages, the acked ones moved to archive
+ * segments by the `archive` lane from half of it, and a post at it answered `storage_busy`
+ * (retryable) while the lane catches up, never a delete; and `maxUnacked` messages unread
+ * owner-wide: the hot ceiling (whose three rows a message the guard already costs, so any
+ * unread count up to it fits under half) less one segment's records, so that at the hot
+ * ceiling there is always a segment's worth of acked mail to move: 50,000 - 25,000. Past it
+ * a post is refused `ledger_full`: too much mail is unread, the readers holding the most
+ * named, and reading or acking makes room. Being owner-wide, one noisy sender can fill it. Disabling an agent releases its unacked mail,
+ * and deleting one purges it, archived mail included (`archive_purges`).
  *
  * How they were chosen (ADR-035; `limits-audit.md`). Bodies past `PLACE_BYTES` live in R2,
  * so the object holds at most that much of each body, and its bytes in R2 count in the
@@ -236,14 +249,20 @@ export interface LedgerLimits {
   readonly maxAgents: number;
   /** Registered agents, enabled or not; the owner deletes a disabled one to make room. */
   readonly maxAgentRows: number;
-  /** Messages held; past it the oldest message no recipient holds is evicted. */
+  /**
+   * Messages held hot: the `archive` lane moves the acked ones out from half of it, and a
+   * post at it is `storage_busy` until a move lands.
+   */
   readonly maxMessages: number;
-  /** Messages the owner has not acked. */
-  readonly maxOwnerUnacked: number;
-  /** Messages one enabled agent has not acked. */
-  readonly maxAgentUnacked: number;
-  /** One agent's share of the owner's mailbox: an outside agent's, or an own agent's. */
-  readonly maxSenderUnacked: number;
+  /**
+   * Messages some recipient has not acked, owner-wide: the guard's `ledger_recipients` term
+   * (rows at `maxMessages`) less one segment's records, so at the hot ceiling the lane always
+   * has a segment to move. Past it a post is `ledger_full`.
+   */
+  readonly maxUnacked: number;
+  /** A segment's seal: its lines' bytes, or its records (`segments.ts`). */
+  readonly archiveBytes: number;
+  readonly archiveRecords: number;
   /** Receipt rows kept, newest first. */
   readonly maxReceipts: number;
   /** How long a settled wake row is kept; its receipt is the record. */
@@ -257,9 +276,9 @@ export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
   maxAgents: 1_000,
   maxAgentRows: 1_000,
   maxMessages: 50_000,
-  maxOwnerUnacked: 10_000,
-  maxAgentUnacked: 1_000,
-  maxSenderUnacked: 5_000,
+  maxUnacked: 50_000 - SEGMENT_MIN_RECORDS,
+  archiveBytes: SEGMENT_MIN_BYTES,
+  archiveRecords: SEGMENT_MIN_RECORDS,
   maxReceipts: 50_000,
   settledWakeRetentionS: 7 * 24 * HOUR_S,
   maxSettledWakes: 1_000,
@@ -267,14 +286,14 @@ export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
 });
 
 /**
- * Refuse limits whose caps are not within their ceilings: a mailbox, or a sender's share
- * of the owner's, larger than the ledger, or a share larger than its mailbox.
+ * Refuse limits whose unread ceiling leaves the hot ceiling no segment to move: then a post
+ * at the hot ceiling could wait on a lane with nothing it may take.
  */
 export function checkLimits(limits: LedgerLimits): LedgerLimits {
   const problems: string[] = [];
-  if (Math.max(limits.maxAgentUnacked, limits.maxOwnerUnacked) > limits.maxMessages
-      || limits.maxSenderUnacked > limits.maxOwnerUnacked) {
-    problems.push("a mailbox's messages exceed its ceiling");
+  if (limits.maxUnacked < 1 || limits.archiveRecords < 1
+      || limits.maxUnacked + limits.archiveRecords > limits.maxMessages) {
+    problems.push("the unread ceiling leaves the hot ceiling no segment to move");
   }
   if (limits.maxAgents > limits.maxAgentRows) {
     problems.push("maxAgents exceeds maxAgentRows");
@@ -285,8 +304,13 @@ export function checkLimits(limits: LedgerLimits): LedgerLimits {
   return limits;
 }
 
-/** The refusal of a post when the ledger holds only unread mail at a ceiling. */
+/** The refusal of a post when too much mail is unread (`maxUnacked`). */
 export const LEDGER_FULL = "ledger_full";
+
+/** A post at the hot ceiling while the `archive` lane moves acked mail out: retry soon. */
+export const STORAGE_BUSY = "storage_busy";
+/** How long a `storage_busy` post waits before it tries again: about one lane pass. */
+export const STORAGE_BUSY_RETRY_S = 30;
 
 /** A message body as a post takes it, or refused; the door checks it before placing it. */
 export function checkMessage(body: unknown): asserts body is string {
@@ -547,6 +571,8 @@ type Usage = {
   enabled_agents: number;
   messages: number;
   settled_wakes: number;
+  unacked: number;
+  acked_bytes: number;
 };
 
 type StoredMessage = {
@@ -566,6 +592,7 @@ type StoredMessage = {
   unacked: number;
   authority: string | null;
   attended: number;
+  line_bytes: number;
 };
 
 type StoredNative = NativeAgent & { unacked_to_owner: number };
@@ -738,6 +765,202 @@ export interface GrantReader {
 }
 
 /**
+ * A message as its archive segment holds it: its row, its body's window (as a read shows
+ * it: from an offset, at most a page's worth; null where the body is not read, as a reply's
+ * parent), its recipients.
+ */
+export interface ArchivedMail {
+  readonly message: StoredMessage;
+  readonly body: Window | null;
+  readonly recipients: readonly { readonly agent_id: string; readonly state: string }[];
+}
+
+/** A segment's fence row (`archive_segments`): where it is and what it spans. */
+export type Fence = {
+  readonly segment: number;
+  readonly first_key: number;
+  readonly last_key: number;
+  readonly first_at: number;
+  readonly last_at: number;
+  readonly records: number;
+  readonly bytes: number;
+  readonly content_id: string;
+  readonly trailer_offset: number;
+  readonly trailer_bytes: number;
+  readonly members: string;
+};
+
+/** A row cut to the columns its table exports, in their order: its export line's row. */
+function exportRow(table: string, row: Readonly<Record<string, unknown>>):
+    Record<string, unknown> {
+  return Object.fromEntries(exported()[table]!.columns.map((column) =>
+    [column, row[column] ?? null]));
+}
+
+/**
+ * A message's record, as a segment holds it: its row, its body's row with the body's bytes
+ * raw beside it (never escaped, review N3), its recipients.
+ */
+export function mailRecord(message: Readonly<Record<string, unknown>>,
+                           body: Readonly<Record<string, unknown>>,
+                           recipients: readonly Readonly<Record<string, unknown>>[],
+                           raw: readonly Uint8Array[]): SegmentRecord {
+  return { key: message["seq"] as number, chain: message["chain_root"] as string,
+           rows: [["ledger_messages", exportRow("ledger_messages", message)],
+                  ["message_bodies", { ...exportRow("message_bodies", body), body: null }, raw],
+                  ...recipients.map((each) =>
+                    ["ledger_recipients", exportRow("ledger_recipients", each)] as const)] };
+}
+
+/**
+ * The bytes a new message takes as its segment will hold it (D2): its lines, its body raw
+ * (`body_bytes`) and its newline, and its trailer share. Its own `line_bytes` and its body's
+ * `meta_bytes` are in its lines, so settled to a fixed point; the body is never copied here.
+ */
+function mailLineBytes(message: Readonly<Record<string, unknown>>,
+                       body: Readonly<Record<string, unknown>>,
+                       recipient: Readonly<Record<string, unknown>>): number {
+  const size = body["body_bytes"] as number;
+  const of = (rows: readonly SegmentRow[]): number => rows.reduce((sum, [table, row, raw]) =>
+    sum + (raw === undefined ? bytesOf(rowLine(table, row))
+      : bytesOf(rowLine(table, row, size)) + size + 1), 0);
+  let bytes = 0;
+  for (let i = 0; i < 6; i++) {
+    const next = of(mailRecord({ ...message, line_bytes: bytes },
+                               { ...body, meta_bytes: Math.max(0, bytes - size) },
+                               [recipient], []).rows) + RECORD_TRAILER_BYTES;
+    if (next === bytes) {
+      return bytes;
+    }
+    bytes = next;
+  }
+  return bytes;
+}
+
+/**
+ * An archived record's bytes, read back as its message: its raw body as the window from
+ * `offset` (null: the body not shown), its recipients.
+ */
+export function archivedMail(bytes: Uint8Array, offset: number | null = 0): ArchivedMail {
+  let message: StoredMessage | undefined;
+  let body: Uint8Array | undefined;
+  const recipients: { agent_id: string; state: string }[] = [];
+  for (const [table, row, raw] of parseRecord(bytes)) {
+    if (table === "ledger_messages") {
+      message = row as unknown as StoredMessage;
+    } else if (table === "message_bodies" && raw !== undefined) {
+      body = raw[0];
+    } else if (table === "ledger_recipients") {
+      recipients.push({ agent_id: row["agent_id"] as string, state: row["state"] as string });
+    }
+  }
+  if (message === undefined || body === undefined) {
+    throw new Error("an archived mail record lacks its message or its body");
+  }
+  recipients.sort((a, b) => (a.agent_id < b.agent_id ? -1 : a.agent_id > b.agent_id ? 1 : 0));
+  return { message, recipients, body: offset === null ? null : inlineWindow(
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body), offset) };
+}
+
+/**
+ * An archived record's head, from bytes read at its start: its message's row, and where its
+ * raw body starts (past its first two lines) and how long it is; null when `bytes` hold
+ * less than the two lines.
+ */
+export function archivedHead(bytes: Uint8Array):
+    { message: StoredMessage; bodyAt: number; bodyBytes: number } | null {
+  const one = bytes.indexOf(0x0a);
+  const two = one < 0 ? -1 : bytes.indexOf(0x0a, one + 1);
+  if (two < 0) {
+    return null;
+  }
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const line = (from: number, to: number): { table?: unknown; row?: Record<string, unknown>;
+                                             raw_bytes?: unknown } =>
+    JSON.parse(decoder.decode(bytes.subarray(from, to)));
+  const first = line(0, one);
+  const second = line(one + 1, two);
+  if (first.table !== "ledger_messages" || second.table !== "message_bodies"
+      || typeof second.raw_bytes !== "number") {
+    throw new Error("an archived mail record lacks its message or its body");
+  }
+  return { message: first.row as unknown as StoredMessage, bodyAt: two + 1,
+           bodyBytes: second.raw_bytes };
+}
+
+/** An archived record's recipients, from its lines past its body (and the body's newline). */
+export function archivedRecipients(bytes: Uint8Array):
+    { agent_id: string; state: string }[] {
+  const recipients = parseRecord(bytes).filter(([table]) => table === "ledger_recipients")
+    .map(([, row]) => ({ agent_id: row["agent_id"] as string, state: row["state"] as string }));
+  return recipients.sort((a, b) => (a.agent_id < b.agent_id ? -1
+    : a.agent_id > b.agent_id ? 1 : 0));
+}
+
+/**
+ * A hot message's bytes as its segment record holds them, but its body: its row's line and
+ * its body row's (the body raw after it, the row naming no content: the segment holds it),
+ * its inline body's bytes if it has no placed one, and the newline after the body with its
+ * recipients' lines (`mailRecord`'s, exactly).
+ */
+export interface MailParts {
+  readonly head: Uint8Array;
+  readonly inline: Uint8Array | null;
+  readonly tail: Uint8Array;
+}
+
+/** A hot message's parts (`MailParts`) from its rows. */
+function mailParts(message: Readonly<Record<string, unknown>>,
+                   body: Readonly<Record<string, unknown>>,
+                   recipients: readonly Readonly<Record<string, unknown>>[]): MailParts {
+  const encoder = new TextEncoder();
+  const size = body["body_bytes"] as number;
+  return {
+    head: encoder.encode(rowLine("ledger_messages", exportRow("ledger_messages", message))
+      + rowLine("message_bodies", { ...exportRow("message_bodies", body), body: null,
+                                    content_id: null }, size)),
+    inline: body["content_id"] === null ? encoder.encode(body["body"] as string) : null,
+    tail: encoder.encode("\n" + recipients.map((each) =>
+      rowLine("ledger_recipients", exportRow("ledger_recipients", each))).join("")),
+  };
+}
+
+/**
+ * What a segment's record says of itself in its first line (its message's row, the only
+ * part a move reads): its room, its chain and its time.
+ */
+export function recordHead(line: Uint8Array): { room: string; chain: string; at: number } {
+  const [row] = parseRecord(line);
+  if (row === undefined || row[0] !== "ledger_messages") {
+    throw new Error("an archived mail record lacks its message");
+  }
+  const message = row[1];
+  return { room: message["room_id"] as string, chain: message["chain_root"] as string,
+           at: message["created_at"] as number };
+}
+
+/**
+ * A record a segment holds, kept as it is, appended to a move's table: its range of that
+ * segment's content (`ref`), with its head (`recordHead`).
+ */
+export function keptRecord(table: MoveTable, key: number, offset: number, length: number,
+                           ref: number, head: { room: string; chain: string; at: number }):
+    number {
+  return table.push(key, head.chain, head.room, head.at, length, MoveTable.KEPT, ref, offset);
+}
+
+/** A fence row's members bloom, as bytes. */
+export function fenceBloom(fence: Fence): Uint8Array {
+  return Uint8Array.from(Buffer.from(fence.members, "hex"));
+}
+
+/** The hot messages a move reads at once, its rows and its lines (review N5). */
+const IMAGE_GROUP = 512;
+
+/** The archive chain read's segments a page reads at most. */
+export const CHAIN_SEGMENTS = 8;
+
+/**
  * A read on from `offset` into its page's first message's body names that message (review
  * L2): the `message_id` the earlier part came with; another first message is refused, so a
  * body is never spliced from two messages.
@@ -803,7 +1026,7 @@ export class Ledger {
   /** The owner-wide counters; only migration 2's triggers write them. */
   #usage(): Usage {
     return this.#sql.exec<Usage>(
-      "SELECT agents, enabled_agents, messages, settled_wakes " +
+      "SELECT agents, enabled_agents, messages, settled_wakes, unacked, acked_bytes " +
         "FROM ledger_usage",
     ).one();
   }
@@ -1079,6 +1302,20 @@ export class Ledger {
       sql.exec("DELETE FROM ledger_readers WHERE reader = ?", agentId);
       sql.exec("DELETE FROM ledger_wakes WHERE agent_id = ?", agentId);
       sql.exec("DELETE FROM outside_agents WHERE agent_id = ?", agentId);
+      // Its archived mail: dropped from every read and the export at once, and rewritten
+      // out of each segment that may hold it by the `archive` lane (`archive_purges`).
+      if (sql.exec("SELECT 1 FROM archive_segments LIMIT 1").toArray().length > 0) {
+        // At most `maxAgentRows` purges wait (the guard's term): past them the lane is still
+        // rewriting, and a deletion waits for it, refused in plain words, never lost.
+        if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM archive_purges").one().n
+            >= this.#limits.maxAgentRows) {
+          throw new Refused(`${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
+                            `removed from the archive; try again in ${STORAGE_BUSY_RETRY_S} ` +
+                            `seconds. ${JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S })}`);
+        }
+        sql.exec("INSERT INTO archive_purges (agent_id, at) VALUES (?, ?) ON CONFLICT " +
+                   "(agent_id) DO NOTHING", agentId, now);
+      }
       return { agent_id: agentId, messages: ids.length };
     });
   }
@@ -1228,24 +1465,23 @@ export class Ledger {
    * answers from what is held. Null for a new post.
    */
   prepare(origin: Actor, roomId: unknown, clientMessageId: unknown, body: unknown,
-          parentId: unknown): Posted | null {
+          parentId: unknown, archived: ArchivedMail | null = null): Posted | null {
     checkMessage(body);
-    const addressed = this.#addressed(origin, roomId, clientMessageId, body, parentId);
+    const addressed = this.#addressed(origin, roomId, clientMessageId, body, parentId, archived);
     if ("resend" in addressed) {
       return addressed.resend;
     }
-    this.#capped(addressed.recipient, addressed.share);
+    this.#roomForOne();
     return null;
   }
 
   /** A post's room, members, parent and caps' share, or its original when it is a resend. */
   #addressed(origin: Actor, roomId: unknown, clientMessageId: unknown, body: string,
-             parentId: unknown):
+             parentId: unknown, archived: ArchivedMail | null = null):
       { resend: Posted } | { room: string; cmid: string; parentKey: string | null; sha: string;
                              members: [Member, Member]; from: Member; to: Member;
                              kind: string; sender: string; recipient: string;
-                             share: { readonly unacked_to_owner: number } | null;
-                             parent: StoredMessage | undefined } {
+                             parent: StoredMessage | undefined; parentArchived: boolean } {
     const room = text(roomId, 128, "room_id");
     const cmid = text(clientMessageId, 128, "client_message_id");
     const parentKey = parentId === null ? null : text(parentId, 128, "parent_id");
@@ -1274,21 +1510,27 @@ export class Ledger {
       } };
     }
     let parent: StoredMessage | undefined;
+    let parentArchived = false;
     if (parentKey !== null) {
       parent = sql.exec<StoredMessage>(
         "SELECT m.* FROM ledger_messages m JOIN ledger_recipients r " +
           "ON r.message_id = m.message_id AND r.agent_id = ? " +
           "WHERE m.message_id = ? AND m.room_id = ?", sender, parentKey, room,
       ).toArray()[0];
+      // An archived parent (acked, so its reply marks nothing): read from its segment by
+      // the door beforehand, and held to the same: to this sender, in this room.
+      if (parent === undefined && archived !== null && archived.message.message_id === parentKey
+          && archived.message.room_id === room && !this.#purged(archived.message.room_id)
+          && archived.recipients.some((each) => each.agent_id === sender)) {
+        parent = archived.message;
+        parentArchived = true;
+      }
       if (parent === undefined) {
         throw new Refused("parent is not a message to this sender in this room");
       }
     }
-    // A sender's share of the owner's mailbox: its own dm room's mail to the owner.
-    const share = recipient !== OWNER ? null : from.kind === "outside"
-      ? from.agent : from.kind === "native" ? from.native : null;
-    return { room, cmid, parentKey, sha, members, from, to, kind, sender, recipient, share,
-             parent };
+    return { room, cmid, parentKey, sha, members, from, to, kind, sender, recipient, parent,
+             parentArchived };
   }
 
   /**
@@ -1299,21 +1541,27 @@ export class Ledger {
    */
   post(origin: Actor, roomId: unknown, clientMessageId: unknown, body: unknown,
        parentId: unknown, now: number = clock(), authority: MailAuthority | null = null,
-       placed: Placed | null = null, filer = "owner"): Posted {
+       placed: Placed | null = null, filer = "owner", archived: ArchivedMail | null = null):
+      Posted {
     checkMessage(body);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
-      const addressed = this.#addressed(origin, roomId, clientMessageId, body, parentId);
+      const addressed = this.#addressed(origin, roomId, clientMessageId, body, parentId,
+                                        archived);
       if ("resend" in addressed) {
         return addressed.resend;
       }
-      const { room, cmid, parentKey, sha, members, to, kind, sender, recipient, share,
-              parent } = addressed;
+      const { room, cmid, parentKey, sha, members, to, kind, sender, recipient,
+              parent, parentArchived } = addressed;
       const size = utf8Bytes(body);
-      this.#capped(recipient, share);
-      this.#makeRoom();
+      this.#roomForOne();
       return adopted(body, placed, filer, this.#adopt, (contentId) => {
-      const messageId = "msg_" + token(16);
+      // The seq is given here, and the id carries it (`orderedId`): an archived message is
+      // found by its id with no row for it.
+      const seq = sql.exec<{ last_seq: number }>(
+        "UPDATE ledger_usage SET last_seq = max(last_seq, coalesce((SELECT max(seq) FROM " +
+          "ledger_messages), 0)) + 1 RETURNING last_seq").one().last_seq;
+      const messageId = "msg_" + orderedId(this.#idKey(), seq);
       const depth = kind === OWNER ? 0 : (parent?.chain_depth ?? 0) + 1;
       // The owner's dm with an outside agent is in that agent's command center; any other
       // room's mail, in the universe its authority acts in.
@@ -1323,17 +1571,28 @@ export class Ledger {
       const kept = authority === null ? null : JSON.stringify({
         authenticated_at: authority.authenticated_at, client: authority.client,
         family: authority.family, generation: authority.generation });
-      const seq = sql.exec<{ seq: number }>(
-        "INSERT INTO ledger_messages (message_id, command_center_id, room_id, sender_kind, " +
-          "sender_id, client_message_id, body_sha256, parent_id, chain_root, chain_depth, " +
-          "created_at, body_bytes, authority, attended) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
-          "?, ?, ?, ?) RETURNING seq",
-        messageId, center, room, kind, sender, cmid, sha, parentKey,
-        parent?.chain_root ?? messageId, depth, now, size, kept, origin === null ? 1 : 0,
-      ).one().seq;
+      const message = {
+        seq, message_id: messageId, command_center_id: center, room_id: room,
+        sender_kind: kind, sender_id: sender, client_message_id: cmid, body_sha256: sha,
+        parent_id: parentKey, chain_root: parent?.chain_root ?? messageId, chain_depth: depth,
+        created_at: now, body_bytes: size, unacked: 0, authority: kept,
+        attended: origin === null ? 1 : 0, line_bytes: 0 };
+      const lineBytes = mailLineBytes(message, {
+        message_id: messageId, room_id: room, body, created_at: now, body_bytes: size,
+        content_id: null, filer, meta_bytes: 0 },
+                                      { message_id: messageId, agent_id: recipient, seq,
+                                        state: "queued", changed_at: now, unacked: 0 });
+      sql.exec(
+        "INSERT INTO ledger_messages (seq, message_id, command_center_id, room_id, " +
+          "sender_kind, sender_id, client_message_id, body_sha256, parent_id, chain_root, " +
+          "chain_depth, created_at, body_bytes, authority, attended, line_bytes) VALUES (?, ?, " +
+          "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        seq, messageId, center, room, kind, sender, cmid, sha, parentKey, message.chain_root,
+        depth, now, size, kept, message.attended, lineBytes);
       sql.exec("INSERT INTO message_bodies (message_id, room_id, body, created_at, " +
-                 "body_bytes, content_id, filer) VALUES (?, ?, ?, ?, ?, ?, ?)", messageId, room,
-               contentId === null ? body : "", now, size, contentId, filer);
+                 "body_bytes, content_id, filer, meta_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+               messageId, room, contentId === null ? body : "", now, size, contentId, filer,
+               lineBytes - size);
       sql.exec("INSERT INTO ledger_recipients (message_id, agent_id, seq, state, changed_at) " +
                  "VALUES (?, ?, ?, 'queued', ?)", messageId, recipient, seq, now);
       // One open wake per ringing recipient; never one for the message's own sender. A
@@ -1344,8 +1603,10 @@ export class Ledger {
         this.#open([to.agent.agent_id], CHANGE_BIT.mail, this.#changes(), now);
       }
       if (parent !== undefined) {
-        sql.exec("UPDATE ledger_recipients SET state = 'replied', changed_at = ? " +
-                   "WHERE message_id = ? AND agent_id = ?", now, parentKey, sender);
+        if (!parentArchived) {
+          sql.exec("UPDATE ledger_recipients SET state = 'replied', changed_at = ? " +
+                     "WHERE message_id = ? AND agent_id = ?", now, parentKey, sender);
+        }
         const read = sql.exec<{ at: number | null }>(
           "SELECT MIN(at) AS at FROM ledger_receipts WHERE agent_id = ? AND kind = 'read' " +
             "AND ref = ?", sender, parentKey,
@@ -1387,13 +1648,88 @@ export class Ledger {
   }
 
   /**
-   * The owner's view of a mail chain: the chain holding `messageId`, oldest first, after
-   * `after`, each message with its recipients and how far each took it. A read of the held
-   * messages by their sequence (at most the ledger's `maxMessages`).
+   * Where a chain read starts: the chain holding `messageId`, its root, the root's seq and
+   * its room (a reply is always in its parent's room), when the message is hot; else the seq
+   * its id carries, for the door to find it archived. A read.
+   */
+  chainStart(messageId: unknown):
+      { root: string; root_seq: number; room: string } | { archived: number } {
+    if (typeof messageId !== "string") {
+      throw new Invalid("a chain read names a message id");
+    }
+    const row = this.#sql.exec<{ chain_root: string; room_id: string }>(
+      "SELECT chain_root, room_id FROM ledger_messages WHERE message_id = ?", messageId)
+      .toArray()[0];
+    if (row !== undefined) {
+      const rootSeq = this.seqOf(row.chain_root);
+      return { root: row.chain_root, root_seq: rootSeq ?? 0, room: row.room_id };
+    }
+    const seq = this.seqOf(messageId);
+    if (seq === null) {
+      throw new Refused("no such message held");
+    }
+    return { archived: seq };
+  }
+
+  /**
+   * The segments a chain read past `after` reads next: those whose keys run past it (and
+   * past the root's seq), at most `CHAIN_SEGMENTS`, in key order, and the frontier: the next
+   * segment's first key (no archived message of the chain below it is unread), null for
+   * none. Segments never overlap in key range (`archive_segments_disjoint`), so key order is
+   * one order.
+   */
+  chainFences(rootSeq: number, after: number): { fences: Fence[]; frontier: number | null } {
+    const from = Math.max(after, rootSeq - 1);
+    const fences = this.#sql.exec<Fence>(
+      "SELECT * FROM archive_segments WHERE stream = 'mail' AND last_key > ? " +
+        "ORDER BY last_key LIMIT ?", from, CHAIN_SEGMENTS + 1).toArray();
+    return fences.length <= CHAIN_SEGMENTS ? { fences, frontier: null }
+      : { fences: fences.slice(0, CHAIN_SEGMENTS), frontier: fences[CHAIN_SEGMENTS]!.first_key };
+  }
+
+  /**
+   * The archive's segments as a read saw them: `mark` changes on any move, rewrite or drop (a
+   * new segment's id is past every id the table ever gave, `AUTOINCREMENT`; a drop alone
+   * lowers the count), and `newest` is the newest segment's id. A read of segments takes it
+   * with its fences: a read that then fails (a fence's content gone, its chunk collected)
+   * failed because the archive changed when `mark` did, and is read again. A read.
+   */
+  archiveMark(): { mark: string; newest: number } {
+    const { n, newest } = this.#sql.exec<{ n: number; newest: number | null }>(
+      "SELECT COUNT(*) AS n, MAX(segment) AS newest FROM archive_segments").one();
+    return { mark: `${n}:${newest ?? 0}`, newest: newest ?? 0 };
+  }
+
+  /**
+   * Whether a segment made after `newest` may hold `room`'s mail past `after`: a move (a
+   * tail's, a merge's, a rewrite's) that may have taken that room's hot rows out after a read
+   * took its fences. By its keys and its members bloom, so another room's moves never count
+   * (a room with no agent member is not in any bloom: every new segment past `after` counts).
+   * A read.
+   */
+  movedSince(newest: number, room: string, after: number): boolean {
+    const members = roomMembers(room);
+    return this.#sql.exec<Fence>(
+      "SELECT * FROM archive_segments WHERE segment > ? AND last_key > ?", newest, after)
+      .toArray().some((fence) => members.length === 0
+        || members.some((member) => bloomHas(fenceBloom(fence), member)));
+  }
+
+  /**
+   * The owner's view of a mail chain: the chain rooted at the hot message's root, or at
+   * `archived.root` when the door read the chain's start from its segment; oldest first,
+   * past `after`, each message with its recipients and how far each took it. Its archived
+   * messages (read from their segments by the door, by range: `archived.mail`, each its body's
+   * window) merge with the hot ones by seq, below `frontier` when the door has more to read.
+   * The page fits one answer (`pages.ts`), its first body cut to fit and read on from
+   * `offset` (`body_offset`, naming the message by `bodyMessage`), hot or archived alike. A
+   * read.
    */
   chain(messageId: unknown, after: unknown, limit: unknown,
         placed: ReadonlyMap<string, Window> = new Map(), offset = 0,
-        bodyMessage: unknown = null): {
+        bodyMessage: unknown = null,
+        archived: { readonly root: string; readonly mail: readonly ArchivedMail[];
+                    readonly frontier: number | null } | null = null): {
       root: string; messages: ChainMail[]; more: boolean; placed: string[]; first: string | null;
     } {
     const maxRead = this.#limits.maxRead;
@@ -1402,20 +1738,51 @@ export class Ledger {
       throw new Invalid(`a chain read names a message id, after a seq, and 1 to ${maxRead}`);
     }
     const sql = this.#sql;
-    const root = sql.exec<{ chain_root: string }>(
-      "SELECT chain_root FROM ledger_messages WHERE message_id = ?", messageId).toArray()[0];
+    let root = archived?.root;
     if (root === undefined) {
-      throw new Refused("no such message held");
+      root = sql.exec<{ chain_root: string }>(
+        "SELECT chain_root FROM ledger_messages WHERE message_id = ?", messageId).toArray()[0]
+        ?.chain_root;
+      if (root === undefined) {
+        throw new Refused("no such message held");
+      }
     }
+    const below = archived?.frontier ?? Number.MAX_SAFE_INTEGER;
     const rows = sql.exec<StoredMessage>(
-      "SELECT * FROM ledger_messages WHERE seq > ? AND chain_root = ? ORDER BY seq LIMIT ?",
-      after, root.chain_root, (limit as number) + 1).toArray();
+      "SELECT * FROM ledger_messages WHERE seq > ? AND seq < ? AND chain_root = ? " +
+        "ORDER BY seq LIMIT ?", after, below, root, (limit as number) + 1).toArray();
+    const cold = (archived?.mail ?? []).filter((mail) => mail.message.seq > (after as number)
+      && mail.message.seq < below && mail.message.chain_root === root
+      && !this.#purged(mail.message.room_id));
+    const merged = [...rows.map((row) => ({ seq: row.seq, row, mail: null })),
+                    ...cold.map((mail) => ({ seq: mail.message.seq, row: null, mail }))]
+      .sort((x, y) => x.seq - y.seq).slice(0, (limit as number) + 1);
     const unread: string[] = [];
     let first: string | null = null;
-    if (rows[0] !== undefined) {
-      readsOn(rows[0].message_id, offset, bodyMessage);
+    if (merged[0] !== undefined) {
+      readsOn(merged[0].row?.message_id ?? merged[0].mail!.message.message_id, offset,
+              bodyMessage);
     }
-    const shown = rows.slice(0, limit as number).map((row, index) => {
+    const shown = merged.slice(0, limit as number).map((item, index) => {
+      if (item.mail !== null) {
+        // Archived: its window as the door read it (from `offset` when it is the first).
+        const { message, body: window, recipients } = item.mail;
+        const whole = window !== null && window.offset === 0 && window.end === window.size
+          ? window.text : null;
+        const integrity: Integrity = window === null ? "missing"
+          : whole !== null && digest(whole) !== message.body_sha256 ? "tampered" : "ok";
+        return {
+          mail: {
+            seq: message.seq, message_id: message.message_id, room_id: message.room_id,
+            sender_kind: message.sender_kind, sender_id: message.sender_id,
+            parent_id: message.parent_id, chain_depth: message.chain_depth,
+            created_at: message.created_at, reply_s: null, body: null, integrity,
+            recipients: [...recipients],
+          } as ChainMail,
+          text: integrity === "ok" ? window : null, unread: false,
+        };
+      }
+      const row = item.row!;
       const stored = sql.exec<{ body: string; content_id: string | null; body_bytes: number }>(
         "SELECT body, content_id, body_bytes FROM message_bodies WHERE message_id = ?",
         row.message_id).toArray()[0];
@@ -1445,12 +1812,453 @@ export class Ledger {
     // answer (`pages.ts`); the bodies not handed are named, for it to read and ask again.
     const stop = shown.findIndex((m) => m.unread);
     const readable = stop < 0 ? shown : shown.slice(0, stop);
-    const fixed = jsonBytes({ root: root.chain_root, messages: [], more: true });
+    const fixed = jsonBytes({ root, messages: [], more: true });
     const messages = readable.length === 0 ? [] : fitPage(fixed, readable,
       (m, room, isFirst) => m.text === null ? whole(m.mail, room)
         : bodied(m.mail, m.text, room, isFirst));
-    return { root: root.chain_root, messages,
-             more: rows.length > messages.length, placed: unread, first };
+    return { root, messages,
+             more: merged.length > messages.length || archived?.frontier != null,
+             placed: unread, first };
+  }
+
+  /** The seq of the chain's first hot message past `after`, or null. A read. */
+  chainNext(root: string, after: number): number | null {
+    return this.#sql.exec<{ seq: number | null }>(
+      "SELECT MIN(seq) AS seq FROM ledger_messages WHERE chain_root = ? AND seq > ?", root, after)
+      .one().seq;
+  }
+
+  // -- THE ARCHIVE: acked mail moved to segments (slice STORE item 2, `segments.ts`) ----------
+
+  /** The key message ids carry their seq under, made with the first message. In a unit. */
+  #idKey(): Uint8Array {
+    const held = this.#sql.exec<{ id_key: string }>("SELECT id_key FROM ledger_ids")
+      .toArray()[0];
+    if (held !== undefined) {
+      return Uint8Array.from(Buffer.from(held.id_key, "hex"));
+    }
+    const made = idKey();
+    this.#sql.exec("INSERT INTO ledger_ids (only, id_key) VALUES (1, ?)",
+                   Buffer.from(made).toString("hex"));
+    return made;
+  }
+
+  /** The seq a message id carries, or null for one the object never gave. A read. */
+  seqOf(messageId: string): number | null {
+    const held = this.#sql.exec<{ id_key: string }>("SELECT id_key FROM ledger_ids")
+      .toArray()[0];
+    if (held === undefined || !messageId.startsWith("msg_")) {
+      return null;
+    }
+    return idOrder(Uint8Array.from(Buffer.from(held.id_key, "hex")), messageId.slice(4));
+  }
+
+  /** Whether a room's mail is a deleted agent's, its segments not yet all rewritten. A read. */
+  #purged(room: string): boolean {
+    const members = roomMembers(room);
+    return members.length > 0 && this.#sql.exec(
+      "SELECT 1 FROM archive_purges WHERE agent_id IN (SELECT value FROM json_each(?))",
+      JSON.stringify(members)).toArray().length > 0;
+  }
+
+  /** The agents deleted while segments may still hold their mail. A read. */
+  purgedAgents(): string[] {
+    return this.#sql.exec<{ agent_id: string }>("SELECT agent_id FROM archive_purges")
+      .toArray().map((row) => row.agent_id);
+  }
+
+  /**
+   * Whether a segment's worth of acked mail waits to move: its records, or their own bytes
+   * (`line_bytes` less each one's trailer share, as `pack` and the segment count them, so a
+   * seal is never short of the least, review N4). A read of the counters.
+   */
+  #sealable(usage: Usage): boolean {
+    const acked = usage.messages - usage.unacked;
+    return acked >= this.#limits.archiveRecords
+      || usage.acked_bytes - acked * RECORD_TRAILER_BYTES >= this.#limits.archiveBytes;
+  }
+
+  /**
+   * The oldest acked hot message whose seq is below the archive's last key: acked after the
+   * mail around it moved, so it goes into the segment its key falls in (`archivePick`), never
+   * a new one that would overlap. A read of one index range.
+   */
+  #straggler(): number | null {
+    return this.#sql.exec<{ seq: number | null }>(
+      "SELECT min(seq) AS seq FROM ledger_messages WHERE unacked = 0 AND seq < (SELECT " +
+        "coalesce(max(last_key), 0) FROM archive_segments WHERE stream = 'mail')").one().seq;
+  }
+
+  /**
+   * Whether the `archive` lane has a move to make: hot mail past half the ceiling, and a
+   * straggler to merge or a segment's worth of acked mail. A read.
+   */
+  archiveDue(): boolean {
+    const usage = this.#usage();
+    return usage.messages > this.#limits.maxMessages / 2
+      && (this.#straggler() !== null || this.#sealable(usage));
+  }
+
+  /**
+   * The next move's batch and the placed bodies to read for it; null when none waits. A
+   * straggler's: every acked hot message whose key falls in the segment that holds the
+   * oldest straggler's range or lies just past it (`into`), merged into it, so no two
+   * segments ever overlap. Else the tail's: the oldest acked messages, every one past the
+   * archive's last key, up to a seal (its lines' bytes or its records). A read.
+   */
+  archivePick(): { seqs: number[]; contents: string[]; into: Fence | null } | null {
+    const limits = this.#limits;
+    const sql = this.#sql;
+    const straggler = this.#straggler();
+    let into: Fence | null = null;
+    let rows: { seq: number; line_bytes: number; content_id: string | null }[];
+    if (straggler !== null) {
+      into = sql.exec<Fence>(
+        "SELECT * FROM archive_segments WHERE stream = 'mail' AND last_key >= ? " +
+          "ORDER BY last_key LIMIT 1", straggler).one();
+      rows = sql.exec<{ seq: number; line_bytes: number; content_id: string | null }>(
+        "SELECT m.seq, m.line_bytes, b.content_id FROM ledger_messages m JOIN message_bodies b " +
+          "ON b.message_id = m.message_id WHERE m.unacked = 0 AND m.seq >= ? AND m.seq <= ? " +
+          "ORDER BY m.seq LIMIT ?", straggler, into.last_key, limits.archiveRecords).toArray();
+    } else {
+      if (!this.#sealable(this.#usage())) {
+        return null;
+      }
+      rows = sql.exec<{ seq: number; line_bytes: number; content_id: string | null }>(
+        "SELECT m.seq, m.line_bytes, b.content_id FROM ledger_messages m JOIN message_bodies b " +
+          "ON b.message_id = m.message_id WHERE m.unacked = 0 ORDER BY m.seq LIMIT ?",
+        limits.archiveRecords).toArray();
+    }
+    // The byte budget, in records' own bytes (their trailer shares out, review N4). A tail
+    // move seals once they reach the seal (so it holds the least). A merge holds its segment
+    // and its stragglers in the isolate at once, so it takes stragglers only while the two
+    // fit `MOVE_BYTES` (review N3: the measured move's bound), and always at least one (so
+    // the oldest straggler always moves); the rest merge on the next passes.
+    const budget = into === null ? limits.archiveBytes : Math.max(0, MOVE_BYTES - into.bytes);
+    const seqs: number[] = [];
+    const contents: string[] = [];
+    let bytes = 0;
+    for (const row of rows) {
+      const own = row.line_bytes - RECORD_TRAILER_BYTES;
+      if (into !== null && seqs.length > 0 && bytes + own > budget) {
+        break;
+      }
+      seqs.push(row.seq);
+      if (row.content_id !== null) {
+        contents.push(row.content_id);
+      }
+      bytes += own;
+      if (into === null && bytes >= budget) {
+        break;
+      }
+    }
+    return seqs.length === 0 ? null : { seqs, contents, into };
+  }
+
+  /**
+   * The batch's rows as the object holds them, in seq order, a group at a time (never the
+   * batch held at once, review N5): each message's row, its body's and its recipients', as
+   * `each` takes them; false when one is no longer hot and acked.
+   */
+  #images(seqs: readonly number[],
+          each: (message: StoredMessage, body: Record<string, SqlStorageValue>,
+                 recipients: Record<string, SqlStorageValue>[]) => void): boolean {
+    for (let at = 0; at < seqs.length; at += IMAGE_GROUP) {
+      const group = seqs.slice(at, at + IMAGE_GROUP);
+      const messages = this.#sql.exec<StoredMessage>(
+        "SELECT * FROM ledger_messages WHERE seq IN (SELECT value FROM json_each(?)) " +
+          "AND unacked = 0 ORDER BY seq", JSON.stringify(group)).toArray();
+      if (messages.length !== group.length) {
+        return false;
+      }
+      for (const message of messages) {
+        each(message, this.#sql.exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM message_bodies WHERE message_id = ?", message.message_id).one(),
+             this.#sql.exec<Record<string, SqlStorageValue>>(
+               "SELECT * FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
+               message.message_id).toArray());
+      }
+    }
+    return true;
+  }
+
+  /** The digest of the batch's rows as held (`ImageDigest`), or null when one is gone. */
+  #imageDigest(seqs: readonly number[]): string | null {
+    const images = new ImageDigest();
+    return this.#images(seqs, (message, body, recipients) =>
+      images.add({ message, body, recipients })) ? images.digest() : null;
+  }
+
+  /**
+   * A batch planned into a move's table (review N5: from its rows' lengths, never their
+   * bytes held; review N6: packed, never an object a record): each message's record, its
+   * length, room, time, and its placed body's content (`place` names it in the table, with
+   * the hash it must have as the move reads it) or its inline body, checked here; the digest
+   * of its rows as held; null when it changed since it was picked. A read.
+   */
+  archiveBatch(seqs: readonly number[], table: MoveTable,
+               place: (contentId: string, bytes: number, sha256: string) => number):
+      { digest: string } | null {
+    const images = new ImageDigest();
+    let count = 0;
+    const held = this.#images(seqs, (message, body, recipients) => {
+      images.add({ message, body, recipients });
+      const parts = mailParts(message, body, recipients);
+      const placed = body["content_id"] as string | null;
+      if (parts.inline !== null
+          && createHash("sha256").update(parts.inline).digest("hex") !== message.body_sha256) {
+        throw new Error("an archived body is not the body its message holds");
+      }
+      table.push(message.seq, message.chain_root, message.room_id, message.created_at,
+                 parts.head.byteLength + message.body_bytes + parts.tail.byteLength,
+                 placed === null ? MoveTable.INLINE : MoveTable.PLACED,
+                 placed === null ? -1 : place(placed, message.body_bytes, message.body_sha256),
+                 0);
+      count++;
+    });
+    return !held || count === 0 ? null : { digest: images.digest() };
+  }
+
+  /**
+   * Hot messages' parts (`MailParts`) by seq, read again for the chunk a move is making;
+   * one missing (no longer hot and acked) is `archive_changed`. A read.
+   */
+  archiveParts(seqs: readonly number[]): Map<number, MailParts> {
+    const parts = new Map<number, MailParts>();
+    if (!this.#images(seqs, (message, body, recipients) =>
+      parts.set(message.seq, mailParts(message, body, recipients)))) {
+      throw new Refused("archive_changed: a message moved went from the hot set mid-move");
+    }
+    return parts;
+  }
+
+  /**
+   * In a move's second unit, its pieces' contents adopted: the segments it `replaced` (a
+   * merge's or a rewrite's), each still held as read, gone; the batch (`seqs`), unchanged
+   * since it was read (its digest), gone from the hot set; and each piece's fence named, the
+   * schema holding no two to overlap. The purges' cursors move past what it replaced, and a
+   * blocked archive is unblocked. Refused `archive_changed` when anything changed, so the
+   * unit rolls back whole and the next pass picks again.
+   */
+  archiveCommit(seqs: readonly number[], expected: string, replaced: readonly Fence[],
+                pieces: readonly { content_id: string;
+                                   fence: Omit<Fence, "segment" | "content_id"> }[],
+                now: number): void {
+    // A piece a rewrite made again byte for byte (a purged segment's neighbour taken in
+    // whole, alone in its piece) is that segment, kept as it stands: deleted, its content's
+    // last reference would go with it, and the piece would name a content no longer held.
+    const made = new Set(pieces.map((piece) => piece.content_id));
+    for (const old of replaced) {
+      const gone = made.has(old.content_id)
+        ? this.#sql.exec("SELECT segment FROM archive_segments WHERE segment = ? AND " +
+                           "content_id = ?", old.segment, old.content_id).toArray()
+        : this.#sql.exec("DELETE FROM archive_segments WHERE segment = ? AND content_id = ? " +
+                           "RETURNING segment", old.segment, old.content_id).toArray();
+      if (gone.length === 0) {
+        throw new Refused("archive_changed: a replaced segment went between the units");
+      }
+    }
+    const kept = new Set(replaced.map((old) => old.content_id).filter((id) => made.has(id)));
+    if (seqs.length > 0) {
+      if (this.#imageDigest(seqs) !== expected) {
+        throw new Refused("archive_changed: the batch changed between the move's units");
+      }
+      const list = JSON.stringify(seqs);
+      const inList = "IN (SELECT message_id FROM ledger_messages WHERE seq IN " +
+        "(SELECT value FROM json_each(?)))";
+      // Recipients before their messages: their triggers read the message's size.
+      this.#sql.exec(`DELETE FROM ledger_recipients WHERE message_id ${inList}`, list);
+      this.#sql.exec(`DELETE FROM message_bodies WHERE message_id ${inList}`, list);
+      this.#sql.exec(`DELETE FROM ledger_messages WHERE message_id ${inList}`, list);
+    }
+    // The purges' cursors stay where they are: what this replaced is gone, and what it
+    // named comes after every cursor, its bloom naming no purged agent, so each purge still
+    // visits every segment it had not (review N7: a jump past the replaced segments' ids
+    // would skip the segments between them).
+    for (const piece of pieces) {
+      if (!kept.has(piece.content_id)) {
+        this.#fence(piece.content_id, piece.fence, now);
+      }
+    }
+    this.#sql.exec("UPDATE ledger_usage SET archive_blocked = 0");
+  }
+
+  /**
+   * The segment a bounded rewrite left under the least, for the next pass to go on with
+   * (review N7), derived from the fences alone (so an export's restore keeps it): the
+   * smallest under `SEGMENT_LEAST_BYTES` while it is not the only one. Null when none. A
+   * read of one index range.
+   */
+  #compactTarget(): Fence | null {
+    // The bound as a literal, so the partial index `archive_segments_small` serves it.
+    const small = this.#sql.exec<Fence>(
+      `SELECT * FROM archive_segments WHERE bytes < ${SEGMENT_LEAST_BYTES} AND ` +
+        "stream = 'mail' ORDER BY bytes LIMIT 1").toArray()[0];
+    return small !== undefined && this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM (SELECT 1 FROM archive_segments WHERE stream = 'mail' " +
+        "LIMIT 2)").one().n > 1 ? small : null;
+  }
+
+  /** Whether a segment under the least waits to take in its neighbours. A read. */
+  archiveCompactPending(): boolean {
+    return this.#compactTarget() !== null;
+  }
+
+  /** A segment's fence row, its content named (counted as a placed body's). In a unit. */
+  #fence(contentId: string, fence: Omit<Fence, "segment" | "content_id">, now: number): number {
+    return this.#sql.exec<{ segment: number }>(
+      "INSERT INTO archive_segments (stream, first_key, last_key, first_at, last_at, records, " +
+        "bytes, content_id, filer, trailer_offset, trailer_bytes, members, made_at) VALUES " +
+        "('mail', ?, ?, ?, ?, ?, ?, ?, 'owner', ?, ?, ?, ?) RETURNING segment",
+      fence.first_key, fence.last_key, fence.first_at, fence.last_at, fence.records,
+      fence.bytes, contentId, fence.trailer_offset, fence.trailer_bytes, fence.members, now)
+      .one().segment;
+  }
+
+  /** A segment's neighbour by key: the one just past it, else the one just before it. */
+  fenceBeside(fence: Fence): Fence | null {
+    return this.#sql.exec<Fence>(
+      "SELECT * FROM archive_segments WHERE stream = 'mail' AND first_key > ? " +
+        "ORDER BY first_key LIMIT 1", fence.last_key).toArray()[0]
+      ?? this.#sql.exec<Fence>(
+        "SELECT * FROM archive_segments WHERE stream = 'mail' AND last_key < ? " +
+          "ORDER BY last_key DESC LIMIT 1", fence.first_key).toArray()[0] ?? null;
+  }
+
+  /** Whether the archive's last move was refused for the storage figure. A read. */
+  archiveBlocked(): boolean {
+    return this.#sql.exec<{ blocked: number }>(
+      "SELECT archive_blocked AS blocked FROM ledger_usage").one().blocked === 1;
+  }
+
+  /** In a unit: the archive's move refused for the storage figure, so posts say so. */
+  blockArchive(): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_blocked = 1");
+  }
+
+  /**
+   * In a unit, as an `archive` pass begins: the passes before it that never ended well and
+   * the last one's error (null when it stopped before it could say), then this one counted
+   * among them until it ends (review N3: kept in storage, so a pass killed with its isolate
+   * still counts).
+   */
+  archiveBegin(): { fails: number; error: string | null } {
+    const was = this.#sql.exec<{ fails: number; error: string | null }>(
+      "SELECT archive_fails AS fails, archive_error AS error FROM ledger_usage").one();
+    this.#sql.exec("UPDATE ledger_usage SET archive_fails = archive_fails + 1, " +
+                     "archive_error = NULL");
+    return was;
+  }
+
+  /** In a unit: an `archive` pass ended well (or for a cause it handles), so none failed. */
+  archiveEnded(): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_fails = 0, archive_error = NULL");
+  }
+
+  /**
+   * In a unit: an `archive` pass refused `busy` (the isolate's pool had not the units free):
+   * contention, not a failure, so the count and the last error stand as the pass found them.
+   */
+  archiveBusy(was: { fails: number; error: string | null }): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_fails = ?, archive_error = ?", was.fails,
+                   was.error);
+  }
+
+  /** Whether the hot set stands at its ceiling: the next post is refused `storage_busy`. */
+  atHotCeiling(): boolean {
+    return this.#usage().messages + 1 > this.#limits.maxMessages;
+  }
+
+  /** When the archive last placed a segment (`made_at`), or 0 for none. A read. */
+  lastPlaced(): number {
+    return this.#sql.exec<{ at: number | null }>(
+      "SELECT MAX(made_at) AS at FROM archive_segments").one().at ?? 0;
+  }
+
+  /** In a unit: an `archive` pass failed, as `error` says; it stays counted. */
+  archiveFailed(error: string): void {
+    this.#sql.exec("UPDATE ledger_usage SET archive_error = ?", error);
+  }
+
+  /** The segment whose key range holds `seq`, if any: segments never overlap, so one. */
+  archiveFences(seq: number): Fence[] {
+    return this.#sql.exec<Fence>(
+      "SELECT * FROM archive_segments WHERE stream = 'mail' AND last_key >= ? AND " +
+        "first_key <= ? ORDER BY last_key LIMIT 1", seq, seq).toArray();
+  }
+
+  /** A segment's fence row, if it is still held. A read. */
+  fenceOf(segment: number): Fence | null {
+    return this.#sql.exec<Fence>("SELECT * FROM archive_segments WHERE segment = ?", segment)
+      .toArray()[0] ?? null;
+  }
+
+  /**
+   * The next segment a deleted agent's mail may be in, for the lane to rewrite, the purges'
+   * cursors moved past every segment whose bloom names none of them; null when none is left,
+   * each purge then done. In a unit.
+   */
+  purgeNext(): { fence: Fence; compact: boolean } | null {
+    const sql = this.#sql;
+    // First, a segment a bounded rewrite left under the least, while it has a neighbour.
+    const small = this.#compactTarget();
+    if (small !== null) {
+      return { fence: small, compact: true };
+    }
+    for (let batch = 0; batch < 64; batch++) {
+      const purges = sql.exec<{ agent_id: string; next_segment: number }>(
+        "SELECT agent_id, next_segment FROM archive_purges ORDER BY next_segment").toArray();
+      if (purges.length === 0) {
+        return null;
+      }
+      const from = purges[0]!.next_segment;
+      const fences = sql.exec<Fence>(
+        "SELECT * FROM archive_segments WHERE segment > ? ORDER BY segment LIMIT 256", from)
+        .toArray();
+      for (const fence of fences) {
+        const bloom = fenceBloom(fence);
+        if (purges.some((purge) => purge.next_segment < fence.segment
+                        && bloomHas(bloom, purge.agent_id))) {
+          sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
+                   fence.segment - 1, fence.segment - 1);
+          return { fence, compact: false };
+        }
+      }
+      if (fences.length === 0) {
+        sql.exec("DELETE FROM archive_purges WHERE next_segment >= ?", from);
+        continue;
+      }
+      sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
+               fences.at(-1)!.segment, fences.at(-1)!.segment);
+    }
+    return null;
+  }
+
+  /** In a unit: past a segment whose bloom named a purged agent but held none of its mail. */
+  purgeSkip(segment: number): void {
+    this.#sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
+                   segment, segment);
+  }
+
+  /** A move begun (its first unit): its upload and its batch's digest, until it ends. */
+  moveBegun(stream: "mail" | "rewrite", intentId: string, expected: string, now: number,
+            storedBefore: number): void {
+    this.#sql.exec("INSERT INTO archive_moves (stream, intent_id, digest, started_at, " +
+                     "stored_before) VALUES (?, ?, ?, ?, ?) ON CONFLICT (stream) DO UPDATE SET " +
+                     "intent_id = excluded.intent_id, digest = excluded.digest, started_at = " +
+                     "excluded.started_at, stored_before = excluded.stored_before", stream,
+                   intentId, expected, now, storedBefore);
+  }
+
+  /** A move ended, adopted or given up: its row gone (only its own, when `intentId`). */
+  moveEnded(stream: "mail" | "rewrite", intentId: string | null = null): void {
+    this.#sql.exec("DELETE FROM archive_moves WHERE stream = ? AND (? IS NULL OR intent_id = ?)",
+                   stream, intentId, intentId);
+  }
+
+  /** The members bloom of a segment's records' rooms, as its fence row keeps it (hex). */
+  static members(members: Iterable<string>): string {
+    return Buffer.from(bloomOf(members)).toString("hex");
   }
 
   // -- MAIL TO THE OWNER'S OWN AGENTS: what the `runs` lane delivers -------------
@@ -1586,70 +2394,51 @@ export class Ledger {
    * owner past its `share` of the owner's mailbox (see {@link LedgerLimits}). Bytes are the
    * tier's storage's to bound: a body past `PLACE_BYTES` is in R2.
    */
-  #capped(recipient: string, share: { readonly unacked_to_owner: number } | null): void {
+  /** The readers holding the most unread mail, at most three, as the owner knows them. */
+  #holders(): string {
+    return this.#sql.exec<{ reader: string; unacked: number; name: string | null }>(
+      "SELECT r.reader, r.unacked, coalesce(o.display_name, n.agent) AS name FROM " +
+        "ledger_readers r LEFT JOIN outside_agents o ON o.agent_id = r.reader LEFT JOIN " +
+        "native_agents n ON n.agent_id = r.reader WHERE r.unacked > 0 " +
+        "ORDER BY r.unacked DESC, r.reader LIMIT 3").toArray()
+      .map((row) => `${row.reader === OWNER ? "you" : row.name ?? row.reader} (${row.unacked})`)
+      .join(", ");
+  }
+
+  /**
+   * Room for one more message, never by a delete: too much unread mail owner-wide is
+   * `ledger_full`, and the hot ceiling, with acked mail the `archive` lane has to move,
+   * `storage_busy` until a move lands (the unread ceiling keeps a segment's records acked).
+   */
+  #roomForOne(): void {
+    const usage = this.#usage();
     const limits = this.#limits;
-    if (share !== null && share.unacked_to_owner + 1 > limits.maxSenderUnacked) {
-      throw new Refused("this agent's unacked mail to the owner is full");
+    if (usage.unacked + 1 > limits.maxUnacked) {
+      const most = limits.maxUnacked;
+      throw new Refused(`${LEDGER_FULL}: too much mail is unread (${most} message${
+        most === 1 ? " waits" : "s wait"} for their readers; the most for ${this.#holders()}); ` +
+                        "reading and acking mail makes room");
     }
-    const [most, full] = recipient === OWNER
-      ? [limits.maxOwnerUnacked, "the owner's mailbox is full"]
-      : [limits.maxAgentUnacked, "this agent's mailbox is full"];
-    if (this.#mailbox(recipient).unacked + 1 > most) {
-      throw new Refused(full);
-    }
-  }
-
-  /**
-   * Room for one more message under `maxMessages`: the oldest message no recipient holds is
-   * evicted with its body and recipients; when every held message is unread, the post is
-   * refused `ledger_full`.
-   */
-  #makeRoom(): void {
-    const sql = this.#sql;
-    while (this.#usage().messages + 1 > this.#limits.maxMessages) {
-      const done = sql.exec<{ message_id: string }>(
-        "SELECT message_id FROM ledger_messages WHERE unacked = 0 ORDER BY seq LIMIT 1",
-      ).toArray()[0];
-      if (done === undefined) {
-        throw new Refused(`${LEDGER_FULL}: every message the ledger holds is unread; a ` +
-                          "reader acks to make room");
-      }
-      this.#evict(done.message_id);
-    }
-  }
-
-  /** One message gone, with its body (its placed content let go) and its recipient. */
-  #evict(messageId: string): void {
-    for (const table of ["ledger_recipients", "message_bodies", "ledger_messages"]) {
-      this.#sql.exec(`DELETE FROM ${table} WHERE message_id = ?`, messageId);
+    if (usage.messages + 1 > limits.maxMessages) {
+      throw new Refused(`${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
+                        `out; try again in ${STORAGE_BUSY_RETRY_S} seconds. ` +
+                        JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S }));
     }
   }
 
   /**
-   * In a change at the files byte quota (`Files.#fit`, ADR-035): the oldest acked message
-   * whose placed body the writers `filer` names (`FILERS`) sent, evicted,
-   * so its bytes can go; false when none is left.
+   * The bytes of the owner's mail, as the one number counts them (D2): each hot message's
+   * lines past its body, its body inline or placed (once a content), and every archive
+   * segment's content. A read.
    */
-  /** The bytes of every mail body the owner stores, inline or placed (once a content). A read. */
   storedBytes(): number {
     return this.#sql.exec<{ bytes: number }>(
       "SELECT coalesce((SELECT SUM(body_bytes) FROM message_bodies WHERE content_id IS NULL), " +
-        "0) + coalesce((SELECT SUM(size) FROM file_contents WHERE content_id IN (SELECT " +
-        "content_id FROM message_bodies WHERE content_id IS NOT NULL)), 0) AS bytes").one().bytes;
+        "0) + coalesce((SELECT SUM(meta_bytes) FROM message_bodies), 0) + " +
+        "coalesce((SELECT SUM(size) FROM file_contents WHERE content_id IN (SELECT " +
+        "content_id FROM message_bodies WHERE content_id IS NOT NULL UNION SELECT content_id " +
+        "FROM archive_segments)), 0) AS bytes").one().bytes;
   }
-
-  readonly reclaim = (filer: string): boolean => {
-    const done = this.#sql.exec<{ message_id: string }>(
-      "SELECT m.message_id FROM ledger_messages m JOIN message_bodies b ON b.message_id = " +
-        `m.message_id WHERE m.unacked = 0 AND b.body_bytes > 0 AND ${
-          FILERS.replaceAll("filer", "b.filer")} ORDER BY m.seq LIMIT 1`, filer, filer, filer)
-      .toArray()[0];
-    if (done === undefined) {
-      return false;
-    }
-    this.#evict(done.message_id);
-    return true;
-  };
 
   // -- MAILBOX_RECEIPT ------------------------------------------------------
 

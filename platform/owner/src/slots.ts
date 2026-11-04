@@ -167,6 +167,12 @@ export interface Lease {
   readonly units: number;
   /** At least `total` units held, or `busy` (its units let go), or `signal`'s reason. */
   grow(total: number, signal?: AbortSignal): Promise<void>;
+  /**
+   * Its newest units let go, down to `total` (never below): a step's units, given back as
+   * the step ends, the lease still holding what it held before (the archive's move: its
+   * records' units held, each pass's grown and given back, `owner-do.ts`'s `MoveHold`).
+   */
+  shrink(total: number): void;
   release(): void;
 }
 
@@ -286,12 +292,12 @@ export class SlotPool {
    * first served), or refused `busy`; `signal`, aborted, takes the call out of its queue at
    * once.
    */
-  acquire(units: number, owner = "", signal?: AbortSignal): Promise<Slot> {
+  acquire(units: number, owner = "", signal?: AbortSignal, large = units > 1): Promise<Slot> {
     const most = this.capacity - this.reserve;
     if (!Number.isSafeInteger(units) || units < 1 || (units > 1 && units > most)) {
       throw new Error(`a call takes 1 to ${Math.max(1, most)} units, not ${units}`);
     }
-    return this.#ask(units, { owner, large: units > 1, lease: null }, signal);
+    return this.#ask(units, { owner, large, lease: null }, signal);
   }
 
   #ask(units: number, asker: Asker, signal?: AbortSignal): Promise<Slot> {
@@ -336,9 +342,12 @@ export class SlotPool {
     });
   }
 
-  /** A lease of units for `owner`, empty: see `Lease`. */
-  lease(owner = ""): Lease {
-    return new LeaseOf(this, owner);
+  /**
+   * A lease of units for `owner`, empty: see `Lease`. `large` holds even one unit in the
+   * larger class, never the reserve: a lease that will grow past one (the archive's move).
+   */
+  lease(owner = "", large = false): Lease {
+    return new LeaseOf(this, owner, large);
   }
 
   /** A holding lease's growth by `units` to `total`: now, the oldest holder's wait, or busy. */
@@ -346,7 +355,7 @@ export class SlotPool {
     if (signal?.aborted === true) {
       return Promise.reject(signal.reason);
     }
-    const asker: Asker = { owner: lease.owner, large: total > 1, lease };
+    const asker: Asker = { owner: lease.owner, large: total > 1 || lease.large, lease };
     if (this.#fits(units, asker)) {
       return Promise.resolve(this.#take(units, asker));
     }
@@ -472,14 +481,16 @@ export class SlotPool {
 /** `SlotPool.lease`'s lease. */
 class LeaseOf implements Lease {
   readonly owner: string;
+  readonly large: boolean;
   readonly #pool: SlotPool;
   readonly #slots: Slot[] = [];
   #units = 0;
   #released = false;
 
-  constructor(pool: SlotPool, owner: string) {
+  constructor(pool: SlotPool, owner: string, large: boolean) {
     this.#pool = pool;
     this.owner = owner;
+    this.large = large;
   }
 
   get units(): number {
@@ -494,7 +505,8 @@ class LeaseOf implements Lease {
       const need = total - this.#units;
       let slot: Slot;
       try {
-        slot = this.#units === 0 ? await this.#pool.acquire(need, this.owner, signal)
+        slot = this.#units === 0
+          ? await this.#pool.acquire(need, this.owner, signal, need > 1 || this.large)
           : await this.#pool.grow(this, need, total, signal);
       } catch (error) {
         if (error instanceof SlotBusy) {
@@ -511,6 +523,17 @@ class LeaseOf implements Lease {
         this.#pool.holding(this, true);
       }
       this.#units += slot.units;
+    }
+  }
+
+  shrink(total: number): void {
+    while (this.#slots.length > 0 && this.#units - this.#slots.at(-1)!.units >= total) {
+      const slot = this.#slots.pop()!;
+      this.#units -= slot.units;
+      slot.release();
+    }
+    if (this.#units === 0) {
+      this.#pool.holding(this, false);
     }
   }
 
