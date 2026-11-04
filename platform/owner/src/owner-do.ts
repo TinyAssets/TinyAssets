@@ -3791,7 +3791,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             failed = error;
           }
         }
-        if (!rewrote) {
+        // The move runs whenever mail is due (the hot set past half), a rewrite or not, so a
+        // long purge never holds new mail at `storage_busy` (review N8); the rewrite's table
+        // is let go before it, so the pass holds one move's at a time.
+        if (!rewrote || await this.#door(() => this.#ledger.archiveDue())) {
           await this.#archiveMove();
         }
         if (failed !== null) {
@@ -3883,10 +3886,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * Bounded, compacting across passes: a pass takes in a neighbour only while what it keeps
    * and the neighbour's records stay within `MOVE_RECORDS` and the neighbours it scans
    * within `MOVE_BYTES` (a merge's work), and stops there. A pass stopped so, still under the
-   * least, places what it kept as one small segment and marks compaction owed
-   * (`archiveCompactOwed`): the next pass takes that segment back as its target
-   * (`purgeNext`) and goes on taking in its neighbours, and so on until it holds the least
-   * or stands alone. Each pass leaves the archive whole and disjoint, only less compacted
+   * least, places what it kept as one small segment: the next pass, finding a segment under
+   * the least that is not the only one (`purgeNext`, derived from the fences alone, so a
+   * restore keeps it), takes it back as its target and goes on taking in its neighbours,
+   * and so on until it holds the least or stands alone. Each pass leaves the archive whole and disjoint, only less compacted
    * until the last; the first neighbour always fits (a small segment's records are under
    * the least's worth and a piece's at most 49,933), so every pass makes progress. False
    * when no rewrite waits.
@@ -3910,7 +3913,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       size += table.length(n);
     }
     let scanned = 0;
-    let bounded = false;
     // Left small, it takes in its neighbours by key (a neighbour a purge also thinned may
     // not be enough alone), within the pass's bound, until it holds the least or none is
     // left: never by id.
@@ -3923,8 +3925,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         break;
       }
       if (table.count + beside.records > MOVE_RECORDS || scanned + beside.bytes > MOVE_BYTES) {
-        bounded = true;
-        break;
+        break;  // the pass's bound: the next pass goes on from what this one places
       }
       replaced.push(beside);
       scanned += beside.bytes;
@@ -3935,14 +3936,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
     }
     if (target.compact && replaced.length === 1) {
-      // A small segment with no neighbour left to take in: it stands alone, as it may.
-      await this.#door(() => this.#ledger.archiveCompactOwed(false));
-      return false;
+      return false;  // a small segment with no neighbour to take in stands alone, as it may
     }
     const all = Array.from({ length: table.count }, (_, n) => n);
     await this.#placePieces(table, all, replaced, [], "0".repeat(64), "rewrite",
-                            new MoveReader(this.#files, table),
-                            bounded && size < SEGMENT_LEAST_BYTES);
+                            new MoveReader(this.#files, table));
     return true;
   }
 
@@ -3988,7 +3986,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async #placePieces(table: MoveTable, indices: readonly number[], replaced: readonly Fence[],
                      seqs: readonly number[], digest: string, stream: "mail" | "rewrite",
-                     reader: MoveReader, leftSmall = false): Promise<void> {
+                     reader: MoveReader): Promise<void> {
     const ordered = [...indices].sort((a, b) => table.key(a) - table.key(b));
     const plans = ordered.length === 0 ? []
       : pack(ordered, SEGMENT_LEAST_BYTES, (n) => table.length(n)).map((part) => {
@@ -4054,9 +4052,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         const adopt = (n: number): void => {
           if (n === pieces.length) {
             this.#ledger.archiveCommit(seqs, digest, replaced, named, clock());
-            if (stream === "rewrite") {
-              this.#ledger.archiveCompactOwed(leftSmall);
-            }
             const { stored, figure } = this.#files.storedNow();
             if (figure !== null && stored > Math.max(figure, begun.before)) {
               throw new Refused("archive_full: the move would leave the storage figure higher " +

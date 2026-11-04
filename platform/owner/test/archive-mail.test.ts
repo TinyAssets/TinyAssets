@@ -1078,8 +1078,10 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
       expect(await overlaps(r)).toEqual([]);
       expect(now.filter((fence) => (fence["bytes"] as number) < 8 * MIB).length)
         .toBeLessThanOrEqual(1);
+      // Done when no purge waits and no segment under the least stands beside another.
       const [{ left }] = await sqlIn(r.stub, "SELECT (SELECT COUNT(*) FROM archive_purges) + " +
-        "(SELECT archive_compact FROM ledger_usage) AS left") as [{ left: number }];
+        "(SELECT COUNT(*) FROM archive_segments WHERE bytes < ?) * ((SELECT COUNT(*) FROM " +
+        "archive_segments) > 1) AS left", 8 * MIB) as [{ left: number }];
       if (left === 0) {
         break;
       }
@@ -1117,12 +1119,82 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
     expect(passes.every((p) => p.records <= MOVE_RECORDS)).toBe(true);
     expect(passes.length).toBeGreaterThan(2);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_purges")).toEqual([{ n: 0 }]);
-    expect(await sqlIn(r.stub, "SELECT archive_compact AS c FROM ledger_usage"))
-      .toEqual([{ c: 0 }]);
     expect(after).toHaveLength(1);  // Dot's few archived, under the least, alone
     for (const [id, body] of kept) {
       expect((await chained(r, id)) === body).toBe(true);
     }
+  }, 600_000);
+});
+
+describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve)", () => {
+  it("keeps pace: a pass moves mail whenever it is due, a rewrite or not", async () => {
+    const MIB = 1024 * 1024;
+    const purging = env.PURGING as unknown as DurableObjectNamespace<OwnerDO>;
+    const r = await rig(purging);
+    const muse = await r.register(MUSE);
+    const dot = await r.register(DOT, "Dot");
+    // A production-sized archive (8 MiB segments), Muse's mail 19 in 20 of it.
+    for (let i = 0; i < 240; i++) {
+      const toDot = i % 20 === 19;
+      await r.post(null, `dm:${toDot ? dot : muse}`, { cmid: `p${i}`,
+                                                      body: `${i} `.padEnd(860 * 1024, "m") });
+      await r.ack(toDot ? DOT : MUSE, (await r.read(toDot ? DOT : MUSE)).messages.at(-1)!.seq);
+      if (i % 10 === 9) {
+        await drainDue(r.stub);
+      }
+    }
+    for (let i = 0; i < 40; i++) {
+      await drainDue(r.stub);
+    }
+    expect((await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_segments"))[0]!["n"])
+      .toBeGreaterThan(15);
+    await sqlIn(r.stub, "DELETE FROM test_moves");
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
+    // Past half the hot ceiling at once (no lane runs between): moves are due from here.
+    await r.inLedger({ ...LEDGER_LIMITS, maxMessages: 40, maxUnacked: 20, archiveRecords: 20 },
+                     (ledger: Ledger) => {
+      for (let i = 0; i < 30; i++) {
+        ledger.post(null, `dm:${dot}`, `pre${i}`, `pre ${i}`, null);
+        if (i % 10 === 9) {
+          ledger.ack(DOT, ledger.read(DOT, 100).messages.at(-1)?.seq ?? 0);
+        }
+      }
+      ledger.ack(DOT, ledger.read(DOT, 100).messages.at(-1)?.seq ?? 0);
+    });
+    // The purge runs pass by pass while Dot is sent mail and acks it.
+    let done = false;
+    const purged = (async () => {
+      for (let i = 0; i < 60; i++) {
+        await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
+                            "'owner-schedule/archive'");
+        await drainDue(r.stub);
+        const [{ left }] = await sqlIn(r.stub, "SELECT (SELECT COUNT(*) FROM archive_purges) " +
+          "+ (SELECT COUNT(*) FROM archive_segments WHERE bytes < ?) * ((SELECT COUNT(*) FROM " +
+          "archive_segments) > 1) AS left", 8 * MIB) as [{ left: number }];
+        if (left === 0) {
+          break;
+        }
+      }
+      done = true;
+    })();
+    const answers: string[] = [];
+    for (let n = 0; !done && n < 400; n++) {
+      try {
+        await r.post(null, `dm:${dot}`, { cmid: `new${n}`, body: `new ${n}` });
+        await r.ack(DOT, (await r.read(DOT)).messages.at(-1)!.seq);
+        answers.push("ok");
+      } catch (error) {
+        answers.push(String((error as Error).message).split(":")[0]!);
+      }
+    }
+    await purged;
+    const moves = (await sqlIn(r.stub, "SELECT stream FROM test_moves ORDER BY rowid"))
+      .map((move) => (move["stream"] === "mail" ? "M" : "r")).join("");
+    // The first pass rewrote and moved: mail did not wait for the purge's rewrites.
+    expect(moves.indexOf("M")).toBe(1);
+    expect(moves.lastIndexOf("r")).toBeGreaterThan(1);
+    expect(answers.filter((answer) => answer !== "ok")).toEqual([]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_purges")).toEqual([{ n: 0 }]);
   }, 600_000);
 });
 

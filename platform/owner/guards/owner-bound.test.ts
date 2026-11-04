@@ -47,7 +47,7 @@ import { describe, expect, it } from "vitest";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { exported } from "../src/export";
 import { LEDGER_LIMITS } from "../src/ledger";
-import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES } from "../src/segments";
+import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
 import {
   CHUNK_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES,
   RECORD_FIXED, recordLayout, TABLE_KEPT, WORST_FILL,
@@ -466,6 +466,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                         by: "ARCHIVE_SEGMENTS_MAX: TIER_STORAGE_MAX over SEGMENT_LEAST_BYTES, " +
                           "plus one; each its keys, times, sizes, content id and bloom",
                         indexes: { archive_segments_by_last: key(8, NUMBER) } },
+    // The partial index on the segments under the least: at most one stands at a time (the
+    // lone one, or the one a bounded rewrite left for the next pass), so one entry.
+    archive_segments_small: { rows: 1, bytes: 0, tables: [],
+                              by: "one segment under SEGMENT_LEAST_BYTES at most",
+                              indexes: { archive_segments_small: key(NUMBER) } },
     archive_moves: { rows: 2, bytes: ROW + 16 + 32 + 64 + 2 * NUMBER,
                      by: "one move in flight a stream, mail and a rewrite",
                      indexes: { sqlite_autoindex_archive_moves_1: key(16) } },
@@ -894,6 +899,12 @@ describe("the owner's database bound", () => {
     const { runs: _runs, ...fewer } = TERMS;
     expect(indexes.filter((index) => !chargedIndexes(fewer).includes(index)))
       .toContain("runs_by_request");
+  });
+
+  it("keeps the partial index on the segments under the least at SEGMENT_LEAST_BYTES", () => {
+    // Its one entry (`archive_segments_small`) holds while its bound is the least's.
+    expect(source("schema")).toContain(
+      `ON archive_segments (bytes) WHERE bytes < ${SEGMENT_LEAST_BYTES}`);
   });
 
   it("finds every manifest table charged by the schema's triggers, and every index charged",

@@ -100,7 +100,8 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import {
   bloomHas, bloomOf, bytesOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
-  parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_MIN_BYTES,
+  parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_LEAST_BYTES,
+  SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
@@ -1927,18 +1928,24 @@ export class Ledger {
   }
 
   /**
-   * In a rewrite's commit: whether it left a segment under the least for the next pass to
-   * go on with (review N7: a bounded pass). Set, `purgeNext` hands the small segment back
-   * as a target until it holds the least or stands alone.
+   * The segment a bounded rewrite left under the least, for the next pass to go on with
+   * (review N7), derived from the fences alone (so an export's restore keeps it): the
+   * smallest under `SEGMENT_LEAST_BYTES` while it is not the only one. Null when none. A
+   * read of one index range.
    */
-  archiveCompactOwed(owed: boolean): void {
-    this.#sql.exec("UPDATE ledger_usage SET archive_compact = ?", owed ? 1 : 0);
+  #compactTarget(): Fence | null {
+    // The bound as a literal, so the partial index `archive_segments_small` serves it.
+    const small = this.#sql.exec<Fence>(
+      `SELECT * FROM archive_segments WHERE bytes < ${SEGMENT_LEAST_BYTES} AND ` +
+        "stream = 'mail' ORDER BY bytes LIMIT 1").toArray()[0];
+    return small !== undefined && this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM (SELECT 1 FROM archive_segments WHERE stream = 'mail' " +
+        "LIMIT 2)").one().n > 1 ? small : null;
   }
 
-  /** Whether a bounded rewrite left compaction owed (so the lane goes on). A read. */
+  /** Whether a segment under the least waits to take in its neighbours. A read. */
   archiveCompactPending(): boolean {
-    return this.#sql.exec<{ owed: number }>(
-      "SELECT archive_compact AS owed FROM ledger_usage").one().owed === 1;
+    return this.#compactTarget() !== null;
   }
 
   /** A segment's fence row, its content named (counted as a placed body's). In a unit. */
@@ -2018,18 +2025,9 @@ export class Ledger {
   purgeNext(): { fence: Fence; compact: boolean } | null {
     const sql = this.#sql;
     // First, a segment a bounded rewrite left under the least, while it has a neighbour.
-    if (sql.exec<{ owed: number }>("SELECT archive_compact AS owed FROM ledger_usage").one()
-      .owed === 1) {
-      const small = sql.exec<Fence>(
-        "SELECT * FROM archive_segments WHERE stream = 'mail' AND bytes < ? ORDER BY bytes " +
-          "LIMIT 1", SEGMENT_MIN_BYTES).toArray()[0];
-      const many = sql.exec<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM (SELECT 1 FROM archive_segments WHERE stream = 'mail' " +
-          "LIMIT 2)").one().n > 1;
-      if (small !== undefined && many) {
-        return { fence: small, compact: true };
-      }
-      sql.exec("UPDATE ledger_usage SET archive_compact = 0");
+    const small = this.#compactTarget();
+    if (small !== null) {
+      return { fence: small, compact: true };
     }
     for (let batch = 0; batch < 64; batch++) {
       const purges = sql.exec<{ agent_id: string; next_segment: number }>(

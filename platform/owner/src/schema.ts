@@ -603,10 +603,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // when it stopped before it could say, as an isolate killed for memory does): counted
       // as a pass begins, so the owner is told after three however they ended (review N3).
       "archive_fails INTEGER NOT NULL DEFAULT 0 CHECK (archive_fails >= 0), " +
-      "archive_error TEXT CHECK (archive_error IS NULL OR length(archive_error) <= 200), " +
-      // Whether a bounded rewrite left a segment under the least for the next pass to take
-      // its neighbours into (review N7).
-      "archive_compact INTEGER NOT NULL DEFAULT 0 CHECK (archive_compact IN (0, 1)))",
+      "archive_error TEXT CHECK (archive_error IS NULL OR length(archive_error) <= 200))",
     "INSERT INTO ledger_usage (only, agents, enabled_agents, messages, settled_wakes) " +
       "VALUES (1, 0, 0, 0, 0)",
     "CREATE TRIGGER outside_agents_added AFTER INSERT ON outside_agents BEGIN " +
@@ -1894,6 +1891,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "members TEXT NOT NULL CHECK (length(members) = 128 AND members NOT GLOB " +
       "'*[^0-9a-f]*'), made_at REAL NOT NULL)",
     "CREATE INDEX archive_segments_by_last ON archive_segments (stream, last_key)",
+    // The segments under the least (`SEGMENT_LEAST_BYTES`), found at once: at most one
+    // stands at a time, the lone one or the one a bounded rewrite left for the next pass
+    // (review N7: compaction across passes, derived from the fences alone).
+    "CREATE INDEX archive_segments_small ON archive_segments (bytes) WHERE bytes < 8388608",
     "CREATE TRIGGER archive_segments_placed AFTER INSERT ON archive_segments " +
       `BEGIN ${PLACED("NEW", "+")} END`,
     "CREATE TRIGGER archive_segments_unplaced AFTER DELETE ON archive_segments " +
