@@ -1909,6 +1909,8 @@ R, S, M and W.
 
   Verification round 9 (R8): a CLI's line shaped as the runner's own event (`ta.…`, `ta_cut`) refused as `ta.cli_refused`, never posted as it, every runner event type tested forged; the unnamed-files notice in the object's own words; `platform-tests`' guard holds each leg's steps, keys and `defaults.run` exactly, the reviewer's mutations its test.
 
+  Verification round 10 (R9): no tracked `.npmrc` nor `package.json` `config` may set `script-shell`, `ignore-scripts`, `shell` or `node-options` (a guard, the reviewer's `.npmrc` its test); the wall's held bytes less the chunks the change itself moved to uploading, so a begin that reclaims history meets `storage_full`, never `uploads_open`.
+
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".

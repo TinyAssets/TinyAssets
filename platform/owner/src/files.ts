@@ -643,6 +643,8 @@ export class Files {
    * never a default.
    */
   readonly #full: Full;
+  /** The chunk bytes the change in hand moved to `uploading` itself (`begin`), for `#bounds`. */
+  #moved = 0;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, full: Full, reclaim: Reclaim = () => false,
@@ -719,15 +721,21 @@ export class Files {
    */
   #change<T>(writer: string | null, act: (now: number) => T,
              freeing = false): T {
-    return this.#storage.transactionSync(() => {
-      const before = this.#before(writer);
-      const value = act(Date.now() / 1000);
-      this.#fit(before, writer);
-      if (!freeing) {
-        this.#bounds(before, writer);
-      }
-      return value;
-    });
+    const outer = this.#moved;
+    this.#moved = 0;
+    try {
+      return this.#storage.transactionSync(() => {
+        const before = this.#before(writer);
+        const value = act(Date.now() / 1000);
+        this.#fit(before, writer);
+        if (!freeing) {
+          this.#bounds(before, writer);
+        }
+        return value;
+      });
+    } finally {
+      this.#moved = outer;
+    }
   }
 
   /** One share row's counters (`file_shares`, kept by the schema's triggers), or zeros. */
@@ -795,13 +803,12 @@ export class Files {
           // the index's own ceilings, keep their codes.
           if (setting === "max_bytes" && scope.filer === "*") {
             const needed = after[counter] - scope.before[counter];
-            // The stored figure counts chunks, small files' rows and placed bodies (slice
-            // P). Only an upload's begin adds chunk bytes, its new chunks uploading: what open
-            // uploads held before this change is what is uploading now, less them.
+            // What open uploads held before this change: what is uploading now, less the
+            // chunks this change itself moved to uploading (an upload's begin), summed as it
+            // moved them, so retention reclaimed in the same change never counts as held.
             const held = Math.max(0, this.#sql.exec<{ bytes: number }>(
               "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = " +
-                "'uploading'").one().bytes
-              - Math.max(0, after.chunk_bytes - scope.before.chunk_bytes));
+                "'uploading'").one().bytes - this.#moved);
             throw new Refused(this.#full(Math.max(0, scope.before[counter] - held), needed,
                                          held, bound));
           }
@@ -1520,11 +1527,13 @@ export class Files {
         if (row === undefined) {
           sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, holder) " +
                      "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, own);
+          this.#moved += chunkSize;
         } else if (row.state === "deleting") {
           throw new Refused(CHUNK_DELETING);
         } else if (row.state === "garbage") {
           sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
                      "WHERE sha256 = ?", sha256);
+          this.#moved += chunkSize;
         } else {
           sql.exec("UPDATE file_chunks SET holds = holds + 1 WHERE sha256 = ?", sha256);
         }

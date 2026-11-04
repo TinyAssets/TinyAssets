@@ -1228,6 +1228,75 @@ def test_platform_tests_has_a_leg_for_every_workspace():
     _check_platform_legs(_load()["jobs"]["platform-tests"])
 
 
+# npm settings that change how, or whether, `npm run` runs a script: `script-shell=true`
+# makes every leg run `true` and pass (round 9, R9-1), `ignore-scripts` skips them, and
+# `shell` and `node-options` change what runs. A tracked file may set none of them.
+_NPM_FORBIDDEN = frozenset({"script-shell", "ignore-scripts", "shell", "node-options"})
+
+
+def _npm_key(key: str) -> str:
+    """An npm config key as npm reads it: case and `_` / `-` alike, any scope prefix off."""
+    return key.strip().rsplit(":", 1)[-1].strip().lower().replace("_", "-")
+
+
+def _npm_config_problems(files: dict[str, str]) -> list[str]:
+    """Each forbidden npm setting in `files` (tracked path: text): `.npmrc` lines, and a
+    `package.json`'s `config` keys."""
+    import json
+
+    problems = []
+    for path, text in sorted(files.items()):
+        name = path.rsplit("/", 1)[-1]
+        if name == ".npmrc":
+            for number, line in enumerate(text.splitlines(), 1):
+                line = line.strip()
+                if not line or line[0] in "#;[":
+                    continue
+                if _npm_key(line.split("=", 1)[0]) in _NPM_FORBIDDEN:
+                    problems.append(f"{path}:{number}: {line}")
+        elif name == "package.json":
+            config = json.loads(text).get("config") or {}
+            for key in config if isinstance(config, dict) else []:
+                if _npm_key(key) in _NPM_FORBIDDEN:
+                    problems.append(f"{path}: config.{key}")
+    return problems
+
+
+def _tracked_npm_files() -> dict[str, str]:
+    listed = subprocess.run(["git", "-C", str(_REPO), "ls-files", "-z", "--", ".npmrc",
+                             "*/.npmrc", "package.json", "*/package.json"],
+                            capture_output=True, check=True).stdout.decode().split("\0")
+    return {path: (_REPO / path).read_text(encoding="utf-8")
+            for path in listed if path and (_REPO / path).is_file()}
+
+
+def test_no_tracked_npm_setting_makes_the_platform_legs_no_ops():
+    """No tracked `.npmrc` and no `package.json` `config` sets a key that changes how `npm
+    run` runs a script (round 9, R9-1): with `script-shell=true` in `platform/.npmrc`,
+    every `platform-tests` leg ran nothing and passed, and so did a local `npm test`."""
+    files = _tracked_npm_files()
+    assert "platform/package.json" in files, "the tracked package files were not listed"
+    assert _npm_config_problems(files) == []
+
+
+@pytest.mark.parametrize("path,text", [
+    ("platform/.npmrc", "script-shell=true\n"),             # the reviewer's mutation
+    ("platform/.npmrc", "registry=https://r.example\nSCRIPT_SHELL = true\n"),
+    ("platform/sandbox/.npmrc", "ignore-scripts\n"),
+    (".npmrc", "shell=/bin/true\n"),
+    ("platform/.npmrc", "node-options=--require=/tmp/x.js\n"),
+    ("platform/.npmrc", "@tinyassets:script-shell=true\n"),
+    ("platform/package.json", '{"name": "p", "config": {"script-shell": "true"}}'),
+    ("platform/owner/package.json", '{"name": "o", "config": {"ignore_scripts": true}}'),
+])
+def test_npm_settings_guard_catches_each_mutation(path, text):
+    """Each forbidden setting, in a `.npmrc` or a `package.json`'s `config`, fails it."""
+    files = _tracked_npm_files()
+    assert _npm_config_problems(files) == []
+    files[path] = text
+    assert _npm_config_problems(files) != [], (path, text)
+
+
 def _leg_mutations() -> dict:
     """The reviewer's mutations of `platform-tests` (round 8), each a job that must fail."""
     def step(index: int, **extra):
