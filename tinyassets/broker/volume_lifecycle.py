@@ -146,17 +146,20 @@ class VolumeLifecycle:
         record = self.volume(owner, "sleep")
         # An idle stop drains only if the box itself still finds no request or
         # turn within the lease; one may have arrived after the status read.
-        result = await self.host(owner, "sleep", **(
-            {"idle_seconds": WAKE_LEASE} if idle else {}))
-        if idle and result == {"stopped": False}:
-            return self.volume(owner, "sleep_refused")
-        if result != {"stopped": True}:
-            raise RuntimeError("owner sleep remains pending")
-        if idle:
-            # Only an idle stop defers its off-host copy. An explicit, deploy,
-            # deadline or crash stop is copied at once, as every sleep was.
-            record = self.volume(owner, "stopped")
-        await self.lifecycle.stopped(owner)
+        # Until it releases the slot or fails, a wake waiting on capacity waits
+        # for it (`freeing`).
+        async with self.lifecycle.freeing(owner):
+            result = await self.host(owner, "sleep", **(
+                {"idle_seconds": WAKE_LEASE} if idle else {}))
+            if idle and result == {"stopped": False}:
+                return self.volume(owner, "sleep_refused")
+            if result != {"stopped": True}:
+                raise RuntimeError("owner sleep remains pending")
+            if idle:
+                # Only an idle stop defers its off-host copy. An explicit, deploy,
+                # deadline or crash stop is copied at once, as every sleep was.
+                record = self.volume(owner, "stopped")
+            await self.lifecycle.stopped(owner)
         return record
 
     def _require_headroom(self, owner):

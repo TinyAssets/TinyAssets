@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
 from tinyassets.broker.admission import owner_call, owner_lock, read, thread_work
@@ -48,6 +48,8 @@ class BrokerLifecycle:
         self._capacity = asyncio.Condition()
         self._background_host_slots = asyncio.Semaphore(self.config.volume_concurrency)
         self._reservations = {}
+        # Owners whose stop is in flight: each frees its slot when it ends (`freeing`).
+        self._freeing = set()
         self._instance = None
 
     def _router(self, request):
@@ -167,9 +169,17 @@ class BrokerLifecycle:
                             victim = max(candidates)[1]
                             self._reservations[owner] = victim
                             break
+                    # The deadline bounds a wait for capacity nothing is freeing. While
+                    # an awake box's stop is in flight (the tick's idle sleep of the very
+                    # box this wake would evict), its slot is on its way: wait for that
+                    # stop to end, bounded by its own host call, not by this deadline.
+                    left = deadline - asyncio.get_running_loop().time()
+                    freeing = bool(self._freeing & self.awake)
                     try:
+                        if not freeing and left <= 0:
+                            raise TimeoutError
                         await asyncio.wait_for(self._capacity.wait(),
-                            max(0, deadline - asyncio.get_running_loop().time()))
+                                               None if freeing else left)
                     except TimeoutError:
                         from tinyassets.boxes.provider import BoxBusy
 
@@ -186,6 +196,19 @@ class BrokerLifecycle:
                 async with self._capacity:
                     self._reservations.pop(owner, None)
                     self._capacity.notify_all()
+
+    @asynccontextmanager
+    async def freeing(self, owner):
+        """An awake box's stop in flight; waiting wakes re-check as it starts and ends."""
+        async with self._capacity:
+            self._freeing.add(owner)
+            self._capacity.notify_all()
+        try:
+            yield
+        finally:
+            async with self._capacity:
+                self._freeing.discard(owner)
+                self._capacity.notify_all()
 
     def _charged(self):
         """Memory held by awake and reserved boxes, each at least the thin class."""

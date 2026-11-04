@@ -1066,6 +1066,35 @@ def test_box_admitted_request_blocks_eviction_until_disconnect(
     assert not waiter.is_alive() and result == [b]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_waiting_wake_outlasts_a_slow_stop_of_the_box_it_waits_on(
+    boxes, admitted, broker, monkeypatch,  # noqa: F811
+):
+    # The tick's idle sleep of alice drains her box at once, then her stop outlasts bob's
+    # capacity deadline (a loaded host, merge queue run 41822333526): the broker loop's
+    # clock passes the deadline before the stop reports. Bob waits for the stop in
+    # flight, which frees his slot, and wakes; the deadline bounds only a wait that
+    # nothing is freeing.
+    from tinyassets.broker.volume_lifecycle import VolumeLifecycle
+
+    host = VolumeLifecycle.host
+
+    async def slow(self, owner, operation, **arguments):
+        result = await host(self, owner, operation, **arguments)
+        if operation == "sleep":
+            loop = asyncio.get_running_loop()
+            clock = loop.time
+            monkeypatch.setattr(loop, "time", lambda: clock() + 11)
+            # Every timer now due runs (a deadline wait would raise) before the stop ends.
+            for _ in range(20):
+                await asyncio.sleep(0)
+        return result
+
+    monkeypatch.setattr(VolumeLifecycle, "host", slow)
+    test_box_admitted_request_blocks_eviction_until_disconnect(
+        boxes, admitted, broker, monkeypatch)
+
+
 @pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("op", ["BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED", "BOX_PUBLIC",
                                 "BOX_LIFECYCLE", "BOX_CREDENTIAL", "BOX_IDENTITY",
