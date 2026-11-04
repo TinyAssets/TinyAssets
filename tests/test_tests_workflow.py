@@ -1401,7 +1401,7 @@ def test_comment_and_label_events_do_not_start_tests() -> None:
     """
     triggers = _triggers(_load())
     types = set(triggers["pull_request"]["types"])
-    assert types == {"opened", "reopened", "synchronize", "ready_for_review"}
+    assert types == {"opened", "reopened", "synchronize"}
     assert "issue_comment" not in triggers
     workflows = _REPO / ".github" / "workflows"
     for path in sorted(workflows.glob("*.yml")):
