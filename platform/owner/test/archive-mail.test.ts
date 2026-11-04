@@ -300,7 +300,10 @@ describe("segments", () => {
     await expect(makeChunk(plan, 0, async (from, to) =>
       planned.slice(from, to).map(() => [new Uint8Array(1)]), read))
       .rejects.toThrow(/not the length its plan placed/);
-  });
+    // Measured at 3.4 s alone and 3.65 s in the owner leg (2026-11-04, four cores); CI's
+    // leg passed vitest's 5 s once (run 41883042155). 30 s is eight times its slowest run
+    // here and six times CI's, as `brain.test.ts` sets its own.
+  }, 30_000);
 
   it("are planned in a table that refuses a move past MOVE_RECORDS, loudly (review N7)", () => {
     const table = new MoveTable();
@@ -486,7 +489,9 @@ describe("the archive lane", () => {
     expect((await failure(() => r.stub.mailChain(r.bind(null), {
       message_id: third.message_id, limit: 1, after: 0, body_offset: 100,
       body_message_id: second.message_id } as never))).message).toMatch(/^message_changed/);
-  }, 120_000);
+    // Measured at 16.3 s alone and 18.5 s in the owner leg (2026-11-04, four cores): 180 s
+    // is about ten times its slowest run, so a slower runner's leg keeps a margin.
+  }, 180_000);
 
   it("finds a chain's mail that the lane moves between its fences and its hot unit (N9)",
      async () => {
@@ -1040,7 +1045,9 @@ describe("a body of control characters (review N3)", () => {
     expect(exported!["message_bodies"]!["body"] === body).toBe(true);
     expect(exported!["message_bodies"]).toMatchObject({ body_bytes: BODY_BYTES_MAX,
                                                        content_id: null });
-  }, 120_000);
+    // Measured at 26.9 s alone and 31.3 s in the owner leg (2026-11-04, four cores): 300 s
+    // is about ten times its slowest run, so a slower runner's leg keeps a margin.
+  }, 300_000);
 });
 
 describe("the worst merge (review N3)", () => {
