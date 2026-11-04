@@ -263,15 +263,15 @@ after it, so wrapping a reason never fails the gate.
 
 A pull request whose body declares `Lane: <glob> <dir/> ...` SHALL be refused
 when any changed path (including a rename's previous path) is outside those
-globs. A pull request touching a release-critical path SHALL declare a lane. The
-check SHALL run from the trusted base checkout, before the receipt is read.
+globs. Every pull request SHALL declare a lane. The check SHALL run from the
+trusted base checkout.
 
 #### Scenario: A smuggled lineage is refused
 - **WHEN** a lane declares `Lane: scripts/peer_agent.py` and its diff also carries `deploy/deploy_fail_safe.sh`
 - **THEN** the scope guard refuses it and names `deploy/deploy_fail_safe.sh`
 
-#### Scenario: A release-critical change must declare a lane
-- **WHEN** a pull request touches `deploy/` and its body has no `Lane:` line
+#### Scenario: Every change must declare a lane
+- **WHEN** a pull request's body has no `Lane:` line
 - **THEN** the scope guard refuses it
 
 ### Requirement: Agent shell commands that lost time are refused
@@ -339,7 +339,7 @@ history holds the full text.
 
 ### Requirement: Fixes reach production through a reversible hotfix first
 
-Pushed fixes SHALL run affected tests at their exact head before hot-swapping eligible Python or daemon-served app assets. Floor-class fixes SHALL carry a corroborated Drain-Review APPROVE receipt for that head. Migrations, storage shape, dependencies, images and host services SHALL use normal deployment. Selection SHALL NOT hide an incompatible change elsewhere in the branch diff.
+Pushed fixes SHALL run affected tests at their exact head before hot-swapping eligible Python or daemon-served app assets. Floor-class fixes SHALL carry a passing `review` check (an APPROVE PR review) for that head. Migrations, storage shape, dependencies, images and host services SHALL use normal deployment. Selection SHALL NOT hide an incompatible change elsewhere in the branch diff.
 
 #### Scenario: A live check fails
 

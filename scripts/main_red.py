@@ -14,7 +14,7 @@ so this runs after every Tests run on main (.github/workflows/main-red.yml):
   never a revert.
 * Still red with failing test IDs on a push run whose PARENT commit was green:
   that merge is a candidate cause. Open a revert PR (not auto-armed; it needs a
-  receipt like every PR) and raise the alarm issue.
+  review like every PR) and raise the alarm issue.
 * Still red otherwise (the parent's state is unknown or red, a scheduled run, a
   revert commit): alarm only. Reverting without knowing the culprit reverts
   the wrong change.
@@ -81,8 +81,8 @@ def render_body(*, sha: str, subject: str, run_url: str, failures: list[str],
         lines += [
             "Its parent was green and failing test IDs were reported; this merge is a "
             "candidate cause.",
-            "This PR reverts it. It is not armed: it needs a Drain-Review receipt like "
-            "every PR. Re-land the change with a fix once main is green.",
+            "This PR reverts it. It is not armed: it needs a review like every PR. "
+            "Re-land the change with a fix once main is green.",
         ]
     else:
         lines += [
@@ -195,6 +195,11 @@ def _close_alarm(repo: str, sha: str, run_url: str) -> None:
             f"Required tests are green on main again at `{sha[:12]}`: {run_url}")
 
 
+def revert_body(body: str, paths: list[str]) -> str:
+    """A revert PR's body: every PR declares its lane, a revert's the files it puts back."""
+    return f"{body}\n\nLane: {' '.join(paths)}\n"
+
+
 def _open_revert(repo: str, sha: str, subject: str, body: str, token: str) -> str | None:
     """Push auto-revert/<sha12> and open the PR with a user token (so CI runs on it)."""
     branch = f"{REVERT_PREFIX}{sha[:12]}"
@@ -210,6 +215,8 @@ def _open_revert(repo: str, sha: str, subject: str, body: str, token: str) -> st
         return None
     remote = f"https://x-access-token:{token}@github.com/{repo}.git"
     _run("git", "push", "-q", remote, f"HEAD:refs/heads/{branch}")
+    paths = _run("git", "diff", "--name-only", "origin/main", "HEAD").stdout.split()
+    body = revert_body(body, paths)
     return _gh("pr", "create", "-R", repo, "--base", "main", "--head", branch,
                "--title", revert_title(subject), "--body", body, "--label", LABEL,
                token=token).strip()

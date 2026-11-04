@@ -22,9 +22,9 @@ When main moves, the first few queued or armed PRs (queue order) are checked:
 Three commands, three trust levels (.github/workflows/queue-freshness.yml):
 
     list   trusted: picks the candidates; its output is the matrix. Only a
-           head with a valid Drain-Review receipt NOW (has_receipt: the same
-           drain_review_gate.py decision pr-scope-guard makes) is a candidate,
-           i.e. a reviewer stamped this change. Codex (#4293 round 2)
+           head whose required `review` check passes NOW (reviewed: the
+           decision review.yml posts, read by drain_review_gate.review_passed_at)
+           is a candidate, i.e. a reviewer approved this change. Codex (#4293 round 2)
            showed a probe job cannot be a hard boundary: PR code runs as the
            runner user and can rewrite the upload action that follows it. So
            the boundary is "only reviewed code runs here"; the split below is
@@ -146,8 +146,8 @@ def render_comment(verdict: dict, main: str) -> str:
         f"Main moved to `{main[:12]}`, and this head (`{verdict['head'][:12]}`) no "
         "longer merges cleanly with it, so it was taken out of the merge queue and "
         "auto-merge was disabled (scripts/queue_freshness.py). Merge or rebase onto "
-        "main and push; a `Drain-Review-Diff:` receipt survives that if the change "
-        "itself is unchanged.",
+        "main and push; the review carries to the new head if the change itself "
+        "is unchanged.",
         "",
         f"**{verdict['verdict']}**: {verdict['why']}",
     ]
@@ -211,53 +211,18 @@ def candidates(repo: str) -> list[dict]:
                   else len(order))
 
 
-def has_receipt(repo: str, number: int, head: str, base: str) -> bool:
-    """True if this PR carries a valid Drain-Review receipt for ``head`` NOW.
+def reviewed(repo: str, number: int, head: str) -> bool:
+    """True if PR ``number``'s `review` check passes at ``head`` NOW (review.yml's decision).
 
-    The same decision pr-scope-guard makes (scripts/drain_review_gate.py
-    --blocking-review over the body and trusted comments, with --base so a
-    head receipt carries across an unchanged rebase), run here on
-    default-branch code. A passing check NAME is not enough: a head can keep a
-    success from before #4255 made receipts universal (Codex on #4293 r3).
-    Any failure to decide is "no receipt".
+    Read from GitHub's check runs by default-branch code. Any failure to read is
+    "not reviewed".
     """
-    with tempfile.TemporaryDirectory(prefix="ta-receipt-") as tmp:
-        try:
-            body = json.loads(_gh("api", f"repos/{repo}/pulls/{number}", "--jq", "{b: .body}"))
-            (Path(tmp) / "body.md").write_text(body.get("b") or "", encoding="utf-8")
-            comments = Path(tmp) / "comments.ndjson"
-            with comments.open("w", encoding="utf-8") as fh:
-                for endpoint in (f"issues/{number}/comments", f"pulls/{number}/comments",
-                                 f"pulls/{number}/reviews"):
-                    fh.write(_gh("api", "--paginate", f"repos/{repo}/{endpoint}", "--jq",
-                                 ".[] | {url: .html_url, association: .author_association,"
-                                 " body: (.body // \"\")}"))
-            body_file = str(Path(tmp) / "body.md")
-            _run("git", "fetch", "-q", "--no-tags", "--filter=blob:none", "origin",
-                 base, f"+refs/pull/{number}/head")
-            # The cited commit is not an ancestor of a rebased head, so the
-            # pull ref above does not contain it. A missing object makes the
-            # gate deny the carry; it cannot become a pass.
-            listed = _run(
-                sys.executable, "scripts/drain_review_gate.py", "--list-carry-heads",
-                "--head", head, "--body-file", body_file,
-                "--review-comments-file", str(comments),
-                check=False, timeout=GH_TIMEOUT)
-            for sha in listed.stdout.split():
-                if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha):
-                    _run("git", "fetch", "-q", "--no-tags", "--filter=blob:none",
-                         "origin", sha, check=False, timeout=GH_TIMEOUT)
-            key = _run(sys.executable, "scripts/drain_review_gate.py", "--print-diff-key",
-                       base, head, check=False).stdout.strip()
-            decision = _run(
-                sys.executable, "scripts/drain_review_gate.py", "--blocking-review",
-                "--head", head, "--base", base, "--diff-key", key,
-                "--body-file", body_file,
-                "--review-repo", repo, "--review-pr", str(number),
-                "--review-comments-file", str(comments), check=False, timeout=GH_TIMEOUT)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
-            return False
-    return decision.returncode == 0
+    from drain_review_gate import review_passed_at
+
+    try:
+        return review_passed_at(repo, head, number)
+    except (subprocess.SubprocessError, ValueError):
+        return False
 
 
 def _selection(files: list[str], root: Path) -> list[str] | None:
@@ -487,7 +452,7 @@ def main() -> int:
         for cand in candidates(args.repo):
             if len(picked) == MAX_PROBES:
                 break
-            if has_receipt(args.repo, cand["number"], cand["head"], cand["base"]):
+            if reviewed(args.repo, cand["number"], cand["head"]):
                 picked.append(cand)
         print(json.dumps(picked))
         return 0

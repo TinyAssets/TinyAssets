@@ -301,6 +301,8 @@ def test_review_yml_decides_per_pr_with_the_app_in_its_environment():
     queue = yaml.safe_load((_ROOT / ".github" / "workflows" / "review-queue.yml").read_text())
     assert queue["permissions"] == {}
     assert all(job.get("name") != "review" for job in queue["jobs"].values())
+    enqueue = yaml.safe_load((_ROOT / ".github" / "workflows" / "enqueue-merge.yml").read_text())
+    assert "workflow_run.id" in enqueue["concurrency"]["group"]
 
 
 # ---- the merge group ---------------------------------------------------------------------
@@ -327,6 +329,23 @@ def test_only_the_latest_successful_run_made_for_this_pr_passes():
     assert not gate.review_run_passed([done, waiting], 12)
     assert not gate.review_run_passed([failed, done], 12)
     assert not gate.review_run_passed([{**done, "name": "required-tests"}], 12)
+
+
+def test_no_receipt_wording_is_left_where_people_read_it():
+    """The receipt is gone: nothing posts, documents or prompts for one."""
+    for rel in (".github/workflows/okf-watch.yml", ".github/workflows/enqueue-merge.yml",
+                "scripts/main_red.py", "docs/host-actions.md",
+                "docs/reference/executable-gates.md"):
+        text = (_ROOT / rel).read_text(encoding="utf-8")
+        assert "review receipt" not in text and "Drain-Review-" not in text, rel
+        assert "a receipt like every PR" not in text, rel
+
+
+def test_okf_watch_ready_comment_runs_no_command():
+    """Backticks in the double-quoted comment body would run `review` as a command."""
+    text = (_ROOT / ".github" / "workflows" / "okf-watch.yml").read_text(encoding="utf-8")
+    line = next(line for line in text.splitlines() if "The cooldown is over" in line)
+    assert "`" not in line
 
 
 def test_only_the_review_apps_run_passes_a_reader(monkeypatch, capsys):

@@ -21,7 +21,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ## Production secrets move into a main-only GitHub Environment (2026-10-13)
 
-**Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `tests/test_workflow_production_environment.py`); the environment itself must exist and own the secrets, which only the repo admin can do.
+**Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `platform/ci/guards/environment.test.ts`); the environment itself must exist and own the secrets, which only the repo admin can do.
 
 | Item | Smallest founder-only action |
 |---|---|

@@ -55,7 +55,7 @@ def test_a_smuggled_lineage_is_refused(tmp_path):
 @pytest.mark.verifies(
     "development-coordination-runtime:A pull request stays inside its declared lane"
 )
-def test_a_release_critical_change_must_declare_a_lane(tmp_path):
+def test_every_change_must_declare_a_lane(tmp_path):
     refused = _lane_cli(tmp_path, "no lane here", ["deploy/deploy_fail_safe.sh"], "--require")
     assert refused.returncode == 2
     assert _lane_cli(tmp_path, "no lane here", ["scripts/peer_agent.py"]).returncode == 0
@@ -106,3 +106,49 @@ def test_a_push_that_did_not_land_is_reported(tmp_path):
     git(work, "push", "-q", "fork", "lane")
     assert guard.push_did_not_land("git push fork lane", work) is None
     assert guard.push_did_not_land("git push fork", work) is None
+
+
+def test_the_scope_guard_requires_a_lane_of_every_pr_and_keeps_no_path_list():
+    """No release-critical list and no cap of it (2026-11-04): every PR declares a lane."""
+    guard = (_ROOT / ".github" / "workflows" / "pr-scope-guard.yml").read_text(encoding="utf-8")
+    assert "SENSITIVE_RE" not in guard and "MAX_SENSITIVE" not in guard
+    assert "infra-change" not in guard
+    assert '--body-file "$RUNNER_TEMP/pr-body-lane.md" --require' in guard
+    enqueue = (_ROOT / "scripts" / "enqueue_merge.py").read_text(encoding="utf-8")
+    assert "SENSITIVE_RE" not in enqueue and "infra-change" not in enqueue
+
+
+@pytest.mark.parametrize("lane", ["*", "**", "?*", "[!x]*", "*/**,*", "`*`", "docs/ *"])
+def test_a_lane_that_matches_every_path_is_refused(tmp_path, lane):
+    """With no cap, a lane is the bound an author declares: one matching everything is none."""
+    out = _lane_cli(tmp_path, f"Lane: {lane}\n", ["deploy/x.sh"], "--require")
+    assert out.returncode == 2
+    assert "match every path" in out.stderr
+
+
+@pytest.mark.parametrize("lane", ["docs/", "*.md", "platform/owner/", "scripts/peer_agent.py"])
+def test_a_narrow_lane_is_not_universal(lane):
+    assert review.universal_globs(review.declared_lane(f"Lane: {lane}")) == []
+
+
+def test_every_bot_opened_pr_declares_a_lane():
+    """The scope guard refuses a PR with no Lane:, so each PR a workflow or script opens
+    writes one that holds its own files."""
+    import importlib
+
+    shape = importlib.import_module("scripts.test_shape")
+    body = shape.prune_body({"tests/test_old.py::test_x"}, {})
+    assert review.declared_lane(body) == ["tests/"]
+    main_red = importlib.import_module("scripts.main_red")
+    body = main_red.revert_body("Reverts it.", ["tinyassets/a.py", "tests/test_a.py"])
+    assert review.outside_lane(["tinyassets/a.py", "tests/test_a.py"],
+                               review.declared_lane(body)) == []
+    okf = (_ROOT / "platform" / "starter" / "okf-watch.ts").read_text(encoding="utf-8")
+    assert '"Lane: platform/starter/"' in okf
+    template = (_ROOT / ".github" / "workflows" / "sandbox-template.yml").read_text()
+    assert ('echo "Lane: platform/sandbox/wrangler.jsonc '
+            'platform/sandbox/template/passed.json"') in template
+    wt = importlib.import_module("scripts.wt")
+    assert not wt.lane_declared(wt.PURPOSE_TEMPLATE)
+    assert not wt.lane_declared("Lane: *\n")
+    assert wt.lane_declared("Lane: scripts/wt.py tests/\n")

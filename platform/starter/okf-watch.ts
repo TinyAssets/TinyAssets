@@ -166,7 +166,7 @@ export function prBody(pin: Pin, upstream: Upstream, found: Report): string {
       "of the reference is replaced at its next wake; an edited one gets a `.ta-new` beside it " +
       "and a notice." : "The spec's bytes are unchanged: merging it moves the pin's README and " +
       "tags only, and raises no starter version, so no owner's files change.",
-    "", "Registry row(s): S17", "Net core lines: 0",
+    "", "Registry row(s): S17", "Net core lines: 0", "Lane: platform/starter/",
   ];
   return `${lines.join("\n")}\n`;
 }

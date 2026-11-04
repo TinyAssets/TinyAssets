@@ -27,10 +27,10 @@ name: okf-watch
 # never fails the run; it is a warning, and the founder is asked again the next day.
 #
 # Nothing here merges. Drafts are not auto-enrolled (auto-enroll-merge.yml), and a ready
-# pull request merges only with the review receipt every pull request needs
-# (drain_review_gate.py): an approving `Drain-Review-Verdict` comment by a trusted author.
-# No workflow writes that receipt; the review is an agent review session's, as for every
-# pull request. A version number never decides anything.
+# pull request merges only with the `review` check every pull request needs (review.yml):
+# an APPROVE PR review by a trusted author. No workflow writes that review; it is an
+# agent review session's, as for every pull request. A version number never decides
+# anything.
 
 on:
   schedule:
@@ -208,7 +208,7 @@ jobs:
           for number in $READY; do
             gh pr ready "$number"
             gh pr edit "$number" --add-label okf-review-due
-            gh pr comment "$number" --body "The cooldown is over: ready for review. Read the spec diff, not the version line; the checks are in the description. It merges only with an approving review receipt."
+            gh pr comment "$number" --body "The cooldown is over: ready for review. Read the spec diff, not the version line; the checks are in the description. It merges only once its review check passes: an APPROVE PR review on its head."
           done
 
       - name: Tell the founder (never fails the run)
