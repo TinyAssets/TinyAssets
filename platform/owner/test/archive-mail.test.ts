@@ -1519,3 +1519,140 @@ describe("a tier's storage", () => {
     expect(() => parseTiers(tier(TIER_STORAGE_MAX + 1))).toThrow(/storage whole bytes up to/);
   });
 });
+
+/**
+ * `storage` with every statement's rows read and written counted, as its cursors count them
+ * (`rowsRead`, `rowsWritten`, triggers' work included): exact, whatever the host.
+ */
+function counted(storage: DurableObjectStorage) {
+  const cursors: SqlStorageCursor<Record<string, SqlStorageValue>>[] = [];
+  const bound = <T extends object>(target: T, prop: string | symbol) => {
+    const value = Reflect.get(target, prop, target) as unknown;
+    return typeof value === "function" ? value.bind(target) : value;
+  };
+  const sql = new Proxy(storage.sql, { get: (target, prop) => prop !== "exec"
+    ? bound(target, prop)
+    : (query: string, ...bindings: unknown[]) => {
+      const cursor = target.exec(query, ...bindings);
+      cursors.push(cursor);
+      return cursor;
+    } });
+  return {
+    storage: new Proxy(storage, { get: (target, prop) => prop === "sql" ? sql
+      : bound(target, prop) }),
+    /** The rows read and written since the last take. */
+    take: () => {
+      const rows = cursors.reduce((sum, cursor) => ({ read: sum.read + cursor.rowsRead,
+                                                      written: sum.written + cursor.rowsWritten }),
+                                  { read: 0, written: 0 });
+      cursors.length = 0;
+      return rows;
+    },
+  };
+}
+
+describe("the ledger at its production limits (rs_cap §2.2)", () => {
+  /** A message's body: over 335 bytes, as most mail is, so a segment seals by its bytes. */
+  const BODY = "m".repeat(600);
+  const { maxMessages, maxUnacked, archiveBytes, archiveRecords } = LEDGER_LIMITS;
+
+  it("reads and writes the same rows for a post at 1 and at 49,999 hot (never a scan), " +
+     "and at the hot ceiling tells a post busy until one lane pass moves a segment sealed " +
+     "by its bytes, then lands it, nothing lost", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    const room = `dm:${muse}`;
+    const filled = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
+      const count = counted(state.storage);
+      const ledger = ledgerOn(count.storage as DurableObjectStorage, LEDGER_LIMITS);
+      const acked = () => {
+        ledger.read(MUSE, 1);
+        ledger.ack(MUSE, state.storage.sql.exec<{ seq: number }>(
+          "SELECT max(seq) AS seq FROM ledger_messages").one().seq);
+      };
+      // The first post makes the ledger's one-time rows (its id key, the reader's counter).
+      ledger.post(null, room, "c0", BODY, null);
+      acked();
+      count.take();
+      ledger.post(null, room, "c1", BODY, null);
+      const first = count.take();
+      acked();
+      // To one short of the hot ceiling, every message acked, as the lane would find it.
+      for (let n = 2; n < maxMessages - 1; n++) {
+        ledger.post(null, room, `c${n}`, BODY, null);
+        if (n % 1_000 === 0) {
+          acked();
+        }
+      }
+      acked();
+      const hot = state.storage.sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM ledger_messages").one().n;
+      count.take();
+      ledger.post(null, room, `c${maxMessages - 1}`, BODY, null);
+      const last = count.take();
+      acked();
+      let refused = "";
+      try {
+        ledger.post(null, room, "past", BODY, null);
+      } catch (error) {
+        refused = (error as Error).message;
+      }
+      return { first, hot, last, refused };
+    });
+    console.log(`a post's rows at 1 hot: ${JSON.stringify(filled.first)}; at ` +
+                `${filled.hot} hot: ${JSON.stringify(filled.last)}`);
+    expect(filled.hot).toBe(maxMessages - 1);
+    expect(filled.last).toEqual(filled.first);
+    expect(filled.refused).toMatch(/^storage_busy:/);
+    // The doors' post: busy alike, nothing deleted; it rings the lane.
+    expect((await failure(() => r.post(null, room, { cmid: "past", body: BODY }))).message)
+      .toMatch(/^storage_busy:/);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM ledger_messages"))
+      .toEqual([{ n: maxMessages }]);
+    // One lane pass: at least one segment moved out, each sealed by its bytes.
+    await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/archive'");
+    await drainDue(r.stub);
+    const fences = await sqlIn(r.stub, "SELECT records, bytes FROM archive_segments") as
+      { records: number; bytes: number }[];
+    console.log(`one pass moved ${JSON.stringify(fences)}`);
+    expect(fences.length).toBeGreaterThan(0);
+    for (const fence of fences) {
+      expect(fence.records).toBeLessThan(archiveRecords);
+      expect(fence.bytes).toBeGreaterThanOrEqual(archiveBytes);
+    }
+    // The post lands, and every message is still the owner's: hot or archived, in one read.
+    await r.post(null, room, { cmid: "past", body: BODY });
+    expect(await sqlIn(r.stub, "SELECT (SELECT COUNT(*) FROM ledger_messages) + (SELECT " +
+                               "coalesce(SUM(records), 0) FROM archive_segments) AS n"))
+      .toEqual([{ n: maxMessages + 1 }]);
+  }, 600_000);
+
+  it("at its unread ceiling refuses a post as full, naming who holds the most; acking one " +
+     "makes room for exactly one", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    const dot = await r.register(DOT, "Dot");
+    const seen = await r.inLedger(LEDGER_LIMITS, (ledger: Ledger) => {
+      const refusal = (cmid: string) => {
+        try {
+          ledger.post(null, `dm:${dot}`, cmid, BODY, null);
+          return null;
+        } catch (error) {
+          return (error as Error).message;
+        }
+      };
+      for (let n = 0; n < maxUnacked; n++) {
+        ledger.post(null, `dm:${n % 5 < 3 ? muse : dot}`, `c${n}`, BODY, null);
+      }
+      const full = refusal("over");
+      // Muse reads and acks its first message: one room, for one post.
+      ledger.ack(MUSE, ledger.read(MUSE, 1).messages[0]!.seq);
+      return { full, landed: refusal("one"), again: refusal("two") };
+    });
+    expect(seen.full).toMatch(/^ledger_full: too much mail is unread/);
+    expect(seen.full).toContain(`the most for Muse (${maxUnacked * 3 / 5}), ` +
+                                `Dot (${maxUnacked * 2 / 5})`);
+    expect(seen.landed).toBeNull();
+    expect(seen.again).toMatch(/^ledger_full:/);
+  }, 600_000);
+});

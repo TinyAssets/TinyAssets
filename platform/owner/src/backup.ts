@@ -71,13 +71,20 @@ export const PART_ENTRY = 64 + 1 + 7 + 1;
 export const SEGMENT_ENTRY = 16 + 1 + 16 + 1 + 64 + 1 + 7 + 1;
 /**
  * The stream's bytes one burst gathers, with no outside call, before it puts them as parts:
- * two parts' worth, about 24 MiB of the isolate's 128 MB at its peak.
+ * two parts' worth, counted as the parts hold them (each line's UTF-8 and its newline), so
+ * a burst holds at most this and its last page's lines, once as lines and once as parts:
+ * about 24 MiB of the isolate's 128 MB at its peak. `export.test.ts` ("a generation at
+ * production sizes") holds a burst of three-byte characters to it.
  */
 const GATHER_BYTES = 2 * CHUNK_BYTES;
 /**
  * A generation's sizes: a base page's rows, a part's bytes, a burst's. The production
  * figures are these; a test passes smaller ones (`BackupParts.sizes`) to cut a small
- * fixture into many pages, parts and bursts, the bound logic the same at any size.
+ * fixture into many pages, parts and bursts, the bound logic the same at any size. What
+ * only these figures show is held at them: one burst's cut within a tenth of the CPU limit,
+ * and linear (`guards/backup-cut.test.ts`); an owner of several bursts finished and read
+ * back exactly, its row under a row's 2 MB (`export.test.ts`, "a generation at production
+ * sizes").
  */
 export interface GenerationSizes {
   readonly page: number;
@@ -114,6 +121,43 @@ function dayStart(day: string): number {
 /** The owner's own offset into the night, in seconds. */
 export function spread(owner: string): number {
   return createHash("sha256").update(owner).digest().readUInt32BE(0) % MANIFEST_SPREAD_S;
+}
+
+/** A stream's line as a part holds it: its UTF-8 and its newline, encoded once. */
+export function lineBytes(line: string): Uint8Array {
+  return new TextEncoder().encode(`${line}\n`);
+}
+
+/**
+ * A burst's lines (`lineBytes`) cut into parts of whole lines, each at most `part` bytes (a
+ * line longer than that alone is a part of its own), so an export streams them as they
+ * are. Linear: each line's bytes are counted once and copied once, never the part so far
+ * again (`guards/backup-cut.test.ts` holds it, and its bytes to the cut it replaced).
+ */
+export function cutParts(lines: readonly Uint8Array[], part: number): Uint8Array[] {
+  const parts: Uint8Array[] = [];
+  let from = 0;
+  let bytes = 0;
+  const close = (to: number) => {
+    const out = new Uint8Array(bytes);
+    for (let n = from, at = 0; n < to; at += lines[n]!.byteLength, n++) {
+      out.set(lines[n]!, at);
+    }
+    parts.push(out);
+  };
+  for (let n = 0; n < lines.length; n++) {
+    const size = lines[n]!.byteLength;
+    if (n > from && bytes + size > part) {
+      close(n);
+      from = n;
+      bytes = 0;
+    }
+    bytes += size;
+  }
+  if (lines.length > from) {
+    close(lines.length);
+  }
+  return parts;
 }
 
 /** One generation's row. */
@@ -520,7 +564,8 @@ export class Backups {
       }
       // A burst of whole base pages, each read in a unit of its own, with no outside call
       // between them; the unit that reads the last fixes E, the log's last seq then.
-      const lines: string[] = [];
+      // Each line encoded once, as its part will hold it, so the burst is bounded by bytes.
+      const lines: Uint8Array[] = [];
       let size = 0;
       let next: string | null = at.cursor;
       let e: number | null = null;
@@ -537,8 +582,9 @@ export class Backups {
         });
         for (const line of [...page.read.lines,
                             ...page.read.chunks.map((chunk) => chunkLine(chunk))]) {
-          lines.push(line);
-          size += line.length;
+          const bytes = lineBytes(line);
+          lines.push(bytes);
+          size += bytes.byteLength;
         }
         if (page.read.next === null) {
           e = page.last;
@@ -548,19 +594,7 @@ export class Backups {
         next = encodeCursor(page.read.next);
       }
       // Parts of whole lines, at most a chunk each, so an export streams them as they are.
-      const parts: Uint8Array[] = [];
-      let text = "";
-      for (const line of lines) {
-        const add = `${line}\n`;
-        if (text !== "" && new TextEncoder().encode(text + add).byteLength > sizes.part) {
-          parts.push(new TextEncoder().encode(text));
-          text = "";
-        }
-        text += add;
-      }
-      if (text !== "") {
-        parts.push(new TextEncoder().encode(text));
-      }
+      const parts = cutParts(lines, sizes.part);
       if (at.parts + at.segments + parts.length > MANIFEST_PARTS) {
         await this.#abandon(ns, at, MANIFEST_CEILING);
         return true;
