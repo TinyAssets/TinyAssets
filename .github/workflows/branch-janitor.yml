@@ -1,7 +1,7 @@
 name: branch-janitor
 
 # Layer 1 + 4 of the branch lifecycle automation.
-# See docs/reference/worktree-discipline.md
+# See AGENTS.md Fact 13
 #
 # The daily scheduled run sweeps in `apply-all` mode: it deletes MERGED
 # branches (already on main) and STALE_DELETE branches (unmerged, no open PR,

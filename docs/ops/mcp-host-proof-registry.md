@@ -75,7 +75,7 @@ current instructions.
   `session_boundary`, `host_id`, and storage subsystem `path` fields are
   absent.
 - ChatGPT Developer Mode proof history is preserved in
-  `docs/ops/openai-app-submission-chatgpt-proof-2026-05-02.md`.
+  a dated proof since deleted (git history).
 - 2026-05-02T13:37-07:00 consolidation check passed from
   `codex/onboarding-readiness-consolidation`: JSON packet validation,
   `tests/test_directory_server.py`, public canaries, tool canaries, strict live
@@ -148,18 +148,18 @@ auth modes are intentionally historical and are not current setup guidance.
 |---|---|---|---|
 | Official MCP Registry | Registry-aware MCP hosts | published-live | 2026-05-01 proof: `mcp-publisher publish packaging/registry/server.json`; API search returned `io.github.Jonnyton/tinyassets-universe-server` active/latest |
 | Claude.ai custom connector | verified: read-only UI | 2026-05-02T14:44-07:00 in-app browser Claude.ai chat `3959f3de-0244-4488-aa24-87a396e465c2`: naive connector prompt loaded TinyAssets tools and returned daemon status; screenshot `output/openai-submission-assets/claude-ai-workflow-connector-status-2026-05-02.png` | Read-only proof only; directory form submit still separate |
-| Claude Connectors Directory | Logged-in Claude users/admins | form-reached; submit blocked on contact/final-submit approval | 2026-05-02: in-app browser reached Google Form page 2 from official Claude submission docs; stopped before entering required contact/org fields because submission records Google identity and transmits contact data. Closeout packet: `docs/ops/claude-directory-submission-closeout-2026-05-02.md` |
+| Claude Connectors Directory | Logged-in Claude users/admins | form-reached; submit blocked on contact/final-submit approval | 2026-05-02: in-app browser reached Google Form page 2 from official Claude submission docs; stopped before entering required contact/org fields because submission records Google identity and transmits contact data. Closeout packet: a dated proof since deleted (git history) |
 | ChatGPT custom MCP / developer mode | Logged-in eligible ChatGPT user/workspace | stale app registration | 2026-05-02T15:37-07:00 settings audit: enabled `TinyAssets DEV` points to legacy `https://tinyassets.io/mcp`; fresh ChatGPT web prompt called legacy `get_status` and returned raw diagnostics. Re-register to `/mcp-directory` before final web/mobile proof |
 | ChatGPT App Directory | app draft; submit blocked | `docs/ops/chatgpt-app-submission.json` covers the 11 directory tools with 10 positive and 4 negative tests; 2026-05-02 dashboard draft uses `/mcp-directory`, `No Auth`, 11 complete justification rows, `Domain verified`, 5+3 dashboard tests, optional screenshots for non-UI app; direct `/mcp-directory` proof is green; final submit remains blocked on ChatGPT DEV re-register + web/mobile proof, legal/publisher assertions, optional uploads, and action-time host approval |
 | ChatGPT guest | No logged-in chatbot account | unsupported by ChatGPT path | Route to local/self-hosted/no-chatbot-login options |
 | Mistral Le Chat MCP connector | Logged-in Mistral user/admin | planned | Need connector config proof and directory/submission research |
-| Open WebUI | No hosted chatbot login if self-hosted | verified: local Docker 0.9.2 | 2026-05-01 proof: `docs/ops/open-webui-runtime-proof-2026-05-01.md`; Streamable HTTP MCP to `https://tinyassets.io/mcp-directory`, auth `None`, chat invoked `workflow_get_workflow_status` |
-| LibreChat | No hosted chatbot login if self-hosted | verified: local Docker v0.8.5 | 2026-05-01 proof: `docs/ops/librechat-runtime-proof-2026-05-01.md`; Streamable HTTP MCP to `https://tinyassets.io/mcp-directory`, auth `None`, chat invoked `get_workflow_status_mcp_workflow` |
+| Open WebUI | No hosted chatbot login if self-hosted | verified: local Docker 0.9.2 | 2026-05-01 proof (since deleted; git history); Streamable HTTP MCP to `https://tinyassets.io/mcp-directory`, auth `None`, chat invoked `workflow_get_workflow_status` |
+| LibreChat | No hosted chatbot login if self-hosted | verified: local Docker v0.8.5 | 2026-05-01 proof (since deleted; git history); Streamable HTTP MCP to `https://tinyassets.io/mcp-directory`, auth `None`, chat invoked `get_workflow_status_mcp_workflow` |
 | LM Studio / Jan | Local model user | planned | Verify native MCP support or document bridge/fallback truthfully |
 | OpenClaw / channel gateway | Channel user | planned | Need direct support proof before claiming |
 | VS Code / GitHub Copilot | Developer/IDE user | planned | Verify `.vscode/mcp.json` or user MCP config with Copilot Chat |
-| Codex CLI/IDE | Developer/IDE user | verified: Codex CLI 0.104.0 | 2026-05-02 proofs: `docs/ops/mcp-codex-registration-proof-2026-05-02.md` and `docs/ops/mcp-codex-runtime-proof-2026-05-02.md`; Codex CLI listed directory tools from `https://tinyassets.io/mcp-directory` and called `get_workflow_status`, returning `"schema_version": 1`; CLI 0.104.0 needed `-m gpt-5.2` because the configured default `gpt-5.5` requires a newer CLI |
-| Cursor | Developer/IDE user | registration-path verified; tool-call pending | 2026-05-01 proof: `docs/ops/mcp-cursor-registration-proof-2026-05-01.md`; Cursor 3.2.16 CLI wrote isolated Streamable HTTP config for `https://tinyassets.io/mcp-directory`; needs UI/agent tool-list plus read call before public verified copy |
+| Codex CLI/IDE | Developer/IDE user | verified: Codex CLI 0.104.0 | 2026-05-02 proofs (since deleted; git history); Codex CLI listed directory tools from `https://tinyassets.io/mcp-directory` and called `get_workflow_status`, returning `"schema_version": 1`; CLI 0.104.0 needed `-m gpt-5.2` because the configured default `gpt-5.5` requires a newer CLI |
+| Cursor | Developer/IDE user | registration-path verified; tool-call pending | 2026-05-01 proof (since deleted; git history); Cursor 3.2.16 CLI wrote isolated Streamable HTTP config for `https://tinyassets.io/mcp-directory`; needs UI/agent tool-list plus read call before public verified copy |
 | Gemini CLI | Developer/CLI user | planned | Verify `settings.json`/command path and a safe tool call |
 | Microsoft Copilot Studio | Enterprise maker/admin | planned | Build custom MCP connector/Power Platform package or OpenAPI fallback |
 | Custom MCP host | Builder | compatible-by-spec | Provide minimal integration contract and smoke command |

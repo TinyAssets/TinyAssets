@@ -203,28 +203,10 @@ function secretsOf(credential: Credential): string[] {
           ...(auth.method === "none" ? [] : [auth.secret])];
 }
 
-/**
- * The metered path's own fixed codes, beside `failure.ts`'s: a key the rules read spelled
- * another way (`aliased`); the owner's object refused the call's reservation (the egress
- * door answers the object's own code and receipt in its place); the pool full past its wait
- * (`slots.ts`: told, retryable, never a loss); a call that alone weighs more than the pool
- * (`held.ts`). Kept here, not in `failure.ts`, because the
- * sandbox's runner bundles `failure.ts` and a change to it is a new E2B template build;
- * they join its table at the next one.
- */
-const EGRESS_CODES = Object.freeze({ egress_aliased_key: 400, egress_reserve_refused: 403,
-                                     busy: 503, egress_too_large: 413 });
-type RefusalCode = Code | keyof typeof EGRESS_CODES;
-
-function refusal(code: RefusalCode, resealed?: Resealed): Response {
-  const extra = resealed === undefined ? {} : { "x-ta-resealed": JSON.stringify(resealed) };
-  if (!Object.hasOwn(EGRESS_CODES, code)) {
-    return failureResponse(code as Code, extra);
-  }
-  return Response.json({ error: { code, message: code } }, {
-    status: EGRESS_CODES[code as keyof typeof EGRESS_CODES],
-    headers: { ...extra, "cache-control": "no-store",
-               ...(code === "busy" ? { "retry-after": "1" } : {}) } });
+/** A refusal's answer (`failure.ts`), carrying a resealed credential when there is one. */
+function refusal(code: Code, resealed?: Resealed): Response {
+  return failureResponse(code, resealed === undefined ? {}
+    : { "x-ta-resealed": JSON.stringify(resealed) });
 }
 
 /**
@@ -307,7 +289,7 @@ export async function forwardMetered(env: KeyringEnv, bound: Binding, blob: unkn
 }
 
 /** A metered call ready to send, or the code it is refused with. */
-type Prepared = { readonly refused: RefusalCode }
+type Prepared = { readonly refused: Code }
   | { readonly upload: Upload; readonly model: Model<Api>; readonly listed: boolean };
 
 /**
@@ -428,7 +410,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                     metered: { reserve: Reserve; catalog: Catalog } | null,
                     stop: ReadableStream<Uint8Array> | null, free = false):
     Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
-  const refused = (code: RefusalCode, resealed?: Resealed) =>
+  const refused = (code: Code, resealed?: Resealed) =>
     ({ response: refusal(code, resealed), outcome: Promise.resolve(FAILED) });
   const cancelled = new AbortController();
   stop?.getReader().read().then(() => cancelled.abort(), () => cancelled.abort());

@@ -19,13 +19,17 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { AUTOMATON_STATES, LIST_BYTES, SANDBOX_HEAP } from "../../owner/src/sync-ignore";
+import { AUTOMATON_STATES, defaultSyncIgnore, LIST_BYTES, SANDBOX_HEAP }
+  from "../../owner/src/sync-ignore";
+import { walkFiles } from "./fsafe";
 import {
-  ignoredBy, memoryMirror, type Mirror, openMirror, type Place, SyncClient, SyncFenced,
-  syncIn, syncOut, wildcard,
+  CHUNK_BYTES, COMMIT_OPS, ignoredBy, memoryMirror, openMirror, type Place, SYNC_BODY,
+  SyncClient, SyncFenced, syncIn, syncOut, wildcard,
 } from "./sync";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -258,66 +262,192 @@ describe("the sync-ignore", () => {
 });
 
 describe("memory, whatever the tree holds", () => {
-  it("sync-in streams a file larger than the sandbox's memory (1 GiB) to disk", { tags: ["large"] }, async () => {
+  // A sample is the live set: the heap and the byte arrays' backing stores, read right after
+  // full collections, at a checkpoint where sync-in is parked on a door's call (the owner
+  // memory leg's sampler, `owner/memory/leg.mjs`). Never RSS: it counts garbage not yet
+  // collected and pages the allocator keeps, so it reads the collector's timing, not the code.
+  setFlagsFromString("--expose-gc");
+  const gc = runInNewContext("gc") as () => void;
+  const live = () => {
+    gc();
+    gc();
+    const usage = process.memoryUsage();
+    return usage.heapUsed + usage.arrayBuffers;
+  };
+
+  /**
+   * Sync-in of one file of `chunks` chunks from a stand-in door, sampled at every call: the
+   * peak over the live set before it, the most calls open at once (each answered after a
+   * turn of the loop, so calls made together overlap) and the largest reply. `keep` is the
+   * control: a client that keeps every reply it is given.
+   */
+  async function syncInMemory(chunks: number, keep = false) {
     const { place: p, local } = place();
-    const CHUNK = 4 * 1024 * 1024;
-    const CHUNKS = 320;  // 1.25 GiB
-    const piece = Buffer.alloc(CHUNK, 3).toString("base64");
+    const piece = Buffer.alloc(CHUNK_BYTES, 3).toString("base64");
+    const kept: string[] = [];
+    const mirror = memoryMirror();
+    let open = 0;
+    let inFlight = 0;
+    let reply = 0;
     let peak = 0;
-    const base = process.memoryUsage().rss;
-    const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 5);
-    const mirror: Mirror = memoryMirror();
-    await syncIn(client((door, body) => {
-      peak = Math.max(peak, process.memoryUsage().rss);
-      if (door === "changes") {
-        return { status: 200, body: { cursor: 5, changes: [
-          { path: "/workspace/video.bin", kind: "file", version: 1 }] } };
+    const base = live();
+    const fetcher = (async (url: string, init: { body: string }) => {
+      open += 1;
+      inFlight = Math.max(inFlight, open);
+      await new Promise((resolve) => setImmediate(resolve));
+      peak = Math.max(peak, live() - base);
+      const door = url.split("/sync/")[1]!;
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      const text = JSON.stringify(door === "changes"
+        ? { cursor: 5, changes: [{ path: "/workspace/video.bin", kind: "file", version: 1 }] }
+        : door === "read"
+        ? { entry: { version: 1, mode: 0, kind: "file" },
+            chunks: Array.from({ length: chunks }, (_, i) => ({
+              sha256: i.toString(16).padStart(64, "0"), size: CHUNK_BYTES })) }
+        : { chunks: Array.from({ length: body["count"] as number }, () => piece) });
+      reply = Math.max(reply, text.length);
+      if (keep) {
+        kept.push(text);
       }
-      if (door === "read") {
-        return { status: 200, body: { entry: { version: 1, mode: 0, kind: "file" },
-          chunks: Array.from({ length: CHUNKS }, (_, i) => ({ sha256: String(i), size: CHUNK })) } };
-      }
-      return { status: 200, body: { chunks: Array.from({ length: body["count"] as number },
-                                                         () => piece) } };
-    }), p, mirror);
-    clearInterval(timer);
-    expect(statSync(join(local, "video.bin")).size).toBe(CHUNK * CHUNKS);
-    expect(mirror.get("/workspace/video.bin")!.size).toBe(CHUNK * CHUNKS);
-    // Bounded by a few replies in flight (each 8 MiB of chunks, as base64 and decoded, the
-    // stand-in door's own copies among them), never by the file: it is 1.25 GiB.
-    expect(peak - base).toBeLessThan(384 * 1024 * 1024);
+      open -= 1;
+      return new Response(text, { status: 200 });
+    }) as unknown as typeof fetch;
+    await syncIn(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p, mirror);
+    expect(statSync(join(local, "video.bin")).size).toBe(CHUNK_BYTES * chunks);
+    expect(mirror.get("/workspace/video.bin")!.size).toBe(CHUNK_BYTES * chunks);
     rmSync(join(local, "video.bin"));
+    return { peak, inFlight, reply };
+  }
+
+  it("sync-in streams a file larger than the sandbox's memory (1 GiB) to disk", { tags: ["large"] }, async () => {
+    const LARGE = 320;  // 1.25 GiB
+    const SMALL = LARGE / 4;
+    // The steps' own objects (the file's list of chunks among them): a quarter chunk, as the
+    // owner memory leg allows each step and the difference of two sizes (ADR-037).
+    const QUARTER = CHUNK_BYTES / 4;
+    // Each size the least of two runs, as the leg reads it: a run's peak is the path's own
+    // plus whatever the process made for a moment beside it.
+    const runs = [await syncInMemory(SMALL), await syncInMemory(LARGE),
+                  await syncInMemory(SMALL), await syncInMemory(LARGE)];
+    const small = Math.min(runs[0]!.peak, runs[2]!.peak);
+    const large = Math.min(runs[1]!.peak, runs[3]!.peak);
+    // What the code holds by its shape: the replies it has open at once (one: each call is
+    // awaited before the next), each at most a call's chunks (the count it asks for, as
+    // base64), and the steps' own objects.
+    const bound = Math.max(...runs.map((run) => run.inFlight)) *
+      Math.max(...runs.map((run) => run.reply)) + QUARTER;
+    // The control: a client that keeps every reply reads as growing, past the bound, or the
+    // samples prove nothing.
+    const kept = [await syncInMemory(LARGE / 16, true), await syncInMemory(LARGE / 8, true)];
+    expect(kept[1]!.peak - kept[0]!.peak).toBeGreaterThan(QUARTER);
+    expect(kept[0]!.peak).toBeGreaterThan(bound);
+    // Each step within the bound, and O(1) in the file's size: four times the file holds no
+    // more than a quarter chunk more.
+    expect(large).toBeLessThanOrEqual(bound);
+    expect(large - small).toBeLessThanOrEqual(QUARTER);
   });
 
-  it("sync-out over many paths holds about what it holds over few", { tags: ["large"] }, async () => {
-    const heap = async (files: number) => {
-      const { place: p, local, root } = place();
-      for (let d = 0; d < files / 100; d++) {
-        const dir = join(local, "a-fairly-ordinary-project-folder", `module-${d}`, "src");
-        mkdirSync(dir, { recursive: true });
-        for (let f = 0; f < 100; f++) {
-          writeFileSync(join(dir, `component-file-number-${f}.ts`), "");
-        }
+  /**
+   * Sync-out of a tree of `modules` folders of 100 files each, sampled at every call as
+   * sync-in is: the peak over the live set before it, the most calls open at once, the most
+   * ops a commit carried and its largest body. With it, `matcher`: what the sync-ignore's
+   * matcher remembers of the same tree (its folders and names, `REMEMBERED_CHARS` at most),
+   * read the same way after it matched every path the walk offers it, as sync-out does.
+   * `keep` is the control: a client that keeps every op it is sent.
+   */
+  async function syncOutMemory(modules: number, keep = false) {
+    const { place: p, local, root } = place();
+    for (let d = 0; d < modules; d++) {
+      const dir = join(local, "a-fairly-ordinary-project-folder", `module-${d}`, "src");
+      mkdirSync(dir, { recursive: true });
+      for (let f = 0; f < 100; f++) {
+        writeFileSync(join(dir, `component-file-number-${f}.ts`), "");
       }
-      const mirror = openMirror(join(root, "mirror.db"));
-      const before = process.memoryUsage().heapUsed;
-      let peak = before;
-      const timer = setInterval(() => {
-        peak = Math.max(peak, process.memoryUsage().heapUsed);
-      }, 5);
-      await syncOut(client((door, body) => door === "commit" ? commitAll(body)
-        : { status: 404, body: {} }), p, mirror, LEASE, []);
-      clearInterval(timer);
-      mirror.close();
-      rmSync(local, { recursive: true, force: true });
-      return Math.max(0, peak - before);
+    }
+    let matcher = live();
+    {
+      const matches = ignoredBy(defaultSyncIgnore());
+      for (const rel of walkFiles(local, (each, isDir) => matches(each, isDir) === "custom")) {
+        matches(rel);
+      }
+      matcher = live() - matcher;
+      expect(matches("x")).toBeNull();
+    }
+    const mirror = openMirror(join(root, "mirror.db"));
+    const kept: unknown[] = [];
+    let open = 0;
+    let inFlight = 0;
+    let ops = 0;
+    let body = 0;
+    let peak = 0;
+    const base = live();
+    const fetcher = (async (url: string, init: { body: string }) => {
+      open += 1;
+      inFlight = Math.max(inFlight, open);
+      await new Promise((resolve) => setImmediate(resolve));
+      peak = Math.max(peak, live() - base);
+      body = Math.max(body, init.body.length);
+      const door = url.split("/sync/")[1]!;
+      const sent = JSON.parse(init.body) as Record<string, unknown>;
+      open -= 1;
+      if (door !== "commit") {
+        return new Response("{}", { status: 404 });
+      }
+      ops = Math.max(ops, (sent["ops"] as unknown[]).length);
+      if (keep) {
+        kept.push(...(sent["ops"] as unknown[]));
+      }
+      return new Response(JSON.stringify(commitAll(sent).body), { status: 200 });
+    }) as unknown as typeof fetch;
+    await syncOut(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p, mirror,
+                  LEASE, []);
+    mirror.close();
+    rmSync(local, { recursive: true, force: true });
+    return { peak, matcher, inFlight, ops, body };
+  }
+
+  it("sync-out over many paths holds about what it holds over few", { tags: ["large"] }, async () => {
+    // One batch: `COMMIT_OPS` files, which sync-out sends as one commit. A batch's live set,
+    // measured, is the unit; the steps' own objects are a quarter of it (the owner memory
+    // leg's allowance, a quarter unit, ADR-037).
+    const BATCH = COMMIT_OPS / 100;
+    const FEW = 10 * BATCH;
+    const MANY = 100 * BATCH;
+    // Each size the least of two runs (a run's peak is the path's own plus whatever the
+    // process made for a moment beside it), the matcher's at the same run.
+    const least = (runs: Awaited<ReturnType<typeof syncOutMemory>>[]) =>
+      runs.reduce((best, run) => run.peak < best.peak ? run : best);
+    const all: Awaited<ReturnType<typeof syncOutMemory>>[] = [];
+    const sized = async (modules: number) => {
+      const runs = [await syncOutMemory(modules), await syncOutMemory(modules)];
+      all.push(...runs);
+      return least(runs);
     };
-    const few = await heap(10_000);
-    const many = await heap(100_000);
-    // Ten times the paths: the same bounded batch, not ten times the memory (the walk, the
-    // mirror and the removals are read a page at a time).
-    expect(many).toBeLessThan(few * 3 + 32 * 1024 * 1024);
-    expect(many).toBeLessThan(96 * 1024 * 1024);
+    const batch = await sized(BATCH);
+    const few = await sized(FEW);
+    const many = await sized(MANY);
+    const QUARTER = batch.peak / 4;
+    // Its shape, from the code's constants: one commit open at once, each at most
+    // `COMMIT_OPS` ops in a body of at most `SYNC_BODY`.
+    const inFlight = Math.max(...all.map((run) => run.inFlight));
+    expect(inFlight).toBe(1);
+    expect(Math.max(...all.map((run) => run.ops))).toBe(COMMIT_OPS);
+    expect(Math.max(...all.map((run) => run.body))).toBeLessThanOrEqual(SYNC_BODY);
+    // What a tree costs past one batch is the matcher's memory of its folders and names
+    // (bounded by `REMEMBERED_CHARS`), never its paths: the walk holds one directory a level,
+    // and the mirror and the removals are read a page at a time.
+    const bound = (run: typeof few) =>
+      inFlight * batch.peak + Math.max(0, run.matcher - batch.matcher) + QUARTER;
+    // The control: a client that keeps every op it is sent reads as growing, past the
+    // bound, or the samples prove nothing.
+    const kept = [await syncOutMemory(FEW, true), await syncOutMemory(2 * FEW, true)];
+    expect(kept[1]!.peak - kept[0]!.peak).toBeGreaterThan(QUARTER);
+    expect(kept[1]!.peak).toBeGreaterThan(bound(kept[1]!));
+    // Each size within one batch beside the matcher's memory, and ten times the paths no
+    // more than the matcher's memory of them more.
+    expect(few.peak).toBeLessThanOrEqual(bound(few));
+    expect(many.peak).toBeLessThanOrEqual(bound(many));
+    expect(many.peak - few.peak).toBeLessThanOrEqual(many.matcher - few.matcher + QUARTER);
   });
 });
 

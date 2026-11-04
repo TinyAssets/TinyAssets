@@ -21,10 +21,17 @@ const STATUS = Object.freeze({
   // tool the provider bills beyond tokens.
   egress_multiple_choices: 400,
   egress_unmetered_tool: 403,
-  // An option priced beyond tokens that pi-ai does not price; a body that is not the call
-  // the owner's object reserved (another model, another tier).
+  // An option priced beyond tokens that pi-ai does not price.
   egress_unpriced_option: 403,
-  egress_reservation_mismatch: 400,
+  // The metered path's (`forward.ts`): a key the rules read spelled another way (`aliased`);
+  // the owner's object refused the call's reservation (the egress door answers the object's
+  // own code and receipt in its place); a call that alone weighs more than the pool
+  // (`held.ts`); the pool full past its wait (`held.ts`: told, retryable after
+  // `Retry-After`, never a loss).
+  egress_aliased_key: 400,
+  egress_reserve_refused: 403,
+  egress_too_large: 413,
+  busy: 503,
   unknown_model: 404,
   unsupported_source: 422,
   not_refreshable: 409,
@@ -76,10 +83,15 @@ export async function guarded<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-/** The HTTP answer for a code: `{error: {code, message}}`, and nothing from upstream. */
+/**
+ * The HTTP answer for a code: `{error: {code, message}}`, and nothing from upstream; `busy`
+ * with its `Retry-After`.
+ */
 export function failureResponse(code: Code, extra?: Readonly<Record<string, string>>): Response {
   return Response.json({ error: { code, message: code } },
-                       { status: STATUS[code], headers: { ...extra, "cache-control": "no-store" } });
+                       { status: STATUS[code],
+                         headers: { ...extra, "cache-control": "no-store",
+                                    ...(code === "busy" ? { "retry-after": "1" } : {}) } });
 }
 
 /**

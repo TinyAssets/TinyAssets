@@ -344,7 +344,7 @@ account and no deploy.
   Durable Object stub and public-URL calls per Worker request, per DO RPC, per alarm and
   per background work outliving its RPC, the 15-minute alarm cut, and whether Worker
   `fetch` reaches names resolving to private addresses (miniflare's limit enforcer is a
-  no-op, so only live counts). It ran live (`cap-probe.yml`; the results are in
+  no-op, so only live counts). It ran live (the cap probe's workflow; the results are in
   `cap-probe.md`, and the follow-up runs are 6's probe item). The platform's subrequest
   limit (`limits.subrequests`) is the only cap on gateway calls: no per-kind budget is
   kept beside it.
@@ -712,8 +712,8 @@ account and no deploy.
   when a migration it applied reads differently now (`schema_digests`, Flyway's
   `validate`), which catches what the repo's guard cannot (a hotfix branch, a revert), and
   refuses a migration it applied whose digest row is gone (it never passes by default).
-  The lock itself only grows: the structural guard `tests/test_migration_lock_append_only.py`
-  holds `migrations.json` against `origin/main` (the base's first-deploy marker never
+  The lock itself only grows: the guard `platform/owner/guards/migrations-append-only.test.ts`
+  holds `migrations.json` against the base branch (the base's first-deploy marker never
   changes; the base's pins stay the head's first pins, in order), so a change that edits a
   deployed migration and its pin together fails in review. Until the marker is set, slices
   still edit in place.
@@ -1929,7 +1929,7 @@ R, S, M and W.
   store while held. Slice D deleted the thread stores; P1's subrequest count still sets the
   owner Worker's `limits.subrequests`.
 - [x] The facet probe P13 (with Q8, F1's erasure window). Method, key and results:
-  `facet-probe.md`; run by the manual `facet-probe.yml`. Run 1 (41247617223, 2026-10-31):
+  `facet-probe.md`; run by its manual workflow, since deleted. Run 1 (41247617223, 2026-10-31):
   Q1 a parent and all its facets share one ceiling of about 10 GiB (read by hand; at the
   ceiling production resets the parent instead of a size error), so the real per-object
   ceiling is about 10 GiB and the owner-bound guard's 10 × 10^9 denominator is
@@ -2194,7 +2194,8 @@ R, S, M and W.
   - DCR (founder ruling): served only with `DCR_ENABLED`, and then a registration is taken
     only when its `client_name` names a `dcr` vendor (Grok, Muse, Gemini, Cursor); a CIMD
     vendor's name or none is refused `invalid_client_metadata`. Production stays
-    `DCR_ENABLED: "false"` until the go-ahead deploy.
+    `DCR_ENABLED: "false"` until the doors go live (mode `routes`; the go-ahead deploy,
+    mode `dark`, moves no route, `platform/deploy/checklist.md`).
   - Plugins (`platform/plugins/`, `build.mjs`, `--check` in the doors' guard): ChatGPT and
     Codex (Agent Plugins format, OpenAI extension, onboarding skill, first example prompt
     "Set me up on TinyAssets") and Claude (`.claude-plugin/`, `.mcp.json`), each the MCP
@@ -2211,10 +2212,10 @@ R, S, M and W.
     a nonce one appends to `USER.md` found by the other's `search` and `fetch` with the
     seeded profile whole, corrected by `file_edit` at its etag; two concurrent creates of
     `offer:connect:grok` leave exactly one row and one conflict.
-- [ ] **Owed by BRAIN, live, after the go-ahead deploy** (proof is observed tool calls and
+- [ ] **Owed by BRAIN, live, once mode `routes` has run** (proof is observed tool calls and
   `writer` values, never an agent's say-so; the user's only acts are connect, sign in and
   answer):
-  1. **Turn DCR on** in the go-ahead deploy (`DCR_ENABLED: "true"`). For each `dcr` vendor
+  1. **Turn DCR on** with the `routes` run (`DCR_ENABLED: "true"`). For each `dcr` vendor
      (Grok via Cursor's backend, Gemini, Muse, Cursor), the founder makes its first connect
      attempt while `wrangler tail` runs on the doors Worker (or with the doors' Workers logs
      open). That attempt's registration is refused, since its `match.redirects` is empty, and
@@ -2523,12 +2524,14 @@ R, S, M and W.
   control (a door reading the body whole) reads 11.99 MiB more. A caller's stop now ends the
   answer closed, not errored with its abort, so workerd's "Uncaught (in promise) AbortError"
   per stopped call (14 in the doors' egress suite, on `main` too) is gone.
-  Owed: a sandbox's real upload rate, measured live, against `MIN_RATE`;
-  `egress_aliased_key`, `egress_reserve_refused`, `egress_too_large` and `busy` stay in
-  `forward.ts`'s own
-  table (`EGRESS_CODES`) and join `failure.ts`'s, and `egress_reservation_mismatch` leaves
-  it, at the next E2B template build (the runner bundles `failure.ts`, so a change to it is a
-  new template); live, `memoryUsageBytes` for the gateway and the doors.
+  Owed: a sandbox's real upload rate, measured live, against `MIN_RATE`; live,
+  `memoryUsageBytes` for the gateway and the doors.
+  Done at the template build `tinyassets-sandbox:s683105ce69435bb9` (2026-11-04, pinned,
+  its checks in `passed.json`): `egress_aliased_key`, `egress_reserve_refused`,
+  `egress_too_large` and `busy` (its `Retry-After` kept) are in `failure.ts`'s table and
+  `forward.ts`'s own (`EGRESS_CODES`) is gone; `egress_reservation_mismatch` left it. The same
+  template carries the runner's `safeDirs` fix: two runs starting at once in a fresh sandbox
+  both make its shared directories, and an `EEXIST` on a real directory is the one asked for.
 
 ## 10. The plan's later slices
 

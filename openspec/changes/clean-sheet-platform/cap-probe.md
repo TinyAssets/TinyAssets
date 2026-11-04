@@ -1,8 +1,8 @@
 # The 32-call cap probe (gateway G0)
 
 For `tasks.md` §6 (the probe before the agent runs a turn on the object). Answered, so
-its code (`scripts/probes/capprobe/`) and manual workflow (`.github/workflows/cap-probe.yml`)
-are deleted; both are in git at `7ae171de8`.
+its code and its manual workflow are deleted; both are at `7ae171de8`
+(https://github.com/TinyAssets/TinyAssets/tree/7ae171de8/scripts/probes/capprobe, https://github.com/TinyAssets/TinyAssets/tree/7ae171de8/.github/workflows/cap-probe.yml).
 
 ## Found (run 1 on Workers Free, run B on Workers Paid)
 
@@ -110,7 +110,7 @@ That burn is inconclusive when it survives, because "each isolate has some built
 flexibility" for an infrequent overrun (`configuration.mdx`, the `isolate-cpu-flexibility`
 partial). Run 1's burn survived on Free. Only a refused burn says anything.
 
-**Local.** `node scripts/probes/capprobe/local.mjs` (after `npm ci` in `platform/`) loads
+**Local.** The probe's `local.mjs` (after `npm ci` in `platform/`, at `7ae171de8`) loaded
 both configs in miniflare and runs every case twice. The first run uses N = 40. The second
 uses N = 60, refuses one case with a 1101, and must refuse that case's first-run records as
 stale. Each run checks the pre-spends, the ordering checks and every burst. Every call

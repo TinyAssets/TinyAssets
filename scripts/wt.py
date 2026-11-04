@@ -1,7 +1,7 @@
 """Worktree lifecycle wrapper (Layer 2): make teardown automatic.
 
 Part of the branch lifecycle automation; see
-``docs/reference/worktree-discipline.md``.
+AGENTS.md Fact 13.
 
 One command for both halves of the loop so worktrees stop piling up:
 

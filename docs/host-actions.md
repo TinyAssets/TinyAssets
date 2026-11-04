@@ -14,10 +14,10 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Lead-only deploy action |
 |---|---|
+| Platform go-ahead deploy | Follow `platform/deploy/checklist.md` § Before you run it: add yourself as the `production` environment's required reviewer; its secrets `WORKOS_API_KEY` (moved from the host), `E2B_API_KEY`, `ROUTING_MAC_KEY`, `GATEWAY_KEYRING`, `FILES_KEYRING`, `E2B_WEBHOOK_SECRET`, `TINYASSETS_WIKI_CANARY_TOKEN`; the variables `OWNER_ISSUER`, `WORKOS_CLIENT_ID`, `OWNER_TOKEN_CLAIMS`; pin `platform/owner/migrations.json`; the E2B template built; Workers Paid. Then run **Platform deploy** in mode `plan`, then `dark`. It moves no route. |
 | Measure the model-source re-seat | Owners whose http sources the C6 cutover repair removed still cannot use them after credential restore. After this fix deploys, dispatch **Restore credential records** in `dry-run` with source `tinyassets-snapshot-2026-10-22T04-41-03Z.tar.gz`, read `plan.assignments.reseat_owners`, `reseat_centers` and `reseat_members`, and report the three counts to the build lead. The write procedure for owner volumes follows from that scale. |
 | Signed desktop updates | Supply `DESKTOP_WIN_CSC_LINK` (base64 PFX) and `DESKTOP_WIN_CSC_KEY_PASSWORD` in the restricted `production` GitHub Environment. After merging, dispatch `desktop-chat-release.yml` on `main` with version `0.1.2` or higher, verify the signed installer in the `desktop-chat-latest` release, then raise `desktop.latest` in `tinyassets/onboarding/app_versions.json` to that published version. The existing unsigned 0.1.0 shell keeps working and shows an update banner; one manual reinstall from the release page puts it on the update channel. |
-| N1 shared Slack app | Register one TinyAssets Slack app with Events API request URL `https://tinyassets.io/hooks/inbound/slack`, OAuth redirect and required scopes. Deposit its signing secret in broker platform custody as the named `http` credential destination `inbound-slack-signing`; keep its client secret and installation-scoped outbound tokens in broker custody. Publish the platform-owned HMAC profile for binding `slack` only after the app registration is verified. No app registration, token, or production change is performed in the N1 implementation PR. |
-| a2b: 25 GiB box store | In the lead's root shell on the droplet, with authenticated `doctl`: `set -eu; region=$(curl -fsS http://169.254.169.254/metadata/v1/region); droplet=$(curl -fsS http://169.254.169.254/metadata/v1/id); volume=$(doctl compute volume create tinyassets-box-store --region "$region" --size 25GiB --format ID --no-header); doctl compute volume-action attach "$volume" "$droplet" --wait; udevadm settle; device=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store; mkfs.xfs -m reflink=1 "$device"; install -d -m 0700 /etc/tinyassets; install -o root -g root -m 0600 /root/box-store-resize.token /etc/tinyassets/box-store.token; (umask 077; printf 'BOX_STORE_DEVICE=%s\nBOX_STORE_VOLUME_ID=%s\nBOX_STORE_REGION=%s\nBOX_STORE_DROPLET_ID=%s\nBOX_STORE_TOKEN_FILE=/etc/tinyassets/box-store.token\nBOX_STORE_MAX_GIB=100\n' "$device" "$volume" "$region" "$droplet" > /etc/tinyassets/box-store.conf)`. Supply `/root/box-store-resize.token` with only [block_storage_action:create and its required read scopes](https://docs.digitalocean.com/reference/api/scopes/block_storage_action/create/). The normal deploy installs/enables the growth timer. Do not run the create/format commands against an existing store. |
+| N1 shared Slack app | Register one TinyAssets Slack app with Events API request URL `https://tinyassets.io/hooks/inbound/slack`, OAuth redirect and required scopes. Store its signing secret as the `production` secret `INBOUND_SLACK_SIGNING_SECRET`; the platform deploy sets it on the doors. Publish the platform-owned HMAC profile for binding `slack` only after the app registration is verified. No app registration, token, or production change is performed in the N1 implementation PR. |
 
 ## Production secrets move into a main-only GitHub Environment (2026-10-13)
 
@@ -25,7 +25,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Smallest founder-only action |
 |---|---|
-| GitHub Environment `production` | Repo → Settings → Environments → New environment `production`. Deployment branches and tags: **Selected branches**, add `main` only (optionally add yourself as a required reviewer). Under Environment secrets add `DO_SSH_KEY`, `DO_DROPLET_HOST`, `DO_SSH_USER`, `DIGITALOCEAN_TOKEN`, `DO_API_TOKEN` with their current values. Then delete the five repo-level copies under Settings → Secrets and variables → Actions. Merging first breaks nothing: GitHub auto-creates `production` the first time a job references it, with no branch restriction, and repo-level secrets still resolve inside it. For the same reason the hole stays open until BOTH halves are done, the environment is restricted to `main` AND the repo-level copies are deleted; until then a branch dispatch of an old or edited workflow can still reach the host. The test treats every secret outside its allowlist as production, so move the daemon secrets deploy-prod syncs onto the host (`TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET`, `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY`, `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`) and dr-drill's `OFFREGION_BACKUP_REMOTE` / `OFFREGION_BACKUP_RCLONE_CONFIG` in the same sitting: a branch can read them the same way. |
+| GitHub Environment `production` | Repo → Settings → Environments → New environment `production`. Deployment branches and tags: **Selected branches**, add `main` only; add yourself as the required reviewer (the platform deploy waits on it). Under Environment secrets add `DO_SSH_KEY`, `DO_DROPLET_HOST`, `DO_SSH_USER`, `DIGITALOCEAN_TOKEN`, `DO_API_TOKEN` with their current values. Then delete the five repo-level copies under Settings → Secrets and variables → Actions. Merging first breaks nothing: GitHub auto-creates `production` the first time a job references it, with no branch restriction, and repo-level secrets still resolve inside it. For the same reason the hole stays open until BOTH halves are done, the environment is restricted to `main` AND the repo-level copies are deleted; until then a branch dispatch of an old or edited workflow can still reach the host. The test treats every secret outside its allowlist as production, so move the daemon secrets deploy-prod syncs onto the host (`TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET`, `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY`, `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`) and dr-drill's `OFFREGION_BACKUP_REMOTE` / `OFFREGION_BACKUP_RCLONE_CONFIG` in the same sitting: a branch can read them the same way. |
 | `E2B_API_KEY`, production only (2026-11-04) | `sandbox-template.yml` (a paid template build) and `platform-deploy.yml`'s apply read it, each in `environment: production`. Confirm it is an environment secret of `production` and that `production`'s deployment branches are `main` only, and that no repo-level `E2B_API_KEY` exists (Settings → Secrets and variables → Actions). A branch dispatch runs that branch's YAML, so only this setting stops a branch spending on E2B. The guard (`platform/ci/guards/environment.test.ts`) lists it among `PRODUCTION_SECRETS`. |
 
 ---
@@ -38,7 +38,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Smallest founder-only action |
 |---|---|
-| Second owner for the post-cutover refusal probe | Supply a separately signed-in tester B account/command center. Runbook ?6.5: B?s cell attempts the founder?s tree and vault, then B?s daemon-side read names the founder?s file; both must refuse. Local UID proofs passed, but no production two-account result is claimed. |
+| Second owner for the post-cutover refusal probe | Supply a separately signed-in tester B account/command center. B?s cell attempts the founder?s tree and vault, then B?s daemon-side read names the founder?s file; both must refuse. Local UID proofs passed, but no production two-account result is claimed. |
 
 ## Connector directory submissions (2026-10-10)
 
@@ -64,7 +64,7 @@ deferred to branch `security/retire-github-oauth-workflow-secret`, so until that
 stale assignment may still sit in the host env file (withheld from the daemon, but
 present). Two things the code change cannot do:
 
-* **This repo is public, and `docs/ops/day-of-cutover.md` carried an example assignment
+* **This repo is public, and a since-deleted day-of-cutover runbook carried an example assignment
   for the secret.** It looks like a placeholder and I did not establish otherwise (I did
   not read the value). Deleting the line does not scrub git history, so if that string was
   ever the real one it is already public.
@@ -853,9 +853,7 @@ failed. A working conversation plus supported browser speech must render `Voice`
 `Voice · Connect`; the first tap may show the browser-speech disclosure but must stop before
 microphone permission for Jonathan's explicit bounded physical-device proof. An unsupported
 browser must name that browser/device limitation while typed chat remains usable. No host file,
-developer bypass, new credential, provider switch, or platform-funded usage counts. The proof
-order, stop conditions, and evidence packet are in
-`docs/ops/realtime-voice-mobile-handoff.md`.
+developer bypass, new credential, provider switch, or platform-funded usage counts.
 
 Stop for Jonathan at the rendered disclosure or honest unsupported-browser state before starting
 microphone acceptance. The app must derive the current binding; do not ask him to name it or
@@ -966,18 +964,6 @@ Instrument landed in #1776; **no agent-buildable task remains** (triaged 2026-08
 records the claude.ai baseline (task 3.1) and the permitted-regression decision (task 3.2).
 *Depends on:* ChatGPT connector registration, before its baseline.
 *Owner artifact:* `openspec/changes/archive/2026-08-26-connector-tool-selection-accuracy/`.
-
-### Cloud drain activation — dark deploy, cutover, and 24/7 proof
-
-Implementation landed; the dark deploy/canary, single-active cutover, and 24/7 PC-off proof remain.
-*Owner artifacts:* `2026-08-03-cloud-drain-epoch2-consumer.md (archived in git)`,
-`openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain/tasks.md`.
-
-> **Changed 2026-08-25.** This row carried the dependency *"keep local drain until reviewed cloud
-> health; never activate both claimers."* The local drain supervisor was deleted in the harness
-> reset (it was an autonomous background worker, which the host's two-provider decision put out of
-> scope). There is no longer a second claimer to conflict with — but that also means **there is no
-> local fallback** if cloud activation stalls. Decide with that in mind.
 
 ---
 

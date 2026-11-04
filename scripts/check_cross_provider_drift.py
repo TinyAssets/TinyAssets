@@ -40,11 +40,9 @@ REQUIRED_ARTIFACTS = ("scripts/check_cross_provider_drift.py",)
 # watched. Trimmed 2026-08-26: `CLAUDE_LEAD_OPS.md`, `LAUNCH_PROMPT.md`,
 # `.cursorrules`, `.claude/agents/*.md`, `.codex/**`, and `.cursor/rules/*.mdc`
 # are all deleted or retired, and the drift-guard hook in REQUIRED_ARTIFACTS
-# went with them. `CODEX.md` -- half the live provider set -- was never watched
-# at all, so no Codex-side drift could ever be reported.
+# went with them. `CODEX.md` was deleted 2026-11-04: Codex reads AGENTS.md.
 WATCHED_FILES = (
     "CLAUDE.md",
-    "CODEX.md",
 )
 
 WATCHED_GLOBS = (
@@ -309,8 +307,8 @@ def check_provider_sections(root: Path, changed_paths: list[Path] | None) -> lis
     # run both arrive that way. Returning [] there made this the ONLY half of
     # the guard that could never fire outside a pre-commit hook, so the
     # `cross-provider-drift` invariant reported "clean" unconditionally while
-    # gating every PR. Proven 2026-08-26 by appending a broad rule to CODEX.md
-    # and watching the check pass. Fall back to the full watched set instead;
+    # gating every PR. Proven 2026-08-26 by appending a broad rule to a watched
+    # file and watching the check pass. Fall back to the full watched set instead;
     # `check_skill_mirrors` already resolves `None` the same way.
     scan = provider_harness_paths(root) if changed_paths is None else changed_paths
 
@@ -415,8 +413,7 @@ def run_self_test() -> int:
 
         mirror.write_text(skill_text, encoding="utf-8")
 
-        # Both live provider harness files must be able to trip the section
-        # scan -- CODEX.md went unwatched entirely until 2026-08-26.
+        # Every watched harness file must be able to trip the section scan.
         broad_rule = "## Queue\n\nEvery provider must add project-level rules here.\n"
         for name in WATCHED_FILES:
             harness = root / name

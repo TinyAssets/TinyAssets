@@ -115,7 +115,7 @@ The policy above applies to the **real-currency phase**. We split discipline by 
   - Admin-pool ≥2 seated + each has verified vault access.
   - Secrets rotated from testnet-phase values.
 
-**The flip is a launch-gate item on the `docs/ops/launch-readiness-checklist.md` §B list.** Until that checklist is green, we do NOT move real money.
+**The flip is a launch gate.** Until it is met, we do NOT move real money.
 
 ### 3.1 Vault of record
 

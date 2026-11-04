@@ -176,7 +176,6 @@ def default_specs(root: Path) -> list[SourceSpec]:
         SourceSpec(".cursor", "cursor", "provider-config"),
         SourceSpec(".cursorrules", "cursor", "provider-config", False),
         SourceSpec("CLAUDE.md", "claude", "provider-routing", False),
-        SourceSpec("CODEX.md", "codex", "provider-routing", False),
         SourceSpec(".agents/activity.log", "shared", "activity-log", False),
         SourceSpec("ideas/INBOX.md", "shared", "idea-feed", False),
         SourceSpec("ideas/PIPELINE.md", "shared", "idea-pipeline", False),
