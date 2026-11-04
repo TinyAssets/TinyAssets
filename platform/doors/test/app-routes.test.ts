@@ -7,6 +7,8 @@
  * and each widening the owner's session.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { runDurableObjectAlarm } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { RUN_CAPABILITIES } from "../../owner/src/agent-file";
@@ -48,6 +50,30 @@ async function answered(response: Response, status = 200): Promise<Record<string
   expect(response.status, JSON.stringify(body)).toBe(status);
   return body;
 }
+
+describe("a new owner's starter seed, through the doors' own bindings", () => {
+  it("lands main and the starter's files, with no failure told: a missing or broken files " +
+     "binding fails here", async () => {
+    const who = owner();
+    await signInApp({ owner: who });
+    const stub = env.OWNER.getByName(who);
+    const binding = { owner: who, caller: who, origin: null, tiers: TIERS };
+    // The seed is the owner's own lane's work once the sign-in admits it: run it out.
+    for (let i = 0; i < 20 && (await stub.starterReceipts(binding)).version === 0; i++) {
+      await runDurableObjectAlarm(stub);
+    }
+    const failed = (await stub.noticeList(binding)).notices
+      .filter((notice) => notice.type === "starter_failed").map((notice) => notice.detail);
+    expect(failed).toEqual([]);
+    expect((await stub.starterReceipts(binding)).version).toBeGreaterThan(0);
+    expect((await stub.outsideAgents(binding)).owner_agents.map((agent) => agent.agent))
+      .toContain("main");
+    for (const path of ["/workspace/USER.md", "/workspace/index.md",
+                        "/workspace/agents/main/agent.json"]) {
+      expect((await stub.fileStat(binding, { path })).entry, path).not.toBeNull();
+    }
+  });
+});
 
 describe("the owner app's account route", () => {
   it("answers the owner's tier beside every tier's numbers and its file usage", async () => {

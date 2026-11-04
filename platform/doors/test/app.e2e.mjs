@@ -1,7 +1,10 @@
 // The owner app in a real browser (Chromium, through Playwright), against the doors in
 // workerd: the doors' test Worker (`e2e-entry.ts`: the fake upstream sign-in, the real
-// owner object with a recording sandbox) with the real gateway and hooks Workers and the
-// fake providers, each bundled by wrangler from its own config as `vitest.config.ts` does.
+// owner object with a recording sandbox) with the real gateway, hooks and files Workers and
+// the fake providers, each bundled by wrangler from its own config as `vitest.config.ts`
+// does. The files Worker is bound as production binds it: the doors' FILES its upload
+// entrypoint, the owner object's (OWNER_FILES here) its whole service, so a new owner's
+// starter seed really writes its files.
 //
 // The browser believes it talks to https://tinyassets.io: every request it makes is caught
 // (`context.route`) and handed to the doors with `dispatchFetch`, the app's live socket
@@ -103,6 +106,7 @@ const errors = [];
 async function doors() {
   const gateway = config(join(PLATFORM, "gateway"));
   const hooks = config(join(PLATFORM, "hooks"));
+  const files = config(join(PLATFORM, "files"));
   const { workerOptions } = unstable_getMiniflareWorkerOptions(join(DOORS, "wrangler.jsonc"));
   const providers = readFileSync(join(DOORS, "test", "fake-providers.ts"), "utf8");
   const keyring = JSON.stringify({ active: "k1", keys: { k1: randomBytes(32).toString("base64") } });
@@ -122,6 +126,7 @@ async function doors() {
           GATEWAY: { name: gateway.name, entrypoint: "ConnectGateway" },
           EGRESS: { name: gateway.name, entrypoint: "EgressGateway" },
           HOOKS: hooks.name, PROVIDERS: "fake-providers",
+          FILES: { name: files.name, entrypoint: "FilesUpload" }, OWNER_FILES: files.name,
         },
         // The provider fetches the first-party app's metadata document, as production does
         // over the public internet; nothing else leaves the doors.
@@ -134,6 +139,15 @@ async function doors() {
         compatibilityDate: gateway.compatibility_date,
         compatibilityFlags: gateway.compatibility_flags,
         bindings: { GATEWAY_KEYRING: keyring }, outboundService: "fake-providers",
+      },
+      {
+        // The files Worker: its one bucket, its config's cipher and a test keyring.
+        name: files.name, modulesRoot: join(PLATFORM, "files"),
+        modules: bundled(join(PLATFORM, "files")),
+        compatibilityDate: files.compatibility_date,
+        compatibilityFlags: files.compatibility_flags,
+        r2Buckets: (files.r2_buckets ?? []).map((bucket) => bucket.binding),
+        bindings: { ...(files.vars ?? {}), FILES_KEYRING: keyring },
       },
       {
         name: hooks.name, modulesRoot: join(PLATFORM, "hooks"),
@@ -270,6 +284,24 @@ test("the owner signs in: the code leaves the address bar first, and a session i
   assert.equal(await page.evaluate(() => location.href), `${ORIGIN}/app`);
 });
 
+test("a new owner is seeded: main and the starter's files, and no failure told",
+     { timeout: 60_000 }, async () => {
+  // The seed runs on the owner's own lane once the sign-in admits it; wait for it to land.
+  let starter;
+  for (const deadline = Date.now() + 45_000; Date.now() < deadline;) {
+    starter = await (await mf.dispatchFetch(`https://e2e.internal/starter/${WHO}`)).json();
+    if (starter.version > 0 || starter.failed.length > 0) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.deepEqual(starter.failed, [], "the seed told no failure");
+  assert.ok(starter.version > 0, "the seed landed");
+  assert.ok(starter.agents.includes("main"), "main is the owner's agent");
+  assert.deepEqual(starter.files, { "/workspace/USER.md": true, "/workspace/index.md": true,
+                                    "/workspace/agents/main/agent.json": true });
+});
+
 test("the sign-in return page cleared its code before any other script ran", async () => {
   const signedIn = seen.find((r) => r.url.startsWith(`${ORIGIN}/app/signed-in?`));
   assert.ok(signedIn, "the browser came back to /app/signed-in");
@@ -316,7 +348,8 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await page.goto(`${ORIGIN}/app#agents`);
   await page.getByRole("heading", { name: "New agent" }).waitFor();
   const form = page.locator("section", { hasText: "New agent" });
-  await form.getByLabel(/^Name/).fill("main");
+  // An agent of the owner's own making: main is the starter's, seeded at sign-up.
+  await form.getByLabel(/^Name/).fill("helper");
   await form.getByLabel(/^Engine/).selectOption("pi");
   await form.getByLabel(/^Runs on/).selectOption("api_key");
   const connection = form.getByLabel(/^API key connection/);
@@ -334,15 +367,15 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   };
   page.on("request", onRequest);
   await form.getByRole("button", { name: "Make the agent" }).click();
-  await page.waitForURL(`${ORIGIN}/app#agents/main`);
+  await page.waitForURL(`${ORIGIN}/app#agents/helper`);
   await page.getByRole("link", { name: "agent.json" }).waitFor();
   await page.getByRole("link", { name: "AGENTS.md" }).waitFor();
   page.off("request", onRequest);
-  assert.deepEqual(changes, [["tools/file_mkdir", "/workspace/agents/main"],
-                             ["files/write", "/workspace/agents/main/AGENTS.md"],
-                             ["files/write", "/workspace/agents/main/agent.json"]]);
+  assert.deepEqual(changes, [["tools/file_mkdir", "/workspace/agents/helper"],
+                             ["files/write", "/workspace/agents/helper/AGENTS.md"],
+                             ["files/write", "/workspace/agents/helper/agent.json"]]);
 
-  await page.getByPlaceholder("Say something to main").fill("hello");
+  await page.getByPlaceholder("Say something to helper").fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
   await page.locator(".said.me", { hasText: "hello" }).waitFor();
   let start;
@@ -543,7 +576,7 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.goto(`${ORIGIN}/app#data`);
   await page.getByText(/^Exporting everything you hold is not here yet/).waitFor();
   assert.equal(await page.getByRole("button", { name: /Export/ }).count(), 0);
-  await page.goto(`${ORIGIN}/app#agents/main`);
+  await page.goto(`${ORIGIN}/app#agents/helper`);
   await page.getByText(/not kept across reloads/).waitFor();
 });
 
@@ -661,14 +694,14 @@ test("no payload runs through file names, file text, frames, results, posts or t
     dialog.dismiss();
   };
   page.on("dialog", onDialog);
-  for (const path of [`/workspace/agents/main/${P_IMG}.md`, `/workspace/${P_SVG}.md`]) {
+  for (const path of [`/workspace/agents/helper/${P_IMG}.md`, `/workspace/${P_SVG}.md`]) {
     assert.equal((await api("files/write", { path, expected_etag: "", text: PAYLOAD })).status,
                  200, path);
   }
-  const agentsMd = (await api("files/read", { path: "/workspace/agents/main/AGENTS.md" })).body;
-  assert.equal((await api("files/write", { path: "/workspace/agents/main/AGENTS.md",
+  const agentsMd = (await api("files/read", { path: "/workspace/agents/helper/AGENTS.md" })).body;
+  assert.equal((await api("files/write", { path: "/workspace/agents/helper/AGENTS.md",
     expected_etag: agentsMd.entry.etag, text: PAYLOAD })).status, 200);
-  await page.goto(`${ORIGIN}/app#agents/main`);
+  await page.goto(`${ORIGIN}/app#agents/helper`);
   await page.reload();
   await page.getByRole("link", { name: "AGENTS.md" }).click();
   await page.locator("textarea.editor").waitFor();
@@ -677,7 +710,7 @@ test("no payload runs through file names, file text, frames, results, posts or t
   await page.locator("textarea.editor").waitFor();
   // A run whose frames and result are the payload, and one frame with no event (review L2).
   const before = (await starts()).length;
-  await page.getByPlaceholder("Say something to main").fill(PAYLOAD);
+  await page.getByPlaceholder("Say something to helper").fill(PAYLOAD);
   await page.getByRole("button", { name: "Send" }).click();
   let start;
   for (let i = 0; i < 100 && start === undefined; i++) {
@@ -697,7 +730,7 @@ test("no payload runs through file names, file text, frames, results, posts or t
   await page.locator(".said.agent", { hasText: "onerror" }).waitFor();
   // The view opens again on its kept frames, the eventless one among them.
   await page.goto(`${ORIGIN}/app#home`);
-  await page.goto(`${ORIGIN}/app#agents/main`);
+  await page.goto(`${ORIGIN}/app#agents/helper`);
   await page.locator(".frame", { hasText: "onerror" }).first().waitFor();
   // A room post, and the listings of the payload names; the hash as an agent and a folder.
   await page.goto(`${ORIGIN}/app#rooms`);

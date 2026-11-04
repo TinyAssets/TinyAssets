@@ -1868,6 +1868,14 @@ R, S, M and W.
     through the files plane as the owner, so its files count in the one storage number,
     sit in every generation, and a seed refused `storage_full` stops, tells the owner once
     and is tried again. The template is rebuilt and pinned once, after this merge.
+  - The owner app's browser test runs the files Worker as production binds it (the doors'
+    FILES its upload entrypoint, the owner object's its whole service), so a new owner's
+    seed really runs there, and asserts it landed: `main`, `/workspace/USER.md`,
+    `/workspace/index.md` and `agents/main/agent.json`, with no `starter_failed`. The
+    doors' unit suite asserts the same through its own bindings (shown to fail with the
+    files binding taken away), and the owner's that a seed unable to reach its store tells
+    the owner and keeps its retry. The browser test's own agent is `helper`: `main` is
+    seeded.
   - The founder's live test (8): onboarding writes `SOUL.md` and `USER.md`; "remember X"
     lands in knowledge and is recalled on another engine; the brief made by the agent
     itself posts to `dm:main`; a main agent finds the knowledge with `search` and `fetch`

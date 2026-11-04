@@ -396,6 +396,41 @@ describe("the seed and the one storage wall (after slice STORE)", () => {
   });
 });
 
+describe("a seed that cannot reach its files plane", () => {
+  it("is never silent: the owner is told once, with the error, and the next try kept",
+     async () => {
+    const r = await rig();
+    // Past what is kept inline, so its bytes need the files plane's store.
+    const pkg = starterPackage({ version: 1, files: [
+      file(`${SKILLS}/big/SKILL.md`, "x".repeat(6_000)),
+      file(`${AGENTS}/agent.json`, agentJson(["read_files"]))] });
+    const now = Date.now() / 1000;
+    const tries = [now, now + STARTER_RETRY_S];
+    const next: (number | null)[] = [];
+    for (const at of tries) {
+      next.push(await inGate(r.stub, async (_instance, _state, gate) => {
+        const notices = new Notices(gate.storage);
+        // A files binding with nothing behind it, as a harness without the files Worker had:
+        // each call a TypeError.
+        const starter = new Starter({
+          storage: gate.storage, write: gate.write, admitted: () => true, clock: () => at,
+          files: filesOn(gate.storage, gate.write, {} as never),
+          notice: (type, detail) => notices.add(type, detail, at),
+        }, pkg);
+        await starter.run(at);
+        return starter.next(at);
+      }));
+    }
+    expect(next).toEqual(tries.map((at) => at + STARTER_RETRY_S));
+    const failed = await notices(r, "starter_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0])
+      .toMatch(/could not all be written, and are tried again: .*(not a function|of undefined)/);
+    expect(await readText(r, `${AGENTS}/agent.json`)).toBeNull();
+    expect((await r.stub.starterReceipts(r.bind(null))).version).toBe(0);
+  });
+});
+
 describe("seeding before the tier's numbers are known (after slice L)", () => {
   it("waits for them, writing nothing and telling nothing, rather than failing", async () => {
     const r = await rig();
