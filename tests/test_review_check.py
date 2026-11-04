@@ -346,3 +346,32 @@ def test_okf_watch_ready_comment_runs_no_command():
     text = (_ROOT / ".github" / "workflows" / "okf-watch.yml").read_text(encoding="utf-8")
     line = next(line for line in text.splitlines() if "The cooldown is over" in line)
     assert "`" not in line
+
+
+def test_only_the_review_apps_run_passes_a_reader(monkeypatch, capsys):
+    """An Actions-app run named review for the PR (any PR's own job can post one) is not a
+    pass: the App filter is what makes the check the review App's alone."""
+    head = "c" * 40
+    actions = {"id": 9, "name": "review", "status": "completed", "conclusion": "success",
+               "external_id": "pr-12", "app": {"id": 15368}}
+    ours = {**actions, "id": 3, "app": {"id": 777}}
+
+    def api(runs):
+        def fake(path):
+            if path.endswith("/pulls/12"):
+                return {"head": {"sha": head}}
+            assert path == f"repos/o/r/commits/{head}/check-runs?check_name=review&per_page=100"
+            return {"check_runs": runs}
+        return fake
+
+    monkeypatch.setenv("REVIEW_APP_ID", "777")
+    monkeypatch.setattr(gate, "_gh_json", api([actions]))
+    assert not gate.review_passed_at("o/r", head, 12)
+    assert gate._queue_review(["--repo", "o/r", "--ref", f"gh-readonly-queue/main/pr-12-{A}",
+                               "--sha", B]) == 0
+    assert json.loads(capsys.readouterr().out)["conclusion"] == "failure"
+    monkeypatch.setattr(gate, "_gh_json", api([actions, ours]))
+    assert gate.review_passed_at("o/r", head, 12)
+    assert gate._queue_review(["--repo", "o/r", "--ref", f"gh-readonly-queue/main/pr-12-{A}",
+                               "--sha", B]) == 0
+    assert json.loads(capsys.readouterr().out)["conclusion"] == "success"
