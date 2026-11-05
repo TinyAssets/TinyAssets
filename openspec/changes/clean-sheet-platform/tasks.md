@@ -344,7 +344,7 @@ account and no deploy.
   Durable Object stub and public-URL calls per Worker request, per DO RPC, per alarm and
   per background work outliving its RPC, the 15-minute alarm cut, and whether Worker
   `fetch` reaches names resolving to private addresses (miniflare's limit enforcer is a
-  no-op, so only live counts). It ran live (`cap-probe.yml`; the results are in
+  no-op, so only live counts). It ran live (the cap probe's workflow; the results are in
   `cap-probe.md`, and the follow-up runs are 6's probe item). The platform's subrequest
   limit (`limits.subrequests`) is the only cap on gateway calls: no per-kind budget is
   kept beside it.
@@ -1929,7 +1929,7 @@ R, S, M and W.
   store while held. Slice D deleted the thread stores; P1's subrequest count still sets the
   owner Worker's `limits.subrequests`.
 - [x] The facet probe P13 (with Q8, F1's erasure window). Method, key and results:
-  `facet-probe.md`; run by the manual `facet-probe.yml`. Run 1 (41247617223, 2026-10-31):
+  `facet-probe.md`; run by its manual workflow, since deleted. Run 1 (41247617223, 2026-10-31):
   Q1 a parent and all its facets share one ceiling of about 10 GiB (read by hand; at the
   ceiling production resets the parent instead of a size error), so the real per-object
   ceiling is about 10 GiB and the owner-bound guard's 10 × 10^9 denominator is
@@ -2351,6 +2351,18 @@ R, S, M and W.
       Stripe's endpoint moved to it; or the founder's word that no live subscription exists,
       and Stripe's endpoint disabled until that door is built.
 
+- [ ] **Old tests leave with their code** (Direction 6). The change that deletes the old
+  stack deletes every test file `python scripts/affected_tests.py --retiring` lists. Those
+  are the tests whose reached modules all lie in its `RETIRING` paths, the old stack's
+  `tinyassets/`; widen that one list if the cutover deletes more. The same change deletes
+  any other test that fails only because the code it checked is gone. None is skipped,
+  quarantined or rewritten to pass. A test that also reaches kept code keeps its cases
+  for that code. A listed structural guard (`scripts/ci_structural_guards.py` `GUARDS`)
+  is deleted only once this line names the platform guard that replaces it, or the
+  recorded decision that retires its principle. Until then, each runs whenever a Python change could reach it, and never
+  for a `platform/` or prose change it cannot read (the merge gate's tree selection,
+  `affected_tests.provable_shape`).
+
 - [ ] **The founder's and the canary's owners start fresh** (the founder's ruling, 2026-11-04):
   the founder's main account and every canary owner account begin on the new platform with
   nothing imported, so the founder goes through the whole onboarding from the first
@@ -2520,6 +2532,58 @@ R, S, M and W.
   `forward.ts`'s own (`EGRESS_CODES`) is gone; `egress_reservation_mismatch` left it. The same
   template carries the runner's `safeDirs` fix: two runs starting at once in a fresh sandbox
   both make its shared directories, and an `EEXIST` on a real directory is the one asked for.
+
+- [x] **The runner by digest** (founder, 2026-11-04; `rs_template.md` §3 and §4): the template
+  is the environment alone (Node, the engines from their locks, the user pool, the
+  directories, the loader `template/ta-runner`), its tag the digest of those inputs only
+  (`build.py`, the loader, `RUNS_CEILING`'s value, the engines' install pins and locks), so a
+  runner change is a Worker deploy, never a template build. The sandbox Worker's build makes
+  `runner.mjs` (`build.command`) and imports it as data (`src/runner-bytes.ts`); its digest is
+  computed from those bytes. Every command is `ta-runner <sha256> <command>`, the loader
+  hashing the bytes again before it runs them (absent 24: the Worker uploads to
+  `/var/lib/ta/incoming/<sha>`, installs, asks again once; 25, not their digest: thrown,
+  nothing launches, the founder's alert `sandbox_runner_mismatch`). A sandbox's row holds the
+  digest it runs: the Worker's at a create, and the Worker's adopted at a start or a start's
+  resume that finds nothing living (`state`, `install`, the runner's `adopt`, which holds the
+  disk to its format and deletes nothing, then the row committed, then the adopted runner's
+  `prepare`, the one a resume runs, which drops the other runners' bytes), so no row names
+  bytes that are gone; an adoption that fails on the way (a full disk, envd failing) is
+  logged (`sandbox_runner_adopt_failed`) and the start goes on with the runner it has. A live
+  run's or sign-in's runner stays, its children re-run from their own bytes. The rule
+  (`runner/state-format.ts`, `runner/protocol.ts`, `limits-audit.md`): expand, then
+  contract, for the on-disk format and the Worker↔runner protocol alike; a runner reads its
+  format and the ones either side at most, the marker is never lowered, so a rollback of one
+  deploy is safe either way; the Worker speaks its runner's protocol and at most the ones
+  either side (`SPEAKS`, refused loudly otherwise); only true caches (`sessions-seen.json`)
+  are discarded when the format moves; each format (the mirror's schema, each run's and
+  sign-in's `state.json`, the kept snapshot) and protocol (the commands, `state`'s answer) is
+  recorded and frozen by digest (`state-format.json`, `protocol.json`). Tests: the Worker
+  against the fake E2B's loader (create installs before `prepare`; a resume with it there
+  sends nothing more; absent, then installed and asked again; tampered bytes refused and
+  named; an older Worker's runner kept under a live run, then adopted; a rolled-back Worker's
+  converges the same way; a lost `adopt` reply leaves the row on bytes still there; a gone
+  row runner is adopted past; a full disk or a failing install or adopt starts on the runner
+  it has and adopts later; a resume runs the adopted runner's `prepare` alone; a protocol not
+  spoken refused; the quiet look goes on past an adoption under it); the loader as root (a
+  copy with the test's paths: the shipped one takes none from its environment, and is pinned
+  LF in `.gitattributes`); `adopt`; the real runner's written run, sign-in and kept files
+  against the record, and its reading of each recorded format; the rule across a format
+  change and back; the protocol's commands on both sides; the template guard (the tag takes
+  no runner input, `build.py`'s tag and the guard's equal, the bundle the same bytes every
+  build). The deploy workflow's `pair` job (production environment, the E2B key alone, its
+  SDK from the hashed lock `template/requirements.txt`, 60 minutes against the checks' 50)
+  runs the pair check (`deploy.ts --pair`, `build.py --check-pair`) before the apply job,
+  which stops without the pair's tag at E2B (`pairTag`); a manual workflow
+  (`sandbox-template.yml`, production environment, the key in its build step alone) builds
+  templates with no host. The `runner` column is in the sandbox object's baseline, edited in
+  place before the first deploy (the owner's `migrations.json` `first_deploy` is null, and the
+  deploy workflow has never run). Measured here: the bundle is 272,426 bytes (about 66 KiB
+  gzipped), hashed by the loader in under 2 ms.
+- [x] The runner by digest's one template build with the loader (the last a runner change
+  needs): `tinyassets-sandbox:s85528cdd2cd74efa`, pinned, its `passed.json` entry recording
+  5 sign-ins, 11 routes and the matcher at 4.39 ns (ceiling 6), and a runner a sandbox does
+  not have yet installed in 370 ms upload + 180 ms install (273,039 bytes).
+- [ ] Owed at the first deploy: the deploy kit's pair check, live.
 
 ## 10. The plan's later slices
 

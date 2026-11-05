@@ -6,27 +6,35 @@ committed beside it (`platform/sources/locks/<id>/`, its digest checked against 
 as many as the most live runs an owner may hold, `RUNS_CEILING` in `owner/src/tier.ts`; each
 its own group, in group `ta`, no home: the runner makes each run's home) and the sync agent's
 user (`ta-sync`, its directory `/var/lib/ta-sync` 0700), none able to `sudo` (checked); the
-shared workspace (`/workspace`, root:ta 2775); the runner (`runner/runner.ts` bundled,
-`/opt/ta/runner`, readable by the sync agent, which runs it, and written by root alone) and its
-command (`/usr/local/bin/ta-runner`, 0700); and the root-only state directory (`/var/lib/ta`,
-0700). The resolver is pinned by the runner's `prepare` at every start and resume (E2B
-rewrites `/etc/resolv.conf` at boot, probed), as `/proc`'s `hidepid=2`.
+shared workspace (`/workspace`, root:ta 2775); the runner's loader
+(`/usr/local/bin/ta-runner`, 0700) and the empty directory it installs runners into
+(`/opt/ta/runner`, root 0755, readable by the sync agent, which runs the runner, and written by
+root alone); and the root-only state directory (`/var/lib/ta`, 0700, its `incoming` the
+loader's uploads). The resolver is pinned by the runner's `prepare` at every start and resume
+(E2B rewrites `/etc/resolv.conf` at boot, probed), as `/proc`'s `hidepid=2`.
 
-The tag is the digest of what the template is made of (the runner's bundle, the records, their
-locks and this script), so a change to any of them is a new template version; the sandbox
-Worker's `E2B_TEMPLATE` names it (`sandbox/guards/template.test.ts` holds the two equal).
+The template holds no runner. The sandbox Worker ships it (`sandbox/src/runner-bytes.ts`, its
+build's `runner.mjs`) and names it by its SHA-256 at every command, which the loader checks, so
+a runner change is a Worker deploy, never a template build. The tag is the digest of what the
+image is made of (this script, the loader, the run pool's size, the engines' locks and their
+install pins), so only a change to those is a new template version; the sandbox Worker's
+`E2B_TEMPLATE` names it (`sandbox/guards/template.test.ts` holds this script's tag and its own
+equal).
 
     python3 -m venv v && v/bin/pip install e2b==2.62.0
     E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py \
-        [--tag-only | --check-logins | --route-probe | --check-matcher]
+        [--tag-only | --check-pair | --check-logins | --route-probe | --check-matcher]
 
-Every build ends with three standing checks on throwaway sandboxes of the template just built:
-every record's sign-in up to its prompt (`check_logins`), every keyed engine's first model
-request reaching the egress door's own path with nothing else leaving the VM
-(`route_probe`), and the sync-ignore automaton's step within `STEP_NS` (`check_matcher`).
-Only once all pass is the template's tag printed, to be pinned, and its
-record written to `passed.json` beside this script (each tag that passed, with what its checks
-found), which the template guard holds the pinned tag to (`sandbox/guards/template.test.ts`).
+Behaviour is a pair's, the template and the runner: every build, and every pair check
+(`--check-pair`: no build, the pinned template with this checkout's runner; the deploy kit runs
+it before a deploy whose pair has not passed), runs three standing checks on throwaway
+sandboxes, the runner uploaded and installed in each as the Worker installs it: every record's
+sign-in up to its prompt (`check_logins`), every keyed engine's first model request reaching
+the egress door's own path with nothing else leaving the VM (`route_probe`), and the
+sync-ignore automaton's step within `STEP_NS` (`check_matcher`). Only once all pass is the pair
+recorded: in `passed.json` beside this script (each pair that passed, with what its checks
+found, and the runner's upload and install as measured), and at E2B as the template's tag
+`<tag>-r<runner's first 16>` (`pair_tag`), which the deploy kit looks for.
 """
 import hashlib
 import json
@@ -101,21 +109,49 @@ def engines():
 
 
 def bundle(out: Path) -> bytes:
+    """The runner as the sandbox Worker ships it (`bundle.mjs`, its build's own command)."""
     subprocess.run(["node", str(HERE / "bundle.mjs"), str(out)], check=True,
                    stdout=subprocess.DEVNULL)
     return (out / "runner.mjs").read_bytes()
 
 
-def tag(runner: bytes) -> str:
-    """The template's version: the digest of the bundle, the records, their locks, this script."""
+def tag() -> str:
+    """The template's version: the digest of what the image is made of, and of nothing else
+    (no runner: the Worker ships it). The template guard computes the same."""
     digest = hashlib.sha256()
-    parts = [("runner.mjs", runner), ("build.py", Path(__file__).read_bytes()),
-             ("ta-runner", (HERE / "ta-runner").read_bytes()), ("tier.ts", TIER.read_bytes())]
+    parts = [("build.py", Path(__file__).read_bytes()),
+             ("ta-runner", (HERE / "ta-runner").read_bytes()),
+             ("runs_ceiling", str(runs_ceiling()).encode()),
+             ("engines", json.dumps(engines(), sort_keys=True, separators=(",", ":"),
+                                    ensure_ascii=False).encode())]
     parts += [(str(p.relative_to(SOURCES)), p.read_bytes())
-              for p in sorted(SOURCES.rglob("*")) if p.is_file()]
+              for p in sorted((SOURCES / "locks").rglob("*")) if p.is_file()]
     for name, data in parts:
         digest.update(name.encode() + b"\0" + hashlib.sha256(data).digest())
     return "s" + digest.hexdigest()[:16]
+
+
+def pair_tag(tag_: str, runner_sha: str) -> str:
+    """The E2B tag a passed pair is marked with: the template's tag and the runner's."""
+    return f"{tag_}-r{runner_sha[:16]}"
+
+
+def install_runner(sandbox, runner: bytes) -> dict:
+    """The runner uploaded and installed as the sandbox Worker does it (`control.ts`
+    `#install`), timed: the cost of a sandbox that does not have it yet."""
+    import time
+    sha = hashlib.sha256(runner).hexdigest()
+    began = time.monotonic()
+    sandbox.files.write(f"/var/lib/ta/incoming/{sha}", runner, user="root")
+    uploaded = time.monotonic()
+    sandbox.commands.run(f"/usr/local/bin/ta-runner install {sha}", user="root", timeout=120)
+    done = time.monotonic()
+    return {"bytes": len(runner), "upload_ms": round((uploaded - began) * 1000),
+            "install_ms": round((done - uploaded) * 1000)}
+
+
+def runner_command(sha: str, command: str) -> str:
+    return f"/usr/local/bin/ta-runner {sha} {command}"
 
 
 def template(stage: Path):
@@ -161,20 +197,21 @@ def template(stage: Path):
         t = t.run_cmd(f"cd /opt/ta/engines/{e['id']} && (/usr/local/bin/npm ci --omit=dev "
                       f"--no-audit --no-fund{scripts} || (cat /root/.npm/_logs/*.log | tail -n 60; "
                       f"exit 1)) && test -x node_modules/.bin/{e['bin']}")
-    t = (t.copy("runner.mjs", "/opt/ta/runner/runner.mjs", user="root", mode=0o644)
-         .copy("ta-runner", "/usr/local/bin/ta-runner", user="root", mode=0o700)
+    t = (t.copy("ta-runner", "/usr/local/bin/ta-runner", user="root", mode=0o700)
          # Root's alone to write, everything the runner or a CLI runs from; checked, never
-         # assumed (a run's user that could write either would run as root). The bundle holds
-         # no secret (the lease's are in /var/lib/ta), so the sync agent may read it.
-         .run_cmd("chown -R root:root /opt/ta /usr/local && chmod -R go-w /opt/ta /usr/local "
-                  "&& chmod 644 /opt/ta/runner/runner.mjs && chmod 755 /opt/ta/runner && "
+         # assumed (a run's user that could write either would run as root). A runner the
+         # loader installs holds no secret (the lease's are in /var/lib/ta), so the sync agent
+         # may read it; the loader's uploads wait in the root-only state directory.
+         .run_cmd("mkdir -p /var/lib/ta/incoming && chmod 700 /var/lib/ta/incoming && "
+                  "chown -R root:root /opt/ta /usr/local && chmod -R go-w /opt/ta /usr/local "
+                  "&& chmod 755 /opt/ta/runner && test -z \"$(ls -A /opt/ta/runner)\" && "
                   "chmod 700 /usr/local/bin/ta-runner && "
                   "test $(stat -c %a /usr/local/bin/ta-runner) = 700 && "
                   "test -z \"$(find /opt/ta /usr/local -perm /022 ! -type l)\""))
     return t
 
 
-def check_logins(name):
+def check_logins(name, runner):
     """The standing check of every record's sign-in on the template just built (slice SIGNIN):
     on a throwaway sandbox, each record's login run up to its prompt (`ta-runner login-probe`,
     each region of a record with regions) and stopped, its URL the record's pinned page and
@@ -192,9 +229,11 @@ def check_logins(name):
         return {"allow_out": [*hosts, egress], "deny_out": [ALL_TRAFFIC], "dns_servers": servers}
 
     results = []
+    sha = hashlib.sha256(runner).hexdigest()
     sandbox = Sandbox.create(template=name, timeout=900, network=plan([]))
     try:
-        sandbox.commands.run("/usr/local/bin/ta-runner prepare " + " ".join(servers),
+        install_runner(sandbox, runner)
+        sandbox.commands.run(runner_command(sha, "prepare " + " ".join(servers)),
                              user="root", timeout=300)
         for path in sorted(SOURCES.glob("*.json")):
             record = json.loads(path.read_text())
@@ -203,7 +242,7 @@ def check_logins(name):
                 continue
             for region in sorted(cli.get("regions") or {}) or [None]:
                 sandbox.update_network(plan(engine_hosts(cli, region)))
-                command = f"/usr/local/bin/ta-runner login-probe {record['id']}"
+                command = runner_command(sha, f"login-probe {record['id']}")
                 if region is not None:
                     command += f" {region}"
                 try:
@@ -222,7 +261,7 @@ def check_logins(name):
     return results
 
 
-def route_probe(name):
+def route_probe(name, runner):
     """The route probe (codexurl_research.md Q4): on a throwaway sandbox of the template just
     built, `strace` installed while its network is still open (the template itself unchanged),
     then the network denied to everything but the pinned resolvers, every record that runs on
@@ -235,19 +274,21 @@ def route_probe(name):
     from e2b import ALL_TRAFFIC, Sandbox
 
     _egress, servers = network_constants()
+    sha = hashlib.sha256(runner).hexdigest()
     sandbox = Sandbox.create(template=name, timeout=1800)
     try:
+        install_runner(sandbox, runner)
         installed = sandbox.commands.run(
             "(command -v strace || (apt-get -qq update && apt-get -qq install -y strace)) "
             ">/dev/null 2>&1; command -v strace", user="root", timeout=600)
         if not installed.stdout.strip():
             raise SystemExit("the route probe's sandbox has no strace")
-        sandbox.commands.run("/usr/local/bin/ta-runner prepare " + " ".join(servers),
+        sandbox.commands.run(runner_command(sha, "prepare " + " ".join(servers)),
                              user="root", timeout=300)
         sandbox.update_network({"deny_out": [ALL_TRAFFIC], "dns_servers": servers})
         try:
-            done = sandbox.commands.run("/usr/local/bin/ta-runner route-probe " +
-                                        " ".join(servers), user="root", timeout=1500)
+            done = sandbox.commands.run(runner_command(sha, "route-probe " + " ".join(servers)),
+                                        user="root", timeout=1500)
             out, code = done.stdout, 0
         except Exception as error:  # a non-zero exit: its lines are still printed
             out, code = getattr(error, "stdout", "") or "", 1
@@ -271,20 +312,23 @@ def step_ceiling() -> float:
     return float(found.group(1))
 
 
-def check_matcher(name):
+def check_matcher(name, runner):
     """The sync-ignore automaton's step (`stepNanos`, a byte of text a 32-state word, at
     `AUTOMATON_STATES` with every state alive), timed on a throwaway sandbox of the template
     just built: past `STEP_NS`, the constant `AUTOMATON_STATES` is derived from, the build
     fails loudly. The sandbox is killed whatever happens."""
     from e2b import Sandbox
 
+    sha = hashlib.sha256(runner).hexdigest()
     sandbox = Sandbox.create(template=name, timeout=300)
     try:
-        done = sandbox.commands.run("/usr/local/bin/ta-runner matcher-probe", user="root",
+        installed = install_runner(sandbox, runner)
+        done = sandbox.commands.run(runner_command(sha, "matcher-probe"), user="root",
                                     timeout=120)
     finally:
         sandbox.kill()
     result = json.loads(done.stdout.strip().splitlines()[-1])
+    result["install"] = installed
     result["ceiling_ns"] = step_ceiling()
     result["ok"] = result["step_ns"] <= result["ceiling_ns"]
     print(json.dumps({"matcher": result}), flush=True)
@@ -294,15 +338,21 @@ def check_matcher(name):
     return result
 
 
-def record_pass(name, logins, routes, matcher):
-    """The tag that passed both checks, with what they found, kept in `passed.json` (one entry
-    a tag, newest last): the record the template guard holds a pinned tag to."""
+def record_pass(name, runner, logins, routes, matcher):
+    """The pair that passed every check, with what they found, kept in `passed.json` (one
+    entry a pair, newest last; the template guard holds the pinned tag to one), and marked at
+    E2B with its pair tag, which the deploy kit looks for before a deploy."""
     import datetime
+
+    import httpx
     passed = json.loads(PASSED.read_text()) if PASSED.exists() else []
     tag_ = name.split(":", 1)[1]
-    passed = [entry for entry in passed if entry["tag"] != tag_]
+    sha = hashlib.sha256(runner).hexdigest()
+    passed = [entry for entry in passed
+              if (entry["tag"], entry.get("runner")) != (tag_, sha)]
     passed.append({
         "tag": tag_,
+        "runner": sha,
         "passed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "logins": [{"engine": r["engine"], "region": r["region"], "ok": r["ok"],
                     "host": r.get("host")} for r in logins],
@@ -310,36 +360,62 @@ def record_pass(name, logins, routes, matcher):
                     "turns": r.get("turns"), "compacted": r.get("compacted")} for r in routes],
         "matcher": {"step_ns": round(matcher["step_ns"], 3), "ceiling_ns": matcher["ceiling_ns"],
                     "ok": matcher["ok"]},
+        "install": matcher["install"],
     })
     PASSED.write_text(json.dumps(passed, indent=2) + "\n")
+    # E2B's own tags (its OpenAPI `AssignTemplateTagsRequest`): the pair, on the build the
+    # template's tag names.
+    answer = httpx.post("https://api.e2b.app/templates/tags",
+                        headers={"X-API-Key": os.environ["E2B_API_KEY"]},
+                        json={"target": name, "tags": [pair_tag(tag_, sha)]}, timeout=60)
+    if answer.status_code >= 300:
+        raise SystemExit(f"E2B did not tag the passed pair ({answer.status_code})")
+
+
+def pinned() -> str:
+    """The template the sandbox Worker names (`wrangler.jsonc`'s `E2B_TEMPLATE`)."""
+    import re
+    found = re.search(r'"E2B_TEMPLATE": "([^"]+)"',
+                      (PLATFORM / "sandbox" / "wrangler.jsonc").read_text())
+    if found is None:
+        raise SystemExit("sandbox/wrangler.jsonc names no E2B_TEMPLATE")
+    return found.group(1)
 
 
 def main():
+    name = f"{NAME}:{tag()}"
+    if "--tag-only" in sys.argv:
+        print(name)
+        return
     with tempfile.TemporaryDirectory() as tmp:
         stage = Path(tmp)
-        runner = bundle(stage)
-        name = f"{NAME}:{tag(runner)}"
-        if "--tag-only" in sys.argv:
-            print(name)
-            return
+        runner = bundle(stage / "runner")
+        if "--check-pair" in sys.argv:
+            # The pinned template with this checkout's runner: no build.
+            name = pinned()
         if "--check-logins" in sys.argv:
-            check_logins(name)
+            check_logins(name, runner)
             return
         if "--route-probe" in sys.argv:
-            route_probe(name)
+            route_probe(name, runner)
             return
         if "--check-matcher" in sys.argv:
-            check_matcher(name)
+            check_matcher(name, runner)
             return
-        from e2b import Template
-        info = Template.build(template(stage), name, cpu_count=CPU, memory_mb=MEMORY_MB,
-                              on_build_logs=lambda entry: print(str(entry)[:2000], flush=True))
-        logins = check_logins(name)
-        routes = route_probe(name)
-        matcher = check_matcher(name)
-        # Every standing check passed: only now the tag, to be pinned, and its record.
-        record_pass(name, logins, routes, matcher)
-        print(json.dumps({"template": name, "template_id": getattr(info, "template_id", None),
+        info = None
+        if "--check-pair" not in sys.argv:
+            from e2b import Template
+            info = Template.build(template(stage), name, cpu_count=CPU, memory_mb=MEMORY_MB,
+                                  on_build_logs=lambda entry: print(str(entry)[:2000],
+                                                                    flush=True))
+        logins = check_logins(name, runner)
+        routes = route_probe(name, runner)
+        matcher = check_matcher(name, runner)
+        # Every standing check passed: only now the pair's record and its tag at E2B.
+        record_pass(name, runner, logins, routes, matcher)
+        print(json.dumps({"template": name, "runner": hashlib.sha256(runner).hexdigest(),
+                          "install": matcher["install"],
+                          "template_id": getattr(info, "template_id", None),
                           "build_id": getattr(info, "build_id", None)}))
 
 

@@ -34,8 +34,8 @@ const SIGNED_OUT_BYTES = 256;
 const FRAME_OVERHEAD = 512;
 
 export const MEMORY = Object.freeze({
-  tailUnits: constant("relay", "TAIL_BYTES"),
-  frameMax: constant("relay", "TAIL_FRAME_MAX"),
+  tailUnits: constant("relay", "TAIL_UNITS"),
+  frameMax: constant("relay", "TAIL_FRAME_UNITS"),
   eventsBody: constant("run-events", "EVENTS_BODY_MAX"),
   eventFrames: constant("run-events", "EVENT_FRAMES_MAX"),
   frameUnits: constant("run-events", "FRAME_UNITS_MAX"),

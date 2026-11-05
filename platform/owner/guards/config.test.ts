@@ -70,10 +70,13 @@ export const OWNER_QUEUES = Object.freeze({ producers: Object.freeze([
  * sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), the doors Worker's too.
  */
 const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
-/** The keys a bound Worker may set that bind nothing. */
+/**
+ * The keys a bound Worker may set that bind nothing: among them its own build step and its
+ * modules' types (`build`, `rules`: the sandbox Worker's runner, built and imported as data).
+ */
 const BOUND_KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls",
+  "preview_urls", "build", "rules",
 ]);
 
 interface Bound {

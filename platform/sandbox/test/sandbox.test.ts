@@ -7,13 +7,19 @@
  * not land is reaped by the look; the look renews a sandbox before its runtime ceiling, at a
  * quiet moment or forced at the edge, resumes one paused while a lease runs in it, and is
  * armed again on every path (slice S review H-5); an erasure kills every sandbox of the
- * owner, paused and strays included (H-6).
+ * owner, paused and strays included (H-6). The runner is the Worker's own, by digest: a
+ * create uploads and installs it before its first command, a resume with it there sends
+ * nothing more, an absent one is installed and asked again, bytes not their digest launch
+ * nothing, and a sandbox on another runner keeps it while anything lives and adopts the
+ * Worker's at the first start that finds nothing living.
  */
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { SandboxStart } from "../../owner/src/sandbox";
-import { CODES, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
+import { CODES, INCOMING, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
+import { PROTOCOL, SPEAKS } from "../runner/protocol";
+import { runnerBytes, runnerDigest } from "../src/runner-bytes";
 import { SLOTS } from "../src/slots";
 
 const OPEN = { outside: "on", ordinary: "all", canary: [], inbound: false };
@@ -38,10 +44,11 @@ async function e2b(path: string, body?: unknown): Promise<Record<string, unknown
 
 interface Seen {
   sandboxes: { id: string; state: string; timeout: number; network: { allowOut: string[] };
-               template: string; metadata: Record<string, string>; secure: boolean }[];
+               template: string; metadata: Record<string, string>; secure: boolean;
+               runners: string[] }[];
   calls: { method: string; path: string; body: unknown; query: string }[];
   files: Record<string, string>;
-  commands: { sandbox: string; argv: string[]; user: string }[];
+  commands: { sandbox: string; argv: string[]; runner: string | null; user: string }[];
   rings: { owner: string }[];
 }
 
@@ -124,9 +131,15 @@ describe("a start", () => {
                                     && call.method === "POST")!.body as Record<string, unknown>;
     expect(create).toMatchObject({ secure: true, autoPause: true, autoPauseMemory: true,
                                    autoResume: { enabled: false } });
-    // prepare, the sign-in check, the launch: as root, in that order.
+    // The Worker's runner installed, then prepare, the sign-in check, the launch, each by
+    // that runner's digest: as root, in that order.
+    const digest = await runnerDigest();
     expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
-      ["prepare", "1.1.1.1"], ["signin-check", "claude-code"], ["launch", RUN]]);
+      ["install", digest], ["prepare", "1.1.1.1"], ["signin-check", "claude-code"],
+      ["launch", RUN]]);
+    expect(state.commands.slice(1).every((command) => command.runner === digest)).toBe(true);
+    expect(state.files[`${box.id}:${INCOMING}/${digest}`])
+      .toBe(`sha256:${digest} bytes:${runnerBytes().byteLength}`);
     expect(state.commands.every((command) => command.user === "root")).toBe(true);
     // The lease's secrets in the root-only state directory; the start document without them.
     const lease = JSON.parse(state.files[`${box.id}:/var/lib/ta/lease.json`]!);
@@ -158,7 +171,7 @@ describe("a start", () => {
     const who = owner();
     expect(await stub(who).start(who, start())).toEqual({ started: false, code: CODES.signin });
     expect((await seen()).commands.map((command) => command.argv[1]))
-      .toEqual(["prepare", "signin-check"]);
+      .toEqual(["install", "prepare", "signin-check"]);
   });
 
   it("runs an API-key run with no sign-in check and no vendor hosts", async () => {
@@ -168,7 +181,8 @@ describe("a start", () => {
     const state = await seen();
     expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com",
                                                           "egress.tinyassets.io"]);
-    expect(state.commands.map((command) => command.argv[1])).toEqual(["prepare", "launch"]);
+    expect(state.commands.map((command) => command.argv[1]))
+      .toEqual(["install", "prepare", "launch"]);
     // No scratch retention in the record: the runner deletes no agent's scratch by age.
     const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${RUN}.json`]!;
     expect(JSON.parse(doc).scratch_retention_days).toBeNull();
@@ -699,6 +713,226 @@ describe("the meter's log (slice P)", () => {
   });
 });
 
+describe("the runner, by digest", () => {
+  /** A sandbox made by a start, then its runner marked an older Worker's (`old`). */
+  async function bornUnder(who: string, old: string): Promise<string> {
+    await e2b("/script", { signin: { "claude-code": 0 } });
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/runners", { id, runners: [old] });
+    await runInDurableObject(stub(who), (_instance, state) => {
+      state.storage.sql.exec("UPDATE sandboxes SET runner = ?", old);
+    });
+    return id;
+  }
+
+  it("is the Worker's own bytes, named by their SHA-256", async () => {
+    const hash = await crypto.subtle.digest("SHA-256", runnerBytes());
+    expect(await runnerDigest()).toBe([...new Uint8Array(hash)]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join(""));
+    expect(runnerBytes().byteLength).toBeGreaterThan(100_000);
+  });
+
+  it("sends nothing more to a resumed sandbox that has it", async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    const who = owner();
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    const before = await seen();
+    expect(before.sandboxes[0]!.state).toBe("paused");
+    await stub(who).start(who, start({ run: `run_${hex(32, "2")}` }));
+    const after = await seen();
+    const commands = after.commands.slice(before.commands.length);
+    expect(commands.map((command) => command.argv[1]))
+      .toEqual(["prepare", "signin-check", "launch"]);
+    expect(Object.keys(after.files).filter((path) => path.startsWith(`${id}:${INCOMING}`)))
+      .toHaveLength(1);  // the create's upload alone
+  });
+
+  it("is installed and asked again when the sandbox has it no more", async () => {
+    const who = owner();
+    await e2b("/script", { signin: { "claude-code": 0 } });
+    await stub(who).start(who, start());
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/runners", { id, runners: [] });
+    const before = (await seen()).commands.length;
+    expect(await stub(who).cancel(who, { run: RUN, lease_id: LEASE.lease_id }))
+      .toEqual({ cancelled: true });
+    expect((await seen()).commands.slice(before).map((command) => command.argv[1]))
+      .toEqual(["cancel", "install", "cancel"]);
+  });
+
+  it("whose bytes are not their digest is refused loudly, and nothing launches", async () => {
+    const who = owner();
+    await e2b("/script", { signin: { "claude-code": 0 }, tampered: await runnerDigest() });
+    const refused = await stub(who).start(who, start()).then(() => null,
+                                                              (error: unknown) => error);
+    expect(String(refused)).toMatch(/not its digest/);
+    expect((await seen()).commands.map((command) => command.argv[1]))
+      .toEqual(["install", "prepare"]);
+  });
+
+  it("of an older Worker is kept while a run lives, then the Worker's is adopted", async () => {
+    const who = owner();
+    const old = "0".repeat(64);
+    const id = await bornUnder(who, old);
+    // A run lives on the old runner: a joining run, and a cancel, keep it.
+    await e2b("/script", { state: { live: 1, quiet: false } });
+    let before = (await seen()).commands.length;
+    await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, tokens: null, network: null }));
+    let commands = (await seen()).commands.slice(before);
+    expect(commands.map((command) => [command.argv[1], command.runner])).toEqual([
+      ["state", old], ["signin-check", old], ["launch", old]]);
+    // Nothing lives: the next start installs the Worker's and adopts it, then runs on it.
+    await e2b("/script", { state: { live: 0, quiet: true } });
+    before = (await seen()).commands.length;
+    await stub(who).start(who, start({ run: `run_${hex(32, "4")}`, tokens: null, network: null }));
+    const digest = await runnerDigest();
+    commands = (await seen()).commands.slice(before);
+    // Installed, adopted, the row committed, then the adopted runner's own `prepare`.
+    expect(commands.map((command) => [command.argv[1], command.runner])).toEqual([
+      ["state", old], ["install", null], ["adopt", digest], ["prepare", digest],
+      ["signin-check", digest], ["launch", digest]]);
+    // Its `prepare` dropped the old runner's bytes; the Worker's alone stay.
+    expect((await seen()).sandboxes.find((box) => box.id === id)!.runners).toEqual([digest]);
+    // Adopted once: the next start asks nothing more.
+    before = (await seen()).commands.length;
+    await stub(who).start(who, start({ run: `run_${hex(32, "5")}`, tokens: null, network: null }));
+    expect((await seen()).commands.slice(before).map((command) => command.argv[1]))
+      .toEqual(["signin-check", "launch"]);
+  });
+
+  it("converges back on a rolled-back Worker's, the same way", async () => {
+    // A sandbox on a newer runner than this Worker's (the Worker rolled back): adopted at
+    // the first idle start, as any other.
+    const who = owner();
+    const newer = "f".repeat(64);
+    await bornUnder(who, newer);
+    await e2b("/script", { state: { live: 0, quiet: true } });
+    const before = (await seen()).commands.length;
+    await stub(who).start(who, start({ run: `run_${hex(32, "6")}`, tokens: null, network: null }));
+    expect((await seen()).commands.slice(before).map((command) => command.runner))
+      .toEqual([newer, null, ...Array(4).fill(await runnerDigest())]);
+  });
+
+  const rowRunner = (who: string) => runInDurableObject(stub(who), (_instance, state) =>
+    state.storage.sql.exec<{ runner: string }>("SELECT runner FROM sandboxes").one().runner);
+
+  it("never leaves the row naming bytes that are gone when an adoption's reply is lost",
+     async () => {
+    const who = owner();
+    const old = "0".repeat(64);
+    const id = await bornUnder(who, old);
+    // `adopt` runs in the sandbox, but its answer never reaches the Worker.
+    await e2b("/script", { state: { live: 0, quiet: true }, lost: "adopt" });
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, tokens: null,
+                                               network: null }))).toEqual({ started: true });
+    // The row still names the old runner, whose bytes are all still there.
+    expect(await rowRunner(who)).toBe(old);
+    expect((await seen()).sandboxes.find((box) => box.id === id)!.runners)
+      .toContain(old);
+    expect((await seen()).commands.at(-1)!.runner).toBe(old);
+    // The next start adopts it.
+    await e2b("/script", { lost: null });
+    await stub(who).start(who, start({ run: `run_${hex(32, "4")}`, tokens: null, network: null }));
+    expect(await rowRunner(who)).toBe(await runnerDigest());
+  });
+
+  it("adopts the Worker's when the row's runner is gone from the sandbox", async () => {
+    // The disk lost the row's runner (whatever did it): nothing can live on it.
+    const who = owner();
+    const id = await bornUnder(who, "0".repeat(64));
+    await e2b("/runners", { id, runners: [] });
+    await e2b("/script", { state: { live: 0, quiet: true } });
+    expect(await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, tokens: null,
+                                               network: null }))).toEqual({ started: true });
+    expect(await rowRunner(who)).toBe(await runnerDigest());
+  });
+
+  it("starts on the runner it has when the Worker's cannot be installed, and tries again",
+     async () => {
+    const who = owner();
+    const old = "0".repeat(64);
+    await bornUnder(who, old);
+    for (const fault of [{ room: 64 * 1024 }, { broken: "install" }, { broken: "adopt" }]) {
+      await e2b("/script", { state: { live: 0, quiet: true }, room: null, broken: null,
+                             ...fault });
+      const before = (await seen()).commands.length;
+      expect(await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, tokens: null,
+                                                 network: null }))).toEqual({ started: true });
+      expect((await seen()).commands.slice(before).filter((command) =>
+        command.argv[1] === "launch").map((command) => command.runner)).toEqual([old]);
+      expect(await rowRunner(who)).toBe(old);
+    }
+    await e2b("/script", { room: null, broken: null });
+    await stub(who).start(who, start({ run: `run_${hex(32, "4")}`, tokens: null, network: null }));
+    expect(await rowRunner(who)).toBe(await runnerDigest());
+  });
+
+  it("runs the adopted runner's prepare, and only it, at a resume", async () => {
+    const who = owner();
+    const old = "0".repeat(64);
+    await bornUnder(who, old);
+    await e2b("/script", { state: { live: 0, quiet: true } });
+    await stub(who).release(who, { lease_id: LEASE.lease_id });
+    expect((await seen()).sandboxes[0]!.state).toBe("paused");
+    const before = (await seen()).commands.length;
+    await stub(who).start(who, start({ run: `run_${hex(32, "3")}` }));
+    const digest = await runnerDigest();
+    expect((await seen()).commands.slice(before).map((command) =>
+      [command.argv[1], command.runner])).toEqual([
+      ["state", old], ["install", null], ["adopt", digest], ["prepare", digest],
+      ["signin-check", digest], ["launch", digest]]);
+  });
+
+  it("refuses a runner speaking a protocol this Worker does not, loudly", async () => {
+    const who = owner();
+    await bornUnder(who, "0".repeat(64));
+    for (const protocol of [PROTOCOL - 1, PROTOCOL + 1, PROTOCOL + 5]) {
+      await e2b("/script", { state: { live: 1, quiet: false }, protocol });
+      const answer = await stub(who).start(who, start({ run: `run_${hex(32, "3")}`,
+                                                        tokens: null, network: null }))
+        .then((started) => started, (error: unknown) => String(error));
+      if (SPEAKS.includes(protocol)) {
+        expect(answer).toEqual({ started: true });
+      } else {
+        expect(String(answer)).toMatch(/sandbox_runner_protocol/);
+      }
+    }
+    // Its own runner's protocol, and only the ones either side of it.
+    expect(SPEAKS).toContain(PROTOCOL);
+    expect(SPEAKS.every((each) => Math.abs(each - PROTOCOL) <= 1)).toBe(true);
+  });
+
+  it("names a runner whose bytes are not their digest for the founder", async () => {
+    const who = owner();
+    await e2b("/script", { signin: { "claude-code": 0 }, tampered: await runnerDigest() });
+    const refused = await stub(who).start(who, start()).then(() => null,
+                                                              (error: unknown) => error);
+    expect(String(refused)).toMatch(/^RunnerRefused: sandbox_runner_mismatch: /);
+  });
+
+  it("looks on when a start adopted another runner under its quiet look", async () => {
+    const who = owner();
+    const old = "0".repeat(64);
+    const id = await bornUnder(who, old);
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    // The look's quiet-wait is answered late, after a start adopted and dropped the old.
+    await e2b("/script", { state: { live: 0, quiet: true },
+                           slow: { command: "quiet-wait", ms: 400 } });
+    const look = runDurableObjectAlarm(stub(who));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await stub(who).start(who, start({ run: `run_${hex(32, "3")}`, tokens: null, network: null }));
+    await look;
+    expect((await seen()).commands.some((command) => command.argv[1] === "quiet-wait"
+                                        && command.runner === old)).toBe(true);
+    // No failed look counted: nothing was unreachable.
+    expect(await runInDurableObject(stub(who), (_instance, state) => state.storage.sql
+      .exec<{ failures: number }>("SELECT failures FROM known").one().failures)).toBe(0);
+  });
+});
+
 describe("a sign-in", () => {
   const SI = `si_${"5".repeat(32)}`;
   function signin(over: Record<string, unknown> = {}) {
@@ -717,7 +951,7 @@ describe("a sign-in", () => {
     expect(box.network.allowOut).toEqual(expect.arrayContaining(["auth.kimi.ai", "api.kimi.ai"]));
     expect(box.network.allowOut).not.toContain("auth.kimi.com");
     expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
-      ["prepare", "1.1.1.1"], ["login-launch", SI]]);
+      ["install", await runnerDigest()], ["prepare", "1.1.1.1"], ["login-launch", SI]]);
     const doc = JSON.parse(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.json`]!);
     expect(doc).toEqual({ id: SI, engine: "kimi", region: "global", mode: "in",
                           authority: "owner", urls: signin().urls });
