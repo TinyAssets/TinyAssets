@@ -53,9 +53,11 @@ jobs:
           # and ACTIONLINT_SHA256 at the same time. The SHA256 can be
           # read from the release's actionlint_<version>_checksums.txt
           # and independently verified by downloading + sha256sum-ing
-          # the tarball.
-          ACTIONLINT_VERSION="1.7.7"
-          ACTIONLINT_SHA256="023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+          # the tarball. 1.7.8 is the first release that knows the
+          # pull_request_target `enqueued` and `dequeued` types
+          # (queue-handoff.yml fires on `dequeued`).
+          ACTIONLINT_VERSION="1.7.12"
+          ACTIONLINT_SHA256="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
           curl -fsSL -o /tmp/actionlint.tgz \
               "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tgz" | sha256sum -c -
