@@ -13,17 +13,25 @@ import tracemalloc
 from contextlib import contextmanager
 
 
+def _closed(item):
+    try:
+        item.total_changes
+    except sqlite3.ProgrammingError as exc:
+        # A thread check raises this type too, for a connection that is open.
+        return "closed database" in str(exc)
+    return False
+
+
 def _open():
-    found = []
-    for item in gc.get_objects():
-        if not isinstance(item, sqlite3.Connection):
-            continue
-        try:
-            item.total_changes
-        except sqlite3.ProgrammingError:
-            continue  # Closed.
-        found.append(item)
-    return found
+    return [item for item in gc.get_objects()
+            if isinstance(item, sqlite3.Connection) and not _closed(item)]
+
+
+def _close(item):
+    try:
+        item.close()
+    except sqlite3.ProgrammingError:
+        pass  # Opened in another thread, which alone may close it; still reported.
 
 
 def _opened_at(item):
@@ -47,7 +55,7 @@ def no_connection_left_open():
         # Run with PYTHONTRACEMALLOC=N to name the line that opened each one.
         opened = [_opened_at(item) for item in left]
         for item in left:
-            item.close()
+            _close(item)
         del left
         assert not opened, f"{len(opened)} sqlite connection(s) left open: {opened}"
     finally:

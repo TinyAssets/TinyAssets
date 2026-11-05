@@ -469,6 +469,32 @@ def test_each_restore_pass_closes_every_store_it_opens(tmp_path):
     assert plan["tables"]["outbound_connections"]["insert"] == 1
 
 
+def test_a_connection_left_open_in_another_thread_is_still_reported(tmp_path):
+    """Another thread's connection raises ProgrammingError for this one; it is open."""
+    import threading
+
+    from tests.support.open_connections import no_connection_left_open
+
+    opened, release = threading.Event(), threading.Event()
+
+    def hold():
+        conn = sqlite3.connect(tmp_path / "held.db")
+        opened.set()
+        release.wait(30)
+        conn.close()
+
+    holder = threading.Thread(target=hold)
+    try:
+        with pytest.raises(AssertionError, match=r"1 sqlite connection\(s\) left open"):
+            with no_connection_left_open():
+                holder.start()
+                assert opened.wait(30)
+    finally:
+        release.set()
+        holder.join(30)
+    assert not holder.is_alive()
+
+
 def test_remote_archive_is_downloaded_and_checked(tmp_path, monkeypatch):
     archive = tmp_path / "packed.tar.gz"
     payload = tmp_path / "outbound.db"
