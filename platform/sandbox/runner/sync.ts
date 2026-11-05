@@ -607,7 +607,12 @@ async function upload(client: SyncClient, op: Op,
   const begun = await client.post("upload_begin", { lease_id: lease.lease_id,
                                                     epoch: lease.epoch, size: op.size,
                                                     chunks: op.chunks });
-  const intentId = begun["intent_id"] as string;
+  const intentId = begun["intent_id"];
+  if (typeof intentId !== "string" || intentId.length !== INTENT_ID_CHARS) {
+    // Each commit op is counted with an intent id of `INTENT_ID_CHARS` (`opBytes`).
+    throw new Error(`the upload door's intent id is not ${INTENT_ID_CHARS} characters: ${
+      JSON.stringify(intentId)}`);
+  }
   try {
     const missing = new Set(begun["missing"] as string[]);
     const ok = await safePieces(op.from!.base, op.from!.local, CHUNK_BYTES,

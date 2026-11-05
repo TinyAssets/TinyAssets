@@ -27,7 +27,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { AUTOMATON_STATES, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP }
   from "../../owner/src/sync-ignore";
 import {
-  CHUNK_BYTES, COMMIT_OPS, ignoredBy, INLINE_BYTES, memoryMirror, openMirror, type Place,
+  CHUNK_BYTES, COMMIT_OPS, ignoredBy, INLINE_BYTES, INTENT_ID_CHARS, memoryMirror,
+  openMirror, type Place,
   SYNC_BODY, SyncClient, SyncFenced, syncIn, syncOut, wildcard,
 } from "./sync";
 
@@ -168,7 +169,8 @@ describe("the mirror, from each file's identity when it was offered", () => {
     const report = await syncOut(client((door, body) => {
       if (door === "upload_begin") {
         writeFileSync(file, Buffer.alloc(10_000, 2));  // the file changes mid-sync
-        return { status: 200, body: { intent_id: "i1", missing: body["chunks"] } };
+        return { status: 200, body: { intent_id: "1".repeat(INTENT_ID_CHARS),
+                                      missing: body["chunks"] } };
       }
       if (door === "upload_abort") {
         aborted.push(body["intent_id"] as string);
@@ -181,7 +183,7 @@ describe("the mirror, from each file's identity when it was offered", () => {
       }
       return { status: 200, body: {} };
     }), p, memoryMirror(), LEASE, []);
-    expect(aborted).toEqual(["i1"]);
+    expect(aborted).toEqual(["1".repeat(INTENT_ID_CHARS)]);
     expect(committed).toEqual([]);
     expect(report.skipped.map((each) => each.path)).toEqual(["/workspace/log.bin"]);
   });
@@ -610,8 +612,11 @@ describe("a list larger than the sandbox's heap would hold whole", () => {
         import { memoryMirror, SyncClient, syncOut } from ${JSON.stringify(join(HERE, "sync.ts"))};
         const fetcher = async (_url, init) => {
           const body = JSON.parse(init.body);
-          return new Response(JSON.stringify({ outcomes: (body.ops ?? []).map((op) => ({
-            path: op.path, outcome: "committed", entry: { version: 1 } })) }), { status: 200 });
+          // Every door at once: an upload's begin (all its chunks held), and a commit's.
+          return new Response(JSON.stringify({ intent_id: "0".repeat(32), missing: [],
+            outcomes: (body.ops ?? []).map((op) => ({
+              path: op.path, outcome: "committed", entry: { version: 1 } })) }),
+                              { status: 200 });
         };
         const report = await syncOut(new SyncClient("https://egress.test", "t", 1, 2, fetcher),
           { local: ${JSON.stringify(local)}, sessionsIn: ${JSON.stringify(join(root, "in"))},
@@ -669,4 +674,16 @@ describe("a commit's body", () => {
     expect(bodies.reduce((sum, each) => sum + each, 0)).toBeGreaterThan(SYNC_BODY);
     expect(Math.max(...bodies)).toBeLessThanOrEqual(SYNC_BODY);
   }, 300_000);
+
+  it("fails loudly on an intent id of another length than it counted", async () => {
+    const { place: p, local } = place();
+    writeFileSync(join(local, "big.bin"), Buffer.alloc(10_000, 7));
+    for (const id of ["i1", "1".repeat(INTENT_ID_CHARS + 1), 7]) {
+      await expect(syncOut(client((door, body) => door === "upload_begin"
+        ? { status: 200, body: { intent_id: id, missing: body["chunks"] } }
+        : door === "commit" ? commitAll(body) : { status: 200, body: {} }),
+                           p, memoryMirror(), LEASE, []))
+        .rejects.toThrow(`intent id is not ${INTENT_ID_CHARS} characters`);
+    }
+  });
 });
