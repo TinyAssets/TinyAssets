@@ -248,6 +248,55 @@ tightens the ratchet; any addition SHALL keep the receipt requirement.
 - **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
 - **THEN** the guard reports the authority hit and requires the receipt
 
+### Requirement: A review verdict is a check run only the review App posts
+
+A verdict SHALL be a review on the commit read, by an OWNER, MEMBER or
+COLLABORATOR, whose first non-blank line, stripped, is `APPROVE` or `BLOCK`. The
+latest verdict after the last base change and dismissal SHALL become a `review`
+check run on the head, `external_id` `pr-<number>`, posted only with the review
+App's token from the main-only `review` environment. It SHALL carry only across the
+same change or a prose delta. Readers SHALL take the App's highest-id run for their
+own pull request.
+
+#### Scenario: An approval at the head passes
+- **WHEN** a trusted author's review on the head's commit opens with `APPROVE`
+- **THEN** the review App posts a successful `review` run on the head for that pull request
+
+#### Scenario: A BLOCK fails the head it carries to
+- **WHEN** the latest verdict is `BLOCK` and it carries to the head
+- **THEN** the `review` run on the head is a failure
+
+#### Scenario: Dismissing a BLOCK does not bring back the APPROVE before it
+- **WHEN** an `APPROVE` is followed by a `BLOCK` that is then dismissed
+- **THEN** the `review` check is pending until a newer verdict
+
+#### Scenario: An approval carries across a prose delta only
+- **WHEN** the change since the approved commit touches only Markdown under `docs/`, `openspec/` or `ideas/`, or top-level Markdown
+- **THEN** the approval carries to the new head
+- **AND** it does not carry when any changed path is under `docs/reference/`, or its name matches `(?i)^(AGENTS|CLAUDE|GEMINI|CODEX)([._-].*)?\.md$` at any depth
+
+#### Scenario: A retarget voids the verdict
+- **WHEN** a pull request approved at its head is retargeted to another base, by hand or by GitHub after its parent merged
+- **THEN** its `review` check is pending until a review after the retarget
+
+#### Scenario: A decision updates the run in progress and never a completed one
+- **WHEN** a head is decided again
+- **THEN** the review App updates its newest `review` run for that pull request on that head while that run is in progress, and posts a new run when none is in progress
+- **AND** it never updates a completed run, and treats an update whose answer lacks the status and conclusion it sent as not made
+
+#### Scenario: The latest run is the highest id
+- **WHEN** a head holds an older in-progress `review` run and a newer successful one, both by the App for the pull request
+- **THEN** readers, listing every run on every page, count the head as reviewed
+
+#### Scenario: A merge group decides its pull request afresh
+- **WHEN** a merge group is made for a pull request whose head still shows an earlier pass, and a `BLOCK` since has no decision run yet
+- **THEN** the review App decides that pull request again from its reviews and timeline at its current head, never from its `review` runs, and posts the group's `review` run as a failure
+- **AND** it posts the group's run as a success only when that fresh decision is a pass
+
+#### Scenario: A forged review context does not pass
+- **WHEN** a pull request's own workflow job named `review` reports success on its head
+- **THEN** a reader of the check treats the head as unreviewed
+
 ### Requirement: A new skip names its owner and where it runs
 
 A new skip or xfail that is not an environment guard SHALL carry `owner=` and

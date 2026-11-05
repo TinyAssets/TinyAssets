@@ -1121,15 +1121,6 @@ def test_every_event_requires_structural_success(tmp_path):
         assert run.returncode == (0 if result == "success" else 1)
 
 
-# Events that do not change the head. A workflow that listens to them must be
-# the receipt/label gate or auto-enroll, never the build or the test jobs.
-_NON_CODE_TYPES = frozenset({"edited", "labeled", "unlabeled"})
-_NON_CODE_WORKFLOWS = frozenset({
-    "pr-scope-guard.yml",
-    "auto-enroll-merge.yml",
-})
-
-
 # npm settings that change how, or whether, `npm run` runs a script: `script-shell=true`
 # makes every leg run `true` and pass (round 9, R9-1), `ignore-scripts` skips them, and
 # `shell` and `node-options` change what runs. A tracked file may set none of them.
@@ -1197,6 +1188,17 @@ def test_npm_settings_guard_catches_each_mutation(path, text):
     assert _npm_config_problems(files) == []
     files[path] = text
     assert _npm_config_problems(files) != [], (path, text)
+
+
+# Events that do not change the head. A workflow that listens to them must be
+# the receipt/label gate or auto-enroll, never the build or the test jobs.
+_NON_CODE_TYPES = frozenset({"edited", "labeled", "unlabeled"})
+_NON_CODE_WORKFLOWS = frozenset({
+    "pr-scope-guard.yml",
+    "auto-enroll-merge.yml",
+    # A retarget is an `edited` event, and it changes what a review read.
+    "review.yml",
+})
 
 
 def test_comment_and_label_events_do_not_start_tests() -> None:

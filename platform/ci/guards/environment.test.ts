@@ -76,6 +76,17 @@ const NON_PRODUCTION_SECRETS: Record<string, string> = {
   TOKEN_HEX: "python `secrets.token_hex(...)` in a run script",
 };
 
+/**
+ * Secrets held by a main-only environment of their own, never by `production` (whose
+ * required reviewer would hold every use): a job that reads one declares that environment,
+ * and no other job may read it.
+ */
+const ENVIRONMENT_SECRETS: Record<string, string> = {
+  // The review App's key: the only identity that may post the required `review` check
+  // (review.yml). Its environment deploys from main alone, with no reviewer.
+  REVIEW_APP_PRIVATE_KEY: "review",
+};
+
 /** Workflows known to hold production jobs: guards the scan against matching nothing. */
 const KNOWN_PRODUCTION_WORKFLOWS = [
   "apply-daemon-env.yml", "box-preflight.yml", "cloud-only-preflight.yml", "deploy-prod.yml",
@@ -120,8 +131,23 @@ function secretNames(text: string): Set<string> {
 }
 
 function productionSecretNames(text: string): string[] {
-  return [...secretNames(text)].filter((name) => !(name.toUpperCase() in NON_PRODUCTION_SECRETS))
+  return [...secretNames(text)].filter((name) => !(name.toUpperCase() in NON_PRODUCTION_SECRETS)
+                                                 && !(name.toUpperCase() in ENVIRONMENT_SECRETS))
     .sort();
+}
+
+/** Every local action's text (`action.yml` or `action.yaml` under `.github/actions`), by folder. */
+function actionTexts(): [string, string][] {
+  const actions = join(REPO, ".github", "actions");
+  const out: [string, string][] = [];
+  for (const folder of existsSync(actions) ? readdirSync(actions) : []) {
+    for (const name of ["action.yml", "action.yaml"]) {
+      if (existsSync(join(actions, folder, name))) {
+        out.push([folder, readFileSync(join(actions, folder, name), "utf8")]);
+      }
+    }
+  }
+  return out;
 }
 
 function localAction(uses: string, repo: string): string | null {
@@ -274,6 +300,48 @@ describe("production workflows", () => {
            "allowlisted secrets no workflow reads any more: delete them").toEqual([]);
     expect(PRODUCTION_SECRETS.filter((name) => name in NON_PRODUCTION_SECRETS)).toEqual([]);
     expect(Object.values(NON_PRODUCTION_SECRETS).every((why) => why.trim())).toBe(true);
+  });
+
+  it("an environment's own secret is read only inside that environment", () => {
+    // The review App's key is read only by a job in the `review` environment, which GitHub
+    // refuses on any ref but main, so no branch's workflow can mint the App's token.
+    const wrong: string[] = [];
+    const seen = new Set<string>();
+    for (const file of workflowNames()) {
+      const data = workflow(file);
+      for (const name of secretNames(workflowLevelText(data))) {
+        if (name.toUpperCase() in ENVIRONMENT_SECRETS) {
+          wrong.push(`${file} reads secrets.${name} for every job`);
+        }
+      }
+      for (const [jobName, job] of Object.entries<Data>(data.jobs ?? {})) {
+        for (const name of secretNames(strings(job))) {
+          const wanted = ENVIRONMENT_SECRETS[name.toUpperCase()];
+          if (wanted === undefined) {
+            continue;
+          }
+          seen.add(name.toUpperCase());
+          if ("uses" in job || environmentName(job) !== wanted) {
+            wrong.push(`${file} job \`${jobName}\` reads secrets.${name} outside the ` +
+                       `\`${wanted}\` environment`);
+          }
+        }
+      }
+    }
+    for (const [folder, text] of actionTexts()) {
+      for (const name of secretNames(text)) {
+        if (name.toUpperCase() in ENVIRONMENT_SECRETS) {
+          wrong.push(`${folder} reads secrets.${name}`);
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
+    expect(Object.keys(ENVIRONMENT_SECRETS).filter((name) => !seen.has(name)),
+           "environment secrets no workflow reads any more: delete them").toEqual([]);
+    expect(Object.keys(ENVIRONMENT_SECRETS).filter((name) => PRODUCTION_SECRETS.includes(name)
+                                                             || name in NON_PRODUCTION_SECRETS))
+      .toEqual([]);
+    expect(Object.values(ENVIRONMENT_SECRETS)).not.toContain("production");
   });
 });
 

@@ -51,9 +51,12 @@ ENV TMPDIR=/tmp/oracle-tmp
 RUN mkdir -p /tmp/oracle-tmp
 
 # Migration copy and deploy-shell proofs must execute in the oracle too.
+# jq: workflow scripts the suite runs as they are (review.yml's decision) use it,
+# as GitHub's ubuntu-latest runner provides it.
 RUN apt-get update -qq \
-    && apt-get install -y -qq --no-install-recommends rsync shellcheck \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y -qq --no-install-recommends rsync shellcheck jq \
+    && rm -rf /var/lib/apt/lists/* \
+    && jq --version
 
 WORKDIR /work
 
