@@ -46,6 +46,9 @@ PRODUCTION_SECRETS = (
     "TINYASSETS_CANARY_SESSION_SEED_DEPLOY",
     "TINYASSETS_CANARY_SESSION_SEED_UPTIME",
     "TINYASSETS_CANARY_HMAC_KEY",
+    # Spends money on E2B: sandbox-template.yml's build and checks, and
+    # platform-deploy.yml's pair check and apply.
+    "E2B_API_KEY",
 )
 
 # Secrets a job may read WITHOUT `environment: production`. A branch dispatch
