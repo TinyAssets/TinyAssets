@@ -166,7 +166,14 @@ describe("E2B's lifecycle webhook", () => {
                                                              authority: "owner" });
     expect(sealed).not.toContain("user_a");
     expect(openRoute("A".repeat(43), sealed)).toBeNull();
-    expect(openRoute(env.ROUTING_MAC_KEY, `${sealed.slice(0, -2)}AA`)).toBeNull();
+    // A bit of each byte flipped, not a text suffix swapped: the last characters can carry
+    // padding bits, so a changed suffix may decode to the same bytes (1 run in 256 did).
+    const bytes = Buffer.from(sealed, "base64url");
+    for (let at = 0; at < bytes.byteLength; at++) {
+      const changed = Buffer.from(bytes);
+      changed[at]! ^= 1;
+      expect(openRoute(env.ROUTING_MAC_KEY, changed.toString("base64url"))).toBeNull();
+    }
     expect(signed(SECRET, "{}", signature("{}"))).toBe(true);
     expect(signed(SECRET, "{}", `${signature("{}")}=`)).toBe(true);
     expect(signed(SECRET, "{}", signature("{ }"))).toBe(false);
