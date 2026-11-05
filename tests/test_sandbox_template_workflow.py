@@ -9,6 +9,7 @@ import ast
 import importlib.util
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -30,7 +31,6 @@ def _production_guard():
 _secret_names = _production_guard()._secret_names
 WORKFLOW = ROOT / ".github/workflows/sandbox-template.yml"
 LOCK = ROOT / "platform/sandbox/template/requirements.txt"
-DEPLOY = ROOT / "platform/deploy/deploy.ts"
 BUILD = ROOT / "platform/sandbox/template/build.py"
 
 
@@ -78,39 +78,71 @@ def test_actions_and_packages_are_pinned_and_no_token_is_kept() -> None:
     assert all(line.endswith("\\") for line in pins)
 
 
+# E2B's two answers (deploy.ts templateReady: the alias, then the tag), as `E2B_MOCK` says.
+_FETCH_MOCK = """
+import { appendFileSync } from "node:fs";
+const answer = process.env.E2B_MOCK;
+globalThis.fetch = async (url, init) => {
+  appendFileSync(process.env.E2B_MOCK_LOG, `${init.headers["X-API-Key"]} ${url}\\n`);
+  if (String(url).includes("/templates/aliases/")) {
+    return answer === "404" || answer === "500"
+      ? new Response("", { status: Number(answer) })
+      : Response.json({ templateID: "t1" });
+  }
+  return Response.json({ exists: answer === "ready" });
+};
+"""
+_ASKED = ["k https://api.e2b.app/templates/aliases/tinyassets-sandbox",
+          "k https://api.e2b.app/templates/t1/tags/exists?tag=s0"]
+
+
+def _node() -> str:
+    """The Node the workflow runs (22): it must strip types, so the real snippet runs."""
+    node = shutil.which("node")
+    assert node, "Node 22.6 or later is required to run the workflow's own snippet"
+    version = subprocess.run([node, "--version"], capture_output=True, text=True,
+                             check=True).stdout.strip()
+    assert tuple(map(int, version.lstrip("v").split(".")[:2])) >= (22, 6), version
+    return node
+
+
 @pytest.mark.parametrize(
-    ("mode", "ready", "code", "calls"),
+    ("mode", "answer", "code", "calls", "asked"),
     [
-        ("build", "false", 0, ["--tag-only", "node templateReady", ""]),
-        ("build", "true", 0, ["--tag-only", "node templateReady", "checks tinyassets-sandbox:s0"]),
-        ("build", "", 1, ["--tag-only", "node templateReady"]),
-        ("pair", "false", 0, ["--check-pair"]),
+        ("build", "absent", 0, ["--tag-only", ""], _ASKED),
+        ("build", "404", 0, ["--tag-only", ""], _ASKED[:1]),
+        ("build", "ready", 0, ["--tag-only", "checks tinyassets-sandbox:s0"], _ASKED),
+        ("build", "500", 1, ["--tag-only"], _ASKED[:1]),
+        ("pair", "ready", 0, ["--check-pair"], []),
     ],
 )
-def test_a_tag_e2b_already_built_is_not_built_again(tmp_path, mode, ready, code, calls) -> None:
-    """The build step's own script, run with E2B's answer stubbed: it builds only when E2B
-    has no ready build of the tag, runs the checks alone on one it has, and an unreadable
-    answer stops it."""
+def test_a_tag_e2b_already_built_is_not_built_again(tmp_path, mode, answer, code, calls,
+                                                    asked) -> None:
+    """The build step's own script and its real node snippet (deploy.ts's templateReady),
+    with only E2B's answers mocked: it builds only when E2B has no ready build of this
+    tree's tag, runs the checks alone on one it has, and an answer it cannot read stops it."""
+    node = _node()
     script = _step("Build and check")["run"]
     log = tmp_path / "calls"
     (tmp_path / "python3").write_text(
         f'#!/bin/sh\n[ "$1" = -c ] && {{ echo "checks $3" >> {log}; exit 0; }}\n'
         f'echo "${{2:-}}" >> {log}\n'
         '[ "${2:-}" = --tag-only ] && echo tinyassets-sandbox:s0\nexit 0\n')
-    (tmp_path / "node").write_text(
-        f'#!/bin/sh\ncase "$*" in *templateReady*) echo "node templateReady" >> {log};; esac\n'
-        'echo "$READY"\n')
+    mock = tmp_path / "fetch-mock.mjs"
+    mock.write_text(_FETCH_MOCK)
+    (tmp_path / "node").write_text(f'#!/bin/sh\nexec "{node}" --import "{mock}" "$@"\n')
     for stub in ("python3", "node"):
         (tmp_path / stub).chmod(0o755)
-    env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "MODE": mode, "READY": ready,
+    env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "MODE": mode, "E2B_API_KEY": "k",
+           "E2B_MOCK": answer, "E2B_MOCK_LOG": str(tmp_path / "asked"),
            "CHECKS": _step("Build and check")["env"]["CHECKS"],
            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}
     done = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT, capture_output=True,
                           text=True, check=False)
     assert done.returncode == code, done.stderr
     assert (log.read_text().splitlines() if log.exists() else []) == calls
-    # The check the script imports is the deploy kit's own.
-    assert "export async function templateReady(" in DEPLOY.read_text(encoding="utf-8")
+    seen = tmp_path / "asked"
+    assert (seen.read_text().splitlines() if seen.exists() else []) == asked
 
 
 _FAKE_BUILD = '''
