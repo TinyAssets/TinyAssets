@@ -128,7 +128,7 @@ describe("a chunk-wise edit", () => {
   });
 
   it("edits a 16 MiB file at its start, a seam and its end, of the same length and longer",
-     async () => {
+     { tags: ["large"] }, async () => {
     const o = await owner();
     const path = "/workspace/big.md";
     await o.stub.fileWrite(o.bind(), { path, expected_etag: null,
@@ -149,5 +149,5 @@ describe("a chunk-wise edit", () => {
     const read = await o.stub.fileText(o.bind(), { path, offset: 4 * MIB - 8, max_bytes: 16 });
     expect(read.text.startsWith("<<DONE>>")).toBe(true);
     expect((await entry()).size).toBe(16 * MIB + "<<END, longer>>".length);
-  }, 300_000);
+  });
 });

@@ -112,24 +112,27 @@ describe("a burst's cut into parts at production sizes", () => {
   const { part, gather } = GENERATION_SIZES;
   const lines = burst(gather);
 
-  it("keeps one burst's cut inside a third of the CPU limit", async () => {
+  it("keeps one burst's cut inside a third of the CPU limit", { tags: ["large"] },
+     async () => {
     const ms = await cpuMs(() => cut(lines, part));
     console.log(`one burst's cut: ${lines.length} lines, ${Math.round(ms)} ms CPU of ` +
                 `${CPU_LIMIT_MS}`);
     expect(ms).toBeLessThan(STEP_CPU_MS);
-  }, 60_000);
+  });
 
   it("costs in proportion to its size: a burst four times as large, parts and all, is " +
-     "under eight times the CPU (the replaced cut's was sixteen)", async () => {
+     "under eight times the CPU (the replaced cut's was sixteen)", { tags: ["large"] },
+     async () => {
     const quarter = burst(gather / 4, 2);
     const small = await leastMs(quarter, part / 4);
     const large = await leastMs(lines, part);
     console.log(`the cut at a quarter: ${small.toFixed(1)} ms; at production: ` +
                 `${large.toFixed(1)} ms`);
     expect(large).toBeLessThan(8 * Math.max(small, 1));
-  }, 60_000);
+  });
 
-  it("cuts parts of at most CHUNK_BYTES, each of whole lines, that join to the burst", () => {
+  it("cuts parts of at most CHUNK_BYTES, each of whole lines, that join to the burst",
+     { tags: ["large"] }, () => {
     expect(part).toBe(CHUNK_BYTES);
     const parts = cut(lines, part);
     const decoder = new TextDecoder();
@@ -147,7 +150,7 @@ describe("a burst's cut into parts at production sizes", () => {
     expect(Buffer.compare(Buffer.concat(parts), Buffer.from(whole))).toBe(0);
     expect(decoder.decode(parts[0]!).split("\n").slice(0, -1).every((line) =>
       JSON.parse(line) !== null)).toBe(true);
-  }, 60_000);
+  });
 });
 
 describe("a burst's cut", () => {
@@ -174,7 +177,7 @@ describe("a burst's cut", () => {
     expect(cutParts([encodeLines(["ab"]), encodeLines([]), encodeLines(["cd"])], 6)
       .map((bytes) => Buffer.from(bytes).toString())).toEqual(["ab\ncd\n"]);
     expect(cutParts([], 6)).toEqual([]);
-  }, 60_000);
+  });
 
   it("counts a line by its UTF-8, not its UTF-16: a part of three-byte characters is cut " +
      "at its bytes", () => {

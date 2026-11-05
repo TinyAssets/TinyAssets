@@ -107,12 +107,16 @@ describe("MCP Events at the MCP door", () => {
 
   it("verifies the callback, then stores it under the id the server derives", async () => {
     const { alice, tokens, origin } = await ringingClient();
+    const before = Date.now();
     const first = (await subscribe(tokens, "echo/dot"))["result"] as Record<string, unknown>;
+    const after = Date.now();
     const id = subscriptionId(origin.client, "https://callback.test/echo/dot", EVENT,
                               { command_center_id: "alpha", board: true, rooms: [] });
     expect(first).toMatchObject({ id, cursor: null, truncated: false });
-    const granted = Date.parse(first["refreshBefore"] as string) - Date.now();
-    expect(granted).toBeGreaterThan(86_400_000 - 60_000);  // the record's default: a day
+    // The record's default: a day on from the server's clock, read between the two reads.
+    const refresh = Date.parse(first["refreshBefore"] as string);
+    expect(refresh).toBeGreaterThanOrEqual(before + 86_400_000 - 1_000);
+    expect(refresh).toBeLessThanOrEqual(after + 86_400_000 + 1_000);
     // The same identity refreshes it; ttlMs null asks for no expiry, and is granted.
     const again = (await subscribe(tokens, "echo/dot", { ttlMs: null }))["result"];
     expect(again).toMatchObject({ id, refreshBefore: null });
@@ -177,7 +181,7 @@ describe("an agent's own subscriptions", () => {
     expect((await subscribe(tokens, "echo/chat-0"))["result"]).toBeDefined();
     expect(await sqlIn(alice, "SELECT 1 FROM wake_callbacks")).toHaveLength(
       SUBSCRIPTIONS_PER_AGENT);
-  }, 60_000);
+  });
 });
 
 describe("the owner surface's doorbell", () => {

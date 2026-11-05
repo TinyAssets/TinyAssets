@@ -60,7 +60,7 @@ describe("the search's worst case", () => {
     console.log(`search worst case, distinct words: ${Math.round(ms)} ms CPU, ${found} results`);
     expect(found).toBe(SEARCH_SCAN);
     expect(ms).toBeLessThan(3_000);
-  }, 60_000);
+  });
 
   it("keeps one call of full indexes inside a tenth of the CPU limit", () => {
     const entries: Scanned[] = [];
@@ -79,7 +79,7 @@ describe("the search's worst case", () => {
     const ms = cpuMs(() => searchPage(entries, false, terms, () => "u"));
     console.log(`search worst case, full indexes: ${Math.round(ms)} ms CPU`);
     expect(ms).toBeLessThan(3_000);
-  }, 60_000);
+  });
 
   it("keeps the worst answer, envelope and escapes included, within one answer", () => {
     // Every result at its widest and worst to escape: a 4,096-byte path of quotes and
@@ -110,7 +110,7 @@ describe("the search's worst case", () => {
     expect(page.results.every((hit) => hit.title === title || hit.title_cut === true))
       .toBe(true);
     expect(page.results.every((hit) => hit.id.startsWith(dir))).toBe(true);
-  }, 60_000);
+  });
 
   it("holds a query's words to their measured heap", () => {
     const ms = cpuMs(() => words(query.text));

@@ -176,10 +176,10 @@ GUARDS = {
         'assert every real_jail case executed without skips. '
     ),
     "test_workflow_production_environment": (
-        'Add `environment: production` to the reported job, or allowlist the secret in '
-        'tests/test_workflow_production_environment.py with a one-line justification if it '
-        'cannot reach the production host or the DigitalOcean account; keep box-preflight.yml '
-        'to one ssh connection running the fixed boxhostd literal. '
+        'Keep box-preflight.yml to one ssh connection running the fixed boxhostd literal. '
+        'For a production job: add `environment: production` to it, or allowlist the '
+        'secret in tests/test_workflow_production_environment.py with a one-line '
+        'justification if it cannot reach the production host or the DigitalOcean account. '
     ),
 }
 

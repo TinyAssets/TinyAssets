@@ -56,7 +56,7 @@ describe("safeDirs among processes", () => {
     } finally {
       rmSync(dirname(race), { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 
   it("still refuses a link where a directory is made", () => {
     const base = mkdtempSync(join(tmpdir(), "ta-fsafe-"));

@@ -169,14 +169,14 @@ jobs:
 
   # The TypeScript platform workspace (ADR-032): typecheck, then its tests in the
   # real workerd runtime. Required through `required-tests`' needs; nothing here deploys.
-  # One leg a workspace, in parallel, each within the ten minutes: run whole, the suite
-  # passed ten (PR #5403). A matrix job's result is every leg's, so one red leg fails
-  # `required-tests`. Every workspace in `platform/package.json` has its leg, the
+  # One leg a workspace, in parallel. A matrix job's result is every leg's, so one red leg
+  # fails `required-tests`. Every workspace in `platform/package.json` has its leg, the
   # sandbox's `test` split in two (workerd and guards; the runner as root) and the owner's
   # (its suite, and the workerd memory leg: each chunk-wise path O(1) in its data's size, by
-  # differences at checkpoints, ADR-037), pinned by tests/test_tests_workflow.py. Measured on a dev box (2026-11-03): typecheck 8 s,
-  # owner 78 s, doors 39 s, files 2 s, gateway 9 s, hooks 1 s, sandbox 3 s, runner 207 s,
-  # each plus `npm ci` (6 s cached); the whole was 2m28s + 3m28s run serially.
+  # differences at checkpoints, ADR-037). Each test's budget is its size class's, one a
+  # project (platform/ci/classes.ts); the legs leave the large class out
+  # (`--tags-filter=!large`), which `platform-sizes` runs. Each leg within the ten
+  # minutes. Pinned by platform/ci/guards and tests/test_tests_workflow.py.
   platform-tests:
     name: platform-tests
     runs-on: ubuntu-latest
@@ -203,6 +203,44 @@ jobs:
             command: npm run test:workerd -w sandbox
           - leg: runner
             command: npm run test:root -w sandbox
+          - leg: ci
+            command: npm run test -w ci
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - run: ${{ matrix.command }}
+
+  # The platform's large tests (platform/ci/classes.ts): production sizes, real-size data,
+  # and anything slower than its project's medium budget, sharded so no shard is longer
+  # than the medium legs' critical path. It runs on every event, and is not yet one of
+  # `required-tests`' needs: it becomes required in the change after the Python legs'
+  # tests are retired. Every workspace with a large test has its
+  # `test:sizes` here, every shard (platform/ci/guards/legs.test.ts).
+  #
+  # timeout-minutes is a watchdog: about 3 x the slowest shard's measured time (owner 2/2,
+  # 178 s in one local run, 2026-11-04; re-derive from the first CI run's shard times).
+  platform-sizes:
+    name: platform-sizes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: owner 1/2
+            command: npm run test:sizes -w owner -- --shard=1/2
+          - leg: owner 2/2
+            command: npm run test:sizes -w owner -- --shard=2/2
+          - leg: runner
+            command: npm run test:sizes -w sandbox
     defaults:
       run:
         working-directory: platform

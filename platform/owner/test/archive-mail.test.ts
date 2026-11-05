@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
-import { BUSY } from "../src/slots";
+import { BUSY, SLOT_WAIT_MS } from "../src/slots";
 import { LEDGER_LIMITS, type Ledger, mailRecord, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import type { ArchivingOwnerDO } from "./worker";
@@ -300,10 +300,7 @@ describe("segments", () => {
     await expect(makeChunk(plan, 0, async (from, to) =>
       planned.slice(from, to).map(() => [new Uint8Array(1)]), read))
       .rejects.toThrow(/not the length its plan placed/);
-    // Measured at 3.4 s alone and 3.65 s in the owner leg (2026-11-04, four cores); CI's
-    // leg passed vitest's 5 s once (run 41883042155). 30 s is eight times its slowest run
-    // here and six times CI's, as `brain.test.ts` sets its own.
-  }, 30_000);
+  });
 
   it("are planned in a table that refuses a move past MOVE_RECORDS, loudly (review N7)", () => {
     const table = new MoveTable();
@@ -451,7 +448,7 @@ describe("the archive lane", () => {
   });
 
   it("pages a chain of large bodies to one answer each, archived and hot, read on by offset",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await rig(ARCHIVING);
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
@@ -489,9 +486,7 @@ describe("the archive lane", () => {
     expect((await failure(() => r.stub.mailChain(r.bind(null), {
       message_id: third.message_id, limit: 1, after: 0, body_offset: 100,
       body_message_id: second.message_id } as never))).message).toMatch(/^message_changed/);
-    // Measured at 16.3 s alone and 18.5 s in the owner leg (2026-11-04, four cores): 180 s
-    // is about ten times its slowest run, so a slower runner's leg keeps a margin.
-  }, 180_000);
+  });
 
   it("finds a chain's mail that the lane moves between its fences and its hot unit (N9)",
      async () => {
@@ -529,7 +524,7 @@ describe("the archive lane", () => {
   });
 
   it("reads a still chain while another room's mail moves and segments are replaced, " +
-     "never failing inside (N10)", async () => {
+     "never failing inside (N10)", { tags: ["large"] }, async () => {
     const r = await rig(ARCHIVING);
     const held = r.stub as unknown as DurableObjectStub<ArchivingOwnerDO>;
     const muse = await r.register(MUSE);
@@ -594,7 +589,7 @@ describe("the archive lane", () => {
     }
     // The muse's segments were replaced under held reads, and each read held.
     expect(replaced).toBeGreaterThan(0);
-  }, 300_000);
+  });
 
   it("holds its move's units on the isolate's pool; refused busy at once, the lane holds " +
      "with no failure counted, tells the owner once at the hot ceiling, and moves once there " +
@@ -617,10 +612,13 @@ describe("the archive lane", () => {
     try {
       await sentAndAcked(r, MUSE, `dm:${muse}`, 6);
       // Refused at once, never waiting on the pool inside the alarm: no failure counted, no
-      // notice while the hot set is below its ceiling, nothing moved.
-      const started = Date.now();
+      // notice while the hot set is below its ceiling, nothing moved. The pool's units stay
+      // held through the pass, so a pass that waited would be refused only by the pool's own
+      // timer, `SLOT_WAIT_MS` on: finishing inside it is the never-waiting, by the code's
+      // constant, not a hand-set figure.
+      const before = Date.now();
       await lane();
-      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(Date.now() - before).toBeLessThan(SLOT_WAIT_MS);
       expect(await usage()).toEqual({ fails: 0, error: null });
       expect(await told()).toBe(0);
       expect(await sqlIn(r.stub, "SELECT * FROM archive_segments")).toEqual([]);
@@ -647,7 +645,7 @@ describe("the archive lane", () => {
         held.release();
       }
     }
-  }, 60_000);
+  });
 
   it("keeps a segment a purge's rewrite makes again byte for byte, its content still held",
      async () => {
@@ -685,7 +683,7 @@ describe("the archive lane", () => {
     expect(await sqlIn(r.stub, "SELECT segment FROM archive_segments WHERE content_id NOT IN " +
                        "(SELECT content_id FROM file_contents)")).toEqual([]);
     expect((await chained(r, kept.message_id)) === big("a")).toBe(true);
-  }, 120_000);
+  });
 
   it("aborts a move whose batch changed between its units, the mail kept hot", async () => {
     const r = await rig(ARCHIVING);
@@ -811,7 +809,7 @@ describe("segments never overlap in key range (review H1)", () => {
     }
     await insert(10_000, 10_001);  // past every key: disjoint, taken
     expect(await overlaps(r)).toEqual([]);
-  }, 60_000);
+  });
 
   it("stay disjoint, and every message readable by its chain, through two deletions " +
      "(the reviewer's case)", async () => {
@@ -850,7 +848,7 @@ describe("segments never overlap in key range (review H1)", () => {
       expect((await failure(() => r.stub.mailChain(r.bind(null), {
         message_id: ids[seq - 1]!, limit: 10 }))).message).toBe("no such message held");
     }
-  }, 120_000);
+  });
 
   it("merges a straggler (acked after the mail around it moved) into the segment its key " +
      "falls in", async () => {
@@ -874,12 +872,12 @@ describe("segments never overlap in key range (review H1)", () => {
                              first.message_id);
     expect(held).toEqual([]);
     expect(await chained(r, first.message_id)).toBe("late");
-  }, 60_000);
+  });
 });
 
 describe("a merge's byte budget (reviews N1 and N3)", () => {
   it("merges large late-acked mail a budget at a pass, never all at once, every message kept",
-     async () => {
+     { tags: ["large"] }, async () => {
     const big = env.BIGARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
     const bigLimits = { ...LEDGER_LIMITS, maxMessages: 12, maxUnacked: 6, archiveRecords: 6 };
     const r = await rig(big);
@@ -928,7 +926,7 @@ describe("a merge's byte budget (reviews N1 and N3)", () => {
       expect(bodies.get(id)?.length).toBe(7 * 1024 * 1024);
       expect(bodies.get(id)?.[0]).toBe(`${n}`);
     }
-  }, 180_000);
+  });
 });
 
 describe("an export across a move (review H2)", () => {
@@ -1012,12 +1010,12 @@ describe("an export across a move (review H2)", () => {
     const bodies = Object.values(atE["message_bodies"]!).map((row) =>
       (JSON.parse(row) as Record<string, unknown>)["body"]).sort();
     expect(bodies).toEqual(ids.map((_id, i) => `body ${i}`).sort());
-  }, 60_000);
+  });
 });
 
 describe("a body of control characters (review N3)", () => {
   it("moves as its own bytes, reads back byte-exact by its chain, and exports whole",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await rig(ARCHIVING);
     const muse = await r.register(MUSE);
     // The reviewer's message: a body at the cap, every byte a control character (which JSON
@@ -1045,14 +1043,12 @@ describe("a body of control characters (review N3)", () => {
     expect(exported!["message_bodies"]!["body"] === body).toBe(true);
     expect(exported!["message_bodies"]).toMatchObject({ body_bytes: BODY_BYTES_MAX,
                                                        content_id: null });
-    // Measured at 26.9 s alone and 31.3 s in the owner leg (2026-11-04, four cores): 300 s
-    // is about ten times its slowest run, so a slower runner's leg keeps a margin.
-  }, 300_000);
+  });
 });
 
 describe("the worst merge (review N3)", () => {
   it("merges a straggler into pack's largest piece, every body control characters, intact",
-     async () => {
+     { tags: ["large"] }, async () => {
     const big = env.BIGARCHIVING as unknown as DurableObjectNamespace<OwnerDO>;
     const r = await rig(big);
     const muse = await r.register(MUSE);
@@ -1124,7 +1120,7 @@ describe("the worst merge (review N3)", () => {
     // And the chain read answers each, its first answer cut to fit.
     const page = await r.stub.mailChain(r.bind(null), { message_id: k1.message_id, limit: 10 });
     expect(page.messages[0]).toMatchObject({ message_id: k1.message_id, truncated: true });
-  }, 300_000);
+  });
 });
 
 describe("the archive lane's failures (review N3)", () => {
@@ -1227,7 +1223,7 @@ describe("the archive lane's failures (review N3)", () => {
 
 describe("the tail's seal at the production limits (review N4)", () => {
   it("counts records' own bytes, never their trailer shares: a sealed segment holds the least",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const seen = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
@@ -1279,7 +1275,7 @@ describe("the tail's seal at the production limits (review N4)", () => {
     expect(seen.size).toBeGreaterThanOrEqual(LEDGER_LIMITS.archiveBytes);
     expect(seen.records).toBeGreaterThanOrEqual(LEDGER_LIMITS.archiveBytes);
     expect(seen.records).toBeLessThan(LEDGER_LIMITS.archiveBytes + seen.largest);
-  }, 300_000);
+  });
 });
 
 describe("a purge's rewrite, bounded a pass (review N7)", () => {
@@ -1351,7 +1347,7 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
   };
 
   it("finishes nine in ten of a run's mail deleted over several passes, each bounded, " +
-     "byte-exact", async () => {
+     "byte-exact", { tags: ["large"] }, async () => {
     const { r, muse, kept } = await build(120, 10, 860 * 1024);
     const { before, passes, after } = await purge(r, muse);
     expect(before.length).toBeGreaterThanOrEqual(8);
@@ -1366,10 +1362,10 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
     for (const [id, body] of kept) {
       expect((await chained(r, id)) === body).toBe(true);
     }
-  }, 600_000);
+  });
 
   it("completes a purge of an agent with nearly all the mail (19 in 20): what is left " +
-     "stands alone, byte-exact", async () => {
+     "stands alone, byte-exact", { tags: ["large"] }, async () => {
     const { r, muse, kept } = await build(200, 20, 430 * 1024);
     const { before, passes, after } = await purge(r, muse);
     expect(before.length).toBeGreaterThanOrEqual(8);
@@ -1381,11 +1377,11 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
     for (const [id, body] of kept) {
       expect((await chained(r, id)) === body).toBe(true);
     }
-  }, 600_000);
+  });
 });
 
 describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve)", () => {
-  it("keeps pace: a pass moves mail whenever it is due, a rewrite or not", async () => {
+  it("keeps pace: a pass moves mail whenever it is due, a rewrite or not", { tags: ["large"] }, async () => {
     const MIB = 1024 * 1024;
     const purging = env.PURGING as unknown as DurableObjectNamespace<OwnerDO>;
     const r = await rig(purging);
@@ -1458,7 +1454,7 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
     expect(moves.lastIndexOf("r")).toBeGreaterThan(1);
     expect(answers.filter((answer) => answer !== "ok")).toEqual([]);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_purges")).toEqual([{ n: 0 }]);
-  }, 600_000);
+  });
 });
 
 describe("a full owner's archive (review M1)", () => {
@@ -1558,7 +1554,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
 
   it("reads and writes the same rows for a post at 1 and at 49,999 hot (never a scan), " +
      "and at the hot ceiling tells a post busy until one lane pass moves a segment sealed " +
-     "by its bytes, then lands it, nothing lost", async () => {
+     "by its bytes, then lands it, nothing lost", { tags: ["large"] }, async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
@@ -1649,11 +1645,11 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
     const moved = ranges.at(-1)!.last_key;
     expect(hot).toEqual([{ first: moved + 1, last: maxMessages + 1, n: maxMessages + 1 - moved,
                   ids: maxMessages + 1 - moved }]);
-  }, 600_000);
+  });
 
   it("reads and writes the same rows for a post at 1 and at 24,999 unread; at its unread " +
      "ceiling refuses a post as full, naming who holds the most; acking one makes room for " +
-     "exactly one", async () => {
+     "exactly one", { tags: ["large"] }, async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
@@ -1705,5 +1701,5 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
     expect(seen.full).toContain(`the most for Muse (${held(muse)}), Dot (${held(dot)})`);
     expect(seen.landed).toBeNull();
     expect(seen.again).toMatch(/^ledger_full:/);
-  }, 600_000);
+  });
 });

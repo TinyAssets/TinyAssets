@@ -26,7 +26,7 @@ describe("the CPU guards' clock", () => {
     expect(wall).toBeGreaterThanOrEqual(450);
     // The thread only waited: well under the half-second the other thread spun.
     expect(ms).toBeLessThan(150);
-  }, 30_000);
+  });
 
   it("counts its own thread's work", () => {
     // Spun until the process has spent 200 ms of CPU, not for 200 ms of wall time: on a

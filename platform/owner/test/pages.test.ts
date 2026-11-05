@@ -58,7 +58,7 @@ describe("the exact count", () => {
 
 describe("a read's pages", () => {
   it("answers the reviewer's 8 MiB control-character body in pages under the cap, " +
-     "reassembled byte-exact by range", async () => {
+     "reassembled byte-exact by range", { tags: ["large"] }, async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const body = SHAPES["control"]!.repeat(8 * MIB);
@@ -82,9 +82,9 @@ describe("a read's pages", () => {
     // Acknowledged, the next message is the page's first.
     await r.ack(MUSE, first.messages[0]!.seq);
     expect((await r.read(MUSE)).messages.map((m) => m.body)).toEqual(["after"]);
-  }, 300_000);
+  });
 
-  it("reads a row of each escape class whole by range, cut only at characters", async () => {
+  it("reads a row of each escape class whole by range, cut only at characters", { tags: ["large"] }, async () => {
     const { stub, as, name } = ownerObject();
     for (const [shape, ch] of Object.entries(SHAPES)) {
       const body = ch.repeat(Math.floor(MIB / 2 / utf8Length(ch)));
@@ -104,7 +104,7 @@ describe("a read's pages", () => {
     expect((await failure(() => stub.collectionGet(as(name), {
       collection: "board", row_id: "pair", body_offset: 6, etag: cut.row!.etag }))).message)
       .toMatch(/^body_offset is inside a character/);
-  }, 300_000);
+  });
 
   it("refuses a read on by range of a row written since, by its etag", async () => {
     const { stub, as, name } = ownerObject();
@@ -152,7 +152,7 @@ describe("a read's pages", () => {
     const later = await stub.boardDigest(as(name), { limit: 10, after: digest.cursor,
                                                      head_chars: 5000 });
     expect(later.rows.map((row) => row.row_id)).toEqual(["t2"]);
-  }, 120_000);
+  });
 
   it("holds file_read and fetch to one answer, read on by next_offset", async () => {
     const r = await rig();
@@ -171,7 +171,7 @@ describe("a read's pages", () => {
     const fetched = await r.stub.fileFetch(r.bind(null), { id: "/workspace/big.md" });
     expect(bytes(fetched)).toBeLessThanOrEqual(RESULT_CHARS);
     expect(fetched.metadata).toMatchObject({ truncated: true });
-  }, 120_000);
+  });
 
   it("counts a cut body's fields at their widest, so its last part never passes (L1)", () => {
     // A body of four-digit size whose rest fills the room exactly.

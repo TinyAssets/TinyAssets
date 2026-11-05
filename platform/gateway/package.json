@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run --tags-filter=!large"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.129.0",

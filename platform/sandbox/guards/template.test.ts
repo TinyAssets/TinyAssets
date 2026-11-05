@@ -125,7 +125,7 @@ describe("the template", () => {
     expect(pinned()).toBe(`tinyassets-sandbox:${tag()}`);
     expect(execFileSync("python3", [join(TEMPLATE, "build.py"), "--tag-only"],
                         { encoding: "utf8" }).trim()).toBe(`tinyassets-sandbox:${tag()}`);
-  }, 60_000);
+  });
 
   it("takes no runner input: a change to the runner's code is no new template", () => {
     // The platform's template inputs and the runner's code copied, the runner's changed.
@@ -149,7 +149,7 @@ describe("the template", () => {
     // What `src/runner-bytes.ts` imports is this build's own output.
     expect(readFileSync(join(PLATFORM, "sandbox", "dist", "runner.mjs")).equals(once))
       .toBe(true);
-  }, 60_000);
+  });
 
   it("is pinned only once it passed its standing checks (review L-b)", () => {
     const passed = JSON.parse(readFileSync(join(TEMPLATE, "passed.json"), "utf8")) as Passed[];

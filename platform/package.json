@@ -8,7 +8,8 @@
     "doors",
     "gateway",
     "hooks",
-    "sandbox"
+    "sandbox",
+    "ci"
   ],
   "scripts": {
     "test": "npm run test --workspaces",
