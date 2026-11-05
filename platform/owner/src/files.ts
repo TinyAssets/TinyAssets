@@ -162,6 +162,8 @@ export const MAX_LIST = 1000;
 export const MAX_INTENT_CHUNKS = 10_000;
 /** Open upload intents, and the chunks they hold in all. */
 export const MAX_OPEN_INTENTS = 64;
+/** An upload intent's id: this many random bytes, as hex. */
+export const INTENT_ID_BYTES = 16;
 export const MAX_HELD_CHUNKS = 20_000;
 /** Ops in one sync commit. */
 export const MAX_SYNC_OPS = 1000;
@@ -1612,7 +1614,7 @@ export class Files {
       }
       wanted.set(sha256, plan[index]!);
     });
-    const intentId = randomBytes(16).toString("hex");
+    const intentId = randomBytes(INTENT_ID_BYTES).toString("hex");
     const outerPast = this.#pastFigure;
     this.#pastFigure = pastFigure;
     try {
