@@ -78,16 +78,26 @@ function gitIgnores(lines: readonly string[], paths: readonly string[]):
     }
   };
   walk("");
-  const git = spawnSync("git", ["-C", repo, "-c", "core.excludesFile=/dev/null", "check-ignore",
-                                "--stdin", "-z"], { input: all.map(([path]) => path).join("\0"),
-                                                    env: ENV, encoding: "utf8",
-                                                    maxBuffer: 1 << 30 });
+  const ignored = checkIgnore(repo, all.map(([path]) => path), []);
   rmSync(repo, { recursive: true, force: true });
-  // Its answers whole, or none: a cut output (past `maxBuffer`) would read as "not ignored".
+  return { all, ignored };
+}
+
+/**
+ * What `git check-ignore` says of `paths` in `repo`, whole or not at all: a cut output (past
+ * `maxBuffer`) or a failed run would read as "not ignored", so either throws.
+ */
+function checkIgnore(repo: string, paths: readonly string[], flags: readonly string[]):
+    Set<string> {
+  const git = spawnSync("git", ["-C", repo, "-c", "core.excludesFile=/dev/null", "check-ignore",
+                                ...flags, "--stdin", "-z"],
+                        { input: paths.join("\0"), env: ENV, encoding: "utf8",
+                          maxBuffer: 1 << 30 });
+  // 0: some ignored; 1: none.
   if (git.error !== undefined || git.status === null || git.status > 1) {
     throw new Error(`git check-ignore failed: ${git.error ?? git.stderr}`);
   }
-  return { all, ignored: new Set(git.stdout.split("\0").filter(Boolean)) };
+  return new Set(git.stdout.split("\0").filter(Boolean));
 }
 
 /** Paths a template's lines name, made concrete, at the top and below a folder. */
@@ -302,11 +312,8 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
       const repo = mkdtempSync(join(scratch, "h-"));
       execFileSync("git", ["init", "-q", repo], { env: ENV });
       writeFileSync(join(repo, ".gitignore"), applied.join("\n"));
-      const answer = spawnSync("git", ["-C", repo, "-c", "core.excludesFile=/dev/null",
-                                       "check-ignore", "--no-index", "--stdin", "-z"],
-                               { input: asked.join("\0"), env: ENV, encoding: "utf8" });
+      ignored = checkIgnore(repo, asked, ["--no-index"]);
       rmSync(repo, { recursive: true, force: true });
-      ignored = new Set(answer.stdout.split("\0").filter(Boolean));
     }
     const matcher = ignoredBy(lines);
     expect(asked.filter((each) => ignored.has(each) !== (matcher(each) !== null))).toEqual([]);
