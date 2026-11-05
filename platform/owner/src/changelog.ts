@@ -43,8 +43,6 @@ export const LOG_ROW_BYTES = 64;
 export const IMAGE_MAX = 1536 * 1024;
 /** What the log holds in place of an image past `IMAGE_MAX`. */
 export const LOG_WIDE = '{"t":"wide"}';
-/** What one log line adds to a segment past its stored text: its seq. */
-const SEQ_BYTES = 32;
 
 /** The capture's one row. */
 export type Capture = {
@@ -102,7 +100,9 @@ export class ChangeLog {
   /**
    * In a unit: the segment to ship next, at most `through` (the log's end once known): the
    * one pending, else the unshipped seqs after `shipped`, whole lines to a part's size at
-   * most, recorded pending. Null when nothing is left to ship.
+   * most as the segment writes them (`writtenLine`: JSON may write a line wider than the
+   * log stored it, and a segment past a part could never be put: rvburst W2), recorded
+   * pending. Null when nothing is left to ship.
    */
   pending(through: number): { a: number; b: number } | null {
     const at = this.state();
@@ -111,13 +111,15 @@ export class ChangeLog {
     }
     let b = at.shipped;
     let size = 0;
-    for (const row of this.#sql.exec<{ seq: number; n: number }>(
-           "SELECT seq, length(CAST(line AS BLOB)) AS n FROM change_log WHERE seq > ? AND " +
-             "seq <= ? ORDER BY seq LIMIT 4096", at.shipped, through).toArray()) {
-      if (size > 0 && size + row.n + SEQ_BYTES > CHUNK_BYTES) {
+    for (const row of this.#sql.exec<{ seq: number; line: string }>(
+           "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq " +
+             "LIMIT 4096", at.shipped, through)) {
+      // Every line as written, kept or not: the segment keeps at most these.
+      const n = Buffer.byteLength(writtenLine(row.seq, row.line), "utf8") + 1;
+      if (size > 0 && size + n > CHUNK_BYTES) {
         break;
       }
-      size += row.n + SEQ_BYTES;
+      size += n;
       b = row.seq;
     }
     if (b === at.shipped) {
@@ -131,63 +133,45 @@ export class ChangeLog {
    * The segment's bytes: the log's lines after `a` through `b`, each with its seq, the last
    * line per (table, key) kept, in the order of those last seqs, a BLOB's hex turned base64
    * as the base writes it, each followed by its newline. Deterministic for the same rows, so
-   * a segment put again is the same bytes. Built without holding its lines (review rvburst
-   * V1: a mostly-ASCII line with one character past U+00FF is a two-byte string in V8, twice
-   * its UTF-8): a first pass keeps each key's last seq and counts the stored bytes, and a
-   * second, in seq order, sizes the kept rows as written and then encodes them straight
-   * into one buffer of exactly those bytes, allocated once and at most a part (past it the
-   * build fails, as the files Worker would), one row's text at a time (`holds.ts`'s `SHIP_BYTES` derives the most this holds). `sample`, the memory
-   * leg's, is awaited at the widest kept row's encode, its stored text, parsed value and
-   * JSON all in hand. A read.
+   * a segment put again is the same bytes. Built without holding its lines (rvburst V1, W1):
+   * SQLite finds each key's last seq (`keyOf`), and each kept row's line is then read once,
+   * alone by its seq, written and encoded straight into one buffer of a part, allocated once
+   * and never grown (`pending` sizes the span by its lines as written, so they fit it), one
+   * row's text at a time (`holds.ts`'s `SHIP_BYTES` derives the most this holds). `sample`,
+   * the memory leg's, is awaited at the widest kept row's encode, its stored text and its
+   * JSON in hand. A read.
    */
   async segment(a: number, b: number, sample?: () => Promise<void>): Promise<Uint8Array> {
-    const tables = exported();
-    const rows = () => this.#sql.exec<{ seq: number; line: string }>(
-      "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq", a, b);
-    const last = new Map<string, { seq: number; bytes: number }>();
-    for (const row of rows()) {
-      const line = parsed(row.line);
-      const shape = tables[line.table]!;
-      const key = line.t === "row" ? shape.key.map((column) => line.row![column]) : line.key!;
-      last.set(JSON.stringify([line.table, key]),
-               { seq: row.seq, bytes: Buffer.byteLength(row.line, "utf8") });
+    // Each key's last seq, and its stored bytes, found by SQLite (its key columns read by
+    // `json_extract`): no line read into the isolate for it (rvburst W1).
+    const kept = this.#sql.exec<{ seq: number; n: number }>(
+      "SELECT max(seq) AS seq, n FROM (SELECT seq, length(CAST(line AS BLOB)) AS n, " +
+        `json_extract(line, '$.table') AS tbl, ${keyOf()} AS k FROM change_log WHERE seq > ? ` +
+        "AND seq <= ?) GROUP BY tbl, k ORDER BY seq", a, b).toArray();
+    const wide = this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM change_log WHERE seq > ? AND seq <= ? AND " +
+        "json_extract(line, '$.t') NOT IN ('row', 'gone')", a, b).one().n;
+    if (wide > 0) {
+      throw new Error("a change log line too wide to keep: the generation fails");
     }
-    const kept = new Set<number>();
-    let widest = { seq: -1, bytes: -1 };
-    for (const each of last.values()) {
-      kept.add(each.seq);
-      widest = each.bytes > widest.bytes ? each : widest;
+    let widest = { seq: -1, n: -1 };
+    for (const each of kept) {
+      widest = each.n > widest.n ? each : widest;
     }
-    last.clear();
-    /** Each kept row as the segment writes it, in seq order, one at a time. */
-    function* written(): Generator<{ seq: number; stored: string; text: string }> {
-      for (const row of rows()) {
-        if (!kept.has(row.seq)) {
-          continue;
-        }
-        const line = parsed(row.line);
-        if (line.t === "row" && line.table === "file_contents"
-            && typeof line.row!["inline"] === "string") {
-          line.row!["inline"] = {
-            $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
-        }
-        yield { seq: row.seq, stored: row.line, text: JSON.stringify({ ...line, seq: row.seq }) };
-      }
-    }
-    // Its exact bytes first, so its one buffer is allocated once and never grown: JSON may
-    // write a line wider than the log stored it (a number SQLite wrote with an exponent).
-    // Past a part no buffer is made: the files Worker takes no segment past `CHUNK_BYTES`.
-    let size = 0;
-    for (const { text } of written()) {
-      size += Buffer.byteLength(text, "utf8") + 1;
-    }
-    if (size > CHUNK_BYTES) {
-      throw new Error(`a log segment is ${size} bytes as written, past a part (${CHUNK_BYTES})`);
-    }
+    // One buffer of a part, allocated once and never grown: `pending` sizes the span by its
+    // lines as written, so the kept rows fit it; each kept row's line is read once, alone
+    // by its seq, written and encoded straight in.
     const encoder = new TextEncoder();
-    const out = new Uint8Array(size);
+    const out = new Uint8Array(CHUNK_BYTES);
     let at = 0;
-    for (const { seq, stored, text } of written()) {
+    for (const { seq } of kept) {
+      const stored = this.#sql.exec<{ line: string }>(
+        "SELECT line FROM change_log WHERE seq = ?", seq).one().line;
+      const text = writtenLine(seq, stored);
+      const size = Buffer.byteLength(text, "utf8") + 1;
+      if (at + size > out.byteLength) {
+        throw new Error(`a log segment is past a part (${CHUNK_BYTES}) as written`);
+      }
       at += encoder.encodeInto(text, out.subarray(at)).written;
       out[at++] = 0x0a;
       if (sample !== undefined && seq === widest.seq) {
@@ -197,10 +181,7 @@ export class ChangeLog {
         }
       }
     }
-    if (at !== size) {
-      throw new Error("a log segment's lines are not the bytes they were counted at");
-    }
-    return out;
+    return out.subarray(0, at);
   }
 
   /** In a unit: the segment through `b` acknowledged: shipped, and its lines gone. */
@@ -208,6 +189,32 @@ export class ChangeLog {
     this.#sql.exec("UPDATE log_capture SET shipped = ?, pending_a = NULL, pending_b = NULL", b);
     this.#sql.exec("DELETE FROM change_log WHERE seq <= ?", b);
   }
+}
+
+/**
+ * A log line as a segment writes it: its seq added, a BLOB's hex turned base64 as the base
+ * writes it.
+ */
+function writtenLine(seq: number, stored: string): string {
+  const line = parsed(stored);
+  if (line.t === "row" && line.table === "file_contents"
+      && typeof line.row!["inline"] === "string") {
+    line.row!["inline"] = {
+      $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
+  }
+  return JSON.stringify({ ...line, seq });
+}
+
+/**
+ * A log line's key as SQLite reads it (`json_extract`), canonical JSON: a gone line's own,
+ * else its table's key columns from its row, as the triggers write both.
+ */
+function keyOf(): string {
+  const tables = Object.entries(exported()).map(([name, { key }]) =>
+    `WHEN '${name}' THEN json_array(${key.map((column) =>
+      `json_extract(line, '$.row.${column}')`).join(", ")})`);
+  return "CASE WHEN json_extract(line, '$.t') = 'gone' THEN json(json_extract(line, '$.key')) " +
+    `ELSE CASE json_extract(line, '$.table') ${tables.join(" ")} END END`;
 }
 
 /** A change log line, parsed: a row or a gone line, else the generation fails loudly. */

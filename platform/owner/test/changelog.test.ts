@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { MANIFEST_LOG_OVERFLOW } from "../src/backup";
 import { ChangeLog, IMAGE_MAX, LOG_BYTES, LOG_WIDE } from "../src/changelog";
 import { exported } from "../src/export";
-import { INLINE_BYTES } from "../src/files";
+import { CHUNK_BYTES, INLINE_BYTES } from "../src/files";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { LOGGED } from "../src/schema";
@@ -90,8 +90,8 @@ describe("a log segment's build", () => {
     expect(made).toEqual([0, 0, 0]);
   });
 
-  it("allocates its one buffer once, exactly its bytes as written, though JSON writes a " +
-     "number SQLite stored with an exponent wider (the log's own bytes undercount it)",
+  it("allocates its one buffer once, a part, never grown, though JSON writes a number " +
+     "SQLite stored with an exponent wider (the log's own bytes undercount it)",
      async () => {
     const o = await owner();
     const made = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
@@ -114,9 +114,38 @@ describe("a log segment's build", () => {
                same: Buffer.compare(Buffer.from(built), Buffer.from(replacedSegment(rows))) };
     });
     expect(made.bytes).toBeGreaterThan(made.stored + 200 * 32);  // wider than stored and seq
-    expect(made.buffer).toBe(made.bytes);  // one buffer, its own bytes: never grown
+    expect(made.buffer).toBe(CHUNK_BYTES);  // one buffer, a part: never grown
     expect(made.same).toBe(0);
   });
+
+  it("ships a log full of large REAL values a part at most each, every line shipped: never a " +
+     "span whose segment as written is past a part (rvburst W2)", async () => {
+    const o = await owner();
+    const shipped = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      const log = new ChangeLog(state.storage);
+      log.begin("0123456789abcdef");
+      // 4,000 lines of a hundred numbers SQLite writes with an exponent: 1.0e+20, 21 digits
+      // as JSON, so each line as written is about twice its stored bytes.
+      const numbers = Array.from({ length: 100 }, (_, n) => `"f${n}":1.0e+20`).join(",");
+      for (let n = 1; n <= 4000; n++) {
+        sql.exec("INSERT INTO change_log (line) VALUES (?)",
+                 `{"t":"row","table":"model_reservations","row":{"seq":${n},${numbers}}}`);
+      }
+      const { last } = log.state();
+      const sizes: number[] = [];
+      for (let span = log.pending(last); span !== null; span = log.pending(last)) {
+        const bytes = await log.segment(span.a, span.b);
+        sizes.push(bytes.byteLength);
+        log.acknowledge(span.b);
+      }
+      return { sizes, shipped: log.state().shipped, last,
+               left: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM change_log").one().n };
+    });
+    expect(shipped.sizes.length).toBeGreaterThan(1);
+    expect(Math.max(...shipped.sizes)).toBeLessThanOrEqual(CHUNK_BYTES);
+    expect(shipped).toMatchObject({ shipped: shipped.last, left: 0 });
+  }, 120_000);
 });
 
 describe("the change log", () => {

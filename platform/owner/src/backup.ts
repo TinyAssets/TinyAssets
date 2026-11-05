@@ -42,7 +42,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import type { ChangeLog } from "./changelog";
 import {
-  chunkLine, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES, type Lines,
+  chunkLine, type Cursor, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES,
+  type Lines,
   readPage,
 } from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
@@ -545,10 +546,10 @@ export class Backups {
    * again after a crash needs, and which the root never names. Whether every seq through
    * `through` is shipped; null once past `MANIFEST_PARTS`. Each segment built and put holding
    * `SHIP_UNITS` of the pool, now or refused `busy` (the lane goes on after
-   * `MANIFEST_BUSY_RETRY_S`), but `inBurst`, whose units hold it already.
+   * `MANIFEST_BUSY_RETRY_S`); never inside a burst, which holds its parts meanwhile.
    */
   async #ship(ns: string, key: string, row: GenerationRow, through: number, until: number,
-              cut: number | null = null, inBurst = false): Promise<boolean | null> {
+              cut: number | null = null): Promise<boolean | null> {
     const log = this.#parts.log;
     const pool = this.#pool;
     while (log.state().shipped < through) {
@@ -560,14 +561,15 @@ export class Backups {
         return null;
       }
       const shipped = log.state().shipped;
-      const span = await this.#write(() => log.pending(
-        cut !== null && shipped < cut ? Math.min(through, cut) : through));
-      if (span === null) {
-        return true;
-      }
-      const slot = inBurst ? null : await unitsNow(pool, SHIP_UNITS);
+      // Its units before `pending` sizes it, which writes each candidate line once.
+      const slot = await unitsNow(pool, SHIP_UNITS);
       try {
-        const bytes = await this.#segment(span.a, span.b, inBurst ? BURST_UNITS : SHIP_UNITS);
+        const span = await this.#write(() => log.pending(
+          cut !== null && shipped < cut ? Math.min(through, cut) : through));
+        if (span === null) {
+          return true;
+        }
+        const bytes = await this.#segment(span.a, span.b, SHIP_UNITS);
         const put = await this.#parts.store.putManifestSegment(ns, key, row.gen, span.a, span.b,
                                                                bytes);
         const entry = `${span.a}-${span.b}:${put.sha256}:${put.size}`;
@@ -579,7 +581,7 @@ export class Backups {
           log.acknowledge(span.b);
         }));
       } finally {
-        slot?.release();
+        slot.release();
       }
     }
     return true;
@@ -598,6 +600,34 @@ export class Backups {
       await observe(units);
     }
     return bytes;
+  }
+
+  /**
+   * One base page from `cursor`, read in a unit of its own (the unit that reads the last
+   * fixes E, the log's last seq then) and encoded outside it (`encodeLines`), in a frame of
+   * its own so its text is let go once encoded; the memory leg samples it encoded, its text
+   * and its bytes both in hand (rvburst W1).
+   */
+  async #page(at: GenerationRow, cursor: string | null, pageBytes: number):
+      Promise<{ lines: Lines[]; next: Cursor | null; last: number | null; at: number }> {
+    const log = this.#parts.log;
+    const page = await this.#write(() => {
+      const read = readPage(this.#sql, decodeCursor(cursor),
+                            { schema: this.#parts.schema, owner: this.#parts.owner(),
+                              at: Date.now(), gen: at.gen, s: at.s },
+                            Number.MAX_SAFE_INTEGER, pageBytes);
+      return { read, last: read.next === null ? log.state().last : null, at: Date.now() };
+    });
+    const encoded = encodeLines(page.read.lines);
+    const pool = this.#pool;
+    if (pool.observe !== null) {
+      await pool.observe(BURST_UNITS);
+      if (page.read.lines.length === 0 && encoded.bytes.byteLength > 0) {
+        throw new Error("a page's bytes without its lines");  // its text held to here
+      }
+    }
+    return { lines: [encoded, encodeLines(page.read.chunks.map(chunkLine))],
+             next: page.read.next, last: page.last, at: page.at };
   }
 
   /** The pool the lane's holds take their units of. */
@@ -678,24 +708,17 @@ export class Backups {
         let endedAt = 0;
         const sizes = this.#parts.sizes ?? GENERATION_SIZES;
         while (size < sizes.gather) {
-          const cursor = next;
-          const page = await this.#write(() => {
-            const read = readPage(this.#sql, decodeCursor(cursor),
-                                  { schema: this.#parts.schema, owner: this.#parts.owner(),
-                                    at: Date.now(), gen: at.gen, s: at.s },
-                                  Number.MAX_SAFE_INTEGER, sizes.page);
-            return { read, last: read.next === null ? log.state().last : null, at: Date.now() };
-          });
-          for (const each of [page.read.lines, encodeLines(page.read.chunks.map(chunkLine))]) {
+          const page = await this.#page(at, next, sizes.page);
+          for (const each of page.lines) {
             lines.push(each);
             size += each.bytes.byteLength;
           }
-          if (page.read.next === null) {
+          if (page.next === null) {
             e = page.last;
             endedAt = page.at;
             break;
           }
-          next = encodeCursor(page.read.next);
+          next = encodeCursor(page.next);
         }
         // Parts of whole lines, at most a chunk each, so an export streams them as they are.
         const parts = cutParts(lines, sizes.part);
@@ -718,14 +741,11 @@ export class Backups {
           if (this.#parts.halted()) {
             return true;
           }
+          // No segment is built between them: the log a burst's puts leave is shipped once
+          // its parts are recorded and let go, under its own hold (rvburst W1), so a burst
+          // never holds its parts and a segment's build at once.
           written.push(await this.#parts.store.putManifestPart(ns, key, at.gen,
                                                                at.parts + written.length, bytes));
-          // The log so far, shipped after each part (cut at E once fixed), so what an owner
-          // writes during one outside call is all the unshipped log ever waits on.
-          if (await this.#ship(ns, key, at, log.state().last, until, e, true) === null) {
-            await this.#abandon(ns, at, MANIFEST_CEILING);
-            return true;
-          }
         }
         const added = written.map((put) => `${put.sha256}:${put.size}`).join(",");
         await this.#write(() => this.#parts.storage.transactionSync(() => {
@@ -742,13 +762,15 @@ export class Backups {
             log.end(e);
           }
         }));
+        parts.length = 0;  // recorded: let go before the log ships
         if (pool.observe !== null) {
           await pool.observe(BURST_UNITS);
         }
       } finally {
         slot.release();
       }
-      // And the log written while the burst's parts were recorded, before the next burst.
+      // And the log written while the burst's parts were put and recorded, before the next
+      // burst, each segment under its own hold (cut at E once fixed).
       if (await this.#ship(ns, key, at, log.state().last, until, e) === null) {
         await this.#abandon(ns, at, MANIFEST_CEILING);
         return true;

@@ -109,8 +109,8 @@ export const MOVE_PASS_UNITS = 3;
 
 /**
  * A log segment's one buffer at most (`ChangeLog.segment`): exactly its bytes as written,
- * allocated once and never grown, and never past a part (`CHUNK_BYTES`: past it the build
- * fails before any buffer, as the files Worker refuses such a segment).
+ * allocated once and never grown, never past a part (`CHUNK_BYTES`): `pending` sizes it by
+ * its lines as written, so it always fits one.
  */
 export const SEGMENT_BUFFER_BYTES = CHUNK_BYTES;
 
@@ -128,8 +128,8 @@ export const SHIP_BYTES = SEGMENT_BUFFER_BYTES + SEGMENT_ROW_BYTES;
 /**
  * One log segment shipped outside a burst (`backup.ts` `#ship`: before a burst, after its
  * parts' record, and the log's last at the generation's end), its build at its most
- * (`SHIP_BYTES`) in whole units. Taken now or not at all around each segment's build, put
- * and acknowledgement; a ship inside a burst is inside the burst's units. The memory leg
+ * (`SHIP_BYTES`) in whole units. Taken now or not at all around each segment's sizing,
+ * build, put and acknowledgement; no segment is built inside a burst. The memory leg
  * holds every checkpoint within them, sampling the build at its widest row's encode ("a log
  * segment shipped outside a burst": a full segment with a row at `IMAGE_MAX`, one character
  * past U+00FF, among 1,000-character lines of the same mix, its put over RPC).
@@ -149,21 +149,40 @@ export const BURST_BYTES = BURST_GATHER_BYTES + EXPORT_PAGE_BYTES + IMAGE_MAX
   + EXPORT_READ_BATCH * CHUNK_LINE_BYTES;
 
 /**
- * A burst at the more of its two peaks (`BURST_UNITS`): its parts and a segment's build,
- * since a build (`SHIP_BYTES`) is past a burst's bytes, so past its pages at the cut too
- * (`memory-counts.test.ts` holds the order).
+ * One base page's build at its most (`readPage`, then `encodeLines` outside its unit): its
+ * lines as text, two bytes a character at worst (`EXPORT_PAGE_BYTES` of rows and the widest
+ * line that reached it, `IMAGE_MAX`), and then its one buffer beside them, encoded once and
+ * exactly (`EXPORT_PAGE_BYTES`, `IMAGE_MAX` and its chunk lines); or, as a row is read, its
+ * values (`IMAGE_MAX`, two bytes a character) beside the text so far. Its rows come a row at
+ * a time from the cursor, never a batch held whole (rvburst W1).
  */
-export const BURST_PEAK_BYTES = BURST_BYTES + SHIP_BYTES;
+export const PAGE_BUILD_BYTES = 2 * (EXPORT_PAGE_BYTES + IMAGE_MAX)
+  + (EXPORT_PAGE_BYTES + IMAGE_MAX + EXPORT_READ_BATCH * CHUNK_LINE_BYTES) + 2 * IMAGE_MAX;
+
+/** A burst at its cut: its pages and its parts. */
+export const BURST_CUT_BYTES = 2 * BURST_BYTES;
+/** A burst at its last page's build: the pages before it (under its gather) and the build. */
+export const BURST_PAGE_BYTES = BURST_GATHER_BYTES + PAGE_BUILD_BYTES;
+/**
+ * A burst at the more of its two peaks (`BURST_UNITS`), by arithmetic (a module binds no call
+ * or conditional): exact for whole bytes this size (`memory-counts.test.ts` holds it to the
+ * greater). It builds no log segment: its log ships once its parts are recorded and let go,
+ * under its own hold (`SHIP_UNITS`).
+ */
+export const BURST_PEAK_BYTES = (BURST_CUT_BYTES + BURST_PAGE_BYTES
+  + ((BURST_CUT_BYTES - BURST_PAGE_BYTES) ** 2) ** 0.5) / 2;
 
 /**
  * A generation's burst (`backup.ts`, the manifest lane), in whole units, at the more of its
- * two peaks: at its cut, its pages and its parts (twice `BURST_BYTES`); between its parts'
- * puts, its parts (the pages let go once cut) and a log segment's build (`SHIP_BYTES`).
- * Taken now or not at all, from its first page to its last part's put (inside the alarm a
- * lane never waits on the pool), so every object's burst is inside the pool. The memory
- * leg holds every checkpoint within them (a burst of the smallest lines, an owner's write
- * during a part's put shipping a full segment inside it with a row at `IMAGE_MAX`, its
- * build sampled at that row's encode).
+ * two peaks: at its cut, its pages and its parts (`BURST_CUT_BYTES`); at its last page's
+ * build, the pages before it and the build (`BURST_PAGE_BYTES`). It builds no log segment
+ * while it holds its parts. Taken now or not at all, from its first page to its parts'
+ * record (inside the alarm a lane never waits on the pool), so every object's burst is
+ * inside the pool. The memory leg holds every checkpoint within them (rows at `IMAGE_MAX`,
+ * one character past U+00FF, on its first burst's pages, the last of them crossing its
+ * gather, each page sampled encoded; then a burst of the smallest lines, an owner's write
+ * during a part's put leaving a full segment of those rows to ship once its parts are let
+ * go).
  */
 export const BURST_UNITS = (BURST_PEAK_BYTES + UNIT_BYTES - 1
   - ((BURST_PEAK_BYTES + UNIT_BYTES - 1) % UNIT_BYTES)) / UNIT_BYTES;  // rounded up
