@@ -41,13 +41,15 @@
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that
  *   the API says does not exist yet; the kit never makes a secret's value. The keyrings
  *   and `ROUTING_MAC_KEY` come from the secret store like the rest (`keyring-new` makes the
- *   first keyring, which platform-setup.yml stores); a held one is never replaced, unless
+ *   first keyring; scripts/platform_setup.py stores one); a held one is never replaced, unless
  *   `--rotate` names it, and a keyring is rotated only by adding a key (the new keyring
  *   must hold two or more keys, the active one among them). Cloudflare never shows a held
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
  *   POST; never a delete);
+ * - E2B's lifecycle webhook is registered, disabled, only when E2B's listing lacks it, its
+ *   secret set again on every apply, and enabled only by `--routes` (`lifecycleHook`);
  * - the owner Worker is deployed only when the migration lock (`owner/migrations.json`)
  *   marks the first deploy and pins every migration the code ships, in order
  *   (`lockRefusal`): pin with `PIN_MIGRATIONS=<commit>` (`owner/guards/migrations.test.ts`)
@@ -108,6 +110,7 @@ const OPTIONAL: readonly string[] = Object.freeze(["INBOUND_SLACK_SIGNING_SECRET
 /** The doors' public routes (`--routes`, the cutover's), on the tinyassets.io zone. */
 export const ROUTES: readonly string[] = Object.freeze([
   "tinyassets.io/mcp*", "tinyassets.io/api/*", "tinyassets.io/hooks/inbound/*",
+  "tinyassets.io/hooks/e2b/*",
   "tinyassets.io/app/api/*", "tinyassets.io/authorize*", "tinyassets.io/oauth/*",
   "tinyassets.io/.well-known/oauth-*",
 ]);
@@ -128,6 +131,15 @@ const WORKOS_API = "https://api.workos.com";
 const CF_API = "https://api.cloudflare.com/client/v4";
 /** E2B's platform API (`sandbox/src/e2b.ts`'s), its OpenAPI spec read 2026-11-03. */
 const E2B_API = "https://api.e2b.app";
+/**
+ * E2B's sandbox lifecycle webhook, the doors' one E2B hook (`doors/src/e2b-hooks.ts`), its
+ * API read in e2b-dev/infra's `spec/openapi.yml` (2026-11-04): `GET` and `POST
+ * /events/webhooks`, `PATCH /events/webhooks/{id}`.
+ */
+export const E2B_HOOK = Object.freeze({
+  name: "tinyassets-lifecycle", url: "https://tinyassets.io/hooks/e2b/lifecycle",
+  events: Object.freeze(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]),
+});
 /** The control record a first deploy writes when there is none: every outside door closed. */
 export const DARK_CONTROL = Object.freeze({
   outside: "off", ordinary: "canary", canary: [], inbound: false,
@@ -629,6 +641,58 @@ export async function registerRedirect(key: string, apply: boolean, fetcher: Fet
   return "registered";
 }
 
+/**
+ * E2B's lifecycle webhook, matched by its URL. Missing, it is registered, disabled unless
+ * `enable`; held, its signature secret is set again to `secret` on every apply (E2B never
+ * shows a hook's secret, so the kit cannot compare, and setting it is the same either way),
+ * and it is enabled with `enable` (`--routes`, after the handover, once the doors serve its
+ * path). It is never disabled or deleted. A failed listing or write throws.
+ */
+export async function lifecycleHook(key: string, secret: string, apply: boolean,
+                                    enable: boolean, fetcher: Fetch = fetch): Promise<string> {
+  const headers = { "X-API-Key": key, "Content-Type": "application/json" };
+  const listed = await fetcher(`${E2B_API}/events/webhooks`, { headers });
+  if (listed.status !== 200) {
+    throw new Error(`E2B listed its webhooks with ${listed.status}`);
+  }
+  const hooks = await listed.json() as unknown;
+  if (!Array.isArray(hooks)) {
+    throw new Error("E2B's webhook listing holds no list");
+  }
+  const ours = hooks.filter((hook) => (hook as Json | null)?.["url"] === E2B_HOOK.url) as Json[];
+  if (ours.length > 1) {
+    throw new Error(`E2B holds ${ours.length} webhooks for ${E2B_HOOK.url}: keep one`);
+  }
+  const hook = ours[0];
+  if (hook === undefined) {
+    const state = enable ? "enabled" : "disabled";
+    if (!apply) {
+      return `missing: registered, ${state}`;
+    }
+    const made = await fetcher(`${E2B_API}/events/webhooks`, {
+      method: "POST", headers, body: JSON.stringify({
+        name: E2B_HOOK.name, url: E2B_HOOK.url, events: [...E2B_HOOK.events], enabled: enable,
+        signatureSecret: secret }) });
+    if (made.status !== 200 && made.status !== 201) {
+      throw new Error(`E2B refused the webhook with ${made.status}`);
+    }
+    return `registered, ${state}`;
+  }
+  const state = hook["enabled"] === true || enable ? "enabled" : "disabled";
+  const turnOn = enable && hook["enabled"] !== true;
+  if (!apply) {
+    return `present: its secret set again${turnOn ? ", then enabled" : `, ${state}`}`;
+  }
+  const changed = await fetcher(`${E2B_API}/events/webhooks/${
+    encodeURIComponent(String(hook["id"]))}`, {
+    method: "PATCH", headers, body: JSON.stringify({
+      signatureSecret: secret, ...(turnOn ? { enabled: true } : {}) }) });
+  if (changed.status !== 200) {
+    throw new Error(`E2B refused the webhook's change with ${changed.status}`);
+  }
+  return `its secret set again, ${state}`;
+}
+
 /** A keyring as the gateway and the files Worker hold it: `{active, keys}`, the active key among the keys. */
 export function keyring(text: string | undefined, name = "GATEWAY_KEYRING"):
     { active: string; keys: Record<string, string> } {
@@ -926,6 +990,15 @@ async function main(): Promise<void> {
     }
     plan.push(`WorkOS redirect URI ${CALLBACK}: ${open ? later
       : await registerRedirect(input("WORKOS_API_KEY")!, apply)}`);
+    // E2B's lifecycle webhook, after the doors hold E2B_WEBHOOK_SECRET: enabled only with
+    // the routes, once the doors serve its path.
+    const hook = () => lifecycleHook(input("E2B_API_KEY")!, input("E2B_WEBHOOK_SECRET")!,
+                                     apply, routes);
+    if (open) {
+      plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${later}`);
+    } else if (!routes) {
+      plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${await hook()}`);
+    }
     if (routes) {
       plan.push(...steps.map((step) => describeStep(step, DOORS)));
       plan.push(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
@@ -935,6 +1008,9 @@ async function main(): Promise<void> {
         writeFileSync(routed, JSON.stringify(deployedConfig("doors", ids, upstream, true),
                                              null, 2));
         wrangler(["triggers", "deploy", "--config", routed]);
+      }
+      if (!open) {
+        plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: ${await hook()}`);
       }
     }
   } finally {

@@ -20,7 +20,8 @@ name: Platform deploy (manual, founder-approved)
 # (tests/test_workflow_production_environment.py), and never from a host
 # (Direction 8). The kit never prints a value and never makes one in a
 # deploy; GATEWAY_KEYRING and FILES_KEYRING are each made once with `keyring-new`
-# (platform-setup.yml) and rotated with `keyring-add`, then stored here.
+# (scripts/platform_setup.py makes the same in memory) and rotated with `keyring-add`,
+# then stored here.
 #
 # Modes:
 #   plan    - the plan job alone

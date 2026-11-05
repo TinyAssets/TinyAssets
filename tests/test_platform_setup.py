@@ -1,34 +1,37 @@
-"""platform-setup.yml writes production secrets once, so its shape is held: dispatch only, on
-main, in `production`, one run at a time, each secret in the steps that use it alone, every
-action and package pinned, no token left in the checkout, the setup token deleted whatever
-happened, nothing printed. Its script (scripts/platform_setup.py) sets a name only where it
-is absent, against a fake of GitHub's and E2B's APIs. The review App's script
-(scripts/review_app_setup.py), run on the founder's own computer with their `gh`, is held
-against the same fake: a main-only `review` environment first, the key on stdin alone."""
+"""scripts/platform_setup.py runs once on the founder's own (Windows) computer with their
+own `gh`: every value is set only where it is absent, goes to gh on stdin alone (never an
+argv, the disk or the output), and the review App's code is turned in only after a
+main-only `review` environment exists. Held against a fake of GitHub's API reached through
+a fake `gh`, and once through real subprocess with a stand-in `gh` on PATH."""
 
 from __future__ import annotations
 
 import base64
 import importlib.util
-import io
 import json
+import os
 import re
-import zipfile
+import shutil
+import subprocess
+import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
-import yaml
 
 from scripts import platform_setup as setup
-from scripts import review_app_setup as review
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github/workflows/platform-setup.yml"
-LOCK = ROOT / "scripts/platform_setup.requirements.txt"
 PAGE = ROOT / "platform/deploy/review-app.html"
-REPO = "TinyAssets/TinyAssets"
-ISSUER = "https://unassuming-environment-16.authkit.app"
+DEPLOY = ROOT / "platform/deploy/deploy.ts"
+REPO = setup.REPO
+ISSUER = setup.OWNER_ISSUER
+CODE = "a180b1a3d263c81bc6441d7b990bae27d4c10679"
+PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n"
+
+pytestmark = pytest.mark.verifies(
+    "clean-sheet-platform:The owner's sign-in is the configured issuer's OpenID Connect flow"
+)
 
 
 def _production_guard():
@@ -40,179 +43,50 @@ def _production_guard():
     return module
 
 
-_guard = _production_guard()
-
-
-def _workflow() -> tuple[dict, dict]:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return workflow, workflow["jobs"]["setup"]
-
-
-def _steps() -> list[dict]:
-    return _workflow()[1]["steps"]
-
-
-# --- the workflow's shape ----------------------------------------------------------------
-
-
-def test_dispatch_only_on_main_in_production_one_at_a_time() -> None:
-    workflow, job = _workflow()
-    assert list(workflow.get("on", workflow.get(True))) == ["workflow_dispatch"]
-    assert set(workflow["jobs"]) == {"setup"}
-    assert job["if"] == "github.ref == 'refs/heads/main'"
-    assert job["environment"] == "production"
-    assert workflow["concurrency"] == {"group": "platform-setup", "cancel-in-progress": False}
-    assert workflow["permissions"] == {"contents": "read"}
-    assert "platform-setup.yml" in _guard._KNOWN_PRODUCTION_WORKFLOWS
-
-
-def test_each_secret_is_in_the_steps_that_use_it_alone() -> None:
-    """Every form of a secret reference, read by the production guard's own parser."""
-    workflow, job = _workflow()
-    outside = {**workflow, "jobs": {"setup": {k: v for k, v in job.items() if k != "steps"}}}
-    assert _guard._secret_names(json.dumps(outside)) == set()
-    found = {step.get("name", step.get("uses")): _guard._secret_names(json.dumps(step))
-             for step in job["steps"]}
-    assert {name: refs for name, refs in found.items() if refs} == {
-        "ROUTING_MAC_KEY": {"SETUP_PAT"},
-        "GATEWAY_KEYRING": {"SETUP_PAT"},
-        "FILES_KEYRING": {"SETUP_PAT"},
-        "WORKOS_API_KEY from the host": {"SETUP_PAT", "DO_SSH_KEY", "DO_DROPLET_HOST",
-                                         "DO_SSH_USER"},
-        "E2B key, webhook secret and lifecycle webhook": {"SETUP_PAT", "E2B_API_KEY",
-                                                          "E2B_WEBHOOK_SECRET"},
-        "Repository variables": {"SETUP_PAT"},
-        "Delete the setup token": {"SETUP_PAT"},
-    }
-    # The PAT is only ever the API's token, never another variable's value.
-    for step in job["steps"]:
-        for name, value in (step.get("env") or {}).items():
-            if "SETUP_PAT" in str(value):
-                assert name == "GH_TOKEN"
-
-
-def test_actions_and_packages_are_pinned_and_no_token_is_kept() -> None:
-    steps = _steps()
-    uses = [step["uses"] for step in steps if "uses" in step]
-    assert uses and all(re.fullmatch(r"actions/[a-z-]+@[0-9a-f]{40}", u) for u in uses)
-    checkout = next(step for step in steps if "checkout" in step.get("uses", ""))
-    assert checkout["with"]["persist-credentials"] is False
-    runs = "\n".join(str(step.get("run", "")) for step in steps)
-    assert "--require-hashes -r scripts/platform_setup.requirements.txt" in runs
-    pins = [line for line in LOCK.read_text(encoding="utf-8").splitlines()
-            if re.match(r"^[a-z0-9_.-]+==", line, re.I)]
-    assert any(line.startswith("pynacl==") for line in pins)
-    assert all(line.endswith("\\") for line in pins)
-
-
-def test_the_setup_token_is_deleted_whatever_happened() -> None:
-    last = _steps()[-1]
-    assert last["name"] == "Delete the setup token" and last["if"] == "always()"
-    assert "gh secret delete SETUP_PAT --env production" in last["run"]
-    # A failed step leaves the rest to run; none is skipped by the one before it.
-    for step in _steps()[4:-1]:
-        assert str(step["if"]).startswith("${{ !cancelled()"), step["name"]
-
-
-def test_nothing_is_printed() -> None:
-    held = {name for step in _steps() for name, value in (step.get("env") or {}).items()
-            if "secrets." in str(value)}
-    assert held == {"GH_TOKEN", "SSH_KEY", "DO_DROPLET_HOST", "DO_SSH_USER", "E2B_API_KEY",
-                    "E2B_WEBHOOK_SECRET"}
-    for step in _steps():
-        run = str(step.get("run", ""))
-        assert "set -x" not in run and "::add-mask::" not in run
-        for line in run.splitlines():
-            if re.search(r"\b(echo|printf|cat|tee)\b", line):
-                for name in held - {"DO_DROPLET_HOST"}:
-                    assert name not in line or line.strip() == (
-                        "(umask 077 && printf '%s\\n' \"${SSH_KEY}\" > \"${key_file}\")"), line
-    host = next(step for step in _steps() if step.get("name") == "WORKOS_API_KEY from the host")
-    # The one ssh call is the script's, with its fixed remote command.
-    assert "ssh " not in host["run"].replace("ssh-keyscan ", "")
-    assert setup.HOST_COMMAND == "sudo grep -E '^WORKOS_API_KEY=' /etc/tinyassets/env"
-
-
-# --- a fake of GitHub's and E2B's APIs ----------------------------------------------------
+# --- a fake of GitHub's API, and of the founder's `gh` in front of it --------------------
 
 
 class Fake:
-    """GitHub's secrets, variables and environments, and E2B's webhooks, as the API holds
-    them; every call recorded as `METHOD path`."""
+    """The repo's secrets, variables, environments and the canary's runs, as GitHub holds
+    them; every REST call recorded as `METHOD path`, every value stored by name."""
 
     def __init__(self, secrets: dict[str | None, set[str]] | None = None,
                  variables: dict[str, str] | None = None,
-                 environments: dict[str, list] | None = None,
-                 hooks: list[dict] | None = None) -> None:
+                 environments: dict[str, list | None] | None = None) -> None:
         self.secrets = {None: set(), "production": set(), "review": set(), **(secrets or {})}
         self.stored: dict[tuple[str | None, str], str] = {}
         self.variables = dict(variables or {})
-        self.environments = dict(environments if environments is not None
-                                 else {"production": [("main", "branch")]})
-        self.hooks = list(hooks or [])
+        self.environments = dict(environments or {})
         self.calls: list[str] = []
-        self.receipt: object = None
+        self.runs = [{"databaseId": 1, "headBranch": "feature"},
+                     {"databaseId": 2, "headBranch": "main"},
+                     {"databaseId": 3, "headBranch": "main"}]
+        self.receipts: dict[int, object] = {}
 
-    def __call__(self, method, url, *, token=None, body=None, headers=None, raw=False,
-                 follow=True):
-        path = url.removeprefix(f"{setup.GITHUB_API}/repos/{REPO}")
+    def rest(self, method: str, path: str, body: object) -> tuple[int, object]:
         self.calls.append(f"{method} {path}")
-        if url.startswith(setup.E2B_API):
-            return self._e2b(method, url.removeprefix(setup.E2B_API), body, headers)
-        if url == "https://storage/receipt.zip":
-            data = io.BytesIO()
-            with zipfile.ZipFile(data, "w") as archive:
-                archive.writestr(setup.CLAIMS_FILE, json.dumps(self.receipt))
-            return 200, data.getvalue()
-        if url.startswith(f"{setup.GITHUB_API}/app-manifests/"):
-            assert token is None
-            return 201, {"id": 77, "slug": "tinyassets-review", "owner": {"login": "TinyAssets"},
-                         "pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n", "client_secret": "c",
-                         "webhook_secret": None}
-        if url == f"{ISSUER}/.well-known/openid-configuration":
-            return 200, {"issuer": ISSUER}
-        assert token == "pat"
-        return self._github(method, path, body, follow)
-
-    def _github(self, method, path, body, follow):
-        if m := re.fullmatch(r"(?:/environments/(\w+))?(?:/actions)?/secrets/public-key", path):
-            return 200, {"key": base64.b64encode(b"k" * 32).decode(), "key_id": "id1"}
         if m := re.fullmatch(r"(?:/environments/(\w+))?(?:/actions)?/secrets/(\w+)", path):
             env, name = m.group(1), m.group(2)
-            held = self.secrets[env]
+            held = self.secrets.setdefault(env, set())
             if method == "GET":
                 return (200 if name in held else 404), {}
-            if method == "PUT":
-                created = name not in held
-                held.add(name)
-                self.stored[(env, name)] = body["encrypted_value"]
-                return (201 if created else 204), None
             if method == "DELETE":
                 if name not in held:
                     return 404, {}
                 held.discard(name)
                 return 204, None
-        if m := re.fullmatch(r"/actions/variables(?:/(\w+))?", path):
+        if m := re.fullmatch(r"/actions/variables/(\w+)", path):
             name = m.group(1)
-            if method == "GET":
-                return (200, {"value": self.variables[name]}) if name in self.variables \
-                    else (404, {})
-            if method == "POST":
-                assert body["name"] not in self.variables
-                self.variables[body["name"]] = body["value"]
-                return 201, {}
-            if method == "PATCH":
-                self.variables[name] = body["value"]
-                return 204, None
+            return (200, {"value": self.variables[name]}) if name in self.variables else (404, {})
         if m := re.fullmatch(r"/environments/(\w+)", path):
             env = m.group(1)
             if method == "GET":
                 if env not in self.environments:
                     return 404, {}
-                policy = ({"protected_branches": False, "custom_branch_policies": True}
-                          if self.environments[env] is not None else None)
+                policy = setup.MAIN_ONLY if self.environments[env] is not None else None
                 return 200, {"name": env, "deployment_branch_policy": policy}
             if method == "PUT":
+                assert body == {"deployment_branch_policy": setup.MAIN_ONLY}
                 self.environments[env] = []
                 return 200, {}
         if m := re.fullmatch(r"/environments/(\w+)/deployment-branch-policies", path):
@@ -222,199 +96,196 @@ class Fake:
                 return 200, {}
             return 200, {"branch_policies": [{"name": n, "type": t}
                                              for n, t in self.environments[env] or []]}
-        if path.startswith("/actions/workflows/uptime-canary.yml/runs"):
-            return 200, {"workflow_runs": [
-                {"id": 1, "head_branch": "feature", "path": ".github/workflows/uptime-canary.yml"},
-                {"id": 2, "head_branch": "main", "path": ".github/workflows/uptime-canary.yml"},
-            ]}
-        if path == f"/actions/runs/2/artifacts?name={setup.CLAIMS_ARTIFACT}":
-            return 200, {"artifacts": [] if self.receipt is None else [
-                {"id": 9, "name": setup.CLAIMS_ARTIFACT, "expired": False}]}
-        if path == "/actions/artifacts/9/zip":
-            assert follow is False
-            return 302, "https://storage/receipt.zip"
         raise AssertionError(f"unexpected {method} {path}")
 
-    def _e2b(self, method, path, body, headers):
-        assert headers["X-API-Key"] == "e2b-key"
-        if method == "GET" and path == "/events/webhooks":
-            return 200, self.hooks
-        if method == "POST" and path == "/events/webhooks":
-            self.hooks.append({"id": "w1", **body})
-            return 201, {"id": "w1"}
-        if method == "PATCH" and path.startswith("/events/webhooks/"):
-            next(h for h in self.hooks if h["id"] == path.rsplit("/", 1)[1]).update(body)
-            return 200, {}
-        raise AssertionError(f"unexpected E2B {method} {path}")
+
+class _Done:
+    def __init__(self, returncode: int, stdout: bytes = b"") -> None:
+        self.returncode, self.stdout = returncode, stdout
 
 
-@pytest.fixture(autouse=True)
-def _sealed(monkeypatch, tmp_path):
-    """Sealing is PyNaCl's (the workflow installs it from the lock); here it is marked, so
-    each test can see what reached GitHub was sealed to its key."""
-    monkeypatch.setattr(setup, "seal", lambda key, value: f"sealed[{key}]:{value}")
-    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary"))
+def _gh_cli(fake: Fake, said: list[str]):
+    """The founder's `gh` over the fake. Every argv is kept in `said`, so a test can see no
+    value was ever in one; a value arrives only as stdin bytes."""
+
+    def run(argv, input=None, **kwargs):
+        assert "text" not in kwargs and "shell" not in kwargs
+        assert input is None or isinstance(input, bytes)
+        value = None if input is None else input.decode("utf-8")
+        said.append(" ".join(argv))
+        assert argv[0] == "gh"
+        if argv[1] == "api":
+            assert argv[2:4] == ["-i", "--method"]
+            status, body = fake.rest(argv[4], argv[5].removeprefix(f"repos/{REPO}"),
+                                     json.loads(value) if value else None)
+            answer = f"HTTP/2.0 {status} X\r\nContent-Type: json\r\n\r\n{json.dumps(body)}"
+            return _Done(0 if status < 400 else 1, answer.encode())
+        assert argv[argv.index("--repo") + 1] == REPO
+        if argv[1:3] == ["secret", "set"]:
+            env = argv[argv.index("--env") + 1] if "--env" in argv else None
+            fake.secrets.setdefault(env, set()).add(argv[3])
+            fake.stored[(env, argv[3])] = value
+            return _Done(0)
+        if argv[1:3] == ["variable", "set"]:
+            fake.variables[argv[3]] = value
+            return _Done(0)
+        if argv[1:3] == ["run", "list"]:
+            assert argv[argv.index("--workflow") + 1] == "uptime-canary.yml"
+            return _Done(0, json.dumps(fake.runs).encode())
+        if argv[1:3] == ["run", "download"]:
+            run_id = int(argv[3])
+            assert argv[argv.index("--name") + 1] == "owner-token-claims"
+            if run_id not in fake.receipts:
+                return _Done(1)
+            into = Path(argv[argv.index("--dir") + 1])
+            (into / "owner-token-claims.json").write_text(json.dumps(fake.receipts[run_id]))
+            return _Done(0)
+        raise AssertionError(argv)
+
+    return run
 
 
-def _summary(tmp_path) -> list[str]:
-    path = tmp_path / "summary"
-    return path.read_text().splitlines() if path.exists() else []
+def _gh(fake: Fake, said: list[str] | None = None) -> setup.Gh:
+    return setup.Gh(run=_gh_cli(fake, [] if said is None else said))
 
 
-def _gh(fake: Fake) -> setup.GitHub:
-    return setup.GitHub("pat", REPO, fake)
+def _no_value_shown(said: list[str], out: str, values) -> None:
+    for value in values:
+        assert value and not [line for line in said if value in line], value
+        assert value not in out, value
 
 
-# --- set only where absent ----------------------------------------------------------------
+# --- the production secrets ----------------------------------------------------------------
 
 
-def test_a_secret_is_made_and_stored_only_where_absent(tmp_path) -> None:
-    fake = Fake(secrets={"production": {"GATEWAY_KEYRING"}})
-    made: list[str] = []
-
-    def make() -> str:
-        made.append("x")
-        return "value"
-
-    assert setup.ensure_secret(_gh(fake), "GATEWAY_KEYRING", make) == "already set"
-    assert made == [] and not any(c.startswith("PUT") for c in fake.calls)
-    assert setup.ensure_secret(_gh(fake), "ROUTING_MAC_KEY", make) == "set"
-    key = base64.b64encode(b"k" * 32).decode()
-    assert fake.stored == {("production", "ROUTING_MAC_KEY"): f"sealed[{key}]:value"}
-    assert fake.calls[-2:] == ["GET /environments/production/secrets/public-key",
-                               "PUT /environments/production/secrets/ROUTING_MAC_KEY"]
+def test_the_made_secrets_are_set_once_each_on_stdin_alone(capsys) -> None:
+    fake, said = Fake(secrets={"production": {"GATEWAY_KEYRING"}}), []
+    setup.made_secrets(_gh(fake, said))
+    assert fake.secrets["production"] == {"ROUTING_MAC_KEY", "E2B_WEBHOOK_SECRET",
+                                          "GATEWAY_KEYRING", "FILES_KEYRING"}
+    assert ("production", "GATEWAY_KEYRING") not in fake.stored
+    out = capsys.readouterr().out
+    assert out.splitlines() == ["ROUTING_MAC_KEY: set", "E2B_WEBHOOK_SECRET: set",
+                                "GATEWAY_KEYRING: already set", "FILES_KEYRING: set"]
+    _no_value_shown(said, out, fake.stored.values())
+    # Run again: nothing written.
+    calls = len(said)
+    setup.made_secrets(_gh(fake, said))
+    assert all(line.startswith("gh api -i --method GET") for line in said[calls:])
 
 
 def test_the_made_values_are_the_shapes_the_platform_reads() -> None:
     mac = setup.make_mac()
     assert len(base64.urlsafe_b64decode(mac + "=")) == 32 and "=" not in mac
     assert setup.make_mac() != mac and len(setup.make_token()) >= 43
+    ring = json.loads(setup.make_keyring())
+    assert ring["active"] == "k1" and list(ring["keys"]) == ["k1"]
+    assert len(base64.b64decode(ring["keys"]["k1"])) == 32
+    assert setup.make_keyring() != setup.make_keyring()
 
 
-def test_a_keyring_is_the_kits_own_and_its_file_is_shredded(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
-    seen: list[list[str]] = []
-
-    def run(argv, **_):
-        seen.append(argv)
-        if argv[0] == "node":
-            Path(argv[-1]).write_text('{"active": "k1", "keys": {"k1": "a"}}')
-        else:
-            Path(argv[-1]).unlink()
-        return type("Done", (), {"returncode": 0})()
-
-    assert json.loads(setup.make_keyring(run))["active"] == "k1"
-    assert seen[0][:4] == ["node", "--experimental-strip-types",
-                           str(ROOT / "platform/deploy/deploy.ts"), "keyring-new"]
-    assert seen[1][:2] == ["shred", "-u"] and seen[1][2] == seen[0][4]
-    assert list(tmp_path.iterdir()) == []
+def _node() -> str:
+    node = shutil.which("node")
+    assert node, "Node 22.6 or later is needed: the kit's own keyring() reads the ring"
+    version = subprocess.run([node, "--version"], capture_output=True, text=True,
+                             check=True).stdout.strip()
+    assert tuple(map(int, version.lstrip("v").split(".")[:2])) >= (22, 6), version
+    return node
 
 
-@pytest.mark.parametrize(("text", "ok"), [
-    ("WORKOS_API_KEY=sk_live_abc123\n", True),
-    ("WORKOS_API_KEY='sk_live_abc123'\n", True),
-    ('WORKOS_API_KEY="sk_live_abc123"\n', True),
-    ("WORKOS_API_KEY=sk_test_abc123\n", False),
-    ("", False),
-    ("WORKOS_API_KEY=sk_live_a\nWORKOS_API_KEY=sk_live_b\n", False),
-    ("WORKOS_API_KEY=sk_live_a b\n", False),
-])
-def test_the_host_key_is_its_one_production_line(text, ok) -> None:
-    if ok:
-        assert setup.host_value(text) == "sk_live_abc123"
-    else:
-        with pytest.raises(setup.SetupError) as refused:
-            setup.host_value(text)
-        assert "sk_live_a" not in str(refused.value) and "abc123" not in str(refused.value)
+def test_the_kits_own_keyring_takes_the_ring_made_in_memory(tmp_path) -> None:
+    """deploy.ts's keyring() (the apply job's check) accepts the ring, and keyring-new, the
+    kit's maker, writes the same shape."""
+    node = _node()
+    check = ("const m = await import(process.argv[1]); "
+             "const fs = await import('node:fs'); "
+             "const ring = m.keyring(fs.readFileSync(0, 'utf8'), 'FILES_KEYRING'); "
+             "console.log(JSON.stringify({ active: ring.active, keys: Object.keys(ring.keys) }));")
+    done = subprocess.run([node, "--experimental-strip-types", "--input-type=module", "-e",
+                           check, DEPLOY.as_uri()], input=setup.make_keyring(),
+                          capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout.splitlines()[-1]) == {"active": "k1", "keys": ["k1"]}
+    made = tmp_path / "ring.json"
+    subprocess.run([node, "--experimental-strip-types", str(DEPLOY), "keyring-new", str(made)],
+                   capture_output=True, check=True)
+    theirs, ours = json.loads(made.read_text()), json.loads(setup.make_keyring())
+    assert (theirs["active"], list(theirs["keys"])) == (ours["active"], list(ours["keys"]))
+    assert len(base64.b64decode(theirs["keys"]["k1"])) == 32
 
 
-def test_the_host_is_asked_one_fixed_command_and_only_when_the_key_is_absent(monkeypatch):
-    monkeypatch.setenv("DO_SSH_USER", "deploy")
-    monkeypatch.setenv("DO_DROPLET_HOST", "203.0.113.7")
-    monkeypatch.setenv("SSH_KEY_FILE", "/tmp/k")
-    asked: list[list[str]] = []
-
-    def run(argv, **_):
-        asked.append(argv)
-        return type("Done", (), {"returncode": 0, "stdout": "WORKOS_API_KEY=sk_live_k\n"})()
-
-    monkeypatch.setitem(setup.MAKERS, "host", lambda: setup.read_host(run))
-    fake = Fake(secrets={"production": {"WORKOS_API_KEY"}})
-    assert setup.ensure_secret(_gh(fake), "WORKOS_API_KEY", setup.MAKERS["host"]) == "already set"
-    assert asked == []
-    fake = Fake()
-    assert setup.ensure_secret(_gh(fake), "WORKOS_API_KEY", setup.MAKERS["host"]) == "set"
-    assert asked == [["ssh", "-n", "-i", "/tmp/k", "-o", "BatchMode=yes", "-o",
-                      "ConnectTimeout=10", "deploy@203.0.113.7", setup.HOST_COMMAND]]
-    assert fake.stored[("production", "WORKOS_API_KEY")].endswith(":sk_live_k")
+# --- WorkOS -----------------------------------------------------------------------------
 
 
-# --- E2B ----------------------------------------------------------------------------------
+def test_workos_stores_a_pasted_production_key_then_retires_the_repository_copies(capsys):
+    fake = Fake(secrets={None: {"WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN"}})
+    said: list[str] = []
+    asked: list[str] = []
+
+    def ask(prompt: str) -> str:
+        asked.append(prompt)
+        return '  "sk_live_pasted"\r\n'
+
+    setup.workos(_gh(fake, said), ask)
+    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_live_pasted"
+    assert fake.secrets[None] == set() and len(asked) == 1
+    out = capsys.readouterr().out
+    assert out.splitlines() == ["WORKOS_API_KEY: set", "WORKOS_API_KEY (repository): deleted",
+                                "WORKOS_AUTHKIT_DOMAIN (repository): deleted"]
+    _no_value_shown(said, out, ["sk_live_pasted"])
+    # Held already: nothing asked, nothing stored again.
+    setup.workos(_gh(fake, said), lambda _: pytest.fail("asked again"))
+    assert capsys.readouterr().out.splitlines()[0] == "WORKOS_API_KEY: already set"
 
 
-def test_e2b_copies_a_repository_key_deletes_that_copy_and_registers_disabled(tmp_path):
-    fake = Fake(secrets={None: {"E2B_API_KEY"}})
-    setup.e2b(_gh(fake), "e2b-key", "", fake)
-    assert fake.secrets == {None: set(), "production": {"E2B_API_KEY", "E2B_WEBHOOK_SECRET"},
-                            "review": set()}
-    [hook] = fake.hooks
-    secret = fake.stored[("production", "E2B_WEBHOOK_SECRET")].split(":", 1)[1]
-    assert hook == {"id": "w1", "name": setup.HOOK_NAME, "url": setup.HOOK_URL,
-                    "events": ["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"],
-                    "enabled": False, "signatureSecret": secret}
-    assert _summary(tmp_path) == [
-        "- `E2B_API_KEY`: copied into production",
-        "- `E2B_API_KEY (repository)`: deleted",
-        "- `E2B_WEBHOOK_SECRET`: set",
-        "- `E2B lifecycle webhook`: registered, disabled until the cutover"]
-    # Run again: nothing changes.
-    calls = len(fake.calls)
-    setup.e2b(_gh(fake), "e2b-key", secret, fake)
-    assert not [c for c in fake.calls[calls:] if not c.startswith("GET")]
-    assert _summary(tmp_path)[-1] == "- `E2B lifecycle webhook`: already registered, disabled"
+@pytest.mark.parametrize("pasted", ["sk_test_staging", "", "sk_live_a b", "client_01"])
+def test_workos_refuses_anything_but_one_production_key(pasted) -> None:
+    fake = Fake(secrets={None: {"WORKOS_API_KEY"}})
+    with pytest.raises(setup.SetupError) as refused:
+        setup.workos(_gh(fake), lambda _: pasted)
+    assert fake.stored == {} and fake.secrets[None] == {"WORKOS_API_KEY"}
+    assert not pasted or pasted not in str(refused.value)
 
 
-def test_e2b_without_a_key_makes_the_secret_and_says_what_is_owed(tmp_path):
-    fake = Fake()
-    setup.e2b(_gh(fake), "", "", fake)
-    assert fake.secrets["production"] == {"E2B_WEBHOOK_SECRET"} and fake.hooks == []
-    assert _summary(tmp_path)[0] == (
-        "- `E2B_API_KEY`: absent: add it to production from the E2B dashboard")
-    assert _summary(tmp_path)[-1] == "- `E2B lifecycle webhook`: not registered: no E2B_API_KEY"
+def test_only_production_jobs_read_the_retired_repository_copies() -> None:
+    """The move deletes the repository copies: every job that reads one must be one the
+    `production` copy reaches."""
+    guard = _production_guard()
+    readers = []
+    for path in guard._workflow_files():
+        for name, job in (guard._load(path).get("jobs") or {}).items():
+            if set(setup.WORKOS_REPO_COPIES) & guard._secret_names(json.dumps(job)):
+                readers.append((path.name, name, job.get("environment")))
+    assert all(env == "production" for _, _, env in readers), readers
 
 
-def test_e2b_gives_a_registered_hook_a_secret_made_now_and_leaves_a_held_key(tmp_path):
-    fake = Fake(secrets={None: {"E2B_API_KEY"}, "production": {"E2B_API_KEY"}},
-                hooks=[{"id": "w9", "url": setup.HOOK_URL, "enabled": False,
-                        "signatureSecret": "old"}])
-    setup.e2b(_gh(fake), "e2b-key", "", fake)
-    secret = fake.stored[("production", "E2B_WEBHOOK_SECRET")].split(":", 1)[1]
-    assert fake.hooks[0]["signatureSecret"] == secret != "old"
-    assert "E2B_API_KEY" in fake.secrets[None]
-    assert "- `E2B_API_KEY (repository)`: also set, left: it may be another key" in (
-        _summary(tmp_path))
+# --- the repository variables ----------------------------------------------------------
 
 
-# --- the variables ------------------------------------------------------------------------
+def _discovery(url: str):
+    assert url == f"{ISSUER}/.well-known/openid-configuration"
+    return 200, {"issuer": ISSUER}
 
 
-def test_the_variables_are_set_once_from_the_canarys_main_receipt(tmp_path):
-    fake = Fake()
-    fake.receipt = {"iss": ISSUER, "auth_time": 1767225600}
-    assert setup.variables(_gh(fake), ISSUER, "client_01", fake)
+def test_the_variables_are_set_once_from_the_newest_main_receipt(capsys) -> None:
+    fake, said = Fake(), []
+    fake.receipts = {1: {"iss": "https://other", "auth_time": 1},
+                     3: {"iss": ISSUER, "auth_time": 1767225600}}
+    assert setup.variables(_gh(fake, said), _discovery)
     assert fake.variables == {
-        "OWNER_ISSUER": ISSUER, "WORKOS_CLIENT_ID": "client_01",
+        "OWNER_ISSUER": ISSUER, "WORKOS_CLIENT_ID": setup.WORKOS_CLIENT_ID,
         "OWNER_TOKEN_CLAIMS": json.dumps({"iss": ISSUER, "auth_time": 1767225600})}
-    assert "GET /actions/runs/1/artifacts?name=owner-token-claims" not in fake.calls
-    # Never the token on the storage URL GitHub redirects to.
-    assert "GET https://storage/receipt.zip" in fake.calls
+    # The feature branch's run is never read; main's run 2 kept none, so run 3 is used.
+    downloads = [line.split()[3] for line in said if line.startswith("gh run download")]
+    assert downloads == ["2", "3"]
+    _no_value_shown(said, capsys.readouterr().out, fake.variables.values())
     # Run again: every one already set, nothing written.
-    calls = len(fake.calls)
-    assert setup.variables(_gh(fake), ISSUER, "client_01", fake)
-    assert all(c.startswith("GET") for c in fake.calls[calls:])
-    # One set by hand to something else is left, and the run says so.
+    calls = len(said)
+    assert setup.variables(_gh(fake, said), _discovery)
+    assert not [line for line in said[calls:] if line.startswith("gh variable")]
+    # One set to something else is left, and the run says so.
     fake.variables["WORKOS_CLIENT_ID"] = "client_other"
-    assert not setup.variables(_gh(fake), ISSUER, "client_01", fake)
+    assert not setup.variables(_gh(fake, said), _discovery)
     assert fake.variables["WORKOS_CLIENT_ID"] == "client_other"
 
 
@@ -424,79 +295,50 @@ def test_the_variables_are_set_once_from_the_canarys_main_receipt(tmp_path):
                                      {"iss": ISSUER, "auth_time": True}])
 def test_owner_token_claims_needs_a_receipt_naming_the_issuer_with_auth_time(receipt):
     fake = Fake()
-    fake.receipt = receipt
+    if receipt is not None:
+        fake.receipts = {2: receipt}
     with pytest.raises(setup.SetupError):
-        setup.variables(_gh(fake), ISSUER, "client_01", fake)
+        setup.variables(_gh(fake), _discovery)
     assert "OWNER_TOKEN_CLAIMS" not in fake.variables
 
 
-# --- the review App, from the founder's own computer (scripts/review_app_setup.py) --------
+def test_an_issuer_whose_discovery_names_another_sets_nothing() -> None:
+    fake = Fake()
+    with pytest.raises(setup.SetupError, match="does not name"):
+        setup.variables(_gh(fake), lambda _: (200, {"issuer": "https://other"}))
+    assert fake.variables == {}
 
 
-CODE = "a180b1a3d263c81bc6441d7b990bae27d4c10679"
+# --- the review App ---------------------------------------------------------------------
 
 
-class _Done:
-    def __init__(self, returncode: int, stdout: str = "") -> None:
-        self.returncode, self.stdout = returncode, stdout
-
-
-def _gh_cli(fake: Fake, said: list[str]):
-    """The founder's `gh`, over the same fake: `gh api -i`, `gh secret list/set`,
-    `gh variable set`. Every argv and stdin is kept in `said`, to show no key was printed."""
-
-    def run(argv, input=None, **_):
-        said.append(" ".join(argv))
-        assert argv[0] == "gh" and "--repo" not in argv or argv[argv.index("--repo") + 1] == REPO
-        if argv[1] == "api":
-            assert argv[2:4] == ["-i", "--method"]
-            path = argv[5].removeprefix(f"repos/{REPO}")
-            fake.calls.append(f"{argv[4]} {path}")
-            status, body = fake._github(argv[4], path, json.loads(input) if input else None,
-                                        True)
-            return _Done(0 if status < 400 else 1,
-                         f"HTTP/2.0 {status} X\r\nContent-Type: json\r\n\r\n{json.dumps(body)}")
-        if argv[1:3] == ["secret", "list"]:
-            env = argv[argv.index("--env") + 1]
-            return _Done(0, json.dumps([{"name": n} for n in sorted(fake.secrets[env])]))
-        if argv[1:3] == ["secret", "set"]:
-            env = argv[argv.index("--env") + 1]
-            fake.secrets[env].add(argv[3])
-            fake.stored[(env, argv[3])] = input
-            return _Done(0)
-        if argv[1:3] == ["variable", "set"]:
-            fake.variables[argv[3]] = argv[argv.index("--body") + 1]
-            return _Done(0)
-        raise AssertionError(argv)
-
-    return run
-
-
-def _turn_in(fake: Fake):
+def _turn_in(fake: Fake, app: dict | None = None):
     def turn_in(code: str):
         fake.calls.append(f"POST conversions {code}")
-        return fake("POST", f"{setup.GITHUB_API}/app-manifests/{code}/conversions")
+        return 201, app or {"id": 77, "slug": "tinyassets-review",
+                            "owner": {"login": "TinyAssets"}, "pem": PEM,
+                            "client_secret": "c", "webhook_secret": None}
 
     return turn_in
 
 
-def test_the_review_app_key_goes_to_a_main_only_review_environment() -> None:
-    fake, said, out = Fake(), [], []
-    review.review_app(CODE, review.Gh(run=_gh_cli(fake, said)), _turn_in(fake), out.append)
+def test_the_review_app_key_goes_to_a_main_only_review_environment(capsys) -> None:
+    fake, said = Fake(), []
+    setup.review_app(CODE, _gh(fake, said), _turn_in(fake))
     assert fake.environments["review"] == [("main", "branch")]
     assert fake.secrets["review"] == {"REVIEW_APP_PRIVATE_KEY"}
-    assert fake.stored[("review", "REVIEW_APP_PRIVATE_KEY")].startswith("-----BEGIN RSA")
+    assert fake.stored[("review", "REVIEW_APP_PRIVATE_KEY")] == PEM
     assert fake.variables == {"REVIEW_APP_ID": "77"}
     # The environment is main-only before the code is spent.
     assert fake.calls.index("PUT /environments/review") < fake.calls.index(
         f"POST conversions {CODE}")
-    # The key went on stdin alone: never in an argv, never said.
-    assert not [line for line in said + out if "BEGIN" in line]
-    assert out[-1].endswith("https://github.com/apps/tinyassets-review/installations/new")
+    out = capsys.readouterr().out
+    _no_value_shown(said, out, [PEM, "BEGIN RSA"])
+    assert out.splitlines()[-1].endswith(
+        "https://github.com/apps/tinyassets-review/installations/new")
     # A second code is not spent while the key is held.
-    with pytest.raises(review.SetupError, match="already set"):
-        review.review_app("b" * 40, review.Gh(run=_gh_cli(fake, said)), _turn_in(fake),
-                          out.append)
+    with pytest.raises(setup.SetupError, match="already set"):
+        setup.review_app("b" * 40, _gh(fake, said), _turn_in(fake))
     assert "POST conversions " + "b" * 40 not in fake.calls
 
 
@@ -504,18 +346,16 @@ def test_the_review_app_key_goes_to_a_main_only_review_environment() -> None:
                                     [("v*", "tag")]])
 def test_a_review_environment_open_to_other_refs_is_refused(policy) -> None:
     fake = Fake(environments={"review": policy})
-    with pytest.raises(review.SetupError, match="other branches than main"):
-        review.review_app(CODE, review.Gh(run=_gh_cli(fake, [])), _turn_in(fake), print)
+    with pytest.raises(setup.SetupError, match="other branches than main"):
+        setup.review_app(CODE, _gh(fake), _turn_in(fake))
     assert not [c for c in fake.calls if "conversions" in c]
 
 
-def test_an_app_another_account_owns_is_not_stored(monkeypatch) -> None:
+def test_an_app_another_account_owns_is_not_stored() -> None:
     fake = Fake()
-    answer = {"id": 1, "slug": "x", "owner": {"login": "someone"},
-              "pem": "-----BEGIN RSA PRIVATE KEY-----\n"}
-    with pytest.raises(review.SetupError, match="belongs to someone"):
-        review.review_app(CODE, review.Gh(run=_gh_cli(fake, [])), lambda _: (201, answer),
-                          print)
+    other = {"id": 1, "slug": "x", "owner": {"login": "someone"}, "pem": PEM}
+    with pytest.raises(setup.SetupError, match="belongs to someone"):
+        setup.review_app(CODE, _gh(fake), _turn_in(fake, other))
     assert fake.secrets["review"] == set() and fake.variables == {}
 
 
@@ -523,25 +363,17 @@ def test_an_app_another_account_owns_is_not_stored(monkeypatch) -> None:
     (CODE, CODE),
     (f"https://github.com/TinyAssets/TinyAssets?code={CODE}", CODE),
     (f" https://github.com/TinyAssets/TinyAssets?code={CODE}&state=s ", CODE),
+    (f"'https://github.com/TinyAssets/TinyAssets?code={CODE}'", CODE),
+    (f'"{CODE}"', CODE),
     ("../../x", None),
     ("https://github.com/TinyAssets/TinyAssets", None),
 ])
 def test_the_code_is_taken_bare_or_from_the_redirect(given, code) -> None:
     if code is None:
-        with pytest.raises(review.SetupError):
-            review.code_of(given)
+        with pytest.raises(setup.SetupError):
+            setup.code_of(given)
     else:
-        assert review.code_of(given) == code
-
-
-def test_the_workflow_takes_no_code_and_no_admin_scope() -> None:
-    workflow, _ = _workflow()
-    on = workflow.get("on", workflow.get(True))
-    assert on == {"workflow_dispatch": None}
-    text = WORKFLOW.read_text(encoding="utf-8")
-    assert "review" not in text.replace("The review App is not made here", "").replace(
-        "scripts/review_app_setup.py", "")
-    assert "Administration" not in text
+        assert setup.code_of(given) == code
 
 
 class _Form(HTMLParser):
@@ -565,11 +397,56 @@ def test_the_manifest_page_asks_for_the_review_app_and_nothing_more() -> None:
     assert form["method"] == "post"
     [field] = page.inputs
     assert field["name"] == "manifest"
-    manifest = json.loads(field["value"])
-    assert manifest == {
+    assert json.loads(field["value"]) == {
         "name": "TinyAssets Review", "url": "https://tinyassets.io",
         "hook_attributes": {"url": "https://tinyassets.io/", "active": False},
         "redirect_url": "https://github.com/TinyAssets/TinyAssets",
         "public": False,
         "default_permissions": {"checks": "write", "statuses": "write", "metadata": "read"},
         "default_events": []}
+
+
+# --- the command line, and the real subprocess path the founder's Windows machine takes -
+
+
+def test_a_refusal_exits_nonzero_and_names_no_value(capsys) -> None:
+    fake = Fake(environments={"review": None})
+    assert setup.main(["review-app", "--code", CODE], gh=_gh(fake)) == 1
+    err = capsys.readouterr().err
+    assert "other branches than main" in err and CODE not in err
+    assert setup.main(["secrets"], gh=_gh(Fake())) == 0
+
+
+def test_the_real_gh_call_sends_bytes_and_no_shell(tmp_path, monkeypatch) -> None:
+    """Through subprocess itself, as on the founder's machine: an argv list (no shell, so no
+    quoting by hand), the value as bytes with its LF newlines kept, gh's answer read as
+    UTF-8."""
+    log = tmp_path / "log.json"
+    stand_in = tmp_path / "gh"
+    stand_in.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        f"open({str(log)!r}, 'w').write(json.dumps({{'argv': sys.argv[1:], "
+        "'stdin': sys.stdin.buffer.read().decode('latin-1')}))\n"
+        "sys.stdout.buffer.write('HTTP/2.0 200 OK\\r\\n\\r\\n{\"n\": \"\\u00e9\"}'.encode())\n",
+        encoding="utf-8")
+    stand_in.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    gh = setup.Gh()
+    gh.set_secret("REVIEW_APP_PRIVATE_KEY", PEM, "review")
+    seen = json.loads(log.read_text())
+    assert seen["argv"] == ["secret", "set", "REVIEW_APP_PRIVATE_KEY", "--env", "review",
+                            "--repo", REPO]
+    assert seen["stdin"] == PEM
+    assert gh.call("GET", "/x") == (200, {"n": "\u00e9"})
+
+
+def test_the_docs_give_the_windows_command() -> None:
+    checklist = (ROOT / "platform/deploy/checklist.md").read_text(encoding="utf-8")
+    for doc in (ROOT / "platform/deploy/checklist.md", ROOT / "docs/host-actions.md", PAGE,
+                ROOT / "scripts/platform_setup.py"):
+        text = doc.read_text(encoding="utf-8")
+        assert "python3 scripts/platform_setup.py" not in text, doc
+        assert "SETUP_PAT" not in text and "platform-setup.yml" not in text, doc
+    for command in ("secrets", "variables", "workos", 'review-app --code "'):
+        assert f"python scripts/platform_setup.py {command}" in checklist, command

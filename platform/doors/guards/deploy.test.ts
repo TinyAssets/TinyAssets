@@ -20,12 +20,13 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  DOORS, handover, kvPresent, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  DOORS, E2B_HOOK, handover, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
 } from "../../deploy/deploy";
 import { parseControl } from "../src/directory";
+import { E2B_HOOK_PATH } from "../src/e2b-hooks";
 import { upstreamConfig } from "../src/oidc";
 
 type Json = Record<string, unknown>;
@@ -121,7 +122,8 @@ describe("the deploy kit", () => {
     expect(routed).toEqual([...ROUTES.map((pattern) => ({ pattern, zone_name: "tinyassets.io" })),
                             { pattern: EGRESS_DOMAIN, custom_domain: true }]);
     expect(ROUTES).toEqual(["tinyassets.io/mcp*", "tinyassets.io/api/*",
-                            "tinyassets.io/hooks/inbound/*", "tinyassets.io/app/api/*",
+                            "tinyassets.io/hooks/inbound/*", "tinyassets.io/hooks/e2b/*",
+                            "tinyassets.io/app/api/*",
                             "tinyassets.io/authorize*", "tinyassets.io/oauth/*",
                             "tinyassets.io/.well-known/oauth-*"]);
   });
@@ -338,6 +340,7 @@ describe("the deploy kit", () => {
                   "tinyassets.io/.well-known/oauth-authorization-server",
                   "tinyassets.io/app/api/keys", "tinyassets.io/oauth/token",
                   "tinyassets.io/authorize", "tinyassets.io/hooks/inbound/x",
+                  "tinyassets.io/hooks/e2b/lifecycle",
                   "tinyassets.io/app", "tinyassets.io/site/x"];
 
   /** The Worker Cloudflare sends `path` to: the most specific matching pattern's. */
@@ -410,7 +413,7 @@ describe("the deploy kit", () => {
     const added = steps.findIndex((step) => step.pattern === "tinyassets.io/.well-known/oauth-*");
     expect(steps.findIndex((step) => step.method === "DELETE")).toBeGreaterThan(added);
     await runHandover(fake, zone, DOORS, steps);
-    for (const path of PROBES.slice(0, 9)) {
+    for (const path of PROBES.slice(0, 10)) {
       expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
     }
     expect(servedBy(fake.table.values(), "tinyassets.io/app")).toBe("tinyassets-mcp-proxy");
@@ -434,6 +437,84 @@ describe("the deploy kit", () => {
     await expect(zoneOf(zones([{ id: "z", account: { id: "../x" } }])))
       .rejects.toThrow(/could not be read/);
     await expect(routesOf(api({}), "z")).rejects.toThrow(/could not be read/);
+  });
+
+  it("registers E2B's lifecycle webhook disabled in dark, sets its secret on every apply, " +
+     "and enables it only with the routes", async () => {
+    /** A fake of E2B's webhooks API: its hooks, and every call as `METHOD path body`. */
+    const e2b = (start: Json[], fail?: string) => {
+      const hooks = start.map((hook) => ({ ...hook }));
+      const calls: string[] = [];
+      const fetcher = async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        const path = url.replace("https://api.e2b.app", "");
+        calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
+        expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe("k");
+        if (fail === method) {
+          return new Response("", { status: 500 });
+        }
+        if (method === "GET") {
+          return Response.json(hooks);
+        }
+        const body = JSON.parse(String(init!.body)) as Json;
+        if (method === "POST") {
+          hooks.push({ id: "w1", ...body });
+          return Response.json({ id: "w1" }, { status: 201 });
+        }
+        const hook = hooks.find((each) => `/events/webhooks/${each["id"]}` === path)!;
+        Object.assign(hook, body);
+        return Response.json(hook);
+      };
+      return { hooks, calls, fetcher };
+    };
+    // dark, none held: registered disabled, with the stored secret, for the two events.
+    const dark = e2b([{ id: "x", url: "https://elsewhere.test/hook", enabled: true }]);
+    expect(await lifecycleHook("k", "s1", true, false, dark.fetcher))
+      .toBe("registered, disabled");
+    expect(dark.hooks[1]).toEqual({ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
+                                    events: ["sandbox.lifecycle.paused",
+                                             "sandbox.lifecycle.killed"],
+                                    enabled: false, signatureSecret: "s1" });
+    // dark again: the secret set again, never enabled, the other team hook untouched.
+    expect(await lifecycleHook("k", "s2", true, false, dark.fetcher))
+      .toBe("its secret set again, disabled");
+    expect(dark.calls.at(-1)).toBe('PATCH /events/webhooks/w1 {"signatureSecret":"s2"}');
+    expect(dark.hooks[0]).toEqual({ id: "x", url: "https://elsewhere.test/hook", enabled: true });
+    // routes: enabled, after the handover; and a routes run later changes only the secret.
+    expect(await lifecycleHook("k", "s2", true, true, dark.fetcher))
+      .toBe("its secret set again, enabled");
+    expect(dark.calls.at(-1))
+      .toBe('PATCH /events/webhooks/w1 {"signatureSecret":"s2","enabled":true}');
+    expect(await lifecycleHook("k", "s2", true, true, dark.fetcher))
+      .toBe("its secret set again, enabled");
+    expect(dark.calls.at(-1)).toBe('PATCH /events/webhooks/w1 {"signatureSecret":"s2"}');
+    // dark after the cutover never turns it off.
+    await lifecycleHook("k", "s2", true, false, dark.fetcher);
+    expect(dark.hooks[1]!["enabled"]).toBe(true);
+    // routes with none held: registered enabled.
+    const routed = e2b([]);
+    expect(await lifecycleHook("k", "s", true, true, routed.fetcher)).toBe("registered, enabled");
+    // Without --yes, only the listing is read.
+    const planned = e2b([]);
+    expect(await lifecycleHook("k", "s", false, false, planned.fetcher))
+      .toBe("missing: registered, disabled");
+    expect(planned.calls).toEqual(["GET /events/webhooks"]);
+    // A failed listing or write stops the kit; two hooks for the URL are refused.
+    await expect(lifecycleHook("k", "s", true, false, e2b([], "GET").fetcher))
+      .rejects.toThrow(/listed its webhooks with 500/);
+    await expect(lifecycleHook("k", "s", true, false, e2b([], "POST").fetcher))
+      .rejects.toThrow(/refused the webhook with 500/);
+    await expect(lifecycleHook("k", "s", true, false,
+                               e2b([{ id: "a", url: E2B_HOOK.url }], "PATCH").fetcher))
+      .rejects.toThrow(/refused the webhook's change/);
+    await expect(lifecycleHook("k", "s", true, false,
+                               e2b([{ id: "a", url: E2B_HOOK.url },
+                                    { id: "b", url: E2B_HOOK.url }]).fetcher))
+      .rejects.toThrow(/holds 2 webhooks/);
+    // The hook's path is the doors' own, and a route hands it to them.
+    expect(E2B_HOOK.url).toBe(`https://tinyassets.io${E2B_HOOK_PATH}`);
+    expect(ROUTES.some((pattern) => pattern.endsWith("*")
+      && `tinyassets.io${E2B_HOOK_PATH}`.startsWith(pattern.slice(0, -1)))).toBe(true);
   });
 
   it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",
