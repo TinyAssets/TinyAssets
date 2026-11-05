@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import io
 import json
 import os
 import re
@@ -26,9 +27,10 @@ ISSUER = setup.OWNER_ISSUER
 CODE = "a180b1a3d263c81bc6441d7b990bae27d4c10679"
 PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n"
 
-pytestmark = pytest.mark.verifies(
-    "clean-sheet-platform:The owner's sign-in is the configured issuer's OpenID Connect flow"
-)
+# Each test names the requirement it holds, as a literal mark (no file-wide one). The review
+# App's own requirement, "A review verdict is a check run only the review App posts", is
+# proposed on land/6c and not on main yet: its tests name the nearest current one until it
+# lands.
 
 
 def _production_guard():
@@ -52,6 +54,7 @@ class Fake:
                  environments: dict[str, list | None] | None = None) -> None:
         self.secrets = {None: set(), "production": set(), "review": set(), **(secrets or {})}
         self.stored: dict[tuple[str | None, str], str] = {}
+        self.updated: dict[tuple[str | None, str], str] = {}
         self.variables = dict(variables or {})
         self.environments = dict(environments or {})
         self.calls: list[str] = []
@@ -66,7 +69,10 @@ class Fake:
             env, name = m.group(1), m.group(2)
             held = self.secrets.setdefault(env, set())
             if method == "GET":
-                return (200 if name in held else 404), {}
+                if name not in held:
+                    return 404, {}
+                return 200, {"name": name,
+                             "updated_at": self.updated.get((env, name), "2026-11-01T00:00:00Z")}
             if method == "DELETE":
                 if name not in held:
                     return 404, {}
@@ -122,6 +128,7 @@ def _gh_cli(fake: Fake, said: list[str]):
             env = argv[argv.index("--env") + 1] if "--env" in argv else None
             fake.secrets.setdefault(env, set()).add(argv[3])
             fake.stored[(env, argv[3])] = value
+            fake.updated[(env, argv[3])] = "2026-11-05T10:00:01Z"
             return _Done(0)
         if argv[1:3] == ["variable", "set"]:
             fake.variables[argv[3]] = value
@@ -155,6 +162,8 @@ def _no_value_shown(said: list[str], out: str, values) -> None:
 # --- the production secrets ----------------------------------------------------------------
 
 
+@pytest.mark.verifies(
+    "clean-sheet-platform:One keyring, held only by the gateway")
 def test_the_made_secrets_are_set_once_each_on_stdin_alone(capsys) -> None:
     fake, said = Fake(secrets={"production": {"GATEWAY_KEYRING"}}), []
     setup.made_secrets(_gh(fake, said))
@@ -171,6 +180,8 @@ def test_the_made_secrets_are_set_once_each_on_stdin_alone(capsys) -> None:
     assert all(line.startswith("gh api -i --method GET") for line in said[calls:])
 
 
+@pytest.mark.verifies(
+    "clean-sheet-platform:One keyring, held only by the gateway")
 def test_the_made_values_are_the_shapes_the_platform_reads() -> None:
     mac = setup.make_mac()
     assert len(base64.urlsafe_b64decode(mac + "=")) == 32 and "=" not in mac
@@ -184,7 +195,10 @@ def test_the_made_values_are_the_shapes_the_platform_reads() -> None:
 # --- WorkOS -----------------------------------------------------------------------------
 
 
-def test_workos_stores_a_pasted_production_key_then_retires_the_repository_copies(capsys):
+@pytest.mark.verifies(
+    "clean-sheet-platform:Sign-up is the platform's explicit admit, "
+    "and erasure its outside record")
+def test_workos_stores_a_pasted_key_and_leaves_the_repository_copies(capsys) -> None:
     fake = Fake(secrets={None: {"WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN"}})
     said: list[str] = []
     asked: list[str] = []
@@ -195,16 +209,57 @@ def test_workos_stores_a_pasted_production_key_then_retires_the_repository_copie
 
     setup.workos(_gh(fake, said), ask)
     assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_live_pasted"
-    assert fake.secrets[None] == set() and len(asked) == 1
+    assert len(asked) == 1
+    # The first step never deletes: the founder checks production's key first.
+    assert fake.secrets[None] == {"WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN"}
     out = capsys.readouterr().out
-    assert out.splitlines() == ["WORKOS_API_KEY: set", "WORKOS_API_KEY (repository): deleted",
-                                "WORKOS_AUTHKIT_DOMAIN (repository): deleted"]
+    assert out.splitlines()[0] == "WORKOS_API_KEY: set (updated 2026-11-05T10:00:01Z)"
+    assert "--delete-repo-copies" in out.splitlines()[1]
     _no_value_shown(said, out, ["sk_live_pasted"])
-    # Held already: nothing asked, nothing stored again.
+    # Held already: nothing asked, nothing stored again, and its time shown.
     setup.workos(_gh(fake, said), lambda _: pytest.fail("asked again"))
-    assert capsys.readouterr().out.splitlines()[0] == "WORKOS_API_KEY: already set"
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "WORKOS_API_KEY: already set (updated 2026-11-05T10:00:01Z)")
 
 
+@pytest.mark.verifies(
+    "clean-sheet-platform:Sign-up is the platform's explicit admit, "
+    "and erasure its outside record")
+def test_workos_deletes_the_repository_copies_only_when_asked_and_production_holds_it(
+        capsys) -> None:
+    fake = Fake(secrets={None: {"WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN"}})
+    with pytest.raises(setup.SetupError, match="production holds no WORKOS_API_KEY"):
+        setup.workos(_gh(fake), lambda _: pytest.fail("asked"), delete_repo_copies=True)
+    assert fake.secrets[None] == {"WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN"}
+    fake.secrets["production"].add("WORKOS_API_KEY")
+    fake.updated[("production", "WORKOS_API_KEY")] = "2026-11-05T09:00:00Z"
+    capsys.readouterr()
+    setup.workos(_gh(fake), lambda _: pytest.fail("asked"), delete_repo_copies=True)
+    assert fake.secrets[None] == set()
+    assert capsys.readouterr().out.splitlines() == [
+        "WORKOS_API_KEY: already set (updated 2026-11-05T09:00:00Z)",
+        "WORKOS_API_KEY (repository): deleted", "WORKOS_AUTHKIT_DOMAIN (repository): deleted"]
+    assert setup.main(["workos", "--delete-repo-copies"], gh=_gh(fake)) == 0
+
+
+@pytest.mark.verifies(
+    "clean-sheet-platform:Sign-up is the platform's explicit admit, "
+    "and erasure its outside record")
+def test_workos_reads_one_line_of_stdin_when_it_is_not_a_terminal(monkeypatch) -> None:
+    """An agent's shell, or `Get-Clipboard | python ...`: Windows' getpass reads only the
+    console, so a pipe is read as one line, its CR/LF stripped."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_live_piped\r\nignored\n"))
+    monkeypatch.setattr(setup.getpass, "getpass", lambda _: pytest.fail("prompted"))
+    assert setup.read_key("p") == "sk_live_piped"
+    fake = Fake()
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_live_piped\r\n"))
+    assert setup.main(["workos"], gh=_gh(fake)) == 0
+    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_live_piped"
+
+
+@pytest.mark.verifies(
+    "clean-sheet-platform:Sign-up is the platform's explicit admit, "
+    "and erasure its outside record")
 @pytest.mark.parametrize("pasted", ["sk_test_staging", "", "sk_live_a b", "client_01"])
 def test_workos_refuses_anything_but_one_production_key(pasted) -> None:
     fake = Fake(secrets={None: {"WORKOS_API_KEY"}})
@@ -214,9 +269,12 @@ def test_workos_refuses_anything_but_one_production_key(pasted) -> None:
     assert not pasted or pasted not in str(refused.value)
 
 
+@pytest.mark.verifies(
+    "clean-sheet-platform:Sign-up is the platform's explicit admit, "
+    "and erasure its outside record")
 def test_only_production_jobs_read_the_retired_repository_copies() -> None:
-    """The move deletes the repository copies: every job that reads one must be one the
-    `production` copy reaches."""
+    """The second step deletes the repository copies: every job that reads one must be one
+    the `production` copy reaches."""
     guard = _production_guard()
     readers = []
     for path in guard._workflow_files():
@@ -234,6 +292,9 @@ def _discovery(url: str):
     return 200, {"issuer": ISSUER}
 
 
+@pytest.mark.verifies(
+    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
+    "OpenID Connect flow")
 def test_the_variables_are_set_once_from_the_newest_main_receipt(capsys) -> None:
     fake, said = Fake(), []
     fake.receipts = {1: {"iss": "https://other", "auth_time": 1},
@@ -256,6 +317,9 @@ def test_the_variables_are_set_once_from_the_newest_main_receipt(capsys) -> None
     assert fake.variables["WORKOS_CLIENT_ID"] == "client_other"
 
 
+@pytest.mark.verifies(
+    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
+    "OpenID Connect flow")
 @pytest.mark.parametrize("receipt", [None, {"iss": ISSUER}, {"iss": "https://other",
                                                              "auth_time": 1},
                                      {"iss": ISSUER, "auth_time": "1"},
@@ -269,6 +333,9 @@ def test_owner_token_claims_needs_a_receipt_naming_the_issuer_with_auth_time(rec
     assert "OWNER_TOKEN_CLAIMS" not in fake.variables
 
 
+@pytest.mark.verifies(
+    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
+    "OpenID Connect flow")
 def test_an_issuer_whose_discovery_names_another_sets_nothing() -> None:
     fake = Fake()
     with pytest.raises(setup.SetupError, match="does not name"):
@@ -279,16 +346,19 @@ def test_an_issuer_whose_discovery_names_another_sets_nothing() -> None:
 # --- the review App ---------------------------------------------------------------------
 
 
-def _turn_in(fake: Fake, app: dict | None = None):
+def _turn_in(fake: Fake, app: dict | None = None, status: int = 201):
     def turn_in(code: str):
         fake.calls.append(f"POST conversions {code}")
-        return 201, app or {"id": 77, "slug": "tinyassets-review",
-                            "owner": {"login": "TinyAssets"}, "pem": PEM,
-                            "client_secret": "c", "webhook_secret": None}
+        return status, app or {"id": 77, "slug": "tinyassets-review",
+                               "owner": {"login": "TinyAssets"}, "pem": PEM,
+                               "client_secret": "c", "webhook_secret": None}
 
     return turn_in
 
 
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
 def test_the_review_app_key_goes_to_a_main_only_review_environment(capsys) -> None:
     fake, said = Fake(), []
     setup.review_app(CODE, _gh(fake, said), _turn_in(fake))
@@ -296,19 +366,60 @@ def test_the_review_app_key_goes_to_a_main_only_review_environment(capsys) -> No
     assert fake.secrets["review"] == {"REVIEW_APP_PRIVATE_KEY"}
     assert fake.stored[("review", "REVIEW_APP_PRIVATE_KEY")] == PEM
     assert fake.variables == {"REVIEW_APP_ID": "77"}
-    # The environment is main-only before the code is spent.
+    # The environment is main-only before the code is spent; the App is named, and its id
+    # set, before its key is stored.
     assert fake.calls.index("PUT /environments/review") < fake.calls.index(
         f"POST conversions {CODE}")
+    assert [line for line in said if line.startswith(("gh variable", "gh secret set"))] == [
+        f"gh variable set REVIEW_APP_ID --repo {REPO}",
+        f"gh secret set REVIEW_APP_PRIVATE_KEY --env review --repo {REPO}"]
     out = capsys.readouterr().out
     _no_value_shown(said, out, [PEM, "BEGIN RSA"])
+    assert out.splitlines()[1] == "App tinyassets-review: made, id 77"
     assert out.splitlines()[-1].endswith(
         "https://github.com/apps/tinyassets-review/installations/new")
-    # A second code is not spent while the key is held.
-    with pytest.raises(setup.SetupError, match="already set"):
-        setup.review_app("b" * 40, _gh(fake, said), _turn_in(fake))
+    # Run again with the key held: reported as set, the code not spent, no App to delete
+    # but one made just now.
+    setup.review_app("b" * 40, _gh(fake, said), _turn_in(fake))
     assert "POST conversions " + "b" * 40 not in fake.calls
+    again = capsys.readouterr().out.splitlines()[-1]
+    assert again.startswith("REVIEW_APP_PRIVATE_KEY: already set (App 77)")
+    assert "made just now" in again and "not App 77" in again
 
 
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
+def test_a_key_that_failed_to_store_names_its_app() -> None:
+    fake = Fake()
+
+    def run(argv, input=None, **kwargs):
+        if argv[1:3] == ["secret", "set"]:
+            return _Done(1)
+        return _gh_cli(fake, [])(argv, input=input, **kwargs)
+
+    with pytest.raises(setup.SetupError, match=r"App 77 \(tinyassets-review\) exists"):
+        setup.review_app(CODE, setup.Gh(run=run), _turn_in(fake))
+    assert fake.variables == {"REVIEW_APP_ID": "77"}
+    # A rerun with a spent code points at that App's key, not at making another App.
+    with pytest.raises(setup.SetupError, match="App 77 is REVIEW_APP_ID without its key"):
+        setup.review_app(CODE, _gh(fake), _turn_in(fake, status=404))
+
+
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
+def test_a_half_made_review_environment_is_finished_not_refused(capsys) -> None:
+    fake = Fake(environments={"review": []})
+    setup.review_app(CODE, _gh(fake), _turn_in(fake))
+    assert fake.environments["review"] == [("main", "branch")]
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "review environment: already there; limited to main now")
+
+
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
 @pytest.mark.parametrize("policy", [None, [("main", "branch"), ("release/*", "branch")],
                                     [("v*", "tag")]])
 def test_a_review_environment_open_to_other_refs_is_refused(policy) -> None:
@@ -316,8 +427,12 @@ def test_a_review_environment_open_to_other_refs_is_refused(policy) -> None:
     with pytest.raises(setup.SetupError, match="other branches than main"):
         setup.review_app(CODE, _gh(fake), _turn_in(fake))
     assert not [c for c in fake.calls if "conversions" in c]
+    assert fake.environments["review"] == policy
 
 
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
 def test_an_app_another_account_owns_is_not_stored() -> None:
     fake = Fake()
     other = {"id": 1, "slug": "x", "owner": {"login": "someone"}, "pem": PEM}
@@ -326,6 +441,9 @@ def test_an_app_another_account_owns_is_not_stored() -> None:
     assert fake.secrets["review"] == set() and fake.variables == {}
 
 
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
 @pytest.mark.parametrize(("given", "code"), [
     (CODE, CODE),
     (f"https://github.com/TinyAssets/TinyAssets?code={CODE}", CODE),
@@ -356,6 +474,9 @@ class _Form(HTMLParser):
             self.inputs.append(dict(attrs))
 
 
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
 def test_the_manifest_page_asks_for_the_review_app_and_nothing_more() -> None:
     page = _Form()
     page.feed(PAGE.read_text(encoding="utf-8"))
@@ -369,13 +490,16 @@ def test_the_manifest_page_asks_for_the_review_app_and_nothing_more() -> None:
         "hook_attributes": {"url": "https://tinyassets.io/", "active": False},
         "redirect_url": "https://github.com/TinyAssets/TinyAssets",
         "public": False,
-        "default_permissions": {"checks": "write", "statuses": "write", "metadata": "read"},
+        "default_permissions": {"checks": "write", "metadata": "read"},
         "default_events": []}
 
 
 # --- the command line, and the real subprocess path the founder's Windows machine takes -
 
 
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
 def test_a_refusal_exits_nonzero_and_names_no_value(capsys) -> None:
     fake = Fake(environments={"review": None})
     assert setup.main(["review-app", "--code", CODE], gh=_gh(fake)) == 1
@@ -384,6 +508,9 @@ def test_a_refusal_exits_nonzero_and_names_no_value(capsys) -> None:
     assert setup.main(["secrets"], gh=_gh(Fake())) == 0
 
 
+@pytest.mark.verifies(
+    "development-coordination-runtime:Gate-defining and authority-critical "
+    "changes need an exact-head review receipt")
 def test_the_real_gh_call_sends_bytes_and_no_shell(tmp_path, monkeypatch) -> None:
     """Through subprocess itself, as on the founder's machine: an argv list (no shell, so no
     quoting by hand), the value as bytes with its LF newlines kept, gh's answer read as
@@ -408,6 +535,9 @@ def test_the_real_gh_call_sends_bytes_and_no_shell(tmp_path, monkeypatch) -> Non
     assert gh.call("GET", "/x") == (200, {"n": "\u00e9"})
 
 
+@pytest.mark.verifies(
+    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
+    "OpenID Connect flow")
 def test_the_docs_give_the_windows_command() -> None:
     checklist = (ROOT / "platform/deploy/checklist.md").read_text(encoding="utf-8")
     for doc in (ROOT / "platform/deploy/checklist.md", ROOT / "docs/host-actions.md", PAGE,

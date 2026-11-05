@@ -22,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  DOORS, E2B_HOOK, handover, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  DOORS, E2B_HOOK, handover, hookPlan, hookSetsSecret, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
@@ -468,75 +468,79 @@ describe("the deploy kit", () => {
     }
   });
 
-  it("registers E2B's lifecycle webhook disabled in dark, sets its secret on every apply, " +
-     "and enables it only with the routes", async () => {
-    /** A fake of E2B's webhooks API: its hooks, and every call as `METHOD path body`. */
-    const e2b = (start: Json[], fail?: string) => {
-      const hooks = start.map((hook) => ({ ...hook }));
-      const calls: string[] = [];
-      const fetcher = async (url: string, init?: RequestInit) => {
-        const method = init?.method ?? "GET";
-        const path = url.replace("https://api.e2b.app", "");
-        calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
-        expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe("k");
-        if (fail === method) {
-          return new Response("", { status: 500 });
-        }
-        if (method === "GET") {
-          return Response.json(hooks);
-        }
-        const body = JSON.parse(String(init!.body)) as Json;
-        if (method === "POST") {
-          hooks.push({ id: "w1", ...body });
-          return Response.json({ id: "w1" }, { status: 201 });
-        }
-        const hook = hooks.find((each) => `/events/webhooks/${each["id"]}` === path)!;
-        Object.assign(hook, body);
-        return Response.json(hook);
-      };
-      return { hooks, calls, fetcher };
+  /** A fake of E2B's webhooks API: its hooks, and every call as `METHOD path body`. */
+  const e2b = (start: Json[], fail?: string) => {
+    const hooks = start.map((hook) => ({ ...hook }));
+    const calls: string[] = [];
+    const fetcher = async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const path = url.replace("https://api.e2b.app", "");
+      calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
+      expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe("k");
+      if (fail === method) {
+        return new Response("", { status: 500 });
+      }
+      if (method === "GET") {
+        return Response.json(hooks);
+      }
+      const body = JSON.parse(String(init!.body)) as Json;
+      if (method === "POST") {
+        hooks.push({ id: "w1", ...body });
+        return Response.json({ id: "w1" }, { status: 201 });
+      }
+      const hook = hooks.find((each) => `/events/webhooks/${each["id"]}` === path)!;
+      Object.assign(hook, body);
+      return Response.json(hook);
     };
+    return { hooks, calls, fetcher };
+  };
+  const EVENTS = ["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"];
+
+  it("registers E2B's lifecycle webhook disabled in dark, and enables it only with the " +
+     "routes", async () => {
     // dark, none held: registered disabled, with the stored secret, for the two events.
     const dark = e2b([{ id: "x", url: "https://elsewhere.test/hook", enabled: true }]);
-    expect(await lifecycleHook("k", "s1", true, false, dark.fetcher))
+    expect(await lifecycleHook("k", "s1", true, false, false, dark.fetcher))
       .toBe("registered, disabled");
     expect(dark.hooks[1]).toEqual({ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
-                                    events: ["sandbox.lifecycle.paused",
-                                             "sandbox.lifecycle.killed"],
-                                    enabled: false, signatureSecret: "s1" });
-    // dark again: the secret set again, never enabled, the other team hook untouched.
-    expect(await lifecycleHook("k", "s2", true, false, dark.fetcher))
-      .toBe("its secret set again, disabled");
-    expect(dark.calls.at(-1)).toBe('PATCH /events/webhooks/w1 {"signatureSecret":"s2"}');
+                                    events: EVENTS, enabled: false, signatureSecret: "s1" });
+    // dark again, the doors' secret not set this run: nothing sent; the other hook untouched.
+    const calls = dark.calls.length;
+    expect(await lifecycleHook("k", "s2", true, false, false, dark.fetcher))
+      .toBe("present, unchanged, disabled");
+    expect(dark.calls.slice(calls)).toEqual(["GET /events/webhooks"]);
     expect(dark.hooks[0]).toEqual({ id: "x", url: "https://elsewhere.test/hook", enabled: true });
-    // routes: enabled, after the handover; and a routes run later changes only the secret.
-    expect(await lifecycleHook("k", "s2", true, true, dark.fetcher))
-      .toBe("its secret set again, enabled");
-    expect(dark.calls.at(-1))
-      .toBe('PATCH /events/webhooks/w1 {"signatureSecret":"s2","enabled":true}');
-    expect(await lifecycleHook("k", "s2", true, true, dark.fetcher))
-      .toBe("its secret set again, enabled");
-    expect(dark.calls.at(-1)).toBe('PATCH /events/webhooks/w1 {"signatureSecret":"s2"}');
-    // dark after the cutover never turns it off.
-    await lifecycleHook("k", "s2", true, false, dark.fetcher);
+    // routes: enabled; a routes run later changes nothing; dark after it never turns it off.
+    expect(await lifecycleHook("k", "s2", true, true, false, dark.fetcher))
+      .toBe("present, enabled set, enabled");
+    expect(dark.calls.at(-1)).toBe('PATCH /events/webhooks/w1 {"enabled":true}');
+    expect(await lifecycleHook("k", "s2", true, true, false, dark.fetcher))
+      .toBe("present, unchanged, enabled");
+    await lifecycleHook("k", "s2", true, false, false, dark.fetcher);
     expect(dark.hooks[1]!["enabled"]).toBe(true);
+    // A held hook whose events drifted is given its two events back.
+    const drifted = e2b([{ id: "a", url: E2B_HOOK.url, enabled: false,
+                           events: ["sandbox.lifecycle.paused"] }]);
+    await lifecycleHook("k", "s", true, false, false, drifted.fetcher);
+    expect(drifted.hooks[0]!["events"]).toEqual(EVENTS);
     // routes with none held: registered enabled.
     const routed = e2b([]);
-    expect(await lifecycleHook("k", "s", true, true, routed.fetcher)).toBe("registered, enabled");
-    // Without --yes, only the listing is read.
+    expect(await lifecycleHook("k", "s", true, true, false, routed.fetcher))
+      .toBe("registered, enabled");
+    // Without apply, only the listing is read: the kit's check before any change.
     const planned = e2b([]);
-    expect(await lifecycleHook("k", "s", false, false, planned.fetcher))
-      .toBe("missing: registered, disabled");
+    expect(await lifecycleHook("k", "s", false, true, true, planned.fetcher))
+      .toBe("missing: registered, enabled");
     expect(planned.calls).toEqual(["GET /events/webhooks"]);
     // A failed listing or write stops the kit; two hooks for the URL are refused.
-    await expect(lifecycleHook("k", "s", true, false, e2b([], "GET").fetcher))
+    await expect(lifecycleHook("k", "s", false, false, false, e2b([], "GET").fetcher))
       .rejects.toThrow(/listed its webhooks with 500/);
-    await expect(lifecycleHook("k", "s", true, false, e2b([], "POST").fetcher))
+    await expect(lifecycleHook("k", "s", true, false, false, e2b([], "POST").fetcher))
       .rejects.toThrow(/refused the webhook with 500/);
-    await expect(lifecycleHook("k", "s", true, false,
+    await expect(lifecycleHook("k", "s", true, false, true,
                                e2b([{ id: "a", url: E2B_HOOK.url }], "PATCH").fetcher))
       .rejects.toThrow(/refused the webhook's change/);
-    await expect(lifecycleHook("k", "s", true, false,
+    await expect(lifecycleHook("k", "s", false, false, false,
                                e2b([{ id: "a", url: E2B_HOOK.url },
                                     { id: "b", url: E2B_HOOK.url }]).fetcher))
       .rejects.toThrow(/holds 2 webhooks/);
@@ -544,6 +548,72 @@ describe("the deploy kit", () => {
     expect(E2B_HOOK.url).toBe(`https://tinyassets.io${E2B_HOOK_PATH}`);
     expect(ROUTES.some((pattern) => pattern.endsWith("*")
       && `tinyassets.io${E2B_HOOK_PATH}`.startsWith(pattern.slice(0, -1)))).toBe(true);
+  });
+
+  it("changes E2B's webhook secret only with the doors' copy: both or neither", async () => {
+    // The doors hold E2B_WEBHOOK_SECRET and production's value was replaced: without
+    // --rotate the doors keep theirs, so E2B keeps its own too.
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
+                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
+    const kept = secretPlan(held, new Set(), null);
+    expect(kept.some((step) => step.name === "E2B_WEBHOOK_SECRET")).toBe(false);
+    const neither = e2b([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+                           signatureSecret: "old" }]);
+    await lifecycleHook("k", "new", true, true, hookSetsSecret(kept), neither.fetcher);
+    expect(neither.hooks[0]!["signatureSecret"]).toBe("old");
+    // With --rotate E2B_WEBHOOK_SECRET the doors take the new value, and E2B does too.
+    const rotated = secretPlan(held, new Set(["E2B_WEBHOOK_SECRET"]), null);
+    expect(rotated).toContainEqual({ worker: "doors", name: "E2B_WEBHOOK_SECRET" });
+    const both = e2b([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+                        signatureSecret: "old" }]);
+    await lifecycleHook("k", "new", true, true, hookSetsSecret(rotated), both.fetcher);
+    expect(both.hooks[0]!["signatureSecret"]).toBe("new");
+    // The doors missing it (a first deploy) sets both as well.
+    const first = secretPlan({ ...held, doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"] },
+                             new Set(), null);
+    expect(hookSetsSecret(first)).toBe(true);
+  });
+
+  it("touches the webhook only where each mode allows, and the kit wires it so", () => {
+    // The plan reaches no E2B; dark registers disabled after the secrets; routes enables only
+    // after the routes; both check the hook with the live checks first.
+    expect(hookPlan({ open: true, routes: false })).toEqual({ check: false, at: "none",
+                                                              enable: false });
+    expect(hookPlan({ open: true, routes: true })).toEqual({ check: false, at: "none",
+                                                             enable: false });
+    expect(hookPlan({ open: false, routes: false })).toEqual({ check: true, at: "secrets",
+                                                               enable: false });
+    expect(hookPlan({ open: false, routes: true })).toEqual({ check: true, at: "routes",
+                                                              enable: true });
+    // main() follows the plan in this order: the check, before the routes are read; the
+    // secrets; the dark step; the handover; the routes step. Its one lifecycleHook call
+    // takes the plan's `enable`, and the account id is masked as soon as it is known.
+    const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
+    const body = kit.slice(kit.indexOf("async function main()"));
+    const at = (needle: string) => {
+      const found = body.indexOf(needle);
+      expect([needle, found]).not.toEqual([needle, -1]);
+      expect([needle, body.indexOf(needle, found + 1)]).toEqual([needle, -1]);
+      return found;
+    };
+    const order = [
+      at("const { id: zone, account } = await zoneOf(api);"),
+      at("console.log(`::add-mask::${account}`);"),
+      at("process.env[\"CLOUDFLARE_ACCOUNT_ID\"] = account;"),
+      at("const hookAt = hookPlan({ open, routes });"),
+      at("if (hookAt.check) {\n    await hook(false, false);\n  }"),
+      at("steps = handover(await routesOf(api, zone), DOORS, ROUTES);"),
+      at("const hookSecret = hookSetsSecret(setting);"),
+      at("if (hookAt.at === \"secrets\") {\n      plan.push(`E2B lifecycle webhook ${" +
+         "E2B_HOOK.url}: ${await hook(apply, hookSecret)}`);"),
+      at("await runHandover(api, zone, DOORS, steps);"),
+      at("if (hookAt.at === \"routes\") {"),
+    ];
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(body.match(/lifecycleHook\(/g)).toHaveLength(1);
+    expect(body).toContain("input(\"E2B_WEBHOOK_SECRET\")!, change, hookAt.enable, setSecret)");
+    expect(body.match(/await hook\(/g)).toHaveLength(3);
   });
 
   it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",

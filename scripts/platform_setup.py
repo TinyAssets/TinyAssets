@@ -7,7 +7,8 @@ on disk or in the output, which names each value and its status, nothing more.
 
     python scripts/platform_setup.py secrets    # ROUTING_MAC_KEY, E2B_WEBHOOK_SECRET, the keyrings
     python scripts/platform_setup.py variables  # OWNER_ISSUER, WORKOS_CLIENT_ID, OWNER_TOKEN_CLAIMS
-    python scripts/platform_setup.py workos     # a pasted production WorkOS key into `production`
+    Get-Clipboard | python scripts/platform_setup.py workos   # a WorkOS key into `production`
+    python scripts/platform_setup.py workos --delete-repo-copies  # then the repository copies
     python scripts/platform_setup.py review-app --code "<code, or the URL GitHub landed on>"
 
 `variables` needs one uptime canary run on `main` after this change lands: OWNER_TOKEN_CLAIMS
@@ -100,11 +101,18 @@ class Gh:
     def _secrets(env: str | None) -> str:
         return f"/environments/{env}/secrets" if env else "/actions/secrets"
 
+    def secret(self, name: str, env: str | None) -> dict | None:
+        """The held secret's record (its name and `updated_at`; GitHub never returns a
+        value), or None when it is absent."""
+        status, body = self.call("GET", f"{self._secrets(env)}/{name}")
+        if status == 404:
+            return None
+        if status != 200:
+            raise SetupError(f"reading whether {name} is set failed ({status})")
+        return body if isinstance(body, dict) else {}
+
     def has_secret(self, name: str, env: str | None) -> bool:
-        status, _ = self.call("GET", f"{self._secrets(env)}/{name}")
-        if status in (200, 404):
-            return status == 200
-        raise SetupError(f"reading whether {name} is set failed ({status})")
+        return self.secret(name, env) is not None
 
     def set_secret(self, name: str, value: str, env: str | None) -> None:
         """`gh secret set`, the value on stdin: gh seals it to the environment's key."""
@@ -205,20 +213,48 @@ def bare(text: str) -> str:
     return text.strip().strip("'\"").strip()
 
 
-def workos(gh: Gh, ask: Callable[[str], str] = getpass.getpass) -> None:
-    """A production WorkOS key, pasted at a prompt that does not echo, into `production`;
-    then the repository-level copies retired. Asks nothing when `production` holds one."""
-    if gh.has_secret(WORKOS_KEY, PRODUCTION):
-        say(WORKOS_KEY, "already set")
+def read_key(prompt: str) -> str:
+    """The pasted key: one line of stdin when it is not a terminal (an agent's shell, or
+    `Get-Clipboard | python ...`; Windows' getpass reads only the console), else a prompt
+    that does not echo."""
+    if not sys.stdin.isatty():
+        return sys.stdin.readline().rstrip("\r\n")
+    return getpass.getpass(prompt)
+
+
+def _held(record: dict) -> str:
+    return f"already set (updated {record.get('updated_at', 'at an unknown time')})"
+
+
+def workos(gh: Gh, ask: Callable[[str], str] = read_key, *,
+           delete_repo_copies: bool = False) -> None:
+    """Two steps. First: a production WorkOS key, from stdin or a prompt that does not
+    echo, into `production`, only when it holds none; a held one is shown with its
+    `updated_at`. Then, with `delete_repo_copies` and only once `production` holds the key,
+    the repository-level copies are deleted; nothing is asked in that step."""
+    held = gh.secret(WORKOS_KEY, PRODUCTION)
+    if delete_repo_copies:
+        if held is None:
+            raise SetupError(f"production holds no {WORKOS_KEY}: store it first; the "
+                             "repository copies are left")
+        say(WORKOS_KEY, _held(held))
+        for name in WORKOS_REPO_COPIES:
+            say(f"{name} (repository)", "deleted" if gh.delete_secret(name, None)
+                else "already gone")
+        return
+    if held is not None:
+        say(WORKOS_KEY, _held(held))
     else:
         value = bare(ask("Paste the production WorkOS API key (sk_live_..., not shown): "))
         if not live_workos_key(value):
             raise SetupError("that is not a production WorkOS key (sk_live_): nothing stored")
         gh.set_secret(WORKOS_KEY, value, PRODUCTION)
-        say(WORKOS_KEY, "set")
-    for name in WORKOS_REPO_COPIES:
-        say(f"{name} (repository)", "deleted" if gh.delete_secret(name, None)
-            else "already gone")
+        stored = gh.secret(WORKOS_KEY, PRODUCTION)
+        if stored is None:
+            raise SetupError(f"{WORKOS_KEY} does not read back from production")
+        say(WORKOS_KEY, f"set (updated {stored.get('updated_at', 'now')})")
+    say("repository copies", "left: once production's key above is the one you made, run "
+                             "workos --delete-repo-copies")
 
 
 # --- the repository variables ----------------------------------------------------------
@@ -307,17 +343,26 @@ def convert(code: str) -> tuple[int, object]:
         return error.code, None
 
 
-def _main_only(gh: Gh, env: str) -> bool:
+def _policies(gh: Gh, env: str) -> list[tuple[object, object]] | None:
+    """The environment's branch policies, or None when it takes branches by no list of
+    its own (all, or protected ones)."""
     status, record = gh.call("GET", f"/environments/{env}")
     if status != 200 or not isinstance(record, dict):
         raise SetupError(f"reading the {env} environment failed ({status})")
     if record.get("deployment_branch_policy") != MAIN_ONLY:
-        return False
+        return None
     status, policies = gh.call("GET", f"/environments/{env}/deployment-branch-policies")
     if status != 200 or not isinstance(policies, dict):
         raise SetupError(f"reading the {env} environment's branches failed ({status})")
     return [(p.get("name"), p.get("type", "branch")) for p in
-            policies.get("branch_policies") or []] == [("main", "branch")]
+            policies.get("branch_policies") or []]
+
+
+def _limit_to_main(gh: Gh, env: str) -> None:
+    status, _ = gh.call("POST", f"/environments/{env}/deployment-branch-policies",
+                        {"name": "main", "type": "branch"})
+    if status != 200:
+        raise SetupError(f"limiting the {env} environment to main failed ({status})")
 
 
 def ensure_environment(gh: Gh, env: str = REVIEW) -> str:
@@ -328,16 +373,17 @@ def ensure_environment(gh: Gh, env: str = REVIEW) -> str:
                             {"deployment_branch_policy": MAIN_ONLY})
         if status != 200:
             raise SetupError(f"making the {env} environment failed ({status})")
-        status, _ = gh.call("POST", f"/environments/{env}/deployment-branch-policies",
-                            {"name": "main", "type": "branch"})
-        if status != 200:
-            raise SetupError(f"limiting the {env} environment to main failed ({status})")
+        _limit_to_main(gh, env)
         made = "made, main only"
     elif status == 200:
         made = "already there"
+        if _policies(gh, env) == []:
+            # Made by a run that stopped before its policy: finish it.
+            _limit_to_main(gh, env)
+            made = "already there; limited to main now"
     else:
         raise SetupError(f"reading the {env} environment failed ({status})")
-    if not _main_only(gh, env):
+    if _policies(gh, env) != [("main", "branch")]:
         raise SetupError(f"the {env} environment takes other branches than main: limit it to "
                          "main (Settings > Environments) and run this again")
     return made
@@ -348,11 +394,18 @@ def review_app(code: str, gh: Gh, turn_in: Fetch = convert) -> None:
     Whoever turns the code in first gets the key, so this runs only on the founder's own
     computer, the hour the App is made."""
     say(f"{REVIEW} environment", ensure_environment(gh))
+    held_id = gh.variable(REVIEW_ID)
     if gh.has_secret(REVIEW_KEY, REVIEW):
-        raise SetupError(f"{REVIEW_KEY} is already set; the code was not used: delete the App "
-                         "it made (organization settings, GitHub Apps)")
+        say(REVIEW_KEY, f"already set (App {held_id or 'id unknown'}); the code was not "
+                        "turned in: if it came from an App made just now, delete that one, "
+                        f"not App {held_id or 'the one installed'}")
+        return
     status, app = turn_in(code)
     if status != 201 or not isinstance(app, dict):
+        if held_id:
+            raise SetupError(f"GitHub refused the code ({status}); App {held_id} is "
+                             f"{REVIEW_ID} without its key: generate a private key in its "
+                             "settings and store it with gh secret set")
         raise SetupError(f"GitHub refused the code ({status}): it is one-time and lasts an "
                          "hour; make the App again from the page")
     slug = str(app.get("slug", ""))
@@ -363,14 +416,17 @@ def review_app(code: str, gh: Gh, turn_in: Fetch = convert) -> None:
     pem = str(app.get("pem", ""))
     if not pem.startswith("-----BEGIN RSA PRIVATE KEY-----"):
         raise SetupError(f"the App {slug} came back with no private key")
+    app_id = str(int(app["id"]))
+    # Neither is secret: named before anything is stored, so a failure below names its App.
+    say(f"App {slug}", f"made, id {app_id}")
+    say(REVIEW_ID, gh.set_variable(REVIEW_ID, app_id, replace=True))
     try:
         gh.set_secret(REVIEW_KEY, pem, REVIEW)
     except SetupError as error:
-        raise SetupError(f"{error}; the App {slug} exists: generate a private key in its "
-                         "settings and store it with gh secret set") from None
+        raise SetupError(f"{error}; App {app_id} ({slug}) exists: generate a private key in "
+                         "its settings and store it with gh secret set") from None
     say(REVIEW_KEY, f"set ({REVIEW})")
-    say(REVIEW_ID, gh.set_variable(REVIEW_ID, str(int(app["id"])), replace=True))
-    say(f"App {slug}", f"made; install it on {REPO} alone: "
+    say(f"App {slug}", f"install it on {REPO} alone: "
                        f"https://github.com/apps/{slug}/installations/new")
 
 
@@ -383,7 +439,10 @@ def main(argv: list[str] | None = None, gh: Gh | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("secrets")
     sub.add_parser("variables")
-    sub.add_parser("workos")
+    work = sub.add_parser("workos")
+    work.add_argument("--delete-repo-copies", action="store_true",
+                      help="the second step: delete the repository-level copies, once "
+                           "production holds the key")
     app = sub.add_parser("review-app")
     app.add_argument("--code", required=True,
                      help="the code, or the whole URL GitHub redirected to")
@@ -396,7 +455,7 @@ def main(argv: list[str] | None = None, gh: Gh | None = None) -> int:
             if not variables(gh):
                 return 1
         elif args.command == "workos":
-            workos(gh)
+            workos(gh, delete_repo_copies=args.delete_repo_copies)
         else:
             review_app(code_of(args.code), gh)
     except SetupError as error:

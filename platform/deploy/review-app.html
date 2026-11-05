@@ -39,13 +39,12 @@
 <main>
   <h1>Make the TinyAssets Review App</h1>
   <p>One click makes a private GitHub App owned by the TinyAssets organization. It has no
-    webhook and three repository permissions: checks (write), commit statuses (write)
-    and metadata (read).</p>
+    webhook and two repository permissions: checks (write) and metadata (read).</p>
   <!-- GitHub's App manifest flow, step 1: a POST of `manifest` to the organization's
        new-App page (docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). -->
   <form action="https://github.com/organizations/TinyAssets/settings/apps/new" method="post"
         target="_blank">
-    <input type="hidden" name="manifest" value='{"name": "TinyAssets Review", "url": "https://tinyassets.io", "hook_attributes": {"url": "https://tinyassets.io/", "active": false}, "redirect_url": "https://github.com/TinyAssets/TinyAssets", "public": false, "default_permissions": {"checks": "write", "statuses": "write", "metadata": "read"}, "default_events": []}'>
+    <input type="hidden" name="manifest" value='{"name": "TinyAssets Review", "url": "https://tinyassets.io", "hook_attributes": {"url": "https://tinyassets.io/", "active": false}, "redirect_url": "https://github.com/TinyAssets/TinyAssets", "public": false, "default_permissions": {"checks": "write", "metadata": "read"}, "default_events": []}'>
     <button type="submit">Make the App on GitHub</button>
   </form>
   <ol>

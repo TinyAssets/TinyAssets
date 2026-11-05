@@ -35,11 +35,14 @@ absent, goes to GitHub on stdin, and is never shown. Your part is in bold.
    `GATEWAY_KEYRING` and `FILES_KEYRING` (each keyring made in memory, in the shape
    `deploy.ts keyring-new` writes).
 2. **Make a production WorkOS API key** in the WorkOS dashboard (API Keys, the production
-   environment; name it `github-production`) and paste it at the prompt of
-   `python scripts/platform_setup.py workos`, which does not echo. It must start `sk_live_`.
-   It is stored in `production`, then the repository-level `WORKOS_API_KEY` and
-   `WORKOS_AUTHKIT_DOMAIN` are deleted (only `production` jobs read them). The host keeps
-   its own key.
+   environment; name it `github-production`) and **copy it**: it goes from your clipboard
+   straight to the script, never into the chat or a command line. Two steps:
+   - `Get-Clipboard | python scripts/platform_setup.py workos` (PowerShell) stores it in
+     `production` if `production` holds none, after checking it starts `sk_live_`, and
+     prints when `production`'s key was last updated. A held key is never replaced.
+   - Once that time is the key you just made, `python scripts/platform_setup.py workos
+     --delete-repo-copies` deletes the repository-level `WORKOS_API_KEY` and
+     `WORKOS_AUTHKIT_DOMAIN` (only `production` jobs read them). The host keeps its own key.
 3. **Make the review App.** Open the review App page (`platform/deploy/review-app.html`),
    click its button, then **Create GitHub App** on GitHub (you must be an owner of the
    organization). GitHub lands on the repository with `?code=` in the address bar: give
