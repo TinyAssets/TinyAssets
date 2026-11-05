@@ -1,0 +1,9 @@
+{
+  "1": {
+    "commands": ["adopt", "cancel", "launch", "login-cancel", "login-drop", "login-input",
+                 "login-launch", "login-probe", "login-run", "matcher-probe", "prepare",
+                 "quiet-wait", "recover", "renew-wait", "renewed", "route-probe", "run",
+                 "signin-check", "state", "status", "sync"],
+    "state": ["live", "protocol", "quiet"]
+  }
+}

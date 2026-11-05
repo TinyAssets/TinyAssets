@@ -124,7 +124,8 @@ function hooksWorker() {
 
 /**
  * The real sandbox Worker, as the SANDBOX service binding's target: bundled by wrangler from
- * its own config, with its own runtime, flags and class, its directory a namespace of its
+ * its own config (its build, the runner's bundle, included), with its own runtime, flags
+ * and class, its directory a namespace of its
  * own (no control record in it, so it starts nothing: `sandbox_unconfigured`), and a key
  * that reaches no E2B (its every fetch goes to the gateway's fake upstream). Its behaviour
  * against E2B is its own package's tests (`sandbox/test`).
@@ -142,8 +143,12 @@ function sandboxWorker() {
     return {
       name: sandbox.name,
       modulesRoot: SANDBOX,
+      // The entry, then the runner it ships, a data module (`sandbox/src/runner-bytes.ts`).
       modules: [{ type: "ESModule" as const, path: join(SANDBOX, "index.js"),
-                  contents: readFileSync(join(out, "index.js"), "utf8") }],
+                  contents: readFileSync(join(out, "index.js"), "utf8") },
+                ...readdirSync(out).filter((file) => file.endsWith("-runner.mjs"))
+                  .map((file) => ({ type: "Data" as const, path: join(SANDBOX, file),
+                                    contents: readFileSync(join(out, file)) }))],
       compatibilityDate: sandbox.compatibility_date,
       compatibilityFlags: sandbox.compatibility_flags,
       bindings: { E2B_API_KEY: "e2b_unused_in_owner_tests", E2B_TEMPLATE: "none" },

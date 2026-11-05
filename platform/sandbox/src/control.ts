@@ -25,6 +25,22 @@
  * 4. the run's start document goes into the state directory and `ta-runner launch` starts
  *    the run's runner, detached; the answer comes at once.
  *
+ * **The runner** is this Worker's own (`runner-bytes.ts`): the template bakes only its loader
+ * (`template/ta-runner`), and every command names the runner by its SHA-256, which the
+ * loader checks before it runs it. A sandbox runs the digest its row holds; a new one is
+ * uploaded and installed (`ta-runner install`) at its create, and a sandbox whose row holds
+ * another adopts this Worker's at a start or resume that finds nothing living in it
+ * (`state`), never under a live run or sign-in, whose children start again from their own
+ * bytes: installed, `adopt`ed (the disk held to its format), the row committed, and only
+ * then the adopted runner's `prepare` (at a resume, the one `prepare` it runs), which drops
+ * the other runners' bytes, so no row ever names bytes that are gone. An adoption that fails
+ * on the way (a full disk, envd failing) is logged loudly (`sandbox_runner_adopt_failed`)
+ * and the sandbox goes on with the runner it has, asked again at its next start. The
+ * loader's absent (24) has the Worker's own digest uploaded and installed and the command
+ * asked again, once; its mismatch (25) is the alert `sandbox_runner_mismatch`, thrown, and
+ * nothing launches. A runner speaking a protocol this Worker does not (`SPEAKS`) is
+ * refused the same way (`sandbox_runner_protocol`).
+ *
  * **The look** (the alarm; the founder's rule of 2026-11-03): a sandbox may run
  * `runtime_ceiling_s` at a stretch, and a pause resets that window (probed). The window's
  * end is E2B's own `endAt`, kept on each row so a look that cannot reach E2B still knows
@@ -55,11 +71,16 @@ import type { SandboxSignin, SandboxStart, Started } from "../../owner/src/sandb
 import { METER_BATCH, type MeterEvent } from "../../owner/src/sandbox-time";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
+import { SPEAKS } from "../runner/protocol";
+
+import { runnerBytes, runnerDigest } from "./runner-bytes";
 import { SLOTS, type SandboxSlots } from "./slots";
 
-/** The runner's command in the template, and its root-only state directory. */
+/** The runner's loader in the template, and its root-only state directory. */
 export const RUNNER = "/usr/local/bin/ta-runner";
 export const STATE_DIR = "/var/lib/ta";
+/** Where a runner's bytes are uploaded for the loader to install (root-only). */
+export const INCOMING = `${STATE_DIR}/incoming`;
 
 /** The start's fixed answers, beside `started: true`. */
 export const CODES = Object.freeze({
@@ -72,6 +93,26 @@ export const CODES = Object.freeze({
 /** The runner's exit codes: done, "no" (not signed in, not live), and anything else a fault. */
 const OK = 0;
 const NO = 3;
+/** The loader's: no runner of that digest in the sandbox; its bytes are not their digest. */
+export const ABSENT = 24;
+export const MISMATCH = 25;
+
+/** A runner command that did not answer 0 or 3: its exit code kept. */
+export class RunnerFailed extends Error {
+  override readonly name = "RunnerFailed";
+  constructor(readonly exitCode: number, message: string) {
+    super(message);
+  }
+}
+
+/**
+ * The sandbox's runner refused for good (the founder's alert): its bytes are not their
+ * digest (`sandbox_runner_mismatch`), or it speaks a protocol this Worker does not
+ * (`sandbox_runner_protocol`). Nothing runs on it; an adoption never hides it.
+ */
+export class RunnerRefused extends Error {
+  override readonly name = "RunnerRefused";
+}
 
 /**
  * A runner command's deadline: the lease's TTL. The owner's object settles a run whose
@@ -145,6 +186,13 @@ interface Row {
   /** A pending resume or pause E2B did not take: when it is asked again, and how often it was. */
   retry_at: number | null;
   tries: number;
+  /** The runner's digest the sandbox runs: this Worker's at its create, or adopted since. */
+  runner: string;
+}
+
+/** A running sandbox's handle, and the runner's digest its commands name. */
+interface Box extends Handle {
+  readonly runner: string;
 }
 
 const RUN = /^run_[0-9a-f]{32}$/;
@@ -242,9 +290,10 @@ export async function ownerTag(owner: string): Promise<string> {
   return opaque(`ta_owner\n${owner}`);
 }
 
-function handleOf(found: SandboxInfo): Handle | null {
+function handleOf(found: SandboxInfo, row: { runner: string }): Box | null {
   return found.state === "running" && found.envdAccessToken !== null
-    ? { sandboxID: found.sandboxID, envdAccessToken: found.envdAccessToken } : null;
+    ? { sandboxID: found.sandboxID, envdAccessToken: found.envdAccessToken, runner: row.runner }
+    : null;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -254,20 +303,29 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /** The one chain every E2B change of this owner's sandboxes runs on, in order. */
   #chain: Promise<unknown> = Promise.resolve();
   readonly #e2b: () => E2b;
+  /** The digest of the runner this Worker ships, computed once an instance. */
+  readonly #digest: Promise<string>;
 
   constructor(ctx: DurableObjectState, env: SandboxEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     this.#schema();
     this.#e2b = () => new E2b(env.E2B_API_KEY);
+    this.#digest = runnerDigest();
   }
 
+  /**
+   * This object's tables. The platform's migration rule (the owner's `migrations.json`):
+   * until the first deploy (`first_deploy` null there, and no deploy kit run has ever
+   * deployed this Worker) the baseline is edited in place, as `runner` was added to it;
+   * from the first deploy on, a change is a migration after it, never an edit.
+   */
   #schema(): void {
     this.#sql.exec("CREATE TABLE IF NOT EXISTS sandboxes (authority TEXT PRIMARY KEY, " +
                      "sandbox_id TEXT NOT NULL, lease_id TEXT, end_at REAL NOT NULL, " +
                      "renewing INTEGER NOT NULL DEFAULT 0, releasing INTEGER NOT NULL " +
                      "DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0, idle_since REAL, retry_at REAL, " +
-                     "tries INTEGER NOT NULL DEFAULT 0)");
+                     "tries INTEGER NOT NULL DEFAULT 0, runner TEXT NOT NULL)");
     this.#sql.exec("CREATE TABLE IF NOT EXISTS launched (run TEXT PRIMARY KEY, " +
                      "authority TEXT NOT NULL, lease_id TEXT NOT NULL)");
     // The control record's sandbox numbers as last read, and the looks failed in a row.
@@ -404,38 +462,117 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("UPDATE sandboxes SET paused = 1 WHERE authority = ?", authority);
   }
 
-  async #run(handle: Handle, argv: readonly string[], timeoutMs = COMMAND_MS):
+  /**
+   * A runner command, by the digest the sandbox runs. The loader finding no runner of this
+   * Worker's digest has it installed and is asked again, once; any other digest absent, or
+   * bytes that are not their digest, are thrown.
+   */
+  async #run(box: Box, argv: readonly string[], timeoutMs = COMMAND_MS):
       Promise<{ code: number; out: string }> {
-    const done = await this.#e2b().exec(handle, [RUNNER, ...argv], { timeoutMs });
+    let done = await this.#e2b().exec(box, [RUNNER, box.runner, ...argv], { timeoutMs });
+    if (done.exitCode === ABSENT && box.runner === await this.#digest) {
+      await this.#install(box);
+      done = await this.#e2b().exec(box, [RUNNER, box.runner, ...argv], { timeoutMs });
+    }
+    if (done.exitCode === MISMATCH) {
+      const message = `sandbox_runner_mismatch: the runner ${box.runner} in sandbox ${
+        box.sandboxID} is not its digest; nothing runs on it`;
+      console.error(message);
+      throw new RunnerRefused(message);
+    }
     if (done.exitCode !== OK && done.exitCode !== NO) {
-      throw new Error(`ta-runner ${argv[0]} failed (${done.exitCode}): ${
+      throw new RunnerFailed(done.exitCode, `ta-runner ${argv[0]} failed (${done.exitCode}): ${
         done.stderr}`);
     }
     return { code: done.exitCode, out: done.stdout };
   }
 
+  /** This Worker's runner uploaded into the sandbox and installed by the loader. */
+  async #install(handle: Handle): Promise<void> {
+    const digest = await this.#digest;
+    const e2b = this.#e2b();
+    await e2b.upload(handle, `${INCOMING}/${digest}`, runnerBytes());
+    const done = await e2b.exec(handle, [RUNNER, "install", digest], { timeoutMs: COMMAND_MS });
+    if (done.exitCode !== OK) {
+      throw new Error(`the runner ${digest} was not installed (${done.exitCode}): ${
+        done.stderr}`);
+    }
+  }
+
+  /**
+   * The sandbox on this Worker's runner, when it runs another and nothing lives in it (no
+   * run, no sign-in): installed, `adopt`ed (the disk held to its format; nothing deleted)
+   * and committed to its row, its caller then running the adopted runner's `prepare`, which
+   * drops the other runners' bytes. Otherwise as it is: a live run's runner stays. A
+   * failure on the way keeps the runner it has (logged loudly, asked again at the next
+   * start): an adoption is never what fails a start. Only a refusal (`RunnerRefused`) is
+   * thrown. Whether it adopted.
+   */
+  async #adopt(authority: string, box: Box): Promise<{ box: Box; adopted: boolean }> {
+    const digest = await this.#digest;
+    if (box.runner === digest) {
+      return { box, adopted: false };
+    }
+    try {
+      let live: number;
+      try {
+        live = (await this.#runnerState(box)).live;
+      } catch (error) {
+        if (!(error instanceof RunnerFailed) || error.exitCode !== ABSENT) {
+          throw error;
+        }
+        live = 0;  // its own runner gone from the disk: nothing can live on it
+      }
+      if (live > 0) {
+        return { box, adopted: false };
+      }
+      const adopted = { ...box, runner: digest };
+      await this.#install(adopted);
+      if ((await this.#run(adopted, ["adopt"])).code !== OK) {
+        return { box, adopted: false };  // something began living since the look
+      }
+      this.#sql.exec("UPDATE sandboxes SET runner = ? WHERE authority = ?", digest, authority);
+      return { box: adopted, adopted: true };
+    } catch (error) {
+      if (error instanceof RunnerRefused) {
+        throw error;
+      }
+      console.error(`sandbox_runner_adopt_failed: sandbox ${box.sandboxID} keeps its runner ${
+        box.runner}, and this Worker's ${digest} is tried again at its next start`, error);
+      return { box, adopted: false };
+    }
+  }
+
   /** A sandbox just running: its resolver pinned, `/proc` hidden, its lockdown re-checked. */
-  async #prepare(handle: Handle, network: E2bNetwork): Promise<void> {
+  async #prepare(box: Box, network: E2bNetwork): Promise<void> {
     const servers = network.dnsServers.length > 0 ? network.dnsServers : DNS_SERVERS;
-    await this.#run(handle, ["prepare", ...servers]);
+    await this.#run(box, ["prepare", ...servers]);
   }
 
   /**
    * A paused sandbox resumed (memory restored, or rebooted when E2B kept its files only):
    * prepared again, and its runs told (`renewed`) or restarted from disk (`recover`). Null
-   * when E2B has it no more. E2B's refusal for room is thrown (`noRoom`).
+   * when E2B has it no more. E2B's refusal for room is thrown (`noRoom`). A start's resume
+   * (`adopt`) of a sandbox resumed with its memory and no renewal pending adopts this
+   * Worker's runner first when nothing lives, so the one `prepare` is the adopted runner's;
+   * a rebooted one's runs restart under the runner that launched them.
    */
   async #resume(row: Row, found: SandboxInfo, network: E2bNetwork | null,
-                ceilings: SandboxCeilings): Promise<Handle | null> {
+                ceilings: SandboxCeilings, adopt = false): Promise<Box | null> {
     const e2b = this.#e2b();
     this.#ended(found);  // a pause E2B made on its own is logged before the resume
     const resumed = await e2b.connect(found.sandboxID, ceilings.runtime_ceiling_s);
     if (resumed === null) {
       return null;
     }
-    const handle = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken };
+    // Its own runner: the one that wrote its disk and launched its runs.
+    let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
+                        runner: row.runner };
     if (network !== null) {
       await e2b.network(resumed.sandboxID, network);
+    }
+    if (adopt && found.pauseMode !== "filesystem" && row.renewing === 0) {
+      handle = (await this.#adopt(row.authority, handle)).box;
     }
     await this.#prepare(handle, network ?? e2bNetwork(found.network));
     if (found.pauseMode === "filesystem") {
@@ -463,17 +600,23 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    */
   async #ensure(owner: string, authority: string, network: E2bNetwork | null,
                 ceilings: SandboxCeilings, route?: string):
-      Promise<{ handle: Handle } | "waiting" | "lost"> {
+      Promise<{ handle: Box } | "waiting" | "lost"> {
     const e2b = this.#e2b();
     const row = this.#row(authority);
     const found = row === null ? null : await e2b.info(row.sandbox_id);
-    const running = found === null ? null : handleOf(found);
+    const running = found === null ? null : handleOf(found, row!);
     if (running !== null) {
       this.#ended(found!);
       if (network !== null) {
         await e2b.network(running.sandboxID, network);
       }
-      return { handle: running };
+      const { box, adopted } = await this.#adopt(authority, running);
+      if (adopted) {
+        // The adopted runner's own `prepare`, the row naming it: its lockdown, and the
+        // other runners' bytes dropped.
+        await this.#prepare(box, network ?? e2bNetwork(found!.network));
+      }
+      return { handle: box };
     }
     if (found === null && network === null) {
       return "lost";  // a joining run's sandbox is gone: nothing configures a new one
@@ -501,7 +644,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return await wait();
       }
       if (found !== null) {
-        const handle = await this.#resume(row!, found, network, ceilings);
+        const handle = await this.#resume(row!, found, network, ceilings, true);
         if (handle !== null) {
           await slots.took(owner);
           return { handle };
@@ -520,15 +663,20 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                     ...(route === undefined ? {} : { ta_route: route }) },
       });
       const info = await e2b.info(created.sandboxID);
-      this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at) VALUES " +
-                       "(?, ?, NULL, ?) ON CONFLICT (authority) DO UPDATE SET sandbox_id = " +
-                       "excluded.sandbox_id, lease_id = NULL, end_at = excluded.end_at, " +
-                       "renewing = 0, releasing = 0, paused = 0", authority, created.sandboxID,
-                     info === null ? Date.now() : Date.parse(info.endAt));
+      const digest = await this.#digest;
+      this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner) " +
+                       "VALUES (?, ?, NULL, ?, ?) ON CONFLICT (authority) DO UPDATE SET " +
+                       "sandbox_id = excluded.sandbox_id, lease_id = NULL, end_at = " +
+                       "excluded.end_at, renewing = 0, releasing = 0, paused = 0, runner = " +
+                       "excluded.runner", authority, created.sandboxID,
+                     info === null ? Date.now() : Date.parse(info.endAt), digest);
       this.#log(authority, "start");
       await slots.took(owner);
-      await this.#prepare(created, network!);
-      return { handle: created };
+      // The template holds no runner: this Worker's, installed before its first command.
+      const box = { ...created, runner: digest };
+      await this.#install(box);
+      await this.#prepare(box, network!);
+      return { handle: box };
     } catch (error) {
       if (noRoom(error)) {
         return wait();
@@ -656,10 +804,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /** The authority's running sandbox, or null (none, or paused). */
-  async #running(authority: string): Promise<Handle | null> {
+  async #running(authority: string): Promise<Box | null> {
     const row = this.#row(authority);
     const found = row === null ? null : await this.#e2b().info(row.sandbox_id);
-    return found === null ? null : handleOf(found);
+    return found === null ? null : handleOf(found, row!);
   }
 
   /**
@@ -705,7 +853,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /** The running sandbox a run is in, or null (gone, or paused: its runner is not running). */
-  async #live(run: string): Promise<Handle | null> {
+  async #live(run: string): Promise<Box | null> {
     const at = this.#sql.exec<{ authority: string }>(
       "SELECT authority FROM launched WHERE run = ?", run).toArray()[0];
     const row = at === undefined ? null : this.#row(at.authority);
@@ -713,7 +861,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return null;
     }
     const found = await this.#e2b().info(row.sandbox_id);
-    return found === null ? null : handleOf(found);
+    return found === null ? null : handleOf(found, row);
   }
 
   async cancel(_owner: string, request: { run: string; lease_id: string }):
@@ -793,7 +941,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return false;
     }
     this.#ended(found);
-    const handle = handleOf(found);
+    const handle = handleOf(found, row);
     if (handle === null) {
       this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);
       return found.state === "paused";
@@ -835,8 +983,18 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("DELETE FROM launched WHERE authority = ?", authority);
   }
 
-  async #runnerState(handle: Handle): Promise<{ live: number; quiet: boolean }> {
-    return this.#shape((await this.#run(handle, ["state"])).out);
+  /** The runner's state, from a runner speaking a protocol this Worker speaks. */
+  async #runnerState(handle: Box): Promise<{ live: number; quiet: boolean }> {
+    const out = (await this.#run(handle, ["state"])).out;
+    const protocol = (JSON.parse(out) as { protocol?: unknown }).protocol;
+    if (typeof protocol !== "number" || !SPEAKS.includes(protocol)) {
+      const message = `sandbox_runner_protocol: the runner ${handle.runner} in sandbox ${
+        handle.sandboxID} speaks protocol ${String(protocol)}; this Worker speaks ${
+        SPEAKS.join(" and ")}`;
+      console.error(message);
+      throw new RunnerRefused(message);
+    }
+    return this.#shape(out);
   }
 
   #shape(out: string): { live: number; quiet: boolean } {
@@ -936,14 +1094,25 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return;
       }
       const found = await e2b.info(row.sandbox_id);
-      const handle = found === null ? null : handleOf(found);
+      const handle = found === null ? null : handleOf(found, row);
       if (handle === null || Date.now() < Date.parse(found!.endAt) - windowMs) {
         return;
       }
       this.#ended(found!);
       const until = Math.min(Date.parse(found!.endAt) - RENEW_EDGE_MS, lookEnd);
-      const { out } = await this.#run(handle, ["quiet-wait", String(Math.floor(until))],
-                                      Math.max(0, until - Date.now()) + COMMAND_MS);
+      let out: string;
+      try {
+        ({ out } = await this.#run(handle, ["quiet-wait", String(Math.floor(until))],
+                                   Math.max(0, until - Date.now()) + COMMAND_MS));
+      } catch (error) {
+        // A start on the chain adopted another runner meanwhile, and its `prepare` dropped
+        // this one's bytes: no quiet moment read here, and nothing failed.
+        if (error instanceof RunnerFailed && error.exitCode === ABSENT
+            && this.#row(row.authority)?.runner !== handle.runner) {
+          return;
+        }
+        throw error;
+      }
       quiet.set(row.authority, this.#shape(out).quiet);
     }));
     return this.#serial(async () => {
@@ -967,7 +1136,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return Number.POSITIVE_INFINITY;
     }
     this.#ended(found);
-    const handle = handleOf(found);
+    const handle = handleOf(found, row);
     if (handle === null) {
       if (row.renewing === 0 && !this.#leased(row.authority)) {
         this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);
@@ -1059,7 +1228,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * pause and the resume (`reserve`), so the first owner waiting cannot create into the
    * moment it frees; the sandbox is paused with its memory and resumed at once.
    */
-  async #renew(row: Row, handle: Handle, endAt: number, ceilings: SandboxCeilings):
+  async #renew(row: Row, handle: Box, endAt: number, ceilings: SandboxCeilings):
       Promise<void> {
     const e2b = this.#e2b();
     await this.#run(handle, ["renew-wait", String(Date.now())]);

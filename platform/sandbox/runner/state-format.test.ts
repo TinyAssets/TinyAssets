@@ -1,0 +1,221 @@
+/**
+ * The runner's on-disk format, its protocol, and their rollback rule (`state-format.ts`,
+ * `protocol.ts`): each recorded format and protocol is frozen (its digest pinned here, so a
+ * past entry is never edited, only a new one added); what this runner writes is exactly
+ * its format's record (the mirror here, the run's and sign-in's `state.json` and the kept
+ * snapshot in `runner.test.ts`, written by the real runner), and it reads every format it
+ * says it reads, as recorded. The runner one deploy away passed the same reading test
+ * against the same frozen record, so it reads what this one writes. The rule itself: a
+ * runner reads its format and the ones either side at most, the marker is never lowered,
+ * and a rollback across a format change starts. The protocol: the commands the runner
+ * takes and the Worker sends, and `state`'s answer, are the recorded ones.
+ */
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync }
+  from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import { PROTOCOL, SPEAKS } from "./protocol";
+import { checkFormat, dropRunners, type FormatRule, READS, STATE_FORMAT } from "./state-format";
+import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./state-shape";
+import { openMirror } from "./sync";
+
+/**
+ * Every recorded format's and protocol's digest, frozen: an entry once recorded never
+ * changes. A new format or protocol is a new entry, and its pin is added here with it.
+ */
+const FROZEN = Object.freeze({
+  formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263" },
+  protocols: { "1": "aac0a62b9d84e282755fdcccb9b1c0370d9bd1ff6619b5547027cc5aae152ffa" },
+});
+
+/** Canonical JSON (sorted keys), for an entry's digest. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonical).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
+
+const dirs: string[] = [];
+function temp(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ta-format-"));
+  dirs.push(dir);
+  return dir;
+}
+afterEach(() => {
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function schema(path: string): Format["mirror"] {
+  const db = new DatabaseSync(path);
+  try {
+    return db.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name").all()
+      .map((row) => ({ type: String(row["type"]), name: String(row["name"]),
+                       sql: row["sql"] === null ? null : String(row["sql"]) }));
+  } finally {
+    db.close();
+  }
+}
+
+describe("the recorded formats and protocols", () => {
+  it("are frozen: each entry is its pinned digest, and every entry is pinned", () => {
+    expect(Object.fromEntries(Object.entries(FORMATS).map(([key, entry]) =>
+      [key, digest(entry)]))).toEqual(FROZEN.formats);
+    expect(Object.fromEntries(Object.entries(PROTOCOLS).map(([key, entry]) =>
+      [key, digest(entry)]))).toEqual(FROZEN.protocols);
+  });
+
+  it("are read and spoken one deploy either side at most, and each is recorded", () => {
+    expect(READS).toContain(STATE_FORMAT);
+    expect(READS.every((format) => Math.abs(format - STATE_FORMAT) <= 1)).toBe(true);
+    expect(SPEAKS).toContain(PROTOCOL);
+    expect(SPEAKS.every((each) => Math.abs(each - PROTOCOL) <= 1)).toBe(true);
+    for (const format of READS) {
+      expect(FORMATS[String(format)], `format ${format} has no record`).toBeDefined();
+    }
+    for (const protocol of SPEAKS) {
+      expect(PROTOCOLS[String(protocol)], `protocol ${protocol} has no record`).toBeDefined();
+    }
+  });
+});
+
+describe("the runner's on-disk format", () => {
+  it("is the mirror this runner writes, exactly as its format's record says", () => {
+    const path = join(temp(), "mirror.db");
+    const mirror = openMirror(path);
+    mirror.put("/workspace/a.md", { version: 3, size: 5, mtime_ms: 1, sha256: "0".repeat(64) });
+    mirror.setCursor(7);
+    mirror.close();
+    expect(schema(path)).toEqual(FORMATS[String(STATE_FORMAT)]!.mirror);
+  });
+
+  it("reads every format's mirror it reads, as each was recorded", () => {
+    for (const format of READS) {
+      const path = join(temp(), "mirror.db");
+      const db = new DatabaseSync(path);
+      for (const entry of FORMATS[String(format)]!.mirror) {
+        if (entry.sql !== null) {
+          db.exec(entry.sql);
+        }
+      }
+      db.exec("INSERT INTO meta VALUES (1, 7); INSERT INTO files VALUES " +
+              `('/workspace/a.md', 3, 5, 1, '${"0".repeat(64)}')`);
+      db.close();
+      const mirror = openMirror(path);
+      expect(mirror.cursor()).toBe(7);
+      expect(mirror.get("/workspace/a.md")).toEqual({ version: 3, size: 5, mtime_ms: 1,
+                                                      sha256: "0".repeat(64) });
+      mirror.close();
+    }
+  });
+
+  it("checks a shape field by field", () => {
+    const shape = { pid: "number", cli_pid: "number|null" };
+    expect(shapeProblems({ pid: 1, cli_pid: null }, shape)).toEqual([]);
+    expect(shapeProblems({ pid: "1", extra: 2 }, shape)).toEqual([
+      "cli_pid: missing", "extra: not in the record", "pid: string, not number"]);
+    expect(sample(shape, { pid: 9 })).toEqual({ pid: 9, cli_pid: 0 });
+  });
+});
+
+describe("the marker and the caches", () => {
+  const cacheOf = (state: string) => join(state, "sessions-seen.json");
+  const marker = (state: string) => readFileSync(join(state, "format"), "utf8");
+
+  it("is marked on a new sandbox, and kept with its caches while it stands", () => {
+    const state = temp();
+    checkFormat(state, [cacheOf(state)]);
+    expect(marker(state)).toBe(`${STATE_FORMAT}\n`);
+    writeFileSync(cacheOf(state), "{}");
+    checkFormat(state, [cacheOf(state)]);
+    expect(existsSync(cacheOf(state))).toBe(true);
+  });
+
+  it("refuses loudly a format it does not read, and changes nothing", () => {
+    const state = temp();
+    writeFileSync(join(state, "format"), `${STATE_FORMAT + 2}\n`);
+    writeFileSync(cacheOf(state), "{}");
+    expect(() => checkFormat(state, [cacheOf(state)])).toThrow(/this runner reads/);
+    expect(existsSync(cacheOf(state))).toBe(true);
+    expect(marker(state)).toBe(`${STATE_FORMAT + 2}\n`);
+  });
+
+  it("survives a format change both ways: a rollback of one deploy starts", () => {
+    // Three runners of a change from F to F+1: before it, the expand deploy (reads both,
+    // writes F) and the contract deploy (writes F+1, still reads F).
+    const F = 7;
+    const before: FormatRule = { writes: F, reads: [F - 1, F] };
+    const expand: FormatRule = { writes: F, reads: [F, F + 1] };
+    const contract: FormatRule = { writes: F + 1, reads: [F, F + 1] };
+    const state = temp();
+    const cache = cacheOf(state);
+    checkFormat(state, [cache], before);
+    checkFormat(state, [cache], expand);
+    expect(marker(state)).toBe(`${F}\n`);
+    writeFileSync(cache, "{}");
+    checkFormat(state, [cache], contract);
+    expect(marker(state)).toBe(`${F + 1}\n`);
+    expect(existsSync(cache)).toBe(false);  // the format moved: the cache went with it
+    // Rolled back to the expand deploy: it starts, and the marker is never lowered.
+    expect(() => checkFormat(state, [cache], expand)).not.toThrow();
+    expect(marker(state)).toBe(`${F + 1}\n`);
+    // Forward again, and back again: each starts.
+    expect(() => checkFormat(state, [cache], contract)).not.toThrow();
+    expect(() => checkFormat(state, [cache], expand)).not.toThrow();
+    // Two deploys back is past the rule, refused loudly.
+    expect(() => checkFormat(state, [cache], before)).toThrow(/this runner reads/);
+  });
+
+  it("drops every other runner's bytes, and none when its own digest is unknown", () => {
+    const runners = join(temp(), "opt/ta/runner");
+    for (const name of ["a".repeat(64), "b".repeat(64)]) {
+      mkdirSync(join(runners, name), { recursive: true });
+    }
+    dropRunners(runners, null);
+    expect(readdirSync(runners).sort()).toEqual(["a".repeat(64), "b".repeat(64)]);
+    dropRunners(runners, "a".repeat(64));
+    expect(readdirSync(runners)).toEqual(["a".repeat(64)]);
+  });
+});
+
+describe("the Worker's protocol with the runner", () => {
+  const source = (path: string) => readFileSync(join(import.meta.dirname, path), "utf8");
+
+  it("is the runner's commands, as its protocol's record says", () => {
+    const main = source("runner.ts").slice(source("runner.ts")
+      .indexOf("export async function main("));
+    const commands = [...main.matchAll(/case "([a-z-]+)":/g)].map((found) => found[1]).sort();
+    expect(commands).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
+  });
+
+  it("sends only commands every protocol it speaks records", () => {
+    const control = source("../src/control.ts");
+    const sent = [...new Set([...control.matchAll(/#run\([^,]+, \["([a-z-]+)"/g)]
+      .map((found) => found[1]!))].sort();
+    expect(sent.length).toBeGreaterThan(10);
+    for (const protocol of SPEAKS) {
+      expect(sent.filter((command) =>
+        !PROTOCOLS[String(protocol)]!.commands.includes(command))).toEqual([]);
+    }
+  });
+
+  it("reads back the state its runner's protocol records", () => {
+    const state = source("runner.ts").slice(source("runner.ts").indexOf("function stateCommand("));
+    const answer = /JSON\.stringify\(\{([^]*?)\}\)\);/.exec(state)![1]!;
+    const keys = [...answer.matchAll(/([a-z_]+):/g)].map((found) => found[1]).sort();
+    expect(keys).toEqual([...PROTOCOLS[String(PROTOCOL)]!.state].sort());
+  });
+});
