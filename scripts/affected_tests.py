@@ -34,11 +34,20 @@ When unsure it selects EVERYTHING (output ``ALL``):
 
 A test that walks a tree (``rglob``, ``os.walk``...) is also selected for any
 change under a top-level root it names AS A PATH (``ROOT / "tinyassets"``,
-``Path("tinyassets")``, ``"tinyassets/..."``, or a loop over such words; see
-``path_heads``). The same word as data (a vault kind ``"platform"``) names none.
+``Path("tinyassets")``, ``"tinyassets/..."``, or any word that can reach such a
+component; see ``_Paths``). The same word as data (a vault kind ``"platform"``)
+names none. Where the rule cannot follow a value (``globals()``, ``getattr``), the
+test is matched on bare words, as before the rule.
 
-Over-selection is the safe direction throughout: it costs runner minutes,
-while under-selection only defers a failure to the queue, which runs anyway.
+Over-selection is the safe direction throughout: it costs runner minutes. What an
+under-selection costs depends on the tier. Here (PR time) and for a merge-queue
+entry that runs ALL, it defers a failure to a later full run. For a tree-only
+merge-queue entry (``gate_selection``) there is no later run before merge: the
+runtime tree audit (``ci_required_tests.py --ci-tree-audit``) carries the safety
+instead, failing, in the full run of the change that introduced it, any test that
+reads a tree ``tree_readers`` does not give it. The gap: a read the audit cannot
+see (a native extension opening a file, a child process that finds a tree by
+itself) in a test the map misses. Only the post-merge full runs catch that.
 """
 
 from __future__ import annotations
@@ -345,7 +354,10 @@ def select(
         hit.update(t for t in tests if any(k in texts[t] for k in keys))
         top = rel.split("/", 1)[0]
         if "/" in rel:
-            hit.update(t for t, heads in walked.items() if heads is None or top in heads)
+            bare = (f'"{top}"', f"'{top}'", f'"{top}/', f"'{top}/")
+            hit.update(t for t, heads in walked.items()
+                       if (top in heads if heads is not None
+                           else any(word in texts[t] for word in bare)))
         source = rel.endswith(".py") and not rel.startswith("tests/")
         if not hit and source and (root / rel).exists():
             return None, [f"{rel}: Python file no test reaches statically"]
@@ -441,31 +453,21 @@ def _name(node: ast.AST) -> str:
     return node.attr if isinstance(node, ast.Attribute) else ""
 
 
-def _bindings(tree: ast.AST) -> dict[str, list[ast.expr]]:
-    """name -> what each binding binds it to: an assignment's value, a loop's iterable."""
-    binds: dict[str, list[ast.expr]] = {}
-    for node in ast.walk(tree):
-        pairs = ([(t, node.value) for t in node.targets] if isinstance(node, ast.Assign)
-                 else [(node.target, node.value)]
-                 if isinstance(node, ast.AnnAssign) and node.value is not None
-                 else [(node.target, node.iter)]
-                 if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) else [])
-        for target, value in pairs:
-            if isinstance(target, ast.Name):
-                binds.setdefault(target.id, []).append(value)
-    return binds
-
-
 def _below_root(value: ast.expr) -> bool:
-    """A path that is not the checkout's root: absolute (``Path("/proc")``) or a child."""
+    """A path that is not the checkout's root: absolute (``Path("/proc")``) or a child.
+
+    ``X / ".."`` climbs, so it may be the root (``Path(__file__).parent / ".."``).
+    """
     if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div):
-        return True
+        right = value.right
+        return (isinstance(right, ast.Constant) and isinstance(right.value, str)
+                and ".." not in right.value.split("/"))
     return (isinstance(value, ast.Call) and _name(value.func) in ("Path", "PurePath")
             and bool(value.args) and isinstance(value.args[0], ast.Constant)
             and isinstance(value.args[0].value, str) and value.args[0].value.startswith("/"))
 
 
-def _is_repo_root(node: ast.AST, binds: dict[str, list[ast.expr]]) -> bool:
+def _is_repo_root(node: ast.AST, binds: dict[str, list]) -> bool:
     """``Path(".")``, ``Path.cwd()``, ``os.getcwd()`` or an upper-case ROOT/REPO constant.
 
     A constant every binding of which is an absolute path (``PROC_ROOT =
@@ -487,7 +489,7 @@ def _is_repo_root(node: ast.AST, binds: dict[str, list[ast.expr]]) -> bool:
     if not (name.isupper() and ("ROOT" in name or "REPO" in name)):
         return False
     values = binds.get(name, []) if isinstance(node, ast.Name) else []
-    return not (values and all(_below_root(value) for value in values))
+    return not (values and all(isinstance(v, ast.expr) and _below_root(v) for v in values))
 
 
 def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
@@ -500,6 +502,12 @@ def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
 
 #: pytest's temp fixtures and the tempfile module: a path built on them is not the checkout.
 _TEMP = frozenset({"tmp_path", "tmpdir", "tmp_path_factory", "tempfile"})
+#: The calls whose first argument is a child process's argv.
+_SPAWN = frozenset({"run", "Popen", "check_call", "check_output", "call"})
+_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+#: Lookups by a computed name: where their value comes from cannot be read statically.
+_DYNAMIC = frozenset({"globals", "locals", "vars", "getattr", "eval", "exec",
+                      "__import__", "import_module"})
 
 
 def _base(node: ast.AST) -> ast.AST:
@@ -516,92 +524,269 @@ def _base(node: ast.AST) -> ast.AST:
             return node
 
 
-def _temp_names(binds: dict[str, list[ast.expr]]) -> set[str]:
-    """The names every binding of which is a path on a temp directory (``base = tmp_path / x``).
+def _is_fixture(func: ast.AST) -> bool:
+    """A test or a fixture: pytest, not this module, supplies its parameters."""
+    return not isinstance(func, ast.Lambda) and (
+        func.name.startswith("test")
+        or any("fixture" in ast.unparse(d) for d in func.decorator_list))
 
-    One binding to anything else (``root = Path(__file__).parents[1]`` in another
-    test) and the name may be the checkout.
+
+class _Paths:
+    """Which words one module names as checkout paths, with Python's scoping.
+
+    A path is a string holding ``/`` (``"platform/owner"``), the first component
+    built on the checkout (``ROOT / c``, ``Path(c)``, ``os.path.join(ROOT, c)``,
+    ``ROOT.joinpath(c)``, ``ROOT.glob(c)``, ``os.listdir(c)``, ``cwd=c``), or an argv
+    word after a child process's program (``["ls", "platform"]``). A later component
+    (``live / ".broker" / digest``) cannot be a top-level directory. A component
+    counts every word of this module it can be (``resolve``). A path built on a temp
+    directory (``tmp_path / kind``, or on a helper's parameter every call passes one)
+    is not the checkout. The same word anywhere else (a tuple of vault kinds, a dict
+    key, a job name, an expected value) is data.
+
+    A component whose value passes a dynamic lookup (``globals()``, ``getattr``)
+    makes ``complete`` False: the caller then cannot tell data from a path in this
+    module.
+    Residual: a function this module hands away (a callback) that receives its words
+    through code elsewhere.
     """
-    temp = set(_TEMP)
-    grew = True
-    while grew:
-        before = len(temp)
-        temp |= {name for name, values in binds.items()
-                 if all(_name(_base(value)) in temp for value in values)}
-        grew = len(temp) > before
-    return temp
 
+    def __init__(self, tree: ast.Module) -> None:
+        self.tree = tree
+        self.parent = _parents(tree)
+        self.binds: dict[tuple[ast.AST, str], list] = {}
+        #: attribute name -> values: ``self.root = v``, a class body's ``DIRS = (...)``
+        self.attrs: dict[str, list[ast.AST]] = {}
+        self.funcs: dict[str, list[ast.AST]] = {}
+        self.calls: dict[str, list[ast.Call]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if node.value is not None:
+                        self._bind(target, node.value)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                self._bind(node.target, node.iter)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        self._bind(item.optional_vars, item.context_expr)
+            elif isinstance(node, _FUNCS):
+                if not isinstance(node, ast.Lambda):
+                    self.funcs.setdefault(node.name, []).append(node)
+                for arg in self._args(node):
+                    self.binds.setdefault((node, arg.arg), []).append(arg)
+            elif isinstance(node, ast.Call) and _name(node.func):
+                self.calls.setdefault(_name(node.func), []).append(node)
+        self._temp: dict[object, bool] = {}
 
-def _path_position(node: ast.AST, parent: dict[ast.AST, ast.AST], temp: set[str]) -> bool:
-    """`node` is where a checkout path is built: ``ROOT / node``, ``Path(node)``,
-    ``os.path.join(.., node)``, ``ROOT.joinpath(node)``, ``cwd=node``, or a walk's
-    argument (``ROOT.glob(node)``, ``os.listdir(node)``) -- unless it is built on a
-    temp directory (``tmp_path / node``)."""
-    up = parent.get(node)
-    if isinstance(up, ast.keyword):
-        return up.arg == "cwd"
-    if isinstance(up, ast.BinOp) and isinstance(up.op, ast.Div) and up.right is node:
-        on = up.left
-    elif (isinstance(up, ast.Call) and node in up.args
-            and _name(up.func) in _PATH_CALLS | _WALK_METHODS | _WALK_FUNCS):
-        on = up.args[0] if up.args[0] is not node else up.func
-    else:
-        return False
-    return _name(_base(on)) not in temp
+    @staticmethod
+    def _args(func: ast.AST) -> list[ast.arg]:
+        a = func.args
+        return [*a.posonlyargs, *a.args, *a.kwonlyargs,
+                *((a.vararg,) if a.vararg else ()), *((a.kwarg,) if a.kwarg else ())]
 
+    def _scope(self, node: ast.AST) -> ast.AST:
+        node = self.parent.get(node)
+        while node is not None and not isinstance(node, _FUNCS):
+            node = self.parent.get(node)
+        return node or self.tree
 
-def _path_constants(tree: ast.AST, binds: dict[str, list[ast.expr]]) -> list[str]:
-    """Every string `tree` names as a checkout path (``./`` dropped).
+    def _bind(self, target: ast.AST, value: ast.AST) -> None:
+        # A tuple target takes the words of the whole value: over-approximate, never miss.
+        for sub in ast.walk(target):
+            if isinstance(sub, ast.Name):
+                self.binds.setdefault((self._scope(sub), sub.id), []).append(value)
+                if isinstance(self.parent.get(target), ast.ClassDef) or isinstance(
+                        self.parent.get(self.parent.get(target)), ast.ClassDef):
+                    self.attrs.setdefault(sub.id, []).append(value)
+            elif isinstance(sub, ast.Attribute):
+                self.attrs.setdefault(sub.attr, []).append(value)
 
-    A path is a string holding ``/`` (``"platform/owner"``), a word in a path
-    position (``_path_position``), or a word bound to a name used in one, directly
-    or through a sequence or another name (``for d in ("tinyassets", "scripts"):
-    ROOT / d``; ``DIRS = (...)`` then ``for d in DIRS``). The same word anywhere
-    else (a tuple of vault kinds, a dict key, a job name, an expected value,
-    ``tmp_path / kind``) is data.
-    """
-    parent = _parents(tree)
-    temp = _temp_names(binds)
-    todo = [node.id for node in ast.walk(tree)
-            if isinstance(node, ast.Name) and _path_position(node, parent, temp)]
-    names: set[str] = set()
-    via: set[ast.AST] = set()
-    while todo:
-        name = todo.pop()
-        if name in names:
-            continue
-        names.add(name)
-        for value in binds.get(name, []):
-            for node in (value.elts if isinstance(value, (ast.Tuple, ast.List, ast.Set))
-                         else [value]):
-                via.add(node)
-                if isinstance(node, ast.Name):
-                    todo.append(node.id)
-    out: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            text = node.value[2:] if node.value.startswith("./") else node.value
-            if "/" in text or node in via or _path_position(node, parent, temp):
-                out.append(text)
-    return out
+    def lookup(self, node: ast.Name) -> tuple[ast.AST, str] | None:
+        scope = self._scope(node)
+        while True:
+            if (scope, node.id) in self.binds:
+                return scope, node.id
+            if scope is self.tree:
+                return None
+            scope = self._scope(scope)
+
+    def passed(self, func: ast.AST, arg: ast.arg) -> list[ast.AST]:
+        """What `arg` can be: its default and what this module's calls pass for it."""
+        a = func.args
+        positional = [*a.posonlyargs, *a.args]
+        defaults = dict(zip([p.arg for p in positional[len(positional) - len(a.defaults):]],
+                            a.defaults))
+        defaults.update((p.arg, d) for p, d in zip(a.kwonlyargs, a.kw_defaults) if d)
+        out: list[ast.AST] = [defaults[arg.arg]] if arg.arg in defaults else []
+        if isinstance(func, ast.Lambda):
+            return out
+        names = [p.arg for p in positional]
+        for call in self.calls.get(func.name, []):
+            # `f(*a)` or `f(**k)` may pass anything they hold.
+            out += [x.value for x in call.args if isinstance(x, ast.Starred)]
+            out += [k.value for k in call.keywords if k.arg in (None, arg.arg)]
+            shift = 1 if (isinstance(call.func, ast.Attribute) and names
+                          and names[0] in ("self", "cls")) else 0
+            if arg.arg in names and 0 <= names.index(arg.arg) - shift < len(call.args):
+                out.append(call.args[names.index(arg.arg) - shift])
+        return out
+
+    def is_temp(self, expr: ast.AST) -> bool:
+        """`expr` is a path built on a temp directory."""
+        base = _base(expr)
+        if not isinstance(base, ast.Name):
+            return False
+        key = self.lookup(base)
+        if key is None:
+            return base.id in _TEMP
+        if key not in self._temp:
+            self._temp[key] = False  # a cycle is not temp
+            self._temp[key] = all(self._arg_temp(key[0], v) if isinstance(v, ast.arg)
+                                  else self.is_temp(v) for v in self.binds[key])
+        return self._temp[key]
+
+    def _arg_temp(self, func: ast.AST, arg: ast.arg) -> bool:
+        if arg.arg in _TEMP and _is_fixture(func):
+            return True
+        passed = self.passed(func, arg)
+        return bool(passed) and all(self.is_temp(p) for p in passed)
+
+    def _parametrized(self, func: ast.AST, name: str) -> list[ast.AST]:
+        """The values ``pytest.mark.parametrize`` or a same-named local fixture give `name`."""
+        out: list[ast.AST] = []
+        if isinstance(func, ast.Lambda):
+            return out
+        for deco in func.decorator_list:
+            if (isinstance(deco, ast.Call) and _name(deco.func) == "parametrize"
+                    and len(deco.args) >= 2 and isinstance(deco.args[0], ast.Constant)
+                    and name in str(deco.args[0].value).replace(" ", "").split(",")):
+                out.append(deco.args[1])
+        for fixture in self.funcs.get(name, []):
+            if _is_fixture(fixture) and fixture is not func:
+                out += [r.value for r in ast.walk(fixture)
+                        if isinstance(r, ast.Return) and r.value is not None]
+                out += [k.value for d in fixture.decorator_list if isinstance(d, ast.Call)
+                        for k in d.keywords if k.arg == "params"]
+        return out
+
+    def _parts(self, node: ast.AST) -> list[ast.AST] | None:
+        """What `node`'s value can be made of, for ``resolve``; None for a dynamic lookup."""
+        if isinstance(node, ast.Name):
+            if node.id == "__file__" or self.is_temp(node):
+                return []
+            key = self.lookup(node)
+            parts: list[ast.AST] = []
+            for value in self.binds.get(key, []) if key else []:
+                parts += ([*self.passed(key[0], value), *self._parametrized(key[0], value.arg)]
+                          if isinstance(value, ast.arg) else [value])
+            return parts
+        if isinstance(node, ast.Attribute):
+            return [] if node.attr == "__file__" else [node.value, *self.attrs.get(node.attr, [])]
+        if isinstance(node, ast.Call):
+            if _name(node.func) in _DYNAMIC:
+                return None
+            parts = [*node.args, *(k.value for k in node.keywords)]
+            if isinstance(node.func, ast.Attribute):
+                parts.append(node.func.value)
+            elif isinstance(node.func, ast.Name):
+                parts += [r.value for f in self.funcs.get(node.func.id, []) for r in ast.walk(f)
+                          if isinstance(r, ast.Return) and r.value is not None]
+            return parts
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            return [node.left]  # `ROOT / d` names d where it is built; as a value, its base
+        if isinstance(node, (ast.Compare, ast.Constant)):
+            return []
+        if isinstance(node, ast.Lambda):
+            return [node.body]
+        return [child for child in ast.iter_child_nodes(node) if isinstance(child, ast.expr)]
+
+    def resolve(self, node: ast.AST) -> tuple[list[str], bool]:
+        """(every word of this module a path component can be, whether the rule saw them all).
+
+        Everything the value can be made of, followed through names, parameters
+        (``passed``, ``_parametrized``), attributes, calls' arguments and a local
+        helper's returns: over-approximate, so a word that could reach the component
+        is never missed. A name this module does not bind (an import, a builtin) adds
+        none of its words. ``globals()``, ``getattr`` and the like hide where a value
+        comes from, so they make the answer incomplete.
+        """
+        words: list[str] = []
+        todo, seen = [node], {id(node)}
+        while todo:
+            current = todo.pop()
+            if isinstance(current, ast.Constant) and isinstance(current.value, str):
+                words.append(current.value)
+            parts = self._parts(current)
+            if parts is None:
+                return words, False
+            for part in parts:
+                if id(part) not in seen:
+                    seen.add(id(part))
+                    todo.append(part)
+        return words, True
+
+    def components(self, node: ast.AST) -> list[ast.AST]:
+        """The first path components `node` builds on the checkout, and argv words it spawns."""
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left = node.left
+            nested = isinstance(left, ast.BinOp) and isinstance(left.op, ast.Div)
+            return [] if nested or self.is_temp(left) else [node.right]
+        if isinstance(node, ast.keyword) and node.arg == "cwd":
+            return [node.value]
+        if not isinstance(node, ast.Call):
+            return []
+        name, func = _name(node.func), node.func
+        receiver = func.value if isinstance(func, ast.Attribute) else None
+        if name in _SPAWN and node.args and isinstance(node.args[0], (ast.List, ast.Tuple)):
+            return [e for e in node.args[0].elts[1:]
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        if name in ("Path", "PurePath", "PurePosixPath") or (
+                name == "join" and (receiver is None
+                                    or _name(receiver) in ("path", "posixpath", "ntpath"))):
+            return [] if node.args and self.is_temp(node.args[0]) else list(node.args[:2])
+        if name in ("joinpath", "chdir") or (name in _WALK_METHODS and receiver is not None
+                                             and _name(receiver) not in ("ast", "os")):
+            if receiver is not None and self.is_temp(receiver):
+                return []
+            return list(node.args[:1])
+        if name in _WALK_FUNCS and receiver is not None and _name(receiver) == "os":
+            return list(node.args[:1])
+        return []
+
+    def constants(self) -> tuple[list[str], bool]:
+        """(every string named as a checkout path, ``./`` dropped; whether that is all)."""
+        out: list[str] = []
+        complete = True
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and "/" in node.value:
+                out.append(node.value)
+            for component in self.components(node):
+                words, ok = self.resolve(component)
+                out += words
+                complete &= ok
+        return [w[2:] if w.startswith("./") else w for w in out], complete
 
 
 def path_heads(source: str) -> set[str] | None:
-    """The top-level names a source names as checkout paths (``_path_constants``).
+    """The top-level names a source names as checkout paths (``_Paths``).
 
-    ``None`` for unparsable source: it may name anything.
+    ``None`` when the rule cannot tell: unparsable source, or a path component it
+    cannot follow. The caller then matches the bare words, as before the rule.
     """
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return None
-    return {text.split("/", 1)[0] for text in _path_constants(tree, _bindings(tree))}
+    texts, complete = _Paths(tree).constants()
+    return {text.split("/", 1)[0] for text in texts} if complete else None
 
 
 def tree_reads(source: str, top_md: frozenset[str] = frozenset()) -> set[str]:
     """The trees a source can read: named in path form, or walked from the checkout's root.
 
-    A tree is named in path form (``_path_constants``: ``"platform/owner"``,
+    A tree is named in path form (``_Paths``: ``"platform/owner"``,
     ``ROOT / "docs" / "x"``, ``Path("docs")``, ``cwd="docs"``). The top-level
     markdown tree is named by one of its file names (`top_md`). A walk
     (``rglob/glob/iterdir/walk``, ``os.walk/listdir/scandir``) of the root
@@ -611,8 +796,10 @@ def tree_reads(source: str, top_md: frozenset[str] = frozenset()) -> set[str]:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return {*TREES, TOP_MD}
-    binds = _bindings(tree)
-    out = {head for head in (text.split("/", 1)[0] for text in _path_constants(tree, binds))
+    paths = _Paths(tree)
+    binds = {name: values for (scope, name), values in paths.binds.items()
+             if scope is tree}
+    out = {head for head in (text.split("/", 1)[0] for text in paths.constants()[0])
            if head in TREES}
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):

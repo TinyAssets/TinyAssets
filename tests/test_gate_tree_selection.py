@@ -155,6 +155,67 @@ def test_a_tree_named_as_data_selects_no_test_that_merely_walks(tmp_path) -> Non
     assert set(_run_audited(root).values()) == {"passed"}
 
 
+_HEAD = ("from pathlib import Path\nimport os, glob, subprocess\nimport pytest\n"
+         "ROOT = Path(__file__).resolve().parents[1]\n")
+#: Ways to name platform/ as a path that a bare-word match caught; the path rule must too.
+#: Each reads the tree, so each must run on a platform/ change in both tiers.
+_READERS = {
+    "listcomp": "def test_x():\n    for n in [d for d in ('platform',)]:\n"
+                "        os.listdir(os.path.join(ROOT, n))\n",
+    "sorted": "DIRS = ('platform',)\ndef test_x():\n"
+              "    for d in sorted(DIRS):\n        list((ROOT / d).rglob('*'))\n",
+    "concat": "A = ('platform',)\nB = ('docs',)\ndef test_x():\n"
+              "    for d in A + B:\n        list((ROOT / d).rglob('*'))\n",
+    "tuple_target": "def test_x():\n    for top, sub in (('platform', 'owner'),):\n"
+                    "        list((ROOT / top / sub).rglob('*'))\n",
+    "enumerate": "DIRS = ('platform',)\ndef test_x():\n"
+                 "    for i, d in enumerate(DIRS):\n        list((ROOT / d).rglob('*'))\n",
+    "dict_keys": "TOPS = {'platform': 'ts'}\ndef test_x():\n"
+                 "    for t in TOPS:\n        list((ROOT / t).rglob('*'))\n",
+    "parametrize": "@pytest.mark.parametrize('top', ['platform'])\n"
+                   "def test_x(top):\n    assert list((ROOT / top).rglob('*'))\n",
+    "fixture": "@pytest.fixture\ndef top():\n    return 'platform'\n"
+               "def test_x(top):\n    assert list((ROOT / top).rglob('*'))\n",
+    "starred_join": "def test_x():\n"
+                    "    assert os.listdir(os.path.join(ROOT, *('platform', 'owner')))\n",
+    "helper_param": "def scan(root):\n    return list((root / 'platform').rglob('*'))\n"
+                    "def test_tmp(tmp_path):\n    root = tmp_path\n    assert root.exists()\n"
+                    "def test_real():\n    assert scan(ROOT)\n",
+    "temp_named_param": "def walk(tmp_path):\n    return list((tmp_path / 'platform').rglob('*'))\n"
+                        "def test_x():\n    assert walk(ROOT)\n",
+    "default_arg": "def walk(root=ROOT):\n    return list((root / 'platform').rglob('*'))\n"
+                   "def test_x(tmp_path):\n    assert walk() and walk(tmp_path) is not None\n",
+    "argv": "def test_x():\n    list(ROOT.glob('x'))\n"
+            "    subprocess.run(['ls', 'platform'], cwd=ROOT, check=True)\n",
+    "fstring_glob": "def test_x():\n    t = 'platform'\n    assert list(ROOT.glob(f'{t}/**'))\n",
+    "class_attr": "class K:\n    DIRS = ('platform',)\ndef test_x():\n"
+                  "    for d in K.DIRS:\n        list((ROOT / d).rglob('*'))\n",
+    "dynamic": "DIRS = ('platform',)\ndef test_x():\n"
+               "    for d in globals()['DI' + 'RS']:\n        list((ROOT / d).rglob('*'))\n",
+    "relative_glob": "def test_x():\n    assert glob.glob('platform/**', recursive=True)\n",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_READERS))
+def test_every_way_to_name_a_tree_as_a_path_still_selects_its_reader(tmp_path, shape) -> None:
+    root = _tree(tmp_path, {"platform/owner/x.ts": "export {}\n", "docs/a.md": "a\n",
+                            "tests/__init__.py": "", "tests/test_it.py": _HEAD + _READERS[shape]})
+    selected, reasons = select(["platform/owner/x.ts"], root=root, graph=Graph(root),
+                               shared=set(), pr=True)
+    assert selected == ["tests/test_it.py"], reasons
+    selected, reasons = gate_selection(["platform/owner/x.ts"], root=root, shared=set())
+    assert selected == ["tests/test_it.py"], reasons
+
+
+def test_a_root_that_climbs_back_up_is_the_checkout(tmp_path) -> None:
+    root = _tree(tmp_path, {
+        "platform/owner/x.ts": "export {}\n", "tests/__init__.py": "",
+        "tests/test_it.py": ("from pathlib import Path\nREPO_ROOT = Path(__file__).parent / '..'\n"
+                             "def test_x():\n    assert list(REPO_ROOT.iterdir())\n")})
+    assert gate_selection(["platform/owner/x.ts"], root=root, shared=set())[0] == [
+        "tests/test_it.py"]
+
+
 def test_retiring_tests_reach_only_the_old_stack(tmp_path) -> None:
     root = _tree(tmp_path, {
         "tinyassets/__init__.py": "",
