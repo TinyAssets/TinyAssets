@@ -203,30 +203,39 @@ def test_the_checks_alone_refuse_a_tag_that_is_not_this_trees(tmp_path) -> None:
     assert "check_logins" not in (tmp_path / "calls").read_text()
 
 
-def _build_calls(tree: ast.AST) -> list[str]:
-    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
-             and isinstance(node.func, ast.Attribute) and node.func.attr != "tag"
-             and isinstance(node.func.value, ast.Name) and node.func.value.id == "build"]
-    calls.sort(key=lambda node: (node.lineno, node.col_offset))
-    return [node.func.attr for node in calls]
+def _calls(tree: ast.AST, named) -> list[tuple[ast.Call, str]]:
+    """The calls `named` names (its answer, or None), in source order."""
+    found = [(node, named(node.func)) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    found = [(node, name) for node, name in found if name is not None]
+    return sorted(found, key=lambda pair: (pair[0].lineno, pair[0].col_offset))
+
+
+def _signature(node: ast.Call, name: str) -> tuple[str, list[str], list[str]]:
+    return name, [ast.dump(arg) for arg in node.args], [ast.dump(kw) for kw in node.keywords]
 
 
 def test_the_checks_alone_are_build_pys_own_sequence_after_its_build() -> None:
-    """CHECKS follows main()'s calls after Template.build, so the two cannot drift."""
+    """CHECKS makes, after its bundle, every call of build.py's own that main() makes after
+    Template.build, in order and with the same arguments, so the two cannot drift."""
     module = ast.parse(BUILD.read_text(encoding="utf-8"))
     main = next(node for node in module.body
                 if isinstance(node, ast.FunctionDef) and node.name == "main")
-    # The calls that make and check a pair (the tag's own call sits in an f-string).
-    local = {node.name for node in module.body if isinstance(node, ast.FunctionDef)} - {"tag"}
-    calls = [node for node in ast.walk(main) if isinstance(node, ast.Call)
-             and isinstance(node.func, ast.Name) and node.func.id in local]
-    calls.sort(key=lambda node: (node.lineno, node.col_offset))
-    names = [node.func.id for node in calls]
-    after_build = names[len(names) - 1 - names[::-1].index("check_logins"):]
-    driven = _build_calls(ast.parse(_step("Build and check")["env"]["CHECKS"]))
-    assert after_build == ["check_logins", "route_probe", "check_matcher", "record_pass"]
-    assert driven[driven.index("check_logins"):] == after_build
-    assert "bundle" in names and driven.index("bundle") < driven.index("check_logins")
+    local = {node.name for node in module.body if isinstance(node, ast.FunctionDef)}
+    builds = _calls(main, lambda f: "build" if isinstance(f, ast.Attribute) and f.attr == "build"
+                    and isinstance(f.value, ast.Name) and f.value.id == "Template" else None)
+    assert len(builds) == 1, "main() builds in one place"
+    end = (builds[0][0].end_lineno, builds[0][0].end_col_offset)
+    after_build = [_signature(node, name) for node, name in _calls(
+        main, lambda f: f.id if isinstance(f, ast.Name) and f.id in local else None)
+        if (node.lineno, node.col_offset) > end]
+    driver = _calls(ast.parse(_step("Build and check")["env"]["CHECKS"]),
+                    lambda f: f.attr if isinstance(f, ast.Attribute)
+                    and isinstance(f.value, ast.Name) and f.value.id == "build" else None)
+    names = [name for _, name in driver]
+    driven = [_signature(node, name) for node, name in driver[names.index("bundle") + 1:]]
+    assert [name for name, _, _ in after_build] == [
+        "check_logins", "route_probe", "check_matcher", "record_pass"]
+    assert driven == after_build
 
 
 @pytest.mark.parametrize(("changed", "fresh", "code"), [(False, "no", 0), (True, "yes", 0),
