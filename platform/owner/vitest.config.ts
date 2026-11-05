@@ -237,11 +237,8 @@ export default defineConfig({
           }),
         ],
         // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
-        // A test's timeout is a guard against a hang, not a clock on its speed: these run
-        // in workerd or Node, CPU-bound, and a shared, loaded host makes them several
-        // times slower (30 s, as gateway's and sandbox's).
         test: { name: "workerd", include: ["test/**/*.test.ts"],
-                setupFiles: ["./test/admitted.ts"], testTimeout: 30_000 },
+                setupFiles: ["./test/admitted.ts"] },
       },
       {
         // Static guards over the source and config, in Node. The migrations guard imports
@@ -249,8 +246,7 @@ export default defineConfig({
         // (`guards/lifecycle-stub.ts`), since the real one loads `cloudflare:` modules.
         resolve: { alias: { "agents/lifecycle": join(PLATFORM, "owner", "guards",
                                                      "lifecycle-stub.ts") } },
-        test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node",
-                testTimeout: 30_000 },
+        test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node" },
       },
     ],
   },

@@ -7,8 +7,7 @@ export default defineConfig({
     projects: [
       {
         // Static guards over the source and config, in Node.
-        test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node",
-                testTimeout: 30_000 },
+        test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node" },
       },
     ],
   },
