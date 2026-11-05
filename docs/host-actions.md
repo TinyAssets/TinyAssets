@@ -576,18 +576,21 @@ powershell -ExecutionPolicy Bypass -File scripts/clear_sandbox_temp_dirs.ps1 -Ap
 Prevention is already in `tests/conftest.py`, which refuses a temp root inside
 the repo.
 
-## Decide: make a blocking review verdict a required check (2026-09-26)
+## The review App: the one identity that may post the `review` check (2026-11-05)
 
-A Tier 2 review verdict is posted as a PR comment, and auto-merge doesn't read
-comments. On 2026-09-26, #3989 (installer idempotence gate) auto-merged at the
-exact head its reviewer had BLOCKED. It carried `infra-change`, which satisfies
-`pr-scope-guard` for release-critical files without a receipt. The fixes followed
-in #3993. The lead now disables auto-merge on every PR sent to Tier 2 review until
-it is approved. That is discipline, not enforcement. The durable option: have
-`pr-scope-guard` also require an exact-head `Drain-Review-Verdict: APPROVE` receipt
-whenever a PR declares `infra-change` or a Tier 2 title, so a BLOCK holds the PR
-the way a failing required check does. That changes a gate file, so it's yours to
-approve. Say yes and an agent builds it.
+A blocking review verdict is now a check (`.github/workflows/review.yml`), the answer to
+#3989 auto-merging at a BLOCKed head. Any workflow job's check run reports as the GitHub
+Actions app, so the `review` context must be pinned to an App of its own, which only an
+organization owner can make. Nothing requires `review` until the last row; until then the
+receipt still gates.
+
+| Item | Smallest founder-only action |
+|---|---|
+| Make the App | From the platform setup's review App manifest page: one click makes a private App owned by `TinyAssets`, with no webhook and two repository permissions, **checks: write** and **metadata: read**. It needs no commit statuses permission: `review.yml` posts check runs only, and a leaked key with statuses could post a status named `review`. GitHub answers with a one-time code, valid for an hour, in the address bar. |
+| Its key, environment and id | Give that code only to Claude on your own computer, which runs the platform setup's review App step with your own `gh`. It makes the environment `review` (deployment branches `main` only, no required reviewer), stores the App's private key there as the environment secret `REVIEW_APP_PRIVATE_KEY`, and sets the repository variable `REVIEW_APP_ID` to the App's id. `review.yml` reads exactly these three names, and decides nothing while `REVIEW_APP_ID` is unset. |
+| Verify the key is main-only | Settings → Environments → `review`: deployment branches are **Selected branches** with `main` alone (not "No restriction", which is what GitHub gives an environment it makes on its own). Settings → Secrets and variables → Actions: no repository-level `REVIEW_APP_PRIVATE_KEY`. Either one would let a branch's workflow mint the App's token and post `review`. |
+| Install it | From the link the setup prints, install the App on `TinyAssets/TinyAssets` alone. |
+| Pin the context (after `review.yml` has posted on live PRs) | Ruleset 24065294 → Require status checks → add `review` with the review App as its expected source (not GitHub Actions). |
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 

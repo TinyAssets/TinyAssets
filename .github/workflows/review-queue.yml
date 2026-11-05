@@ -1,0 +1,24 @@
+name: review (merge queue)
+
+# A merge group was made: tell review.yml, which decides the group's PR afresh at its
+# head and posts the group's `review` as the review App. Nothing else.
+#
+# A merge_group run takes this file from the group commit, which includes the PR's
+# edits, so it holds no permission and no secret and decides nothing; review.yml
+# reads the group's branch and commit from the workflow_run GitHub writes. A PR that
+# edits this file is code, never prose, so it never carries a review. Its job is not
+# named `review`, so no Actions check run of that name lands on the group.
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+jobs:
+  signal:
+    name: signal the review
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "review.yml posts this merge group's review"

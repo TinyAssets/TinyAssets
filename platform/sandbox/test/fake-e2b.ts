@@ -72,6 +72,11 @@ const fake = {
   commands: [] as { sandbox: string; argv: string[]; runner: string | null; user: string }[],
   rings: [] as unknown[],
   script: null as unknown as Script,
+  /**
+   * The last sandbox id handed out. It counts on across resets, so a look still running from
+   * the test before (an alarm the runtime fired) never meets a new test's sandbox under its
+   * old id: it finds none, and forgets it.
+   */
   next: 0,
 };
 
@@ -82,7 +87,6 @@ function reset(): void {
   fake.incoming.clear();
   fake.commands = [];
   fake.rings = [];
-  fake.next = 0;
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
                   full: false, pauseMode: "full", noCount: false, down: 0,
                   refuseResume: false, broken: null, tampered: null, protocol: 1,
@@ -306,12 +310,16 @@ async function envd(request: Request, url: URL): Promise<Response> {
                            runner: install ? null : raw[1]!, user });
       return new Response("envd went away", { status: 502 });
     }
+    // A command is recorded in the log of the test it began in: one answered late, after the
+    // next test's reset (an alarm's look still running from the test before), lands in the
+    // discarded log, never in the next test's.
+    const log = fake.commands;
     if (command !== undefined && command === fake.script.slow?.command) {
       await new Promise((resolve) => setTimeout(resolve, fake.script.slow!.ms));
     }
     const done = loader(box, raw);
     const argv = done.argv;
-    fake.commands.push({ sandbox: id, argv, runner: done.runner, user });
+    log.push({ sandbox: id, argv, runner: done.runner, user });
     if (command !== undefined && command === fake.script.lost) {
       return new Response("envd went away", { status: 502 });  // it ran; its reply is lost
     }
