@@ -356,11 +356,6 @@ export class Relay extends LifecycleCapability {
     }
   }
 
-  /** The tails' size, in UTF-16 code units, and how many runs hold one. */
-  tailSize(): { runs: number; units: number } {
-    return { runs: this.#tails.size, units: this.#tailUnits };
-  }
-
   #send(connection: Connection, text: string): void {
     try {
       connection.send(text);

@@ -13,7 +13,8 @@ import { mint } from "../../files/src/datakey";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import { PLATFORM_CALLER, PLATFORM_ONLY } from "../src/admission";
 import {
-  GENERATION_SIZES, MANIFEST_CEILING, MANIFEST_CONTINUE_S, PART_ENTRY, SEGMENT_ENTRY, spread,
+  GENERATION_SIZES, MANIFEST_CEILING, MANIFEST_CONTINUE_S, MANIFEST_LINE, PART_ENTRY,
+  SEGMENT_ENTRY, spread,
 } from "../src/backup";
 import {
   decodeCursor, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED, readPage,
@@ -349,6 +350,30 @@ describe("a generation", () => {
     expect(digest(replay(after.lines))).toBe(after.atE);
   }, 120_000);
 
+  it("gives up one with a line longer than a part, loudly and the owner told once, never a " +
+     "part no root may name (review rvbackup 5)", async () => {
+    // Parts of 4 KiB, and one notice of 1,000 control characters: its line is past 6 KB.
+    const sizes = { page: 16 * 1024, part: 4096, gather: 8192 };
+    const o = await owner();
+    await notices(o, 20);
+    await sqlIn(o.stub, "INSERT INTO owner_notices (at, type, detail) VALUES (0, 'wide', " +
+                        "replace(printf('%.1000c', 'a'), 'a', char(1)))");
+    const first = await generate(o.stub, { sizes });
+    expect(first.notices).toEqual([MANIFEST_LINE]);
+    expect(first.lines).toEqual([]);  // no root: nothing finished
+    expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM owner_backups")).toEqual([{ n: 0 }]);
+    // The next change tries again, and gives it up again, the owner not told twice.
+    const again = await generate(o.stub, { sizes });
+    expect(again.notices).toEqual([]);
+    expect(again.lines).toEqual([]);
+    expect(await sqlIn(o.stub, "SELECT told FROM owner_backup_state")).toEqual([{ told: 1 }]);
+    // Without it, the generation finishes at the same sizes, every part within them.
+    await sqlIn(o.stub, "DELETE FROM owner_notices WHERE type = 'wide'");
+    const made = await generate(o.stub, { sizes });
+    expect(made.notices).toEqual([]);
+    expect(digest(replay(made.lines))).toBe(made.atE);
+  }, 120_000);
+
   it("goes on later, never at once, when a pass ends before it does", async () => {
     const o = await owner();
     await notices(o, 100);
@@ -380,9 +405,13 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
         const page = readPage(state.storage.sql, cursor, { schema: MIGRATIONS.length,
                                                            owner: "owner", at: 0, gen: "g", s: 1 },
                               Number.MAX_SAFE_INTEGER, EXPORT_PAGE_BYTES);
-        const text = page.lines.map((line) => new TextDecoder().decode(line));
+        // One buffer, each line whole at its end, its newline last.
+        const { bytes, ends } = page.lines;
+        const text = Array.from(ends, (end, n) => new TextDecoder().decode(
+          bytes.subarray(n === 0 ? 0 : ends[n - 1]!, end)));
+        expect(ends.at(-1)).toBe(bytes.byteLength);
         expect(text.every((line) => line.endsWith("\n") && JSON.parse(line) !== null)).toBe(true);
-        seen.push({ bytes: page.lines.reduce((sum, line) => sum + line.byteLength, 0),
+        seen.push({ bytes: bytes.byteLength,
                     rows: text.filter((line) => line.includes('"table":"owner_notices"')).length });
         if (page.next === null) {
           return seen;

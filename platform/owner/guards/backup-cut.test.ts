@@ -13,7 +13,7 @@
 import { describe, expect, it } from "vitest";
 
 import { cutParts, GENERATION_SIZES } from "../src/backup";
-import { chunkLine, lineBytes } from "../src/export";
+import { chunkLine, encodeLines, EXPORT_PAGE_BYTES, type Lines } from "../src/export";
 import { CHUNK_BYTES } from "../src/manifest";
 import { CPU_LIMIT_MS, cpuMs } from "./cpu";
 
@@ -68,13 +68,35 @@ function burst(gather: number, seed = 1): string[] {
       : JSON.stringify({ t: "row", table: "owner_notices", row: {
         seq: n, at: n, type: "agent", detail: mixed(next, 20 + Math.floor(next() * 200)) } });
     lines.push(line);
-    bytes += lineBytes(line).byteLength;
+    bytes += Buffer.byteLength(line) + 1;
   }
   return lines;
 }
 
-/** A burst's cut as the lane makes it: each line encoded once, then cut. */
-const cut = (lines: readonly string[], part: number) => cutParts(lines.map(lineBytes), part);
+/**
+ * Lines as a burst's pages hold them, each page's encoded once (`encodeLines`): pages of
+ * `EXPORT_PAGE_BYTES`, as `readPage` cuts them, or of the line counts `sizes` gives in turn.
+ */
+function paged(lines: readonly string[], sizes?: () => number): Lines[] {
+  const pages: Lines[] = [];
+  for (let at = 0; at < lines.length;) {
+    let to = at;
+    if (sizes === undefined) {
+      for (let bytes = 0; to < lines.length && bytes < EXPORT_PAGE_BYTES; to++) {
+        bytes += Buffer.byteLength(lines[to]!) + 1;
+      }
+    } else {
+      to = Math.min(lines.length, at + sizes());
+    }
+    pages.push(encodeLines(lines.slice(at, to)));
+    at = to;
+  }
+  return pages;
+}
+
+/** A burst's cut as the lane makes it: each page encoded once, then cut. */
+const cut = (lines: readonly string[], part: number, sizes?: () => number) =>
+  cutParts(paged(lines, sizes), part);
 
 /** The least CPU of a few runs of one cut, so a stray collection does not count. */
 async function leastMs(lines: readonly string[], part: number): Promise<number> {
@@ -128,14 +150,14 @@ describe("a burst's cut into parts at production sizes", () => {
 });
 
 describe("a burst's cut", () => {
-  it("makes byte for byte the parts of the cut it replaced, for lines of any characters",
-     () => {
+  it("makes byte for byte the parts of the cut it replaced, for lines of any characters " +
+     "in pages of any sizes", () => {
     const next = random(7);
     for (const part of [1, 64, 1000, 4096, 65_536]) {
-      // Lines of every width up to past a part, and the empty line.
+      // Lines of every width up to past a part, and the empty line, in pages of 0 to 40.
       const lines = Array.from({ length: 400 }, (_, n) => n % 50 === 0 ? ""
         : mixed(next, Math.floor(next() * part * (n % 7 === 0 ? 1.5 : 0.3))));
-      const made = cut(lines, part);
+      const made = cut(lines, part, () => Math.floor(next() * 41));
       const reference = replacedCut(lines, part);
       expect(made.length).toBe(reference.length);
       for (const [n, bytes] of made.entries()) {
@@ -147,7 +169,11 @@ describe("a burst's cut", () => {
       expect(cut(lines, 7).map((bytes) => Buffer.from(bytes).toString("hex")))
         .toEqual(replacedCut(lines, 7).map((bytes) => Buffer.from(bytes).toString("hex")));
     }
-  });
+    // An empty page between two, and none.
+    expect(cutParts([encodeLines(["ab"]), encodeLines([]), encodeLines(["cd"])], 6)
+      .map((bytes) => Buffer.from(bytes).toString())).toEqual(["ab\ncd\n"]);
+    expect(cutParts([], 6)).toEqual([]);
+  }, 60_000);
 
   it("counts a line by its UTF-8, not its UTF-16: a part of three-byte characters is cut " +
      "at its bytes", () => {
