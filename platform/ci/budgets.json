@@ -1,62 +1,62 @@
 {
   "factor": 4,
-  "measured": "2026-11-04, one local run of each workspace (4 cores, 15 GB), not yet a CI leg's",
+  "measured": "CI run 41976556279 (Tests, workflow_dispatch of land/4b at 15ecc32cb, its legs and sizes shards with a JSON report each), 2026-11-05",
   "medium": {
     "ci/guards": {
-      "slowest_ms": 1886,
-      "test": "ci/guards/legs.test.ts > platform-tests and platform-sizes run every workspace's tests, whole, each leg its command alone"
+      "slowest_ms": 1326,
+      "test": "ci/guards/timeouts.test.ts > test timeouts no platform test sets one"
     },
     "doors/guards": {
-      "slowest_ms": 1242,
+      "slowest_ms": 1172,
       "test": "doors/guards/binder.test.ts > binder guard finds the binder alone binding, in every Worker's source"
     },
     "doors/workerd": {
-      "slowest_ms": 2685,
-      "test": "doors/test/runs.test.ts > a run's live events keep a settled run's tail no longer: the live runs' tails have its room"
+      "slowest_ms": 1600,
+      "test": "doors/test/runs.test.ts > the run tools start, read and cancel a run over MCP, each client held to its own"
     },
     "files/guards": {
-      "slowest_ms": 946,
+      "slowest_ms": 976,
       "test": "files/guards/r2-keys.test.ts > r2-keys guard finds every R2 key built by chunkKey, and the bucket named only by the files Worker"
     },
     "files/workerd": {
-      "slowest_ms": 125,
+      "slowest_ms": 134,
       "test": "files/test/chunks.test.ts > putChunks takes a full batch of two 4 MiB chunks"
     },
     "gateway/guards": {
-      "slowest_ms": 290,
+      "slowest_ms": 520,
       "test": "gateway/guards/isolation.test.ts > gateway isolation guards finds the keyring named only in keyring.ts, and no OWNER or getByName, over the whole import closure"
     },
     "gateway/workerd": {
-      "slowest_ms": 11026,
+      "slowest_ms": 11013,
       "test": "gateway/test/held.test.ts > the verification's cases (rveg2) never counts a wait for a unit against the sender (V-M2)"
     },
     "hooks/guards": {
-      "slowest_ms": 41,
+      "slowest_ms": 20,
       "test": "hooks/guards/isolation.test.ts > hooks isolation guards find no owner binding, no storage and no import from outside"
     },
     "owner/guards": {
-      "slowest_ms": 2423,
-      "test": "owner/guards/alarm.test.ts > alarm guard finds no alarm reach past Lifecycle in any Worker's source"
+      "slowest_ms": 5576,
+      "test": "owner/guards/move-cpu.test.ts > an archive move at the production seal keeps one move of the least mail inside a third of the CPU limit"
     },
     "owner/workerd": {
-      "slowest_ms": 9666,
+      "slowest_ms": 7821,
       "test": "owner/test/archive-mail.test.ts > the archive lane keeps a segment a purge's rewrite makes again byte for byte, its content still held"
     },
     "sandbox/guards": {
-      "slowest_ms": 131,
-      "test": "sandbox/guards/config.test.ts > the sandbox Worker reaches E2B's own hosts alone"
+      "slowest_ms": 224,
+      "test": "sandbox/guards/template.test.ts > the template takes no runner input: a change to the runner's code is no new template"
     },
     "sandbox/runner": {
-      "slowest_ms": 6746,
-      "test": "sandbox/runner/runner.test.ts > the store's generation and its lock (review round 2: N2, N3) lets a completed sign-in's new login win over a run live across it"
+      "slowest_ms": 9030,
+      "test": "sandbox/runner/sync-ignore.test.ts > what it remembers of a tree, and what that buys answers a large mixed tree as git does, in any order, as with nothing remembered"
     },
     "sandbox/workerd": {
-      "slowest_ms": 148,
-      "test": "sandbox/test/sandbox.test.ts > an erasure kills every sandbox of the owner, paused and strays included, and forgets the owner"
+      "slowest_ms": 434,
+      "test": "sandbox/test/sandbox.test.ts > the runner, by digest looks on when a start adopted another runner under its quiet look"
     }
   },
   "large": {
-    "slowest_ms": 60689,
+    "slowest_ms": 61344,
     "test": "sandbox/runner/runner.test.ts > the store's generation and its lock (review round 2: N2, N3) waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly"
   }
 }
