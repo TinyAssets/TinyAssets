@@ -102,6 +102,15 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
     "TOKEN_HEX": "python `secrets.token_hex(...)` in a run script",
 }
 
+# Secrets held by a main-only environment of their own, never by `production`
+# (whose required reviewer would hold every use): a job that reads one declares
+# that environment, and no other job may read it.
+ENVIRONMENT_SECRETS: dict[str, str] = {
+    # The review App's key: the only identity that may post the required `review`
+    # check (review.yml). Its environment deploys from main alone, with no reviewer.
+    "REVIEW_APP_PRIVATE_KEY": "review",
+}
+
 # `secrets.NAME`, `secrets['NAME']`, `secrets["NAME"]`, `secrets[NAME]`,
 # `secrets[format(...)]` — any key, any quoting. A dynamic index is reported as
 # the raw expression, which is never on the allowlist.
@@ -151,7 +160,8 @@ def _secret_names(text: str) -> set[str]:
 
 
 def _production_secret_names(text: str) -> set[str]:
-    return {n for n in _secret_names(text) if n.upper() not in NON_PRODUCTION_SECRETS}
+    return {n for n in _secret_names(text)
+            if n.upper() not in NON_PRODUCTION_SECRETS and n.upper() not in ENVIRONMENT_SECRETS}
 
 
 def _run_scripts(job: dict) -> list[str]:
@@ -252,6 +262,40 @@ def test_allowlist_is_in_use_and_never_names_a_production_secret():
     assert all(v.strip() for v in NON_PRODUCTION_SECRETS.values()), (
         "every allowlist entry is justified"
     )
+
+
+def test_an_environments_own_secret_is_read_only_inside_that_environment():
+    """The review App's key is read only by a job in the `review` environment, which
+    GitHub refuses on any ref but main, so no branch's workflow can mint the App's token."""
+    wrong: list[str] = []
+    seen: set[str] = set()
+    for path in _workflow_files():
+        data = _load(path)
+        wf_text = _workflow_level_text(data)
+        for name in _secret_names(wf_text):
+            if name.upper() in ENVIRONMENT_SECRETS:
+                wrong.append(f"{path.name} reads secrets.{name} for every job")
+        for job_name, job in (data.get("jobs") or {}).items():
+            for name in _secret_names(yaml.safe_dump(job)):
+                wanted = ENVIRONMENT_SECRETS.get(name.upper())
+                if wanted is None:
+                    continue
+                seen.add(name.upper())
+                if "uses" in job or _environment_name(job) != wanted:
+                    wrong.append(f"{path.name} job `{job_name}` reads secrets.{name} "
+                                 f"outside the `{wanted}` environment")
+    for action in _ACTIONS.glob("*/action.y*ml"):
+        for name in _secret_names(action.read_text(encoding="utf-8")):
+            if name.upper() in ENVIRONMENT_SECRETS:
+                wrong.append(f"{action.parent.name} reads secrets.{name}")
+    assert not wrong, wrong
+    assert seen == set(ENVIRONMENT_SECRETS), (
+        f"environment secrets no workflow reads any more; delete them: "
+        f"{sorted(set(ENVIRONMENT_SECRETS) - seen)}"
+    )
+    assert not set(ENVIRONMENT_SECRETS) & set(PRODUCTION_SECRETS)
+    assert not set(ENVIRONMENT_SECRETS) & set(NON_PRODUCTION_SECRETS)
+    assert "production" not in ENVIRONMENT_SECRETS.values()
 
 
 @pytest.mark.parametrize(
