@@ -1604,10 +1604,12 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
     expect(filled.hot).toBe(maxMessages - 1);
     expect(filled.last).toEqual(filled.first);
     expect(filled.refused).toMatch(/^storage_busy:/);
-    // The doors' post: busy alike, nothing deleted; it rings the lane.
+    // The doors' post: busy alike, nothing deleted; it rings the lane, which may move mail
+    // out at once, so hot and archived are counted together, in one read.
     expect((await failure(() => r.post(null, room, { cmid: "past", body: BODY }))).message)
       .toMatch(/^storage_busy:/);
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM ledger_messages"))
+    expect(await sqlIn(r.stub, "SELECT (SELECT COUNT(*) FROM ledger_messages) + (SELECT " +
+                               "coalesce(SUM(records), 0) FROM archive_segments) AS n"))
       .toEqual([{ n: maxMessages }]);
     // One lane pass: at least one segment moved out, each sealed by its bytes.
     await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/archive'");
