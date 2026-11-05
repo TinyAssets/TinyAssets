@@ -62,7 +62,8 @@ describe("an archive move at the production seal", () => {
 
   for (const [shape, body] of [["the least mail", "x"],
                                ["mail of 600-byte bodies", "m".repeat(600)]] as const) {
-    it(`keeps one move of ${shape} inside a third of the CPU limit`, async () => {
+    it(`keeps one move of ${shape} inside a third of the CPU limit`, { tags: ["large"] },
+       async () => {
       const held = new Map<number, ReturnType<typeof rows>>();
       for (let seq = 1, bytes = 0; held.size < archiveRecords && bytes < archiveBytes; seq++) {
         const own = rows(seq, body);
@@ -126,6 +127,6 @@ describe("an archive move at the production seal", () => {
       expect(seqs.length).toBeLessThan(archiveRecords);
       expect(size).toBeGreaterThanOrEqual(archiveBytes);
       expect(ms).toBeLessThan(STEP_CPU_MS);
-    }, 120_000);
+    });
   }
 });

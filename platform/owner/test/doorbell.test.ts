@@ -688,7 +688,7 @@ describe("a send's answer", () => {
     expect(receipts).toMatchObject([{ status: 302 }, { status: 410 }]);
     expect(await r.sql("SELECT * FROM wake_callbacks")).toHaveLength(1);  // 410 keeps it
     expect((await received(r)).every((request) => request.redirect === "manual")).toBe(true);
-  }, 30_000);
+  });
 
   it("tells the owner when a pasted token is refused as dead, and keeps it", async () => {
     const r = await rung();

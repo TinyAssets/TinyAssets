@@ -7,6 +7,8 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
+import { LARGE, medium } from "../ci/classes";
+
 const TEST = join(dirname(fileURLToPath(import.meta.url)), "test");
 
 /**
@@ -36,6 +38,7 @@ const KEYRING = JSON.stringify({
 
 export default defineConfig({
   test: {
+    tags: [LARGE],
     projects: [
       {
         // Runs in workerd, under the config's own runtime and flags. The keyring is the
@@ -51,12 +54,12 @@ export default defineConfig({
             },
           }),
         ],
-        // Slow under a loaded CI runner, not hanging: two different tests passed 5 s there.
-        test: { name: "workerd", include: ["test/**/*.test.ts"], testTimeout: 30_000 },
+        test: { name: "workerd", ...medium("gateway/workerd"), include: ["test/**/*.test.ts"] },
       },
       {
         // Static guards over the source and config, in Node.
-        test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node" },
+        test: { name: "guards", ...medium("gateway/guards"), include: ["guards/**/*.test.ts"],
+                environment: "node" },
       },
     ],
   },

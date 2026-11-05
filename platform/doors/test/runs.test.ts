@@ -159,7 +159,7 @@ describe("the run tools", () => {
     expect(cancelled).toMatchObject({ run_id: run["run_id"] });
     await client.close();
     await other.close();
-  }, 60_000);
+  });
 
   it("are refused without the control record's tier numbers, and held to them", async () => {
     const { who, app } = await owned();
@@ -179,7 +179,7 @@ describe("the run tools", () => {
     expect([second.status, await second.json()])
       .toEqual([403, { error: "tier_runs: the owner's tier runs this many runs at once (free: 1)" }]);
     expect(await starts(who)).toHaveLength(1);
-  }, 60_000);
+  });
 });
 
 describe("the owner's /app/api/agent/* routes", () => {
@@ -198,7 +198,7 @@ describe("the owner's /app/api/agent/* routes", () => {
     const scheduled = await appPost("agent/run", app.access_token, null, {
       agent: "main", input: "nightly", cron: "0 3 * * *" });
     expect(await scheduled.json()).toMatchObject({ agent: "main", trigger: "cron" });
-  }, 60_000);
+  });
 });
 
 describe("a run's own doors on the egress host", () => {
@@ -237,7 +237,7 @@ describe("a run's own doors on the egress host", () => {
       method: "POST", body: "{}", headers: { Origin: url(""), [SANDBOX_HEADER]: tokenOf(start!),
                                              [GENERATION_HEADER]: "1" } }));
     expect(browser.status).toBe(404);
-  }, 60_000);
+  });
 
   it("serve a run no MCP Events: it lists none and may subscribe or end none", async () => {
     const { who, app } = await owned();
@@ -261,7 +261,7 @@ describe("a run's own doors on the egress host", () => {
       expect((await post(method, params))["error"]).toMatchObject({ code: -32024 });
     }
     expect(await sqlIn(who, "SELECT 1 FROM wake_callbacks")).toEqual([]);
-  }, 60_000);
+  });
 
   it("take a run's own secret as its header, where its CLI sends one", async () => {
     const { who, app } = await owned();
@@ -280,7 +280,7 @@ describe("a run's own doors on the egress host", () => {
       method: "POST", body: "{}",
       headers: { "Content-Type": "application/json", ...sandbox, [RUN_HEADER]: "0".repeat(64) } }));
     expect(wrong.status).not.toBe(200);
-  }, 60_000);
+  });
 
   it("answer a post the object holds no room for 503, for the runner to post again", () => {
     expect(refusedStatus("events_busy", 403)).toBe(503);
@@ -306,7 +306,7 @@ describe("a run's own doors on the egress host", () => {
     expect([large.status, ((await large.json()) as { error: { code: string } }).error.code])
       .toEqual([413, "events_too_large"]);
     expect((await post(runnerOf(start!), many.slice(0, 2))).status).toBe(200);
-  }, 60_000);
+  });
 
   it("take the runner's sign-in report by the sandbox's egress token, and nothing else",
      async () => {
@@ -337,7 +337,7 @@ describe("a run's own doors on the egress host", () => {
     expect(await runInDurableObject(env.OWNER.getByName(who), (_instance, state) =>
       state.storage.sql.exec("SELECT engine, signed_in FROM engine_signins").toArray()))
       .toEqual([{ engine: "claude-code", signed_in: 1 }]);
-  }, 60_000);
+  });
 });
 
 /** A socket ticket for `conversation`, from the owner's token. */
@@ -428,7 +428,7 @@ describe("a run's live events", () => {
     after.ws.close(1000, "done");
     early.ws.close(1000, "done");
     late.ws.close(1000, "done");
-  }, 60_000);
+  });
 
   it("relay a frame whose session id is outside its shape, refusing the id with a fixed code " +
      "(app review)", async () => {
@@ -475,7 +475,7 @@ describe("a run's live events", () => {
     expect(late.frames.map((frame) => frame.seq))
       .toEqual(Array.from({ length: 118 }, (_, i) => i + 1));
     late.ws.close(1000, "done");
-  }, 60_000);
+  });
 
   it("reach only the sockets on the run's own conversation", async () => {
     const { who, app } = await owned();
@@ -495,14 +495,14 @@ describe("a run's live events", () => {
     expect(theirs.frames).toEqual([]);
     mine.ws.close(1000, "done");
     theirs.ws.close(1000, "done");
-  }, 60_000);
+  });
 
   it("take no forged ticket: the doors refuse it before any object", async () => {
     const forged = `user_${crypto.randomUUID().replace(/-/g, "")}`;
     const answer = await socket(forged, `cv_${"0".repeat(32)}`);
     expect([answer.status, await answer.json()]).toEqual([403, { error: TICKET_REFUSED }]);
     expect(await reached(forged)).toBe(false);
-  }, 60_000);
+  });
 
   it("take no bearer: a ticket opens one socket, once, for its own conversation, and a " +
      "sign-out closes it", async () => {
@@ -535,5 +535,5 @@ describe("a run's live events", () => {
     expect(kept.closed()).toBeNull();
     kept.ws.close(1000, "done");
     void who;
-  }, 60_000);
+  });
 });

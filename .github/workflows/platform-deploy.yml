@@ -17,7 +17,7 @@ name: Platform deploy (manual, founder-approved)
 #
 # The apply job's secrets come from the `production` environment's store, so
 # a branch's copy of this file never reaches them
-# (tests/test_workflow_production_environment.py), and never from a host
+# (platform/ci/guards/environment.test.ts), and never from a host
 # (Direction 8). The kit never prints a value and never makes one in a
 # deploy; GATEWAY_KEYRING and FILES_KEYRING are each made once with `keyring-new`
 # (scripts/platform_setup.py makes the same in memory) and rotated with `keyring-add`,

@@ -323,7 +323,7 @@ describe("mail to an agent", () => {
     await drainDue(r.stub);
     expect(told((await starts(r)).at(-1)!).body).toBe(long);
     expect(await r.sql("SELECT COUNT(*) AS n FROM run_inputs")).toEqual([{ n: 0 }]);
-  }, 120_000);
+  });
 
   it("from a client starts a run held to the intersection with that client's grant",
      async () => {

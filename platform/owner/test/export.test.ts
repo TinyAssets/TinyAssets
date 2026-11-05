@@ -198,7 +198,7 @@ describe("the owner export", () => {
         cursor: bad, export_id: whole.exportId }))).message)
         .toBe("an export cursor is one a page handed out");
     }
-  }, 120_000);
+  });
 
   it("is the owner's alone, in its session: no outside client, no call without the session",
      async () => {
@@ -238,7 +238,7 @@ describe("the owner export", () => {
     expect(a.lines).toEqual(b.lines);
     expect(await sqlIn(o.stub, "SELECT COUNT(DISTINCT gen) AS n FROM owner_exports"))
       .toEqual([{ n: 1 }]);
-  }, 60_000);
+  });
 });
 
 describe("a generation", () => {
@@ -260,7 +260,7 @@ describe("a generation", () => {
     expect(after).toBeGreaterThan(5);
     expect(made.atE).toBeDefined();
     expect(digest(replay(made.lines))).toBe(made.atE);
-  }, 120_000);
+  });
 
   it("carries the starter's receipts as they change while it runs (slice STARTER)",
      async () => {
@@ -300,9 +300,10 @@ describe("a generation", () => {
     expect(Object.keys(rows["starter_receipts"]!)).toHaveLength(2);
     expect(Object.values(rows["starter_state"]!).map((row) => JSON.parse(row)["version"]))
       .toEqual([2]);
-  }, 120_000);
+  });
 
-  it("settles though a 5,000-file sync runs through its pass (review R4-3)", async () => {
+  it("settles though a 5,000-file sync runs through its pass (review R4-3)", { tags: ["large"] },
+     async () => {
     const o = await owner();
     await notices(o, 1_600);  // some twenty-five bursts: hundreds of units and calls
     let written = 0;
@@ -317,10 +318,10 @@ describe("a generation", () => {
       .toMatchObject({ written: 5000, notices: [] });
     expect(made.atE).toBeDefined();
     expect(digest(replay(made.lines))).toBe(made.atE);
-  }, 120_000);
+  });
 
   it("repeats only what was not acknowledged, wherever a pass is cut: before or after " +
-     "each outside call (review R4-1; crash points)", async () => {
+     "each outside call (review R4-1; crash points)", { tags: ["large"] }, async () => {
     const plain = await owner();
     await notices(plain, 100);  // two bursts: segments before E and after
     const { calls, lines } = await generate(plain.stub, { duringCall: busy(3) });
@@ -336,7 +337,7 @@ describe("a generation", () => {
         expect([call, when, digest(replay(made.lines))]).toEqual([call, when, made.atE]);
       }
     }
-  }, 600_000);
+  });
 
   it("gives up one a migration ran under, loudly, and begins a fresh one under the new " +
      "schema: never two schemas in one (review L5-2)", async () => {
@@ -354,7 +355,7 @@ describe("a generation", () => {
     // Its lines are one schema's, and replayed they are the owner at E.
     expect(after.lines[0]).toMatchObject({ t: "header", schema: MIGRATIONS.length + 1 });
     expect(digest(replay(after.lines))).toBe(after.atE);
-  }, 120_000);
+  });
 
   it("gives up one with a line longer than any part may be, loudly and the owner told " +
      "once, never a part no root may name (review rvbackup 5)", async () => {
@@ -379,7 +380,7 @@ describe("a generation", () => {
     const made = await generate(o.stub, { sizes });
     expect(made.notices).toEqual([]);
     expect(digest(replay(made.lines))).toBe(made.atE);
-  }, 120_000);
+  });
 
   it("takes its burst's units of the pool now or yields: with the pool full it reads and " +
      "puts nothing and goes on later; with room, each part's put inside its units, each " +
@@ -413,7 +414,7 @@ describe("a generation", () => {
     expect(new Set(seen["segment"])).toEqual(new Set([SHIP_UNITS]));
     expect(seen["root"]).toEqual([0]);
     expect(pool.state()).toMatchObject({ held: 0, peak: BURST_UNITS });
-  }, 120_000);
+  });
 
   it("ships a log segment outside a burst inside its own units, now or not at all: with the " +
      "pool full it puts nothing and goes on later (rvburst 1)", async () => {
@@ -443,7 +444,7 @@ describe("a generation", () => {
     expect(made.notices).toEqual([]);
     expect(digest(replay(made.lines))).toBe(made.atE);
     expect(pool.state().held).toBe(0);
-  }, 120_000);
+  });
 
   it("begins no burst once the owner's erasure begins while the log ships: no part put, " +
      "the pool never past the ship's units (rvburst V2)", async () => {
@@ -464,7 +465,7 @@ describe("a generation", () => {
     } });
     expect(kinds).toEqual(["segment"]);
     expect(pool.state()).toMatchObject({ held: 0, peak: SHIP_UNITS });
-  }, 120_000);
+  });
 
   it("goes on later, never at once, when a pass ends before it does", async () => {
     const o = await owner();
@@ -488,7 +489,8 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', CASE WHEN i % 2 = 0 THEN " +
     "printf('%.1000c', 'a') ELSE replace(printf('%.1000c', 'a'), 'a', '€') END FROM n", count);
 
-  it("reads each page of three-byte characters within its bytes, its lines whole", async () => {
+  it("reads each page of three-byte characters within its bytes, its lines whole",
+     { tags: ["large"] }, async () => {
     const o = await owner();
     await notices3(o, 2_000);
     const pages = await runInDurableObject(o.stub, (_instance: OwnerDO, state) => {
@@ -518,10 +520,10 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     }
     expect(pages.length).toBeGreaterThan(3);
     expect(pages.reduce((sum, page) => sum + page.rows, 0)).toBe(2_000);
-  }, 120_000);
+  });
 
   it("finishes an owner of several bursts, read back exactly, each burst bounded by its " +
-     "bytes and its row under a row's 2 MB", async () => {
+     "bytes and its row under a row's 2 MB", { tags: ["large"] }, async () => {
     const o = await owner();
     // 14,000 notices of 1,000 characters, every other one of three-byte characters: about
     // 29 MB of base, so that each burst counts its UTF-8, not its UTF-16 (a third of it).
@@ -580,7 +582,7 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     expect(widest.part).toBeLessThanOrEqual(PART_ENTRY);
     expect(widest.segment).toBeLessThanOrEqual(SEGMENT_ENTRY);
     expect(MANIFEST_PARTS * Math.max(widest.part, widest.segment)).toBeLessThan(ROW_MAX);
-  }, 300_000);
+  });
 });
 
 /** A generation finished long ago, so tonight's is due now. */
@@ -675,7 +677,7 @@ describe("an open export", () => {
     await drainDue(o.stub);
     expect(await bucket().getManifestRoot(ns, gen)).toBeNull();
     expect(await bucket().getManifestRoot(ns, made.gen)).not.toBeNull();
-  }, 60_000);
+  });
 });
 
 describe("the nightly manifest", () => {

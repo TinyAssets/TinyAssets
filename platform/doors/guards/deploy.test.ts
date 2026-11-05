@@ -689,7 +689,7 @@ describe("the deploy kit", () => {
     // build.py marks a passed pair with the same tag.
     const script = readFileSync(join(PLATFORM, "sandbox", "template", "build.py"), "utf8");
     expect(script).toContain('return f"{tag_}-r{runner_sha[:16]}"');
-  }, 60_000);
+  });
 
   it("runs the pair check with the E2B key alone, and stops on a failure", async () => {
     const saved = { ...process.env };
@@ -723,7 +723,7 @@ describe("the deploy kit", () => {
     } finally {
       process.env = saved;
     }
-  }, 60_000);
+  });
 
   it("deploys a later version without touching routes, and names its version", () => {
     expect(versionOf("Uploaded tinyassets-owner\nWorker Version ID: " +

@@ -94,7 +94,7 @@ describe("the owner's agent definitions (review H1)", () => {
     expect((await r.stub.fileStat(r.bind(null), { path: OTHER })).entry!.etag).toBe(now);
     expect(await r.stub.fileWrite(client, { path: "/workspace/mine.md", expected_etag: "",
                                             content: bytes("mine") })).toHaveProperty("entry");
-  }, 30_000);
+  });
 
   it("take the owner's own change only in its live session, refused and receipted without",
      async () => {
@@ -132,7 +132,7 @@ describe("the owner's agent definitions (review H1)", () => {
     // Outside the owner's trees, the bare token writes as before.
     expect(await r.stub.fileWrite(bare, { path: "/workspace/notes.md", expected_etag: "",
                                           content: bytes("mine") })).toHaveProperty("entry");
-  }, 30_000);
+  });
 
   it("name the agent trees: the agents, their skills, their prompts and the goals", () => {
     expect(OWNER_TREES).toEqual([AGENTS_DIR, "/workspace/.agents", "/workspace/skills",
@@ -188,7 +188,7 @@ describe("the owner's agent definitions (review H1)", () => {
     // The owner, in its session, still writes them.
     expect(await r.stub.fileWrite(r.session(null), { path: GOAL, expected_etag: etag,
       content: bytes("## Agreed\n") })).toHaveProperty("entry");
-  }, 30_000);
+  });
 
   it("hold only the tree and the roots themselves, never a name that merely starts alike " +
      "(review round 2)", async () => {
@@ -204,5 +204,5 @@ describe("the owner's agent definitions (review H1)", () => {
     expect((await failure(() => r.stub.fileWrite(r.bind(MUSE), {
       path: "/workspaceX/a.md", expected_etag: "", content: bytes("x") }))).name)
       .toBe("Invalid");
-  }, 30_000);
+  });
 });

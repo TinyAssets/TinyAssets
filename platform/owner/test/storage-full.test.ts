@@ -286,7 +286,7 @@ describe("the sync's ignore list", () => {
       .filter((each) => each.type === "sync_ignore_changed");
     expect(notice!.detail).toContain(`The list past its ${LIST_BYTES.toLocaleString("en")} ` +
                                      "bytes is not applied");
-  }, 120_000);
+  });
 
   it("never gives an outside client's sandbox count, which sees only its part of the files " +
      "(verification round 3, R3-2)", async () => {

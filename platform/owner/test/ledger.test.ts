@@ -664,5 +664,5 @@ describe("a registration's identity (slice D review M1)", () => {
                        "GROUP BY outside_client")).toEqual([{ client: MUSE.client, n: 1 }]);
     // Its other fields still change.
     await r.sql("UPDATE outside_agents SET display_name = 'Renamed' WHERE agent_id = ?", muse);
-  }, 30_000);
+  });
 });

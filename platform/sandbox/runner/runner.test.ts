@@ -767,7 +767,7 @@ describe("a secret written back (review M3: compare-and-swap)", () => {
     // The run was stopped by the sign-out, well before its CLI's own end.
     await doors.ended_(25_000, start.run);
     expect(() => readFileSync(box.path(store), "utf8")).toThrow();
-  }, 40_000);
+  });
 });
 
 describe("the store's generation and its lock (review round 2: N2, N3)", () => {
@@ -845,7 +845,7 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
   });
 
   it("waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly",
-     async () => {
+     { tags: ["large"] }, async () => {
     const lock = box.path("/var/lib/ta/locks/kimi");
     mkdirSync(lock, { recursive: true });
     const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
@@ -857,7 +857,7 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
     // Its event loop was never blocked: it beat while it waited.
     expect(doors.events().filter((post) => post.path.includes(start.run)).length)
       .toBeGreaterThan(2);
-  }, 120_000);
+  });
 });
 
 describe("an API-key run's base URL (codexurl_research.md)", () => {
@@ -1073,7 +1073,7 @@ describe("the route probe (codexurl_research.md Q4)", () => {
   };
 
   it("passes every keyed engine whose CLI completes its turn, its resume and its " +
-     "compaction on the door, as a run runs it", () => {
+     "compaction on the door, as a run runs it", { tags: ["large"] }, () => {
     honest();
     const { code, lines } = probe();
     expect(lines.filter((line) => !line.ok)).toEqual([]);
@@ -1087,10 +1087,10 @@ describe("the route probe (codexurl_research.md Q4)", () => {
       new Set(["claude-code", "codex", "gemini", "pi"]));
     // A fake sign-in was seeded in the stores and is gone again.
     expect(existsSync(box.path("/var/lib/ta/store/codex/.codex/auth.json"))).toBe(false);
-  }, 240_000);
+  });
 
   it("judges every request: a resumed turn's call off the door fails, as a first's would",
-     () => {
+     { tags: ["large"] }, () => {
     honest();
     box.cli("pi", { lines: said("pi"), requests: [{
       url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat/completions",
@@ -1103,10 +1103,10 @@ describe("the route probe (codexurl_research.md Q4)", () => {
     for (const line of lines.filter((each) => each.engine === "pi")) {
       expect(line.reason, line.provider).toMatch(/no placeholder key/);
     }
-  }, 240_000);
+  });
 
   it("fails a CLI whose resume silently starts afresh: the first turn's word never comes back",
-     () => {
+     { tags: ["large"] }, () => {
     honest();
     box.cli("gemini", { lines: said("gemini"), requests: [{
       url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent",
@@ -1115,9 +1115,9 @@ describe("the route probe (codexurl_research.md Q4)", () => {
     expect(code).toBe(3);
     expect(lines.find((line) => line.engine === "gemini")!.reason)
       .toMatch(/none of the first turn's history/);
-  }, 240_000);
+  });
 
-  it("fails a CLI that does not complete its turn, or does not compact when told", () => {
+  it("fails a CLI that does not complete its turn, or does not compact when told", { tags: ["large"] }, () => {
     honest();
     box.cli("claude-code", { lines: [], requests: [{
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
@@ -1133,9 +1133,9 @@ describe("the route probe (codexurl_research.md Q4)", () => {
       .toMatch(/first turn did not complete/);
     expect(lines.find((line) => line.engine === "codex")!.reason)
       .toMatch(/no compaction request/);
-  }, 240_000);
+  });
 
-  it("fails loudly when a CLI ignores its channel and calls out instead", () => {
+  it("fails loudly when a CLI ignores its channel and calls out instead", { tags: ["large"] }, () => {
     honest();
     box.cli("codex", { lines: [], requests: [{ url: "http://192.0.2.1:9/v1/responses",
                                                headers: { authorization: "Bearer x" } }] });
@@ -1145,7 +1145,7 @@ describe("the route probe (codexurl_research.md Q4)", () => {
       { engine: string; ok: boolean; reason: string }).find((line) => line.engine === "codex")!;
     expect(codex.ok).toBe(false);
     expect(codex.reason).toMatch(/outside the sandbox: 192\.0\.2\.1:9|no model request/);
-  }, 240_000);
+  });
 });
 
 describe("each run's own user", () => {
@@ -1279,7 +1279,7 @@ describe("the sync", () => {
       && post.at > commit.at + 1_000 && post.at < commit.at + HEARTBEAT_MS + 3_000);
     expect(during.length).toBeGreaterThanOrEqual(1);
     expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/notes.md");
-  }, 90_000);
+  });
 
   it("ends the run loudly when the sync agent dies before reading a job past the pipe's " +
      "buffer (verification round 4, R4-3)", async () => {
@@ -1306,7 +1306,7 @@ describe("the sync", () => {
     } finally {
       chmodSync(bundle, 0o644);
     }
-  }, 60_000);
+  });
 
   it("says the sync-ignore lines past its ceilings, which, how many and why, and keeps " +
      "their files syncing", async () => {
@@ -1517,7 +1517,7 @@ describe("the posts", () => {
     expect(doors.events().every((post) => JSON.stringify(post.body).length < 65_536)).toBe(true);
   });
 
-  it("stop the CLI when the object ended the run", async () => {
+  it("stop the CLI when the object ended the run", { tags: ["large"] }, async () => {
     box.cli("codex", { lines: [], sleepMs: 20_000 });
     const start = startDoc(doors, "codex", { config: config("codex") });
     box.start(start);
@@ -1526,7 +1526,7 @@ describe("the posts", () => {
     doors.ended = true;
     await waitFor(() => JSON.parse(readFileSync(
       box.path(`/var/lib/ta/runs/${start.run}/state.json`), "utf8")).ended === true, 30_000);
-  }, 40_000);
+  });
 });
 
 describe("cancel and the runner's state", () => {
@@ -1591,7 +1591,7 @@ describe("cancel and the runner's state", () => {
     }
     // Run by no loader (no digest named), it refuses.
     expect(box.runner("adopt").code).toBe(1);
-  }, 40_000);
+  });
 
   it("reads every format's run and sign-in state it reads, as each was recorded", () => {
     // Live processes of the test's own, as a run's runner and a sign-in's would be.
@@ -1622,7 +1622,7 @@ describe("cancel and the runner's state", () => {
     }
   });
 
-  it("kills a CLI that ignores SIGTERM, after its grace", async () => {
+  it("kills a CLI that ignores SIGTERM, after its grace", { tags: ["large"] }, async () => {
     box.cli("codex", { lines: [], sleepMs: 60_000, stubborn: true });
     const start = startDoc(doors, "codex", { config: config("codex") });
     box.start(start);
@@ -1631,7 +1631,7 @@ describe("cancel and the runner's state", () => {
     box.runner("cancel", start.run);
     const end = await doors.ended_(40_000, start.run);
     expect((end.body["end"] as { exit_code: number }).exit_code).toBeGreaterThan(128);
-  }, 50_000);
+  });
 });
 
 describe("renewal", () => {
@@ -1663,7 +1663,7 @@ describe("renewal", () => {
     expect(types).toEqual(expect.arrayContaining(["ta.renewing", "ta.renewed", "ta.resumed"]));
     expect(types.indexOf("ta.renewing")).toBeLessThan(types.indexOf("ta.renewed"));
     expect(box.ran("claude-code").at(-1)!.argv.slice(-2)).toEqual(["--resume", "cs-r"]);
-  }, 40_000);
+  });
 
   it("waits for a quiet moment, and renews at its deadline regardless", async () => {
     // A CLI that never goes quiet: it is held running until the renewal is over, by an event.
@@ -1680,7 +1680,7 @@ describe("renewal", () => {
     box.runner("renewed");
     writeFileSync(release, "");
     await doors.ended_(25_000, start.run);
-  }, 40_000);
+  });
 });
 
 describe("the sign-in", () => {

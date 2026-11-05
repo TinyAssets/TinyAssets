@@ -177,7 +177,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
       [499, { error: { code: "aborted", message: "aborted" } }]);
     expect(await outcome(stopped)).toEqual({ state: "failed" });
     await until(() => pool.state().held === 0);
-  }, 60_000);
+  });
 
   it("refuses a body stalled past its deadline, its slots let go", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
@@ -194,7 +194,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(heldDeadlineMs(100) - 50);
     expect(await outcome(answer)).toEqual({ state: "failed" });
     expect(isolatePool(GATEWAY_POOL_SLOTS).state().held).toBe(0);
-  }, 30_000);
+  });
 
   it("stops a reserve its caller stopped, its slots let go, nothing sent", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
@@ -266,7 +266,7 @@ describe("the verification's cases (rveg2)", () => {
       expect(await hog.response.json()).toMatchObject({ error: { code: "invalid_request" } });
     }
     await until(() => pool.state().held === 0);
-  }, 60_000);
+  });
 
   it("never counts a wait for a unit against the sender (V-M2)", async () => {
     const pool = new SlotPool(3, 12_000);
@@ -280,7 +280,7 @@ describe("the verification's cases (rveg2)", () => {
     expect(read.bytes).toBe(new TextEncoder().encode(text).byteLength);
     expect(Date.now() - started).toBeGreaterThan(10_500);
     hold.release();
-  }, 30_000);
+  });
 
   it("refuses a body that cannot fit as soon as its weight passes the pool, not after it",
      async () => {
@@ -336,7 +336,7 @@ describe("wait-die under load (rveg2 V-M1)", () => {
     expect(Date.now() - started).toBeLessThan(1000);
     expect(ends.filter((end) => end === "done").length).toBeGreaterThanOrEqual(1);
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
-  }, 30_000);
+  });
 
   it("keeps a closed loop of 8 owners at least as productive as one call at a time",
      async () => {
@@ -357,5 +357,5 @@ describe("wait-die under load (rveg2 V-M1)", () => {
     // One at a time (a read of about 0.1 s, a hold of 0.05 s): about 25 in 4 s.
     expect(done).toBeGreaterThanOrEqual(25);
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
-  }, 60_000);
+  });
 });

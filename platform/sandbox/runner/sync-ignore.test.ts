@@ -142,7 +142,7 @@ function differences(lines: readonly string[], paths: readonly string[]): string
 }
 
 describe("the sync-ignore, as git reads a .gitignore", () => {
-  it("answers every path as git does, over all 310 of GitHub's templates", () => {
+  it("answers every path as git does, over all 310 of GitHub's templates", { tags: ["large"] }, () => {
     const files = templates();
     expect(files).toHaveLength(310);
     let checked = 0;
@@ -155,9 +155,9 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
     }
     expect(checked).toBeGreaterThan(20_000);
     expect(found).toEqual([]);
-  }, 600_000);
+  });
 
-  it("answers random lists as git does: negation, **, classes, escapes, folders only", () => {
+  it("answers random lists as git does: negation, **, classes, escapes, folders only", { tags: ["large"] }, () => {
     let seed = 20261103;
     const random = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
     const pick = <T>(xs: readonly T[]) => xs[Math.floor(random() * xs.length)]!;
@@ -180,7 +180,7 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
       found.push(...differences(lines, paths).map((each) => `${JSON.stringify(lines)} ${each}`));
     }
     expect(found).toEqual([]);
-  }, 600_000);
+  });
 
   it("never ignores itself, nor the folders on its way", () => {
     const matcher = ignoredBy(["*", ".ta/", ".ta/sync-ignore"]);
@@ -298,7 +298,7 @@ const bytesOf = (text: string) => Buffer.byteLength(text, "utf8");
 
 describe("the review's hostile lists (rounds 1 to 6)", () => {
   it.each([...HOSTILE, DEEP])("%s: git's answers with the lines that fit, at the automaton's cost",
-                   (label, list, path) => {
+                   { tags: ["large"] }, (label, list, path) => {
     const lines = [...defaultSyncIgnore(), ...list];
     const past = new Set(unappliedLines(lines).map((each) => each.line));
     const applied = lines.filter((each) => !past.has(each.trim()));
@@ -336,11 +336,13 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     let perPath = Number.POSITIVE_INFINITY;
     for (let round = 0; round < 3; round++) {
       const fresh = Array.from({ length: 300 }, (_, i) => path(10_000 * (round + 1) + i));
-      const began = performance.now();
+      // The process's CPU time, not wall-clock: another process's load does not stretch it.
+      const began = process.cpuUsage();
       for (const each of fresh) {
         matcher(each);
       }
-      perPath = Math.min(perPath, (performance.now() - began) / fresh.length);
+      const spent = process.cpuUsage(began);
+      perPath = Math.min(perPath, (spent.user + spent.system) / 1000 / fresh.length);
     }
     const fresh = [path(1)];
     const name = bytesOf(fresh[0]!.split("/").at(-1)!);
@@ -350,7 +352,7 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     const bound = ((2 * name + 1) * (words * STEP_NS + INDEX_NS) + folder * INDEX_NS) * 1.5
       / 1e6;
     expect(perPath).toBeLessThanOrEqual(bound);
-  }, 300_000);
+  });
 
   it("R7 in the sync's own orders: each folder stepped once, a path its own segment", () => {
     const [, list, path] = DEEP;
@@ -388,7 +390,7 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     };
     expect(took(walk)).toBeLessThanOrEqual(bound);
     expect(took(files.map((file) => [file, false]))).toBeLessThanOrEqual(bound);
-  }, 300_000);
+  });
 });
 
 /**
@@ -433,7 +435,7 @@ describe("its memory", () => {
 
   it("holds, at `LIST_BYTES` of any class (each measured at a quarter of it, a list byte's " +
      "heap), what the sandbox's heap leaves beside the agent",
-     () => {
+     { tags: ["large"] }, () => {
     expect(LIST_BYTES * HEAP_PER_LIST_BYTE).toBeLessThanOrEqual(SANDBOX_HEAP - AGENT_PEAK);
     const used = () => process.memoryUsage().heapUsed + process.memoryUsage().arrayBuffers;
     // Two full collections settle what a collection leaves for the next (weak maps, the
@@ -464,7 +466,7 @@ describe("its memory", () => {
       }
       expect(perByte, label).toBeLessThanOrEqual(HEAP_PER_LIST_BYTE);
     }
-  }, 300_000);
+  });
 });
 
 describe("what it remembers of a tree, and what that buys", () => {
@@ -523,7 +525,7 @@ describe("what it remembers of a tree, and what that buys", () => {
   };
 
   it("holds its names within `REMEMBERED_NAME_BYTES` and of its folders only the path's own, " +
-     "at 10k, 100k and 200k folders", () => {
+     "at 10k, 100k and 200k folders", { tags: ["large"] }, () => {
     // The steps' own objects and the path's few folders: a quarter of the names' memory,
     // as the owner memory leg allows a step (ADR-037).
     const QUARTER = REMEMBERED_NAME_BYTES / 4;
@@ -542,7 +544,7 @@ describe("what it remembers of a tree, and what that buys", () => {
     }
     // O(1) in the tree: twenty times the folders hold at most a quarter more.
     expect(sizes[2]! - sizes[0]!).toBeLessThanOrEqual(QUARTER);
-  }, 300_000);
+  });
 
   it("holds its names within `REMEMBERED_NAME_BYTES` under a path near its most", () => {
     // A name of 13 characters or more, cut from its path, is a slice that keeps the whole
@@ -566,7 +568,7 @@ describe("what it remembers of a tree, and what that buys", () => {
       }
     }
     expect(peak).toBeLessThanOrEqual(REMEMBERED_NAME_BYTES * 1.25);
-  }, 300_000);
+  });
 
   it("answers a large mixed tree as git does, in any order, as with nothing remembered", () => {
     let seed = 20261104;
@@ -620,7 +622,7 @@ describe("what it remembers of a tree, and what that buys", () => {
     // And as a matcher with nothing remembered answers, a fresh one each path.
     expect(shuffled.slice(0, 400).filter(([path, isDir]) =>
       ignoredBy(lines)(path, isDir) !== inWalk.get(path))).toEqual([]);
-  }, 300_000);
+  });
 
   it("answers paths no walk makes (`.`, `..`, empty segments, a trailing `/`, 40 deep) the " +
      "same in any order as with nothing remembered", () => {
@@ -654,7 +656,7 @@ describe("what it remembers of a tree, and what that buys", () => {
       [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
     }
     expect([order(asMade), order(sorted), order(shuffled)]).toEqual([[], [], []]);
-  }, 300_000);
+  });
 
   it("matches a path in a walk at its own segment's cost, whatever its depth", () => {
     // Path lines that keep the automaton alive across every `/` (a leading `**/`, `*` loops):
@@ -707,5 +709,5 @@ describe("what it remembers of a tree, and what that buys", () => {
       took = Math.min(took, performance.now() - began);
     }
     expect(took).toBeLessThanOrEqual(bound);
-  }, 300_000);
+  });
 });
