@@ -126,6 +126,6 @@ describe("an archive move at the production seal", () => {
       expect(seqs.length).toBeLessThan(archiveRecords);
       expect(size).toBeGreaterThanOrEqual(archiveBytes);
       expect(ms).toBeLessThan(STEP_CPU_MS);
-    }, 120_000);
+    });
   }
 });

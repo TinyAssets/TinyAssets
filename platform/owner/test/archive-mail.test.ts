@@ -1554,7 +1554,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
 
   it("reads and writes the same rows for a post at 1 and at 49,999 hot (never a scan), " +
      "and at the hot ceiling tells a post busy until one lane pass moves a segment sealed " +
-     "by its bytes, then lands it, nothing lost", async () => {
+     "by its bytes, then lands it, nothing lost", { tags: ["large"] }, async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const room = `dm:${muse}`;
@@ -1639,11 +1639,11 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
                                "COUNT(DISTINCT client_message_id) AS ids FROM ledger_messages"))
       .toEqual([{ first: moved + 1, last: maxMessages + 1, n: maxMessages + 1 - moved,
                   ids: maxMessages + 1 - moved }]);
-  }, 600_000);
+  });
 
   it("reads and writes the same rows for a post at 1 and at 24,999 unread; at its unread " +
      "ceiling refuses a post as full, naming who holds the most; acking one makes room for " +
-     "exactly one", async () => {
+     "exactly one", { tags: ["large"] }, async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
@@ -1695,5 +1695,5 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
     expect(seen.full).toContain(`the most for Muse (${held(muse)}), Dot (${held(dot)})`);
     expect(seen.landed).toBeNull();
     expect(seen.again).toMatch(/^ledger_full:/);
-  }, 600_000);
+  });
 });

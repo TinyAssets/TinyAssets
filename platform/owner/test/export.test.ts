@@ -374,7 +374,7 @@ describe("a generation", () => {
     const made = await generate(o.stub, { sizes });
     expect(made.notices).toEqual([]);
     expect(digest(replay(made.lines))).toBe(made.atE);
-  }, 120_000);
+  });
 
   it("goes on later, never at once, when a pass ends before it does", async () => {
     const o = await owner();
@@ -428,7 +428,7 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     }
     expect(pages.length).toBeGreaterThan(3);
     expect(pages.reduce((sum, page) => sum + page.rows, 0)).toBe(2_000);
-  }, 120_000);
+  });
 
   it("finishes an owner of several bursts, read back exactly, each burst bounded by its " +
      "bytes and its row under a row's 2 MB", async () => {
@@ -490,7 +490,7 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     expect(widest.part).toBeLessThanOrEqual(PART_ENTRY);
     expect(widest.segment).toBeLessThanOrEqual(SEGMENT_ENTRY);
     expect(MANIFEST_PARTS * Math.max(widest.part, widest.segment)).toBeLessThan(ROW_MAX);
-  }, 300_000);
+  });
 });
 
 /** A generation finished long ago, so tonight's is due now. */
