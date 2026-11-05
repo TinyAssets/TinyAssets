@@ -11,7 +11,9 @@ name: Sandbox template (manual, founder-approved)
 #   build - builds the template, runs its three standing checks with this
 #           commit's runner on throwaway sandboxes (each killed), tags the
 #           passed pair at E2B and uploads passed.json, whose new entry and the
-#           printed tag are then committed with the pin (wrangler.jsonc).
+#           printed tag are then committed with the pin (wrangler.jsonc). Once a
+#           tag: when E2B already holds a ready build of it in this team (a second
+#           dispatch, or one after a failed check), it builds nothing.
 #   pair  - the pair check alone: the pinned template with this commit's
 #           runner, no build (the deploy kit runs the same before a deploy).
 #
@@ -45,9 +47,12 @@ jobs:
     env:
       MODE: ${{ inputs.mode }}
     steps:
-      - uses: actions/checkout@v4
+      # Nothing here pushes: no token is left in .git for npm's or pip's installs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
 
@@ -55,14 +60,16 @@ jobs:
         working-directory: platform
         run: npm ci
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
 
       - name: Install the template's E2B SDK from its hashed lock
         run: python3 -m pip install --require-hashes -r platform/sandbox/template/requirements.txt
 
-      # The one step that holds the E2B key.
+      # The one step that holds the E2B key. Whether E2B already has a ready build of the
+      # tag is the deploy kit's own check (deploy.ts templateReady); an answer it cannot
+      # read stops the step before anything is spent.
       - name: Build and check
         env:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
@@ -71,12 +78,26 @@ jobs:
           if [ "${MODE}" = "pair" ]; then
             python3 platform/sandbox/template/build.py --check-pair
           else
-            python3 platform/sandbox/template/build.py
+            name="$(python3 platform/sandbox/template/build.py --tag-only)"
+            ready="$(node --experimental-strip-types --input-type=module -e '
+              const { templateReady } = await import("./platform/deploy/deploy.ts");
+              console.log(await templateReady(process.argv[1], process.env.E2B_API_KEY ?? ""));
+            ' "$name")"
+            case "$ready" in
+              true)
+                echo "E2B already holds a ready build of ${name} in this team: nothing built." \
+                  "Dispatch pair to check this commit's runner with it." | tee -a "$GITHUB_STEP_SUMMARY" ;;
+              false)
+                python3 platform/sandbox/template/build.py ;;
+              *)
+                echo "::error::E2B's ready-build check answered '${ready}'"
+                exit 1 ;;
+            esac
           fi
 
       - name: Keep the record of what passed
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: passed-json
           path: platform/sandbox/template/passed.json
