@@ -118,7 +118,8 @@ def test_the_scope_guard_requires_a_lane_of_every_pr_and_keeps_no_path_list():
     assert "SENSITIVE_RE" not in enqueue and "infra-change" not in enqueue
 
 
-@pytest.mark.parametrize("lane", ["*", "**", "?*", "[!x]*", "*/**,*", "`*`", "docs/ *"])
+@pytest.mark.parametrize("lane", ["*", "**", "?*", "[!x]*", "*/**,*", "`*`", "docs/ *",
+                                  "[!.]* .*", ".* [!.]*/* [!.]*"])
 def test_a_lane_that_matches_every_path_is_refused(tmp_path, lane):
     """With no cap, a lane is the bound an author declares: one matching everything is none."""
     out = _lane_cli(tmp_path, f"Lane: {lane}\n", ["deploy/x.sh"], "--require")
@@ -126,7 +127,8 @@ def test_a_lane_that_matches_every_path_is_refused(tmp_path, lane):
     assert "match every path" in out.stderr
 
 
-@pytest.mark.parametrize("lane", ["docs/", "*.md", "platform/owner/", "scripts/peer_agent.py"])
+@pytest.mark.parametrize("lane", ["docs/", "*.md", "platform/owner/", "scripts/peer_agent.py",
+                                  ".* docs/", "platform/ tests/ scripts/"])
 def test_a_narrow_lane_is_not_universal(lane):
     assert review.universal_globs(review.declared_lane(f"Lane: {lane}")) == []
 

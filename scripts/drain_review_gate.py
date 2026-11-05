@@ -542,8 +542,13 @@ _EVERY_PATH = ("a", ".a", "A/b.c", "deploy/x.sh", ".github/workflows/deploy-prod
 
 
 def universal_globs(globs: list[str]) -> list[str]:
-    """The globs of a lane that match every path: each one declares nothing."""
-    return [g for g in globs if all(_in_glob(path, g) for path in _EVERY_PATH)]
+    """A lane's globs when together they match every path (they declare nothing), else [].
+
+    Taken together, not one by one: `[!.]* .*` matches every path though neither glob
+    alone does.
+    """
+    every = all(any(_in_glob(path, g) for g in globs) for path in _EVERY_PATH)
+    return list(globs) if every else []
 
 
 def _lane_scope(argv: list[str]) -> int:
@@ -562,8 +567,8 @@ def _lane_scope(argv: list[str]) -> int:
         return 0
     everything = universal_globs(globs)
     if everything:
-        print("a Lane names the files a PR owns; these match every path, so they name none: "
-              + " ".join(everything), file=sys.stderr)
+        print("a Lane names the files a PR owns; together these match every path, so they "
+              "name none: " + " ".join(everything), file=sys.stderr)
         return 2
     stray = outside_lane(sys.stdin.read().splitlines(), globs)
     if stray:
