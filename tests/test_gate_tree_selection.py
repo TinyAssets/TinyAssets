@@ -20,6 +20,7 @@ from scripts.affected_tests import (
     gate_selection,
     provable_shape,
     retiring_tests,
+    select,
     tree_readers,
 )
 
@@ -107,6 +108,51 @@ def test_a_tree_a_conftest_reads_runs_the_whole_suite(tmp_path) -> None:
     assert shared == {"docs"}
     assert gate_selection(["docs/a.md"], root=root, shared=set())[0] is None
     assert gate_selection(["platform/owner/x.json"], root=root, shared=set())[0] is not None
+
+
+def test_a_tree_named_as_data_selects_no_test_that_merely_walks(tmp_path) -> None:
+    # tests/test_restore_legacy_credentials.py's shape: "platform" is a vault kind,
+    # looped over under tmp_path, the test walks a temp tree, and its helper lists /proc.
+    # It reads nothing of the checkout's platform/, so a platform change must not run it.
+    root = _tree(tmp_path, {
+        "platform/owner/x.ts": "export {}\n",
+        "tinyassets/__init__.py": "",
+        "tinyassets/thing.py": "X = 1\n",
+        "tinyassets/repair.py": (
+            "from pathlib import Path\nPROC_ROOT = Path('/proc')\n"
+            "def live(): return [p for p in PROC_ROOT.iterdir() if p.name.isdecimal()]\n"),
+        "tests/__init__.py": "",
+        "tests/test_legacy.py": (
+            "from tinyassets.repair import live\n"
+            "KINDS = ('center', 'platform', 'provider')\n"
+            "def test_it(tmp_path):\n"
+            "    for kind in KINDS:\n"
+            "        base = tmp_path / kind\n"
+            "        (base / 'platform').mkdir(parents=True)\n"
+            "    report = {'platform': []}\n"
+            "    assert live() is not None and report['platform'] == []\n"
+            "    assert len(list(tmp_path.rglob('*'))) == 6\n"),
+        # True readers, each naming the tree as a checkout path, must still run.
+        "tests/test_looped.py": (
+            "from pathlib import Path\nfrom tinyassets.thing import X\n"
+            "ROOT = Path(__file__).parents[1]\nTOPS = ('tinyassets', 'platform')\n"
+            "def test_it(): assert [p for top in TOPS for p in (ROOT / top).rglob('*')] and X\n"),
+        "tests/test_root_listing.py": (
+            "from pathlib import Path\nfrom tinyassets.thing import X\n"
+            "REPO_ROOT = Path(__file__).resolve().parents[1]\n"
+            "def test_it(): assert list(REPO_ROOT.iterdir()) and X\n"),
+    })
+    selected, reasons = select(["platform/owner/x.ts"], root=root, graph=Graph(root),
+                               shared=set(), pr=True)
+    assert selected == ["tests/test_looped.py"], reasons
+    selected, reasons = gate_selection(["platform/owner/x.ts"], root=root, shared=set())
+    assert selected == ["tests/test_looped.py", "tests/test_root_listing.py"], reasons
+    # The loop still names tinyassets/ as a path for a change under it.
+    selected, _ = select(["tinyassets/data.json"], root=root, graph=Graph(root),
+                         shared=set(), pr=True)
+    assert selected == ["tests/test_looped.py"]
+    # And the audit finds no unmapped read in any of them.
+    assert set(_run_audited(root).values()) == {"passed"}
 
 
 def test_retiring_tests_reach_only_the_old_stack(tmp_path) -> None:

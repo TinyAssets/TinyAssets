@@ -33,7 +33,9 @@ When unsure it selects EVERYTHING (output ``ALL``):
   tree, where nothing imports it any more.
 
 A test that walks a tree (``rglob``, ``os.walk``...) is also selected for any
-change under a top-level root it names as a string, e.g. ``"tinyassets"``.
+change under a top-level root it names AS A PATH (``ROOT / "tinyassets"``,
+``Path("tinyassets")``, ``"tinyassets/..."``, or a loop over such words; see
+``path_heads``). The same word as data (a vault kind ``"platform"``) names none.
 
 Over-selection is the safe direction throughout: it costs runner minutes,
 while under-selection only defers a failure to the queue, which runs anyway.
@@ -78,8 +80,8 @@ GENERIC_BASENAMES = {
 }
 
 # A test that walks a tree. Such a test reads every file under the roots it
-# names, including a bare top-level root like "tinyassets" or "mobile", which
-# is too common a string to match on for any other test.
+# names as a path (`path_heads`), including a bare top-level root like
+# "tinyassets" or "mobile", which is too common a word to match on as text.
 _WALKS = re.compile(r"\.rglob\(|\.glob\(|\.iterdir\(|os\.walk\(|os\.listdir\(|glob\.glob\(")
 
 # `"docs" / "concerns"` (pathlib) reads as `"docs/concerns"` after this.
@@ -327,7 +329,7 @@ def select(
 
     closures = {t: graph.closure(t) for t in tests}
     texts = {t: _PATHLIB_JOIN.sub("/", graph.files[t]) for t in tests}
-    walkers = [t for t in tests if _WALKS.search(texts[t])]
+    walked = {t: path_heads(graph.files[t]) for t in tests if _WALKS.search(texts[t])}
     selected: set[str] = set()
     for rel in changed:
         if rel.endswith(".py") and not is_test_file(rel) and not (root / rel).exists():
@@ -343,8 +345,7 @@ def select(
         hit.update(t for t in tests if any(k in texts[t] for k in keys))
         top = rel.split("/", 1)[0]
         if "/" in rel:
-            roots = (f'"{top}"', f"'{top}'", f'"{top}/', f"'{top}/")
-            hit.update(t for t in walkers if any(r in texts[t] for r in roots))
+            hit.update(t for t, heads in walked.items() if heads is None or top in heads)
         source = rel.endswith(".py") and not rel.startswith("tests/")
         if not hit and source and (root / rel).exists():
             return None, [f"{rel}: Python file no test reaches statically"]
@@ -428,7 +429,7 @@ def provable_shape(changed: list[str]) -> str | None:
     return "+".join(sorted(trees))
 
 
-_PATH_CALLS = {"Path", "PurePath", "PurePosixPath", "join", "chdir"}
+_PATH_CALLS = {"Path", "PurePath", "PurePosixPath", "join", "joinpath", "chdir"}
 _WALK_METHODS = {"rglob", "glob", "iterdir", "walk"}
 _WALK_FUNCS = {"walk", "listdir", "scandir"}
 _GIT = re.compile(r"""["']git["']""")
@@ -440,8 +441,37 @@ def _name(node: ast.AST) -> str:
     return node.attr if isinstance(node, ast.Attribute) else ""
 
 
-def _is_repo_root(node: ast.AST) -> bool:
-    """``Path(".")``, ``Path.cwd()``, ``os.getcwd()`` or an upper-case ROOT/REPO constant."""
+def _bindings(tree: ast.AST) -> dict[str, list[ast.expr]]:
+    """name -> what each binding binds it to: an assignment's value, a loop's iterable."""
+    binds: dict[str, list[ast.expr]] = {}
+    for node in ast.walk(tree):
+        pairs = ([(t, node.value) for t in node.targets] if isinstance(node, ast.Assign)
+                 else [(node.target, node.value)]
+                 if isinstance(node, ast.AnnAssign) and node.value is not None
+                 else [(node.target, node.iter)]
+                 if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) else [])
+        for target, value in pairs:
+            if isinstance(target, ast.Name):
+                binds.setdefault(target.id, []).append(value)
+    return binds
+
+
+def _below_root(value: ast.expr) -> bool:
+    """A path that is not the checkout's root: absolute (``Path("/proc")``) or a child."""
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div):
+        return True
+    return (isinstance(value, ast.Call) and _name(value.func) in ("Path", "PurePath")
+            and bool(value.args) and isinstance(value.args[0], ast.Constant)
+            and isinstance(value.args[0].value, str) and value.args[0].value.startswith("/"))
+
+
+def _is_repo_root(node: ast.AST, binds: dict[str, list[ast.expr]]) -> bool:
+    """``Path(".")``, ``Path.cwd()``, ``os.getcwd()`` or an upper-case ROOT/REPO constant.
+
+    A constant every binding of which is an absolute path (``PROC_ROOT =
+    Path("/proc")``) or a path below another (``ANDROID_ROOT = REPO_ROOT /
+    "mobile"``) is not the checkout's root; the second is judged by the tree it names.
+    """
     if isinstance(node, ast.Constant):
         return node.value in (".", "", "./")
     if isinstance(node, ast.Call):
@@ -449,20 +479,130 @@ def _is_repo_root(node: ast.AST) -> bool:
         if name in ("cwd", "getcwd"):
             return True
         if name in ("Path", "PurePath"):
-            return not node.args or _is_repo_root(node.args[0])
+            return not node.args or _is_repo_root(node.args[0], binds)
         if name in ("resolve", "absolute") and isinstance(node.func, ast.Attribute):
-            return _is_repo_root(node.func.value)
+            return _is_repo_root(node.func.value, binds)
         return False
     name = _name(node)
-    return name.isupper() and ("ROOT" in name or "REPO" in name)
+    if not (name.isupper() and ("ROOT" in name or "REPO" in name)):
+        return False
+    values = binds.get(name, []) if isinstance(node, ast.Name) else []
+    return not (values and all(_below_root(value) for value in values))
+
+
+def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    parent: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+    return parent
+
+
+#: pytest's temp fixtures and the tempfile module: a path built on them is not the checkout.
+_TEMP = frozenset({"tmp_path", "tmpdir", "tmp_path_factory", "tempfile"})
+
+
+def _base(node: ast.AST) -> ast.AST:
+    """The operand a path expression is built on: ``tmp_path`` in ``(tmp_path / "a").b()``."""
+    while True:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            node = node.left
+        elif isinstance(node, ast.Call):
+            node = (node.args[0] if _name(node.func) in _PATH_CALLS and node.args
+                    else node.func)
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        else:
+            return node
+
+
+def _temp_names(binds: dict[str, list[ast.expr]]) -> set[str]:
+    """The names every binding of which is a path on a temp directory (``base = tmp_path / x``).
+
+    One binding to anything else (``root = Path(__file__).parents[1]`` in another
+    test) and the name may be the checkout.
+    """
+    temp = set(_TEMP)
+    grew = True
+    while grew:
+        before = len(temp)
+        temp |= {name for name, values in binds.items()
+                 if all(_name(_base(value)) in temp for value in values)}
+        grew = len(temp) > before
+    return temp
+
+
+def _path_position(node: ast.AST, parent: dict[ast.AST, ast.AST], temp: set[str]) -> bool:
+    """`node` is where a checkout path is built: ``ROOT / node``, ``Path(node)``,
+    ``os.path.join(.., node)``, ``ROOT.joinpath(node)``, ``cwd=node``, or a walk's
+    argument (``ROOT.glob(node)``, ``os.listdir(node)``) -- unless it is built on a
+    temp directory (``tmp_path / node``)."""
+    up = parent.get(node)
+    if isinstance(up, ast.keyword):
+        return up.arg == "cwd"
+    if isinstance(up, ast.BinOp) and isinstance(up.op, ast.Div) and up.right is node:
+        on = up.left
+    elif (isinstance(up, ast.Call) and node in up.args
+            and _name(up.func) in _PATH_CALLS | _WALK_METHODS | _WALK_FUNCS):
+        on = up.args[0] if up.args[0] is not node else up.func
+    else:
+        return False
+    return _name(_base(on)) not in temp
+
+
+def _path_constants(tree: ast.AST, binds: dict[str, list[ast.expr]]) -> list[str]:
+    """Every string `tree` names as a checkout path (``./`` dropped).
+
+    A path is a string holding ``/`` (``"platform/owner"``), a word in a path
+    position (``_path_position``), or a word bound to a name used in one, directly
+    or through a sequence or another name (``for d in ("tinyassets", "scripts"):
+    ROOT / d``; ``DIRS = (...)`` then ``for d in DIRS``). The same word anywhere
+    else (a tuple of vault kinds, a dict key, a job name, an expected value,
+    ``tmp_path / kind``) is data.
+    """
+    parent = _parents(tree)
+    temp = _temp_names(binds)
+    todo = [node.id for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and _path_position(node, parent, temp)]
+    names: set[str] = set()
+    via: set[ast.AST] = set()
+    while todo:
+        name = todo.pop()
+        if name in names:
+            continue
+        names.add(name)
+        for value in binds.get(name, []):
+            for node in (value.elts if isinstance(value, (ast.Tuple, ast.List, ast.Set))
+                         else [value]):
+                via.add(node)
+                if isinstance(node, ast.Name):
+                    todo.append(node.id)
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value[2:] if node.value.startswith("./") else node.value
+            if "/" in text or node in via or _path_position(node, parent, temp):
+                out.append(text)
+    return out
+
+
+def path_heads(source: str) -> set[str] | None:
+    """The top-level names a source names as checkout paths (``_path_constants``).
+
+    ``None`` for unparsable source: it may name anything.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    return {text.split("/", 1)[0] for text in _path_constants(tree, _bindings(tree))}
 
 
 def tree_reads(source: str, top_md: frozenset[str] = frozenset()) -> set[str]:
     """The trees a source can read: named in path form, or walked from the checkout's root.
 
-    A tree is named by a string starting ``<tree>/`` (``"platform/owner"``), or by
-    ``"<tree>"`` itself where a path is built (``ROOT / "docs" / "x"``,
-    ``Path("docs")``, ``os.path.join(.., "docs")``, ``cwd="docs"``). The top-level
+    A tree is named in path form (``_path_constants``: ``"platform/owner"``,
+    ``ROOT / "docs" / "x"``, ``Path("docs")``, ``cwd="docs"``). The top-level
     markdown tree is named by one of its file names (`top_md`). A walk
     (``rglob/glob/iterdir/walk``, ``os.walk/listdir/scandir``) of the root
     reaches every tree. Unparsable source reads everything.
@@ -471,31 +611,18 @@ def tree_reads(source: str, top_md: frozenset[str] = frozenset()) -> set[str]:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return {*TREES, TOP_MD}
-    parent: dict[ast.AST, ast.AST] = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parent[child] = node
-    out: set[str] = set()
+    binds = _bindings(tree)
+    out = {head for head in (text.split("/", 1)[0] for text in _path_constants(tree, binds))
+           if head in TREES}
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            text = node.value[2:] if node.value.startswith("./") else node.value
-            if text in top_md:
+            if (node.value[2:] if node.value.startswith("./") else node.value) in top_md:
                 out.add(TOP_MD)
-            head = text.split("/", 1)[0]
-            if head not in TREES:
-                continue
-            up = parent.get(node)
-            if ("/" in text
-                    or (isinstance(up, ast.BinOp) and isinstance(up.op, ast.Div)
-                        and up.right is node)
-                    or (isinstance(up, ast.Call) and _name(up.func) in _PATH_CALLS)
-                    or (isinstance(up, ast.keyword) and up.arg == "cwd")):
-                out.add(head)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             func = node.func
-            if ((func.attr in _WALK_METHODS and _is_repo_root(func.value))
+            if ((func.attr in _WALK_METHODS and _is_repo_root(func.value, binds))
                     or (func.attr in _WALK_FUNCS and _name(func.value) == "os"
-                        and (not node.args or _is_repo_root(node.args[0])))):
+                        and (not node.args or _is_repo_root(node.args[0], binds)))):
                 out.update((*TREES, TOP_MD))
     return out
 
