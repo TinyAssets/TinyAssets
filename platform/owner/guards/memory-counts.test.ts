@@ -97,9 +97,10 @@ describe("an owner isolate's counts", () => {
   });
 
   it("derives a burst's and a ship's units from what they hold at their most", () => {
-    // A burst's peak is its parts beside a segment's build only while that build is past its
-    // bytes (else its pages and parts at the cut would be the more).
-    expect(holds.SHIP_BYTES).toBeGreaterThanOrEqual(holds.BURST_BYTES);
+    // A burst's peak is the more of its two, the arithmetic exact.
+    expect(holds.BURST_PEAK_BYTES).toBe(Math.max(holds.BURST_CUT_BYTES,
+                                                 holds.BURST_PAGE_BYTES));
+    expect(Number.isSafeInteger(holds.BURST_PEAK_BYTES)).toBe(true);
     expect(holds.SHIP_UNITS * UNIT_BYTES).toBeGreaterThanOrEqual(holds.SHIP_BYTES);
     expect((holds.SHIP_UNITS - 1) * UNIT_BYTES).toBeLessThan(holds.SHIP_BYTES);
     expect(holds.BURST_UNITS * UNIT_BYTES).toBeGreaterThanOrEqual(holds.BURST_PEAK_BYTES);
