@@ -1629,10 +1629,16 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
       .toEqual([{ n: maxMessages + 1 }]);
     // Each message once: the segments' key ranges run on from the first seq with no gap,
     // each holding every key in its range, and the hot set is exactly the keys after them,
-    // every one its own message.
-    const ranges = await sqlIn(r.stub, "SELECT first_key, last_key, records FROM " +
-                                       "archive_segments ORDER BY first_key") as
-      { first_key: number; last_key: number; records: number }[];
+    // every one its own message. Both read in one turn of the object, so no move the post
+    // rang lands between them.
+    const { ranges, hot } = await runInDurableObject(r.stub, (_i: OwnerDO, state) => ({
+      ranges: state.storage.sql.exec<{ first_key: number; last_key: number; records: number }>(
+        "SELECT first_key, last_key, records FROM archive_segments ORDER BY first_key")
+        .toArray(),
+      hot: state.storage.sql.exec("SELECT min(seq) AS first, max(seq) AS last, COUNT(*) AS n, " +
+                                  "COUNT(DISTINCT client_message_id) AS ids FROM ledger_messages")
+        .toArray(),
+    }));
     expect(ranges[0]!.first_key).toBe(1);
     for (const [n, range] of ranges.entries()) {
       expect(range.records).toBe(range.last_key - range.first_key + 1);
@@ -1641,9 +1647,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
       }
     }
     const moved = ranges.at(-1)!.last_key;
-    expect(await sqlIn(r.stub, "SELECT min(seq) AS first, max(seq) AS last, COUNT(*) AS n, " +
-                               "COUNT(DISTINCT client_message_id) AS ids FROM ledger_messages"))
-      .toEqual([{ first: moved + 1, last: maxMessages + 1, n: maxMessages + 1 - moved,
+    expect(hot).toEqual([{ first: moved + 1, last: maxMessages + 1, n: maxMessages + 1 - moved,
                   ids: maxMessages + 1 - moved }]);
   }, 600_000);
 
