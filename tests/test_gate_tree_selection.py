@@ -183,6 +183,10 @@ _READERS = {
                     "def test_real():\n    assert scan(ROOT)\n",
     "temp_named_param": "def walk(tmp_path):\n    return list((tmp_path / 'platform').rglob('*'))\n"
                         "def test_x():\n    assert walk(ROOT)\n",
+    "call_arg": "def scan(t):\n    return list((ROOT / t).rglob('*'))\n"
+                "def test_x():\n    assert scan('platform')\n",
+    "call_keyword": "def scan(root, t):\n    return list((root / t).rglob('*'))\n"
+                    "def test_x():\n    assert scan(ROOT, t='platform')\n",
     "default_arg": "def walk(root=ROOT):\n    return list((root / 'platform').rglob('*'))\n"
                    "def test_x(tmp_path):\n    assert walk() and walk(tmp_path) is not None\n",
     "argv": "def test_x():\n    list(ROOT.glob('x'))\n"
