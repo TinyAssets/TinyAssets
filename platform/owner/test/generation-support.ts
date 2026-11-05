@@ -168,8 +168,14 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       mintKey: (ns) => real.mintKey(ns),
       putManifestPart: call("part", (ns, key, gen, part, bytes) =>
         real.putManifestPart(ns, key, gen, part, bytes)),
-      putManifestSegment: call("segment", (ns, key, gen, a, b, bytes) =>
-        real.putManifestSegment(ns, key, gen, a, b, bytes)),
+      putManifestSegment: call("segment", (ns, key, gen, a, b, bytes) => {
+        // A segment's own bytes, never a view of a larger buffer: RPC would carry all of it.
+        if (bytes.buffer.byteLength !== bytes.byteLength) {
+          throw new Error(`a segment of ${bytes.byteLength} bytes sent as a view of a ` +
+                          `${bytes.buffer.byteLength}-byte buffer`);
+        }
+        return real.putManifestSegment(ns, key, gen, a, b, bytes);
+      }),
       putManifestRoot: call("root", (ns, key, gen, parts, segments, span) =>
         real.putManifestRoot(ns, key, gen, parts, segments, span)),
       getManifestRoot: (ns, gen) => real.getManifestRoot(ns, gen),

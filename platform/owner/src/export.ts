@@ -346,9 +346,16 @@ export function encodeLines(lines: readonly string[]): Lines {
     at += Buffer.byteLength(line, "utf8") + 1;
     ends[n] = at;
   }
-  const bytes = lines.length === 0 ? new Uint8Array(0)
-    : new TextEncoder().encode(`${lines.join("\n")}\n`);
-  if (bytes.byteLength !== at) {
+  // Counted first, then encoded straight into one buffer of exactly those bytes: never the
+  // lines joined into one text (and its flattened copy) and encoded again (rvburst W1).
+  const bytes = new Uint8Array(at);
+  const encoder = new TextEncoder();
+  let written = 0;
+  for (const line of lines) {
+    written += encoder.encodeInto(line, bytes.subarray(written)).written;
+    bytes[written++] = 0x0a;
+  }
+  if (written !== at) {
     throw new Error("a page's lines are not the bytes they were counted at");
   }
   return { bytes, ends };
@@ -356,8 +363,11 @@ export function encodeLines(lines: readonly string[]): Lines {
 
 /** A page of the stream: its lines, the chunks it names, and where the next one starts. */
 export interface Page {
-  /** Its lines but the chunks', encoded once (`encodeLines`). */
-  readonly lines: Lines;
+  /**
+   * Its lines but the chunks', as text: its reader encodes them once (`encodeLines`),
+   * outside the unit that read them.
+   */
+  readonly lines: string[];
   /** The chunks section 3 names in this page, in order; their bytes are the caller's to add. */
   readonly chunks: { readonly sha256: string; readonly size: number }[];
   readonly next: Cursor | null;
@@ -407,20 +417,22 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
     const { columns, key } = all[table]!;
     const keyed = key.join(", ");
     const where = after === null ? "" : `WHERE (${keyed}) > (${key.map(() => "?").join(", ")}) `;
-    const rows = sql.exec<Record<string, SqlStorageValue>>(
-      `SELECT ${[...new Set([...columns, ...key])].join(", ")} FROM ${table} ${where}` +
-        `ORDER BY ${keyed} LIMIT ${READ_BATCH}`, ...(after ?? [])).toArray();
-    for (const row of rows) {
+    // Its rows a row at a time from the cursor, never a batch held whole (rvburst W1).
+    let read = 0;
+    for (const row of sql.exec<Record<string, SqlStorageValue>>(
+           `SELECT ${[...new Set([...columns, ...key])].join(", ")} FROM ${table} ${where}` +
+             `ORDER BY ${keyed} LIMIT ${READ_BATCH}`, ...(after ?? []))) {
+      read++;
       const line = JSON.stringify({ t: "row", table, row: Object.fromEntries(
         columns.map((column) => [column, value(row[column])])) });
       lines.push(line);
       bytes += Buffer.byteLength(line, "utf8") + 1;
       after = key.map((column) => row[column] as string | number);
       if (bytes >= pageBytes) {
-        return { lines: encodeLines(lines), chunks: [], next: { section, after } };
+        return { lines, chunks: [], next: { section, after } };
       }
     }
-    if (rows.length === READ_BATCH) {
+    if (read === READ_BATCH) {
       continue;
     }
     section++;
@@ -435,17 +447,17 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
   let held = 0;
   for (const chunk of chunks) {
     if (taken.length > 0 && held + chunk.size > chunkBytes) {
-      return { lines: encodeLines(lines), chunks: taken,
+      return { lines, chunks: taken,
                next: { section: chunksAt, after: [taken.at(-1)!.sha256] } };
     }
     taken.push(chunk);
     held += chunk.size;
   }
   if (chunks.length === READ_BATCH) {
-    return { lines: encodeLines(lines), chunks: taken,
+    return { lines, chunks: taken,
              next: { section: chunksAt, after: [taken.at(-1)!.sha256] } };
   }
-  return { lines: encodeLines(lines), chunks: taken, next: null };
+  return { lines, chunks: taken, next: null };
 }
 
 /** A chunk's line: its hash and size (its bytes are fetched by hash, `exportChunks`). */
