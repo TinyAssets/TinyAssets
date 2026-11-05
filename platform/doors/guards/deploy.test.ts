@@ -12,7 +12,9 @@
  * and unknown stops the kit; the kit runs from an approved manual workflow whose secrets come
  * from the environment's store.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -20,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  DOORS, E2B_HOOK, handover, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  DOORS, E2B_HOOK, handover, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
@@ -437,6 +439,33 @@ describe("the deploy kit", () => {
     await expect(zoneOf(zones([{ id: "z", account: { id: "../x" } }])))
       .rejects.toThrow(/could not be read/);
     await expect(routesOf(api({}), "z")).rejects.toThrow(/could not be read/);
+  });
+
+  it("takes the keyring the founder's setup makes in memory, in keyring-new's own shape",
+     () => {
+    // scripts/platform_setup.py's maker, through a two-line driver: Python's ring is the one
+    // stored, and the apply job's keyring() is the check it must pass.
+    const repo = join(PLATFORM, "..");
+    const made = execFileSync("python3", ["-I", "-c",
+      "import sys; sys.path.insert(0, sys.argv[1]); " +
+      "from scripts.platform_setup import make_keyring; sys.stdout.write(make_keyring())",
+      repo], { encoding: "utf8" });
+    const ring = keyring(made, "FILES_KEYRING");
+    expect([ring.active, Object.keys(ring.keys)]).toEqual(["k1", ["k1"]]);
+    expect(Buffer.from(ring.keys["k1"]!, "base64").byteLength).toBe(32);
+    // The kit's own maker writes the same shape.
+    const out = mkdtempSync(join(tmpdir(), "keyring-"));
+    try {
+      execFileSync(process.execPath, ["--experimental-strip-types",
+                                      join(PLATFORM, "deploy", "deploy.ts"), "keyring-new",
+                                      join(out, "ring.json")], { stdio: "pipe" });
+      const theirs = keyring(readFileSync(join(out, "ring.json"), "utf8"));
+      expect([theirs.active, Object.keys(theirs.keys)])
+        .toEqual([ring.active, Object.keys(ring.keys)]);
+      expect(Buffer.from(theirs.keys["k1"]!, "base64").byteLength).toBe(32);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
   });
 
   it("registers E2B's lifecycle webhook disabled in dark, sets its secret on every apply, " +

@@ -11,8 +11,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
@@ -23,7 +21,6 @@ from scripts import platform_setup as setup
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "platform/deploy/review-app.html"
-DEPLOY = ROOT / "platform/deploy/deploy.ts"
 REPO = setup.REPO
 ISSUER = setup.OWNER_ISSUER
 CODE = "a180b1a3d263c81bc6441d7b990bae27d4c10679"
@@ -182,36 +179,6 @@ def test_the_made_values_are_the_shapes_the_platform_reads() -> None:
     assert ring["active"] == "k1" and list(ring["keys"]) == ["k1"]
     assert len(base64.b64decode(ring["keys"]["k1"])) == 32
     assert setup.make_keyring() != setup.make_keyring()
-
-
-def _node() -> str:
-    node = shutil.which("node")
-    assert node, "Node 22.6 or later is needed: the kit's own keyring() reads the ring"
-    version = subprocess.run([node, "--version"], capture_output=True, text=True,
-                             check=True).stdout.strip()
-    assert tuple(map(int, version.lstrip("v").split(".")[:2])) >= (22, 6), version
-    return node
-
-
-def test_the_kits_own_keyring_takes_the_ring_made_in_memory(tmp_path) -> None:
-    """deploy.ts's keyring() (the apply job's check) accepts the ring, and keyring-new, the
-    kit's maker, writes the same shape."""
-    node = _node()
-    check = ("const m = await import(process.argv[1]); "
-             "const fs = await import('node:fs'); "
-             "const ring = m.keyring(fs.readFileSync(0, 'utf8'), 'FILES_KEYRING'); "
-             "console.log(JSON.stringify({ active: ring.active, keys: Object.keys(ring.keys) }));")
-    done = subprocess.run([node, "--experimental-strip-types", "--input-type=module", "-e",
-                           check, DEPLOY.as_uri()], input=setup.make_keyring(),
-                          capture_output=True, text=True, check=False)
-    assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout.splitlines()[-1]) == {"active": "k1", "keys": ["k1"]}
-    made = tmp_path / "ring.json"
-    subprocess.run([node, "--experimental-strip-types", str(DEPLOY), "keyring-new", str(made)],
-                   capture_output=True, check=True)
-    theirs, ours = json.loads(made.read_text()), json.loads(setup.make_keyring())
-    assert (theirs["active"], list(theirs["keys"])) == (ours["active"], list(ours["keys"]))
-    assert len(base64.b64decode(theirs["keys"]["k1"])) == 32
 
 
 # --- WorkOS -----------------------------------------------------------------------------
