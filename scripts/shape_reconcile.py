@@ -22,6 +22,7 @@ LABEL = "shape-registry"
 ROW_LINE = re.compile(r"^\ufeff?Registry row\(s\):\s*(.*)$", re.MULTILINE | re.IGNORECASE)
 # Any row-shaped token: the registry table, not this pattern, says which rows exist.
 ROW_ID = re.compile(r"\b[BSN]\d+\b")
+SHAPE_KEY = re.compile(r'["\']([BSN]\d+)["\']:\s*Shape\(')  # a SHAPES entry in check_shapes.py
 NO_ROW = re.compile(r"none\b", re.IGNORECASE)
 FLEET_PREFIXES = (
     "cursor/",
@@ -69,7 +70,7 @@ def pages(path: str) -> list[dict]:
 class Declaration(NamedTuple):
     rows: list[str]  # declared rows the registry defines
     unknown: list[str]  # row-shaped tokens the registry does not define (typos)
-    none: bool  # the PR says it touches no row
+    none: bool  # the PR says it touches no row, and names none
 
 
 def declared_rows(body: str, known: Collection[str]) -> Declaration:
@@ -78,10 +79,12 @@ def declared_rows(body: str, known: Collection[str]) -> Declaration:
     if not match:
         return Declaration([], [], False)
     value = match.group(1).strip()
-    if NO_ROW.match(value):
-        return Declaration([], [], True)
     tokens = set(ROW_ID.findall(value))
-    return Declaration(sorted(tokens & set(known)), sorted(tokens - set(known)), False)
+    return Declaration(
+        sorted(tokens & set(known)),
+        sorted(tokens - set(known)),
+        not tokens and bool(NO_ROW.match(value)),
+    )
 
 
 def shape_paths(files: list[dict], *, old_only: bool = False) -> set[str]:
@@ -179,7 +182,7 @@ def lowered_ceilings(files: list[dict]) -> set[str]:
     for number, line in enumerate(
         (ROOT / "scripts/check_shapes.py").read_text(encoding="utf-8").splitlines(), 1
     ):
-        match = re.search(r'["\']([BSN]\d+)["\']:\s*Shape\(', line)
+        match = SHAPE_KEY.search(line)
         if match:
             source_rows.append((number, match.group(1)))
     for item in files:
@@ -197,7 +200,7 @@ def lowered_ceilings(files: list[dict]) -> set[str]:
                 )
                 removed = added = None
                 continue
-            match = re.search(r'["\']([BSN]\d+)["\']:\s*Shape\(', line)
+            match = SHAPE_KEY.search(line)
             if match:
                 row = match.group(1)
             pin = re.search(r"\bceiling=(\d+)", line)
@@ -220,6 +223,8 @@ def lowered_ceilings(files: list[dict]) -> set[str]:
 
 def registry_status() -> dict[str, str]:
     rows = check_shapes.registry_rows(check_shapes.REGISTRY.read_text(encoding="utf-8"))
+    if not rows:
+        raise RuntimeError(f"no Shape registry rows parsed from {check_shapes.REGISTRY}")
     return {row: status.lower() for row, status in rows.items()}
 
 
@@ -265,7 +270,10 @@ def issue_body(repo: str, now: datetime) -> str:
             findings.append("builds on deleting path: " + ", ".join(deleting))
         if declaration.unknown:
             findings.append("unknown registry row: " + ", ".join(declaration.unknown))
-        if not declared and not declaration.none and datetime.fromisoformat(
+        if declaration.none and touched:
+            findings.append("declared none but touches: " + ", ".join(sorted(touched)))
+        # `none` holds only while the PR touches no registered row.
+        if not declared and not (declaration.none and not touched) and datetime.fromisoformat(
             pr["created_at"].replace("Z", "+00:00")
         ) < now - timedelta(days=7):
             findings.append("registry row missing")

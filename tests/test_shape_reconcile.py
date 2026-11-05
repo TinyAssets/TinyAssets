@@ -39,6 +39,25 @@ def test_none_is_a_declaration():
     assert not shape_reconcile.declared_rows("no line here", REAL_ROWS).none
 
 
+def test_rows_beside_none_are_kept():
+    declaration = shape_reconcile.declared_rows("Registry row(s): none, S36", REAL_ROWS)
+    assert declaration == shape_reconcile.Declaration(["S36"], [], False)
+
+
+def test_registry_status_fails_loudly_on_an_empty_registry(monkeypatch, tmp_path):
+    registry = tmp_path / "architecture.md"
+    registry.write_text("# Architecture\n\nThe table moved.\n", encoding="utf-8")
+    monkeypatch.setattr(check_shapes, "REGISTRY", registry)
+    with pytest.raises(RuntimeError, match="no Shape registry rows"):
+        shape_reconcile.registry_status()
+
+
+def test_a_lowered_ceiling_counts_for_any_b_row():
+    patch = '@@ -1,3 +1,3 @@\n     "B3": Shape(\n-        ceiling=4,\n+        ceiling=3,\n'
+    files = [{"filename": "scripts/check_shapes.py", "patch": patch}]
+    assert shape_reconcile.lowered_ceilings(files) == {"B3"}
+
+
 def test_dashboard_flags_typos_and_accepts_none(monkeypatch):
     def pr(number, body):
         return {
@@ -56,9 +75,15 @@ def test_dashboard_flags_typos_and_accepts_none(monkeypatch):
         pr(1, "Registry row(s): S36"),
         pr(2, "Registry row(s): none (docs only)"),
         pr(3, "Registry row(s): S9999"),
+        pr(4, "Registry row(s): none"),
     ]
+    pr_files = {"repos/o/r/pulls/4/files?per_page=100": [
+        {"filename": "platform/owner/src/x.ts", "status": "modified", "patch": "+x"}
+    ]}
     monkeypatch.setattr(
-        shape_reconcile, "pages", lambda path: pulls if "pulls?state=open" in path else []
+        shape_reconcile,
+        "pages",
+        lambda path: pulls if "pulls?state=open" in path else pr_files.get(path, []),
     )
     monkeypatch.setattr(shape_reconcile.openspec_flow, "build_report", lambda root: {"changes": []})
     monkeypatch.setattr(
@@ -74,3 +99,9 @@ def test_dashboard_flags_typos_and_accepts_none(monkeypatch):
     assert "registry row missing" not in rows["| [#2](https://example.invalid/2)"]
     assert "unknown registry row: S9999" in rows["| [#3](https://example.invalid/3)"]
     assert "registry row missing" in rows["| [#3](https://example.invalid/3)"]
+    touches = shape_reconcile.shape_paths(pr_files["repos/o/r/pulls/4/files?per_page=100"])
+    assert touches
+    assert f"declared none but touches: {', '.join(sorted(touches))}" in rows[
+        "| [#4](https://example.invalid/4)"
+    ]
+    assert "registry row missing" in rows["| [#4](https://example.invalid/4)"]
