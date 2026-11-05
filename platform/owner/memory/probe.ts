@@ -36,7 +36,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { bundledSources, signinsOn } from "../../doors/src/sources";
 import { PLATFORM_CALLER } from "../src/admission";
-import { Backups, BURST_BYTES } from "../src/backup";
+import { Backups } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";
 import { ChangeLog } from "../src/changelog";
 import { Grants } from "../src/grants";
@@ -268,7 +268,8 @@ export class LegOwner extends OwnerDO {
    * A generation's burst at production sizes (`GENERATION_SIZES`) of the smallest lines a
    * stream holds (notices of no detail, about 80 bytes a line, as small as a chunk's), so a
    * burst holds the most lines its bytes allow: a whole generation run by the real lane, each
-   * part's put a checkpoint while the burst's pages and parts are live. Its parts.
+   * part's put a checkpoint while the burst's pages and parts are live, inside its units of
+   * the isolate's pool (`BURST_UNITS`). Its parts.
    */
   async legBurst(): Promise<number> {
     const sql = this.#gate.storage.sql;
@@ -731,8 +732,7 @@ export default {
                              move_seal_units: holds.moveTableUnits(25_000),
                              move_most_units: holds.moveTableUnits(MOVE_RECORDS),
                              move_records: MOVE_RECORDS,
-                             move_body_units: holds.moveTableUnits(2),
-                             burst_bytes: BURST_BYTES });
+                             move_body_units: holds.moveTableUnits(2) });
     }
     if (url.pathname === "/rest") {
       LEG.runs += 1;

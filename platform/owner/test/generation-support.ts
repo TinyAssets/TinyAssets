@@ -11,6 +11,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { Backups, type GenerationSizes } from "../src/backup";
+import {
+  OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
+} from "../src/holds";
+import { SLOT_WAIT_MS, SlotPool } from "../src/slots";
 import { ChangeLog } from "../src/changelog";
 import { exported } from "../src/export";
 import type { ChunkStore, Files } from "../src/files";
@@ -113,6 +117,11 @@ export interface Harness {
   readonly schema?: number;
   /** Its sizes: `SMALL` unless a test asks for others (production's `GENERATION_SIZES`). */
   readonly sizes?: GenerationSizes;
+  /**
+   * The pool its bursts take their units of: a pool of the production figures its own unless
+   * a test passes one, so another test's holds in the isolate never refuse its bursts.
+   */
+  readonly pool?: SlotPool;
 }
 
 /**
@@ -170,10 +179,13 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       return value;
     };
     const notices: string[] = [];
+    const pool = harness.pool ?? new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
+                                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
     const lane = () => new Backups({
       storage: gate.storage, write: quiet, store, log, space: () => files.space(),
       owner: () => "owner", serves: () => true, schema: harness.schema ?? MIGRATIONS.length,
       halted: () => false, notice: (type) => notices.push(type), sizes: harness.sizes ?? SMALL,
+      pool,
     });
     // The one under way, or a new one, begun now (its owner changed since the last).
     if (state.storage.sql.exec("SELECT 1 FROM owner_backups WHERE state = 'writing'")

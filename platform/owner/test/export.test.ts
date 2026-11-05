@@ -13,9 +13,13 @@ import { mint } from "../../files/src/datakey";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import { PLATFORM_CALLER, PLATFORM_ONLY } from "../src/admission";
 import {
-  GENERATION_SIZES, MANIFEST_CEILING, MANIFEST_CONTINUE_S, MANIFEST_LINE, PART_ENTRY,
-  SEGMENT_ENTRY, spread,
+  GENERATION_SIZES, MANIFEST_BUSY_RETRY_S, MANIFEST_CEILING, MANIFEST_CONTINUE_S,
+  MANIFEST_LINE, PART_ENTRY, SEGMENT_ENTRY, spread,
 } from "../src/backup";
+import {
+  BURST_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
+} from "../src/holds";
+import { SLOT_WAIT_MS, SlotPool } from "../src/slots";
 import {
   decodeCursor, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED, readPage,
 } from "../src/export";
@@ -373,6 +377,35 @@ describe("a generation", () => {
     const made = await generate(o.stub, { sizes });
     expect(made.notices).toEqual([]);
     expect(digest(replay(made.lines))).toBe(made.atE);
+  }, 120_000);
+
+  it("takes its burst's units of the pool now or yields: with the pool full it reads and " +
+     "puts nothing and goes on later; with room, every put inside them (burstlease)",
+     async () => {
+    const pool = new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
+                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
+    const o = await owner();
+    await notices(o, 200);
+    // Another object's holds: past what leaves a burst its units beside the reserve.
+    const other = await pool.acquire(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS - BURST_UNITS + 1);
+    const held = await generate(o.stub, { pool });
+    expect({ calls: held.calls, notices: held.notices, lines: held.lines.length })
+      .toEqual({ calls: 0, notices: [], lines: 0 });
+    const [row] = await sqlIn(o.stub, "SELECT state, cursor, parts, retry_at FROM owner_backups");
+    expect(row).toMatchObject({ state: "writing", cursor: null, parts: 0 });
+    expect(row!["retry_at"] as number)
+      .toBeGreaterThan(Date.now() / 1000 + MANIFEST_BUSY_RETRY_S - 2);
+    expect(pool.state().held).toBe(other.units);  // nothing of the burst's left held
+    other.release();
+    // With room, every outside call of a burst is made inside its units, and they go back.
+    const seen: number[] = [];
+    const made = await generate(o.stub, { pool, duringCall: async () => {
+      seen.push(pool.state().held);
+    } });
+    expect(made.notices).toEqual([]);
+    expect(digest(replay(made.lines))).toBe(made.atE);
+    expect(Math.max(...seen)).toBe(BURST_UNITS);
+    expect(pool.state()).toMatchObject({ held: 0, peak: BURST_UNITS });
   }, 120_000);
 
   it("goes on later, never at once, when a pass ends before it does", async () => {

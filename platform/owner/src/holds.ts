@@ -104,6 +104,16 @@ export function moveTableUnits(records: number): number {
  */
 export const MOVE_PASS_UNITS = 3;
 
+/**
+ * A generation's burst (`backup.ts`, the manifest lane): its pages' buffers and line ends (at
+ * most `GATHER_BYTES` and its last page), then its parts beside them, and the part its call
+ * is sending: twice two parts and a page, and a part, rounded up to whole units. Taken now
+ * or not at all, from its first page to its last part's put (inside the alarm a lane never
+ * waits on the pool), so every object's burst is inside the pool. The leg reads 16.46 MiB at
+ * a put, a burst of the smallest lines, and holds it within these at every checkpoint.
+ */
+export const BURST_UNITS = 6;
+
 /** Body windows (`Bodies.windows`): each at most a page, read by verified ranges. */
 export const WINDOW_UNITS = 1;
 

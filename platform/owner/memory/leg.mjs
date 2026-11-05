@@ -29,7 +29,8 @@
 //   each run by the object's own `archive` lane, every pass within its table's and its own
 //   units;
 // - a generation's burst (slice P): at production sizes, of the smallest lines, run by the
-//   real lane, its pages and parts at every part's put within `BURST_BYTES`;
+//   real lane, its pages and parts at every part's put within the units it holds
+//   (`BURST_UNITS`);
 // - per unit: two edits at once hold at most one making step's units more than one;
 // - its time: the worst edit's time a chunk, measured with no collections, keeps
 //   `EDIT_BYTES_MAX` inside a request's 30 s of CPU (the time is wall time, at least the CPU
@@ -214,8 +215,11 @@ try {
     let answer = null;
     // The most live at a hold's end (after its chunks are let go): its records' own.
     let ends = 0;
+    // The most units the pool held at a sample.
+    let heldMost = 0;
     sample = async (held, at) => {
       points += 1;
+      heldMost = Math.max(heldMost, held ?? 0);
       const now = await live() - floor;
       if (now > most) {
         where = `${at} (${held} units)`;
@@ -258,6 +262,7 @@ try {
                   at: where, closest_to_its_units: overAt });
     }
     peak.ends = ends;
+    peak.held = heldMost;
     peak.answer = answer;
     return most;
   };
@@ -330,10 +335,12 @@ try {
         "bodyUnits(2)");
 
   // A generation's burst at production sizes, of the smallest lines (the most lines its bytes
-  // allow), run by the real lane: at every part's put, its pages and parts within
-  // BURST_BYTES (review rvbackup 1).
+  // allow), run by the real lane: at every part's put, its pages and parts within the units
+  // it holds (above, at every checkpoint), and its peak within BURST_UNITS (review rvbackup 1).
   check("a generation's burst: peak, the smallest lines", await peak("burst", 0),
-        costs.burst_bytes, "BURST_BYTES");
+        costs.BURST_UNITS * UNIT, "BURST_UNITS");
+  check("a generation's burst: its puts inside its units of the pool",
+        costs.BURST_UNITS - peak.held, 0, "the units held at its puts");
 
   // The archive: each pass of its move and rewrite within the units it holds (above, at
   // every checkpoint), each run's peak within its table's and its pass's units, and a move
