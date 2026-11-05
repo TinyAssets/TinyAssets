@@ -285,8 +285,32 @@ def test_dry_run_previews_the_real_plan_and_writes_nothing(tmp_path):
     assert _sidecars(db_path(tmp_path)) == [] and _sidecars(ledger) == []
     assert repair(tmp_path, ledger) == preview
     assert _volume_bytes(tmp_path) != untouched
-    # The repair run leaves its own WAL behind: the preview must read that too.
+    # The preview reads what the repair run committed.
     assert repair(tmp_path, ledger, dry_run=True) == []
+
+
+def test_repair_closes_the_owner_store_before_it_returns(tmp_path):
+    """The run's own close checkpoints its WAL away.
+
+    A connection left open is freed only by the cyclic collector. That close
+    deletes the WAL and index later, under whoever is copying the store then:
+    the restore pass's readonly_db read it as unreadable. Collection is off, so
+    a collect between the return and the check cannot hide a leak.
+    """
+    import gc
+
+    from tinyassets.storage import db_path
+
+    definitions, members, bindings = _accepted()
+    ledger = _owner_volume(tmp_path, members, bindings, stored=definitions, grants=["grant-2"])
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        assert repair(tmp_path, ledger)
+        assert _sidecars(db_path(tmp_path)) == []
+    finally:
+        if enabled:
+            gc.enable()
 
 
 @pytest.mark.verifies("owner-daemon-in-box:Cutover accounts for loss without guessing ownership")
