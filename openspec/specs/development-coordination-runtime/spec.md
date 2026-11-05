@@ -288,9 +288,10 @@ own pull request.
 - **WHEN** a head holds an older in-progress `review` run and a newer successful one, both by the App for the pull request
 - **THEN** readers, listing every run on every page, count the head as reviewed
 
-#### Scenario: A merge group passes only on its pull request's own review
-- **WHEN** a merge group is made for a pull request
-- **THEN** the review App posts the group's `review` run as a success only when that pull request's own latest App run at its head is a success
+#### Scenario: A merge group decides its pull request afresh
+- **WHEN** a merge group is made for a pull request whose head still shows an earlier pass, and a `BLOCK` since has no decision run yet
+- **THEN** the review App decides that pull request again from its reviews and timeline at its current head, never from its `review` runs, and posts the group's `review` run as a failure
+- **AND** it posts the group's run as a success only when that fresh decision is a pass
 
 #### Scenario: A forged review context does not pass
 - **WHEN** a pull request's own workflow job named `review` reports success on its head

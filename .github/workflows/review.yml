@@ -30,7 +30,7 @@ name: review
 #     because pull_request_review runs the PR's own copy), checked against the
 #     signal run's own branch so one PR's copy cannot decide another PR;
 #   * workflow_run of review-queue.yml (a merge group; same reason): the group's
-#     `review` is its PR's own check, read at the PR's head, posted on the group.
+#     `review` is its PR decided afresh at its head, posted on the group.
 # Nothing here checks out or executes the PR's code: the checkout is the default
 # branch, and the PR's commits are only read as git objects for `carries`.
 
@@ -112,10 +112,13 @@ jobs:
     # no branch policy.
     if: vars.REVIEW_APP_ID != ''
     environment: review
-    # One decision at a time per PR of this repository, never cancelled: each reads
-    # the PR as it is when it runs, so a queued one decides the newest state.
+    # One decision at a time per PR and kind. A running decision is never cancelled,
+    # but GitHub replaces a pending one in the same group with the newest: safe within
+    # a kind, since the newest reads the PR as it is then. The kind is in the group so
+    # that a merge group's decision never replaces a pending decision of the PR's head
+    # (a BLOCK's, say), and the reverse.
     concurrency:
-      group: review-${{ github.repository }}-${{ needs.resolve.outputs.pr }}
+      group: review-${{ github.repository }}-${{ needs.resolve.outputs.kind }}-${{ needs.resolve.outputs.pr }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -146,7 +149,6 @@ jobs:
           PR: ${{ needs.resolve.outputs.pr }}
           KIND: ${{ needs.resolve.outputs.kind }}
           GROUP_SHA: ${{ github.event.workflow_run.head_sha }}
-          GROUP_REF: ${{ github.event.workflow_run.head_branch }}
         shell: bash
         run: |
           set -euo pipefail
@@ -220,12 +222,21 @@ jobs:
               return 0
             fi
             [ -z "$found" ] || echo "::warning::check run ${found} did not take \"deciding\"; posting a new one"
-            RUN_ID="$(as_app -X POST "repos/${REPO}/check-runs" --input "$RUNNER_TEMP/deciding.json" --jq .id)"
-            if ! [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            # A failed POST is retried; if it still fails there is no run to fail, so
+            # the decision exits non-zero; the next event decides again, and a merge
+            # group decides the PR afresh whatever its own runs say.
+            local attempt
+            for attempt in 1 2 3; do
+              if RUN_ID="$(as_app -X POST "repos/${REPO}/check-runs" --input "$RUNNER_TEMP/deciding.json" --jq .id)" \
+                  && [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+                return 0
+              fi
               RUN_ID=""
-              echo "::error::the deciding check run has no id"
-              exit 1
-            fi
+              echo "::warning::posting the deciding check run failed (attempt ${attempt} of 3)"
+              [ "$attempt" = 3 ] || sleep "$attempt"
+            done
+            echo "::error::could not post the deciding check run"
+            exit 1
           }
           finish() {
             jq 'del(.name, .head_sha)' "$RUNNER_TEMP/run.json" > "$RUNNER_TEMP/verdict.json"
@@ -236,40 +247,41 @@ jobs:
             DONE=1
           }
 
-          if [ "$KIND" = queue ]; then
-            # The group's `review`: its PR's own check at the PR's head, read as data.
-            start "$GROUP_SHA" "queue-pr-${PR}"
-            python scripts/drain_review_gate.py --queue-review --repo "$REPO" \
-              --ref "$GROUP_REF" --sha "$GROUP_SHA" > "$RUNNER_TEMP/run.json"
-            finish
-          else
-            # The head and base as they are now, from the API, never from the event.
-            read -r HEAD BASE < <(gh api "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
-            if ! [[ "$HEAD" =~ ^[0-9a-f]{40}$ && "$BASE" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error::PR #${PR} has no head or base"
-              exit 1
-            fi
-            start "$HEAD" "pr-${PR}"
-
-            gh api --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
-              | jq -s . > "$RUNNER_TEMP/reviews.json"
-            gh api --paginate "repos/${REPO}/issues/${PR}/timeline?per_page=100" --jq '.[]' \
-              | jq -s . > "$RUNNER_TEMP/timeline.json"
-
-            # The base, the head and every commit a review names, as git objects only.
-            # One that cannot be fetched does not carry.
-            for sha in "$BASE" "$HEAD" $(jq -r '.[].commit_id // empty' "$RUNNER_TEMP/reviews.json" | sort -u); do
-              [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
-              git cat-file -e "${sha}^{commit}" 2> /dev/null \
-                || git fetch -q --no-tags --filter=blob:none origin "$sha" \
-                || echo "::warning::could not fetch ${sha}"
-            done
-
-            python scripts/drain_review_gate.py --review-check \
-              --reviews-file "$RUNNER_TEMP/reviews.json" \
-              --timeline-file "$RUNNER_TEMP/timeline.json" --pr "$PR" \
-              --base "$BASE" --head "$HEAD" > "$RUNNER_TEMP/run.json"
-            finish
+          # The PR's head and base as they are now, from the API, never from the event.
+          read -r HEAD BASE < <(gh api "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
+          if ! [[ "$HEAD" =~ ^[0-9a-f]{40}$ && "$BASE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::PR #${PR} has no head or base"
+            exit 1
           fi
+          if [ "$KIND" = queue ]; then
+            # A merge group's `review` decides the PR afresh, from its reviews and
+            # timeline at its current head, never from the PR's own `review` runs: a
+            # BLOCK whose own decision has not landed, or never could, still fails it.
+            start "$GROUP_SHA" "queue-pr-${PR}"
+            GROUP=(--group-sha "$GROUP_SHA")
+          else
+            start "$HEAD" "pr-${PR}"
+            GROUP=()
+          fi
+
+          gh api --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
+            | jq -s . > "$RUNNER_TEMP/reviews.json"
+          gh api --paginate "repos/${REPO}/issues/${PR}/timeline?per_page=100" --jq '.[]' \
+            | jq -s . > "$RUNNER_TEMP/timeline.json"
+
+          # The base, the head and every commit a review names, as git objects only.
+          # One that cannot be fetched does not carry.
+          for sha in "$BASE" "$HEAD" $(jq -r '.[].commit_id // empty' "$RUNNER_TEMP/reviews.json" | sort -u); do
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
+            git cat-file -e "${sha}^{commit}" 2> /dev/null \
+              || git fetch -q --no-tags --filter=blob:none origin "$sha" \
+              || echo "::warning::could not fetch ${sha}"
+          done
+
+          python scripts/drain_review_gate.py --review-check \
+            --reviews-file "$RUNNER_TEMP/reviews.json" \
+            --timeline-file "$RUNNER_TEMP/timeline.json" --pr "$PR" \
+            --base "$BASE" --head "$HEAD" "${GROUP[@]}" > "$RUNNER_TEMP/run.json"
+          finish
           jq -r '"review for #'"$PR"' at \(.head_sha): \(.status) \(.conclusion // "") \(.output.title)"' \
             "$RUNNER_TEMP/run.json" | tee -a "$GITHUB_STEP_SUMMARY"

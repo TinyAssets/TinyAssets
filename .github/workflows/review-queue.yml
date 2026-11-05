@@ -1,7 +1,7 @@
 name: review (merge queue)
 
-# A merge group was made: tell review.yml, which posts the group's `review` (its PR's
-# own check, read at the PR's head) as the review App. Nothing else.
+# A merge group was made: tell review.yml, which decides the group's PR afresh at its
+# head and posts the group's `review` as the review App. Nothing else.
 #
 # A merge_group run takes this file from the group commit, which includes the PR's
 # edits, so it holds no permission and no secret and decides nothing; review.yml

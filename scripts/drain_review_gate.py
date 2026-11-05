@@ -661,8 +661,26 @@ def _check_run(name_sha: str, state: CheckState, ident: str) -> dict[str, object
     return run
 
 
+def group_check(state: CheckState, *, number: int, head: str) -> CheckState:
+    """A merge group's `review`, from PR `number`'s own decision made fresh at `head`.
+
+    The group passes only when that decision is a pass. Anything else, a BLOCK or a
+    review still owed, fails the group: the queue cannot wait for a review.
+    """
+    if state.conclusion == "success":
+        return CheckState("success", f"PR #{number} at {head}: {state.title}", state.summary)
+    return CheckState("failure", f"PR #{number} at {head} has not passed review: {state.title}",
+                      state.summary)
+
+
 def _review_check(argv: list[str]) -> int:
-    """`--review-check`: print the `review` check run for a PR's head, as the API's JSON."""
+    """`--review-check`: print the `review` check run for a PR's head, as the API's JSON.
+
+    With `--group-sha`, print the merge group's run instead: the same decision, made
+    fresh from the PR's reviews and timeline, as `group_check` on the group's commit.
+    It never reads the PR's own `review` runs, so a BLOCK whose own decision has not
+    landed, or never could, still fails the group.
+    """
     parser = argparse.ArgumentParser(prog="drain_review_gate.py --review-check")
     parser.add_argument("--reviews-file", type=Path, required=True,
                         help="the PR's reviews, one JSON array")
@@ -671,9 +689,13 @@ def _review_check(argv: list[str]) -> int:
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
+    parser.add_argument("--group-sha", help="the merge group's commit, to post the group's run")
     args = parser.parse_args(argv)
     if not _SHA_RE.fullmatch(args.head) or args.pr < 1:
         print(f"not a commit and a PR: {args.head!r} #{args.pr}", file=sys.stderr)
+        return 2
+    if args.group_sha is not None and not _SHA_RE.fullmatch(args.group_sha):
+        print(f"not a merge group commit: {args.group_sha!r}", file=sys.stderr)
         return 2
     try:
         reviews = json.loads(args.reviews_file.read_text(encoding="utf-8"))
@@ -687,6 +709,10 @@ def _review_check(argv: list[str]) -> int:
     except (OSError, ValueError) as exc:
         print(f"cannot decide the review check: {exc}", file=sys.stderr)
         return 2
+    if args.group_sha is not None:
+        group = group_check(state, number=args.pr, head=args.head)
+        print(json.dumps(_check_run(args.group_sha, group, f"queue-{external_id(args.pr)}")))
+        return 0
     print(json.dumps(_check_run(args.head, state, external_id(args.pr))))
     return 0
 
@@ -762,8 +788,9 @@ def _gh_check_runs(path: str) -> list[object]:
 def review_passed_at(repo: str, head: str, number: int, *, app_id: int | None = None) -> bool:
     """Does `head`'s latest `review` run, by the review App, for PR `number`, read success?
 
-    The one reader of the decision for everything that acts on it (the merge group,
-    enqueue, the queue's freshness probe, the floor hotfix). It lists every run
+    The reader for what acts on the PR's own check outside a merge group (enqueue,
+    the queue's freshness probe, the floor hotfix); a merge group decides afresh
+    (`--review-check --group-sha`). It lists every run
     (`filter=all`, every page), because the API's default `filter=latest` keeps one
     run per name and suite by its own choice, not the highest id `review_run_passed`
     takes. Raises on a read that fails: a caller that cannot read the check treats
@@ -776,40 +803,6 @@ def review_passed_at(repo: str, head: str, number: int, *, app_id: int | None = 
         f"repos/{repo}/commits/{head}/check-runs?check_name=review&filter=all&per_page=100")
     return review_run_passed([r for r in listed if isinstance(r, dict)
                               and (r.get("app") or {}).get("id") == app], number)
-
-
-def _queue_review(argv: list[str]) -> int:
-    """`--queue-review`: print the merge group's `review` check run, as the API's JSON.
-
-    The group's ref names its PR; the PR's head and its own `review` runs are read
-    with `gh api` (GitHub's data, never the group's code). A queued PR whose review is
-    missing, pending, failed or made for another PR fails the group. An unreadable
-    one exits 2, and the workflow posts a failure.
-    """
-    parser = argparse.ArgumentParser(prog="drain_review_gate.py --queue-review")
-    parser.add_argument("--repo", required=True)
-    parser.add_argument("--ref", required=True, help="the merge group's branch")
-    parser.add_argument("--sha", required=True, help="the merge group's commit")
-    args = parser.parse_args(argv)
-    number = queued_pr(args.ref)
-    if number is None or not _SHA_RE.fullmatch(args.sha):
-        print(f"not a merge-queue ref and commit: {args.ref!r} {args.sha!r}", file=sys.stderr)
-        return 2
-    try:
-        pull = _gh_json(f"repos/{args.repo}/pulls/{number}")
-        head = pull["head"]["sha"] if isinstance(pull, dict) else None
-        if not isinstance(head, str):
-            raise ValueError(f"PR #{number} has no head")
-        passed = review_passed_at(args.repo, head, number)
-    except (subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
-        print(f"PR #{number}: cannot read its review check: {exc}", file=sys.stderr)
-        return 2
-    state = (CheckState("success", f"PR #{number}'s review passed at {head}", "")
-             if passed else
-             CheckState("failure", f"PR #{number}'s review at {head} is missing, pending, "
-                        "failed or another PR's", ""))
-    print(json.dumps(_check_run(args.sha, state, f"queue-{external_id(number)}")))
-    return 0
 
 
 def _read_text(path: Path | None) -> str | None:
@@ -995,8 +988,6 @@ def _print_diff_key(argv: list[str]) -> int:
 def main() -> int:
     if sys.argv[1:2] == ["--review-check"]:
         return _review_check(sys.argv[2:])
-    if sys.argv[1:2] == ["--queue-review"]:
-        return _queue_review(sys.argv[2:])
     if sys.argv[1:2] == ["--signal-pr"]:
         return _signal_pr(sys.argv[2:])
     if sys.argv[1:2] == ["--print-diff-key"]:

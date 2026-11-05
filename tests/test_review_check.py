@@ -247,11 +247,11 @@ def test_a_block_fails_where_it_carries_and_waits_after_a_new_change():
     assert _state(reviews).conclusion is None
 
 
-def _cli(path, reviews, timeline, base, head, pr="12"):
+def _cli(path, reviews, timeline, base, head, *more, pr="12"):
     return subprocess.run(
         [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
          "--reviews-file", str(reviews), "--timeline-file", str(timeline), "--pr", pr,
-         "--base", base, "--head", head], cwd=path, capture_output=True, text=True)
+         "--base", base, "--head", head, *more], cwd=path, capture_output=True, text=True)
 
 
 def test_the_cli_prints_the_check_run_for_its_pr(tmp_path, repo):
@@ -335,10 +335,18 @@ def test_review_yml_decides_per_pr_with_the_app_in_its_environment():
     assert "edited" in on["pull_request_target"]["types"]
     decide = wf["jobs"]["decide"]
     assert decide["environment"] == "review"
+    # The kind is in the group, so a merge group's decision never replaces a pending
+    # decision of the PR's head (a BLOCK's), nor the reverse; no other group exists.
     assert decide["concurrency"]["group"] == (
-        "review-${{ github.repository }}-${{ needs.resolve.outputs.pr }}")
+        "review-${{ github.repository }}-${{ needs.resolve.outputs.kind }}"
+        "-${{ needs.resolve.outputs.pr }}")
     assert decide["concurrency"]["cancel-in-progress"] is False
     assert "concurrency" not in wf
+    assert all("concurrency" not in job for name, job in wf["jobs"].items() if name != "decide")
+    for name in ("review-signal.yml", "review-queue.yml"):
+        signal = yaml.safe_load((_ROOT / ".github" / "workflows" / name).read_text())
+        assert "concurrency" not in signal
+        assert all("concurrency" not in job for job in signal["jobs"].values())
     steps = "\n".join(str(step) for step in decide["steps"])
     assert "create-github-app-token" in steps and "REVIEW_APP_PRIVATE_KEY" in steps
     for name, job in wf["jobs"].items():
@@ -376,7 +384,7 @@ def test_only_the_latest_successful_run_made_for_this_pr_passes():
     assert gate.review_run_passed([{**done, "id": 4}, waiting], 12)
 
 
-def test_only_the_review_apps_run_passes_a_reader(monkeypatch, capsys):
+def test_only_the_review_apps_run_passes_a_reader(monkeypatch):
     """An Actions-app run named review for the PR (any PR's own job can post one) is not a
     pass: the App filter is what makes the check the review App's alone."""
     head = "c" * 40
@@ -385,28 +393,44 @@ def test_only_the_review_apps_run_passes_a_reader(monkeypatch, capsys):
     ours = {**actions, "id": 3, "app": {"id": 777}}
 
     def api(runs):
-        def pull(path):
-            assert path.endswith("/pulls/12")
-            return {"head": {"sha": head}}
-
         def check_runs(path):
             assert path == (f"repos/o/r/commits/{head}/check-runs"
                             "?check_name=review&filter=all&per_page=100")
             return runs
-        monkeypatch.setattr(gate, "_gh_json", pull)
         monkeypatch.setattr(gate, "_gh_check_runs", check_runs)
 
     monkeypatch.setenv("REVIEW_APP_ID", "777")
     api([actions])
     assert not gate.review_passed_at("o/r", head, 12)
-    assert gate._queue_review(["--repo", "o/r", "--ref", f"gh-readonly-queue/main/pr-12-{A}",
-                               "--sha", B]) == 0
-    assert json.loads(capsys.readouterr().out)["conclusion"] == "failure"
     api([actions, ours])
     assert gate.review_passed_at("o/r", head, 12)
-    assert gate._queue_review(["--repo", "o/r", "--ref", f"gh-readonly-queue/main/pr-12-{A}",
-                               "--sha", B]) == 0
-    assert json.loads(capsys.readouterr().out)["conclusion"] == "success"
+
+
+def test_a_merge_group_passes_only_on_a_fresh_pass():
+    ok = gate.CheckState("success", "APPROVE: reviewed at this head", "u")
+    assert gate.group_check(ok, number=12, head=A) == gate.CheckState(
+        "success", f"PR #12 at {A}: APPROVE: reviewed at this head", "u")
+    for state in (gate.CheckState("failure", "BLOCK: x", "u"),
+                  gate.CheckState(None, f"waiting for review of {A}", "ask")):
+        group = gate.group_check(state, number=12, head=A)
+        assert group.conclusion == "failure" and state.title in group.title
+
+
+def test_the_cli_prints_the_group_run_from_the_fresh_decision(tmp_path, repo):
+    path, base, approved = repo
+    reviews = tmp_path / "reviews.json"
+    timeline = tmp_path / "timeline.json"
+    timeline.write_text("[]", encoding="utf-8")
+    for verdicts, conclusion in ((["APPROVE"], "success"), (["APPROVE", "BLOCK"], "failure"),
+                                 ([], "failure")):
+        reviews.write_text(json.dumps([
+            _review(v, approved, ident=i, when=f"2026-11-04T1{i}:00:00Z")
+            for i, v in enumerate(verdicts)]), encoding="utf-8")
+        run = json.loads(_cli(path, reviews, timeline, base, approved,
+                              "--group-sha", B).stdout)
+        assert (run["head_sha"], run["external_id"]) == (B, "queue-pr-12")
+        assert (run["status"], run["conclusion"]) == ("completed", conclusion)
+    assert _cli(path, reviews, timeline, base, approved, "--group-sha", "x").returncode == 2
 
 
 # ---- the App's token, and review.yml's decision run against a fake GitHub --------------
@@ -518,6 +542,7 @@ def test_host_actions_names_what_review_yml_reads():
 #   run is frozen: the PATCH answers 200 and changes nothing, which is what the
 #   evidence suggests GitHub does. data["ignore_patch"] freezes every run that way;
 #   data["race"] = id completes that run just before the first PATCH of it lands.
+# - data["fail_posts"] = n makes the next n POSTs exit 1.
 # - A listing of `commits/<sha>/check-runs` returns the runs on that commit.
 # - data["fail"] names a path fragment whose call exits 1, as a 502 would.
 _FAKE_GH = '''\
@@ -540,6 +565,11 @@ if data.get("fail") and data["fail"] in path:
     sys.exit(1)
 runs = data["check_runs"]
 method = args[args.index("-X") + 1] if "-X" in args else "GET"
+if method == "POST" and data.get("fail_posts"):
+    data["fail_posts"] -= 1
+    with open(store, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    sys.exit(1)
 if method == "POST":
     answer = {"id": 700 + data.get("posted", 0),
               "app": {"id": 777 if token == "app-token" else 15368}, "conclusion": None, **body}
@@ -842,9 +872,30 @@ def test_a_pr_with_no_head_writes_nothing(pr_checkout):
     assert done.returncode == 1 and _writes(calls) == []
 
 
+def test_a_failed_deciding_post_is_retried(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"])]
+    data["fail_posts"] = 2
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    assert [w[0] for w in _writes(calls)] == ["POST", "POST", "POST", "PATCH"]
+    assert _passes(after, data["head"])
+
+
+def test_a_deciding_post_that_keeps_failing_fails_the_decision(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"])]
+    data["fail_posts"] = 3
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode != 0
+    assert [w[0] for w in _writes(calls)] == ["POST", "POST", "POST"]
+    assert "could not post the deciding check run" in done.stdout
+    assert _review_runs(after, data["head"]) == []
+    assert not any("/reviews" in a for c in calls for a in c["args"]), "decided with no run"
+
+
 def _queue(**more: str) -> dict:
-    return {"KIND": "queue", "GROUP_SHA": B, "GROUP_REF": f"gh-readonly-queue/main/pr-12-{A}",
-            **more}
+    return {"KIND": "queue", "GROUP_SHA": B, **more}
 
 
 def _pr_run(head: str, **fields) -> dict:
@@ -852,34 +903,54 @@ def _pr_run(head: str, **fields) -> dict:
             "external_id": "pr-12", **fields}
 
 
-def test_the_merge_group_review_refuses_an_actions_run_named_review(pr_checkout):
+def _group_run(data: dict) -> dict:
+    (group,) = _review_runs(data, B)
+    assert group["external_id"] == "queue-pr-12" and group["status"] == "completed"
+    return group
+
+
+def test_a_merge_group_fails_on_a_block_whose_own_decision_never_ran(pr_checkout):
+    """The PR's head still shows its old pass (the BLOCK's decision has not landed, or
+    could not), but the group decides the PR afresh from its reviews, so it fails."""
     tmp_path, path, data = pr_checkout
-    data["check_runs"] = [_pr_run(data["head"], id=9, app={"id": 15368})]
+    head = data["head"]
+    data["check_runs"] = [_pr_run(head, id=5, app={"id": 777})]
+    data["reviews"] = [_review("APPROVE", head, ident=1),
+                       _review("BLOCK", head, ident=2, when="2026-11-04T11:00:00Z")]
     done, calls, after = _decide(tmp_path, path, data, **_queue())
     assert done.returncode == 0, done.stderr
-    (_, _, deciding), (_, _, refused) = _writes(calls)
-    assert deciding["head_sha"] == B and deciding["external_id"] == "queue-pr-12"
-    assert refused["external_id"] == "queue-pr-12" and refused["conclusion"] == "failure"
-    read = next(c for c in calls if c["token"] == _ACTIONS_TOKEN
-                and any(f"/commits/{data['head']}/" in a for a in c["args"]))
-    assert read["args"][:2] == ["api", "--paginate"]
-    assert (f"repos/o/r/commits/{data['head']}/check-runs"
-            "?check_name=review&filter=all&per_page=100") in read["args"]
-    (group,) = _review_runs(after, B)
-    assert group["external_id"] == "queue-pr-12"
+    assert _group_run(after)["conclusion"] == "failure"
+    assert _passes(after, head), "the PR's own old pass is untouched, and not what decides"
+    # The group never reads the PR's own `review` runs.
+    assert not any(f"/commits/{head}/" in a for c in calls for a in c["args"])
 
 
-def test_the_merge_group_review_passes_on_the_apps_newest_run_past_a_stale_one(pr_checkout):
+@pytest.mark.parametrize(("reviews", "conclusion"), [
+    ([("APPROVE", 1, "2026-11-04T10:00:00Z")], "success"),
+    ([], "failure"),
+    ([("APPROVE", 1, "2026-11-04T10:00:00Z"), ("BLOCK", 2, "2026-11-04T11:00:00Z")], "failure"),
+])
+def test_a_merge_group_takes_only_its_prs_fresh_decision(pr_checkout, reviews, conclusion):
+    """Whatever the PR head's runs say, a pass forged by an Actions job among them, the
+    group's run is the fresh decision: success on an approval, failure otherwise."""
     tmp_path, path, data = pr_checkout
-    passed = _pr_run(data["head"], id=5, app={"id": 777})
-    stale = {**passed, "id": 3, "status": "in_progress", "conclusion": None}
-    data["check_runs"] = [passed, stale]
-    done, calls, _ = _decide(tmp_path, path, data, **_queue())
+    head = data["head"]
+    data["check_runs"] = [_pr_run(head, id=9, app={"id": 15368}),
+                          _pr_run(head, id=8, app={"id": 777}, conclusion="failure")]
+    data["reviews"] = [_review(v, head, ident=i, when=w) for v, i, w in reviews]
+    done, calls, after = _decide(tmp_path, path, data, **_queue())
     assert done.returncode == 0, done.stderr
-    (_, _, verdict) = _writes(calls)[-1]
-    assert verdict["external_id"] == "queue-pr-12" and verdict["conclusion"] == "success"
-    # Reversed, the newer run is the one in progress, and the group fails.
-    data["check_runs"] = [stale, {**passed, "id": 2}]
-    done, calls, _ = _decide(tmp_path, path, data, **_queue())
+    (_, _, deciding), (_, _, verdict) = _writes(calls)
+    assert deciding["head_sha"] == B and deciding["external_id"] == "queue-pr-12"
+    assert verdict["conclusion"] == conclusion
+    assert _group_run(after)["conclusion"] == conclusion
+
+
+def test_a_merge_group_retarget_after_an_approve_fails_the_group(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"], when="2026-11-04T10:00:00Z")]
+    data["timeline"] = [{"event": "automatic_base_change_succeeded",
+                         "created_at": "2026-11-04T11:00:00Z"}]
+    done, calls, after = _decide(tmp_path, path, data, **_queue())
     assert done.returncode == 0, done.stderr
-    assert _writes(calls)[-1][2]["conclusion"] == "failure"
+    assert _group_run(after)["conclusion"] == "failure"
