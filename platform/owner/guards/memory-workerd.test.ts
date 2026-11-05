@@ -32,6 +32,25 @@ ${rest}
   return path;
 }
 
+/** Each `const name = (async) (...) => {` helper in `text`, with its braced body. */
+function helpersOf(text: string): { name: string; start: number; end: number; body: string }[] {
+  const found = [];
+  for (const hit of text.matchAll(/const (\w+) = (?:async )?\([^)]*\) => \{/g)) {
+    const open = hit.index! + hit[0].length - 1;
+    let depth = 0;
+    let at = open;
+    for (; at < text.length; at++) {
+      if (text[at] === "{") {
+        depth++;
+      } else if (text[at] === "}" && --depth === 0) {
+        break;
+      }
+    }
+    found.push({ name: hit[1]!, start: open, end: at, body: text.slice(open, at) });
+  }
+  return found;
+}
+
 /** Whether `pid` is gone: no such process, or one that only waits to be reaped. */
 function gone(pid: number): boolean {
   try {
@@ -97,18 +116,21 @@ console.log("measured");`)], { encoding: "utf8", timeout: 4000 });
     expect(done.stdout).not.toContain("still measuring");
   });
 
-  it("says a child that is not running is not the leg's own", () => {
+  it("says a child that is not running is not the leg's own", async () => {
     const done = spawnSync(process.execPath, [leg("setInterval(() => {}, 1000)", `
 own.stop();
 await new Promise((resolve) => setTimeout(resolve, 200));
 try { own.check(); console.log("measured"); } catch (error) { console.log(error.message); }`)],
-                           { encoding: "utf8" });
+                           { encoding: "utf8", timeout: 4000 });
+    const pid = Number(done.stdout.split("\n")[0]);
+    started.push(pid);
     expect(done.status).toBe(0);
     expect(done.stdout).toContain("is not running: what answered is not this leg's own");
     expect(done.stdout).not.toContain("measured");
+    expect(await goneSoon(pid)).toBe(true);
   });
 
-  it.each([["SIGTERM", 143], ["SIGINT", 130]] as const)(
+  it.each([["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]] as const)(
     "leaves no child behind when the leg gets %s", async (signal, status) => {
       const ended = await signalled(signal);
       expect(ended.status).toBe(status);
@@ -119,6 +141,31 @@ try { own.check(); console.log("measured"); } catch (error) { console.log(error.
     const ended = await signalled(null);
     expect(ended.status).toBe(0);
     expect(await goneSoon(ended.pid)).toBe(true);
+  });
+
+  it("has every request helper of each leg confirm its own workerd after it answers", () => {
+    // A helper is a `const name = (async) (...) => {...}` whose body requests a leg port
+    // (`fetch(`); each must call `own.check()`. The inspector's polling loop is not one: it
+    // runs before the leg has a target, and the check follows it.
+    const legs = ["leg.mjs", "egress.mjs", "baselines.mjs"];
+    for (const name of legs) {
+      const text = readFileSync(join(PLATFORM, "owner", "memory", name), "utf8");
+      const helpers = helpersOf(text);
+      const requesting = helpers.filter((helper) => helper.body.includes("fetch("));
+      expect([name, requesting.length]).not.toEqual([name, 0]);
+      for (const helper of requesting) {
+        expect([name, helper.name, helper.body.includes("own.check()")])
+          .toEqual([name, helper.name, true]);
+      }
+      // Every other request is the inspector's poll, or inside a helper (`fetch()` with no
+      // argument is a Worker's own handler, in the source a leg serves, not a request).
+      const outside = [...text.matchAll(/fetch\((?!\))/g)].map((hit) => hit.index!)
+        .filter((at) => !helpers.some((helper) => at > helper.start && at < helper.end))
+        .map((at) => text.slice(at, text.indexOf("\n", at)));
+      expect([name, outside.filter((line) => !line.includes("/json/list"))])
+        .toEqual([name, []]);
+      expect(text).toContain("own.check();");
+    }
   });
 
   it("leaves no child behind when the leg crashes", async () => {

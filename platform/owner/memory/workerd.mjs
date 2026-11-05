@@ -5,8 +5,8 @@
 // - the child's early exit fails the leg at once, loudly, before another figure is read;
 // - `check()` confirms the child is still alive (after the inspector answers, after a
 //   request), so what answered was this leg's own;
-// - the child is killed when the leg ends however it ends: `stop()`, process exit, SIGTERM
-//   or SIGINT (the signal's own exit status follows).
+// - the child is killed when the leg ends however it ends: `stop()`, process exit, SIGTERM,
+//   SIGINT or SIGHUP (the signal's own exit status follows).
 import { spawn } from "node:child_process";
 
 export function ownWorkerd(bin, args, { onEarlyExit } = {}) {
@@ -21,7 +21,7 @@ export function ownWorkerd(bin, args, { onEarlyExit } = {}) {
       child.kill("SIGKILL");
     }
   };
-  const signals = { SIGTERM: 143, SIGINT: 130 };
+  const signals = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129 };
   const onSignal = (signal) => {
     kill();
     process.exit(signals[signal]);

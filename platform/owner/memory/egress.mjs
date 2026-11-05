@@ -197,15 +197,20 @@ const upstream :Workerd.Worker = ${worker("upstream")};
     const isolates = { doors: { call: await inspect("doors"), port: DOORS },
                        gateway: { call: await inspect("gateway"), port: GATEWAY } };
     own.check();
+    /** Every request to this leg's isolates: answered, then its workerd confirmed alive. */
+    const ask = async (port, at, init) => {
+      const answer = await fetch(`http://127.0.0.1:${port}${at}`, init);
+      own.check();
+      return answer;
+    };
     const live = async (name) => {
-      await fetch(`http://127.0.0.1:${isolates[name].port}/gc`).then((r) => r.text());
+      await ask(isolates[name].port, "/gc").then((r) => r.text());
       const usage = await isolates[name].call("Runtime.getHeapUsage");
       return usage.usedSize + (usage.backingStorageSize ?? 0);
     };
-    const { blob, model } = await (await fetch(`http://127.0.0.1:${GATEWAY}/seal`)).json();
-    const { token, path } = await (await fetch(`http://127.0.0.1:${DOORS}/token`)).json();
-    own.check();
-    const send = (bytes, call, to = path) => fetch(`http://127.0.0.1:${DOORS}${to}`, {
+    const { blob, model } = await (await ask(GATEWAY, "/seal")).json();
+    const { token, path } = await (await ask(DOORS, "/token")).json();
+    const send = (bytes, call, to = path) => ask(DOORS, to, {
       method: "POST", body: Buffer.from(body(model, bytes)),
       headers: { "content-type": "application/json", "x-ta-sandbox": token,
                  "x-ta-network-generation": "1", "x-ta-probe-blob": blob,
@@ -281,8 +286,7 @@ const upstream :Workerd.Worker = ${worker("upstream")};
         phased[phase] = +(now / MIB).toFixed(2);
         most = Math.max(most, now);
       } };
-      const answer = await fetch(`http://127.0.0.1:${GATEWAY}/parse`, {
-        method: "POST", body: Buffer.from(text) });
+      const answer = await ask(GATEWAY, "/parse", { method: "POST", body: Buffer.from(text) });
       const read = await answer.json();
       mode = null;
       const row = { check: `gateway, ${name}: held after its parse, its stringify, its encode`,
@@ -304,7 +308,7 @@ const upstream :Workerd.Worker = ${worker("upstream")};
       while (!seen.includes("upload:0")) {
         await sleep(20);
       }
-      const pool = await (await fetch(`http://127.0.0.1:${GATEWAY}/pool`)).json();
+      const pool = await (await ask(GATEWAY, "/pool")).json();
       const behind = await send(64 * 1024, 1);
       const status = behind.status;
       await behind.text();

@@ -75,10 +75,14 @@ const w :Workerd.Worker = (
         ws.onmessage = (event) => resolve(JSON.parse(event.data).result);
         ws.send(JSON.stringify({ id: 1, method: "Runtime.getHeapUsage" }));
       });
-      for (let n = 0; n < 3; n++) {
+      /** A request to this leg's own isolate: answered, then its workerd confirmed alive. */
+      const ask = async () => {
         await fetch(`http://127.0.0.1:${port}/`).then((r) => r.text());
+        own.check();
+      };
+      for (let n = 0; n < 3; n++) {
+        await ask();
       }
-      own.check();
       const at = await usage();
       figures[name] = +((at.usedSize + (at.backingStorageSize ?? 0)) / MIB).toFixed(2);
       ws.close();
