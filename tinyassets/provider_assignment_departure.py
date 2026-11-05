@@ -1,5 +1,5 @@
 """Explicit membership departure inside an owner's assignment transaction."""
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import replace
 
 _ANCHOR = (
@@ -161,7 +161,9 @@ def disconnect_subscription(owner, source_id):
     from tinyassets.providers.definition import get_definition, remove_definitions
     from tinyassets.storage import db_path
 
-    with sqlite3.connect(db_path(owner.root)) as conn:
+    # sqlite3's own `with` ends the transaction and leaves the connection open
+    # until the garbage collector: closing() closes it here.
+    with closing(sqlite3.connect(db_path(owner.root))) as conn, conn:
         ensure_provider_assignment_schema(conn)
         assigned = {row[0] for row in conn.execute("SELECT universe_id FROM provider_assignments")}
     # A candidate registered but never assigned has no assignment row, and its
@@ -173,7 +175,7 @@ def disconnect_subscription(owner, source_id):
         for uid in centers:
             universe = owner.root / uid
             updated = None
-            with sqlite3.connect(db_path(owner.root)) as conn:
+            with closing(sqlite3.connect(db_path(owner.root))) as conn, conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("BEGIN IMMEDIATE")
                 assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)

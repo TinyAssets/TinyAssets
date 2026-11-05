@@ -313,6 +313,27 @@ def test_repair_closes_the_owner_store_before_it_returns(tmp_path):
             gc.enable()
 
 
+def test_subscription_disconnect_closes_the_owner_store(tmp_path, monkeypatch):
+    """The departure writer beside repair's removal closes both of its opens."""
+    from types import SimpleNamespace
+
+    from tests.support.open_connections import no_connection_left_open
+    from tinyassets.owner_centers import Centers
+    from tinyassets.provider_assignment_departure import disconnect_subscription
+    from tinyassets.storage import db_path
+
+    definitions, members, bindings = _accepted()
+    _owner_volume(tmp_path, members, bindings, stored=definitions, grants=["grant-2"])
+    Centers(tmp_path).create("center")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    owner = SimpleNamespace(root=tmp_path, principal="owner")
+    with no_connection_left_open(), disconnect_subscription(owner, "grant-1"):
+        pass
+    assert _sidecars(db_path(tmp_path)) == []
+    stored = json.loads((tmp_path / "center/provider_definitions.json").read_text())
+    assert members[1].provider.split(":", 1)[1] not in {item["id"] for item in stored}
+
+
 @pytest.mark.verifies("owner-daemon-in-box:Cutover accounts for loss without guessing ownership")
 def test_dry_run_plans_every_schema_the_repair_run_accepts(tmp_path):
     from tinyassets.storage import db_path

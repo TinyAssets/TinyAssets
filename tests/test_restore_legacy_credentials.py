@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.open_connections import no_connection_left_open
 from tinyassets import restore_credentials as rc
 from tinyassets.providers.definition import _definition_id
 
@@ -987,7 +988,10 @@ def test_center_local_record_is_kept_beside_the_platform_file(tmp_path):
     local = source / "alpha"
     local.mkdir()
     (local / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_GAMMA, TOKEN_GAMMA)]))
-    stats = rc.convert_legacy_vaults(source)
+    # Conversion opens the custody owners and restricts the ledger and its
+    # definitions: none of those stores may wait on the collector to close.
+    with no_connection_left_open():
+        stats = rc.convert_legacy_vaults(source)
     digest = hashlib.sha256(OWNER_A.encode()).hexdigest()
     vault = (
         source / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
@@ -3388,10 +3392,13 @@ def _restored_assignment(volume):
 
 
 def _restore(world, *, write):
-    return rc.restore_assignments(
-        world["live"], world["source"], world["mounts"], world["ledger"],
-        write=write,
-    )
+    """The assignment pass, which must close every store it opens (owner
+    identities, the ledger, each owner volume and its disposable copy)."""
+    with no_connection_left_open():
+        return rc.restore_assignments(
+            world["live"], world["source"], world["mounts"], world["ledger"],
+            write=write,
+        )
 
 
 def test_removed_member_returns_with_its_access_and_root(tmp_path):
