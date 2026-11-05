@@ -23,7 +23,8 @@ import { describe, expect, it } from "vitest";
 import { parse, PLATFORM, workerSources } from "../../owner/guards/sources";
 import { HEARTBEAT_MS, LEASE_TTL_MS } from "../runner/runner";
 import { KILL_WITHIN_MS } from "../runner/users";
-import { CHUNK_BYTES, COMMIT_OPS, FEED_LIMIT, INLINE_BYTES, SYNC_BODY } from "../runner/sync";
+import { CHUNK_BYTES, COMMIT_OPS, FEED_LIMIT, INLINE_BYTES, INTENT_ID_CHARS, SYNC_BODY }
+  from "../runner/sync";
 import { E2B_API, E2B_ENVD } from "../src/e2b";
 
 const CONFIG = join(PLATFORM, "sandbox", "wrangler.jsonc");
@@ -109,6 +110,7 @@ describe("the sandbox Worker", () => {
       number(manifest, "CHUNK_BYTES"), number(files, "INLINE_BYTES"),
       number(files, "MAX_SYNC_OPS"), number(files, "MAX_LIST"),
       number(egress, "SYNC_BODY_MAX")]);
+    expect(INTENT_ID_CHARS).toBe(2 * number(files, "INTENT_ID_BYTES"));
   });
 
   it("finds a fetch outside e2b.ts, and a URL off E2B's origins", () => {

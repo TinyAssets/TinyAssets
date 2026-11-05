@@ -24,12 +24,12 @@ import { runInNewContext } from "node:vm";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { AUTOMATON_STATES, defaultSyncIgnore, LIST_BYTES, SANDBOX_HEAP }
+import { AUTOMATON_STATES, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP }
   from "../../owner/src/sync-ignore";
-import { walkFiles } from "./fsafe";
 import {
-  CHUNK_BYTES, COMMIT_OPS, ignoredBy, memoryMirror, openMirror, type Place, SYNC_BODY,
-  SyncClient, SyncFenced, syncIn, syncOut, wildcard,
+  CHUNK_BYTES, COMMIT_OPS, ignoredBy, INLINE_BYTES, INTENT_ID_CHARS, memoryMirror,
+  openMirror, type Place,
+  SYNC_BODY, SyncClient, SyncFenced, syncIn, syncOut, wildcard,
 } from "./sync";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -169,7 +169,8 @@ describe("the mirror, from each file's identity when it was offered", () => {
     const report = await syncOut(client((door, body) => {
       if (door === "upload_begin") {
         writeFileSync(file, Buffer.alloc(10_000, 2));  // the file changes mid-sync
-        return { status: 200, body: { intent_id: "i1", missing: body["chunks"] } };
+        return { status: 200, body: { intent_id: "1".repeat(INTENT_ID_CHARS),
+                                      missing: body["chunks"] } };
       }
       if (door === "upload_abort") {
         aborted.push(body["intent_id"] as string);
@@ -182,7 +183,7 @@ describe("the mirror, from each file's identity when it was offered", () => {
       }
       return { status: 200, body: {} };
     }), p, memoryMirror(), LEASE, []);
-    expect(aborted).toEqual(["i1"]);
+    expect(aborted).toEqual(["1".repeat(INTENT_ID_CHARS)]);
     expect(committed).toEqual([]);
     expect(report.skipped.map((each) => each.path)).toEqual(["/workspace/log.bin"]);
   });
@@ -347,10 +348,8 @@ describe("memory, whatever the tree holds", () => {
   /**
    * Sync-out of a tree of `modules` folders of 100 files each, sampled at every call as
    * sync-in is: the peak over the live set before it, the most calls open at once, the most
-   * ops a commit carried and its largest body. With it, `matcher`: what the sync-ignore's
-   * matcher remembers of the same tree (its folders and names, `REMEMBERED_CHARS` at most),
-   * read the same way after it matched every path the walk offers it, as sync-out does.
-   * `keep` is the control: a client that keeps every op it is sent.
+   * ops a commit carried and its largest body. `keep` is the control: a client that keeps
+   * every op it is sent.
    */
   async function syncOutMemory(modules: number, keep = false) {
     const { place: p, local, root } = place();
@@ -360,15 +359,6 @@ describe("memory, whatever the tree holds", () => {
       for (let f = 0; f < 100; f++) {
         writeFileSync(join(dir, `component-file-number-${f}.ts`), "");
       }
-    }
-    let matcher = live();
-    {
-      const matches = ignoredBy(defaultSyncIgnore());
-      for (const rel of walkFiles(local, (each, isDir) => matches(each, isDir) === "custom")) {
-        matches(rel);
-      }
-      matcher = live() - matcher;
-      expect(matches("x")).toBeNull();
     }
     const mirror = openMirror(join(root, "mirror.db"));
     const kept: unknown[] = [];
@@ -400,7 +390,7 @@ describe("memory, whatever the tree holds", () => {
                   LEASE, []);
     mirror.close();
     rmSync(local, { recursive: true, force: true });
-    return { peak, matcher, inFlight, ops, body };
+    return { peak, inFlight, ops, body };
   }
 
   it("sync-out over many paths holds about what it holds over few", async () => {
@@ -411,7 +401,7 @@ describe("memory, whatever the tree holds", () => {
     const FEW = 10 * BATCH;
     const MANY = 100 * BATCH;
     // Each size the least of two runs (a run's peak is the path's own plus whatever the
-    // process made for a moment beside it), the matcher's at the same run.
+    // process made for a moment beside it).
     const least = (runs: Awaited<ReturnType<typeof syncOutMemory>>[]) =>
       runs.reduce((best, run) => run.peak < best.peak ? run : best);
     const all: Awaited<ReturnType<typeof syncOutMemory>>[] = [];
@@ -430,21 +420,21 @@ describe("memory, whatever the tree holds", () => {
     expect(inFlight).toBe(1);
     expect(Math.max(...all.map((run) => run.ops))).toBe(COMMIT_OPS);
     expect(Math.max(...all.map((run) => run.body))).toBeLessThanOrEqual(SYNC_BODY);
-    // What a tree costs past one batch is the matcher's memory of its folders and names
-    // (bounded by `REMEMBERED_CHARS`), never its paths: the walk holds one directory a level,
-    // and the mirror and the removals are read a page at a time.
-    const bound = (run: typeof few) =>
-      inFlight * batch.peak + Math.max(0, run.matcher - batch.matcher) + QUARTER;
+    // What a tree may cost past one batch is the sync-ignore matcher's memory of names,
+    // `REMEMBERED_NAME_BYTES` at most (of folders it keeps only the path's own,
+    // `sync-ignore.test.ts`), never its paths: the walk holds one directory a level, and the
+    // mirror and the removals are read a page at a time.
+    const bound = inFlight * batch.peak + REMEMBERED_NAME_BYTES + QUARTER;
     // The control: a client that keeps every op it is sent reads as growing, past the
     // bound, or the samples prove nothing.
     const kept = [await syncOutMemory(FEW, true), await syncOutMemory(2 * FEW, true)];
     expect(kept[1]!.peak - kept[0]!.peak).toBeGreaterThan(QUARTER);
-    expect(kept[1]!.peak).toBeGreaterThan(bound(kept[1]!));
-    // Each size within one batch beside the matcher's memory, and ten times the paths no
-    // more than the matcher's memory of them more.
-    expect(few.peak).toBeLessThanOrEqual(bound(few));
-    expect(many.peak).toBeLessThanOrEqual(bound(many));
-    expect(many.peak - few.peak).toBeLessThanOrEqual(many.matcher - few.matcher + QUARTER);
+    expect(kept[1]!.peak).toBeGreaterThan(bound);
+    // Each size within one batch beside the matcher's names, and ten times the paths no more
+    // than those names more.
+    expect(few.peak).toBeLessThanOrEqual(bound);
+    expect(many.peak).toBeLessThanOrEqual(bound);
+    expect(many.peak - few.peak).toBeLessThanOrEqual(REMEMBERED_NAME_BYTES + QUARTER);
   }, 900_000);
 });
 
@@ -622,8 +612,11 @@ describe("a list larger than the sandbox's heap would hold whole", () => {
         import { memoryMirror, SyncClient, syncOut } from ${JSON.stringify(join(HERE, "sync.ts"))};
         const fetcher = async (_url, init) => {
           const body = JSON.parse(init.body);
-          return new Response(JSON.stringify({ outcomes: (body.ops ?? []).map((op) => ({
-            path: op.path, outcome: "committed", entry: { version: 1 } })) }), { status: 200 });
+          // Every door at once: an upload's begin (all its chunks held), and a commit's.
+          return new Response(JSON.stringify({ intent_id: "0".repeat(32), missing: [],
+            outcomes: (body.ops ?? []).map((op) => ({
+              path: op.path, outcome: "committed", entry: { version: 1 } })) }),
+                              { status: 200 });
         };
         const report = await syncOut(new SyncClient("https://egress.test", "t", 1, 2, fetcher),
           { local: ${JSON.stringify(local)}, sessionsIn: ${JSON.stringify(join(root, "in"))},
@@ -645,4 +638,52 @@ describe("a list larger than the sandbox's heap would hold whole", () => {
     expect(out.committed).toBeGreaterThan(0);
     expect(out.past).toBeGreaterThan(10 * 1024 * 1024);
   }, 300_000);
+});
+
+describe("a commit's body", () => {
+  it("stays within the door's limit whatever its paths' characters", async () => {
+    // A path's characters as the body carries them: a non-ASCII one 2 to 4 bytes, a control
+    // character escaped to 6. A folder chain near the path's most (4,096 bytes), each name of
+    // `é` and U+0001 (3 bytes on disk, 8 in the body), and `COMMIT_OPS` files of
+    // `INLINE_BYTES` under it: about 15 MB of ops, past the door's 12 MiB, though their
+    // paths count about 8 MB in UTF-16 units.
+    const { place: p, local } = place();
+    const name = "é\u0001".repeat(84);
+    let dir = local;
+    for (let level = 0; level < 14; level++) {
+      dir = join(dir, name);
+    }
+    mkdirSync(dir, { recursive: true });
+    for (let f = 0; f < COMMIT_OPS; f++) {
+      writeFileSync(join(dir, `file-${f}`), "x".repeat(INLINE_BYTES));
+    }
+    const bodies: number[] = [];
+    const sent: string[] = [];
+    const fetcher = (async (url: string, init: { body: string }) => {
+      const door = url.split("/sync/")[1]!;
+      if (door !== "commit") {
+        return new Response("{}", { status: 404 });
+      }
+      bodies.push(Buffer.byteLength(init.body, "utf8"));
+      return new Response(JSON.stringify(commitAll(JSON.parse(init.body) as
+        Record<string, unknown>, sent).body), { status: 200 });
+    }) as unknown as typeof fetch;
+    await syncOut(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p,
+                  memoryMirror(), LEASE, []);
+    expect(sent.filter((path) => path.includes("/file-"))).toHaveLength(COMMIT_OPS);
+    expect(bodies.reduce((sum, each) => sum + each, 0)).toBeGreaterThan(SYNC_BODY);
+    expect(Math.max(...bodies)).toBeLessThanOrEqual(SYNC_BODY);
+  }, 300_000);
+
+  it("fails loudly on an intent id of another length than it counted", async () => {
+    const { place: p, local } = place();
+    writeFileSync(join(local, "big.bin"), Buffer.alloc(10_000, 7));
+    for (const id of ["i1", "1".repeat(INTENT_ID_CHARS + 1), 7]) {
+      await expect(syncOut(client((door, body) => door === "upload_begin"
+        ? { status: 200, body: { intent_id: id, missing: body["chunks"] } }
+        : door === "commit" ? commitAll(body) : { status: 200, body: {} }),
+                           p, memoryMirror(), LEASE, []))
+        .rejects.toThrow(`intent id is not ${INTENT_ID_CHARS} characters`);
+    }
+  });
 });
