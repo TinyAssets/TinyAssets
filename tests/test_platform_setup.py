@@ -28,9 +28,8 @@ CODE = "a180b1a3d263c81bc6441d7b990bae27d4c10679"
 PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n"
 
 # Each test names the requirement it holds, as a literal mark (no file-wide one). The review
-# App's own requirement, "A review verdict is a check run only the review App posts", is
-# proposed on land/6c and not on main yet: its tests name the nearest current one until it
-# lands.
+# App's tests name its own requirement (#5438): review.yml mints its token from the names
+# this script sets, in the main-only `review` environment.
 
 
 def _production_guard():
@@ -386,8 +385,8 @@ def _turn_in(fake: Fake, app: dict | None = None, status: int = 201):
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 def test_the_review_app_key_goes_to_a_main_only_review_environment(capsys) -> None:
     fake, said = Fake(), []
     setup.review_app(CODE, _gh(fake, said), _turn_in(fake))
@@ -417,8 +416,8 @@ def test_the_review_app_key_goes_to_a_main_only_review_environment(capsys) -> No
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 def test_a_key_that_failed_to_store_names_its_app() -> None:
     fake = Fake()
 
@@ -436,8 +435,8 @@ def test_a_key_that_failed_to_store_names_its_app() -> None:
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 def test_a_half_made_review_environment_is_finished_not_refused(capsys) -> None:
     fake = Fake(environments={"review": []})
     setup.review_app(CODE, _gh(fake), _turn_in(fake))
@@ -447,8 +446,8 @@ def test_a_half_made_review_environment_is_finished_not_refused(capsys) -> None:
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 @pytest.mark.parametrize("policy", [None, [("main", "branch"), ("release/*", "branch")],
                                     [("v*", "tag")]])
 def test_a_review_environment_open_to_other_refs_is_refused(policy) -> None:
@@ -460,8 +459,8 @@ def test_a_review_environment_open_to_other_refs_is_refused(policy) -> None:
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 def test_an_app_another_account_owns_is_not_stored() -> None:
     fake = Fake()
     other = {"id": 1, "slug": "x", "owner": {"login": "someone"}, "pem": PEM}
@@ -471,8 +470,8 @@ def test_an_app_another_account_owns_is_not_stored() -> None:
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 @pytest.mark.parametrize(("given", "code"), [
     (CODE, CODE),
     (f"https://github.com/TinyAssets/TinyAssets?code={CODE}", CODE),
@@ -504,8 +503,8 @@ class _Form(HTMLParser):
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 def test_the_manifest_page_asks_for_the_review_app_and_nothing_more() -> None:
     page = _Form()
     page.feed(PAGE.read_text(encoding="utf-8"))
@@ -527,8 +526,8 @@ def test_the_manifest_page_asks_for_the_review_app_and_nothing_more() -> None:
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 def test_a_refusal_exits_nonzero_and_names_no_value(capsys) -> None:
     fake = Fake(environments={"review": None})
     assert setup.main(["review-app", "--code", CODE], gh=_gh(fake)) == 1
@@ -538,8 +537,8 @@ def test_a_refusal_exits_nonzero_and_names_no_value(capsys) -> None:
 
 
 @pytest.mark.verifies(
-    "development-coordination-runtime:Gate-defining and authority-critical "
-    "changes need an exact-head review receipt")
+    "development-coordination-runtime:A review verdict is a check run only the "
+    "review App posts")
 def test_the_real_gh_call_sends_bytes_and_no_shell(tmp_path, monkeypatch) -> None:
     """Through subprocess itself, as on the founder's machine: an argv list (no shell, so no
     quoting by hand), the value as bytes with its LF newlines kept, gh's answer read as

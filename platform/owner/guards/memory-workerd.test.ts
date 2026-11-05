@@ -154,7 +154,11 @@ try { own.check(); console.log("measured"); } catch (error) { console.log(error.
       const requesting = helpers.filter((helper) => helper.body.includes("fetch("));
       expect([name, requesting.length]).not.toEqual([name, 0]);
       for (const helper of requesting) {
-        expect([name, helper.name, helper.body.includes("own.check()")])
+        // The check confirms what answered, so it follows the awaited request: after the
+        // helper's last `await fetch(`, never before it.
+        const asked = helper.body.lastIndexOf("await fetch(");
+        const checked = helper.body.lastIndexOf("own.check()");
+        expect([name, helper.name, asked >= 0 && checked > asked])
           .toEqual([name, helper.name, true]);
       }
       // Every other request is the inspector's poll, or inside a helper (`fetch()` with no
