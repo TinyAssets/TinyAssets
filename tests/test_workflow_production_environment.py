@@ -18,6 +18,24 @@ import yaml
 _REPO = Path(__file__).resolve().parent.parent
 _WORKFLOWS = _REPO / ".github" / "workflows"
 
+# `secrets.NAME`, `secrets['NAME']`, `secrets["NAME"]`, `secrets[NAME]`,
+# `secrets[format(...)]` — any key, any quoting. A dynamic index is reported as
+# the raw expression, which is never on the allowlist.
+_SECRET_REF = re.compile(
+    r"\bsecrets\s*(?:\.\s*(?P<dot>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|\[\s*(?P<quote>['\"]?)(?P<idx>[^\]]*?)(?P=quote)\s*\])"
+)
+# The whole secrets context at once.
+_SECRETS_CONTEXT = re.compile(r"\btoJSON\s*\(\s*secrets\s*\)", re.IGNORECASE)
+
+
+# tests/test_sandbox_template_workflow.py reads a workflow's secrets with this parser.
+def _secret_names(text: str) -> set[str]:
+    names = {(m.group("dot") or m.group("idx")).strip() for m in _SECRET_REF.finditer(text)}
+    if _SECRETS_CONTEXT.search(text):
+        names.add("<toJSON(secrets)>")
+    return names
+
 
 def _load(path: Path) -> dict:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
