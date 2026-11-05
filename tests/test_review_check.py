@@ -511,14 +511,17 @@ def test_host_actions_names_what_review_yml_reads():
     assert "vars.REVIEW_APP_ID" in wf and "secrets.REVIEW_APP_PRIVATE_KEY" in wf
 
 
-# A stand-in for `gh` that keeps check runs: it logs each call with the token it carried
-# and answers from data.json, which it updates. A POST makes a run with the next id
-# (700, 701, ...) owned by whichever token made it; a PATCH updates that run. A listing
-# of `commits/<sha>/check-runs` returns the runs on that commit. data["fail"] names a
-# path fragment whose call exits 1, as a 502 would; data["no_reopen"] refuses a PATCH
-# that would take a completed run back to in progress.
+# A stand-in for `gh` that keeps check runs: it logs each call with the token it carried,
+# answers from data.json, which it updates, and applies `--jq` with the real jq.
+# - A POST makes a run with the next id (700, 701, ...), owned by whichever token made it.
+# - A PATCH updates the App's own run and answers with the run as it now is. A completed
+#   run is frozen: the PATCH answers 200 and changes nothing, which is what the
+#   evidence suggests GitHub does. data["ignore_patch"] freezes every run that way;
+#   data["race"] = id completes that run just before the first PATCH of it lands.
+# - A listing of `commits/<sha>/check-runs` returns the runs on that commit.
+# - data["fail"] names a path fragment whose call exits 1, as a 502 would.
 _FAKE_GH = '''\
-import json, os, sys
+import json, os, subprocess, sys
 args = sys.argv[1:]
 state = os.environ["FAKE_GH"]
 store = os.path.join(state, "data.json")
@@ -536,37 +539,38 @@ path = next(a for a in args if a.startswith("repos/"))
 if data.get("fail") and data["fail"] in path:
     sys.exit(1)
 runs = data["check_runs"]
-if "-X" in args and args[args.index("-X") + 1] == "POST":
-    run = {"id": 700 + data.get("posted", 0), "app": {"id": 777 if token == "app-token" else 15368},
-           "conclusion": None, **body}
+method = args[args.index("-X") + 1] if "-X" in args else "GET"
+if method == "POST":
+    answer = {"id": 700 + data.get("posted", 0),
+              "app": {"id": 777 if token == "app-token" else 15368}, "conclusion": None, **body}
     data["posted"] = data.get("posted", 0) + 1
-    runs.append(run)
-    print(run["id"] if "--jq" in args else json.dumps(run))
-elif "-X" in args:
-    run = next((r for r in runs if path.endswith(f"/check-runs/{r['id']}")), None)
-    if run is None or run["app"]["id"] != 777:
+    runs.append(answer)
+elif method == "PATCH":
+    answer = next((r for r in runs if path.endswith(f"/check-runs/{r['id']}")), None)
+    if answer is None or answer["app"]["id"] != 777:
         sys.exit(1)
-    if (data.get("no_reopen") and run.get("status") == "completed"
-            and body.get("status") == "in_progress"):
-        sys.exit(1)
-    run.update(body)
-    if body.get("status") == "in_progress":
-        run["conclusion"] = None
-    print("{}")
+    if data.get("race") == answer["id"]:
+        # Another writer completed it between the listing and this PATCH.
+        answer.update(status="completed", conclusion="failure")
+        data.pop("race")
+    if answer.get("status") != "completed" and not data.get("ignore_patch"):
+        answer.update(body)
+        if body.get("status") == "in_progress":
+            answer["conclusion"] = None
 elif "/reviews" in path or "/timeline" in path:
-    for item in data["reviews" if "/reviews" in path else "timeline"]:
-        print(json.dumps(item))
+    answer = data["reviews" if "/reviews" in path else "timeline"]
 elif "/check-runs" in path:
     sha = path.split("/commits/")[1].split("/")[0]
-    for run in runs:
-        if run.get("head_sha") == sha:
-            print(json.dumps(run))
-elif "--jq" in args:
-    print(data["head"], data["base"])
+    answer = {"check_runs": [r for r in runs if r.get("head_sha") == sha]}
 else:
-    print(json.dumps({"head": {"sha": data["head"]}}))
+    answer = {"head": {"sha": data["head"]}, "base": {"sha": data["base"]}}
 with open(store, "w", encoding="utf-8") as f:
     json.dump(data, f)
+text = json.dumps(answer)
+if "--jq" in args:
+    text = subprocess.run(["jq", "-c", "-r", args[args.index("--jq") + 1]], input=text,
+                          capture_output=True, text=True, check=True).stdout.rstrip("\\n")
+print(text)
 '''
 
 
@@ -625,6 +629,11 @@ def _review_runs(data: dict, sha: str) -> list[dict]:
     return [r for r in data["check_runs"] if r.get("head_sha") == sha and r["app"]["id"] == 777]
 
 
+def _passes(data: dict, sha: str) -> bool:
+    """What every reader decides from the App's runs on `sha` for PR 12."""
+    return gate.review_run_passed(_review_runs(data, sha), 12)
+
+
 @pytest.fixture
 def pr_checkout(tmp_path: Path, repo):
     path, base, approved = repo
@@ -646,12 +655,12 @@ def test_the_decision_completes_its_own_deciding_run_with_the_verdict(pr_checkou
     assert verdict["external_id"] == "pr-12" and "head_sha" not in verdict
     assert verdict["status"] == "completed" and verdict["conclusion"] == "success"
     (run,) = _review_runs(after, data["head"])
-    assert run["id"] == 700 and run["conclusion"] == "success"
+    assert run["id"] == 700 and run["conclusion"] == "success" and _passes(after, data["head"])
 
 
-def test_repeated_decisions_keep_one_run_per_head_and_pr(pr_checkout):
-    """Waiting decisions reuse the App's one run; a later APPROVE turns that same run to
-    success, and a BLOCK after it turns it to failure."""
+def test_waiting_decisions_keep_one_run_and_a_verdict_completes_it(pr_checkout):
+    """Waiting decisions reuse the App's one in-progress run; a later APPROVE turns that
+    same run to success."""
     tmp_path, path, data = pr_checkout
     for _ in range(3):
         done, calls, data = _decide(tmp_path, path, data)
@@ -666,18 +675,45 @@ def test_repeated_decisions_keep_one_run_per_head_and_pr(pr_checkout):
     assert {w[1] for w in _writes(calls)} == {"repos/o/r/check-runs/700"}
     (run,) = _review_runs(data, data["head"])
     assert run["id"] == 700 and (run["status"], run["conclusion"]) == ("completed", "success")
+
+
+def test_a_block_after_an_approve_on_one_head_fails_it(pr_checkout):
+    """A completed run is frozen, so the BLOCK goes on a new run, the newest, which fails."""
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"], ident=1)]
+    done, calls, data = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    assert _passes(data, data["head"])
     data["reviews"].append(_review("BLOCK", data["head"], ident=2, when="2026-11-04T11:00:00Z"))
     done, calls, data = _decide(tmp_path, path, data)
     assert done.returncode == 0, done.stderr
-    (run,) = _review_runs(data, data["head"])
-    assert run["id"] == 700 and run["conclusion"] == "failure"
+    assert [(w[0], w[1]) for w in _writes(calls)] == [
+        ("POST", "repos/o/r/check-runs"), ("PATCH", "repos/o/r/check-runs/701")]
+    newest = max(_review_runs(data, data["head"]), key=lambda r: r["id"])
+    assert (newest["id"], newest["conclusion"]) == (701, "failure")
+    assert not _passes(data, data["head"])
 
 
-def test_the_run_reused_is_the_apps_newest_for_this_pr_alone(pr_checkout):
+def test_a_retarget_after_an_approve_reads_waiting(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"], when="2026-11-04T10:00:00Z")]
+    done, calls, data = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    assert _passes(data, data["head"])
+    data["timeline"] = [{"event": "base_ref_changed", "created_at": "2026-11-04T11:00:00Z"}]
+    done, calls, data = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    newest = max(_review_runs(data, data["head"]), key=lambda r: r["id"])
+    assert newest["id"] == 701 and newest["status"] == "in_progress"
+    assert newest["output"]["title"].startswith(f"waiting for review of {data['head']}")
+    assert not _passes(data, data["head"])
+
+
+def test_the_run_reused_is_the_apps_newest_for_this_pr_while_in_progress(pr_checkout):
     tmp_path, path, data = pr_checkout
     head = data["head"]
-    mine = {"name": "review", "head_sha": head, "external_id": "pr-12", "status": "completed",
-            "conclusion": "failure", "output": {"title": "BLOCK", "summary": ""}}
+    mine = {"name": "review", "head_sha": head, "external_id": "pr-12", "status": "in_progress",
+            "conclusion": None, "output": {"title": "waiting", "summary": ""}}
     data["check_runs"] = [
         {**mine, "id": 41, "app": {"id": 777}},
         {**mine, "id": 42, "app": {"id": 777}},
@@ -689,17 +725,23 @@ def test_the_run_reused_is_the_apps_newest_for_this_pr_alone(pr_checkout):
     assert done.returncode == 0, done.stderr
     writes = _writes(calls)
     assert {(w[0], w[1]) for w in writes} == {("PATCH", "repos/o/r/check-runs/42")}
-    # Reopened first: while the decision reads, the head shows "deciding", not BLOCK.
     assert writes[0][2] == {"external_id": "pr-12", "status": "in_progress",
                             "output": {"title": "deciding",
                                        "summary": "review.yml is reading the reviews."}}
     by_id = {r["id"]: r for r in after["check_runs"]}
     assert by_id[42]["conclusion"] == "success"
-    assert by_id[41]["conclusion"] == by_id[50]["conclusion"] == by_id[60]["conclusion"] == (
-        "failure")
+    assert all(by_id[i]["status"] == "in_progress" for i in (41, 50, 60))
+    # When this PR's newest run has completed, an older one in progress is not reused.
+    data["check_runs"] = [{**mine, "id": 41, "app": {"id": 777}},
+                          {**mine, "id": 42, "app": {"id": 777}, "status": "completed",
+                           "conclusion": "failure"}]
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    assert [w[0] for w in _writes(calls)] == ["POST", "PATCH"]
+    assert _passes(after, head)
 
 
-def test_a_run_that_cannot_be_listed_or_reopened_gets_a_fresh_one(pr_checkout):
+def test_a_run_that_cannot_be_listed_or_did_not_take_deciding_gets_a_fresh_one(pr_checkout):
     """Unknown is not none, and a stale pass must not stand: post a new deciding run,
     which readers take as the newest."""
     tmp_path, path, data = pr_checkout
@@ -708,18 +750,35 @@ def test_a_run_that_cannot_be_listed_or_reopened_gets_a_fresh_one(pr_checkout):
     done, calls, _ = _decide(tmp_path, path, data)
     assert done.returncode == 0, done.stderr
     assert [w[0] for w in _writes(calls)] == ["POST", "PATCH"]
+    # The run listed in progress has completed by the time the reopen lands: GitHub
+    # answers 200 with it completed, so the reopen did not take.
     data.pop("fail")
     data["check_runs"] = [{"id": 41, "app": {"id": 777}, "name": "review",
                            "head_sha": data["head"], "external_id": "pr-12",
-                           "status": "completed", "conclusion": "success"}]
-    data["no_reopen"] = True
+                           "status": "in_progress", "conclusion": None,
+                           "output": {"title": "waiting", "summary": ""}}]
+    data["race"] = 41
     done, calls, after = _decide(tmp_path, path, data)
     assert done.returncode == 0, done.stderr
     assert [(w[0], w[1]) for w in _writes(calls)] == [
         ("PATCH", "repos/o/r/check-runs/41"), ("POST", "repos/o/r/check-runs"),
         ("PATCH", "repos/o/r/check-runs/700")]
+    assert 'did not take "deciding"' in done.stdout
     newest = max(_review_runs(after, data["head"]), key=lambda r: r["id"])
-    assert newest["id"] == 700 and newest["conclusion"] == "failure"
+    assert (newest["id"], newest["conclusion"]) == (700, "failure")
+
+
+def test_a_verdict_that_did_not_take_fails_the_decision(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"])]
+    data["ignore_patch"] = True
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode == 1
+    assert "check run 700 did not take the verdict" in done.stdout
+    # The trap's own PATCH is checked too, and says so when it did not take.
+    assert "could not complete check run 700 as a failure" in done.stdout
+    (run,) = _review_runs(after, data["head"])
+    assert run["status"] == "in_progress" and not _passes(after, data["head"])
 
 
 def test_the_decision_waits_when_the_base_changed_after_the_verdict(pr_checkout):
@@ -762,7 +821,7 @@ def test_a_decision_that_stops_after_deciding_fails_that_run(pr_checkout, fail):
                                         "then rerun it."}}
 
 
-def test_a_crash_after_reopening_a_passed_run_fails_that_run(pr_checkout):
+def test_a_crash_after_a_passed_run_leaves_the_head_failing(pr_checkout):
     tmp_path, path, data = pr_checkout
     data["check_runs"] = [{"id": 41, "app": {"id": 777}, "name": "review",
                            "head_sha": data["head"], "external_id": "pr-12",
@@ -771,8 +830,9 @@ def test_a_crash_after_reopening_a_passed_run_fails_that_run(pr_checkout):
     data["fail"] = "/timeline"
     done, calls, after = _decide(tmp_path, path, data)
     assert done.returncode != 0
-    (run,) = _review_runs(after, data["head"])
-    assert run["id"] == 41 and run["conclusion"] == "failure"
+    newest = max(_review_runs(after, data["head"]), key=lambda r: r["id"])
+    assert (newest["id"], newest["conclusion"]) == (700, "failure")
+    assert not _passes(after, data["head"])
 
 
 def test_a_pr_with_no_head_writes_nothing(pr_checkout):

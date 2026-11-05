@@ -150,18 +150,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # One App run per (commit, PR): a decision PATCHes the App's own `review` run
-          # for this PR on this commit back to "deciding" (whatever it said: waiting,
-          # deciding or a verdict), and POSTs one only when there is none. That same
-          # run (RUN_ID) then takes the verdict. If anything stops the decision before
-          # then, the trap completes it as a failure, so a head never collects runs in
-          # progress, and never keeps showing a pass an earlier decision made before a
-          # later BLOCK.
+          # One App run per (commit, PR) while it is in progress: a decision takes the
+          # App's newest `review` run for this PR on this commit back to "deciding" when
+          # that run is still in progress (waiting or deciding), and POSTs a new run
+          # otherwise. A completed run is never PATCHed: GitHub does not document
+          # reopening one, and if it answers 200 while leaving it frozen, an APPROVE's
+          # pass would outlive a later BLOCK. Readers take the highest id, so the new
+          # run is the one that counts. That same run (RUN_ID) then takes the verdict.
+          # Every PATCH is checked against GitHub's answer: a reopen that did not take
+          # posts a new run; a verdict that did not take fails the decision, and the
+          # trap completes the run as a failure on any exit before the verdict.
           as_app() { GH_TOKEN="$APP_TOKEN" gh api "$@"; }
           if ! [[ "$REVIEW_APP_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::REVIEW_APP_ID is not an App id"
             exit 1
           fi
+          # PATCH run $1 with file $2; succeed only if GitHub's answer has the status
+          # and conclusion that were sent.
+          patch_run() {
+            local want got
+            want="$(jq -r '"\(.status) \(.conclusion // "")"' "$2")"
+            got="$(as_app -X PATCH "repos/${REPO}/check-runs/$1" --input "$2" \
+              --jq '"\(.status) \(.conclusion // "")"')" || return 1
+            [ "$got" = "$want" ]
+          }
           RUN_ID=""
           DONE=0
           on_exit() {
@@ -171,19 +183,20 @@ jobs:
               jq -n '{status: "completed", conclusion: "failure", output: {title: "could not decide",
                 summary: "review.yml stopped before its verdict; see its log, then rerun it."}}' \
                 > "$RUNNER_TEMP/failed.json"
-              as_app -X PATCH "repos/${REPO}/check-runs/${RUN_ID}" --input "$RUNNER_TEMP/failed.json" \
-                > /dev/null || echo "::error::could not complete check run ${RUN_ID}"
+              patch_run "$RUN_ID" "$RUNNER_TEMP/failed.json" \
+                || echo "::error::could not complete check run ${RUN_ID} as a failure"
             fi
             exit "$status"
           }
           trap on_exit EXIT
-          # The App's newest `review` run for external id $2 on commit $1, or nothing.
+          # The App's newest `review` run for external id $2 on commit $1 when it is
+          # still in progress; nothing when there is none or it has completed.
           existing() {
             as_app --paginate "repos/${REPO}/commits/$1/check-runs?check_name=review&filter=all&per_page=100" \
                 --jq '.check_runs[]' \
-              | jq -r --argjson app "$REVIEW_APP_ID" --arg ext "$2" \
-                  'select(.app.id == $app and .external_id == $ext) | .id' \
-              | sort -n | tail -n 1
+              | jq -rs --argjson app "$REVIEW_APP_ID" --arg ext "$2" \
+                  'map(select(.app.id == $app and .external_id == $ext)) | max_by(.id)
+                   | select(. != null and .status != "completed") | .id'
           }
           start() {
             if ! [[ "$1" =~ ^[0-9a-f]{40}$ ]]; then
@@ -202,13 +215,11 @@ jobs:
               echo "::warning::could not list the review runs on $1; posting a new one"
               found=""
             fi
-            if [[ "$found" =~ ^[1-9][0-9]*$ ]] \
-                && as_app -X PATCH "repos/${REPO}/check-runs/${found}" \
-                     --input "$RUNNER_TEMP/reopen.json" > /dev/null; then
+            if [[ "$found" =~ ^[1-9][0-9]*$ ]] && patch_run "$found" "$RUNNER_TEMP/reopen.json"; then
               RUN_ID="$found"
               return 0
             fi
-            [ -z "$found" ] || echo "::warning::could not reopen check run ${found}; posting a new one"
+            [ -z "$found" ] || echo "::warning::check run ${found} did not take \"deciding\"; posting a new one"
             RUN_ID="$(as_app -X POST "repos/${REPO}/check-runs" --input "$RUNNER_TEMP/deciding.json" --jq .id)"
             if ! [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
               RUN_ID=""
@@ -218,7 +229,10 @@ jobs:
           }
           finish() {
             jq 'del(.name, .head_sha)' "$RUNNER_TEMP/run.json" > "$RUNNER_TEMP/verdict.json"
-            as_app -X PATCH "repos/${REPO}/check-runs/${RUN_ID}" --input "$RUNNER_TEMP/verdict.json" > /dev/null
+            if ! patch_run "$RUN_ID" "$RUNNER_TEMP/verdict.json"; then
+              echo "::error::check run ${RUN_ID} did not take the verdict"
+              exit 1
+            fi
             DONE=1
           }
 

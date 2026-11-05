@@ -279,9 +279,10 @@ own pull request.
 - **WHEN** a pull request approved at its head is retargeted to another base, by hand or by GitHub after its parent merged
 - **THEN** its `review` check is pending until a review after the retarget
 
-#### Scenario: Repeated decisions keep one run per head and pull request
-- **WHEN** a head is decided again, while waiting or after a verdict
-- **THEN** the review App updates its existing `review` run for that pull request on that head, and posts a new one only when none exists
+#### Scenario: A decision updates the run in progress and never a completed one
+- **WHEN** a head is decided again
+- **THEN** the review App updates its newest `review` run for that pull request on that head while that run is in progress, and posts a new run when none is in progress
+- **AND** it never updates a completed run, and treats an update whose answer lacks the status and conclusion it sent as not made
 
 #### Scenario: The latest run is the highest id
 - **WHEN** a head holds an older in-progress `review` run and a newer successful one, both by the App for the pull request
