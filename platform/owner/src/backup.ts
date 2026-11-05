@@ -551,7 +551,6 @@ export class Backups {
   async #ship(ns: string, key: string, row: GenerationRow, through: number, until: number,
               cut: number | null = null): Promise<boolean | null> {
     const log = this.#parts.log;
-    const pool = this.#pool;
     while (log.state().shipped < through) {
       if (Date.now() >= until || this.#parts.halted()) {
         return false;
@@ -560,31 +559,46 @@ export class Backups {
       if (at.parts + at.segments + 1 > MANIFEST_PARTS) {
         return null;
       }
-      const shipped = log.state().shipped;
-      // Its units before `pending` sizes it, which writes each candidate line once.
-      const slot = await unitsNow(pool, SHIP_UNITS);
-      try {
-        const span = await this.#write(() => log.pending(
-          cut !== null && shipped < cut ? Math.min(through, cut) : through));
-        if (span === null) {
-          return true;
-        }
-        const bytes = await this.#segment(span.a, span.b, SHIP_UNITS);
-        const put = await this.#parts.store.putManifestSegment(ns, key, row.gen, span.a, span.b,
-                                                               bytes);
-        const entry = `${span.a}-${span.b}:${put.sha256}:${put.size}`;
-        await this.#write(() => this.#parts.storage.transactionSync(() => {
-          this.#sql.exec(
-            "UPDATE owner_backups SET segments = segments + 1, bytes = bytes + ?, " +
-              "segment_list = segment_list || CASE WHEN segment_list = '' THEN '' ELSE ',' " +
-              "END || ? WHERE gen = ?", put.size, entry, row.gen);
-          log.acknowledge(span.b);
-        }));
-      } finally {
-        slot.release();
+      if (!await this.#shipOne(ns, key, row, through, cut)) {
+        return true;  // nothing left to ship through `through`
       }
     }
     return true;
+  }
+
+  /**
+   * One segment of the log shipped (`#ship`), in a frame of its own, so its bytes are let go
+   * before the next is built (rvburst X2: held in `#ship`'s frame, segment N's bytes stood
+   * beside segment N+1's build): its units taken now or refused `busy` (before `pending`
+   * sizes it, which writes each candidate line once), then sized, built, put and
+   * acknowledged with its list's entry. Whether one was shipped (false: none was pending).
+   */
+  async #shipOne(ns: string, key: string, row: GenerationRow, through: number,
+                 cut: number | null): Promise<boolean> {
+    const log = this.#parts.log;
+    const shipped = log.state().shipped;
+    const slot = await unitsNow(this.#pool, SHIP_UNITS);
+    try {
+      const span = await this.#write(() => log.pending(
+        cut !== null && shipped < cut ? Math.min(through, cut) : through));
+      if (span === null) {
+        return false;
+      }
+      const bytes = await this.#segment(span.a, span.b, SHIP_UNITS);
+      const put = await this.#parts.store.putManifestSegment(ns, key, row.gen, span.a, span.b,
+                                                             bytes);
+      const entry = `${span.a}-${span.b}:${put.sha256}:${put.size}`;
+      await this.#write(() => this.#parts.storage.transactionSync(() => {
+        this.#sql.exec(
+          "UPDATE owner_backups SET segments = segments + 1, bytes = bytes + ?, " +
+            "segment_list = segment_list || CASE WHEN segment_list = '' THEN '' ELSE ',' " +
+            "END || ? WHERE gen = ?", put.size, entry, row.gen);
+        log.acknowledge(span.b);
+      }));
+      return true;
+    } finally {
+      slot.release();
+    }
   }
 
   /**
