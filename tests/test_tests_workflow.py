@@ -1390,6 +1390,8 @@ _NON_CODE_TYPES = frozenset({"edited", "labeled", "unlabeled"})
 _NON_CODE_WORKFLOWS = frozenset({
     "pr-scope-guard.yml",
     "auto-enroll-merge.yml",
+    # A retarget is an `edited` event, and it changes what a review read.
+    "review.yml",
 })
 
 

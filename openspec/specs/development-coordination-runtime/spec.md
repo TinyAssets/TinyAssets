@@ -248,6 +248,28 @@ tightens the ratchet; any addition SHALL keep the receipt requirement.
 - **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
 - **THEN** the guard reports the authority hit and requires the receipt
 
+### Requirement: A review verdict is a check run only the review App posts
+
+A verdict SHALL be a pull-request review on the commit read, first line `APPROVE` or
+`BLOCK`. A default-branch workflow SHALL post the latest trusted verdict since the
+last base change as a `review` check run on the head, with `external_id`
+`pr-<number>`, using only the review App's token from the main-only `review`
+environment. A verdict SHALL carry to a later head only across the same change or a
+prose-only delta. Readers SHALL count only the App's latest run for their own pull
+request.
+
+#### Scenario: An approval at the head passes
+- **WHEN** a trusted author's review on the head's commit opens with `APPROVE`
+- **THEN** the review App posts a successful `review` run on the head for that pull request
+
+#### Scenario: A retarget voids the verdict
+- **WHEN** a pull request approved at its head is retargeted to another base
+- **THEN** its `review` check is pending until a review after the retarget
+
+#### Scenario: A forged review context does not pass
+- **WHEN** a pull request's own workflow job named `review` reports success on its head
+- **THEN** a reader of the check treats the head as unreviewed
+
 ### Requirement: A new skip names its owner and where it runs
 
 A new skip or xfail that is not an environment guard SHALL carry `owner=` and
