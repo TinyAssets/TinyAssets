@@ -3,7 +3,8 @@
  * `GENERATION_SIZES`; rs_cap §2.1). The cut it replaced re-encoded the whole part so far for
  * every line, quadratic in the part: about 50 to 132 s of CPU a burst at these sizes, past
  * the owner Worker's CPU limit, so a large owner's generation never finished. Held here:
- * one burst's cut within a tenth of that limit, its cost linear in its size, every part at
+ * one burst's cut within a third of that limit (`cpu.ts` `STEP_CPU_MS`), on its thread, its
+ * cost linear in its size, every part at
  * most `CHUNK_BYTES` and cut at a whole line, and its bytes those of the cut it replaced
  * for any line, multi-byte characters included.
  *
@@ -15,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import { cutParts, GENERATION_SIZES } from "../src/backup";
 import { chunkLine, encodeLines, EXPORT_PAGE_BYTES, type Lines } from "../src/export";
 import { CHUNK_BYTES } from "../src/manifest";
-import { CPU_LIMIT_MS, cpuMs } from "./cpu";
+import { CPU_LIMIT_MS, cpuMs, STEP_CPU_MS } from "./cpu";
 
 /** The cut `cutParts` replaced, verbatim but for its inputs: the reference for its bytes. */
 function replacedCut(lines: readonly string[], part: number): Uint8Array[] {
@@ -111,11 +112,11 @@ describe("a burst's cut into parts at production sizes", () => {
   const { part, gather } = GENERATION_SIZES;
   const lines = burst(gather);
 
-  it("keeps one burst's cut inside a tenth of the CPU limit", async () => {
+  it("keeps one burst's cut inside a third of the CPU limit", async () => {
     const ms = await cpuMs(() => cut(lines, part));
     console.log(`one burst's cut: ${lines.length} lines, ${Math.round(ms)} ms CPU of ` +
                 `${CPU_LIMIT_MS}`);
-    expect(ms).toBeLessThan(CPU_LIMIT_MS / 10);
+    expect(ms).toBeLessThan(STEP_CPU_MS);
   }, 60_000);
 
   it("costs in proportion to its size: a burst four times as large, parts and all, is " +

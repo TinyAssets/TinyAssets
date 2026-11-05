@@ -13,6 +13,7 @@ import { RESULT_CHARS } from "../src/encoded";
 import {
   SEARCH_ANSWER_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, type Scanned, searchPage, words,
 } from "../src/file-search";
+import { threadMs } from "./cpu";
 
 const INLINE = 4096;
 const encoder = new TextEncoder();
@@ -33,11 +34,11 @@ function distinct(from: number, bytes: number): { text: string; next: number } {
   return { text: parts.join(" "), next: n };
 }
 
+/** The CPU `act` takes on this thread (`cpu.ts`: never the whole process's). */
 function cpuMs(act: () => unknown): number {
-  const start = process.cpuUsage();
+  const start = threadMs();
   act();
-  const used = process.cpuUsage(start);
-  return (used.user + used.system) / 1000;
+  return threadMs(start);
 }
 
 describe("the search's worst case", () => {

@@ -91,7 +91,7 @@ export const MANIFEST_BUSY_RETRY_S = SLOT_WAIT_MS / 1000;
  * A generation's sizes: a base page's rows, a part's bytes, a burst's. The production
  * figures are these; a test passes smaller ones (`BackupParts.sizes`) to cut a small
  * fixture into many pages, parts and bursts, the bound logic the same at any size. What
- * only these figures show is held at them: one burst's cut within a tenth of the CPU limit,
+ * only these figures show is held at them: one burst's cut within a third of the CPU limit,
  * and linear (`guards/backup-cut.test.ts`); an owner of several bursts finished and read
  * back exactly, its row under a row's 2 MB (`export.test.ts`, "a generation at production
  * sizes").
