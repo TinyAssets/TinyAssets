@@ -6,6 +6,8 @@ but still checked and recorded, and no upload that is not a new record."""
 from __future__ import annotations
 
 import ast
+import importlib.util
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -14,6 +16,18 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _production_guard():
+    spec = importlib.util.spec_from_file_location(
+        "production_environment_guard", ROOT / "tests/test_workflow_production_environment.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_secret_names = _production_guard()._secret_names
 WORKFLOW = ROOT / ".github/workflows/sandbox-template.yml"
 LOCK = ROOT / "platform/sandbox/template/requirements.txt"
 DEPLOY = ROOT / "platform/deploy/deploy.ts"
@@ -39,11 +53,15 @@ def test_dispatch_only_on_main_in_production_one_at_a_time() -> None:
 
 
 def test_the_key_is_in_the_build_step_alone() -> None:
-    text, _, job = _workflow()
-    assert re.findall(r"secrets\.([A-Z0-9_]+)", text) == ["E2B_API_KEY"]
-    holders = [step["name"] for step in job["steps"]
-               if "secrets." in str(step.get("env", {}))]
-    assert holders == ["Build and check"]
+    """Every form of a secret reference (dotted, bracketed, `toJSON(secrets)`), read by the
+    production guard's own parser, in every step and outside the steps."""
+    _, workflow, job = _workflow()
+    outside = {**workflow, "jobs": {"template": {k: v for k, v in job.items() if k != "steps"}}}
+    assert _secret_names(json.dumps(outside)) == set()
+    found = {step.get("name", step.get("uses")): _secret_names(json.dumps(step))
+             for step in job["steps"]}
+    assert {name: refs for name, refs in found.items() if refs} == {
+        "Build and check": {"E2B_API_KEY"}}
 
 
 def test_actions_and_packages_are_pinned_and_no_token_is_kept() -> None:
