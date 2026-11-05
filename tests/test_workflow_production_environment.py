@@ -49,6 +49,13 @@ PRODUCTION_SECRETS = (
     # Spends money on E2B: sandbox-template.yml's build and checks, and
     # platform-deploy.yml's pair check and apply.
     "E2B_API_KEY",
+    # The platform's (platform-deploy.yml's apply), stored by the founder's own gh
+    # (scripts/platform_setup.py).
+    "WORKOS_API_KEY",
+    "ROUTING_MAC_KEY",
+    "GATEWAY_KEYRING",
+    "FILES_KEYRING",
+    "E2B_WEBHOOK_SECRET",
 )
 
 # Secrets a job may read WITHOUT `environment: production`. A branch dispatch

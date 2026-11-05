@@ -12,7 +12,9 @@
  * and unknown stops the kit; the kit runs from an approved manual workflow whose secrets come
  * from the environment's store.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -20,12 +22,13 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  DOORS, handover, kvPresent, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  DOORS, E2B_HOOK, handover, heldHook, hookPlan, hookSetsSecret, maskInLog, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
 } from "../../deploy/deploy";
 import { parseControl } from "../src/directory";
+import { E2B_HOOK_PATH } from "../src/e2b-hooks";
 import { upstreamConfig } from "../src/oidc";
 
 type Json = Record<string, unknown>;
@@ -121,7 +124,8 @@ describe("the deploy kit", () => {
     expect(routed).toEqual([...ROUTES.map((pattern) => ({ pattern, zone_name: "tinyassets.io" })),
                             { pattern: EGRESS_DOMAIN, custom_domain: true }]);
     expect(ROUTES).toEqual(["tinyassets.io/mcp*", "tinyassets.io/api/*",
-                            "tinyassets.io/hooks/inbound/*", "tinyassets.io/app/api/*",
+                            "tinyassets.io/hooks/inbound/*", "tinyassets.io/hooks/e2b/*",
+                            "tinyassets.io/app/api/*",
                             "tinyassets.io/authorize*", "tinyassets.io/oauth/*",
                             "tinyassets.io/.well-known/oauth-*"]);
   });
@@ -338,6 +342,7 @@ describe("the deploy kit", () => {
                   "tinyassets.io/.well-known/oauth-authorization-server",
                   "tinyassets.io/app/api/keys", "tinyassets.io/oauth/token",
                   "tinyassets.io/authorize", "tinyassets.io/hooks/inbound/x",
+                  "tinyassets.io/hooks/e2b/lifecycle",
                   "tinyassets.io/app", "tinyassets.io/site/x"];
 
   /** The Worker Cloudflare sends `path` to: the most specific matching pattern's. */
@@ -364,7 +369,7 @@ describe("the deploy kit", () => {
       const method = init?.method ?? "GET";
       calls.push(`${method} ${path}`);
       if (path === "/zones?name=tinyassets.io") {
-        return ok([{ id: "z" }]);
+        return ok([{ id: "z", account: { id: "a".repeat(32) } }]);
       }
       if (method === "GET" && path === "/zones/z/workers/routes") {
         return ok([...table.values()]);
@@ -397,7 +402,8 @@ describe("the deploy kit", () => {
   it("hands each route from the old proxy to the doors one at a time, no path unserved " +
      "(review D3)", async () => {
     const fake = zoneApi(LIVE);
-    const zone = await zoneOf(fake);
+    const { id: zone, account } = await zoneOf(fake);
+    expect(account).toBe("a".repeat(32));
     const steps = handover(await routesOf(fake, zone), DOORS, ROUTES);
     // Identical patterns move in place; a narrower old one is deleted after the doors' wider
     // one exists; a wider old one (app*, api*) keeps only the paths the doors do not cover.
@@ -409,7 +415,7 @@ describe("the deploy kit", () => {
     const added = steps.findIndex((step) => step.pattern === "tinyassets.io/.well-known/oauth-*");
     expect(steps.findIndex((step) => step.method === "DELETE")).toBeGreaterThan(added);
     await runHandover(fake, zone, DOORS, steps);
-    for (const path of PROBES.slice(0, 9)) {
+    for (const path of PROBES.slice(0, 10)) {
       expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
     }
     expect(servedBy(fake.table.values(), "tinyassets.io/app")).toBe("tinyassets-mcp-proxy");
@@ -424,7 +430,238 @@ describe("the deploy kit", () => {
     await expect(runHandover(fake, "z", DOORS, steps)).rejects.toThrow(/the steps before it/);
     expect(fake.calls.filter((call) => call.startsWith("DELETE"))).toEqual([]);
     await expect(zoneOf(api({}))).rejects.toThrow(/could not be read/);
+    // The account is the zone's own: one zone, with its account, or the kit stops.
+    const zones = (result: unknown) => api({ "/zones?name=tinyassets.io": ok(result) });
+    await expect(zoneOf(zones([{ id: "z" }]))).rejects.toThrow(/could not be read/);
+    await expect(zoneOf(zones([{ id: "z", account: { id: "a".repeat(32) } },
+                               { id: "y", account: { id: "b".repeat(32) } }])))
+      .rejects.toThrow(/2 found/);
+    await expect(zoneOf(zones([{ id: "z", account: { id: "../x" } }])))
+      .rejects.toThrow(/could not be read/);
     await expect(routesOf(api({}), "z")).rejects.toThrow(/could not be read/);
+  });
+
+  it("takes the keyring the founder's setup makes in memory, in keyring-new's own shape",
+     () => {
+    // scripts/platform_setup.py's maker, through a two-line driver: Python's ring is the one
+    // stored, and the apply job's keyring() is the check it must pass.
+    const repo = join(PLATFORM, "..");
+    const made = execFileSync("python3", ["-I", "-c",
+      "import sys; sys.path.insert(0, sys.argv[1]); " +
+      "from scripts.platform_setup import make_keyring; sys.stdout.write(make_keyring())",
+      repo], { encoding: "utf8" });
+    const ring = keyring(made, "FILES_KEYRING");
+    expect([ring.active, Object.keys(ring.keys)]).toEqual(["k1", ["k1"]]);
+    expect(Buffer.from(ring.keys["k1"]!, "base64").byteLength).toBe(32);
+    // The kit's own maker writes the same shape.
+    const out = mkdtempSync(join(tmpdir(), "keyring-"));
+    try {
+      execFileSync(process.execPath, ["--experimental-strip-types",
+                                      join(PLATFORM, "deploy", "deploy.ts"), "keyring-new",
+                                      join(out, "ring.json")], { stdio: "pipe" });
+      const theirs = keyring(readFileSync(join(out, "ring.json"), "utf8"));
+      expect([theirs.active, Object.keys(theirs.keys)])
+        .toEqual([ring.active, Object.keys(ring.keys)]);
+      expect(Buffer.from(theirs.keys["k1"]!, "base64").byteLength).toBe(32);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  /** A fake of E2B's webhooks API: its hooks, and every call as `METHOD path body`. */
+  const e2b = (start: Json[], fail?: string) => {
+    const hooks = start.map((hook) => ({ ...hook }));
+    const calls: string[] = [];
+    const fetcher = async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const path = url.replace("https://api.e2b.app", "");
+      calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
+      expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe("k");
+      if (fail === method) {
+        return new Response("", { status: 500 });
+      }
+      if (method === "GET") {
+        return Response.json(hooks);
+      }
+      const body = JSON.parse(String(init!.body)) as Json;
+      if (method === "POST") {
+        hooks.push({ id: "w1", ...body });
+        return Response.json({ id: "w1" }, { status: 201 });
+      }
+      const hook = hooks.find((each) => `/events/webhooks/${each["id"]}` === path)!;
+      Object.assign(hook, body);
+      return Response.json(hook);
+    };
+    return { hooks, calls, fetcher };
+  };
+  const EVENTS = ["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"];
+
+  it("registers E2B's lifecycle webhook disabled in dark, and enables it only with the " +
+     "routes", async () => {
+    // dark, none held: registered disabled, with the stored secret, for the two events.
+    const dark = e2b([{ id: "x", url: "https://elsewhere.test/hook", enabled: true }]);
+    expect(await lifecycleHook("k", "s1", true, false, false, dark.fetcher))
+      .toBe("registered, disabled");
+    expect(dark.hooks[1]).toEqual({ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
+                                    events: EVENTS, enabled: false, signatureSecret: "s1" });
+    // dark again, the doors' secret not set this run: nothing sent; the other hook untouched.
+    const calls = dark.calls.length;
+    expect(await lifecycleHook("k", "s2", true, false, false, dark.fetcher))
+      .toBe("present, unchanged, disabled");
+    expect(dark.calls.slice(calls)).toEqual(["GET /events/webhooks"]);
+    expect(dark.hooks[0]).toEqual({ id: "x", url: "https://elsewhere.test/hook", enabled: true });
+    // routes: enabled; a routes run later changes nothing; dark after it never turns it off.
+    expect(await lifecycleHook("k", "s2", true, true, false, dark.fetcher))
+      .toBe("present, enabled set, enabled");
+    expect(dark.calls.at(-1)).toBe('PATCH /events/webhooks/w1 {"enabled":true}');
+    expect(await lifecycleHook("k", "s2", true, true, false, dark.fetcher))
+      .toBe("present, unchanged, enabled");
+    await lifecycleHook("k", "s2", true, false, false, dark.fetcher);
+    expect(dark.hooks[1]!["enabled"]).toBe(true);
+    // A held hook whose events drifted is given its two events back.
+    const drifted = e2b([{ id: "a", url: E2B_HOOK.url, enabled: false,
+                           events: ["sandbox.lifecycle.paused"] }]);
+    await lifecycleHook("k", "s", true, false, false, drifted.fetcher);
+    expect(drifted.hooks[0]!["events"]).toEqual(EVENTS);
+    // routes with none held: registered enabled.
+    const routed = e2b([]);
+    expect(await lifecycleHook("k", "s", true, true, false, routed.fetcher))
+      .toBe("registered, enabled");
+    // Without apply, only the listing is read: the kit's check before any change.
+    const planned = e2b([]);
+    expect(await lifecycleHook("k", "s", false, true, true, planned.fetcher))
+      .toBe("missing: registered, enabled");
+    expect(planned.calls).toEqual(["GET /events/webhooks"]);
+    // A failed listing or write stops the kit; two hooks for the URL are refused.
+    await expect(lifecycleHook("k", "s", false, false, false, e2b([], "GET").fetcher))
+      .rejects.toThrow(/listed its webhooks with 500/);
+    await expect(lifecycleHook("k", "s", true, false, false, e2b([], "POST").fetcher))
+      .rejects.toThrow(/refused the webhook with 500/);
+    await expect(lifecycleHook("k", "s", true, false, true,
+                               e2b([{ id: "a", url: E2B_HOOK.url }], "PATCH").fetcher))
+      .rejects.toThrow(/refused the webhook's change/);
+    await expect(lifecycleHook("k", "s", false, false, false,
+                               e2b([{ id: "a", url: E2B_HOOK.url },
+                                    { id: "b", url: E2B_HOOK.url }]).fetcher))
+      .rejects.toThrow(/holds 2 webhooks/);
+    // The hook's path is the doors' own, and a route hands it to them.
+    expect(E2B_HOOK.url).toBe(`https://tinyassets.io${E2B_HOOK_PATH}`);
+    expect(ROUTES.some((pattern) => pattern.endsWith("*")
+      && `tinyassets.io${E2B_HOOK_PATH}`.startsWith(pattern.slice(0, -1)))).toBe(true);
+  });
+
+  it("changes E2B's webhook secret only with the doors' copy: both or neither", async () => {
+    // The doors hold E2B_WEBHOOK_SECRET and production's value was replaced: without
+    // --rotate the doors keep theirs, so E2B keeps its own too.
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
+                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
+    const kept = secretPlan(held, new Set(), null);
+    expect(kept.some((step) => step.name === "E2B_WEBHOOK_SECRET")).toBe(false);
+    const neither = e2b([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+                           signatureSecret: "old" }]);
+    await lifecycleHook("k", "new", true, true, hookSetsSecret(kept), neither.fetcher);
+    expect(neither.hooks[0]!["signatureSecret"]).toBe("old");
+    // With --rotate E2B_WEBHOOK_SECRET the doors take the new value, and E2B does too.
+    const rotated = secretPlan(held, new Set(["E2B_WEBHOOK_SECRET"]), null);
+    expect(rotated).toContainEqual({ worker: "doors", name: "E2B_WEBHOOK_SECRET" });
+    const both = e2b([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+                        signatureSecret: "old" }]);
+    await lifecycleHook("k", "new", true, true, hookSetsSecret(rotated), both.fetcher);
+    expect(both.hooks[0]!["signatureSecret"]).toBe("new");
+    // The doors missing it (a first deploy) sets both as well.
+    const first = secretPlan({ ...held, doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"] },
+                             new Set(), null);
+    expect(hookSetsSecret(first)).toBe(true);
+  });
+
+  it("touches the webhook only where each mode allows, and the kit wires it so", () => {
+    // The plan reaches no E2B; dark registers disabled after the secrets; routes enables only
+    // after the routes; both list the hook with the live checks first, and a missing one is
+    // made this run, with the doors' secret.
+    for (const missing of [false, true]) {
+      expect(hookPlan({ open: true, routes: false, missing }))
+        .toEqual({ check: false, at: "none", enable: false, creates: false });
+      expect(hookPlan({ open: true, routes: true, missing }))
+        .toEqual({ check: false, at: "none", enable: false, creates: false });
+      expect(hookPlan({ open: false, routes: false, missing }))
+        .toEqual({ check: true, at: "secrets", enable: false, creates: missing });
+      expect(hookPlan({ open: false, routes: true, missing }))
+        .toEqual({ check: true, at: "routes", enable: true, creates: missing });
+    }
+    // main() follows the plan in this order: the listing, before the routes are read; the
+    // secrets, with the hook's creation; the dark step; the handover; the routes step. Its
+    // one lifecycleHook call takes the plan's `enable`, and the account id is masked as soon
+    // as it is known.
+    const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
+    const body = kit.slice(kit.indexOf("async function main()"));
+    const at = (needle: string) => {
+      const found = body.indexOf(needle);
+      expect([needle, found]).not.toEqual([needle, -1]);
+      expect([needle, body.indexOf(needle, found + 1)]).toEqual([needle, -1]);
+      return found;
+    };
+    const order = [
+      at("const { id: zone, account } = await zoneOf(api);"),
+      at("maskInLog(account);"),
+      at("process.env[\"CLOUDFLARE_ACCOUNT_ID\"] = account;"),
+      at("const listed = open ? undefined : await heldHook(input(\"E2B_API_KEY\")!);"),
+      at("const hookAt = hookPlan({ open, routes, missing: listed === null });"),
+      at("steps = handover(await routesOf(api, zone), DOORS, ROUTES);"),
+      at("const setting = secretPlan(held, rotate, open ? null : input, hookAt.creates);"),
+      at("const hookSecret = hookSetsSecret(setting);"),
+      at("if (hookAt.at === \"secrets\") {\n      plan.push(`E2B lifecycle webhook ${" +
+         "E2B_HOOK.url}: ${await hook(apply, hookSecret)}`);"),
+      at("await runHandover(api, zone, DOORS, steps);"),
+      at("if (hookAt.at === \"routes\") {\n        plan.push(`E2B lifecycle webhook ${" +
+         "E2B_HOOK.url}, after the routes: ${\n          await hook(apply, hookSecret)}`);"),
+    ];
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(body.match(/lifecycleHook\(/g)).toHaveLength(1);
+    expect(body.match(/heldHook\(/g)).toHaveLength(1);
+    expect(body).toContain("input(\"E2B_WEBHOOK_SECRET\")!, change, hookAt.enable, setSecret)");
+    expect(body.match(/await hook\(/g)).toHaveLength(2);
+  });
+
+  it("masks the account id in an Actions log, and prints nothing outside one", () => {
+    const lines: string[] = [];
+    maskInLog("a".repeat(32), { GITHUB_ACTIONS: "true" }, (line) => lines.push(line));
+    expect(lines).toEqual([`::add-mask::${"a".repeat(32)}`]);
+    maskInLog("b".repeat(32), {}, (line) => lines.push(line));
+    expect(lines).toHaveLength(1);
+  });
+
+  it("starts the pair equal: a dark run that makes the hook sets the doors' secret too",
+     async () => {
+    // The doors hold an old E2B_WEBHOOK_SECRET, production holds a new one, and E2B holds no
+    // hook. The dark run's own steps: the listing, the plan, the secrets, the hook.
+    const doors = new Map([["E2B_WEBHOOK_SECRET", "old"]]);
+    const production = (name: string) => (name === "E2B_WEBHOOK_SECRET" ? "new" : undefined);
+    const fake = e2b([]);
+    const listed = await heldHook("k", fake.fetcher);
+    expect(listed).toBeNull();
+    const hookAt = hookPlan({ open: false, routes: false, missing: listed === null });
+    expect(hookAt.creates).toBe(true);
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                           "INBOUND_SLACK_SIGNING_SECRET"],
+                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
+    const setting = secretPlan(held, new Set(), null, hookAt.creates);
+    expect(setting).toEqual([{ worker: "doors", name: "E2B_WEBHOOK_SECRET" }]);
+    for (const { worker, name } of setting) {
+      if (worker === "doors") {
+        doors.set(name, production(name)!);
+      }
+    }
+    await lifecycleHook("k", production("E2B_WEBHOOK_SECRET")!, true, hookAt.enable,
+                        hookSetsSecret(setting), fake.fetcher);
+    expect([doors.get("E2B_WEBHOOK_SECRET"), fake.hooks[0]!["signatureSecret"]])
+      .toEqual(["new", "new"]);
+    expect(fake.hooks[0]!["enabled"]).toBe(false);
+    // A run that finds the hook held makes nothing and sets neither.
+    expect(secretPlan(held, new Set(), null,
+                      hookPlan({ open: false, routes: false, missing: false }).creates))
+      .toEqual([]);
   });
 
   it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",
@@ -531,6 +768,9 @@ describe("the deploy kit", () => {
     for (const name of SECRET_INPUTS) {
       expect(plan).not.toContain(name);
     }
+    // The account is read from the zone (`zoneOf`), never held as an input.
+    expect(PUBLIC_INPUTS).not.toContain("CLOUDFLARE_ACCOUNT_ID");
+    expect(workflow).not.toContain("CLOUDFLARE_ACCOUNT_ID");
     for (const name of PUBLIC_INPUTS) {
       expect(plan).toMatch(new RegExp(`${name}: \\$\\{\\{ (secrets|vars)\\.${name} \\}\\}`));
     }
