@@ -134,9 +134,9 @@ export class ChangeLog {
    * a segment put again is the same bytes. Built without holding its lines (review rvburst
    * V1: a mostly-ASCII line with one character past U+00FF is a two-byte string in V8, twice
    * its UTF-8): a first pass keeps each key's last seq and counts the stored bytes, and a
-   * second, in seq order, encodes only the kept rows straight into one buffer of at most
-   * those bytes (`pending` holds them to a part, or one wider line), one row's text at a
-   * time (`holds.ts`'s `SHIP_BYTES` derives the most this holds). `sample`, the memory
+   * second, in seq order, sizes the kept rows as written and then encodes them straight
+   * into one buffer of exactly those bytes, allocated once and at most a part (past it the
+   * build fails, as the files Worker would), one row's text at a time (`holds.ts`'s `SHIP_BYTES` derives the most this holds). `sample`, the memory
    * leg's, is awaited at the widest kept row's encode, its stored text, parsed value and
    * JSON all in hand. A read.
    */
@@ -145,14 +145,12 @@ export class ChangeLog {
     const rows = () => this.#sql.exec<{ seq: number; line: string }>(
       "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq", a, b);
     const last = new Map<string, { seq: number; bytes: number }>();
-    let most = 0;
     for (const row of rows()) {
       const line = parsed(row.line);
       const shape = tables[line.table]!;
       const key = line.t === "row" ? shape.key.map((column) => line.row![column]) : line.key!;
-      const bytes = Buffer.byteLength(row.line, "utf8");
-      last.set(JSON.stringify([line.table, key]), { seq: row.seq, bytes });
-      most += bytes + SEQ_BYTES;
+      last.set(JSON.stringify([line.table, key]),
+               { seq: row.seq, bytes: Buffer.byteLength(row.line, "utf8") });
     }
     const kept = new Set<number>();
     let widest = { seq: -1, bytes: -1 };
@@ -161,37 +159,48 @@ export class ChangeLog {
       widest = each.bytes > widest.bytes ? each : widest;
     }
     last.clear();
+    /** Each kept row as the segment writes it, in seq order, one at a time. */
+    function* written(): Generator<{ seq: number; stored: string; text: string }> {
+      for (const row of rows()) {
+        if (!kept.has(row.seq)) {
+          continue;
+        }
+        const line = parsed(row.line);
+        if (line.t === "row" && line.table === "file_contents"
+            && typeof line.row!["inline"] === "string") {
+          line.row!["inline"] = {
+            $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
+        }
+        yield { seq: row.seq, stored: row.line, text: JSON.stringify({ ...line, seq: row.seq }) };
+      }
+    }
+    // Its exact bytes first, so its one buffer is allocated once and never grown: JSON may
+    // write a line wider than the log stored it (a number SQLite wrote with an exponent).
+    // Past a part no buffer is made: the files Worker takes no segment past `CHUNK_BYTES`.
+    let size = 0;
+    for (const { text } of written()) {
+      size += Buffer.byteLength(text, "utf8") + 1;
+    }
+    if (size > CHUNK_BYTES) {
+      throw new Error(`a log segment is ${size} bytes as written, past a part (${CHUNK_BYTES})`);
+    }
     const encoder = new TextEncoder();
-    let out = new Uint8Array(most);
+    const out = new Uint8Array(size);
     let at = 0;
-    for (const row of rows()) {
-      if (!kept.has(row.seq)) {
-        continue;
-      }
-      const line = parsed(row.line);
-      if (line.t === "row" && line.table === "file_contents"
-          && typeof line.row!["inline"] === "string") {
-        line.row!["inline"] = {
-          $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
-      }
-      const text = JSON.stringify({ ...line, seq: row.seq });
-      const need = Buffer.byteLength(text, "utf8") + 1;
-      if (at + need > out.byteLength) {
-        // A line its JSON writes wider than the log stored it: grown, never cut.
-        const wider = new Uint8Array(Math.max(at + need, 2 * out.byteLength));
-        wider.set(out.subarray(0, at));
-        out = wider;
-      }
+    for (const { seq, stored, text } of written()) {
       at += encoder.encodeInto(text, out.subarray(at)).written;
       out[at++] = 0x0a;
-      if (sample !== undefined && row.seq === widest.seq) {
+      if (sample !== undefined && seq === widest.seq) {
         await sample();
-        if (text.length === 0 || line.table === "" || row.line === "") {
+        if (text.length === 0 || stored === "") {
           throw new Error("a sampled log line is empty");  // each held to here
         }
       }
     }
-    return out.subarray(0, at);
+    if (at !== size) {
+      throw new Error("a log segment's lines are not the bytes they were counted at");
+    }
+    return out;
   }
 
   /** In a unit: the segment through `b` acknowledged: shipped, and its lines gone. */

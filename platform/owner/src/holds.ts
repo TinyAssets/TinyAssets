@@ -108,8 +108,9 @@ export function moveTableUnits(records: number): number {
 export const MOVE_PASS_UNITS = 3;
 
 /**
- * A log segment's one buffer at most (`ChangeLog.segment`): its stored bytes, which `pending`
- * holds to a part (`CHUNK_BYTES`), or one line alone, at most `IMAGE_MAX`, under it.
+ * A log segment's one buffer at most (`ChangeLog.segment`): exactly its bytes as written,
+ * allocated once and never grown, and never past a part (`CHUNK_BYTES`: past it the build
+ * fails before any buffer, as the files Worker refuses such a segment).
  */
 export const SEGMENT_BUFFER_BYTES = CHUNK_BYTES;
 

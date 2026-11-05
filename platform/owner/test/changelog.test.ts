@@ -89,6 +89,34 @@ describe("a log segment's build", () => {
     });
     expect(made).toEqual([0, 0, 0]);
   });
+
+  it("allocates its one buffer once, exactly its bytes as written, though JSON writes a " +
+     "number SQLite stored with an exponent wider (the log's own bytes undercount it)",
+     async () => {
+    const o = await owner();
+    const made = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      // A reservation's numbers as SQLite may write them: `1.0e+20` is 21 digits in JSON.
+      const wide = "1.0e+20";
+      for (let n = 1; n <= 200; n++) {
+        sql.exec("INSERT INTO change_log (line) VALUES (?)",
+                 `{"t":"row","table":"model_reservations","row":{"seq":${n},"id":"r",` +
+                 `"max_output_tokens":${wide},"est_tokens":${wide},"est_cost":${wide},` +
+                 `"tokens":${wide},"cost":${wide},"policy_generation":${wide},` +
+                 `"created_at":${wide},"settled_at":${wide}}}`);
+      }
+      const rows = sql.exec<{ seq: number; line: string }>(
+        "SELECT seq, line FROM change_log ORDER BY seq").toArray();
+      const stored = rows.reduce((sum, row) => sum + Buffer.byteLength(row.line) + 1, 0);
+      const built = await new ChangeLog(state.storage).segment(rows[0]!.seq - 1,
+                                                               rows.at(-1)!.seq);
+      return { stored, bytes: built.byteLength, buffer: built.buffer.byteLength,
+               same: Buffer.compare(Buffer.from(built), Buffer.from(replacedSegment(rows))) };
+    });
+    expect(made.bytes).toBeGreaterThan(made.stored + 200 * 32);  // wider than stored and seq
+    expect(made.buffer).toBe(made.bytes);  // one buffer, its own bytes: never grown
+    expect(made.same).toBe(0);
+  });
 });
 
 describe("the change log", () => {
