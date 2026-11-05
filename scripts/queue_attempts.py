@@ -275,10 +275,22 @@ def _selection(repo: str, run_id: int) -> list[str] | None:
     return None if entries == ["ALL"] else entries
 
 
-def _changed(repo: str, number: int) -> list[str]:
-    raw = _gh("api", "--paginate", f"repos/{repo}/pulls/{number}/files",
-              "--jq", ".[] | .filename, (.previous_filename // empty)")
-    return sorted({line for line in raw.splitlines() if line})
+#: `GET /pulls/{n}/files` lists at most 3000 files, so a list that long may be cut.
+FILES_API_CAP = 3000
+
+
+def changed_paths(files: list[dict]) -> list[str] | None:
+    """Every path the PR's files name (a rename's old path too); None if the list may be cut."""
+    if len(files) >= FILES_API_CAP:
+        return None
+    return sorted({path for f in files
+                   for path in (f.get("filename"), f.get("previous_filename")) if path})
+
+
+def _changed(repo: str, number: int) -> list[str] | None:
+    raw = _gh("api", "--paginate", f"repos/{repo}/pulls/{number}/files?per_page=100",
+              "--jq", ".[] | {filename, previous_filename}")
+    return changed_paths([json.loads(line) for line in raw.splitlines() if line.strip()])
 
 
 def _failed_jobs(repo: str, run_id: int) -> dict[str, list[str]]:

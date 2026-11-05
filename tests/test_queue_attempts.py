@@ -128,6 +128,29 @@ def test_a_removal_whose_evidence_cannot_be_read_counts(monkeypatch) -> None:
     # The same removal, read in full, does not count: the vitest test is unselected.
     monkeypatch.setattr(qa, "_selection", lambda repo, run: None)
     assert qa.classify_removal("o/r", 7, "2026-11-04T12:00:00Z")[0] is False
+    # The PR's files list may be cut at the API's 3000: the diff is unknown, so it counts.
+    monkeypatch.setattr(qa, "_changed", lambda repo, number: qa.changed_paths(
+        [{"filename": f"docs/f{i}.md"} for i in range(qa.FILES_API_CAP)]))
+    assert qa.classify_removal("o/r", 7, "2026-11-04T12:00:00Z")[0] is True
+    monkeypatch.setattr(qa, "_changed", lambda repo, number: ["docs/a.md"])
+    # No enqueue before the removal: counts.
+    monkeypatch.setattr(qa, "_timeline", lambda repo, number: [])
+    assert qa.classify_removal("o/r", 7, "2026-11-04T12:00:00Z")[0] is True
+    monkeypatch.setattr(qa, "_timeline", lambda repo, number: [
+        {"event": "added_to_merge_queue", "created_at": "2026-11-04T11:00:00Z"}])
+    # No run at all, or only an earlier entry's run: counts.
+    for runs in ([], [{"id": 2, "head_branch": "gh-readonly-queue/main/pr-7-b",
+                       "conclusion": "failure", "created_at": "2026-11-04T10:30:00Z"}]):
+        monkeypatch.setattr(qa, "_runs", lambda repo, since, runs=runs: runs)
+        assert qa.classify_removal("o/r", 7, "2026-11-04T12:00:00Z")[0] is True
+
+
+def test_the_files_list_names_old_and_new_paths_and_refuses_a_full_page() -> None:
+    files = [{"filename": "platform/x.ts", "previous_filename": "tinyassets/x.py"},
+             {"filename": "docs/a.md", "previous_filename": None}]
+    assert qa.changed_paths(files) == ["docs/a.md", "platform/x.ts", "tinyassets/x.py"]
+    assert qa.changed_paths([{"filename": "a"}] * (qa.FILES_API_CAP - 1)) == ["a"]
+    assert qa.changed_paths([{"filename": "a"}] * qa.FILES_API_CAP) is None
 
 
 def test_a_not_counted_removal_never_moves_the_head_toward_the_cap(monkeypatch) -> None:
