@@ -79,8 +79,14 @@ export const EXPORT_VERSION = 3;
  * generation at production sizes") holds a page of three-byte characters to it.
  */
 export const EXPORT_PAGE_BYTES = 1024 * 1024;
-/** Rows read at a time while a page fills. */
-const READ_BATCH = 256;
+/** Rows read at a time while a page fills (and a page's chunk lines at most). */
+export const EXPORT_READ_BATCH = 256;
+const READ_BATCH = EXPORT_READ_BATCH;
+/**
+ * A chunk's line at its widest, its newline included (`chunkLine`): `{"t":"chunk","sha256":"`,
+ * its hash, `","size":`, at most seven digits (a chunk is at most `CHUNK_BYTES`), `}`.
+ */
+export const CHUNK_LINE_BYTES = 23 + 64 + 9 + 7 + 1 + 1;
 /**
  * A cursor's most characters: past the widest key it can hold (a file entry's parent path,
  * at most 4 KiB, and its name), as base64url JSON.

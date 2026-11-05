@@ -9,6 +9,9 @@
  * within it. The counts test (`guards/memory-counts.test.ts`) holds the pool, with the
  * isolate's other live holds and its resting baseline, within the isolate's 128 MB.
  */
+import { IMAGE_MAX } from "./changelog";
+import { CHUNK_LINE_BYTES, EXPORT_PAGE_BYTES, EXPORT_READ_BATCH } from "./export";
+import { CHUNK_BYTES } from "./manifest";
 import { isolatePool, type SlotPool, UNIT_BYTES } from "./slots";
 
 /**
@@ -103,6 +106,67 @@ export function moveTableUnits(records: number): number {
  * bodies beside a one-unit table, the same at 4 MiB (O(1) in their size).
  */
 export const MOVE_PASS_UNITS = 3;
+
+/**
+ * A log segment's one buffer at most (`ChangeLog.segment`): exactly its bytes as written,
+ * allocated once and never grown, and never past a part (`CHUNK_BYTES`: past it the build
+ * fails before any buffer, as the files Worker refuses such a segment).
+ */
+export const SEGMENT_BUFFER_BYTES = CHUNK_BYTES;
+
+/**
+ * One row's text while a segment encodes it, at its worst: the widest row image the log takes
+ * (`IMAGE_MAX` of UTF-8, so at most that many characters), held three times at once (its
+ * stored text, its parsed value, its JSON written again), each a two-byte string in V8 once
+ * one character is past U+00FF (review rvburst V1).
+ */
+export const SEGMENT_ROW_BYTES = 3 * 2 * IMAGE_MAX;
+
+/** A segment's build at its most: its buffer and one row's text. */
+export const SHIP_BYTES = SEGMENT_BUFFER_BYTES + SEGMENT_ROW_BYTES;
+
+/**
+ * One log segment shipped outside a burst (`backup.ts` `#ship`: before a burst, after its
+ * parts' record, and the log's last at the generation's end), its build at its most
+ * (`SHIP_BYTES`) in whole units. Taken now or not at all around each segment's build, put
+ * and acknowledgement; a ship inside a burst is inside the burst's units. The memory leg
+ * holds every checkpoint within them, sampling the build at its widest row's encode ("a log
+ * segment shipped outside a burst": a full segment with a row at `IMAGE_MAX`, one character
+ * past U+00FF, among 1,000-character lines of the same mix, its put over RPC).
+ */
+export const SHIP_UNITS = (SHIP_BYTES + UNIT_BYTES - 1
+  - ((SHIP_BYTES + UNIT_BYTES - 1) % UNIT_BYTES)) / UNIT_BYTES;  // rounded up, by arithmetic
+
+/** A burst's gathered bytes before its last page (`backup.ts`'s `GATHER_BYTES`): two parts. */
+export const BURST_GATHER_BYTES = 2 * CHUNK_BYTES;
+
+/**
+ * A burst's bytes at most: its gather, then its last page (`EXPORT_PAGE_BYTES` of rows and
+ * the widest line that reached it, an image at most `IMAGE_MAX`, and a page's chunk lines,
+ * `EXPORT_READ_BATCH` of `CHUNK_LINE_BYTES`), held once as its pages and again as its parts.
+ */
+export const BURST_BYTES = BURST_GATHER_BYTES + EXPORT_PAGE_BYTES + IMAGE_MAX
+  + EXPORT_READ_BATCH * CHUNK_LINE_BYTES;
+
+/**
+ * A burst at the more of its two peaks (`BURST_UNITS`): its parts and a segment's build,
+ * since a build (`SHIP_BYTES`) is past a burst's bytes, so past its pages at the cut too
+ * (`memory-counts.test.ts` holds the order).
+ */
+export const BURST_PEAK_BYTES = BURST_BYTES + SHIP_BYTES;
+
+/**
+ * A generation's burst (`backup.ts`, the manifest lane), in whole units, at the more of its
+ * two peaks: at its cut, its pages and its parts (twice `BURST_BYTES`); between its parts'
+ * puts, its parts (the pages let go once cut) and a log segment's build (`SHIP_BYTES`).
+ * Taken now or not at all, from its first page to its last part's put (inside the alarm a
+ * lane never waits on the pool), so every object's burst is inside the pool. The memory
+ * leg holds every checkpoint within them (a burst of the smallest lines, an owner's write
+ * during a part's put shipping a full segment inside it with a row at `IMAGE_MAX`, its
+ * build sampled at that row's encode).
+ */
+export const BURST_UNITS = (BURST_PEAK_BYTES + UNIT_BYTES - 1
+  - ((BURST_PEAK_BYTES + UNIT_BYTES - 1) % UNIT_BYTES)) / UNIT_BYTES;  // rounded up
 
 /** Body windows (`Bodies.windows`): each at most a page, read by verified ranges. */
 export const WINDOW_UNITS = 1;

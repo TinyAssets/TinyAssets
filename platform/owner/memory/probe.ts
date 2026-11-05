@@ -36,7 +36,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { bundledSources, signinsOn } from "../../doors/src/sources";
 import { PLATFORM_CALLER } from "../src/admission";
-import { Backups, BURST_BYTES } from "../src/backup";
+import { Backups } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";
 import { ChangeLog } from "../src/changelog";
 import { Grants } from "../src/grants";
@@ -162,7 +162,12 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
   async rewrapManifestRoot(): Promise<never> { throw new Error("not in the leg"); }
   async deleteNamespace(): Promise<never> { throw new Error("not in the leg"); }
   async putManifestPart(): Promise<never> { throw new Error("not in the leg"); }
-  async putManifestSegment(): Promise<never> { throw new Error("not in the leg"); }
+  /** A log segment as the files Worker takes it: a checkpoint while its call holds it. */
+  async putManifestSegment(_ns: string, _key: string, _gen: string, _a: number, _b: number,
+                           bytes: Uint8Array): Promise<{ sha256: string; size: number }> {
+    await checkpoint(this.env, undefined, "store-segment");
+    return { sha256: sha(bytes), size: bytes.byteLength };
+  }
   async putManifestRoot(): Promise<never> { throw new Error("not in the leg"); }
   async getManifestRoot(): Promise<never> { throw new Error("not in the leg"); }
   async getManifestPart(): Promise<never> { throw new Error("not in the leg"); }
@@ -245,6 +250,20 @@ async function moveRecords(env: LegEnv, records: number): Promise<number> {
   }
 }
 
+/**
+ * The widest row the change log takes (`IMAGE_MAX`'s own: a connection's models at their
+ * 640 KiB, every one a character JSON escapes, and its egress scope at its own), its name
+ * one character past U+00FF, so its line is a two-byte string in V8: inserted, and its
+ * image logged by `widen`, a change while capture is on (the change log test's L5-1 row).
+ */
+const WIDEN = "UPDATE connections SET expires_at = coalesce(expires_at, 0) + 1";
+function wideRow(sql: Pick<SqlStorage, "exec">): void {
+  sql.exec("INSERT INTO connections (id, source, kind, display_name, provider, models, " +
+           "status, version, created_at, revocable, egress) VALUES (?, 'src', 'oauth2', " +
+           "?, 'p', ?, 'active', 1, 0, 1, ?)", "c".repeat(25), "wide \u20ac",
+           '"'.repeat(655_360), "\\".repeat(16_384));
+}
+
 /** The real owner object, with the body paths and the control in reach. */
 export class LegOwner extends OwnerDO {
   readonly #leg: LegEnv;
@@ -268,14 +287,18 @@ export class LegOwner extends OwnerDO {
    * A generation's burst at production sizes (`GENERATION_SIZES`) of the smallest lines a
    * stream holds (notices of no detail, about 80 bytes a line, as small as a chunk's), so a
    * burst holds the most lines its bytes allow: a whole generation run by the real lane, each
-   * part's put a checkpoint while the burst's pages and parts are live. Its parts.
+   * part's put a checkpoint, inside its units of the isolate's pool (`BURST_UNITS`), and the
+   * owner rewriting rows wide during its third part's put, so the ship after it builds a full
+   * log segment inside the burst. The widest segment it put.
    */
   async legBurst(): Promise<number> {
     const sql = this.#gate.storage.sql;
     await this.#gate.write(() => sql.exec(
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 130000) " +
       "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', '' FROM n"));
+    await this.#gate.write(() => wideRow(sql));
     let parts = 0;
+    let widest = 0;
     const put = async (bytes: Uint8Array) => {
       await owned(this.#leg, "burst-part");
       return { sha256: sha(bytes), size: bytes.byteLength };
@@ -284,10 +307,24 @@ export class LegOwner extends OwnerDO {
       putManifestPart: async (_ns: string, _key: string, _gen: string, _part: number,
                               bytes: Uint8Array) => {
         parts += 1;
+        if (parts === 3) {
+          // The owner writes during the put: 4,200 rows already read rewritten wide, so the
+          // ship after this part builds and puts a full segment inside the burst's units;
+          // each line ASCII but one character past U+00FF, the worst mix for its heap (a
+          // two-byte string in V8, twice its UTF-8: review rvburst V1).
+          await this.#gate.write(() => {
+            sql.exec(WIDEN);  // the widest row first: the segment holds it and the rest
+            sql.exec("UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
+                     "WHERE seq <= 4200");
+          });
+        }
         return put(bytes);
       },
       putManifestSegment: async (_ns: string, _key: string, _gen: string, _a: number,
-                                 _b: number, bytes: Uint8Array) => put(bytes),
+                                 _b: number, bytes: Uint8Array) => {
+        widest = Math.max(widest, bytes.byteLength);
+        return put(bytes);
+      },
       putManifestRoot: async () => {},
       getManifestRoot: async () => null,
       deleteManifest: async () => {},
@@ -301,7 +338,62 @@ export class LegOwner extends OwnerDO {
     await this.#gate.write(() => sql.exec("UPDATE owner_backup_state SET changed = 1"));
     await this.#gate.quiet(() => lane.forExport(Date.now() / 1000));
     await lane.run(Date.now() / 1000, Date.now() + 120_000);
-    return parts;
+    if (parts < 3) {
+      throw new Error(`the burst case put ${parts} parts: its write never ran`);
+    }
+    return widest;
+  }
+
+  /**
+   * One full log segment shipped outside a burst: 4,200 notices of 1,000 characters (ASCII
+   * but one past U+00FF each, the worst mix for a string's heap)
+   * rewritten once the generation's capture is on, so the pass's first ship (before any
+   * burst) builds and puts a segment of a part's bytes and then the rest, each a checkpoint
+   * inside its units (`SHIP_UNITS`), the put made over RPC to the store's isolate as the
+   * files Worker's is; then the pass reads as halted, so no burst begins. The widest segment
+   * it put.
+   */
+  async legShip(): Promise<number> {
+    const sql = this.#gate.storage.sql;
+    await this.#gate.write(() => sql.exec(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4200) " +
+      "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', 'a' FROM n"));
+    await this.#gate.write(() => wideRow(sql));
+    let segments = 0;
+    let widest = 0;
+    const store = {
+      putManifestPart: async () => {
+        throw new Error("the ship case begins no burst");
+      },
+      putManifestSegment: async (ns: string, key: string, gen: string, a: number,
+                                 b: number, bytes: Uint8Array) => {
+        segments += 1;
+        widest = Math.max(widest, bytes.byteLength);
+        await owned(this.#leg, "ship-segment");
+        return this.#leg.FILES.putManifestSegment(ns, key, gen, a, b, bytes);
+      },
+      putManifestRoot: async () => {},
+      getManifestRoot: async () => null,
+      deleteManifest: async () => {},
+    } as unknown as ChunkStore;
+    const lane = new Backups({
+      storage: this.#gate.storage, write: (unit) => this.#gate.quiet(unit), store,
+      log: new ChangeLog(this.#gate.storage), space: () => this.#files.space(),
+      owner: () => "owner", serves: () => true, schema: MIGRATIONS.length,
+      halted: () => segments >= 2, notice: () => {},
+    });
+    await this.#gate.write(() => sql.exec("UPDATE owner_backup_state SET changed = 1"));
+    await this.#gate.quiet(() => lane.forExport(Date.now() / 1000));
+    await this.#gate.write(() => {
+      sql.exec(WIDEN);  // the widest row first: the first segment holds it and the rest
+      sql.exec("UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
+               "WHERE seq <= 4200");
+    });
+    await lane.run(Date.now() / 1000, Date.now() + 120_000);
+    if (segments < 2) {
+      throw new Error(`the ship case shipped ${segments} segments, not a full one and more`);
+    }
+    return widest;
   }
 
   /** A placed body of `bytes` letters, placed as a message's is: its content id. */
@@ -673,6 +765,9 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
       if (path === "burst") {
         return await stub.legBurst();
       }
+      if (path === "ship") {
+        return await stub.legShip();
+      }
       if (path === "merge") {
         const archive = env.ARCHIVE.getByName(name);
         await archive.legAckSeq(2, offset!);
@@ -731,8 +826,7 @@ export default {
                              move_seal_units: holds.moveTableUnits(25_000),
                              move_most_units: holds.moveTableUnits(MOVE_RECORDS),
                              move_records: MOVE_RECORDS,
-                             move_body_units: holds.moveTableUnits(2),
-                             burst_bytes: BURST_BYTES });
+                             move_body_units: holds.moveTableUnits(2) });
     }
     if (url.pathname === "/rest") {
       LEG.runs += 1;
