@@ -294,9 +294,12 @@ export class LegOwner extends OwnerDO {
         parts += 1;
         if (parts === 3) {
           // The owner writes during the put: 4,200 rows already read rewritten wide, so the
-          // ship after this part builds and puts a full segment inside the burst's units.
+          // ship after this part builds and puts a full segment inside the burst's units;
+          // each line ASCII but one character past U+00FF, the worst mix for its heap (a
+          // two-byte string in V8, twice its UTF-8: review rvburst V1).
           await this.#gate.write(() => sql.exec(
-            "UPDATE owner_notices SET detail = printf('%.1000c', 'b') WHERE seq <= 4200"));
+            "UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
+            "WHERE seq <= 4200"));
         }
         return put(bytes);
       },
@@ -325,11 +328,13 @@ export class LegOwner extends OwnerDO {
   }
 
   /**
-   * One full log segment shipped outside a burst: 4,200 notices of 1,000 characters
+   * One full log segment shipped outside a burst: 4,200 notices of 1,000 characters (ASCII
+   * but one past U+00FF each, the worst mix for a string's heap)
    * rewritten once the generation's capture is on, so the pass's first ship (before any
    * burst) builds and puts a segment of a part's bytes and then the rest, each a checkpoint
    * inside its units (`SHIP_UNITS`), the put made over RPC to the store's isolate as the
-   * files Worker's is; then the pass reads as halted, so no burst begins. Its segments.
+   * files Worker's is; then the pass reads as halted, so no burst begins. The widest segment
+   * it put.
    */
   async legShip(): Promise<number> {
     const sql = this.#gate.storage.sql;
@@ -337,6 +342,7 @@ export class LegOwner extends OwnerDO {
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4200) " +
       "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', 'a' FROM n"));
     let segments = 0;
+    let widest = 0;
     const store = {
       putManifestPart: async () => {
         throw new Error("the ship case begins no burst");
@@ -344,6 +350,7 @@ export class LegOwner extends OwnerDO {
       putManifestSegment: async (ns: string, key: string, gen: string, a: number,
                                  b: number, bytes: Uint8Array) => {
         segments += 1;
+        widest = Math.max(widest, bytes.byteLength);
         await owned(this.#leg, "ship-segment");
         return this.#leg.FILES.putManifestSegment(ns, key, gen, a, b, bytes);
       },
@@ -360,9 +367,13 @@ export class LegOwner extends OwnerDO {
     await this.#gate.write(() => sql.exec("UPDATE owner_backup_state SET changed = 1"));
     await this.#gate.quiet(() => lane.forExport(Date.now() / 1000));
     await this.#gate.write(() => sql.exec(
-      "UPDATE owner_notices SET detail = printf('%.1000c', 'b') WHERE seq <= 4200"));
+      "UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
+      "WHERE seq <= 4200"));
     await lane.run(Date.now() / 1000, Date.now() + 120_000);
-    return segments;
+    if (segments < 2) {
+      throw new Error(`the ship case shipped ${segments} segments, not a full one and more`);
+    }
+    return widest;
   }
 
   /** A placed body of `bytes` letters, placed as a message's is: its content id. */

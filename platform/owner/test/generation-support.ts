@@ -114,6 +114,8 @@ export interface Harness {
   readonly failAt?: { readonly call: number; readonly when: "before" | "after" };
   /** Begin it and stop, a pass with no time to carry it on, for an export to join. */
   readonly onePass?: boolean;
+  /** Whether the owner is being erased, as the lane asks it (never, unless a test says). */
+  readonly halted?: () => boolean;
   /** The schema version the lane runs under (the code's, unless a migration is played). */
   readonly schema?: number;
   /** Its sizes: `SMALL` unless a test asks for others (production's `GENERATION_SIZES`). */
@@ -186,7 +188,8 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     const lane = () => new Backups({
       storage: gate.storage, write: quiet, store, log, space: () => files.space(),
       owner: () => "owner", serves: () => true, schema: harness.schema ?? MIGRATIONS.length,
-      halted: () => false, notice: (type) => notices.push(type), sizes: harness.sizes ?? SMALL,
+      halted: harness.halted ?? (() => false), notice: (type) => notices.push(type),
+      sizes: harness.sizes ?? SMALL,
       pool,
     });
     // The one under way, or a new one, begun now (its owner changed since the last).

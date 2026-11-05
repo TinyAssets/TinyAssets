@@ -127,39 +127,57 @@ export class ChangeLog {
     return { a: at.shipped, b };
   }
 
-  /** The segment's bytes (`segmentLines`, `encodeSegment`). A read. */
-  segment(a: number, b: number): Uint8Array {
-    return encodeSegment(this.segmentLines(a, b));
-  }
-
   /**
-   * The segment's lines: the log's lines after `a` through `b`, each with its seq, the last
-   * line per (table, key) kept, a BLOB's hex turned base64 as the base writes it.
-   * Deterministic for the same rows, so a segment put again is the same bytes. A read.
+   * The segment's bytes: the log's lines after `a` through `b`, each with its seq, the last
+   * line per (table, key) kept, in the order of those last seqs, a BLOB's hex turned base64
+   * as the base writes it, each followed by its newline. Deterministic for the same rows, so
+   * a segment put again is the same bytes. Built without holding its lines (review rvburst
+   * V1: a mostly-ASCII line with one character past U+00FF is a two-byte string in V8, twice
+   * its UTF-8): a first pass keeps each key's last seq and counts the stored bytes, and a
+   * second, in seq order, encodes only the kept rows straight into one buffer of at most
+   * those bytes (`pending` holds them to a part, or one wider line), one row's text at a
+   * time. A read.
    */
-  segmentLines(a: number, b: number): string[] {
+  segment(a: number, b: number): Uint8Array {
     const tables = exported();
-    const kept = new Map<string, string>();
-    for (const row of this.#sql.exec<{ seq: number; line: string }>(
-           "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq", a, b)
-           .toArray()) {
-      const line = JSON.parse(row.line) as { t: string; table: string;
-                                             row?: Record<string, unknown>; key?: unknown[] };
-      if (line.t !== "row" && line.t !== "gone") {
-        throw new Error("a change log line too wide to keep: the generation fails");
-      }
+    const rows = () => this.#sql.exec<{ seq: number; line: string }>(
+      "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq", a, b);
+    const last = new Map<string, number>();
+    let most = 0;
+    for (const row of rows()) {
+      const line = parsed(row.line);
       const shape = tables[line.table]!;
       const key = line.t === "row" ? shape.key.map((column) => line.row![column]) : line.key!;
+      last.set(JSON.stringify([line.table, key]), row.seq);
+      most += Buffer.byteLength(row.line, "utf8") + SEQ_BYTES;
+    }
+    const kept = new Set(last.values());
+    last.clear();
+    const encoder = new TextEncoder();
+    let out = new Uint8Array(most);
+    let at = 0;
+    for (const row of rows()) {
+      if (!kept.has(row.seq)) {
+        continue;
+      }
+      const line = parsed(row.line);
       if (line.t === "row" && line.table === "file_contents"
           && typeof line.row!["inline"] === "string") {
         line.row!["inline"] = {
           $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
       }
-      const id = JSON.stringify([line.table, key]);
-      kept.delete(id);  // re-set, so the kept order is each key's last seq
-      kept.set(id, JSON.stringify({ ...line, seq: row.seq }));
+      const text = JSON.stringify({ ...line, seq: row.seq });
+      const need = Buffer.byteLength(text, "utf8") + 1;
+      if (at + need > out.byteLength) {
+        // A line its JSON writes wider than the log stored it: grown, never cut.
+        const wider = new Uint8Array(Math.max(at + need, 2 * out.byteLength));
+        wider.set(out.subarray(0, at));
+        out = wider;
+      }
+      at += encoder.encodeInto(text, out.subarray(at)).written;
+      out[at++] = 0x0a;
     }
-    return [...kept.values()];
+    return out.subarray(0, at);
   }
 
   /** In a unit: the segment through `b` acknowledged: shipped, and its lines gone. */
@@ -169,24 +187,13 @@ export class ChangeLog {
   }
 }
 
-/**
- * A segment's lines as its bytes, each followed by its newline: encoded once, line by line,
- * straight into one buffer, never the lines joined into one text and encoded again.
- */
-export function encodeSegment(lines: readonly string[]): Uint8Array {
-  let size = 0;
-  for (const line of lines) {
-    size += Buffer.byteLength(line, "utf8") + 1;
+/** A change log line, parsed: a row or a gone line, else the generation fails loudly. */
+function parsed(text: string): { t: string; table: string; row?: Record<string, unknown>;
+                                 key?: unknown[] } {
+  const line = JSON.parse(text) as { t: string; table: string; row?: Record<string, unknown>;
+                                     key?: unknown[] };
+  if (line.t !== "row" && line.t !== "gone") {
+    throw new Error("a change log line too wide to keep: the generation fails");
   }
-  const out = new Uint8Array(size);
-  const encoder = new TextEncoder();
-  let at = 0;
-  for (const line of lines) {
-    at += encoder.encodeInto(line, out.subarray(at)).written;
-    out[at++] = 0x0a;
-  }
-  if (at !== size) {
-    throw new Error("a log segment's lines are not the bytes they were counted at");
-  }
-  return out;
+  return line;
 }

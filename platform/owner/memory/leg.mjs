@@ -351,8 +351,8 @@ try {
         await peak("ship", 0), costs.SHIP_UNITS * UNIT, "SHIP_UNITS");
   check("a log segment shipped outside a burst: inside its units of the pool",
         costs.SHIP_UNITS - peak.held, 0, "the units held at its checkpoints");
-  if (peak.answer[0] < 2) {
-    throw new Error(`the ship case shipped ${peak.answer[0]} segments, not a full one and more`);
+  if (peak.answer[0] < 3 * MIB) {
+    throw new Error(`the ship case's widest segment was ${peak.answer[0]} bytes, not a full one`);
   }
 
   // The archive: each pass of its move and rewrite within the units it holds (above, at

@@ -113,20 +113,22 @@ export const MOVE_PASS_UNITS = 3;
  * part's put (inside the alarm a lane never waits on the pool), so every object's burst is
  * inside the pool. Its pages are let go once
  * cut, so a full log segment built between its puts sits beside its parts alone. The leg
- * reads 17.06 MiB at its most (a burst of the smallest lines, an owner's write during a
- * part's put shipping a full segment inside it) and holds every checkpoint within these.
+ * reads 16.46 MiB at its most (a burst of the smallest lines, an owner's write during a
+ * part's put shipping a full segment of the worst character mix inside it) and holds every
+ * checkpoint within these.
  */
 export const BURST_UNITS = 6;
 
 /**
  * One log segment shipped outside a burst (`backup.ts` `#ship`: before a burst, after its
- * parts' record, and the log's last at the generation's end): its kept lines as the log
- * keeps them (the last line per key, at most a part's bytes as text) and the segment built
- * from them into one buffer (at most a part, `CHUNK_BYTES`), the lines let go before its put.
- * Taken now or not at all around each segment's build, put and acknowledgement; a ship
- * inside a burst is inside the burst's units. The memory leg ("a log segment shipped outside
- * a burst", a full segment of 1,000-character lines, its put over RPC) reads 7.92 MiB at the
- * build, its lines and its bytes, and holds every checkpoint within these.
+ * parts' record, and the log's last at the generation's end): the segment's one buffer (at
+ * most its stored bytes, which `pending` holds to a part), built a kept row at a time, never
+ * its lines held (`ChangeLog.segment`), and one row's text while it is encoded. Taken now
+ * or not at all around each segment's build, put and acknowledgement; a ship inside a burst
+ * is inside the burst's units. The memory leg ("a log segment shipped outside a burst", a
+ * full segment of 1,000-character lines each ASCII but one past U+00FF, the worst mix for a
+ * string's heap, its put over RPC) reads 4.5 MiB at the build, and holds every checkpoint
+ * within these; the build that held its lines read 11.82 MiB there (review rvburst V1).
  */
 export const SHIP_UNITS = 2;
 

@@ -40,7 +40,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { MANIFEST_PARTS } from "../../files/src/keys";
-import { type ChangeLog, encodeSegment } from "./changelog";
+import type { ChangeLog } from "./changelog";
 import {
   chunkLine, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES, type Lines,
   readPage,
@@ -586,19 +586,14 @@ export class Backups {
   }
 
   /**
-   * A log segment's bytes, built from its kept lines in a frame of its own, so the lines are
-   * let go before its put waits; the memory leg samples the build at its most, its lines
-   * and its bytes both in hand (`units`, the hold it is built in).
+   * A log segment's bytes (`ChangeLog.segment`: one buffer, never its lines held), the memory
+   * leg sampling it built (`units`, the hold it is built in).
    */
   async #segment(a: number, b: number, units: number): Promise<Uint8Array> {
-    const lines = this.#parts.log.segmentLines(a, b);
-    const bytes = encodeSegment(lines);
+    const bytes = this.#parts.log.segment(a, b);
     const pool = this.#pool;
     if (pool.observe !== null) {
       await pool.observe(units);
-      if (lines.length === 0) {
-        throw new Error("a pending log segment holds no line");
-      }
     }
     return bytes;
   }

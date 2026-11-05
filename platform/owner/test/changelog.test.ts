@@ -20,6 +20,71 @@ import { filesOn, sqlIn } from "./support";
 const W = "/workspace";
 const text = (body: string) => new TextEncoder().encode(body);
 
+/**
+ * The segment build `ChangeLog.segment` replaced (review rvburst V1), verbatim but for its
+ * rows: every kept line held as a string, then joined and encoded. The reference for its
+ * bytes.
+ */
+function replacedSegment(rows: readonly { seq: number; line: string }[]): Uint8Array {
+  const tables = exported();
+  const kept = new Map<string, string>();
+  for (const row of rows) {
+    const line = JSON.parse(row.line) as { t: string; table: string;
+                                           row?: Record<string, unknown>; key?: unknown[] };
+    const shape = tables[line.table]!;
+    const key = line.t === "row" ? shape.key.map((column) => line.row![column]) : line.key!;
+    if (line.t === "row" && line.table === "file_contents"
+        && typeof line.row!["inline"] === "string") {
+      line.row!["inline"] = {
+        $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
+    }
+    const id = JSON.stringify([line.table, key]);
+    kept.delete(id);
+    kept.set(id, JSON.stringify({ ...line, seq: row.seq }));
+  }
+  return new TextEncoder().encode([...kept.values()].map((line) => `${line}\n`).join(""));
+}
+
+describe("a log segment's build", () => {
+  it("makes byte for byte the segment the build it replaced made, every line's last per key, " +
+     "of any characters", async () => {
+    const o = await owner();
+    const made = await runInDurableObject(o.stub, (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      const chars = ["a", "Z", " ", "\"", "\\", "\n", "\u0001", "é", "€", "語", "😀", "\ud800"];
+      let seed = 7;
+      const next = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+      const textOf = (n: number) => Array.from({ length: n },
+                                                () => chars[Math.floor(next() * chars.length)])
+        .join("");
+      // Rows, gone lines and inline contents, the same few keys again and again.
+      for (let n = 0; n < 400; n++) {
+        const pick = next();
+        const line = pick < 0.6
+          ? { t: "row", table: "owner_notices",
+              row: { seq: Math.floor(next() * 40), at: n, type: "x",
+                     detail: textOf(Math.floor(next() * 300)) } }
+          : pick < 0.8 ? { t: "gone", table: "owner_notices", key: [Math.floor(next() * 40)] }
+          : { t: "row", table: "file_contents",
+              row: { content_id: `c${Math.floor(next() * 5)}`, size: n,
+                     inline: Buffer.from(textOf(20)).toString("hex"), refs: 1 } };
+        sql.exec("INSERT INTO change_log (line) VALUES (?)", JSON.stringify(line));
+      }
+      const log = new ChangeLog(state.storage);
+      const rows = sql.exec<{ seq: number; line: string }>(
+        "SELECT seq, line FROM change_log ORDER BY seq").toArray();
+      const first = rows[0]!.seq - 1;
+      return [[first, first + 400], [first + 17, first + 233], [first + 399, first + 400]]
+        .map(([a, b]) => {
+          const built = log.segment(a!, b!);
+          const reference = replacedSegment(rows.filter((row) => row.seq > a! && row.seq <= b!));
+          return Buffer.compare(Buffer.from(built), Buffer.from(reference));
+        });
+    });
+    expect(made).toEqual([0, 0, 0]);
+  });
+});
+
 describe("the change log", () => {
   it("has one trigger an exported table and event, its image every exported column and " +
      "its key", async () => {

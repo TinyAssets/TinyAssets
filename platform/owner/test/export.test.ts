@@ -444,6 +444,27 @@ describe("a generation", () => {
     expect(pool.state().held).toBe(0);
   }, 120_000);
 
+  it("begins no burst once the owner's erasure begins while the log ships: no part put, " +
+     "the pool never past the ship's units (rvburst V2)", async () => {
+    const pool = new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
+                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
+    const o = await owner();
+    await notices(o, 200);
+    await generate(o.stub, { pool, onePass: true });
+    await sqlIn(o.stub, "UPDATE owner_notices SET detail = 'changed' WHERE seq <= 50");
+    pool.resetPeak();
+    let erasing = false;
+    const kinds: string[] = [];
+    await generate(o.stub, { pool, halted: () => erasing, duringCall: async ({ kind }) => {
+      kinds.push(kind);
+      if (kind === "segment") {
+        erasing = true;  // the erasure begins during the first ship's put
+      }
+    } });
+    expect(kinds).toEqual(["segment"]);
+    expect(pool.state()).toMatchObject({ held: 0, peak: SHIP_UNITS });
+  }, 120_000);
+
   it("goes on later, never at once, when a pass ends before it does", async () => {
     const o = await owner();
     await notices(o, 100);
