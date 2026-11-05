@@ -4,13 +4,13 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(join(here, "..", "..", "package.json"));
 const esbuild = require("esbuild");
-const out = process.argv[2];
+const out = process.argv[2] === undefined ? undefined : resolve(process.argv[2]);
 if (!out) {
   throw new Error("bundle.mjs <out dir>");
 }

@@ -1,0 +1,41 @@
+{
+  "1": {
+    "mirror": [
+      {
+        "type": "table",
+        "name": "files",
+        "sql": "CREATE TABLE files (path TEXT PRIMARY KEY, version INTEGER NOT NULL, size INTEGER NOT NULL, mtime_ms REAL NOT NULL, sha256 TEXT NOT NULL) WITHOUT ROWID"
+      },
+      {
+        "type": "table",
+        "name": "meta",
+        "sql": "CREATE TABLE meta (only INTEGER PRIMARY KEY CHECK (only = 1), cursor INTEGER NOT NULL)"
+      }
+    ],
+    "files": {
+      "var/lib/ta/runs/<run>/state.json": {
+        "pid": "number",
+        "cli_pid": "number|null",
+        "seq": "number",
+        "session_id": "string|null",
+        "last_kind": "string|null",
+        "ended": "boolean",
+        "renewing": "boolean"
+      },
+      "var/lib/ta/signin/<id>/state.json": {
+        "pid": "number",
+        "ended": "boolean"
+      },
+      "var/lib/ta/kept/<home>.json": {
+        "generation": "number",
+        "secrets": "object",
+        "signedIn": "boolean"
+      }
+    },
+    "text": {
+      "var/lib/ta/generations/<engine>": "a decimal integer, the engine store's generation",
+      "var/lib/ta/scratch-used/<agent>": "an empty file, its modification time the agent's last use",
+      "var/lib/ta/format": "a decimal integer and a newline, the newest format on the disk"
+    }
+  }
+}

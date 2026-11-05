@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,11 @@ import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
 const SANDBOX = dirname(fileURLToPath(import.meta.url));
+
+// The runner the Worker ships (`src/runner-bytes.ts` imports it as data), built as the
+// Worker's own build makes it (`build.command` in wrangler.jsonc): tests run what deploys.
+execFileSync(process.execPath, [join(SANDBOX, "template", "bundle.mjs"), join(SANDBOX, "dist")],
+             { stdio: "ignore" });
 
 /** The fake E2B (`test/fake-e2b.ts`), transpiled: E2B's two hosts, in tests only. */
 function fakeE2b() {
