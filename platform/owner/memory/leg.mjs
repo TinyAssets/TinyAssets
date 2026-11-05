@@ -28,6 +28,8 @@
 //   two large bodies (4 against 8 MiB each, O(1) in size) and a purge's rewrite of them,
 //   each run by the object's own `archive` lane, every pass within its table's and its own
 //   units;
+// - a generation's burst (slice P): at production sizes, of the smallest lines, run by the
+//   real lane, its pages and parts at every part's put within `BURST_BYTES`;
 // - per unit: two edits at once hold at most one making step's units more than one;
 // - its time: the worst edit's time a chunk, measured with no collections, keeps
 //   `EDIT_BYTES_MAX` inside a request's 30 s of CPU (the time is wall time, at least the CPU
@@ -326,6 +328,12 @@ try {
         "bodyUnits(1)");
   check("fetch: peak(8 MiB body)", await peak("fetch", 8), costs.body_units[1] * UNIT,
         "bodyUnits(2)");
+
+  // A generation's burst at production sizes, of the smallest lines (the most lines its bytes
+  // allow), run by the real lane: at every part's put, its pages and parts within
+  // BURST_BYTES (review rvbackup 1).
+  check("a generation's burst: peak, the smallest lines", await peak("burst", 0),
+        costs.burst_bytes, "BURST_BYTES");
 
   // The archive: each pass of its move and rewrite within the units it holds (above, at
   // every checkpoint), each run's peak within its table's and its pass's units, and a move

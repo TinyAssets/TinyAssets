@@ -42,7 +42,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import type { ChangeLog } from "./changelog";
 import {
-  chunkLine, decodeCursor, encodeCursor, endLine, EXPORT_PAGE_BYTES, readPage,
+  chunkLine, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES, type Lines,
+  readPage,
 } from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
@@ -71,18 +72,39 @@ export const PART_ENTRY = 64 + 1 + 7 + 1;
 export const SEGMENT_ENTRY = 16 + 1 + 16 + 1 + 64 + 1 + 7 + 1;
 /**
  * The stream's bytes one burst gathers, with no outside call, before it puts them as parts:
- * two parts' worth, about 24 MiB of the isolate's 128 MB at its peak.
+ * two parts' worth, counted as the parts hold them (each line's UTF-8 and its newline), so
+ * a burst holds at most this and its last page (`export.test.ts`, "a generation at
+ * production sizes", holds a burst of three-byte characters to it), once as its pages'
+ * buffers and once as parts: `BURST_BYTES` at its peak.
  */
 const GATHER_BYTES = 2 * CHUNK_BYTES;
 /**
+ * A burst's live bytes at its peak, whatever its lines' sizes: its pages' buffers (one a
+ * page, `encodeLines`, never an array a line) and their line ends, its parts, and the part
+ * its outside call is sending. Measured by the workerd memory leg (`memory/leg.mjs`, "a
+ * generation's burst", a burst of the smallest lines, chunks' 90 bytes); not yet under the
+ * pool's units, so the counts test names it, owed to PR 4 (`UNCOUNTED`).
+ */
+export const BURST_BYTES = 6 * CHUNK_BYTES;
+/**
  * A generation's sizes: a base page's rows, a part's bytes, a burst's. The production
  * figures are these; a test passes smaller ones (`BackupParts.sizes`) to cut a small
- * fixture into many pages, parts and bursts, the bound logic the same at any size.
+ * fixture into many pages, parts and bursts, the bound logic the same at any size. What
+ * only these figures show is held at them: one burst's cut within a tenth of the CPU limit,
+ * and linear (`guards/backup-cut.test.ts`); an owner of several bursts finished and read
+ * back exactly, its row under a row's 2 MB (`export.test.ts`, "a generation at production
+ * sizes").
  */
 export interface GenerationSizes {
   readonly page: number;
   readonly part: number;
   readonly gather: number;
+  /**
+   * The most bytes any part may hold: `CHUNK_BYTES`, what the files Worker takes (a test
+   * shrinks it to see a line past it). A part over `part` but within it, a line wider than
+   * a test's small parts, is put as it is.
+   */
+  readonly most?: number;
 }
 export const GENERATION_SIZES: GenerationSizes = Object.freeze({
   page: EXPORT_PAGE_BYTES, part: CHUNK_BYTES, gather: GATHER_BYTES });
@@ -96,6 +118,14 @@ export const MANIFEST_LOG_OVERFLOW = "manifest_log_overflow";
  * a fresh one is begun under the new.
  */
 export const MANIFEST_SCHEMA = "manifest_schema";
+/**
+ * The notice an owner is given, once, when one line of its stream (one row, as JSON) is
+ * longer than any part may be (`CHUNK_BYTES`): the files Worker takes no such part, so the
+ * generation is given up, loudly, and the lane waits for the owner's next change.
+ * Unreachable by the schema's bounds (the widest row image, `IMAGE_MAX`, is under a
+ * chunk), kept so a later wider column fails loudly.
+ */
+export const MANIFEST_LINE = "manifest_line";
 /** A generation's recorded cursor once its base is read: only its log is left. */
 const ENDED = "ended";
 const DAY_S = 86_400;
@@ -114,6 +144,57 @@ function dayStart(day: string): number {
 /** The owner's own offset into the night, in seconds. */
 export function spread(owner: string): number {
   return createHash("sha256").update(owner).digest().readUInt32BE(0) % MANIFEST_SPREAD_S;
+}
+
+/**
+ * A burst's lines (its pages' `Lines`, in order) cut into parts of whole lines, each at most
+ * `part` bytes, so an export streams them as they are. A line longer than `part` is a part
+ * of its own, longer than `part`: past `CHUNK_BYTES` the lane gives such a generation up
+ * (`MANIFEST_LINE`), since the files Worker takes no such part. Linear: each line's end is read once and each byte copied once,
+ * as slices of its page's buffer, never the part so far again (`guards/backup-cut.test.ts`
+ * holds it, and its bytes to the cut it replaced).
+ */
+export function cutParts(pages: readonly Lines[], part: number): Uint8Array[] {
+  const parts: Uint8Array[] = [];
+  /** The part so far: slices of its pages' buffers, and their bytes. */
+  let runs: Uint8Array[] = [];
+  let held = 0;
+  const close = () => {
+    const out = new Uint8Array(held);
+    let at = 0;
+    for (const run of runs) {
+      out.set(run, at);
+      at += run.byteLength;
+    }
+    parts.push(out);
+    runs = [];
+    held = 0;
+  };
+  for (const { bytes, ends } of pages) {
+    // This page's run in the part so far starts at `from`; its next line at `start`.
+    let from = 0;
+    let start = 0;
+    for (const end of ends) {
+      const sofar = held + start - from;
+      if (sofar > 0 && sofar + end - start > part) {
+        if (start > from) {
+          runs.push(bytes.subarray(from, start));
+          held += start - from;
+        }
+        close();
+        from = start;
+      }
+      start = end;
+    }
+    if (start > from) {
+      runs.push(bytes.subarray(from, start));
+      held += start - from;
+    }
+  }
+  if (held > 0) {
+    close();
+  }
+  return parts;
 }
 
 /** One generation's row. */
@@ -394,6 +475,10 @@ export class Backups {
         this.#parts.notice(why, why === MANIFEST_CEILING
           ? `The nightly recovery copy of your data passed its ${MANIFEST_PARTS} parts and ` +
             "was not written. Your data is intact; export it to keep a copy."
+          : why === MANIFEST_LINE
+          ? "The nightly recovery copy of your data was not written: one of your records is " +
+            "too large for one part of it. Your data is intact; it is tried again after your " +
+            "next change."
           : why === MANIFEST_SCHEMA
           ? "The recovery copy of your data under way was begun again: an update changed how " +
             "your data is stored while it ran. Your data is intact."
@@ -520,7 +605,9 @@ export class Backups {
       }
       // A burst of whole base pages, each read in a unit of its own, with no outside call
       // between them; the unit that reads the last fixes E, the log's last seq then.
-      const lines: string[] = [];
+      // Each page's lines encoded once, into one buffer, as its parts will hold them: the
+      // burst bounded by their bytes.
+      const lines: Lines[] = [];
       let size = 0;
       let next: string | null = at.cursor;
       let e: number | null = null;
@@ -535,10 +622,9 @@ export class Backups {
                                 Number.MAX_SAFE_INTEGER, sizes.page);
           return { read, last: read.next === null ? log.state().last : null, at: Date.now() };
         });
-        for (const line of [...page.read.lines,
-                            ...page.read.chunks.map((chunk) => chunkLine(chunk))]) {
-          lines.push(line);
-          size += line.length;
+        for (const each of [page.read.lines, encodeLines(page.read.chunks.map(chunkLine))]) {
+          lines.push(each);
+          size += each.bytes.byteLength;
         }
         if (page.read.next === null) {
           e = page.last;
@@ -548,18 +634,10 @@ export class Backups {
         next = encodeCursor(page.read.next);
       }
       // Parts of whole lines, at most a chunk each, so an export streams them as they are.
-      const parts: Uint8Array[] = [];
-      let text = "";
-      for (const line of lines) {
-        const add = `${line}\n`;
-        if (text !== "" && new TextEncoder().encode(text + add).byteLength > sizes.part) {
-          parts.push(new TextEncoder().encode(text));
-          text = "";
-        }
-        text += add;
-      }
-      if (text !== "") {
-        parts.push(new TextEncoder().encode(text));
+      const parts = cutParts(lines, sizes.part);
+      if (parts.some((bytes) => bytes.byteLength > (sizes.most ?? CHUNK_BYTES))) {
+        await this.#abandon(ns, at, MANIFEST_LINE);
+        return true;
       }
       if (at.parts + at.segments + parts.length > MANIFEST_PARTS) {
         await this.#abandon(ns, at, MANIFEST_CEILING);

@@ -36,7 +36,9 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { bundledSources, signinsOn } from "../../doors/src/sources";
 import { PLATFORM_CALLER } from "../src/admission";
+import { Backups, BURST_BYTES } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";
+import { ChangeLog } from "../src/changelog";
 import { Grants } from "../src/grants";
 import { Ledger, LEDGER_LIMITS, type LedgerLimits, type Origin } from "../src/ledger";
 import { type ChunkStore, Files } from "../src/files";
@@ -46,6 +48,7 @@ import { CHUNK_BYTES } from "../src/manifest";
 import { type Binding, EDIT_BYTES_MAX, OwnerDO, type OwnerEnv } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
 import { FILE_DEFAULTS, Policy } from "../src/policy";
+import { MIGRATIONS } from "../src/schema";
 import {
   MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, SEGMENT_LEAST_BYTES,
 } from "../src/segments";
@@ -247,6 +250,7 @@ export class LegOwner extends OwnerDO {
   readonly #leg: LegEnv;
   readonly #gate: WriteGate;
   readonly #bodies: Bodies;
+  readonly #files: Files;
 
   constructor(state: DurableObjectState, env: LegEnv) {
     const files = received(env);
@@ -257,6 +261,47 @@ export class LegOwner extends OwnerDO {
                             () => ({ ...FILE_DEFAULTS, max_bytes: 25_000_000_000 }),
                             this.#gate.write, () => "storage_full");
     this.#bodies = new Bodies(bodyFiles, this.#gate.storage, this.#gate.write);
+    this.#files = bodyFiles;
+  }
+
+  /**
+   * A generation's burst at production sizes (`GENERATION_SIZES`) of the smallest lines a
+   * stream holds (notices of no detail, about 80 bytes a line, as small as a chunk's), so a
+   * burst holds the most lines its bytes allow: a whole generation run by the real lane, each
+   * part's put a checkpoint while the burst's pages and parts are live. Its parts.
+   */
+  async legBurst(): Promise<number> {
+    const sql = this.#gate.storage.sql;
+    await this.#gate.write(() => sql.exec(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 130000) " +
+      "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', '' FROM n"));
+    let parts = 0;
+    const put = async (bytes: Uint8Array) => {
+      await owned(this.#leg, "burst-part");
+      return { sha256: sha(bytes), size: bytes.byteLength };
+    };
+    const store = {
+      putManifestPart: async (_ns: string, _key: string, _gen: string, _part: number,
+                              bytes: Uint8Array) => {
+        parts += 1;
+        return put(bytes);
+      },
+      putManifestSegment: async (_ns: string, _key: string, _gen: string, _a: number,
+                                 _b: number, bytes: Uint8Array) => put(bytes),
+      putManifestRoot: async () => {},
+      getManifestRoot: async () => null,
+      deleteManifest: async () => {},
+    } as unknown as ChunkStore;
+    const lane = new Backups({
+      storage: this.#gate.storage, write: (unit) => this.#gate.quiet(unit), store,
+      log: new ChangeLog(this.#gate.storage), space: () => this.#files.space(),
+      owner: () => "owner", serves: () => true, schema: MIGRATIONS.length,
+      halted: () => false, notice: () => {},
+    });
+    await this.#gate.write(() => sql.exec("UPDATE owner_backup_state SET changed = 1"));
+    await this.#gate.quiet(() => lane.forExport(Date.now() / 1000));
+    await lane.run(Date.now() / 1000, Date.now() + 120_000);
+    return parts;
   }
 
   /** A placed body of `bytes` letters, placed as a message's is: its content id. */
@@ -625,6 +670,9 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
       if (path === "records") {
         return await moveRecords(env, MOVE_RECORDS);
       }
+      if (path === "burst") {
+        return await stub.legBurst();
+      }
       if (path === "merge") {
         const archive = env.ARCHIVE.getByName(name);
         await archive.legAckSeq(2, offset!);
@@ -683,7 +731,8 @@ export default {
                              move_seal_units: holds.moveTableUnits(25_000),
                              move_most_units: holds.moveTableUnits(MOVE_RECORDS),
                              move_records: MOVE_RECORDS,
-                             move_body_units: holds.moveTableUnits(2) });
+                             move_body_units: holds.moveTableUnits(2),
+                             burst_bytes: BURST_BYTES });
     }
     if (url.pathname === "/rest") {
       LEG.runs += 1;
