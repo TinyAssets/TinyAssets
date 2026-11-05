@@ -165,6 +165,11 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
   /** A log segment as the files Worker takes it: a checkpoint while its call holds it. */
   async putManifestSegment(_ns: string, _key: string, _gen: string, _a: number, _b: number,
                            bytes: Uint8Array): Promise<{ sha256: string; size: number }> {
+    // What crossed the RPC is the segment's own bytes, never a larger buffer (rvburst X1).
+    if (bytes.buffer.byteLength !== bytes.byteLength) {
+      throw new Error(`a segment arrived as a view of ${bytes.byteLength} bytes of a ` +
+                      `${bytes.buffer.byteLength}-byte buffer`);
+    }
     await checkpoint(this.env, undefined, "store-segment");
     return { sha256: sha(bytes), size: bytes.byteLength };
   }
@@ -257,10 +262,10 @@ async function moveRecords(env: LegEnv, records: number): Promise<number> {
  * image logged by `widen`, a change while capture is on (the change log test's L5-1 row).
  */
 const WIDEN = "UPDATE connections SET expires_at = coalesce(expires_at, 0) + 1";
-function wideRow(sql: Pick<SqlStorage, "exec">): void {
+function wideRow(sql: Pick<SqlStorage, "exec">, n = 0): void {
   sql.exec("INSERT INTO connections (id, source, kind, display_name, provider, models, " +
            "status, version, created_at, revocable, egress) VALUES (?, 'src', 'oauth2', " +
-           "?, 'p', ?, 'active', 1, 0, 1, ?)", "c".repeat(25), "wide \u20ac",
+           "?, 'p', ?, 'active', 1, 0, 1, ?)", `c${n}`.padEnd(25, "c"), "wide \u20ac",
            '"'.repeat(655_360), "\\".repeat(16_384));
 }
 
@@ -288,15 +293,22 @@ export class LegOwner extends OwnerDO {
    * stream holds (notices of no detail, about 80 bytes a line, as small as a chunk's), so a
    * burst holds the most lines its bytes allow: a whole generation run by the real lane, each
    * part's put a checkpoint, inside its units of the isolate's pool (`BURST_UNITS`), and the
-   * owner rewriting rows wide during its third part's put, so the ship after it builds a full
-   * log segment inside the burst. The widest segment it put.
+   * owner rewriting rows wide during its third part's put, so the ship after the burst's
+   * record builds a full log segment, under its own hold. The widest segment it put.
    */
   async legBurst(): Promise<number> {
     const sql = this.#gate.storage.sql;
     await this.#gate.write(() => sql.exec(
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 130000) " +
       "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', '' FROM n"));
-    await this.#gate.write(() => wideRow(sql));
+    // Seven rows at `IMAGE_MAX`, each a page of its own and the first burst's (connections
+    // come before notices): the seventh crosses its gather, a near-`IMAGE_MAX` two-byte row on
+    // a burst's last page, its build sampled (rvburst W1).
+    await this.#gate.write(() => {
+      for (let n = 0; n < 7; n++) {
+        wideRow(sql, n);
+      }
+    });
     let parts = 0;
     let widest = 0;
     const put = async (bytes: Uint8Array) => {
@@ -309,7 +321,7 @@ export class LegOwner extends OwnerDO {
         parts += 1;
         if (parts === 3) {
           // The owner writes during the put: 4,200 rows already read rewritten wide, so the
-          // ship after this part builds and puts a full segment inside the burst's units;
+          // ship after the burst's record builds and puts a full segment, its own hold;
           // each line ASCII but one character past U+00FF, the worst mix for its heap (a
           // two-byte string in V8, twice its UTF-8: review rvburst V1).
           await this.#gate.write(() => {
