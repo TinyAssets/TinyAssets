@@ -605,13 +605,16 @@ describe("the runs' rows (review M-1)", () => {
      async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    const { run } = await ownerRun(r.stub, r.bind(), undefined, "main");
+    const { run, start } = await ownerRun(r.stub, r.bind(), undefined, "main");
     const owner = r.bind({ tiers: TIERS });
     await r.in(async (instance) => {
       for (let i = 0; i < 3400; i++) {
         const waiting = await instance.agentSubmit(owner, {
           message: "x", client_send_id: `w-${i}`, conversation_id: run.conversation_id });
         await instance.agentCancel(owner, { run_id: waiting.run_id });
+        // Its runner keeps it alive, however slow the loop runs: unbeaten, its own heartbeat
+        // would lapse and the lane settle it `unknown`.
+        await instance.runEvents(runnerBinding(r, start), { frames: [] });
       }
     });
     const [{ n }] = await r.sql("SELECT COUNT(*) AS n FROM runs") as [{ n: number }];
