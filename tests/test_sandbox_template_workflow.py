@@ -18,6 +18,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
+pytestmark = pytest.mark.verifies(
+    'clean-sheet-platform:The sandbox runs behind one Worker that reaches only E2B'
+)
+
 
 def _production_guard():
     spec = importlib.util.spec_from_file_location(
