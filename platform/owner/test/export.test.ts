@@ -488,7 +488,8 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', CASE WHEN i % 2 = 0 THEN " +
     "printf('%.1000c', 'a') ELSE replace(printf('%.1000c', 'a'), 'a', '€') END FROM n", count);
 
-  it("reads each page of three-byte characters within its bytes, its lines whole", async () => {
+  it("reads each page of three-byte characters within its bytes, its lines whole",
+     { tags: ["large"] }, async () => {
     const o = await owner();
     await notices3(o, 2_000);
     const pages = await runInDurableObject(o.stub, (_instance: OwnerDO, state) => {
@@ -521,7 +522,7 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
   });
 
   it("finishes an owner of several bursts, read back exactly, each burst bounded by its " +
-     "bytes and its row under a row's 2 MB", async () => {
+     "bytes and its row under a row's 2 MB", { tags: ["large"] }, async () => {
     const o = await owner();
     // 14,000 notices of 1,000 characters, every other one of three-byte characters: about
     // 29 MB of base, so that each burst counts its UTF-8, not its UTF-16 (a third of it).

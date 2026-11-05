@@ -712,8 +712,8 @@ account and no deploy.
   when a migration it applied reads differently now (`schema_digests`, Flyway's
   `validate`), which catches what the repo's guard cannot (a hotfix branch, a revert), and
   refuses a migration it applied whose digest row is gone (it never passes by default).
-  The lock itself only grows: the guard `platform/owner/guards/migrations-append-only.test.ts`
-  holds `migrations.json` against the base branch (the base's first-deploy marker never
+  The lock itself only grows: the structural guard `tests/test_migration_lock_append_only.py`
+  holds `migrations.json` against `origin/main` (the base's first-deploy marker never
   changes; the base's pins stay the head's first pins, in order), so a change that edits a
   deployed migration and its pin together fails in review. Until the marker is set, slices
   still edit in place.

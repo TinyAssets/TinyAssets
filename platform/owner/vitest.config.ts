@@ -249,8 +249,10 @@ export default defineConfig({
         // (`guards/lifecycle-stub.ts`), since the real one loads `cloudflare:` modules.
         resolve: { alias: { "agents/lifecycle": join(PLATFORM, "owner", "guards",
                                                      "lifecycle-stub.ts") } },
+        // `migrations-append-only` reads its base's history, which the legs' checkout
+        // does not fetch yet: tests/test_migration_lock_append_only.py holds the lock.
         test: { name: "guards", ...medium("owner/guards"), include: ["guards/**/*.test.ts"],
-                environment: "node" },
+                exclude: ["guards/migrations-append-only.test.ts"], environment: "node" },
       },
     ],
   },

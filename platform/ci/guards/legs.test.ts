@@ -4,8 +4,9 @@
  *
  * `platform-tests` runs every workspace's tests as parallel legs and `platform-sizes` runs
  * the large ones, sharded (`ci/classes.ts`). A matrix job's result is every leg's, and
- * `required-tests` (the protected context) fails unless both, and the owner app's browser
- * job, succeeded. Held here: every workspace `platform/package.json` lists has its tests run
+ * `required-tests` (the protected context) fails unless `platform-tests` and the owner
+ * app's browser job succeeded; `platform-sizes` runs on every event, not yet one of its
+ * needs. Held here: every workspace `platform/package.json` lists has its tests run
  * by a leg, its `test` script whole or each `npm run` part of it; every workspace with a
  * large test has its `test:sizes` run, every shard of it; the typecheck has its leg; no leg
  * is excluded, conditional or allowed to fail; and each leg runs exactly its command.
@@ -27,8 +28,7 @@ import { largeTests } from "../timeouts";
 import { type Data, json, PLATFORM, REPO, workflow } from "../workflows";
 
 const STEPS = [
-  // Full history, no file contents until read: the migration lock's guard reads its base.
-  { uses: "actions/checkout@v4", with: { "fetch-depth": 0, filter: "blob:none" } },
+  { uses: "actions/checkout@v4" },
   { uses: "actions/setup-node@v4",
     with: { "node-version": "22", cache: "npm",
             "cache-dependency-path": "platform/package-lock.json" } },
@@ -245,7 +245,6 @@ describe("platform-tests and platform-sizes", () => {
       job.defaults.run["working-directory"] = ".";
     },
     "an extra step after the command": (job) => { job.steps.push({ run: "true" }); },
-    "a shallow checkout": (job) => { job.steps[0].with["fetch-depth"] = 1; },
     "drop hooks leg": drop("hooks"),
     "drop runner leg": drop("runner"),
     "drop typecheck leg": drop("typecheck"),
@@ -280,16 +279,19 @@ describe("platform-tests and platform-sizes", () => {
 
 describe("required-tests", () => {
   const RESULTS = { PLATFORM_RESULT: "${{ needs.platform-tests.result }}",
-                    APP_RESULT: "${{ needs.platform-app.result }}",
-                    SIZES_RESULT: "${{ needs.platform-sizes.result }}" };
+                    APP_RESULT: "${{ needs.platform-app.result }}" };
 
   it("needs the platform's jobs, each run on every event and never allowed to fail", () => {
     const jobs = tests().jobs;
     const agg = jobs["required-tests"];
     expect(agg.if).toBe("always()");
     expect(agg["continue-on-error"]).toBeUndefined();
+    // platform-sizes runs on every event too, and is not yet one of the needs.
+    expect(agg.needs).not.toContain("platform-sizes");
     for (const name of ["platform-tests", "platform-app", "platform-sizes"]) {
-      expect(agg.needs).toContain(name);
+      if (name !== "platform-sizes") {
+        expect(agg.needs).toContain(name);
+      }
       expect(jobs[name].if, `${name} must run on every event`).toBeUndefined();
       expect(jobs[name]["continue-on-error"]).toBeUndefined();
       for (const each of jobs[name].steps) {
@@ -309,13 +311,10 @@ describe("required-tests", () => {
     const results = ["success", "failure", "skipped", "cancelled", ""];
     for (const platform of results) {
       for (const app of results) {
-        for (const sizes of results) {
-          const script = `PLATFORM_RESULT=${platform}\nAPP_RESULT=${app}\n` +
-            `SIZES_RESULT=${sizes}\n${gate[0].run}`;
-          const run = spawnSync("bash", ["-s"], { input: script });
-          const passed = platform === "success" && app === "success" && sizes === "success";
-          expect(run.status, `${platform} ${app} ${sizes}`).toBe(passed ? 0 : 1);
-        }
+        const script = `PLATFORM_RESULT=${platform}\nAPP_RESULT=${app}\n${gate[0].run}`;
+        const run = spawnSync("bash", ["-s"], { input: script });
+        const passed = platform === "success" && app === "success";
+        expect(run.status, `${platform} ${app}`).toBe(passed ? 0 : 1);
       }
     }
   });

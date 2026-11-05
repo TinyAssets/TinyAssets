@@ -112,7 +112,8 @@ describe("a burst's cut into parts at production sizes", () => {
   const { part, gather } = GENERATION_SIZES;
   const lines = burst(gather);
 
-  it("keeps one burst's cut inside a third of the CPU limit", async () => {
+  it("keeps one burst's cut inside a third of the CPU limit", { tags: ["large"] },
+     async () => {
     const ms = await cpuMs(() => cut(lines, part));
     console.log(`one burst's cut: ${lines.length} lines, ${Math.round(ms)} ms CPU of ` +
                 `${CPU_LIMIT_MS}`);
@@ -120,7 +121,8 @@ describe("a burst's cut into parts at production sizes", () => {
   });
 
   it("costs in proportion to its size: a burst four times as large, parts and all, is " +
-     "under eight times the CPU (the replaced cut's was sixteen)", async () => {
+     "under eight times the CPU (the replaced cut's was sixteen)", { tags: ["large"] },
+     async () => {
     const quarter = burst(gather / 4, 2);
     const small = await leastMs(quarter, part / 4);
     const large = await leastMs(lines, part);
@@ -129,7 +131,8 @@ describe("a burst's cut into parts at production sizes", () => {
     expect(large).toBeLessThan(8 * Math.max(small, 1));
   });
 
-  it("cuts parts of at most CHUNK_BYTES, each of whole lines, that join to the burst", () => {
+  it("cuts parts of at most CHUNK_BYTES, each of whole lines, that join to the burst",
+     { tags: ["large"] }, () => {
     expect(part).toBe(CHUNK_BYTES);
     const parts = cut(lines, part);
     const decoder = new TextDecoder();
