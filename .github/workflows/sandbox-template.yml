@@ -13,7 +13,8 @@ name: Sandbox template (manual, founder-approved)
 #           passed pair at E2B and uploads passed.json, whose new entry and the
 #           printed tag are then committed with the pin (wrangler.jsonc). Once a
 #           tag: when E2B already holds a ready build of it in this team (a second
-#           dispatch, or one after a failed check), it builds nothing.
+#           dispatch, or one after a failed check), it builds nothing and runs the
+#           standing checks, and their record, on that build.
 #   pair  - the pair check alone: the pinned template with this commit's
 #           runner, no build (the deploy kit runs the same before a deploy).
 #
@@ -69,10 +70,30 @@ jobs:
 
       # The one step that holds the E2B key. Whether E2B already has a ready build of the
       # tag is the deploy kit's own check (deploy.ts templateReady); an answer it cannot
-      # read stops the step before anything is spent.
+      # read stops the step before anything is spent. A ready build gets build.py's own
+      # checks and record (CHECKS), on this tree's tag, never a second Template.build.
       - name: Build and check
         env:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          # build.py's main() after its build, driven rather than given a flag: build.py's
+          # text is in the template's tag, so an edit to it would be a new, paid build.
+          CHECKS: |
+            import hashlib, json, os, sys, tempfile
+            from pathlib import Path
+            sys.path.insert(0, os.path.join(os.getcwd(), "platform", "sandbox", "template"))
+            import build
+            os.chdir(build.PLATFORM)
+            name = f"{build.NAME}:{build.tag()}"
+            if name != sys.argv[1]:
+                raise SystemExit(f"this tree's template is {name}, not {sys.argv[1]}")
+            with tempfile.TemporaryDirectory() as tmp:
+                runner = build.bundle(Path(tmp) / "runner")
+                logins = build.check_logins(name, runner)
+                routes = build.route_probe(name, runner)
+                matcher = build.check_matcher(name, runner)
+                build.record_pass(name, runner, logins, routes, matcher)
+                print(json.dumps({"template": name, "runner": hashlib.sha256(runner).hexdigest(),
+                                  "install": matcher["install"]}))
         run: |
           set -euo pipefail
           if [ "${MODE}" = "pair" ]; then
@@ -85,8 +106,9 @@ jobs:
             ' "$name")"
             case "$ready" in
               true)
-                echo "E2B already holds a ready build of ${name} in this team: nothing built." \
-                  "Dispatch pair to check this commit's runner with it." | tee -a "$GITHUB_STEP_SUMMARY" ;;
+                echo "E2B already holds a ready build of ${name} in this team: no build;" \
+                  "its standing checks run on it." | tee -a "$GITHUB_STEP_SUMMARY"
+                python3 -c "$CHECKS" "$name" ;;
               false)
                 python3 platform/sandbox/template/build.py ;;
               *)
@@ -95,8 +117,26 @@ jobs:
             esac
           fi
 
-      - name: Keep the record of what passed
+      # An upload is a new record only: passed.json as checked out is no pass of this run.
+      - name: Did this run record a pass
+        id: record
         if: always()
+        run: |
+          rc=0
+          git diff --quiet -- platform/sandbox/template/passed.json || rc=$?
+          case "$rc" in
+            0)
+              echo "fresh=no" >> "$GITHUB_OUTPUT"
+              echo "passed.json is unchanged: this run recorded no pass." | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            1)
+              echo "fresh=yes" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::git could not compare passed.json ($rc)"
+              exit 1 ;;
+          esac
+
+      - name: Keep the record of what passed
+        if: always() && steps.record.outputs.fresh == 'yes'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: passed-json
