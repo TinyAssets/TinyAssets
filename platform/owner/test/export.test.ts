@@ -22,7 +22,8 @@ import {
 } from "../src/holds";
 import { SLOT_WAIT_MS, SlotPool } from "../src/slots";
 import {
-  decodeCursor, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED, readPage,
+  decodeCursor, encodeLines, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED,
+  readPage,
 } from "../src/export";
 import type FilesService from "../../files/src/index";
 import {
@@ -382,7 +383,7 @@ describe("a generation", () => {
 
   it("takes its burst's units of the pool now or yields: with the pool full it reads and " +
      "puts nothing and goes on later; with room, each part's put inside its units, each " +
-     "segment's inside the burst's or its own (burstlease)", async () => {
+     "segment's inside its own, never a burst's (burstlease, rvburst W1)", async () => {
     const pool = new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
                               OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
     const o = await owner();
@@ -399,8 +400,8 @@ describe("a generation", () => {
     expect(pool.state().held).toBe(other.units);  // nothing of the burst's left held
     other.release();
     // With room, the owner writing at every call: each part's put is made inside the
-    // burst's units, each segment's inside the burst's (between its parts) or its own ship
-    // hold (before or after a burst, at the end), the root's in none; all go back.
+    // burst's units, each segment's inside its own ship hold (before or after a burst, at
+    // the end: never between a burst's parts), the root's in none; all go back.
     const seen: Record<string, number[]> = { part: [], segment: [], root: [] };
     const made = await generate(o.stub, { pool, duringCall: async (at) => {
       seen[at.kind]!.push(pool.state().held);
@@ -409,7 +410,7 @@ describe("a generation", () => {
     expect(made.notices).toEqual([]);
     expect(digest(replay(made.lines))).toBe(made.atE);
     expect(new Set(seen["part"])).toEqual(new Set([BURST_UNITS]));
-    expect(new Set(seen["segment"])).toEqual(new Set([BURST_UNITS, SHIP_UNITS]));
+    expect(new Set(seen["segment"])).toEqual(new Set([SHIP_UNITS]));
     expect(seen["root"]).toEqual([0]);
     expect(pool.state()).toMatchObject({ held: 0, peak: BURST_UNITS });
   }, 120_000);
@@ -496,8 +497,8 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
         const page = readPage(state.storage.sql, cursor, { schema: MIGRATIONS.length,
                                                            owner: "owner", at: 0, gen: "g", s: 1 },
                               Number.MAX_SAFE_INTEGER, EXPORT_PAGE_BYTES);
-        // One buffer, each line whole at its end, its newline last.
-        const { bytes, ends } = page.lines;
+        // Encoded as the burst encodes it: one buffer, each line whole at its end.
+        const { bytes, ends } = encodeLines(page.lines);
         const text = Array.from(ends, (end, n) => new TextDecoder().decode(
           bytes.subarray(n === 0 ? 0 : ends[n - 1]!, end)));
         expect(ends.at(-1)).toBe(bytes.byteLength);
