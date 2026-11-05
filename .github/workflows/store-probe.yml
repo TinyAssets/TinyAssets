@@ -12,7 +12,7 @@ name: Store probe
 # is touched, no owner data exists there, and no model credential is used: pi runs on
 # pi-ai's faux provider.
 #
-# Token scope (the CLOUDFLARE_API_TOKEN repo secret deploy-worker.yml and cap-probe.yml use):
+# Token scope (the CLOUDFLARE_API_TOKEN repo secret deploy-worker.yml uses):
 #   Account -> Workers Scripts: Edit       upload, DO class migrations, the door's
 #                                          workers.dev route, delete, reading the
 #                                          workers.dev subdomain and the DO namespace list
