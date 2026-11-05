@@ -40,7 +40,6 @@
 // Differences cancel the baseline and the probe's own code (review M4); the absolute figure
 // is production's (`memoryUsageBytes`). Run: `npm run test:memory -w owner`. Exits non-zero
 // on any failed check, printing every figure.
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -49,13 +48,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { egressLeg } from "./egress.mjs";
+import { freePorts } from "./ports.mjs";
+import { ownWorkerd } from "./workerd.mjs";
 
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(OWNER, "package.json"));
 const MIB = 1024 * 1024;
-const PORT = 8899;
-const INSPECT = 9399;
-const DRIVER = 8898;
+const [PORT, INSPECT, DRIVER] = await freePorts(3);
 const HTTP = `http://127.0.0.1:${PORT}`;
 const CPU_MS = 30_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -114,9 +113,10 @@ const dummy :Workerd.Worker = (
 const driver = createServer();
 await new Promise((resolve) => driver.listen(DRIVER, "127.0.0.1", resolve));
 const workerd = join(dirname(require.resolve("workerd/package.json")), "bin", "workerd");
-const child = spawn(workerd, ["serve", join(work, "config.capnp"),
-                              `--inspector-addr=127.0.0.1:${INSPECT}`],
-                    { stdio: ["ignore", "inherit", "inherit"] });
+// This leg's own workerd: its early exit fails the leg, and any end of the leg kills it.
+const own = ownWorkerd(workerd, ["serve", join(work, "config.capnp"),
+                                 `--inspector-addr=127.0.0.1:${INSPECT}`],
+                       { onEarlyExit: () => rmSync(work, { recursive: true, force: true }) });
 const problems = [];
 const rows = [];
 try {
@@ -129,6 +129,7 @@ try {
   if (target === undefined) {
     throw new Error(`no owner isolate among the inspector's targets: ${JSON.stringify(list)}`);
   }
+  own.check();
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();
@@ -149,6 +150,7 @@ try {
   const get = async (path) => {
     const answer = await fetch(`${HTTP}${path}`);
     const body = await answer.text();
+    own.check();
     if (!answer.ok) {
       throw new Error(`${path}: ${answer.status} ${body}`);
     }
@@ -443,7 +445,7 @@ try {
   problems.push(String(error?.stack ?? error));
   console.log(JSON.stringify({ checks: rows }, null, 1));
 } finally {
-  child.kill("SIGKILL");
+  own.stop();
   driver.close();
   rmSync(work, { recursive: true, force: true });
 }
