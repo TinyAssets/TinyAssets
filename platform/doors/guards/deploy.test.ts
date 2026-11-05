@@ -22,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  DOORS, E2B_HOOK, handover, hookPlan, hookSetsSecret, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  DOORS, E2B_HOOK, handover, heldHook, hookPlan, hookSetsSecret, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
@@ -577,18 +577,22 @@ describe("the deploy kit", () => {
 
   it("touches the webhook only where each mode allows, and the kit wires it so", () => {
     // The plan reaches no E2B; dark registers disabled after the secrets; routes enables only
-    // after the routes; both check the hook with the live checks first.
-    expect(hookPlan({ open: true, routes: false })).toEqual({ check: false, at: "none",
-                                                              enable: false });
-    expect(hookPlan({ open: true, routes: true })).toEqual({ check: false, at: "none",
-                                                             enable: false });
-    expect(hookPlan({ open: false, routes: false })).toEqual({ check: true, at: "secrets",
-                                                               enable: false });
-    expect(hookPlan({ open: false, routes: true })).toEqual({ check: true, at: "routes",
-                                                              enable: true });
-    // main() follows the plan in this order: the check, before the routes are read; the
-    // secrets; the dark step; the handover; the routes step. Its one lifecycleHook call
-    // takes the plan's `enable`, and the account id is masked as soon as it is known.
+    // after the routes; both list the hook with the live checks first, and a missing one is
+    // made this run, with the doors' secret.
+    for (const missing of [false, true]) {
+      expect(hookPlan({ open: true, routes: false, missing }))
+        .toEqual({ check: false, at: "none", enable: false, creates: false });
+      expect(hookPlan({ open: true, routes: true, missing }))
+        .toEqual({ check: false, at: "none", enable: false, creates: false });
+      expect(hookPlan({ open: false, routes: false, missing }))
+        .toEqual({ check: true, at: "secrets", enable: false, creates: missing });
+      expect(hookPlan({ open: false, routes: true, missing }))
+        .toEqual({ check: true, at: "routes", enable: true, creates: missing });
+    }
+    // main() follows the plan in this order: the listing, before the routes are read; the
+    // secrets, with the hook's creation; the dark step; the handover; the routes step. Its
+    // one lifecycleHook call takes the plan's `enable`, and the account id is masked as soon
+    // as it is known.
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     const body = kit.slice(kit.indexOf("async function main()"));
     const at = (needle: string) => {
@@ -601,9 +605,10 @@ describe("the deploy kit", () => {
       at("const { id: zone, account } = await zoneOf(api);"),
       at("console.log(`::add-mask::${account}`);"),
       at("process.env[\"CLOUDFLARE_ACCOUNT_ID\"] = account;"),
-      at("const hookAt = hookPlan({ open, routes });"),
-      at("if (hookAt.check) {\n    await hook(false, false);\n  }"),
+      at("const listed = open ? undefined : await heldHook(input(\"E2B_API_KEY\")!);"),
+      at("const hookAt = hookPlan({ open, routes, missing: listed === null });"),
       at("steps = handover(await routesOf(api, zone), DOORS, ROUTES);"),
+      at("const setting = secretPlan(held, rotate, open ? null : input, hookAt.creates);"),
       at("const hookSecret = hookSetsSecret(setting);"),
       at("if (hookAt.at === \"secrets\") {\n      plan.push(`E2B lifecycle webhook ${" +
          "E2B_HOOK.url}: ${await hook(apply, hookSecret)}`);"),
@@ -612,8 +617,42 @@ describe("the deploy kit", () => {
     ];
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(body.match(/lifecycleHook\(/g)).toHaveLength(1);
+    expect(body.match(/heldHook\(/g)).toHaveLength(1);
     expect(body).toContain("input(\"E2B_WEBHOOK_SECRET\")!, change, hookAt.enable, setSecret)");
-    expect(body.match(/await hook\(/g)).toHaveLength(3);
+    expect(body.match(/await hook\(/g)).toHaveLength(2);
+  });
+
+  it("starts the pair equal: a dark run that makes the hook sets the doors' secret too",
+     async () => {
+    // The doors hold an old E2B_WEBHOOK_SECRET, production holds a new one, and E2B holds no
+    // hook. The dark run's own steps: the listing, the plan, the secrets, the hook.
+    const doors = new Map([["E2B_WEBHOOK_SECRET", "old"]]);
+    const production = (name: string) => (name === "E2B_WEBHOOK_SECRET" ? "new" : undefined);
+    const fake = e2b([]);
+    const listed = await heldHook("k", fake.fetcher);
+    expect(listed).toBeNull();
+    const hookAt = hookPlan({ open: false, routes: false, missing: listed === null });
+    expect(hookAt.creates).toBe(true);
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                           "INBOUND_SLACK_SIGNING_SECRET"],
+                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
+    const setting = secretPlan(held, new Set(), null, hookAt.creates);
+    expect(setting).toEqual([{ worker: "doors", name: "E2B_WEBHOOK_SECRET" }]);
+    for (const { worker, name } of setting) {
+      if (worker === "doors") {
+        doors.set(name, production(name)!);
+      }
+    }
+    await lifecycleHook("k", production("E2B_WEBHOOK_SECRET")!, true, hookAt.enable,
+                        hookSetsSecret(setting), fake.fetcher);
+    expect([doors.get("E2B_WEBHOOK_SECRET"), fake.hooks[0]!["signatureSecret"]])
+      .toEqual(["new", "new"]);
+    expect(fake.hooks[0]!["enabled"]).toBe(false);
+    // A run that finds the hook held makes nothing and sets neither.
+    expect(secretPlan(held, new Set(), null,
+                      hookPlan({ open: false, routes: false, missing: false }).creates))
+      .toEqual([]);
   });
 
   it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",

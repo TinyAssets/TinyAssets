@@ -142,9 +142,11 @@ It never counts as "absent".
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:**
    `https://tinyassets.io/oauth/upstream/callback`. The kit never deletes one.
 7. **E2B's lifecycle webhook** (`https://tinyassets.io/hooks/e2b/lifecycle`, matched by
-   its URL): registered **disabled** if E2B's listing lacks it, and its signature secret set
-   again to `E2B_WEBHOOK_SECRET` on every apply (E2B never shows a hook's secret, so the kit
-   cannot compare). It is never disabled or deleted.
+   its URL, listed with the checks before any change): registered **disabled** if E2B's
+   listing lacks it, and the run that registers it sets the doors' `E2B_WEBHOOK_SECRET` from
+   `production` too, so the two start equal. After that its secret changes only with the
+   doors' (`rotate` naming `E2B_WEBHOOK_SECRET`): E2B never shows a hook's secret, so the kit
+   cannot compare them. It is never disabled or deleted.
 8. **The handles canary** (Fact 11) runs against `tinyassets.io/mcp`, with
    `TINYASSETS_WIKI_CANARY_TOKEN`. No route moves, so it should show the live connector
    exactly as before.

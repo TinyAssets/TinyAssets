@@ -50,7 +50,8 @@
  *   POST; never a delete);
  * - E2B's lifecycle webhook is listed and checked before any change, registered, disabled,
  *   only when E2B's listing lacks it, its secret changed only with the doors' copy, and
- *   enabled only by `--routes` after the handover (`hookPlan`, `lifecycleHook`);
+ *   enabled only by `--routes` after the handover; the run that registers it sets the
+ *   doors' copy too (`hookPlan`, `secretPlan`, `lifecycleHook`);
  * - the owner Worker is deployed only when the migration lock (`owner/migrations.json`)
  *   marks the first deploy and pins every migration the code ships, in order
  *   (`lockRefusal`): pin with `PIN_MIGRATIONS=<commit>` (`owner/guards/migrations.test.ts`)
@@ -644,43 +645,39 @@ export async function registerRedirect(key: string, apply: boolean, fetcher: Fet
 
 /**
  * Where a run touches E2B's lifecycle webhook, and whether it enables it: the hook is listed
- * and checked with the live checks, before any change, in every mode that holds the E2B key;
- * `dark` then registers or changes it once the doors hold their secrets, never enabling it;
- * `routes` does so only after the last route is handed to the doors, enabling it, since
- * an enabled hook sends the whole team's events to whatever serves its path. The public plan
- * never reaches E2B.
+ * and checked with the live checks, before any change, in every mode that holds the E2B key
+ * (`missing` is that listing's answer); `dark` then registers or changes it once the doors
+ * hold their secrets, never enabling it; `routes` does so only after the last route is
+ * handed to the doors, enabling it, since an enabled hook sends the whole team's events to
+ * whatever serves its path. A run that `creates` the hook sets the doors' E2B_WEBHOOK_SECRET
+ * too (`secretPlan`), so the pair starts equal. The public plan never reaches E2B.
  */
-export function hookPlan(mode: { open: boolean; routes: boolean }):
-    { check: boolean; at: "none" | "secrets" | "routes"; enable: boolean } {
+export function hookPlan(mode: { open: boolean; routes: boolean; missing?: boolean }):
+    { check: boolean; at: "none" | "secrets" | "routes"; enable: boolean; creates: boolean } {
   if (mode.open) {
-    return { check: false, at: "none", enable: false };
+    return { check: false, at: "none", enable: false, creates: false };
   }
-  return mode.routes ? { check: true, at: "routes", enable: true }
-    : { check: true, at: "secrets", enable: false };
+  const creates = mode.missing === true;
+  return mode.routes ? { check: true, at: "routes", enable: true, creates }
+    : { check: true, at: "secrets", enable: false, creates };
 }
 
 /**
  * Whether this run sets E2B's copy of the webhook secret: only when it sets the doors' copy
- * (missing on the doors, or named in `--rotate`), so the two never drift apart.
+ * (missing on the doors, named in `--rotate`, or the hook made this run), so the two never
+ * drift apart.
  */
 export function hookSetsSecret(setting: readonly { worker: string; name: string }[]): boolean {
   return setting.some((step) => step.worker === "doors" && step.name === "E2B_WEBHOOK_SECRET");
 }
 
 /**
- * E2B's lifecycle webhook, matched by its URL. Missing, it is registered with `secret`,
- * disabled unless `enable`. Held, it is changed only where the run asks: its signature
- * secret only with `setSecret`, when this run also sets the doors' E2B_WEBHOOK_SECRET (E2B
- * never shows a hook's secret, so the two change together or not at all); its events when
- * they differ; and it is enabled with `enable` (`--routes`). It is never disabled or deleted.
- * Without `apply` it only lists and checks. A failed listing or write, or two hooks for the
- * URL, throws.
+ * E2B's lifecycle webhook as its listing holds it, matched by its URL, or null when it holds
+ * none. A failed listing, or two hooks for the URL, throws.
  */
-export async function lifecycleHook(key: string, secret: string, apply: boolean,
-                                    enable: boolean, setSecret: boolean,
-                                    fetcher: Fetch = fetch): Promise<string> {
-  const headers = { "X-API-Key": key, "Content-Type": "application/json" };
-  const listed = await fetcher(`${E2B_API}/events/webhooks`, { headers });
+export async function heldHook(key: string, fetcher: Fetch = fetch): Promise<Json | null> {
+  const listed = await fetcher(`${E2B_API}/events/webhooks`, {
+    headers: { "X-API-Key": key, "Content-Type": "application/json" } });
   if (listed.status !== 200) {
     throw new Error(`E2B listed its webhooks with ${listed.status}`);
   }
@@ -692,8 +689,24 @@ export async function lifecycleHook(key: string, secret: string, apply: boolean,
   if (ours.length > 1) {
     throw new Error(`E2B holds ${ours.length} webhooks for ${E2B_HOOK.url}: keep one`);
   }
-  const hook = ours[0];
-  if (hook === undefined) {
+  return ours[0] ?? null;
+}
+
+/**
+ * E2B's lifecycle webhook (`heldHook`). Missing, it is registered with `secret`, disabled
+ * unless `enable`; the run that does so sets the doors' copy of the secret too (`hookPlan`,
+ * `secretPlan`). Held, it is changed only where the run asks: its signature secret only with
+ * `setSecret`, when this run also sets the doors' E2B_WEBHOOK_SECRET (E2B never shows a
+ * hook's secret, so the two change together or not at all); its events when they differ;
+ * and it is enabled with `enable` (`--routes`). It is never disabled or deleted. Without
+ * `apply` it only lists and checks. A failed listing or write throws.
+ */
+export async function lifecycleHook(key: string, secret: string, apply: boolean,
+                                    enable: boolean, setSecret: boolean,
+                                    fetcher: Fetch = fetch): Promise<string> {
+  const headers = { "X-API-Key": key, "Content-Type": "application/json" };
+  const hook = await heldHook(key, fetcher);
+  if (hook === null) {
     const state = enable ? "enabled" : "disabled";
     if (!apply) {
       return `missing: registered, ${state}`;
@@ -754,7 +767,8 @@ export function keyring(text: string | undefined, name = "GATEWAY_KEYRING"):
  */
 export function secretPlan(held: Readonly<Record<string, readonly string[] | null>>,
                            rotate: ReadonlySet<string>,
-                           values: ((name: string) => string | undefined) | null):
+                           values: ((name: string) => string | undefined) | null,
+                           hookCreated = false):
     { worker: string; name: string }[] {
   const has = (worker: string, name: string) => (held[worker] ?? []).includes(name);
   if (has("doors", SHARED) !== has("owner", SHARED) && !rotate.has(SHARED)) {
@@ -774,7 +788,9 @@ export function secretPlan(held: Readonly<Record<string, readonly string[] | nul
   const plan: { worker: string; name: string }[] = [];
   for (const [worker, names] of Object.entries(SECRETS)) {
     for (const name of names) {
-      if (!has(worker, name) || rotate.has(name)) {
+      // A webhook made this run takes production's secret: the doors take it too.
+      const withHook = hookCreated && worker === "doors" && name === "E2B_WEBHOOK_SECRET";
+      if (!has(worker, name) || rotate.has(name) || withHook) {
         plan.push({ worker, name });
       }
     }
@@ -943,12 +959,10 @@ async function main(): Promise<void> {
   }
   // E2B's lifecycle webhook, listed and checked now: two hooks for its URL, or a failed
   // listing, stop the kit before a route moves.
-  const hookAt = hookPlan({ open, routes });
+  const listed = open ? undefined : await heldHook(input("E2B_API_KEY")!);
+  const hookAt = hookPlan({ open, routes, missing: listed === null });
   const hook = (change: boolean, setSecret: boolean) => lifecycleHook(
     input("E2B_API_KEY")!, input("E2B_WEBHOOK_SECRET")!, change, hookAt.enable, setSecret);
-  if (hookAt.check) {
-    await hook(false, false);
-  }
   let steps: RouteStep[] = [];
   if (routes) {
     steps = handover(await routesOf(api, zone), DOORS, ROUTES);
@@ -1000,7 +1014,7 @@ async function main(): Promise<void> {
     for (const worker of Object.keys(SECRETS)) {
       held[worker] = await secretsOf(api, account, `tinyassets-${worker}`);
     }
-    const setting = secretPlan(held, rotate, open ? null : input);
+    const setting = secretPlan(held, rotate, open ? null : input, hookAt.creates);
     const hookSecret = hookSetsSecret(setting);
     for (const { worker, name } of setting) {
       const value = input(name);
