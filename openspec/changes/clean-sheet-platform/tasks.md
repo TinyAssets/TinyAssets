@@ -85,10 +85,13 @@ test, cutover.
   data: `OWNER_ISSUER` and the `UPSTREAM` record (endpoints, client id, the identity's
   deletion URL), both `not-configured` as checked in (the config guard), filled by the
   deploy kit (`platform/deploy/deploy.ts`) from the issuer's live discovery, which must name
-  `OWNER_ISSUER` exactly, declare `client_secret_post` and https endpoints, and show
-  `auth_time` (one real AuthKit token's claims, `OWNER_TOKEN_CLAIMS`, or else the
-  discovery's `claims_supported`; an absent field is unknown, and unknown stops the kit),
-  or nothing deploys (review, research 3b); the secret
+  `OWNER_ISSUER` exactly and declare `client_secret_post` and https endpoints (an absent
+  field is unknown, and unknown stops the kit), or nothing deploys (review, research 3b).
+  No discovery shows whether the ID token carries `auth_time`, so the kit's `--probe` mode,
+  after `dark` and before `routes`, hands the doors only `/authorize*` and `/oauth/*` behind
+  the closed gates and prints one first-party sign-in link; that sign-in proves `auth_time`,
+  the doors' client and secret at the issuer and the callback, or names the check that
+  failed at the callback; the secret
   `WORKOS_API_KEY`. `prompt=login`, `scope=openid` and the PKCE challenge again as the ID
   token's `nonce`. A half-configured Worker throws (`upstreamOf`), and only at sign-in:
   `upstreamOf` is read lazily, so a bad `UPSTREAM` breaks sign-in alone and every other
@@ -103,7 +106,8 @@ test, cutover.
   callback refuses the sign-in. Owners migrated at cutover are admitted by the import
   (task 9): it admits each imported owner's object through the platform caller and writes
   its `o:` record, as sign-up does, so no imported owner is ever `pending` (review L8). The admit is idempotent and lifts no suspension. Owed live: the
-  exact `iss` against a live token, and AuthKit's production Google and GitHub apps.
+  probe's sign-in (the exact `iss` and `auth_time` against a live ID token), and AuthKit's
+  production Google and GitHub apps.
 - [x] The AuthKit upstream refuses an ID token without `auth_time`: there is no clock
   fallback (this replaces the research's "use the binder's own clock"), since the fence
   and the session's 600 s bound both rest on the sign-in's real time. The binder names

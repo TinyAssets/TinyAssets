@@ -175,6 +175,16 @@ describe("the live upstream", () => {
       .rejects.toThrow(/nonce/);
   });
 
+  it("names a refused exchange's OAuth error code, and nothing else of its answer", async () => {
+    const refusing = (body: unknown) => (async () =>
+      Response.json(body, { status: 401 })) as unknown as typeof fetch;
+    const finish = (body: unknown) => oidcUpstream(ISSUER, CONFIG, SECRET, refusing(body))
+      .finish({ code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK });
+    await expect(finish({ error: "invalid_client", error_description: `bad ${SECRET}` }))
+      .rejects.toThrow(/^the upstream's token endpoint answered 401 \(invalid_client\)$/);
+    await expect(finish({ error: SECRET })).rejects.toThrow(/^[^(]*answered 401$/);
+  });
+
   it("deletes an identity by its subject, with the secret; gone already is done", async () => {
     const seen: Request[] = [];
     const answering = (status: number) => (async (input: RequestInfo | URL, init?: RequestInit) => {

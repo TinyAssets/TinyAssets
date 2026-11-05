@@ -12,7 +12,8 @@
  *    provider's browser-bound, single-use upstream record and `prompt=login`, so the
  *    sign-in's time is always fresh, and after any revoke the owner made before.
  * 4. At the callback: the provider recovers the request in the same browser only, the
- *    upstream verifies the sign-in, and the doors take it only when at most 600 s old.
+ *    upstream verifies the sign-in, and the doors take it only when at most 600 s old. A
+ *    failed verification is a `502` naming the check, logged the same.
  * 5. The owner directory's record of the owner (`o:`): an erased owner is refused (and its
  *    identity's deletion tried again), whatever the issuer still says.
  * 6. The platform gates: an outside client's authorization is outside work (the kill
@@ -62,10 +63,10 @@ interface Verifier {
 const escape = (value: string): string =>
   value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 
-function text(status: number, message: string): Response {
-  return new Response(message, {
-    status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
-  });
+function text(status: number, message: string, headers: Headers = new Headers()): Response {
+  headers.set("Content-Type", "text/plain; charset=utf-8");
+  headers.set("Cache-Control", "no-store");
+  return new Response(message, { status, headers });
 }
 
 function redirect(location: string, headers: Headers = new Headers()): Response {
@@ -321,8 +322,17 @@ export async function callback(request: Request, env: DoorsEnv,
   if (params.get("error") !== null || code === null) {
     return redirect(authorizationErrorRedirect(original, "access_denied"), headers);
   }
-  const signedIn = await upstream.finish({ code, code_verifier: data.verifier,
-                                           redirect_uri: UPSTREAM_CALLBACK });
+  let signedIn: SignIn;
+  try {
+    signedIn = await upstream.finish({ code, code_verifier: data.verifier,
+                                       redirect_uri: UPSTREAM_CALLBACK });
+  } catch (error) {
+    // The check that failed, by name, on the page and in the Worker's log: an upstream's
+    // message names a check or a status, never a token or a secret (`upstream.ts`).
+    const reason = error instanceof Error ? error.message : "the upstream sign-in failed";
+    console.error(`the upstream sign-in failed: ${reason}`);
+    return text(502, `The sign-in could not be completed: ${reason}.`, headers);
+  }
   const at = now();
   if (!Number.isSafeInteger(signedIn.authenticated_at)
       || signedIn.authenticated_at < at - SIGN_IN_MAX_AGE_S

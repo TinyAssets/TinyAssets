@@ -6,15 +6,13 @@ Every value is set only where it is absent, and travels on stdin alone: never in
 on disk or in the output, which names each value and its status, nothing more.
 
     python scripts/platform_setup.py secrets    # ROUTING_MAC_KEY, E2B_WEBHOOK_SECRET, the keyrings
-    python scripts/platform_setup.py variables  # OWNER_ISSUER, WORKOS_CLIENT_ID, OWNER_TOKEN_CLAIMS
+    python scripts/platform_setup.py variables  # OWNER_ISSUER, WORKOS_CLIENT_ID
     Get-Clipboard | python scripts/platform_setup.py workos   # a WorkOS key into `production`
     # (Git Bash: powershell.exe -NoProfile -Command Get-Clipboard | python ... workos)
     python scripts/platform_setup.py workos --delete-repo-copies  # then the repository copies
     python scripts/platform_setup.py review-app --code "<code, or the URL GitHub landed on>"
 
-`variables` needs one uptime canary run on `main` after this change lands: OWNER_TOKEN_CLAIMS
-is that run's receipt of its renewed AuthKit token (`iss` and `auth_time` alone). E2B's
-lifecycle webhook is the deploy kit's to register (`platform/deploy/deploy.ts`).
+E2B's lifecycle webhook is the deploy kit's to register (`platform/deploy/deploy.ts`).
 """
 
 from __future__ import annotations
@@ -27,12 +25,10 @@ import re
 import secrets
 import subprocess
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from pathlib import Path
 
 REPO = "TinyAssets/TinyAssets"
 OWNER = "TinyAssets"
@@ -48,10 +44,6 @@ WORKOS_REPO_COPIES = ("WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN")
 REVIEW_KEY = "REVIEW_APP_PRIVATE_KEY"
 REVIEW_ID = "REVIEW_APP_ID"
 CONVERSIONS = "https://api.github.com/app-manifests/{code}/conversions"
-# The uptime canary's receipt of its renewed AuthKit token (scripts/canary_session.py).
-CANARY_WORKFLOW = "uptime-canary.yml"
-CLAIMS_ARTIFACT = "owner-token-claims"
-CLAIMS_FILE = "owner-token-claims.json"
 MAIN_ONLY = {"protected_branches": False, "custom_branch_policies": True}
 USER_AGENT = "tinyassets-platform-setup"
 
@@ -149,19 +141,6 @@ class Gh:
         if done.returncode != 0:
             raise SetupError(f"setting the variable {name} failed (exit {done.returncode})")
         return "set" if held is None else "replaced"
-
-    def runs(self, workflow: str) -> list[dict]:
-        done = self._gh(["run", "list", "--workflow", workflow, "--branch", "main", "--limit",
-                         "30", "--json", "databaseId,headBranch", "--repo", self.repo])
-        if done.returncode != 0:
-            raise SetupError(f"listing {workflow}'s runs failed (exit {done.returncode})")
-        return json.loads(done.stdout or "[]")
-
-    def download(self, run_id: int, artifact: str, into: str) -> bool:
-        """`gh run download` of one run's artifact; False when that run kept none."""
-        done = self._gh(["run", "download", str(run_id), "--name", artifact, "--dir", into,
-                         "--repo", self.repo])
-        return done.returncode == 0
 
 
 # --- the production secrets ----------------------------------------------------------------
@@ -278,44 +257,14 @@ def check_issuer(issuer: str, fetch: Fetch = fetch_json) -> None:
         raise SetupError(f"the issuer's discovery does not name {issuer} ({status})")
 
 
-def claims_of(receipt: object, issuer: str) -> dict[str, object]:
-    """`{iss, auth_time}` from the canary's receipt, held to the kit's own check."""
-    if not isinstance(receipt, dict) or receipt.get("iss") != issuer:
-        raise SetupError("the canary's token receipt does not name OWNER_ISSUER")
-    auth_time = receipt.get("auth_time")
-    if isinstance(auth_time, bool) or not isinstance(auth_time, int) or auth_time <= 0:
-        raise SetupError("the canary's AuthKit token carries no auth_time")
-    return {"iss": issuer, "auth_time": auth_time}
-
-
-def canary_receipt(gh: Gh) -> object:
-    """The newest receipt an uptime canary run on `main` kept, or a SetupError."""
-    for run in gh.runs(CANARY_WORKFLOW):
-        if run.get("headBranch") != "main":
-            continue
-        with tempfile.TemporaryDirectory() as into:
-            if gh.download(int(run["databaseId"]), CLAIMS_ARTIFACT, into):
-                found = list(Path(into).rglob(CLAIMS_FILE))
-                if len(found) != 1:
-                    raise SetupError("the canary's receipt is not one file")
-                return json.loads(found[0].read_text(encoding="utf-8"))
-    raise SetupError("no uptime canary run on main kept a token receipt yet: wait for one "
-                     "(every 5 minutes, once this change is on main) and run this again")
-
-
 def variables(gh: Gh, fetch: Fetch = fetch_json) -> bool:
-    """The three variables, each only where absent. False when one is left differing."""
+    """The two variables, each only where absent. False when one is left differing."""
     check_issuer(OWNER_ISSUER, fetch)
     ok = True
     for name, value in (("OWNER_ISSUER", OWNER_ISSUER), ("WORKOS_CLIENT_ID", WORKOS_CLIENT_ID)):
         status = gh.set_variable(name, value)
         ok = ok and not status.startswith("differs")
         say(name, status)
-    if gh.variable("OWNER_TOKEN_CLAIMS") is not None:
-        say("OWNER_TOKEN_CLAIMS", "already set")
-        return ok
-    claims = claims_of(canary_receipt(gh), OWNER_ISSUER)
-    say("OWNER_TOKEN_CLAIMS", gh.set_variable("OWNER_TOKEN_CLAIMS", json.dumps(claims)))
     return ok
 
 

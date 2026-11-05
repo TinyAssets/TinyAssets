@@ -4,7 +4,7 @@
  * `invalid_grant` once revoked.
  */
 import { createExecutionContext } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mcpOrigin } from "../src/binder";
 import { ACCESS_TOKEN_TTL_S, MCP_RESOURCE, now, REFRESH_TOKEN_TTL_S, WEB_REDIRECT } from "../src/config";
@@ -194,6 +194,30 @@ describe("the authorization flow", () => {
                                         { owner: owner(), authenticatedAt: now() - 601 });
     expect(new URL(stale.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
+  });
+
+  it("names a failed upstream check at the callback, on its page and in the log", async () => {
+    const reason = "the ID token carries no auth_time";
+    const upstream: Upstream = { ...FAKE_UPSTREAM,
+                                 finish: () => Promise.reject(new Error(reason)) };
+    const client = await registerClient();
+    const jar = new Jar();
+    const { challenge } = await pkce();
+    const page = await consent(jar, client, challenge);
+    const approved = await decide(jar, handleOf(await page.text()), "approve");
+    const sent = new URL(approved.headers.get("Location")!);
+    const back = new URLSearchParams({ code: "c", state: sent.searchParams.get("state")! });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const failed = await serve(new Request(url(`/oauth/upstream/callback?${back}`), {
+        headers: { ...NAVIGATE, Cookie: jar.header() } }), doorsEnv, createExecutionContext(),
+                                 upstream, TEST_SOURCES);
+      expect(failed.status).toBe(502);
+      expect(await failed.text()).toBe(`The sign-in could not be completed: ${reason}.`);
+      expect(logged).toHaveBeenCalledWith(`the upstream sign-in failed: ${reason}`);
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("never gives an outside client a first-party token, nor the app an MCP one", async () => {

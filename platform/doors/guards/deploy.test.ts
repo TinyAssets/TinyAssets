@@ -10,7 +10,8 @@
  * keyring is never replaced, and is rotated only by adding a key; the control record is
  * written only when the API answers that it is absent; an absent discovery field is unknown,
  * and unknown stops the kit; the kit runs from an approved manual workflow whose secrets come
- * from the environment's store.
+ * from the environment's store. The sign-in probe takes only the sign-in's two unserved paths,
+ * behind a control record that admits nobody, and `--routes` then finds both held.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -21,12 +22,16 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../owner/guards/sources";
 import {
-  BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  DOORS, E2B_HOOK, handover, heldHook, hookPlan, hookSetsSecret, maskInLog, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  admitsNobody, BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig,
+  EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,
+  maskInLog, keyring, kvValue, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf,
+  PROBE_ROUTES, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
 } from "../../deploy/deploy";
+import { APP_RESOURCE, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT } from "../src/config";
+import { outsideOpen, ownerOpen } from "../src/control";
 import { parseControl } from "../src/directory";
 import { E2B_HOOK_PATH } from "../src/e2b-hooks";
 import { upstreamConfig } from "../src/oidc";
@@ -140,22 +145,21 @@ describe("the deploy kit", () => {
   const discovery = (body: Json) => async () => Response.json(body);
   const good = { issuer: "https://auth.test", authorization_endpoint: "https://auth.test/a",
                  token_endpoint: "https://auth.test/t", jwks_uri: "https://auth.test/j",
-                 token_endpoint_auth_methods_supported: ["client_secret_post"],
-                 claims_supported: ["sub", "auth_time"] };
+                 token_endpoint_auth_methods_supported: ["client_secret_post"] };
 
   it("holds the owner issuer to its live discovery exactly, in a record the doors accept",
      async () => {
-    const made = await upstreamFrom("https://auth.test", "c", undefined, discovery(good));
+    const made = await upstreamFrom("https://auth.test", "c", discovery(good));
     expect(made.record).toEqual(UPSTREAM.record);
     expect(() => upstreamConfig(JSON.stringify(made.record))).not.toThrow();
-    await expect(upstreamFrom("https://auth.test", "c", undefined,
+    await expect(upstreamFrom("https://auth.test", "c",
                               discovery({ ...good, issuer: "https://auth.test/" })))
       .rejects.toThrow(/not OWNER_ISSUER/);
-    await expect(upstreamFrom("https://auth.test", "", undefined, discovery(good)))
+    await expect(upstreamFrom("https://auth.test", "", discovery(good)))
       .rejects.toThrow(/WORKOS_CLIENT_ID/);
-    await expect(upstreamFrom("http://auth.test", "c", undefined, discovery(good)))
+    await expect(upstreamFrom("http://auth.test", "c", discovery(good)))
       .rejects.toThrow();
-    await expect(upstreamFrom("https://auth.test", "c", undefined, async () =>
+    await expect(upstreamFrom("https://auth.test", "c", async () =>
       new Response("down", { status: 503 }))).rejects.toThrow(/503/);
   });
 
@@ -165,34 +169,14 @@ describe("the deploy kit", () => {
       delete body[field];
       return discovery(body);
     };
-    for (const field of ["claims_supported", "token_endpoint_auth_methods_supported",
-                         "token_endpoint", "jwks_uri", "authorization_endpoint"]) {
-      await expect(upstreamFrom("https://auth.test", "c", undefined, without(field)))
+    for (const field of ["token_endpoint_auth_methods_supported", "token_endpoint", "jwks_uri",
+                         "authorization_endpoint"]) {
+      await expect(upstreamFrom("https://auth.test", "c", without(field)))
         .rejects.toThrow(/unknown/);
     }
-    await expect(upstreamFrom("https://auth.test", "c", undefined,
-                              discovery({ ...good, claims_supported: ["sub"] })))
-      .rejects.toThrow(/auth_time/);
-    await expect(upstreamFrom("https://auth.test", "c", undefined,
+    await expect(upstreamFrom("https://auth.test", "c",
       discovery({ ...good, token_endpoint_auth_methods_supported: ["private_key_jwt"] })))
       .rejects.toThrow(/client_secret_post/);
-  });
-
-  it("settles auth_time by one real token's claims before the discovery's list", async () => {
-    const quiet = { ...good, claims_supported: undefined };
-    const claims = (body: Json) => JSON.stringify(body);
-    expect((await upstreamFrom("https://auth.test", "c",
-                               claims({ iss: "https://auth.test", sub: "user_1",
-                                        auth_time: 1_700_000_000 }), discovery(quiet))).issuer)
-      .toBe("https://auth.test");
-    await expect(upstreamFrom("https://auth.test", "c",
-                              claims({ iss: "https://auth.test", sub: "user_1" }),
-                              discovery(good))).rejects.toThrow(/no auth_time/);
-    await expect(upstreamFrom("https://auth.test", "c",
-                              claims({ iss: "https://other.test", auth_time: 1 }),
-                              discovery(good))).rejects.toThrow(/iss/);
-    await expect(upstreamFrom("https://auth.test", "c", "not json", discovery(good)))
-      .rejects.toThrow(/JSON/);
   });
 
   it("registers the WorkOS redirect URI only when missing, and never deletes one", async () => {
@@ -250,8 +234,12 @@ describe("the deploy kit", () => {
       .toEqual([{ worker: "files", name: "FILES_KEYRING" }]);
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     // The kit never makes a secret's value in a deploy: only keyring-new and keyring-add,
-    // which write a local file for the founder to store.
-    expect(kit.match(/randomBytes\(/g)).toHaveLength(2);
+    // which write a local file for the founder to store. The probe's link is random too, its
+    // verifier dropped where it is made: never stored, printed or sent.
+    const link = kit.slice(kit.indexOf("export function probeLink()"),
+                           kit.indexOf("export const PROBE_SIGNS"));
+    expect(link.match(/randomBytes\(/g)).toHaveLength(2);
+    expect(kit.replace(link, "").match(/randomBytes\(/g)).toHaveLength(2);
   });
 
   it("refuses to deploy the owner Worker unless the migration lock pins every migration it " +
@@ -297,14 +285,14 @@ describe("the deploy kit", () => {
 
   it("calls the control record absent only when the API answers it is", async () => {
     const path = "/accounts/a/storage/kv/namespaces/n/values/c%3Acontrol";
-    expect(await kvPresent(api({ [path]: { status: 200, body: {} } }), "a", "n", "c:control"))
-      .toBe(true);
-    expect(await kvPresent(api({ [path]: { status: 404, body: { success: false,
-                                                                errors: [{ code: 10009 }] } } }),
-                           "a", "n", "c:control")).toBe(false);
+    expect(await kvValue(api({ [path]: { status: 200, body: { ordinary: "none" } } as CfAnswer }),
+                         "a", "n", "c:control")).toEqual({ ordinary: "none" });
+    expect(await kvValue(api({ [path]: { status: 404, body: { success: false,
+                                                              errors: [{ code: 10009 }] } } }),
+                         "a", "n", "c:control")).toBeUndefined();
     for (const answer of [{ status: 500, body: {} }, { status: 404, body: {} },
                           { status: 401, body: { errors: [{ code: 10000 }] } }] as CfAnswer[]) {
-      await expect(kvPresent(api({ [path]: answer }), "a", "n", "c:control"))
+      await expect(kvValue(api({ [path]: answer }), "a", "n", "c:control"))
         .rejects.toThrow(/failed/);
     }
   });
@@ -422,6 +410,80 @@ describe("the deploy kit", () => {
     expect(servedBy(fake.table.values(), "tinyassets.io/site/x")).toBe("site");
     // Run again, it changes nothing.
     expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
+  });
+
+  it("probes the sign-in on its two unheld paths alone; routes then finds both the doors'",
+     async () => {
+    expect(PROBE_ROUTES).toEqual(["tinyassets.io/authorize*", "tinyassets.io/oauth/*"]);
+    expect(PROBE_ROUTES.every((pattern) => ROUTES.includes(pattern))).toBe(true);
+    const fake = zoneApi(LIVE);
+    const steps = probeSteps(await routesOf(fake, "z"));
+    expect(steps).toEqual(PROBE_ROUTES.map((pattern) => ({ method: "POST", pattern })));
+    await runHandover(fake, "z", DOORS, steps);
+    // Only the sign-in's paths move: every other path is served as before.
+    for (const path of PROBES) {
+      const doors = path === "tinyassets.io/authorize" || path === "tinyassets.io/oauth/token";
+      expect([path, servedBy(fake.table.values(), path)])
+        .toEqual([path, doors ? DOORS : fake.before.get(path)]);
+    }
+    // Run again, it changes nothing; routes hands over the rest, unchanged, and both are held.
+    expect(probeSteps([...fake.table.values()])).toEqual([]);
+    const after = handover([...fake.table.values()], DOORS, ROUTES);
+    expect(after).toEqual(handover(LIVE, DOORS, ROUTES)
+      .filter((step) => !PROBE_ROUTES.includes(step.pattern)));
+    await runHandover(fake, "z", DOORS, after);
+    for (const path of PROBES.slice(0, 10)) {
+      expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
+    }
+    expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
+  });
+
+  it("refuses to probe a path any other Worker, or no Worker, serves", () => {
+    for (const held of [
+      { id: "x", pattern: "tinyassets.io/oauth/*", script: "tinyassets-mcp-proxy" },
+      { id: "x", pattern: "tinyassets.io/oauth/token", script: "tinyassets-mcp-proxy" },
+      { id: "x", pattern: "tinyassets.io/*", script: "site" },
+      { id: "x", pattern: "tinyassets.io/authorize*" },
+    ] as Route[]) {
+      expect(() => probeSteps([...LIVE, held])).toThrow(/nothing is changed/);
+    }
+  });
+
+  it("probes only behind a control record that admits nobody, as the doors read it", () => {
+    const owners = ["user_a", "user_b"];
+    const records: [unknown, boolean][] = [
+      [DARK_CONTROL, true], [{ ...DARK_CONTROL, ordinary: "none" }, true],
+      [{ ...DARK_CONTROL, canary: ["user_a"] }, false], [{ ...DARK_CONTROL, ordinary: "all" }, false],
+      [undefined, false], [{}, false], [null, false],
+    ];
+    for (const [record, closed] of records) {
+      expect([record, admitsNobody(record)]).toEqual([record, closed]);
+      const control = parseControl(record);
+      if (closed && control !== null) {
+        for (const owner of owners) {
+          expect(ownerOpen({ kind: "read", control }, owner)).toBe(false);
+          expect(outsideOpen({ kind: "read", control }, owner)).toBe(false);
+        }
+      }
+    }
+    // A missing record opens the owner's sign-in: never a probe.
+    expect(ownerOpen({ kind: "missing" }, "user_a")).toBe(true);
+  });
+
+  it("prints the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
+    expect([FIRST_PARTY.client, FIRST_PARTY.redirect, FIRST_PARTY.resource, CALLBACK])
+      .toEqual([WEB_CLIENT, WEB_REDIRECT, APP_RESOURCE, UPSTREAM_CALLBACK]);
+    const link = new URL(probeLink());
+    expect(`${link.origin}${link.pathname}`).toBe("https://tinyassets.io/authorize");
+    const { code_challenge: challenge, state, ...rest } = Object.fromEntries(link.searchParams);
+    expect(rest).toEqual({ response_type: "code", client_id: WEB_CLIENT,
+                           redirect_uri: WEB_REDIRECT, code_challenge_method: "S256",
+                           resource: APP_RESOURCE });
+    expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(state).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(new URL(probeLink()).searchParams.get("code_challenge")).not.toBe(challenge);
+    expect(PROBE_SIGNS).toContain(`${WEB_REDIRECT}?error=temporarily_unavailable`);
+    expect(PROBE_SIGNS).toContain(CALLBACK);
   });
 
   it("stops the handover at a refused change, saying what is done", async () => {
@@ -759,6 +821,12 @@ describe("the deploy kit", () => {
     }
     expect(apply).toMatch(/^    needs: \[plan, pair\]$/m);
     expect(apply).toContain("needs.pair.result == 'success'");
+    // The probe deploys nothing: no pair check before it, and its flag in the plan and apply.
+    expect(pair).toContain("(inputs.mode == 'dark' || inputs.mode == 'routes')");
+    expect(apply).toContain("(inputs.mode == 'h2' || inputs.mode == 'probe')");
+    for (const job of [plan, apply]) {
+      expect(job).toContain('if [ "${MODE}" = "probe" ]; then args+=(--probe); fi');
+    }
     expect(apply).not.toMatch(/pip install|python/);
     // The plan holds no production secret, so it needs no environment and runs first.
     expect(plan).not.toMatch(/environment:/);
