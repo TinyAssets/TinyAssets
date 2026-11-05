@@ -29,12 +29,18 @@ _SECRET_REF = re.compile(
 _SECRETS_CONTEXT = re.compile(r"\btoJSON\s*\(\s*secrets\s*\)", re.IGNORECASE)
 
 
-# tests/test_sandbox_template_workflow.py reads a workflow's secrets with this parser.
+# tests/test_sandbox_template_workflow.py and tests/test_platform_setup.py read a
+# workflow's secrets with this parser; the latter walks every workflow's jobs with
+# _workflow_files and _load.
 def _secret_names(text: str) -> set[str]:
     names = {(m.group("dot") or m.group("idx")).strip() for m in _SECRET_REF.finditer(text)}
     if _SECRETS_CONTEXT.search(text):
         names.add("<toJSON(secrets)>")
     return names
+
+
+def _workflow_files() -> list[Path]:
+    return sorted(list(_WORKFLOWS.glob("*.yml")) + list(_WORKFLOWS.glob("*.yaml")))
 
 
 def _load(path: Path) -> dict:

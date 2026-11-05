@@ -6,12 +6,15 @@
 // built, migrated and served, by the memory leg (`memory/leg.mjs`), which holds it within
 // `OWNER_BASELINE_BYTES`; the doors' and files' pools (PR 3b, PR 4) measure theirs the same
 // way. Run by hand: `node memory/baselines.mjs`.
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { freePorts } from "./ports.mjs";
+import { ownWorkerd } from "./workerd.mjs";
 
 const PLATFORM = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const require = createRequire(join(PLATFORM, "owner", "package.json"));
@@ -21,7 +24,8 @@ const MIB = 1024 * 1024;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const figures = {};
-for (const [name, port] of [["doors", 8912], ["files", 8913]]) {
+for (const name of ["doors", "files"]) {
+  const [port, inspector] = await freePorts(2);
   const out = mkdtempSync(join(tmpdir(), `baseline-${name}-`));
   try {
     execFileSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", out, "--config",
@@ -55,14 +59,14 @@ const w :Workerd.Worker = (
   compatibilityFlags = ["nodejs_compat"],
 );
 `);
-    const child = spawn(workerd, ["serve", join(out, "config.capnp"),
-                                  `--inspector-addr=127.0.0.1:${port + 100}`],
-                        { stdio: ["ignore", "ignore", "inherit"] });
+    const own = ownWorkerd(workerd, ["serve", join(out, "config.capnp"),
+                                     `--inspector-addr=127.0.0.1:${inspector}`],
+                           { onEarlyExit: () => rmSync(out, { recursive: true, force: true }) });
     try {
       let list = [];
       for (let n = 0; n < 100 && list.length === 0; n++) {
         await sleep(100);
-        list = await fetch(`http://127.0.0.1:${port + 100}/json/list`).then((r) => r.json(),
+        list = await fetch(`http://127.0.0.1:${inspector}/json/list`).then((r) => r.json(),
                                                                                () => []);
       }
       const ws = new WebSocket(list[0].webSocketDebuggerUrl);
@@ -71,14 +75,19 @@ const w :Workerd.Worker = (
         ws.onmessage = (event) => resolve(JSON.parse(event.data).result);
         ws.send(JSON.stringify({ id: 1, method: "Runtime.getHeapUsage" }));
       });
-      for (let n = 0; n < 3; n++) {
+      /** A request to this leg's own isolate: answered, then its workerd confirmed alive. */
+      const ask = async () => {
         await fetch(`http://127.0.0.1:${port}/`).then((r) => r.text());
+        own.check();
+      };
+      for (let n = 0; n < 3; n++) {
+        await ask();
       }
       const at = await usage();
       figures[name] = +((at.usedSize + (at.backingStorageSize ?? 0)) / MIB).toFixed(2);
       ws.close();
     } finally {
-      child.kill("SIGKILL");
+      own.stop();
     }
   } finally {
     rmSync(out, { recursive: true, force: true });

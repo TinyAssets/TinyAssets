@@ -141,7 +141,27 @@ def access_token(origin: str = ORIGIN) -> str:
             ("canary_signed_out: " if status == 401 else "canary_renewal_failed: ") + code
         )
     _store(str(body.get("session_ref") or handle))
+    _keep_claims(token)
     return token
+
+
+def _keep_claims(token: str) -> None:
+    """With ``TINYASSETS_OWNER_CLAIMS_RECEIPT`` set, write the renewed AuthKit token's
+    ``iss`` and ``auth_time`` there, and nothing else of it: the platform setup's
+    ``OWNER_TOKEN_CLAIMS`` (``scripts/platform_setup.py``). Its signature is not checked;
+    the receipt shows only which claims AuthKit puts in the token. A token that is not a
+    JWT writes nothing, and the setup then says no receipt was kept."""
+    path = os.environ.get("TINYASSETS_OWNER_CLAIMS_RECEIPT", "")
+    parts = token.split(".")
+    if not path or len(parts) != 3:
+        return
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except ValueError:
+        return
+    if isinstance(claims, dict):
+        kept = {name: claims[name] for name in ("iss", "auth_time") if name in claims}
+        Path(path).write_text(json.dumps(kept), encoding="utf-8")
 
 
 def begin(pending: Path, origin: str = ORIGIN) -> str:

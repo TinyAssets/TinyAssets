@@ -58,6 +58,10 @@ jobs:
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # The renewed AuthKit token's iss and auth_time alone (scripts/canary_session.py),
+      # kept below until Platform setup has filled OWNER_TOKEN_CLAIMS from it.
+      TINYASSETS_OWNER_CLAIMS_RECEIPT: ${{ github.workspace }}/owner-token-claims.json
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -84,6 +88,14 @@ jobs:
         with:
           mode: save
           chain: uptime
+      - name: Keep the token's claims receipt for Platform setup
+        if: always() && github.ref == 'refs/heads/main' && vars.OWNER_TOKEN_CLAIMS == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: owner-token-claims
+          path: owner-token-claims.json
+          if-no-files-found: ignore
+          retention-days: 1
 
   probe:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
