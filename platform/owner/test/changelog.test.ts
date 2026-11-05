@@ -120,7 +120,8 @@ describe("a log segment's build", () => {
   });
 
   it("ships a log full of large REAL values a part at most each, every line shipped: never a " +
-     "span whose segment as written is past a part (rvburst W2)", async () => {
+     "span whose segment as written is past a part (rvburst W2)", { tags: ["large"] },
+     async () => {
     const o = await owner();
     const shipped = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
@@ -146,10 +147,10 @@ describe("a log segment's build", () => {
     expect(shipped.sizes.length).toBeGreaterThan(1);
     expect(Math.max(...shipped.sizes)).toBeLessThanOrEqual(CHUNK_BYTES);
     expect(shipped).toMatchObject({ shipped: shipped.last, left: 0 });
-  }, 120_000);
+  });
 
   it("sizes again a span pinned under the old sizing that is past a part as written, once, " +
-     "and ships every line (rvburst X3)", async () => {
+     "and ships every line (rvburst X3)", { tags: ["large"] }, async () => {
     const o = await owner();
     const shipped = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
@@ -187,7 +188,7 @@ describe("a log segment's build", () => {
     expect(shipped.first).toBeLessThan(shipped.pinned);  // sized again, shorter
     expect(Math.max(...shipped.sizes)).toBeLessThanOrEqual(CHUNK_BYTES);
     expect(shipped).toMatchObject({ done: true, left: 0 });
-  }, 120_000);
+  });
 });
 
 describe("the change log", () => {
