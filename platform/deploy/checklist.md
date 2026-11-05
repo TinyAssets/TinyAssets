@@ -41,7 +41,7 @@ absent, goes to GitHub on stdin, and is never shown. Your part is in bold.
      Bash (the shell a Windows Claude session usually runs)
      `powershell.exe -NoProfile -Command Get-Clipboard | python scripts/platform_setup.py workos`,
      stores it in `production` if `production` holds none, after checking it starts
-     `sk_live_`, and prints when `production`'s key was last updated. A held key is never
+     `sk_` (not `sk_test_`), and prints when `production`'s key was last updated. A held key is never
      replaced.
    - Once that time is the key you just made, `python scripts/platform_setup.py workos
      --delete-repo-copies` deletes the repository-level `WORKOS_API_KEY` and

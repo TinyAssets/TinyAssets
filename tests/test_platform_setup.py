@@ -285,6 +285,12 @@ def test_workos_fails_loudly_when_the_stored_key_does_not_read_back(capsys) -> N
     assert fake.secrets[None] == {"WORKOS_API_KEY"}
 
 
+def test_workos_takes_an_unlabelled_key() -> None:
+    """WorkOS's current keys are `sk_` with no environment label."""
+    assert setup.live_workos_key("sk_" + "a1B2" * 18)
+    assert not setup.live_workos_key("sk_test_" + "a1B2" * 18)
+
+
 @pytest.mark.verifies(
     "clean-sheet-platform:Sign-up is the platform's explicit admit, "
     "and erasure its outside record")
