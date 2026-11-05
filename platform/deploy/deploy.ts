@@ -6,9 +6,9 @@
  *
  * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, from `main`: a
  * `plan` job runs `--public` with the Cloudflare token alone and prints the plan to the job
- * summary; the `apply` job then waits for the main-only `production` environment (and its
- * required reviewer, when set) and runs `--yes` with that environment's secrets, never a
- * host's (Direction 8).
+ * summary; the `apply` job then runs `--yes` in the main-only `production` environment,
+ * with that environment's secrets, never a host's (Direction 8). The Cloudflare account is
+ * the zone's (`zoneOf`).
  *
  *   node --experimental-strip-types platform/deploy/deploy.ts               # the plan
  *   node --experimental-strip-types platform/deploy/deploy.ts --public      # the plan job's
@@ -41,13 +41,17 @@
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that
  *   the API says does not exist yet; the kit never makes a secret's value. The keyrings
  *   and `ROUTING_MAC_KEY` come from the secret store like the rest (`keyring-new` makes the
- *   first keyring locally, for the founder to store); a held one is never replaced, unless
+ *   first keyring; scripts/platform_setup.py stores one); a held one is never replaced, unless
  *   `--rotate` names it, and a keyring is rotated only by adding a key (the new keyring
  *   must hold two or more keys, the active one among them). Cloudflare never shows a held
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
  *   POST; never a delete);
+ * - E2B's lifecycle webhook is listed and checked before any change, registered, disabled,
+ *   only when E2B's listing lacks it, its secret changed only with the doors' copy, and
+ *   enabled only by `--routes` after the handover; the run that registers it sets the
+ *   doors' copy too (`hookPlan`, `secretPlan`, `lifecycleHook`);
  * - the owner Worker is deployed only when the migration lock (`owner/migrations.json`)
  *   marks the first deploy and pins every migration the code ships, in order
  *   (`lockRefusal`): pin with `PIN_MIGRATIONS=<commit>` (`owner/guards/migrations.test.ts`)
@@ -108,6 +112,7 @@ const OPTIONAL: readonly string[] = Object.freeze(["INBOUND_SLACK_SIGNING_SECRET
 /** The doors' public routes (`--routes`, the cutover's), on the tinyassets.io zone. */
 export const ROUTES: readonly string[] = Object.freeze([
   "tinyassets.io/mcp*", "tinyassets.io/api/*", "tinyassets.io/hooks/inbound/*",
+  "tinyassets.io/hooks/e2b/*",
   "tinyassets.io/app/api/*", "tinyassets.io/authorize*", "tinyassets.io/oauth/*",
   "tinyassets.io/.well-known/oauth-*",
 ]);
@@ -119,7 +124,7 @@ export const CALLBACK = "https://tinyassets.io/oauth/upstream/callback";
 export const DOORS = "tinyassets-doors";
 /** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
-  "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
+  "CLOUDFLARE_API_TOKEN", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
 /** What only the apply job holds: the production environment's secrets. */
 export const SECRET_INPUTS: readonly string[] = Object.freeze([
   "WORKOS_API_KEY", "E2B_API_KEY", "ROUTING_MAC_KEY", "GATEWAY_KEYRING", "FILES_KEYRING",
@@ -128,6 +133,15 @@ const WORKOS_API = "https://api.workos.com";
 const CF_API = "https://api.cloudflare.com/client/v4";
 /** E2B's platform API (`sandbox/src/e2b.ts`'s), its OpenAPI spec read 2026-11-03. */
 const E2B_API = "https://api.e2b.app";
+/**
+ * E2B's sandbox lifecycle webhook, the doors' one E2B hook (`doors/src/e2b-hooks.ts`), its
+ * API read in e2b-dev/infra's `spec/openapi.yml` (2026-11-04): `GET` and `POST
+ * /events/webhooks`, `PATCH /events/webhooks/{id}`.
+ */
+export const E2B_HOOK = Object.freeze({
+  name: "tinyassets-lifecycle", url: "https://tinyassets.io/hooks/e2b/lifecycle",
+  events: Object.freeze(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]),
+});
 /** The control record a first deploy writes when there is none: every outside door closed. */
 export const DARK_CONTROL = Object.freeze({
   outside: "off", ordinary: "canary", canary: [], inbound: false,
@@ -329,15 +343,35 @@ export function narrower(narrow: string, wide: string): boolean {
   return narrow !== wide && wide.endsWith("*") && narrow.startsWith(base(wide));
 }
 
-/** The zone's id, by its name; a failed read throws. */
-export async function zoneOf(api: CfApi): Promise<string> {
+/**
+ * The zone, by its name: its id, and the id of the account that holds it. That account is
+ * the one the doors' routes need their Workers in, so the kit reads it here and holds no
+ * account id of its own. A failed read, or any answer but one zone with its account, throws.
+ */
+export async function zoneOf(api: CfApi): Promise<{ id: string; account: string }> {
   const zones = await api(`/zones?name=${ZONE}`);
-  const zone = Array.isArray(zones.body.result)
-    ? (zones.body.result as { id?: string }[])[0]?.id : undefined;
-  if (zones.status !== 200 || zones.body.success !== true || zone === undefined) {
-    throw new Error(`the zone ${ZONE} could not be read (${zones.status})`);
+  const rows = Array.isArray(zones.body.result)
+    ? zones.body.result as { id?: unknown; account?: { id?: unknown } }[] : [];
+  const id = rows[0]?.id;
+  const account = rows[0]?.account?.id;
+  if (zones.status !== 200 || zones.body.success !== true || rows.length !== 1
+      || typeof id !== "string" || typeof account !== "string"
+      || !/^[0-9a-f]{32}$/.test(account)) {
+    throw new Error(`the zone ${ZONE} could not be read (${zones.status}, ${rows.length} found)`);
   }
-  return zone;
+  return { id, account };
+}
+
+/**
+ * Masks `value` in a GitHub Actions job's log (`::add-mask::`), as the probe workflows mask
+ * the account id: not a credential, but once a secret, and a wrangler error the kit quotes
+ * names `/accounts/<id>/...` in a public log. Outside Actions it prints nothing.
+ */
+export function maskInLog(value: string, env: NodeJS.ProcessEnv = process.env,
+                          log: (line: string) => void = console.log): void {
+  if (env["GITHUB_ACTIONS"] !== undefined) {
+    log(`::add-mask::${value}`);
+  }
 }
 
 /** The zone's Worker routes; a failed read throws. */
@@ -621,6 +655,106 @@ export async function registerRedirect(key: string, apply: boolean, fetcher: Fet
   return "registered";
 }
 
+/**
+ * Where a run touches E2B's lifecycle webhook, and whether it enables it: the hook is listed
+ * and checked with the live checks, before any change, in every mode that holds the E2B key
+ * (`missing` is that listing's answer); `dark` then registers or changes it once the doors
+ * hold their secrets, never enabling it; `routes` does so only after the last route is
+ * handed to the doors, enabling it, since an enabled hook sends the whole team's events to
+ * whatever serves its path. A run that `creates` the hook sets the doors' E2B_WEBHOOK_SECRET
+ * too (`secretPlan`), so the pair starts equal. The public plan never reaches E2B.
+ */
+export function hookPlan(mode: { open: boolean; routes: boolean; missing?: boolean }):
+    { check: boolean; at: "none" | "secrets" | "routes"; enable: boolean; creates: boolean } {
+  if (mode.open) {
+    return { check: false, at: "none", enable: false, creates: false };
+  }
+  const creates = mode.missing === true;
+  return mode.routes ? { check: true, at: "routes", enable: true, creates }
+    : { check: true, at: "secrets", enable: false, creates };
+}
+
+/**
+ * Whether this run sets E2B's copy of the webhook secret: only when it sets the doors' copy
+ * (missing on the doors, named in `--rotate`, or the hook made this run), so the two never
+ * drift apart.
+ */
+export function hookSetsSecret(setting: readonly { worker: string; name: string }[]): boolean {
+  return setting.some((step) => step.worker === "doors" && step.name === "E2B_WEBHOOK_SECRET");
+}
+
+/**
+ * E2B's lifecycle webhook as its listing holds it, matched by its URL, or null when it holds
+ * none. A failed listing, or two hooks for the URL, throws.
+ */
+export async function heldHook(key: string, fetcher: Fetch = fetch): Promise<Json | null> {
+  const listed = await fetcher(`${E2B_API}/events/webhooks`, {
+    headers: { "X-API-Key": key, "Content-Type": "application/json" } });
+  if (listed.status !== 200) {
+    throw new Error(`E2B listed its webhooks with ${listed.status}`);
+  }
+  const hooks = await listed.json() as unknown;
+  if (!Array.isArray(hooks)) {
+    throw new Error("E2B's webhook listing holds no list");
+  }
+  const ours = hooks.filter((hook) => (hook as Json | null)?.["url"] === E2B_HOOK.url) as Json[];
+  if (ours.length > 1) {
+    throw new Error(`E2B holds ${ours.length} webhooks for ${E2B_HOOK.url}: keep one`);
+  }
+  return ours[0] ?? null;
+}
+
+/**
+ * E2B's lifecycle webhook (`heldHook`). Missing, it is registered with `secret`, disabled
+ * unless `enable`; the run that does so sets the doors' copy of the secret too (`hookPlan`,
+ * `secretPlan`). Held, it is changed only where the run asks: its signature secret only with
+ * `setSecret`, when this run also sets the doors' E2B_WEBHOOK_SECRET (E2B never shows a
+ * hook's secret, so the two change together or not at all); its events when they differ;
+ * and it is enabled with `enable` (`--routes`). It is never disabled or deleted. Without
+ * `apply` it only lists and checks. A failed listing or write throws.
+ */
+export async function lifecycleHook(key: string, secret: string, apply: boolean,
+                                    enable: boolean, setSecret: boolean,
+                                    fetcher: Fetch = fetch): Promise<string> {
+  const headers = { "X-API-Key": key, "Content-Type": "application/json" };
+  const hook = await heldHook(key, fetcher);
+  if (hook === null) {
+    const state = enable ? "enabled" : "disabled";
+    if (!apply) {
+      return `missing: registered, ${state}`;
+    }
+    const made = await fetcher(`${E2B_API}/events/webhooks`, {
+      method: "POST", headers, body: JSON.stringify({
+        name: E2B_HOOK.name, url: E2B_HOOK.url, events: [...E2B_HOOK.events], enabled: enable,
+        signatureSecret: secret }) });
+    if (made.status !== 200 && made.status !== 201) {
+      throw new Error(`E2B refused the webhook with ${made.status}`);
+    }
+    return `registered, ${state}`;
+  }
+  const events = Array.isArray(hook["events"]) ? [...hook["events"] as string[]].sort() : [];
+  const change: Json = {
+    ...(setSecret ? { signatureSecret: secret } : {}),
+    ...(JSON.stringify(events) !== JSON.stringify([...E2B_HOOK.events].sort())
+      ? { events: [...E2B_HOOK.events] } : {}),
+    ...(enable && hook["enabled"] !== true ? { enabled: true } : {}),
+  };
+  const state = hook["enabled"] === true || enable ? "enabled" : "disabled";
+  const what = Object.keys(change).length === 0 ? "unchanged"
+    : `${Object.keys(change).map((field) => field === "signatureSecret" ? "its secret"
+      : field === "events" ? "its events" : "enabled").join(", ")} set`;
+  if (!apply || Object.keys(change).length === 0) {
+    return `present, ${what}, ${state}`;
+  }
+  const changed = await fetcher(`${E2B_API}/events/webhooks/${
+    encodeURIComponent(String(hook["id"]))}`, {
+    method: "PATCH", headers, body: JSON.stringify(change) });
+  if (changed.status !== 200) {
+    throw new Error(`E2B refused the webhook's change with ${changed.status}`);
+  }
+  return `present, ${what}, ${state}`;
+}
+
 /** A keyring as the gateway and the files Worker hold it: `{active, keys}`, the active key among the keys. */
 export function keyring(text: string | undefined, name = "GATEWAY_KEYRING"):
     { active: string; keys: Record<string, string> } {
@@ -645,7 +779,8 @@ export function keyring(text: string | undefined, name = "GATEWAY_KEYRING"):
  */
 export function secretPlan(held: Readonly<Record<string, readonly string[] | null>>,
                            rotate: ReadonlySet<string>,
-                           values: ((name: string) => string | undefined) | null):
+                           values: ((name: string) => string | undefined) | null,
+                           hookCreated = false):
     { worker: string; name: string }[] {
   const has = (worker: string, name: string) => (held[worker] ?? []).includes(name);
   if (has("doors", SHARED) !== has("owner", SHARED) && !rotate.has(SHARED)) {
@@ -665,7 +800,9 @@ export function secretPlan(held: Readonly<Record<string, readonly string[] | nul
   const plan: { worker: string; name: string }[] = [];
   for (const [worker, names] of Object.entries(SECRETS)) {
     for (const name of names) {
-      if (!has(worker, name) || rotate.has(name)) {
+      // A webhook made this run takes production's secret: the doors take it too.
+      const withHook = hookCreated && worker === "doors" && name === "E2B_WEBHOOK_SECRET";
+      if (!has(worker, name) || rotate.has(name) || withHook) {
         plan.push({ worker, name });
       }
     }
@@ -799,8 +936,11 @@ async function main(): Promise<void> {
     throw new Error(refused);
   }
   plan.push("the migration lock pins every migration the owner Worker ships");
-  const account = input("CLOUDFLARE_ACCOUNT_ID")!;
   const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
+  // The account is the zone's (`zoneOf`), and wrangler is handed that one.
+  const { id: zone, account } = await zoneOf(api);
+  maskInLog(account);
+  process.env["CLOUDFLARE_ACCOUNT_ID"] = account;
   // The live checks, before anything is changed.
   const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"),
                                       input("OWNER_TOKEN_CLAIMS"));
@@ -825,10 +965,14 @@ async function main(): Promise<void> {
     throw new Error(`the pair ${pair} has not passed its standing checks in this E2B team: ` +
                     "run the pair job (--pair) first; nothing is deployed");
   }
-  let zone: string | undefined;
+  // E2B's lifecycle webhook, listed and checked now: two hooks for its URL, or a failed
+  // listing, stop the kit before a route moves.
+  const listed = open ? undefined : await heldHook(input("E2B_API_KEY")!);
+  const hookAt = hookPlan({ open, routes, missing: listed === null });
+  const hook = (change: boolean, setSecret: boolean) => lifecycleHook(
+    input("E2B_API_KEY")!, input("E2B_WEBHOOK_SECRET")!, change, hookAt.enable, setSecret);
   let steps: RouteStep[] = [];
   if (routes) {
-    zone = await zoneOf(api);
     steps = handover(await routesOf(api, zone), DOORS, ROUTES);
   }
   const titles = await namespacesOf(api, account);
@@ -862,6 +1006,8 @@ async function main(): Promise<void> {
   for (const queue of queues) {
     ensure("queue", queue, apply, plan);
   }
+  // Reached only when every listing answered: a token without the scope stops above.
+  plan.push("the Cloudflare token listed the account's KV namespaces, R2 buckets and queues");
   const out = mkdtempSync(join(tmpdir(), "tinyassets-deploy-"));
   try {
     const paths: Record<string, string> = {};
@@ -876,7 +1022,9 @@ async function main(): Promise<void> {
     for (const worker of Object.keys(SECRETS)) {
       held[worker] = await secretsOf(api, account, `tinyassets-${worker}`);
     }
-    for (const { worker, name } of secretPlan(held, rotate, open ? null : input)) {
+    const setting = secretPlan(held, rotate, open ? null : input, hookAt.creates);
+    const hookSecret = hookSetsSecret(setting);
+    for (const { worker, name } of setting) {
       const value = input(name);
       if (value === undefined && !open) {
         if (OPTIONAL.includes(name)) {
@@ -916,15 +1064,26 @@ async function main(): Promise<void> {
     }
     plan.push(`WorkOS redirect URI ${CALLBACK}: ${open ? later
       : await registerRedirect(input("WORKOS_API_KEY")!, apply)}`);
+    // E2B's lifecycle webhook, once the doors hold E2B_WEBHOOK_SECRET (`hookPlan`).
+    if (hookAt.at === "none") {
+      plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${later}`);
+    }
+    if (hookAt.at === "secrets") {
+      plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${await hook(apply, hookSecret)}`);
+    }
     if (routes) {
       plan.push(...steps.map((step) => describeStep(step, DOORS)));
       plan.push(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
       if (apply) {
-        await runHandover(api, zone!, DOORS, steps);
+        await runHandover(api, zone, DOORS, steps);
         const routed = join(out, "doors", "routed.json");
         writeFileSync(routed, JSON.stringify(deployedConfig("doors", ids, upstream, true),
                                              null, 2));
         wrangler(["triggers", "deploy", "--config", routed]);
+      }
+      if (hookAt.at === "routes") {
+        plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: ${
+          await hook(apply, hookSecret)}`);
       }
     }
   } finally {

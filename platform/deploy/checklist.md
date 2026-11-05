@@ -2,81 +2,107 @@
 
 The kit is `platform/deploy/deploy.ts`. It runs from the manual workflow **Platform deploy
 (manual, founder-approved)** (`.github/workflows/platform-deploy.yml`), on `main` only, in
-two jobs:
+three jobs:
 
 1. **`plan`** prints what the run would change to the job summary. It holds only the
    Cloudflare token and the repo's variables, and changes nothing.
-2. **`apply`** waits for the plan job, then for the main-only `production` environment. With
-   you as that environment's required reviewer, GitHub holds it until you approve it, with
-   the plan already on the page. It then runs the kit with `--yes`.
+2. **`pair`** (modes `dark` and `routes`) checks the pinned E2B template with the runner this
+   commit ships, unless E2B already holds their pair's tag (`deploy.ts --pair`: three
+   throwaway sandboxes, up to about 50 minutes, the E2B key alone).
+3. **`apply`** runs the kit with `--yes`, in the main-only `production` environment.
 
-Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and approve.
+Starting a run with a mode other than `plan` is the approval. Do not add a required reviewer
+to `production`: the uptime canary, the DR drill, deploy-prod and the host installs run there
+on their own, and a reviewer would hold every one of them for a click.
 
-**The go-ahead deploy** is that first approved `dark` run. It turns on the platform's storage,
-secrets, six Workers and control record (every gate closed), and nothing public: it moves no
-route, so `tinyassets.io` keeps serving the old stack. The doors go live only with mode
-`routes`, at the cutover.
+**The go-ahead deploy** is the first `dark` run. It turns on the platform's storage, secrets,
+six Workers and control record (every gate closed), and nothing public: it moves no route,
+so `tinyassets.io` keeps serving the old stack. The doors go live only with mode `routes`,
+at the cutover.
 
 ## Before you run it
 
-- **Your approval.** Add yourself as the `production` environment's required reviewer
-  (`docs/host-actions.md`), so the apply job waits for you after its plan. Whether it has
-  one today is **unverified** here. Without one, starting a run with a mode other than
-  `plan` is the approval.
-- **The secrets and variables.** The kit reads nothing from a host.
-  - The `production` environment's secrets: `WORKOS_API_KEY`, `E2B_API_KEY`,
-    `ROUTING_MAC_KEY`, `GATEWAY_KEYRING`, `FILES_KEYRING`, `E2B_WEBHOOK_SECRET`,
-    `TINYASSETS_WIKI_CANARY_TOKEN` (the handles canary's), and, if you want Slack events,
-    `INBOUND_SLACK_SIGNING_SECRET`.
-  - `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets, where
-    `deploy-worker.yml` already reads them. The plan job reads them too; the repo's
-    workflow guard counts neither as a production secret.
-  - Repository variables, which are not secrets: `OWNER_ISSUER` (AuthKit's production issuer
-    URL), `WORKOS_CLIENT_ID`, and `OWNER_TOKEN_CLAIMS` (below).
-  - `WORKOS_API_KEY` lives on the production host today. Move it once, the way
-    `copy-secrets-to-production.yml` moved the others.
-  - `ROUTING_MAC_KEY` is one random 32-byte value you make and store. The kit never makes it.
-  - `GATEWAY_KEYRING` and `FILES_KEYRING` (the files Worker's data keys' ring), each its own:
-    make the first one locally with
-    `node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>`, store the
-    file's contents, then delete the file.
-  - `E2B_WEBHOOK_SECRET`: the signature secret you register with E2B's sandbox lifecycle
-    webhook (`/hooks/e2b/lifecycle`). Its registration at E2B is owed (tasks.md).
+Done already (2026-11-05): Workers Paid; the Cloudflare token's R2, KV, Queues and Workers
+Routes edit (the `plan` job lists R2, KV and queues, so a missing scope stops it);
+`E2B_API_KEY` in `production` and nowhere else; `production` limited to `main`, with no
+required reviewer.
+
+The rest runs on your own computer, by your Claude session with your own `gh` login. It
+runs `scripts/platform_setup.py` (Windows: `python`); every value is set only where it is
+absent, goes to GitHub on stdin, and is never shown. Your part is in bold.
+
+1. `python scripts/platform_setup.py secrets`: `ROUTING_MAC_KEY`, `E2B_WEBHOOK_SECRET`,
+   `GATEWAY_KEYRING` and `FILES_KEYRING` (each keyring made in memory, in the shape
+   `deploy.ts keyring-new` writes).
+2. **Make a production WorkOS API key** in the WorkOS dashboard (API Keys, the production
+   environment; name it `github-production`) and **copy it**: it goes from your clipboard
+   straight to the script, never into the chat or a command line. Two steps:
+   - `Get-Clipboard | python scripts/platform_setup.py workos` in PowerShell, or from Git
+     Bash (the shell a Windows Claude session usually runs)
+     `powershell.exe -NoProfile -Command Get-Clipboard | python scripts/platform_setup.py workos`,
+     stores it in `production` if `production` holds none, after checking it starts
+     `sk_live_`, and prints when `production`'s key was last updated. A held key is never
+     replaced.
+   - Once that time is the key you just made, `python scripts/platform_setup.py workos
+     --delete-repo-copies` deletes the repository-level `WORKOS_API_KEY` and
+     `WORKOS_AUTHKIT_DOMAIN` (only `production` jobs read them). The host keeps its own key.
+3. **Make the review App.** Open the review App page (`platform/deploy/review-app.html`),
+   click its button, then **Create GitHub App** on GitHub (you must be an owner of the
+   organization). GitHub lands on the repository with `?code=` in the address bar: give
+   that address to your Claude session and nowhere else, since whoever turns the code in
+   first gets the App's private key. Within the hour it runs
+   `python scripts/platform_setup.py review-app --code "<address>"`: the main-only `review`
+   environment (made when absent), `REVIEW_APP_PRIVATE_KEY` there and the variable
+   `REVIEW_APP_ID`. **Install the App** on this repository alone, from the link it prints.
+4. After this change is on `main` and one uptime canary run has passed there (every five
+   minutes): `python scripts/platform_setup.py variables` sets `OWNER_ISSUER`,
+   `WORKOS_CLIENT_ID` and `OWNER_TOKEN_CLAIMS` (below).
+5. **Approve** the session's `gh workflow run platform-deploy.yml -f mode=plan`, and read
+   the plan.
+6. A session pins the migration lock (below) and merges it. Then **approve**
+   `gh workflow run platform-deploy.yml -f mode=dark`.
+
+Before the cutover only, not for `dark`: the AuthKit GitHub sign-in app (absent from the
+login page today; Google is live), or a decision to drop GitHub sign-in; and the optional
+Slack app (`INBOUND_SLACK_SIGNING_SECRET`). Mode `routes` enables E2B's lifecycle webhook
+itself, after the routes.
+
+What the kit reads, all from the store, never a host:
+
+- `production` secrets: `WORKOS_API_KEY`, `E2B_API_KEY`, `ROUTING_MAC_KEY`,
+  `GATEWAY_KEYRING`, `FILES_KEYRING`, `E2B_WEBHOOK_SECRET`, `TINYASSETS_WIKI_CANARY_TOKEN`
+  (the handles canary's, there since 2026-10-14) and, for Slack events,
+  `INBOUND_SLACK_SIGNING_SECRET`.
+- The repository secret `CLOUDFLARE_API_TOKEN`. The account is the `tinyassets.io` zone's,
+  read from the zone (`zoneOf`), so no account id is stored.
+- The repository variables `OWNER_ISSUER`, `WORKOS_CLIENT_ID` and `OWNER_TOKEN_CLAIMS`.
+
+More on three of them:
+
 - **The migration lock, pinned at the commit you deploy.** The kit refuses to run unless
   `platform/owner/migrations.json` marks the first deploy and pins every migration the code
   ships, in order. To pin it:
-  1. **Who and when.** You, or a session you ask, do it once, in the same sitting as the
-     first deploy. The deploy itself is yours to approve.
+  1. **Who and when.** A session does it once, in the same sitting as the first deploy.
   2. **Pin.** On a branch made from the current `main`, run this in `platform/owner`:
      `PIN_MIGRATIONS=$(git rev-parse HEAD) npx vitest run --project guards guards/migrations.test.ts`.
      It writes `platform/owner/migrations.json`: the first-deploy marker (time and commit)
      and a digest for every migration.
   3. **Land it.** Commit only that file and merge it to `main` by pull request. The workflow
      runs only from `main`, and the kit reads the lock there.
-  4. **Deploy.** Run the Platform deploy workflow from `main`: `plan`, then `dark`.
-  5. **Every later deploy that adds a migration** repeats steps 2 and 3 first. The pin only
+  4. **Every later deploy that adds a migration** repeats steps 2 and 3 first. The pin only
      appends, and the kit refuses until it is done.
-  6. **Pin only when you deploy.** Pinning freezes the baseline for good: from then on a
+  5. **Pin only when you deploy.** Pinning freezes the baseline for good: from then on a
      schema change is a new migration, even if no deploy follows.
 - **`auth_time`, settled before anything changes.** Every sign-in needs AuthKit's tokens to
-  carry `auth_time`. Store one real AuthKit token's `iss` and `auth_time`, copied from it, as
-  the variable `OWNER_TOKEN_CLAIMS`, a JSON object (the `fetch-prod-logs` workflow shows a
-  claim receipt). The kit reads only those two, so leave out `sub` and the rest. Without it, the kit uses the
-  discovery's `claims_supported`. A field that is absent counts as unknown, and unknown stops
-  the kit; it never passes. If the token has no `auth_time`, the kit stops. The way on is
-  to have AuthKit send it (`max_age=0`). Taking the binder's clock at the code exchange
-  instead is not something the code can do: it would need its own change and your approval.
-- **The sandbox's template is built.** `E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`
-  must have a ready build at E2B (`platform/sandbox/template/build.py`, or the manual
-  `sandbox-template.yml` workflow in the production team). The kit checks this through E2B's
-  API and stops if it is missing. The runner is the sandbox Worker's own: the workflow's
-  `pair` job, before the apply job, looks for the pair's tag (the template and the runner it
-  deploys) and, when absent, runs the pair check (`deploy.ts --pair`, `build.py
-  --check-pair`, three throwaway sandboxes, up to about 50 minutes) with the E2B key alone; a
-  failure stops the run, and the apply job stops without the tag.
-- **The Cloudflare plan is Workers Paid.** The owner Worker needs it for its subrequests and
-  for Durable Objects on SQLite.
-- **AuthKit's production Google and GitHub apps exist** (WorkOS dashboard).
+  carry `auth_time`, and AuthKit's discovery lists no `claims_supported`. So the uptime
+  canary keeps a receipt of its renewed AuthKit token's `iss` and `auth_time` alone (until
+  the variable is set), and `platform_setup.py variables` stores it as `OWNER_TOKEN_CLAIMS`. That is AuthKit's
+  access token; the doors check the ID token, so the first real sign-in at the cutover is
+  the final test (`oidc.ts` refuses loudly). An absent field counts as unknown, and unknown
+  stops the kit. If the token has no `auth_time`, the way on is to have AuthKit send it
+  (`max_age=0`).
+- **The sandbox's template is built** (`E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`,
+  pinned in #5428). The kit checks E2B has a ready build, and the `pair` job checks the pair.
 
 ## What mode `dark` changes
 
@@ -118,7 +144,13 @@ It never counts as "absent".
    record is there, the kit leaves it alone. If the read fails, the whole run stops.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:**
    `https://tinyassets.io/oauth/upstream/callback`. The kit never deletes one.
-7. **The handles canary** (Fact 11) runs against `tinyassets.io/mcp`, with
+7. **E2B's lifecycle webhook** (`https://tinyassets.io/hooks/e2b/lifecycle`, matched by
+   its URL, listed with the checks before any change): registered **disabled** if E2B's
+   listing lacks it, and the run that registers it sets the doors' `E2B_WEBHOOK_SECRET` from
+   `production` too, so the two start equal. After that its secret changes only with the
+   doors' (`rotate` naming `E2B_WEBHOOK_SECRET`): E2B never shows a hook's secret, so the kit
+   cannot compare them. It is never disabled or deleted.
+8. **The handles canary** (Fact 11) runs against `tinyassets.io/mcp`, with
    `TINYASSETS_WIKI_CANARY_TOKEN`. No route moves, so it should show the live connector
    exactly as before.
 
@@ -132,8 +164,8 @@ It never counts as "absent".
 ## Later steps, each its own approved run
 
 - **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
-  the doors' routes over (`/mcp*`, `/api/*`, `/hooks/inbound/*`, `/app/api/*`,
-  `/authorize*`, `/oauth/*`, `/.well-known/oauth-*`) one route at a time, through
+  the doors' routes over (`/mcp*`, `/api/*`, `/hooks/inbound/*`, `/hooks/e2b/*`,
+  `/app/api/*`, `/authorize*`, `/oauth/*`, `/.well-known/oauth-*`) one route at a time, through
   Cloudflare's routes API, so no path is ever served by nothing:
   - A pattern another Worker holds is moved to the doors in place (`PUT`, one change). Today
     that is the old proxy's (`tinyassets-mcp-proxy`) `mcp*`.
@@ -147,8 +179,9 @@ It never counts as "absent".
     `api/*` already take their own paths, and `/app` itself stays with the proxy.
   - A refused change stops the run and says which steps are done.
 
-  It then adds the `egress.tinyassets.io` custom domain (`wrangler triggers deploy`) and
-  runs the handles canary. Every connector then signs in again once. Update the handles
+  It then adds the `egress.tinyassets.io` custom domain (`wrangler triggers deploy`),
+  enables E2B's lifecycle webhook now that the doors serve its path, and runs the handles
+  canary. Every connector then signs in again once. Update the handles
   canary's tool list for the new door first.
 - **Optional: a WAF rate-limiting rule of your own.** The platform sets no number on any
   caller. If you ever want a per-IP backstop at the edge, make one zone rule in the
