@@ -21,7 +21,8 @@ import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
   DOORS, handover, kvPresent, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
-  ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, zoneOf,
+  pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
+  zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
 } from "../../deploy/deploy";
 import { parseControl } from "../src/directory";
@@ -440,6 +441,53 @@ describe("the deploy kit", () => {
     await expect(templateReady("tinyassets-sandbox", "k", e2b(200, true))).rejects.toThrow();
   });
 
+  it("names the pair it deploys by the template and the runner the sandbox Worker ships",
+     () => {
+    const runner = shippedRunner();
+    expect(runner).toMatch(/^[0-9a-f]{64}$/);
+    expect(shippedRunner()).toBe(runner);  // the same bytes every build
+    expect(pairTag("tinyassets-sandbox:s0123456789abcdef", runner))
+      .toBe(`tinyassets-sandbox:s0123456789abcdef-r${runner.slice(0, 16)}`);
+    expect(() => pairTag("tinyassets-sandbox:s1", "runner")).toThrow(/SHA-256/);
+    // build.py marks a passed pair with the same tag.
+    const script = readFileSync(join(PLATFORM, "sandbox", "template", "build.py"), "utf8");
+    expect(script).toContain('return f"{tag_}-r{runner_sha[:16]}"');
+  });
+
+  it("runs the pair check with the E2B key alone, and stops on a failure", async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, { E2B_API_KEY: "e2b_key", CLOUDFLARE_API_TOKEN: "cf",
+                                 GATEWAY_KEYRING: "ring", WORKOS_API_KEY: "workos" });
+    try {
+      let tagged = false;
+      const e2b = async (url: string) => url.includes("/aliases/")
+        ? Response.json({ templateID: "t1" }) : Response.json({ exists: tagged });
+      const calls: { argv: readonly string[]; env: Record<string, string> }[] = [];
+      const spawn = ((command: string, argv: readonly string[],
+                      options: { env: Record<string, string> }) => {
+        calls.push({ argv: [command, ...argv], env: options.env });
+        tagged = true;
+        return { status: 0 };
+      }) as unknown as Parameters<typeof pairCheck>[0];
+      await pairCheck(spawn, e2b);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.argv.slice(-1)).toEqual(["--check-pair"]);
+      expect(Object.keys(calls[0]!.env).sort()).toEqual(["E2B_API_KEY", "HOME", "PATH"]);
+      expect(calls[0]!.env["E2B_API_KEY"]).toBe("e2b_key");
+      // Already passed: nothing is run.
+      await pairCheck(spawn, e2b);
+      expect(calls).toHaveLength(1);
+      // A failed check, or one that tagged nothing, stops the kit.
+      tagged = false;
+      const failed = (() => ({ status: 1 })) as unknown as Parameters<typeof pairCheck>[0];
+      await expect(pairCheck(failed, e2b)).rejects.toThrow(/failed its standing checks/);
+      const silent = (() => ({ status: 0 })) as unknown as Parameters<typeof pairCheck>[0];
+      await expect(pairCheck(silent, e2b)).rejects.toThrow(/failed its standing checks/);
+    } finally {
+      process.env = saved;
+    }
+  });
+
   it("deploys a later version without touching routes, and names its version", () => {
     expect(versionOf("Uploaded tinyassets-owner\nWorker Version ID: " +
                      "0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n"))
@@ -454,8 +502,27 @@ describe("the deploy kit", () => {
     expect(workflow).toMatch(/^on:\s*\n\s+workflow_dispatch:/m);
     expect(workflow).not.toMatch(/^\s+(push|pull_request|schedule):/m);
     expect(workflow).not.toMatch(/ssh|droplet|\/etc\/tinyassets/i);
-    const plan = workflow.slice(workflow.indexOf("\n  plan:\n"), workflow.indexOf("\n  apply:\n"));
+    const plan = workflow.slice(workflow.indexOf("\n  plan:\n"), workflow.indexOf("\n  pair:\n"));
+    const pair = workflow.slice(workflow.indexOf("\n  pair:\n"), workflow.indexOf("\n  apply:\n"));
     const apply = workflow.slice(workflow.indexOf("\n  apply:\n"));
+    // The pair check: after the plan, before the apply, in the production environment with
+    // the E2B key alone (in its one step), its SDK from the hashed lock, its timeout past the
+    // three throwaway sandboxes' own (900 + 1800 + 300 s, `build.py`).
+    expect(pair).toMatch(/^    needs: plan$/m);
+    expect(pair).toMatch(/^    environment: production$/m);
+    expect(pair).toContain("deploy.ts --pair");
+    expect(pair).toContain("--require-hashes -r platform/sandbox/template/requirements.txt");
+    expect([...pair.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((found) => found[1]))
+      .toEqual(["E2B_API_KEY"]);
+    expect(pair).not.toMatch(/^    env:/m);
+    expect(Number(/timeout-minutes: (\d+)/.exec(pair)![1]) * 60).toBeGreaterThan(900 + 1800 + 300);
+    const script = readFileSync(join(PLATFORM, "sandbox", "template", "build.py"), "utf8");
+    for (const seconds of [900, 1800, 300]) {
+      expect(script).toContain(`timeout=${seconds}`);
+    }
+    expect(apply).toMatch(/^    needs: \[plan, pair\]$/m);
+    expect(apply).toContain("needs.pair.result == 'success'");
+    expect(apply).not.toMatch(/pip install|python/);
     // The plan holds no production secret, so it needs no environment and runs first.
     expect(plan).not.toMatch(/environment:/);
     expect(plan).toContain("deploy.ts");
@@ -469,7 +536,6 @@ describe("the deploy kit", () => {
     }
     // The apply job: after the plan, in the repo's main-only environment
     // (tests/test_workflow_production_environment.py), with every input the kit reads.
-    expect(apply).toMatch(/^    needs: plan$/m);
     expect(apply).toMatch(/^    environment: production$/m);
     for (const name of [...PUBLIC_INPUTS, ...SECRET_INPUTS]) {
       expect(apply).toMatch(new RegExp(`${name}: \\$\\{\\{ (secrets|vars)\\.${name} \\}\\}`));

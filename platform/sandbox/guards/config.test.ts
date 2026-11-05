@@ -64,9 +64,13 @@ describe("the sandbox Worker", () => {
     const config = ts.parseConfigFileTextToJson(CONFIG, readFileSync(CONFIG, "utf8"))
       .config as Record<string, unknown>;
     expect(Object.keys(config).sort()).toEqual([
-      "$schema", "compatibility_date", "compatibility_flags", "durable_objects",
-      "kv_namespaces", "main", "migrations", "name", "preview_urls", "queues", "secrets",
-      "vars", "workers_dev"]);
+      "$schema", "build", "compatibility_date", "compatibility_flags", "durable_objects",
+      "kv_namespaces", "main", "migrations", "name", "preview_urls", "queues", "rules",
+      "secrets", "vars", "workers_dev"]);
+    // Its build makes the runner it ships, and the runner alone is imported as data.
+    expect(config["build"]).toEqual({ command: "node template/bundle.mjs dist" });
+    expect(config["rules"]).toEqual([{ type: "Data", globs: ["**/dist/runner.mjs"],
+                                       fallthrough: false }]);
     expect(config["durable_objects"]).toEqual({ bindings: [
       { name: "SANDBOXES", class_name: "SandboxControl" },
       { name: "SLOTS", class_name: "SandboxSlots" }] });

@@ -128,33 +128,79 @@ export class ChangeLog {
   }
 
   /**
-   * The segment's text: the log's lines after `a` through `b`, each with its seq, the last
-   * line per (table, key) kept, a BLOB's hex turned base64 as the base writes it.
-   * Deterministic for the same rows, so a segment put again is the same bytes. A read.
+   * The segment's bytes: the log's lines after `a` through `b`, each with its seq, the last
+   * line per (table, key) kept, in the order of those last seqs, a BLOB's hex turned base64
+   * as the base writes it, each followed by its newline. Deterministic for the same rows, so
+   * a segment put again is the same bytes. Built without holding its lines (review rvburst
+   * V1: a mostly-ASCII line with one character past U+00FF is a two-byte string in V8, twice
+   * its UTF-8): a first pass keeps each key's last seq and counts the stored bytes, and a
+   * second, in seq order, sizes the kept rows as written and then encodes them straight
+   * into one buffer of exactly those bytes, allocated once and at most a part (past it the
+   * build fails, as the files Worker would), one row's text at a time (`holds.ts`'s `SHIP_BYTES` derives the most this holds). `sample`, the memory
+   * leg's, is awaited at the widest kept row's encode, its stored text, parsed value and
+   * JSON all in hand. A read.
    */
-  segment(a: number, b: number): Uint8Array {
+  async segment(a: number, b: number, sample?: () => Promise<void>): Promise<Uint8Array> {
     const tables = exported();
-    const kept = new Map<string, string>();
-    for (const row of this.#sql.exec<{ seq: number; line: string }>(
-           "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq", a, b)
-           .toArray()) {
-      const line = JSON.parse(row.line) as { t: string; table: string;
-                                             row?: Record<string, unknown>; key?: unknown[] };
-      if (line.t !== "row" && line.t !== "gone") {
-        throw new Error("a change log line too wide to keep: the generation fails");
-      }
+    const rows = () => this.#sql.exec<{ seq: number; line: string }>(
+      "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq", a, b);
+    const last = new Map<string, { seq: number; bytes: number }>();
+    for (const row of rows()) {
+      const line = parsed(row.line);
       const shape = tables[line.table]!;
       const key = line.t === "row" ? shape.key.map((column) => line.row![column]) : line.key!;
-      if (line.t === "row" && line.table === "file_contents"
-          && typeof line.row!["inline"] === "string") {
-        line.row!["inline"] = {
-          $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
-      }
-      const id = JSON.stringify([line.table, key]);
-      kept.delete(id);  // re-set, so the kept order is each key's last seq
-      kept.set(id, JSON.stringify({ ...line, seq: row.seq }));
+      last.set(JSON.stringify([line.table, key]),
+               { seq: row.seq, bytes: Buffer.byteLength(row.line, "utf8") });
     }
-    return new TextEncoder().encode([...kept.values()].map((line) => `${line}\n`).join(""));
+    const kept = new Set<number>();
+    let widest = { seq: -1, bytes: -1 };
+    for (const each of last.values()) {
+      kept.add(each.seq);
+      widest = each.bytes > widest.bytes ? each : widest;
+    }
+    last.clear();
+    /** Each kept row as the segment writes it, in seq order, one at a time. */
+    function* written(): Generator<{ seq: number; stored: string; text: string }> {
+      for (const row of rows()) {
+        if (!kept.has(row.seq)) {
+          continue;
+        }
+        const line = parsed(row.line);
+        if (line.t === "row" && line.table === "file_contents"
+            && typeof line.row!["inline"] === "string") {
+          line.row!["inline"] = {
+            $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
+        }
+        yield { seq: row.seq, stored: row.line, text: JSON.stringify({ ...line, seq: row.seq }) };
+      }
+    }
+    // Its exact bytes first, so its one buffer is allocated once and never grown: JSON may
+    // write a line wider than the log stored it (a number SQLite wrote with an exponent).
+    // Past a part no buffer is made: the files Worker takes no segment past `CHUNK_BYTES`.
+    let size = 0;
+    for (const { text } of written()) {
+      size += Buffer.byteLength(text, "utf8") + 1;
+    }
+    if (size > CHUNK_BYTES) {
+      throw new Error(`a log segment is ${size} bytes as written, past a part (${CHUNK_BYTES})`);
+    }
+    const encoder = new TextEncoder();
+    const out = new Uint8Array(size);
+    let at = 0;
+    for (const { seq, stored, text } of written()) {
+      at += encoder.encodeInto(text, out.subarray(at)).written;
+      out[at++] = 0x0a;
+      if (sample !== undefined && seq === widest.seq) {
+        await sample();
+        if (text.length === 0 || stored === "") {
+          throw new Error("a sampled log line is empty");  // each held to here
+        }
+      }
+    }
+    if (at !== size) {
+      throw new Error("a log segment's lines are not the bytes they were counted at");
+    }
+    return out;
   }
 
   /** In a unit: the segment through `b` acknowledged: shipped, and its lines gone. */
@@ -162,4 +208,15 @@ export class ChangeLog {
     this.#sql.exec("UPDATE log_capture SET shipped = ?, pending_a = NULL, pending_b = NULL", b);
     this.#sql.exec("DELETE FROM change_log WHERE seq <= ?", b);
   }
+}
+
+/** A change log line, parsed: a row or a gone line, else the generation fails loudly. */
+function parsed(text: string): { t: string; table: string; row?: Record<string, unknown>;
+                                 key?: unknown[] } {
+  const line = JSON.parse(text) as { t: string; table: string; row?: Record<string, unknown>;
+                                     key?: unknown[] };
+  if (line.t !== "row" && line.t !== "gone") {
+    throw new Error("a change log line too wide to keep: the generation fails");
+  }
+  return line;
 }

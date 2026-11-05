@@ -1,7 +1,10 @@
 /**
  * The in-VM runner (`ta-runner`; ADR-034 decision 4.3, `engines-replan.md` §2.1 steps 4-7),
- * baked into the versioned template (`template/build.py`) and run as root by the sandbox
- * Worker through envd. Root never follows a path another user controls (slice S review
+ * shipped by the sandbox Worker (`src/runner-bytes.ts`) and run as root through envd by the
+ * template's loader (`template/ta-runner`), which names it by its SHA-256 and checks its
+ * bytes before every command (`/opt/ta/runner/<sha256>/runner.mjs`, `TA_RUNNER_DIGEST` set).
+ * Its on-disk format and the rule that keeps a rollback one deploy deep are
+ * `state-format.ts`'s. Root never follows a path another user controls (slice S review
  * H-1 to H-3): every file it writes or reads in a tree another user can write goes through
  * `fsafe.ts` (no link followed, owner and mode set on the descriptor), the sync agent runs
  * as its own user (`ta-sync`), and each run as a user of its own from the template's pool
@@ -11,6 +14,8 @@
  *   the network's resolvers (E2B opens the firewall only), `/proc` remounted `hidepid=2`,
  *   and nothing root runs left writable by another user (`lockDown`), fixed and checked
  *   at every start and resume.
+ * - `adopt`: this runner to be made the sandbox's own, while nothing lives (3 otherwise):
+ *   the disk held to its format. Its `prepare` then drops every other runner's bytes.
  * - `signin-check <engine>`: the record's `status_argv`, as a run user on a home made from
  *   the engine's store: 0 signed in, 3 not.
  * - `launch <run>`: the start document the Worker put in the root-only inbox taken, and the
@@ -83,6 +88,8 @@ import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
 import { AUTOMATON_STATES, LIST_BYTES, stepNanos } from "../../owner/src/sync-ignore";
 import { openMirror, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport }
   from "./sync";
+import { PROTOCOL } from "./protocol";
+import { checkFormat, dropRunners } from "./state-format";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
 /** Every path the runner touches is under this root: `/` in the sandbox, a temp dir in tests. */
@@ -101,6 +108,10 @@ const SCRATCH_INDEX = `${STATE}/scratch-used`;
 const RESERVE = `${STATE}/reserve`;
 /** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
 const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
+/** The runners installed by digest (`template/ta-runner`): `<sha256>/runner.mjs` each. */
+const RUNNERS = `${ROOT}/opt/ta/runner`;
+/** What the runner keeps that is a cache alone, discarded when its format changes. */
+const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
 /** A change time the runner trusts: older than the coarsest filesystem tick (`sync.ts`). */
 const RACY_MS = 2_000;
 /** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
@@ -581,6 +592,8 @@ function prepare(servers: readonly string[]): number {
   lockSudo();
   // The runner's own room on the disk, kept while there is room for it (`scratch.ts`).
   mkdirSync(STATE, { recursive: true, mode: 0o700 });
+  checkFormat(STATE, CACHES);
+  dropOtherRunners();
   keepReserve(RESERVE, RESERVE_SIZE);
   // A pasted code is never left at rest (review L1): one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
@@ -672,6 +685,44 @@ function lockDown(): void {
   }
 }
 
+/** The digest the loader ran this runner by, or null (not run by the loader: a test's). */
+function ownDigest(): string | null {
+  const own = process.env["TA_RUNNER_DIGEST"];
+  return own !== undefined && /^[0-9a-f]{64}$/.test(own) ? own : null;
+}
+
+/**
+ * Every other runner's bytes gone from `/opt/ta/runner`, at `prepare`, only while nothing
+ * lives (a live run's children start again from their own bytes) and only by the runner the
+ * loader names, which the sandbox's row already names (the Worker commits it before it runs
+ * this runner's `prepare`): a sandbox keeps the one it runs, and no row ever names bytes
+ * that are gone.
+ */
+function dropOtherRunners(): void {
+  if (liveRuns().length + liveLogins().length === 0) {
+    dropRunners(RUNNERS, ownDigest());
+  }
+}
+
+/**
+ * This runner to be made the sandbox's own (`adopt`, by the sandbox Worker, which ships it,
+ * only when nothing lives: no run, no sign-in, as `state` saw): the disk held to its format
+ * (`checkFormat`), changing nothing else. Refused (`NO`) while anything lives, whose runner
+ * must stay. The other runners' bytes go at this runner's `prepare`, once the row names it.
+ */
+function adopt(): number {
+  if (ownDigest() === null) {
+    throw new Error("adopt is run by the loader, which names the runner's digest");
+  }
+  if (liveRuns().length + liveLogins().length > 0) {
+    process.stderr.write("ta-runner: a run or a sign-in lives; its runner stays\n");
+    return NO;
+  }
+  mkdirSync(STATE, { recursive: true, mode: 0o700 });
+  checkFormat(STATE, CACHES);
+  return OK;
+}
+
 // -- launch, cancel, status, state, renewal ------------------------------------------
 
 function launch(run: string): number {
@@ -726,7 +777,8 @@ function stateCommand(): number {
   const live = liveRuns();
   // A sign-in in progress keeps its sandbox from the idle reap; it is quiet (no model call).
   process.stdout.write(JSON.stringify({ live: live.length + liveLogins().length,
-                                        quiet: live.every(({ state }) => quiet(state)) }));
+                                        quiet: live.every(({ state }) => quiet(state)),
+                                        protocol: PROTOCOL }));
   return OK;
 }
 
@@ -2335,6 +2387,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       return status(args[0] ?? "");
     case "state":
       return stateCommand();
+    case "adopt":
+      return adopt();
     case "quiet-wait":
       return quietWait(Number(args[0]));
     case "renew-wait":

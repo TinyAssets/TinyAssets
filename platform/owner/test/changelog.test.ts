@@ -20,6 +20,105 @@ import { filesOn, sqlIn } from "./support";
 const W = "/workspace";
 const text = (body: string) => new TextEncoder().encode(body);
 
+/**
+ * The segment build `ChangeLog.segment` replaced (review rvburst V1), verbatim but for its
+ * rows: every kept line held as a string, then joined and encoded. The reference for its
+ * bytes.
+ */
+function replacedSegment(rows: readonly { seq: number; line: string }[]): Uint8Array {
+  const tables = exported();
+  const kept = new Map<string, string>();
+  for (const row of rows) {
+    const line = JSON.parse(row.line) as { t: string; table: string;
+                                           row?: Record<string, unknown>; key?: unknown[] };
+    const shape = tables[line.table]!;
+    const key = line.t === "row" ? shape.key.map((column) => line.row![column]) : line.key!;
+    if (line.t === "row" && line.table === "file_contents"
+        && typeof line.row!["inline"] === "string") {
+      line.row!["inline"] = {
+        $base64: Buffer.from(line.row!["inline"] as string, "hex").toString("base64") };
+    }
+    const id = JSON.stringify([line.table, key]);
+    kept.delete(id);
+    kept.set(id, JSON.stringify({ ...line, seq: row.seq }));
+  }
+  return new TextEncoder().encode([...kept.values()].map((line) => `${line}\n`).join(""));
+}
+
+describe("a log segment's build", () => {
+  it("makes byte for byte the segment the build it replaced made, every line's last per key, " +
+     "of any characters", async () => {
+    const o = await owner();
+    const made = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      const chars = ["a", "Z", " ", "\"", "\\", "\n", "\u0001", "é", "€", "語", "😀", "\ud800"];
+      let seed = 7;
+      const next = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+      const textOf = (n: number) => Array.from({ length: n },
+                                                () => chars[Math.floor(next() * chars.length)])
+        .join("");
+      // Rows, gone lines and inline contents, the same few keys again and again.
+      for (let n = 0; n < 400; n++) {
+        const pick = next();
+        const line = pick < 0.6
+          ? { t: "row", table: "owner_notices",
+              row: { seq: Math.floor(next() * 40), at: n, type: "x",
+                     detail: textOf(Math.floor(next() * 300)) } }
+          : pick < 0.8 ? { t: "gone", table: "owner_notices", key: [Math.floor(next() * 40)] }
+          : { t: "row", table: "file_contents",
+              row: { content_id: `c${Math.floor(next() * 5)}`, size: n,
+                     inline: Buffer.from(textOf(20)).toString("hex"), refs: 1 } };
+        sql.exec("INSERT INTO change_log (line) VALUES (?)", JSON.stringify(line));
+      }
+      const log = new ChangeLog(state.storage);
+      const rows = sql.exec<{ seq: number; line: string }>(
+        "SELECT seq, line FROM change_log ORDER BY seq").toArray();
+      const first = rows[0]!.seq - 1;
+      const compared: number[] = [];
+      for (const [a, b] of [[first, first + 400], [first + 17, first + 233],
+                            [first + 399, first + 400]]) {
+        let sampled = 0;
+        const built = await log.segment(a!, b!, async () => {
+          sampled++;
+        });
+        expect(sampled).toBe(1);
+        const reference = replacedSegment(rows.filter((row) => row.seq > a! && row.seq <= b!));
+        compared.push(Buffer.compare(Buffer.from(built), Buffer.from(reference)));
+      }
+      return compared;
+    });
+    expect(made).toEqual([0, 0, 0]);
+  });
+
+  it("allocates its one buffer once, exactly its bytes as written, though JSON writes a " +
+     "number SQLite stored with an exponent wider (the log's own bytes undercount it)",
+     async () => {
+    const o = await owner();
+    const made = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      // A reservation's numbers as SQLite may write them: `1.0e+20` is 21 digits in JSON.
+      const wide = "1.0e+20";
+      for (let n = 1; n <= 200; n++) {
+        sql.exec("INSERT INTO change_log (line) VALUES (?)",
+                 `{"t":"row","table":"model_reservations","row":{"seq":${n},"id":"r",` +
+                 `"max_output_tokens":${wide},"est_tokens":${wide},"est_cost":${wide},` +
+                 `"tokens":${wide},"cost":${wide},"policy_generation":${wide},` +
+                 `"created_at":${wide},"settled_at":${wide}}}`);
+      }
+      const rows = sql.exec<{ seq: number; line: string }>(
+        "SELECT seq, line FROM change_log ORDER BY seq").toArray();
+      const stored = rows.reduce((sum, row) => sum + Buffer.byteLength(row.line) + 1, 0);
+      const built = await new ChangeLog(state.storage).segment(rows[0]!.seq - 1,
+                                                               rows.at(-1)!.seq);
+      return { stored, bytes: built.byteLength, buffer: built.buffer.byteLength,
+               same: Buffer.compare(Buffer.from(built), Buffer.from(replacedSegment(rows))) };
+    });
+    expect(made.bytes).toBeGreaterThan(made.stored + 200 * 32);  // wider than stored and seq
+    expect(made.buffer).toBe(made.bytes);  // one buffer, its own bytes: never grown
+    expect(made.same).toBe(0);
+  });
+});
+
 describe("the change log", () => {
   it("has one trigger an exported table and event, its image every exported column and " +
      "its key", async () => {
@@ -64,7 +163,7 @@ describe("the change log", () => {
       await gate.write(() => gate.storage.sql.exec(
         "UPDATE owner_notices SET detail = 'x' WHERE 0"));  // touches nothing, logs nothing
       const { last, s } = log.state();
-      const lines = new TextDecoder().decode(log.segment(s - 1, last)).trimEnd().split("\n")
+      const lines = new TextDecoder().decode(await log.segment(s - 1, last)).trimEnd().split("\n")
         .map((line) => JSON.parse(line) as Line);
       return { lines, now: standing(state.storage.sql) };
     });

@@ -29,13 +29,20 @@ describe("the CPU guards' clock", () => {
   });
 
   it("counts its own thread's work", () => {
+    // Spun until the process has spent 200 ms of CPU, not for 200 ms of wall time: on a
+    // loaded host a wall-time spin gets less CPU than its length, which says nothing about
+    // the clock. Only this thread is busy here, so nearly all the process's CPU is its own.
+    const process0 = process.cpuUsage();
     const start = threadMs();
-    const end = performance.now() + 200;
     let spins = 0;
-    while (performance.now() < end) {
+    const spent = () => {
+      const used = process.cpuUsage(process0);
+      return (used.user + used.system) / 1000;
+    };
+    while (spent() < 200) {
       spins += 1;
     }
     expect(spins).toBeGreaterThan(0);
-    expect(threadMs(start)).toBeGreaterThan(150);
+    expect(threadMs(start)).toBeGreaterThan(spent() / 2);
   });
 });

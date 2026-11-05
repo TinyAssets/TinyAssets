@@ -11,6 +11,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { Backups, type GenerationSizes } from "../src/backup";
+import {
+  OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
+} from "../src/holds";
+import { SLOT_WAIT_MS, SlotPool } from "../src/slots";
 import { ChangeLog } from "../src/changelog";
 import { exported } from "../src/export";
 import type { ChunkStore, Files } from "../src/files";
@@ -102,17 +106,25 @@ export interface Generated {
 
 export interface Harness {
   /** At the start of every outside call of the generation, before it is made. */
-  readonly duringCall?: (at: { files: Files; gate: WriteGate; n: number }) => Promise<void>;
+  readonly duringCall?: (at: { files: Files; gate: WriteGate; n: number;
+                                kind: "part" | "segment" | "root" }) => Promise<void>;
   /** After every unit of the generation (`n` counts units, from 100,000). */
   readonly afterUnit?: (at: { files: Files; gate: WriteGate; n: number }) => Promise<void>;
   /** The outside call to fail, by its number, before it is made or after it landed. */
   readonly failAt?: { readonly call: number; readonly when: "before" | "after" };
   /** Begin it and stop, a pass with no time to carry it on, for an export to join. */
   readonly onePass?: boolean;
+  /** Whether the owner is being erased, as the lane asks it (never, unless a test says). */
+  readonly halted?: () => boolean;
   /** The schema version the lane runs under (the code's, unless a migration is played). */
   readonly schema?: number;
   /** Its sizes: `SMALL` unless a test asks for others (production's `GENERATION_SIZES`). */
   readonly sizes?: GenerationSizes;
+  /**
+   * The pool its bursts take their units of: a pool of the production figures its own unless
+   * a test passes one, so another test's holds in the isolate never refuse its bursts.
+   */
+  readonly pool?: SlotPool;
 }
 
 /**
@@ -136,10 +148,11 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       }
     };
     let calls = 0;
-    const call = <A extends unknown[], R>(made: (...args: A) => Promise<R>) =>
+    const call = <A extends unknown[], R>(kind: "part" | "segment" | "root",
+                                          made: (...args: A) => Promise<R>) =>
       async (...args: A): Promise<R> => {
         const n = ++calls;
-        await harness.duringCall?.({ files, gate, n });
+        await harness.duringCall?.({ files, gate, n, kind });
         if (harness.failAt?.call === n && harness.failAt.when === "before") {
           throw new Error("an outside call failed before it was made");
         }
@@ -153,11 +166,11 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     const store: ChunkStore = {
       ...real,
       mintKey: (ns) => real.mintKey(ns),
-      putManifestPart: call((ns, key, gen, part, bytes) =>
+      putManifestPart: call("part", (ns, key, gen, part, bytes) =>
         real.putManifestPart(ns, key, gen, part, bytes)),
-      putManifestSegment: call((ns, key, gen, a, b, bytes) =>
+      putManifestSegment: call("segment", (ns, key, gen, a, b, bytes) =>
         real.putManifestSegment(ns, key, gen, a, b, bytes)),
-      putManifestRoot: call((ns, key, gen, parts, segments, span) =>
+      putManifestRoot: call("root", (ns, key, gen, parts, segments, span) =>
         real.putManifestRoot(ns, key, gen, parts, segments, span)),
       getManifestRoot: (ns, gen) => real.getManifestRoot(ns, gen),
       deleteManifest: (ns, gen, parts, segments) => real.deleteManifest(ns, gen, parts, segments),
@@ -170,10 +183,14 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       return value;
     };
     const notices: string[] = [];
+    const pool = harness.pool ?? new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
+                                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
     const lane = () => new Backups({
       storage: gate.storage, write: quiet, store, log, space: () => files.space(),
       owner: () => "owner", serves: () => true, schema: harness.schema ?? MIGRATIONS.length,
-      halted: () => false, notice: (type) => notices.push(type), sizes: harness.sizes ?? SMALL,
+      halted: harness.halted ?? (() => false), notice: (type) => notices.push(type),
+      sizes: harness.sizes ?? SMALL,
+      pool,
     });
     // The one under way, or a new one, begun now (its owner changed since the last).
     if (state.storage.sql.exec("SELECT 1 FROM owner_backups WHERE state = 'writing'")
@@ -196,6 +213,11 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       if (harness.onePass === true || row === undefined || row.state === "done") {
         break;
       }
+    }
+    // Every unit the lane took is given back, whatever its passes did (a leak would vanish
+    // with a pool of the run's own).
+    if (harness.pool === undefined && pool.state().held !== 0) {
+      throw new Error(`the generation's lane left ${pool.state().held} units of its pool held`);
     }
     const { ns } = await files.space();
     const root = await real.getManifestRoot(ns, gen);

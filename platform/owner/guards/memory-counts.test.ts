@@ -49,8 +49,6 @@ export const UNCOUNTED = Object.freeze({
     "file_read_chunks' two chunks, as its answer": "PR 3b",
     "a placed body's bytes as room_post or collection_write sends them (BODY_BYTES_MAX)": "PR 3b",
     "an export's chunks, as its answer": "PR 4",
-    // One an object while its manifest lane runs; its peak measured by the memory leg.
-    "a generation's burst, its pages and its parts (BURST_BYTES)": "PR 4",
     "sync's raw chunk bytes": "PR 4",
     "an inbound event's body (INBOUND_BODY_MAX)": "PR 4",
   }),
@@ -98,10 +96,23 @@ describe("an owner isolate's counts", () => {
     expect(total).toBeLessThanOrEqual(ISOLATE_BYTES);
   });
 
+  it("derives a burst's and a ship's units from what they hold at their most", () => {
+    // A burst's peak is its parts beside a segment's build only while that build is past its
+    // bytes (else its pages and parts at the cut would be the more).
+    expect(holds.SHIP_BYTES).toBeGreaterThanOrEqual(holds.BURST_BYTES);
+    expect(holds.SHIP_UNITS * UNIT_BYTES).toBeGreaterThanOrEqual(holds.SHIP_BYTES);
+    expect((holds.SHIP_UNITS - 1) * UNIT_BYTES).toBeLessThan(holds.SHIP_BYTES);
+    expect(holds.BURST_UNITS * UNIT_BYTES).toBeGreaterThanOrEqual(holds.BURST_PEAK_BYTES);
+    expect((holds.BURST_UNITS - 1) * UNIT_BYTES).toBeLessThan(holds.BURST_PEAK_BYTES);
+    console.log(`a ship: ${holds.SHIP_UNITS} units for ${holds.SHIP_BYTES} bytes; a burst: ` +
+                `${holds.BURST_UNITS} units for ${holds.BURST_PEAK_BYTES}`);
+  });
+
   it("lets every declared hold run: each fits the pool beside its reserve", () => {
     const larger = holds.OWNER_POOL_UNITS - holds.OWNER_RESERVE_UNITS;
     for (const units of [holds.EDIT_READ_UNITS, holds.EDIT_MAKE_UNITS, holds.APPEND_UNITS,
                          holds.WINDOW_UNITS, holds.bodyUnits(1), holds.bodyUnits(2),
+                         holds.BURST_UNITS, holds.SHIP_UNITS,
                          holds.moveTableUnits(MOVE_RECORDS) + holds.MOVE_PASS_UNITS]) {
       expect(units === 1 || units <= larger).toBe(true);
     }

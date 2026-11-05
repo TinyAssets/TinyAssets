@@ -1,14 +1,18 @@
 /**
- * The template the sandbox Worker starts (`E2B_TEMPLATE`) is the one built from these
- * sources: its tag is `template/build.py`'s digest of the runner's bundle, the records, their
- * locks, the build script and the run pool's size's source (`owner/src/tier.ts`), recomputed
- * here the same way. A change to the runner or a
- * record without a new template build fails CI, so no sandbox runs a runner older than its
- * code.
+ * The template the sandbox Worker starts (`E2B_TEMPLATE`) is the one built from what the
+ * image is made of: its tag is `template/build.py`'s digest of the build script, the runner's
+ * loader, the run pool's size (`RUNS_CEILING`), the engines' install pins and their locks,
+ * recomputed here the same way and held equal to the script's own. The runner is no part of
+ * it: the Worker ships the runner (`src/runner-bytes.ts`) and names it by its digest, so a
+ * runner change is a deploy, not a template build. Here: the tag takes no runner input, the
+ * runner the Worker ships is the bundle as built, byte for byte, every time, and the pinned
+ * tag passed its standing checks. Each runner's behaviour on the pinned template is held at
+ * deploy by the pair check (`deploy/deploy.ts`, `build.py --check-pair`).
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync }
+  from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
@@ -19,7 +23,6 @@ import { PLATFORM } from "../../owner/guards/sources";
 import { STEP_NS } from "../../owner/src/sync-ignore";
 
 const TEMPLATE = join(PLATFORM, "sandbox", "template");
-const SOURCES = join(PLATFORM, "sources");
 
 function files(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -40,24 +43,59 @@ function byParts(a: string, b: string): number {
   return x.length - y.length;
 }
 
-function tag(): string {
-  const out = mkdtempSync(join(tmpdir(), "ta-template-"));
+/** Python's `json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonical).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** `build.py`'s `engines()`: each served npm record's id, binary and lifecycle scripts. */
+function engines(sources: string): { id: string; bin: string; scripts: boolean }[] {
+  return readdirSync(sources).filter((name) => name.endsWith(".json")).sort()
+    .map((name) => JSON.parse(readFileSync(join(sources, name), "utf8")) as {
+      id: string; unwired?: string;
+      cli?: { install: { manager: string; bin: string; lifecycle_scripts?: boolean } } })
+    .filter((rec) => rec.cli !== undefined && rec.unwired === undefined
+                     && rec.cli.install.manager === "npm")
+    .map((rec) => ({ id: rec.id, bin: rec.cli!.install.bin,
+                     scripts: rec.cli!.install.lifecycle_scripts === true }));
+}
+
+/** `build.py`'s `tag()`, from the platform tree at `platform`. */
+function tag(platform = PLATFORM): string {
+  const template = join(platform, "sandbox", "template");
+  const locks = join(platform, "sources", "locks");
+  const ceiling = /export const RUNS_CEILING = ([0-9_]+);/.exec(
+    readFileSync(join(platform, "owner", "src", "tier.ts"), "utf8"))![1]!.replaceAll("_", "");
+  const parts: [string, Buffer][] = [
+    ["build.py", readFileSync(join(template, "build.py"))],
+    ["ta-runner", readFileSync(join(template, "ta-runner"))],
+    ["runs_ceiling", Buffer.from(String(Number(ceiling)))],
+    ["engines", Buffer.from(canonical(engines(join(platform, "sources"))))],
+    ...files(locks).map((path) => `locks/${relative(locks, path).split("\\").join("/")}`)
+      .sort(byParts).map((name): [string, Buffer] =>
+        [name, readFileSync(join(platform, "sources", name))]),
+  ];
+  const digest = createHash("sha256");
+  for (const [name, data] of parts) {
+    digest.update(Buffer.concat([Buffer.from(`${name}\0`),
+                                 createHash("sha256").update(data).digest()]));
+  }
+  return `s${digest.digest("hex").slice(0, 16)}`;
+}
+
+/** The runner as the Worker's build makes it (`bundle.mjs`). */
+function bundled(): Buffer {
+  const out = mkdtempSync(join(tmpdir(), "ta-runner-"));
   try {
     execFileSync(process.execPath, [join(TEMPLATE, "bundle.mjs"), out]);
-    const parts: [string, Buffer][] = [
-      ["runner.mjs", readFileSync(join(out, "runner.mjs"))],
-      ["build.py", readFileSync(join(TEMPLATE, "build.py"))],
-      ["ta-runner", readFileSync(join(TEMPLATE, "ta-runner"))],
-      ["tier.ts", readFileSync(join(PLATFORM, "owner", "src", "tier.ts"))],
-      ...files(SOURCES).map((path) => relative(SOURCES, path).split("\\").join("/"))
-        .sort(byParts).map((name): [string, Buffer] => [name, readFileSync(join(SOURCES, name))]),
-    ];
-    const digest = createHash("sha256");
-    for (const [name, data] of parts) {
-      digest.update(Buffer.concat([Buffer.from(`${name}\0`),
-                                   createHash("sha256").update(data).digest()]));
-    }
-    return `s${digest.digest("hex").slice(0, 16)}`;
+    return readFileSync(join(out, "runner.mjs"));
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
@@ -72,6 +110,7 @@ function pinned(): string {
 
 interface Passed {
   readonly tag: string;
+  readonly runner?: string;
   readonly logins: readonly { engine: string; region: string | null; ok: boolean }[];
   readonly routes: readonly { engine: string; provider: string; ok: boolean;
                               turns: readonly { exit: number; answered: boolean;
@@ -82,40 +121,49 @@ interface Passed {
 }
 
 describe("the template", () => {
-  it("is the one built from the runner and the records as they stand", () => {
+  it("is the one built from what the image is made of, as build.py computes it", () => {
     expect(pinned()).toBe(`tinyassets-sandbox:${tag()}`);
+    expect(execFileSync("python3", [join(TEMPLATE, "build.py"), "--tag-only"],
+                        { encoding: "utf8" }).trim()).toBe(`tinyassets-sandbox:${tag()}`);
   });
 
-  it("is pinned only once it passed both standing checks, for every record (review L-b)",
-     () => {
+  it("takes no runner input: a change to the runner's code is no new template", () => {
+    // The platform's template inputs and the runner's code copied, the runner's changed.
+    const copy = mkdtempSync(join(tmpdir(), "ta-template-"));
+    try {
+      for (const part of ["sandbox/template", "sources", "owner/src/tier.ts",
+                          "sandbox/runner", "gateway/src/failure.ts"]) {
+        cpSync(join(PLATFORM, part), join(copy, part), { recursive: true });
+      }
+      writeFileSync(join(copy, "gateway/src/failure.ts"), "export const CHANGED = 1;\n");
+      writeFileSync(join(copy, "sandbox/runner/runner.ts"), "export {};\n");
+      expect(tag(copy)).toBe(tag());
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
+  });
+
+  it("is given the runner the Worker ships, the same bytes every build", () => {
+    const once = bundled();
+    expect(bundled().equals(once)).toBe(true);
+    // What `src/runner-bytes.ts` imports is this build's own output.
+    expect(readFileSync(join(PLATFORM, "sandbox", "dist", "runner.mjs")).equals(once))
+      .toBe(true);
+  });
+
+  it("is pinned only once it passed its standing checks (review L-b)", () => {
     const passed = JSON.parse(readFileSync(join(TEMPLATE, "passed.json"), "utf8")) as Passed[];
-    const entry = passed.find((each) => `tinyassets-sandbox:${each.tag}` === pinned());
+    const entry = passed.findLast((each) => `tinyassets-sandbox:${each.tag}` === pinned());
     expect(entry, "the pinned tag has no passing record in template/passed.json").toBeDefined();
-    const records = files(SOURCES).filter((path) => path.endsWith(".json")
-      && !path.includes("/locks/")).map((path) => JSON.parse(readFileSync(path, "utf8")) as {
-        id: string; unwired?: string; cli?: { credential: string[]; login?: unknown;
-                                              compaction?: unknown;
-                                              regions?: Record<string, unknown>;
-                                              api_key_env?: Record<string, unknown> } });
-    const logins = records.filter((rec) => rec.cli?.login !== undefined
-      && rec.unwired === undefined).flatMap((rec) =>
-      Object.keys(rec.cli!.regions ?? {}).length === 0 ? [`${rec.id}:`]
-        : Object.keys(rec.cli!.regions!).map((region) => `${rec.id}:${region}`)).sort();
-    const routes = records.filter((rec) => rec.cli?.credential.includes("api_key") === true
-      && rec.unwired === undefined).flatMap((rec) =>
-      Object.keys(rec.cli!.api_key_env!).map((provider) => `${rec.id}:${provider}`)).sort();
+    expect(entry!.logins.length).toBeGreaterThan(0);
+    expect(entry!.logins.every((each) => each.ok)).toBe(true);
+    expect(entry!.routes.length).toBeGreaterThan(0);
+    expect(entry!.routes.every((each) => each.ok && each.turns?.length === 2
+      && each.turns.every((one) => one.exit === 0 && one.answered)
+      && each.turns[1]!.resumed)).toBe(true);
     // The sync-ignore automaton's step, timed in the sandbox, within `STEP_NS`.
     expect(entry!.matcher, "the pinned tag's record has no matcher check").toBeDefined();
     expect(entry!.matcher!.ok).toBe(true);
     expect(entry!.matcher!.step_ns).toBeLessThanOrEqual(STEP_NS);
-    expect(entry!.logins.filter((each) => each.ok)
-      .map((each) => `${each.engine}:${each.region ?? ""}`).sort()).toEqual(logins);
-    // A record that says how to compact it (`cli.compaction`) passed only once it compacted.
-    const compacts = new Set(records.filter((rec) => rec.cli?.compaction !== undefined)
-      .map((rec) => rec.id));
-    expect(entry!.routes.filter((each) => each.ok && each.turns?.length === 2
-      && each.turns.every((one) => one.exit === 0 && one.answered)
-      && each.turns[1]!.resumed && (!compacts.has(each.engine) || each.compacted === true))
-      .map((each) => `${each.engine}:${each.provider}`).sort()).toEqual(routes);
   });
 });

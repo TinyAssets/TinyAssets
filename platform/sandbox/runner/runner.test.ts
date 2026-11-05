@@ -10,8 +10,9 @@
  * a home's settings outliving its run). Cancel, `events_busy`, the renewal's held posts and
  * resume, the projection and big files are here too.
  */
+import { spawn } from "node:child_process";
 import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync,
-         readFileSync, statSync, symlinkSync,
+         readFileSync, rmSync, statSync, symlinkSync,
          writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +27,9 @@ import { invocation, type StartDoc } from "./engine";
 import { lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { SCRATCH_ENV } from "./scratch";
+import { PROTOCOL } from "./protocol";
+import { READS, STATE_FORMAT } from "./state-format";
+import { FORMATS, sample, shapeProblems } from "./state-shape";
 import { processesOf } from "./users";
 import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./harness";
 
@@ -489,6 +493,11 @@ describe("the vendor's own sign-in", () => {
       && (frame["url"] !== null || frame["code"] !== null));
     expect(open).toMatchObject({ type: "ta.signin", url: plan.url,
                                  accepts_code: login["accepts_code"] === true });
+    // What the real runner keeps of a live sign-in is its format's record.
+    expect(shapeProblems(JSON.parse(readFileSync(box.path(`/var/lib/ta/signin/${id}/state.json`),
+                                                 "utf8")),
+                         FORMATS[String(STATE_FORMAT)]!.files[
+                           "var/lib/ta/signin/<id>/state.json"]!)).toEqual([]);
     if (plan.code !== null) {
       await frameWhere(id, (frame) => frame["code"] === plan.code);
     }
@@ -705,7 +714,7 @@ describe("the vendor's own sign-in", () => {
     box.login({ id, engine: "claude-code" }, doors);
     box.runner("login-launch", id);
     await frameWhere(id, (frame) => frame["state"] === "open");
-    expect(JSON.parse(box.runner("state").out)).toEqual({ live: 1, quiet: true });
+    expect(JSON.parse(box.runner("state").out)).toEqual({ live: 1, quiet: true, protocol: PROTOCOL });
     box.runner("login-cancel", id);
     await doors.ended_(25_000, id);
   });
@@ -1529,13 +1538,88 @@ describe("cancel and the runner's state", () => {
     box.runner("launch", start.run);
     await waitFor(() => box.ran("claude-code").length > 0);
     await waitFor(() => box.runner("state").out.includes("\"quiet\":false"));
-    expect(JSON.parse(box.runner("state").out)).toEqual({ live: 1, quiet: false });
+    expect(JSON.parse(box.runner("state").out)).toEqual({ live: 1, quiet: false, protocol: PROTOCOL });
     expect(box.runner("status", start.run).code).toBe(0);
     expect(box.runner("cancel", start.run).code).toBe(0);
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 143 });
     await waitFor(() => box.runner("status", start.run).code === 3);
     expect(box.runner("cancel", start.run).code).toBe(3);
+  });
+
+  it("adopts this runner only when nothing lives: its format held, nothing deleted",
+     async () => {
+    const own = "a".repeat(64);
+    const old = "b".repeat(64);
+    for (const digest of [own, old]) {
+      box.write(`/opt/ta/runner/${digest}/runner.mjs`, "// a runner");
+    }
+    box.write("/var/lib/ta/sessions-seen.json", "{}");
+    box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
+                             sleepMs: 20_000 });
+    const start = startDoc(doors, "claude-code", { config: config("claude-code") });
+    box.start(start);
+    box.runner("launch", start.run);
+    await waitFor(() => box.ran("claude-code").length > 0);
+    // What the real runner wrote while its run lives is its format's record, field by field.
+    const format = FORMATS[String(STATE_FORMAT)]!;
+    expect(shapeProblems(JSON.parse(readFileSync(box.path(
+      `/var/lib/ta/runs/${start.run}/state.json`), "utf8")),
+                         format.files["var/lib/ta/runs/<run>/state.json"]!)).toEqual([]);
+    const kept = readdirSync(box.path("/var/lib/ta/kept"));
+    expect(kept.length).toBeGreaterThan(0);
+    for (const name of kept) {
+      expect(shapeProblems(JSON.parse(readFileSync(box.path(`/var/lib/ta/kept/${name}`),
+                                                   "utf8")),
+                           format.files["var/lib/ta/kept/<home>.json"]!)).toEqual([]);
+    }
+    process.env["TA_RUNNER_DIGEST"] = own;
+    try {
+      // A run lives: its runner stays, and nothing changes.
+      expect(box.runner("adopt").code).toBe(3);
+      box.runner("cancel", start.run);
+      await doors.ended_(25_000, start.run);
+      await waitFor(() => JSON.parse(box.runner("state").out).live === 0);
+      expect(box.runner("adopt").code).toBe(0);
+      expect(readFileSync(box.path("/var/lib/ta/format"), "utf8")).toBe(`${STATE_FORMAT}\n`);
+      // A new marker: the one cache gone with it; the durable state kept. No runner's bytes
+      // go at `adopt`: its `prepare` drops them once the row names it.
+      expect(existsSync(box.path("/var/lib/ta/sessions-seen.json"))).toBe(false);
+      expect(readdirSync(box.path("/opt/ta/runner")).sort()).toEqual([own, old]);
+    } finally {
+      delete process.env["TA_RUNNER_DIGEST"];
+    }
+    // Run by no loader (no digest named), it refuses.
+    expect(box.runner("adopt").code).toBe(1);
+  });
+
+  it("reads every format's run and sign-in state it reads, as each was recorded", () => {
+    // Live processes of the test's own, as a run's runner and a sign-in's would be.
+    const sleepers = [0, 1].map(() => spawn("sleep", ["30"], { stdio: "ignore" }));
+    try {
+      for (const format of READS) {
+        const files = FORMATS[String(format)]!.files;
+        const run = `run_${String(format).padStart(32, "0")}`;
+        const id = `si_${String(format).padStart(32, "0")}`;
+        box.write(`/var/lib/ta/runs/${run}/state.json`, JSON.stringify(sample(
+          files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleepers[0]!.pid, ended: false })));
+        box.write(`/var/lib/ta/signin/${id}/state.json`, JSON.stringify(sample(
+          files["var/lib/ta/signin/<id>/state.json"]!, { pid: sleepers[1]!.pid, ended: false })));
+        expect(JSON.parse(box.runner("state").out)).toMatchObject({ live: 2 });
+        process.env["TA_RUNNER_DIGEST"] = "a".repeat(64);
+        try {
+          expect(box.runner("adopt").code).toBe(3);  // both read as living
+        } finally {
+          delete process.env["TA_RUNNER_DIGEST"];
+        }
+        rmSync(box.path(`/var/lib/ta/runs/${run}`), { recursive: true, force: true });
+        rmSync(box.path(`/var/lib/ta/signin/${id}`), { recursive: true, force: true });
+      }
+    } finally {
+      for (const sleeper of sleepers) {
+        sleeper.kill();
+      }
+    }
   });
 
   it("kills a CLI that ignores SIGTERM, after its grace", { tags: ["large"] }, async () => {
