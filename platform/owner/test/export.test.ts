@@ -18,6 +18,7 @@ import {
 } from "../src/backup";
 import {
   BURST_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
+  SHIP_UNITS,
 } from "../src/holds";
 import { SLOT_WAIT_MS, SlotPool } from "../src/slots";
 import {
@@ -380,8 +381,8 @@ describe("a generation", () => {
   }, 120_000);
 
   it("takes its burst's units of the pool now or yields: with the pool full it reads and " +
-     "puts nothing and goes on later; with room, every put inside them (burstlease)",
-     async () => {
+     "puts nothing and goes on later; with room, each part's put inside its units, each " +
+     "segment's inside the burst's or its own (burstlease)", async () => {
     const pool = new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
                               OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
     const o = await owner();
@@ -397,15 +398,50 @@ describe("a generation", () => {
       .toBeGreaterThan(Date.now() / 1000 + MANIFEST_BUSY_RETRY_S - 2);
     expect(pool.state().held).toBe(other.units);  // nothing of the burst's left held
     other.release();
-    // With room, every outside call of a burst is made inside its units, and they go back.
-    const seen: number[] = [];
-    const made = await generate(o.stub, { pool, duringCall: async () => {
-      seen.push(pool.state().held);
+    // With room, the owner writing at every call: each part's put is made inside the
+    // burst's units, each segment's inside the burst's (between its parts) or its own ship
+    // hold (before or after a burst, at the end), the root's in none; all go back.
+    const seen: Record<string, number[]> = { part: [], segment: [], root: [] };
+    const made = await generate(o.stub, { pool, duringCall: async (at) => {
+      seen[at.kind]!.push(pool.state().held);
+      await busy(2)(at);
     } });
     expect(made.notices).toEqual([]);
     expect(digest(replay(made.lines))).toBe(made.atE);
-    expect(Math.max(...seen)).toBe(BURST_UNITS);
+    expect(new Set(seen["part"])).toEqual(new Set([BURST_UNITS]));
+    expect(new Set(seen["segment"])).toEqual(new Set([BURST_UNITS, SHIP_UNITS]));
+    expect(seen["root"]).toEqual([0]);
     expect(pool.state()).toMatchObject({ held: 0, peak: BURST_UNITS });
+  }, 120_000);
+
+  it("ships a log segment outside a burst inside its own units, now or not at all: with the " +
+     "pool full it puts nothing and goes on later (rvburst 1)", async () => {
+    const pool = new SlotPool(OWNER_POOL_UNITS, SLOT_WAIT_MS, OWNER_WAITERS,
+                              OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS);
+    const o = await owner();
+    await notices(o, 200);
+    // Begun, its capture on, and the owner's writes logged before any burst.
+    await generate(o.stub, { pool, onePass: true });
+    await sqlIn(o.stub, "UPDATE owner_notices SET detail = 'changed' WHERE seq <= 50");
+    const [{ logged }] = await sqlIn(o.stub, "SELECT COUNT(*) AS logged FROM change_log") as
+      [{ logged: number }];
+    expect(logged).toBeGreaterThan(0);
+    // Another object's holds: past what leaves the ship its units beside the reserve.
+    const other = await pool.acquire(OWNER_POOL_UNITS - OWNER_RESERVE_UNITS - SHIP_UNITS + 1);
+    const held = await generate(o.stub, { pool });
+    expect({ calls: held.calls, notices: held.notices }).toEqual({ calls: 0, notices: [] });
+    const [row] = await sqlIn(o.stub, "SELECT state, segments, retry_at FROM owner_backups");
+    expect(row).toMatchObject({ state: "writing", segments: 0 });
+    expect(row!["retry_at"] as number)
+      .toBeGreaterThan(Date.now() / 1000 + MANIFEST_BUSY_RETRY_S - 2);
+    expect(await sqlIn(o.stub, "SELECT COUNT(*) AS logged FROM change_log"))
+      .toEqual([{ logged }]);
+    expect(pool.state().held).toBe(other.units);
+    other.release();
+    const made = await generate(o.stub, { pool });
+    expect(made.notices).toEqual([]);
+    expect(digest(replay(made.lines))).toBe(made.atE);
+    expect(pool.state().held).toBe(0);
   }, 120_000);
 
   it("goes on later, never at once, when a pass ends before it does", async () => {

@@ -127,12 +127,17 @@ export class ChangeLog {
     return { a: at.shipped, b };
   }
 
+  /** The segment's bytes (`segmentLines`, `encodeSegment`). A read. */
+  segment(a: number, b: number): Uint8Array {
+    return encodeSegment(this.segmentLines(a, b));
+  }
+
   /**
-   * The segment's text: the log's lines after `a` through `b`, each with its seq, the last
+   * The segment's lines: the log's lines after `a` through `b`, each with its seq, the last
    * line per (table, key) kept, a BLOB's hex turned base64 as the base writes it.
    * Deterministic for the same rows, so a segment put again is the same bytes. A read.
    */
-  segment(a: number, b: number): Uint8Array {
+  segmentLines(a: number, b: number): string[] {
     const tables = exported();
     const kept = new Map<string, string>();
     for (const row of this.#sql.exec<{ seq: number; line: string }>(
@@ -154,7 +159,7 @@ export class ChangeLog {
       kept.delete(id);  // re-set, so the kept order is each key's last seq
       kept.set(id, JSON.stringify({ ...line, seq: row.seq }));
     }
-    return new TextEncoder().encode([...kept.values()].map((line) => `${line}\n`).join(""));
+    return [...kept.values()];
   }
 
   /** In a unit: the segment through `b` acknowledged: shipped, and its lines gone. */
@@ -162,4 +167,26 @@ export class ChangeLog {
     this.#sql.exec("UPDATE log_capture SET shipped = ?, pending_a = NULL, pending_b = NULL", b);
     this.#sql.exec("DELETE FROM change_log WHERE seq <= ?", b);
   }
+}
+
+/**
+ * A segment's lines as its bytes, each followed by its newline: encoded once, line by line,
+ * straight into one buffer, never the lines joined into one text and encoded again.
+ */
+export function encodeSegment(lines: readonly string[]): Uint8Array {
+  let size = 0;
+  for (const line of lines) {
+    size += Buffer.byteLength(line, "utf8") + 1;
+  }
+  const out = new Uint8Array(size);
+  const encoder = new TextEncoder();
+  let at = 0;
+  for (const line of lines) {
+    at += encoder.encodeInto(line, out.subarray(at)).written;
+    out[at++] = 0x0a;
+  }
+  if (at !== size) {
+    throw new Error("a log segment's lines are not the bytes they were counted at");
+  }
+  return out;
 }

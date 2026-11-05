@@ -106,7 +106,8 @@ export interface Generated {
 
 export interface Harness {
   /** At the start of every outside call of the generation, before it is made. */
-  readonly duringCall?: (at: { files: Files; gate: WriteGate; n: number }) => Promise<void>;
+  readonly duringCall?: (at: { files: Files; gate: WriteGate; n: number;
+                                kind: "part" | "segment" | "root" }) => Promise<void>;
   /** After every unit of the generation (`n` counts units, from 100,000). */
   readonly afterUnit?: (at: { files: Files; gate: WriteGate; n: number }) => Promise<void>;
   /** The outside call to fail, by its number, before it is made or after it landed. */
@@ -145,10 +146,11 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       }
     };
     let calls = 0;
-    const call = <A extends unknown[], R>(made: (...args: A) => Promise<R>) =>
+    const call = <A extends unknown[], R>(kind: "part" | "segment" | "root",
+                                          made: (...args: A) => Promise<R>) =>
       async (...args: A): Promise<R> => {
         const n = ++calls;
-        await harness.duringCall?.({ files, gate, n });
+        await harness.duringCall?.({ files, gate, n, kind });
         if (harness.failAt?.call === n && harness.failAt.when === "before") {
           throw new Error("an outside call failed before it was made");
         }
@@ -162,11 +164,11 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     const store: ChunkStore = {
       ...real,
       mintKey: (ns) => real.mintKey(ns),
-      putManifestPart: call((ns, key, gen, part, bytes) =>
+      putManifestPart: call("part", (ns, key, gen, part, bytes) =>
         real.putManifestPart(ns, key, gen, part, bytes)),
-      putManifestSegment: call((ns, key, gen, a, b, bytes) =>
+      putManifestSegment: call("segment", (ns, key, gen, a, b, bytes) =>
         real.putManifestSegment(ns, key, gen, a, b, bytes)),
-      putManifestRoot: call((ns, key, gen, parts, segments, span) =>
+      putManifestRoot: call("root", (ns, key, gen, parts, segments, span) =>
         real.putManifestRoot(ns, key, gen, parts, segments, span)),
       getManifestRoot: (ns, gen) => real.getManifestRoot(ns, gen),
       deleteManifest: (ns, gen, parts, segments) => real.deleteManifest(ns, gen, parts, segments),
@@ -208,6 +210,11 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
       if (harness.onePass === true || row === undefined || row.state === "done") {
         break;
       }
+    }
+    // Every unit the lane took is given back, whatever its passes did (a leak would vanish
+    // with a pool of the run's own).
+    if (harness.pool === undefined && pool.state().held !== 0) {
+      throw new Error(`the generation's lane left ${pool.state().held} units of its pool held`);
     }
     const { ns } = await files.space();
     const root = await real.getManifestRoot(ns, gen);

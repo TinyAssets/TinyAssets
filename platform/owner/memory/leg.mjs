@@ -30,7 +30,9 @@
 //   units;
 // - a generation's burst (slice P): at production sizes, of the smallest lines, run by the
 //   real lane, its pages and parts at every part's put within the units it holds
-//   (`BURST_UNITS`);
+//   (`BURST_UNITS`), an owner's write during a part's put shipping a full segment inside them;
+// - a log segment shipped outside a burst: a full segment of wide lines, its build and its
+//   put within the units it holds (`SHIP_UNITS`);
 // - per unit: two edits at once hold at most one making step's units more than one;
 // - its time: the worst edit's time a chunk, measured with no collections, keeps
 //   `EDIT_BYTES_MAX` inside a request's 30 s of CPU (the time is wall time, at least the CPU
@@ -341,6 +343,17 @@ try {
         costs.BURST_UNITS * UNIT, "BURST_UNITS");
   check("a generation's burst: its puts inside its units of the pool",
         costs.BURST_UNITS - peak.held, 0, "the units held at its puts");
+  if (peak.answer[0] < 3 * MIB) {
+    throw new Error(`the burst case's widest segment was ${peak.answer[0]} bytes, not a full one`);
+  }
+  // A full log segment shipped outside a burst (its build, then its put), within SHIP_UNITS.
+  check("a log segment shipped outside a burst: peak, a full segment of wide lines",
+        await peak("ship", 0), costs.SHIP_UNITS * UNIT, "SHIP_UNITS");
+  check("a log segment shipped outside a burst: inside its units of the pool",
+        costs.SHIP_UNITS - peak.held, 0, "the units held at its checkpoints");
+  if (peak.answer[0] < 2) {
+    throw new Error(`the ship case shipped ${peak.answer[0]} segments, not a full one and more`);
+  }
 
   // The archive: each pass of its move and rewrite within the units it holds (above, at
   // every checkpoint), each run's peak within its table's and its pass's units, and a move

@@ -40,14 +40,14 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { MANIFEST_PARTS } from "../../files/src/keys";
-import type { ChangeLog } from "./changelog";
+import { type ChangeLog, encodeSegment } from "./changelog";
 import {
   chunkLine, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES, type Lines,
   readPage,
 } from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
-import { BURST_UNITS, ownerSlots } from "./holds";
+import { BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
 import { type Slot, SLOT_WAIT_MS, SlotBusy, type SlotPool } from "./slots";
 
 /** The manifest lane's name in the schedule. */
@@ -83,7 +83,7 @@ export const SEGMENT_ENTRY = 16 + 1 + 16 + 1 + 64 + 1 + 7 + 1;
  */
 const GATHER_BYTES = 2 * CHUNK_BYTES;
 /**
- * When a pass whose burst found the pool full goes on: the turnover of a full queue
+ * When a pass whose burst or log ship found the pool full goes on: the turnover of a full queue
  * (`SLOT_WAIT_MS`), as the archive's lane's (`ARCHIVE_BUSY_RETRY_S`). Not a failure.
  */
 export const MANIFEST_BUSY_RETRY_S = SLOT_WAIT_MS / 1000;
@@ -432,8 +432,8 @@ export class Backups {
       }
     } catch (error) {
       if (error instanceof SlotBusy) {
-        // A burst found the pool full: nothing was read or put; it goes on once units turn
-        // over, never counted a failure.
+        // A burst or a segment's ship found the pool full: nothing of it was read or put; it
+        // goes on once units turn over, never counted a failure.
         await this.#write(() => this.#sql.exec(
           "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing'",
           Date.now() / 1000 + MANIFEST_BUSY_RETRY_S));
@@ -543,11 +543,14 @@ export class Backups {
    * ends: each pending segment recorded, put, then acknowledged with its list's entry. No
    * segment spans `cut` (E, once fixed): those past it are the tail, which only a base read
    * again after a crash needs, and which the root never names. Whether every seq through
-   * `through` is shipped; null once past `MANIFEST_PARTS`.
+   * `through` is shipped; null once past `MANIFEST_PARTS`. Each segment built and put holding
+   * `SHIP_UNITS` of the pool, now or refused `busy` (the lane goes on after
+   * `MANIFEST_BUSY_RETRY_S`), but `inBurst`, whose units hold it already.
    */
   async #ship(ns: string, key: string, row: GenerationRow, through: number, until: number,
-              cut: number | null = null): Promise<boolean | null> {
+              cut: number | null = null, inBurst = false): Promise<boolean | null> {
     const log = this.#parts.log;
+    const pool = this.#pool;
     while (log.state().shipped < through) {
       if (Date.now() >= until || this.#parts.halted()) {
         return false;
@@ -562,18 +565,47 @@ export class Backups {
       if (span === null) {
         return true;
       }
-      const put = await this.#parts.store.putManifestSegment(ns, key, row.gen, span.a, span.b,
-                                                             log.segment(span.a, span.b));
-      const entry = `${span.a}-${span.b}:${put.sha256}:${put.size}`;
-      await this.#write(() => this.#parts.storage.transactionSync(() => {
-        this.#sql.exec(
-          "UPDATE owner_backups SET segments = segments + 1, bytes = bytes + ?, segment_list = " +
-            "segment_list || CASE WHEN segment_list = '' THEN '' ELSE ',' END || ? WHERE gen = ?",
-          put.size, entry, row.gen);
-        log.acknowledge(span.b);
-      }));
+      const slot = inBurst ? null : await unitsNow(pool, SHIP_UNITS);
+      try {
+        const bytes = await this.#segment(span.a, span.b, inBurst ? BURST_UNITS : SHIP_UNITS);
+        const put = await this.#parts.store.putManifestSegment(ns, key, row.gen, span.a, span.b,
+                                                               bytes);
+        const entry = `${span.a}-${span.b}:${put.sha256}:${put.size}`;
+        await this.#write(() => this.#parts.storage.transactionSync(() => {
+          this.#sql.exec(
+            "UPDATE owner_backups SET segments = segments + 1, bytes = bytes + ?, " +
+              "segment_list = segment_list || CASE WHEN segment_list = '' THEN '' ELSE ',' " +
+              "END || ? WHERE gen = ?", put.size, entry, row.gen);
+          log.acknowledge(span.b);
+        }));
+      } finally {
+        slot?.release();
+      }
     }
     return true;
+  }
+
+  /**
+   * A log segment's bytes, built from its kept lines in a frame of its own, so the lines are
+   * let go before its put waits; the memory leg samples the build at its most, its lines
+   * and its bytes both in hand (`units`, the hold it is built in).
+   */
+  async #segment(a: number, b: number, units: number): Promise<Uint8Array> {
+    const lines = this.#parts.log.segmentLines(a, b);
+    const bytes = encodeSegment(lines);
+    const pool = this.#pool;
+    if (pool.observe !== null) {
+      await pool.observe(units);
+      if (lines.length === 0) {
+        throw new Error("a pending log segment holds no line");
+      }
+    }
+    return bytes;
+  }
+
+  /** The pool the lane's holds take their units of. */
+  get #pool(): SlotPool {
+    return this.#parts.pool ?? ownerSlots();
   }
 
   /**
@@ -630,6 +662,9 @@ export class Backups {
       if (!first) {
         return false;
       }
+      if (this.#parts.halted()) {
+        return true;  // an erasure begun while the log shipped: no burst begins
+      }
       // A burst of whole base pages, each read in a unit of its own, with no outside call
       // between them; the unit that reads the last fixes E, the log's last seq then. Each
       // page's lines encoded once, into one buffer, as its parts will hold them: the burst
@@ -637,7 +672,7 @@ export class Backups {
       // (nothing read yet: the lane goes on after `MANIFEST_BUSY_RETRY_S`), and held to its
       // parts' record, its pages and parts in hand throughout.
       let e: number | null = null;
-      const pool = this.#parts.pool ?? ownerSlots();
+      const pool = this.#pool;
       const slot = await unitsNow(pool, BURST_UNITS);
       try {
         const lines: Lines[] = [];
@@ -667,6 +702,12 @@ export class Backups {
         }
         // Parts of whole lines, at most a chunk each, so an export streams them as they are.
         const parts = cutParts(lines, sizes.part);
+        // The pages let go once cut: the parts hold their bytes from here on (the memory
+        // leg samples the cut, the pages and parts both in hand).
+        if (pool.observe !== null) {
+          await pool.observe(BURST_UNITS);
+        }
+        lines.length = 0;
         if (parts.some((bytes) => bytes.byteLength > (sizes.most ?? CHUNK_BYTES))) {
           await this.#abandon(ns, at, MANIFEST_LINE);
           return true;
@@ -684,7 +725,7 @@ export class Backups {
                                                                at.parts + written.length, bytes));
           // The log so far, shipped after each part (cut at E once fixed), so what an owner
           // writes during one outside call is all the unshipped log ever waits on.
-          if (await this.#ship(ns, key, at, log.state().last, until, e) === null) {
+          if (await this.#ship(ns, key, at, log.state().last, until, e, true) === null) {
             await this.#abandon(ns, at, MANIFEST_CEILING);
             return true;
           }
