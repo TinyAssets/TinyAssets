@@ -373,6 +373,7 @@ class TreeAudit:
 
     def wrap(self, name: str, original):
         """`os.<name>` that records the tree its path lies in, then calls through."""
+        @functools.wraps(original)
         def audited(path, *args, **kwargs):
             if self.current is not None and not getattr(self._local, "busy", False):
                 self._local.busy = True
@@ -390,7 +391,6 @@ class TreeAudit:
             finally:
                 self._local.wrapped_open = False
 
-        audited.__wrapped__ = original
         return audited
 
     def _record(self, found: list[tuple[str, str]]) -> None:
@@ -453,13 +453,34 @@ class TreeAudit:
                 return path[len(root) + 1:].replace(os.sep, "/")
         return None
 
+    #: Where Linux names an open fd's path.
+    PROC_FD = "/proc/self/fd"
+
+    def _fd_path(self, fd: int) -> str | None:
+        """The path an open directory fd names: /proc on Linux, F_GETPATH on macOS, else None."""
+        if os.path.isdir(self.PROC_FD):
+            return os.readlink(f"{self.PROC_FD}/{fd}")
+        try:
+            import fcntl
+        except ImportError:
+            return None
+        if not hasattr(fcntl, "F_GETPATH"):
+            return None
+        raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+        return os.fsdecode(raw.split(b"\0", 1)[0])
+
     def _path(self, path, dir_fd=None):
         """The tree a path (relative to `dir_fd`, else the working directory) lies in."""
         if path is None or isinstance(path, int):
             return
         base = None
         if dir_fd is not None and not os.path.isabs(os.fsdecode(path)):
-            base = os.readlink(f"/proc/self/fd/{dir_fd}")
+            base = self._fd_path(dir_fd)
+            if base is None:
+                # A directory this host cannot name may be anywhere, the checkout included.
+                yield from ((tree, f"<dir_fd {dir_fd}>/{os.fsdecode(path)}")
+                            for tree in self.every)
+                return
         rel = self._relative(path, base)
         if rel and self.at.tree_of(rel):
             yield self.at.tree_of(rel), rel
@@ -541,18 +562,22 @@ class TreeAudit:
         program = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
         if program.removesuffix(".exe") != "git":
             return False
-        where, pointed, i = here, [], 1
+        # git reads its repository and its work tree. A given work tree replaces the
+        # working directory (or -C); a git dir alone does not, since git then works on the cwd.
+        where, pointed, work_tree, i = here, [], False, 1
         while i < len(argv) and argv[i].startswith("-"):
             option = argv[i]
             if option in self.GIT_HARMLESS:
                 return False
             if option.startswith(("--git-dir=", "--work-tree=")):
                 pointed.append(option.split("=", 1)[1])
+                work_tree |= option.startswith("--work-tree=")
             elif option in self.GIT_VALUED and i + 1 < len(argv):
                 if option == "-C":
                     where = os.path.join(where, argv[i + 1])
                 elif option in ("--git-dir", "--work-tree"):
                     pointed.append(argv[i + 1])
+                    work_tree |= option == "--work-tree"
                 i += 1
             i += 1
         if i >= len(argv) or argv[i] in self.GIT_HARMLESS:
@@ -562,7 +587,9 @@ class TreeAudit:
             value = env.get(name) if hasattr(env, "get") else None
             if value:
                 pointed.append(os.fsdecode(value))
-        targets = [os.path.join(where, p) for p in pointed] or [where]
+                # http-backend serves repositories under GIT_PROJECT_ROOT, with no work tree.
+                work_tree |= name != "GIT_DIR"
+        targets = [os.path.join(where, p) for p in pointed] + ([] if work_tree else [where])
         if sub in ("init", "clone"):
             # These read only the paths they are given; with none, the working directory.
             named, j = [], 0
