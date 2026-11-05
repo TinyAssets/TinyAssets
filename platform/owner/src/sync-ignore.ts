@@ -1001,9 +1001,11 @@ export function wildcard(pattern: string, text: string): boolean {
  *   does not share with the last, each at its own segment's cost (a literal path line is
  *   looked up a segment at a time, `Segments`), never a different answer.
  * - **Names:** at most `REMEMBERED_NAME_BYTES`, each name counted at what it really takes
- *   (`NAME_ENTRY_BYTES` beside its characters at two bytes each); past it the memory starts
- *   again. 256 KiB holds 1,200 to 1,500 names, many more than a tree's repeated names
- *   (`index.ts`, `package.json`), so each is matched about once every 1,200 names met.
+ *   (`NAME_ENTRY_BYTES` beside its characters at two bytes each, its key a string of its
+ *   own, `own`); past it the memory starts again. The time budget (limits-audit.md,
+ *   `AUTOMATON_STATES`) counts no names memory, so this buys speed alone: 256 KiB holds 1,200
+ *   to 1,500 names, many more than a tree's repeated names (`index.ts`, `package.json`), and
+ *   matched a 20,000-folder tree as fast as 1 MiB did (and faster than none).
  *
  * Refuses nothing.
  */
@@ -1015,6 +1017,15 @@ export const REMEMBERED_NAME_BYTES = 256 * 1024;
  * The matcher's memory test (`sync-ignore.test.ts`) holds a tree of short names to it.
  */
 export const NAME_ENTRY_BYTES = 160;
+
+/**
+ * `text` as a string of its own. A slice of 13 characters or more is V8's sliced string,
+ * which keeps the whole string it was cut from alive: a name cut from a path would hold the
+ * path (up to about 8 KiB) where its own characters are counted. Under 13, a slice is a copy.
+ */
+function own(text: string): string {
+  return text.length < 13 ? text : JSON.parse(JSON.stringify(text)) as string;
+}
 
 /**
  * A list's matcher: for a path and whether it is a folder, the kind of the line that
@@ -1070,7 +1081,7 @@ export function ignoredBy(lines: readonly string[]): Matcher {
       byName.clear();
       held = 0;
     }
-    byName.set(name, best);
+    byName.set(own(name), best);
     held += cost;
     return best;
   };

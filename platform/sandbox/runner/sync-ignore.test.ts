@@ -80,8 +80,13 @@ function gitIgnores(lines: readonly string[], paths: readonly string[]):
   walk("");
   const git = spawnSync("git", ["-C", repo, "-c", "core.excludesFile=/dev/null", "check-ignore",
                                 "--stdin", "-z"], { input: all.map(([path]) => path).join("\0"),
-                                                    env: ENV, encoding: "utf8" });
+                                                    env: ENV, encoding: "utf8",
+                                                    maxBuffer: 1 << 30 });
   rmSync(repo, { recursive: true, force: true });
+  // Its answers whole, or none: a cut output (past `maxBuffer`) would read as "not ignored".
+  if (git.error !== undefined || git.status === null || git.status > 1) {
+    throw new Error(`git check-ignore failed: ${git.error ?? git.stderr}`);
+  }
   return { all, ignored: new Set(git.stdout.split("\0").filter(Boolean)) };
 }
 
@@ -470,8 +475,8 @@ describe("what it remembers of a tree, and what that buys", () => {
   /**
    * A tree of `folders` folders, each entry as the sync's walk offers it (`walkFiles`: a
    * folder, then what is under it): `project/module-i/src`, each folder a name every folder
-   * has and a short name of its own (a remembered name's worst: its entry's cost beside few
-   * characters).
+   * has and a short name of its own (a remembered name's worst for its entry's cost beside
+   * few characters; the other worst, a long name under a long path, is below).
    */
   function* tree(folders: number): Generator<[string, boolean]> {
     for (let i = 0; i < folders / 2; i++) {
@@ -532,18 +537,45 @@ describe("what it remembers of a tree, and what that buys", () => {
     expect(sizes[2]! - sizes[0]!).toBeLessThanOrEqual(QUARTER);
   }, 300_000);
 
+  it("holds its names within `REMEMBERED_NAME_BYTES` under a path near its most", () => {
+    // A name of 13 characters or more, cut from its path, is a slice that keeps the whole
+    // path alive (V8's sliced string): a folder chain of about 3,900 characters, one of them
+    // past Latin-1 (`€`, so each path is two bytes a character, about 8 KiB), and 5,000
+    // distinct names of 20 characters under it, each path a fresh string as the walk makes.
+    const matcher = ignoredBy(defaultSyncIgnore());
+    const folders: string[] = [];
+    for (let length = 0, k = 0; length < 3_900; k++) {
+      folders.push(`${k === 0 ? "€" : ""}d${k}`.padEnd(40, "x"));
+      length += 41;
+      matcher(folders.join("/"), true);
+    }
+    const dir = folders.join("/");
+    const base = live();
+    let peak = 0;
+    for (let i = 0; i < 5_000; i++) {
+      matcher([dir, `f${i}`.padEnd(20, "q")].join("/"));
+      if (i % 50 === 49) {
+        peak = Math.max(peak, live() - base);
+      }
+    }
+    expect(peak).toBeLessThanOrEqual(REMEMBERED_NAME_BYTES * 1.25);
+  }, 300_000);
+
   it("answers a large mixed tree as git does, in any order, as with nothing remembered", () => {
     let seed = 20261104;
     const random = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
     const pick = <T>(xs: readonly T[]) => xs[Math.floor(random() * xs.length)]!;
     // Names the lists name, names that sort before `/` (`-`, `.`, a space) beside a folder of
-    // the same head, and names of more than one byte.
+    // the same head, names of more than one byte, `é` composed and decomposed (two names, by
+    // byte, as git reads them), and names that differ by case.
     const names = ["src", "lib", "index.ts", "node_modules", "build", "dist", "gen", "docs",
                    "draft-1.md", "keep.log", "x.log", "a", "a-b", "a.b", "a b", "b", "Library",
-                   "Temp", "__pycache__", "m.pyc", ".cache", "top-only", "ü", "😀", "k"];
+                   "Temp", "__pycache__", "m.pyc", ".cache", "top-only", "ü", "😀", "k", "c",
+                   "\u00e9", "e\u0301", "A", "Ab", "ab", "Src"];
     const paths = new Set<string>();
     while (paths.size < 12_000) {
-      const depth = 1 + Math.floor(random() * 7);
+      // Most a few folders deep, one in ten 8 to 40.
+      const depth = random() < 0.1 ? 8 + Math.floor(random() * 33) : 1 + Math.floor(random() * 7);
       paths.add(Array.from({ length: depth }, (_, i) => i === depth - 1 && random() < 0.5
         ? `f${Math.floor(random() * 500)}.${pick(["ts", "log", "md"])}` : pick(names)).join("/"));
     }
@@ -551,7 +583,11 @@ describe("what it remembers of a tree, and what that buys", () => {
                    ...["Node", "Python", "Unity"].flatMap((name) =>
                      readFileSync(join(TEMPLATES, `${name}.gitignore`), "utf8").split("\n")),
                    "**/gen/**", "!keep.log", "docs/*/draft-*", "/top-only", "a/**/b",
-                   "*.lo[gk]", "!a/build/", "a?b/", "ü/k"];
+                   "*.lo[gk]", "!a/build/", "a?b/", "ü/k",
+                   // Literal path lines, one a prefix of another (the segments' trie), one
+                   // re-included, one folders only; a name by one form of `é`; a case.
+                   "a/b", "a/b/c", "a/b/c/k", "!a/b", "lib/src/", "lib/src/a", "!lib/src",
+                   "/src/lib", "docs/a/b/c", "\u00e9/k", "e\u0301", "Src/"];
     // Walk order (git's oracle walks the tree it made, a folder and then what is under it).
     const { all, ignored } = gitIgnores(lines, [...paths]);
     expect(all.length).toBeGreaterThan(12_000);
@@ -577,6 +613,40 @@ describe("what it remembers of a tree, and what that buys", () => {
     // And as a matcher with nothing remembered answers, a fresh one each path.
     expect(shuffled.slice(0, 400).filter(([path, isDir]) =>
       ignoredBy(lines)(path, isDir) !== inWalk.get(path))).toEqual([]);
+  }, 300_000);
+
+  it("answers paths no walk makes (`.`, `..`, empty segments, a trailing `/`, 40 deep) the " +
+     "same in any order as with nothing remembered", () => {
+    let seed = 20261105;
+    const random = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
+    const pick = <T>(xs: readonly T[]) => xs[Math.floor(random() * xs.length)]!;
+    const names = ["", ".", "..", "a", "b", "c", "k", "src", "lib", "build", ".ta", "sync-ignore",
+                   "\u00e9", "e\u0301", "A", "Ab", "x.log", "node_modules"];
+    const asked: [string, boolean][] = [];
+    while (asked.length < 6_000) {
+      const depth = 1 + Math.floor(random() * 40);
+      const path = Array.from({ length: depth }, () => pick(names)).join("/");
+      asked.push([random() < 0.1 ? `${path}/` : path, random() < 0.3]);
+    }
+    const lines = [...defaultSyncIgnore(), "a/b", "a/b/c", "!a/b", "/src/lib", "lib/src/",
+                   "!lib/src/a", "a//b", "./a", "../k", "a/./b", "**/k/**", "*.log", "\u00e9/k",
+                   "Ab/", "!.ta/x", "build/"];
+    // Nothing remembered: a matcher of its own each path.
+    const bare = asked.map(([path, isDir]) => ignoredBy(lines)(path, isDir));
+    expect(new Set(bare).size).toBe(3);
+    const order = (indices: number[]) => {
+      const matcher = ignoredBy(lines);
+      return indices.filter((i) => matcher(asked[i]![0], asked[i]![1]) !== bare[i]);
+    };
+    const asMade = asked.map((_, i) => i);
+    const sorted = [...asMade].sort((x, y) => asked[x]![0] < asked[y]![0] ? -1
+      : asked[x]![0] > asked[y]![0] ? 1 : 0);
+    const shuffled = [...asMade];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+    }
+    expect([order(asMade), order(sorted), order(shuffled)]).toEqual([[], [], []]);
   }, 300_000);
 
   it("matches a path in a walk at its own segment's cost, whatever its depth", () => {
