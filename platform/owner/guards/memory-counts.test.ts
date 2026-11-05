@@ -49,8 +49,6 @@ export const UNCOUNTED = Object.freeze({
     "file_read_chunks' two chunks, as its answer": "PR 3b",
     "a placed body's bytes as room_post or collection_write sends them (BODY_BYTES_MAX)": "PR 3b",
     "an export's chunks, as its answer": "PR 4",
-    // One an object while its manifest lane runs; its peak measured by the memory leg.
-    "a generation's burst, its pages and its parts (BURST_BYTES)": "PR 4",
     "sync's raw chunk bytes": "PR 4",
     "an inbound event's body (INBOUND_BODY_MAX)": "PR 4",
   }),
