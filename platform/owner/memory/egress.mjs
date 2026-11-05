@@ -16,7 +16,6 @@
 // - the pool: a call behind a whole-pool upload waits and then lands; one held past the
 //   pool's wait is refused `busy`.
 // Exports `egressLeg()`, which answers its rows and problems.
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -26,6 +25,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { freePorts } from "./ports.mjs";
+import { ownWorkerd } from "./workerd.mjs";
 
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(OWNER, "package.json"));
@@ -158,9 +158,10 @@ const upstream :Workerd.Worker = ${worker("upstream")};
   });
   await new Promise((resolve) => driver.listen(DRIVER, "127.0.0.1", resolve));
   const workerd = join(dirname(require.resolve("workerd/package.json")), "bin", "workerd");
-  const child = spawn(workerd, ["serve", join(work, "config.capnp"),
-                                `--inspector-addr=127.0.0.1:${INSPECT}`],
-                      { stdio: ["ignore", "inherit", "inherit"] });
+  // This leg's own workerd: its early exit fails the leg, and any end of the leg kills it.
+  const own = ownWorkerd(workerd, ["serve", join(work, "config.capnp"),
+                                   `--inspector-addr=127.0.0.1:${INSPECT}`],
+                         { onEarlyExit: () => rmSync(work, { recursive: true, force: true }) });
   const sockets = [];
   try {
     let list = [];
@@ -195,6 +196,7 @@ const upstream :Workerd.Worker = ${worker("upstream")};
     };
     const isolates = { doors: { call: await inspect("doors"), port: DOORS },
                        gateway: { call: await inspect("gateway"), port: GATEWAY } };
+    own.check();
     const live = async (name) => {
       await fetch(`http://127.0.0.1:${isolates[name].port}/gc`).then((r) => r.text());
       const usage = await isolates[name].call("Runtime.getHeapUsage");
@@ -202,6 +204,7 @@ const upstream :Workerd.Worker = ${worker("upstream")};
     };
     const { blob, model } = await (await fetch(`http://127.0.0.1:${GATEWAY}/seal`)).json();
     const { token, path } = await (await fetch(`http://127.0.0.1:${DOORS}/token`)).json();
+    own.check();
     const send = (bytes, call, to = path) => fetch(`http://127.0.0.1:${DOORS}${to}`, {
       method: "POST", body: Buffer.from(body(model, bytes)),
       headers: { "content-type": "application/json", "x-ta-sandbox": token,
@@ -321,7 +324,7 @@ const upstream :Workerd.Worker = ${worker("upstream")};
     problems.push(String(error?.stack ?? error));
   } finally {
     sockets.forEach((ws) => ws.close());
-    child.kill("SIGKILL");
+    own.stop();
     driver.close();
     rmSync(work, { recursive: true, force: true });
   }
