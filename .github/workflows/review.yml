@@ -150,12 +150,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # One check run per decision: posted as "deciding" first, then that same run
-          # (RUN_ID) is completed with the verdict. If anything stops the decision
-          # before then, the trap completes it as a failure, so no decision leaves a
-          # run in progress, and a head never keeps showing a pass an earlier decision
-          # posted before a later BLOCK.
+          # One App run per (commit, PR): a decision PATCHes the App's own `review` run
+          # for this PR on this commit back to "deciding" (whatever it said: waiting,
+          # deciding or a verdict), and POSTs one only when there is none. That same
+          # run (RUN_ID) then takes the verdict. If anything stops the decision before
+          # then, the trap completes it as a failure, so a head never collects runs in
+          # progress, and never keeps showing a pass an earlier decision made before a
+          # later BLOCK.
           as_app() { GH_TOKEN="$APP_TOKEN" gh api "$@"; }
+          if ! [[ "$REVIEW_APP_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::REVIEW_APP_ID is not an App id"
+            exit 1
+          fi
           RUN_ID=""
           DONE=0
           on_exit() {
@@ -171,11 +177,38 @@ jobs:
             exit "$status"
           }
           trap on_exit EXIT
+          # The App's newest `review` run for external id $2 on commit $1, or nothing.
+          existing() {
+            as_app --paginate "repos/${REPO}/commits/$1/check-runs?check_name=review&filter=all&per_page=100" \
+                --jq '.check_runs[]' \
+              | jq -r --argjson app "$REVIEW_APP_ID" --arg ext "$2" \
+                  'select(.app.id == $app and .external_id == $ext) | .id' \
+              | sort -n | tail -n 1
+          }
           start() {
+            if ! [[ "$1" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::not a commit: $1"
+              exit 1
+            fi
             jq -n --arg sha "$1" --arg id "$2" '{name: "review", head_sha: $sha,
               external_id: $id, status: "in_progress",
               output: {title: "deciding", summary: "review.yml is reading the reviews."}}' \
               > "$RUNNER_TEMP/deciding.json"
+            jq 'del(.name, .head_sha)' "$RUNNER_TEMP/deciding.json" > "$RUNNER_TEMP/reopen.json"
+            local found=""
+            if ! found="$(existing "$1" "$2")"; then
+              # Unknown is not none, but a stale pass must not stand: post a fresh run,
+              # which readers take as the newest.
+              echo "::warning::could not list the review runs on $1; posting a new one"
+              found=""
+            fi
+            if [[ "$found" =~ ^[1-9][0-9]*$ ]] \
+                && as_app -X PATCH "repos/${REPO}/check-runs/${found}" \
+                     --input "$RUNNER_TEMP/reopen.json" > /dev/null; then
+              RUN_ID="$found"
+              return 0
+            fi
+            [ -z "$found" ] || echo "::warning::could not reopen check run ${found}; posting a new one"
             RUN_ID="$(as_app -X POST "repos/${REPO}/check-runs" --input "$RUNNER_TEMP/deciding.json" --jq .id)"
             if ! [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
               RUN_ID=""

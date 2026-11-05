@@ -511,60 +511,85 @@ def test_host_actions_names_what_review_yml_reads():
     assert "vars.REVIEW_APP_ID" in wf and "secrets.REVIEW_APP_PRIVATE_KEY" in wf
 
 
-# A stand-in for `gh`: logs each call with the token it carried, and answers from
-# data.json. A POST makes a check run with the next id; data["fail"] names a path
-# fragment whose read exits 1, as a 502 would.
+# A stand-in for `gh` that keeps check runs: it logs each call with the token it carried
+# and answers from data.json, which it updates. A POST makes a run with the next id
+# (700, 701, ...) owned by whichever token made it; a PATCH updates that run. A listing
+# of `commits/<sha>/check-runs` returns the runs on that commit. data["fail"] names a
+# path fragment whose call exits 1, as a 502 would; data["no_reopen"] refuses a PATCH
+# that would take a completed run back to in progress.
 _FAKE_GH = '''\
 import json, os, sys
 args = sys.argv[1:]
 state = os.environ["FAKE_GH"]
-with open(os.path.join(state, "data.json"), encoding="utf-8") as f:
+store = os.path.join(state, "data.json")
+with open(store, encoding="utf-8") as f:
     data = json.load(f)
-call = {"token": os.environ.get("GH_TOKEN", ""), "args": args}
+token = os.environ.get("GH_TOKEN", "")
+call = {"token": token, "args": args}
+body = None
 if "--input" in args:
     with open(args[args.index("--input") + 1], encoding="utf-8") as f:
-        call["input"] = json.load(f)
-log = os.path.join(state, "calls.jsonl")
-made = 0
-if os.path.exists(log):
-    with open(log, encoding="utf-8") as f:
-        made = sum('"POST"' in line for line in f)
-with open(log, "a", encoding="utf-8") as f:
+        body = call["input"] = json.load(f)
+with open(os.path.join(state, "calls.jsonl"), "a", encoding="utf-8") as f:
     f.write(json.dumps(call) + "\\n")
 path = next(a for a in args if a.startswith("repos/"))
 if data.get("fail") and data["fail"] in path:
     sys.exit(1)
-if "-X" in args:
-    method = args[args.index("-X") + 1]
-    print(700 + made if method == "POST" and "--jq" in args else "{}")
+runs = data["check_runs"]
+if "-X" in args and args[args.index("-X") + 1] == "POST":
+    run = {"id": 700 + data.get("posted", 0), "app": {"id": 777 if token == "app-token" else 15368},
+           "conclusion": None, **body}
+    data["posted"] = data.get("posted", 0) + 1
+    runs.append(run)
+    print(run["id"] if "--jq" in args else json.dumps(run))
+elif "-X" in args:
+    run = next((r for r in runs if path.endswith(f"/check-runs/{r['id']}")), None)
+    if run is None or run["app"]["id"] != 777:
+        sys.exit(1)
+    if (data.get("no_reopen") and run.get("status") == "completed"
+            and body.get("status") == "in_progress"):
+        sys.exit(1)
+    run.update(body)
+    if body.get("status") == "in_progress":
+        run["conclusion"] = None
+    print("{}")
 elif "/reviews" in path or "/timeline" in path:
     for item in data["reviews" if "/reviews" in path else "timeline"]:
         print(json.dumps(item))
 elif "/check-runs" in path:
-    for run in data["check_runs"]:
-        print(json.dumps(run))
+    sha = path.split("/commits/")[1].split("/")[0]
+    for run in runs:
+        if run.get("head_sha") == sha:
+            print(json.dumps(run))
 elif "--jq" in args:
     print(data["head"], data["base"])
 else:
     print(json.dumps({"head": {"sha": data["head"]}}))
+with open(store, "w", encoding="utf-8") as f:
+    json.dump(data, f)
 '''
 
 
 def _decide(tmp_path: Path, checkout: Path, data: dict, **env: str):
-    """Run review.yml's decision script as Actions would, with `gh` faked."""
+    """Run review.yml's decision script as Actions would, with `gh` faked.
+
+    Returns the run, this decision's calls, and the fake's data after it, which a
+    later decision can be handed to see what this one left on GitHub."""
     _, decide = _decide_steps()
     (checkout / "scripts").mkdir(exist_ok=True)
     shutil.copy(_ROOT / "scripts" / "drain_review_gate.py", checkout / "scripts")
     tools = tmp_path / "tools"
-    tools.mkdir()
-    (tools / "gh").write_text(f"#!{sys.executable}\n{_FAKE_GH}", encoding="utf-8")
-    (tools / "gh").chmod(0o755)
-    (tools / "python").symlink_to(sys.executable)
+    if not tools.exists():
+        tools.mkdir()
+        (tools / "gh").write_text(f"#!{sys.executable}\n{_FAKE_GH}", encoding="utf-8")
+        (tools / "gh").chmod(0o755)
+        (tools / "python").symlink_to(sys.executable)
     state = tmp_path / "fake-gh"
+    shutil.rmtree(state, ignore_errors=True)
     state.mkdir()
     (state / "data.json").write_text(json.dumps(data), encoding="utf-8")
     runner = tmp_path / "runner"
-    runner.mkdir()
+    runner.mkdir(exist_ok=True)
     done = subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", decide["run"]],
         cwd=checkout, capture_output=True, text=True, timeout=120,
@@ -575,24 +600,29 @@ def _decide(tmp_path: Path, checkout: Path, data: dict, **env: str):
              **env})
     log = state / "calls.jsonl"
     calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
-    return done, calls
+    after = json.loads((state / "data.json").read_text(encoding="utf-8"))
+    return done, calls, after
 
 
 def _writes(calls: list[dict]) -> list[tuple[str, str, dict]]:
-    """(method, path, body) of each check-run write, all made as the App, and the one
-    run each decision makes: one POST, then PATCHes of that same run."""
+    """(method, path, body) of each check-run write. Every write, and every listing of
+    the App's own runs, is made as the App; every other read as Actions."""
     writes = [c for c in calls if "-X" in c["args"]]
     assert all(c["token"] == _APP_TOKEN for c in writes), "a check run not written as the App"
-    assert all(c["token"] == _ACTIONS_TOKEN for c in calls if c not in writes)
+    for c in calls:
+        if c not in writes and c["token"] != _ACTIONS_TOKEN:
+            assert c["token"] == _APP_TOKEN and c["args"][:2] == ["api", "--paginate"]
+            assert any("/check-runs?check_name=review&filter=all" in a for a in c["args"])
     out = []
     for c in writes:
         method = c["args"][c["args"].index("-X") + 1]
         path = next(a for a in c["args"] if a.startswith("repos/"))
         out.append((method, path, c["input"]))
-    if out:
-        assert out[0][:2] == ("POST", "repos/o/r/check-runs")
-        assert all(w[:2] == ("PATCH", "repos/o/r/check-runs/700") for w in out[1:])
     return out
+
+
+def _review_runs(data: dict, sha: str) -> list[dict]:
+    return [r for r in data["check_runs"] if r.get("head_sha") == sha and r["app"]["id"] == 777]
 
 
 @pytest.fixture
@@ -605,22 +635,98 @@ def pr_checkout(tmp_path: Path, repo):
 def test_the_decision_completes_its_own_deciding_run_with_the_verdict(pr_checkout):
     tmp_path, path, data = pr_checkout
     data["reviews"] = [_review("APPROVE\n\nread it", data["head"])]
-    done, calls = _decide(tmp_path, path, data)
+    done, calls, after = _decide(tmp_path, path, data)
     assert done.returncode == 0, done.stderr
-    (_, _, deciding), (_, _, verdict) = _writes(calls)
+    (post, _, deciding), (patch, where, verdict) = _writes(calls)
+    assert (post, patch, where) == ("POST", "PATCH", "repos/o/r/check-runs/700")
     assert deciding == {"name": "review", "head_sha": data["head"], "external_id": "pr-12",
                         "status": "in_progress",
                         "output": {"title": "deciding",
                                    "summary": "review.yml is reading the reviews."}}
     assert verdict["external_id"] == "pr-12" and "head_sha" not in verdict
     assert verdict["status"] == "completed" and verdict["conclusion"] == "success"
+    (run,) = _review_runs(after, data["head"])
+    assert run["id"] == 700 and run["conclusion"] == "success"
+
+
+def test_repeated_decisions_keep_one_run_per_head_and_pr(pr_checkout):
+    """Waiting decisions reuse the App's one run; a later APPROVE turns that same run to
+    success, and a BLOCK after it turns it to failure."""
+    tmp_path, path, data = pr_checkout
+    for _ in range(3):
+        done, calls, data = _decide(tmp_path, path, data)
+        assert done.returncode == 0, done.stderr
+        (run,) = _review_runs(data, data["head"])
+        assert run["id"] == 700 and run["status"] == "in_progress"
+        assert run["output"]["title"] == f"waiting for review of {data['head']}"
+    assert [w[0] for w in _writes(calls)] == ["PATCH", "PATCH"]
+    data["reviews"] = [_review("APPROVE", data["head"], ident=1)]
+    done, calls, data = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    assert {w[1] for w in _writes(calls)} == {"repos/o/r/check-runs/700"}
+    (run,) = _review_runs(data, data["head"])
+    assert run["id"] == 700 and (run["status"], run["conclusion"]) == ("completed", "success")
+    data["reviews"].append(_review("BLOCK", data["head"], ident=2, when="2026-11-04T11:00:00Z"))
+    done, calls, data = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    (run,) = _review_runs(data, data["head"])
+    assert run["id"] == 700 and run["conclusion"] == "failure"
+
+
+def test_the_run_reused_is_the_apps_newest_for_this_pr_alone(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    head = data["head"]
+    mine = {"name": "review", "head_sha": head, "external_id": "pr-12", "status": "completed",
+            "conclusion": "failure", "output": {"title": "BLOCK", "summary": ""}}
+    data["check_runs"] = [
+        {**mine, "id": 41, "app": {"id": 777}},
+        {**mine, "id": 42, "app": {"id": 777}},
+        {**mine, "id": 50, "app": {"id": 777}, "external_id": "pr-13"},
+        {**mine, "id": 60, "app": {"id": 15368}},
+    ]
+    data["reviews"] = [_review("APPROVE", head)]
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    writes = _writes(calls)
+    assert {(w[0], w[1]) for w in writes} == {("PATCH", "repos/o/r/check-runs/42")}
+    # Reopened first: while the decision reads, the head shows "deciding", not BLOCK.
+    assert writes[0][2] == {"external_id": "pr-12", "status": "in_progress",
+                            "output": {"title": "deciding",
+                                       "summary": "review.yml is reading the reviews."}}
+    by_id = {r["id"]: r for r in after["check_runs"]}
+    assert by_id[42]["conclusion"] == "success"
+    assert by_id[41]["conclusion"] == by_id[50]["conclusion"] == by_id[60]["conclusion"] == (
+        "failure")
+
+
+def test_a_run_that_cannot_be_listed_or_reopened_gets_a_fresh_one(pr_checkout):
+    """Unknown is not none, and a stale pass must not stand: post a new deciding run,
+    which readers take as the newest."""
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("BLOCK", data["head"])]
+    data["fail"] = "/check-runs?check_name=review"
+    done, calls, _ = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    assert [w[0] for w in _writes(calls)] == ["POST", "PATCH"]
+    data.pop("fail")
+    data["check_runs"] = [{"id": 41, "app": {"id": 777}, "name": "review",
+                           "head_sha": data["head"], "external_id": "pr-12",
+                           "status": "completed", "conclusion": "success"}]
+    data["no_reopen"] = True
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    assert [(w[0], w[1]) for w in _writes(calls)] == [
+        ("PATCH", "repos/o/r/check-runs/41"), ("POST", "repos/o/r/check-runs"),
+        ("PATCH", "repos/o/r/check-runs/700")]
+    newest = max(_review_runs(after, data["head"]), key=lambda r: r["id"])
+    assert newest["id"] == 700 and newest["conclusion"] == "failure"
 
 
 def test_the_decision_waits_when_the_base_changed_after_the_verdict(pr_checkout):
     tmp_path, path, data = pr_checkout
     data["reviews"] = [_review("APPROVE", data["head"], when="2026-11-04T10:00:00Z")]
     data["timeline"] = [{"event": "base_ref_changed", "created_at": "2026-11-04T11:00:00Z"}]
-    done, calls = _decide(tmp_path, path, data)
+    done, calls, _ = _decide(tmp_path, path, data)
     assert done.returncode == 0, done.stderr
     _, _, verdict = _writes(calls)[-1]
     assert verdict["status"] == "in_progress" and "conclusion" not in verdict
@@ -631,10 +737,12 @@ def test_the_decision_waits_when_the_base_changed_after_the_verdict(pr_checkout)
 def test_a_decision_that_cannot_read_the_reviews_fails_its_run(pr_checkout):
     tmp_path, path, data = pr_checkout
     data["reviews"] = ["not a review"]
-    done, calls = _decide(tmp_path, path, data)
+    done, calls, after = _decide(tmp_path, path, data)
     assert done.returncode != 0
     _, _, failed = _writes(calls)[-1]
     assert failed["conclusion"] == "failure" and failed["output"]["title"] == "could not decide"
+    (run,) = _review_runs(after, data["head"])
+    assert run["conclusion"] == "failure"
 
 
 @pytest.mark.parametrize("fail", ["/reviews", "/timeline", "/check-runs/700"])
@@ -644,19 +752,33 @@ def test_a_decision_that_stops_after_deciding_fails_that_run(pr_checkout, fail):
     tmp_path, path, data = pr_checkout
     data["reviews"] = [_review("APPROVE", data["head"])]
     data["fail"] = fail
-    done, calls = _decide(tmp_path, path, data)
+    done, calls, _ = _decide(tmp_path, path, data)
     assert done.returncode != 0
     writes = _writes(calls)
+    assert writes[-1][:2] == ("PATCH", "repos/o/r/check-runs/700")
     assert writes[-1][2] == {"status": "completed", "conclusion": "failure",
                              "output": {"title": "could not decide", "summary":
                                         "review.yml stopped before its verdict; see its log, "
                                         "then rerun it."}}
 
 
+def test_a_crash_after_reopening_a_passed_run_fails_that_run(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    data["check_runs"] = [{"id": 41, "app": {"id": 777}, "name": "review",
+                           "head_sha": data["head"], "external_id": "pr-12",
+                           "status": "completed", "conclusion": "success"}]
+    data["reviews"] = [_review("APPROVE", data["head"])]
+    data["fail"] = "/timeline"
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode != 0
+    (run,) = _review_runs(after, data["head"])
+    assert run["id"] == 41 and run["conclusion"] == "failure"
+
+
 def test_a_pr_with_no_head_writes_nothing(pr_checkout):
     tmp_path, path, data = pr_checkout
     data["head"] = "null"
-    done, calls = _decide(tmp_path, path, data)
+    done, calls, _ = _decide(tmp_path, path, data)
     assert done.returncode == 1 and _writes(calls) == []
 
 
@@ -665,35 +787,39 @@ def _queue(**more: str) -> dict:
             **more}
 
 
+def _pr_run(head: str, **fields) -> dict:
+    return {"name": "review", "head_sha": head, "status": "completed", "conclusion": "success",
+            "external_id": "pr-12", **fields}
+
+
 def test_the_merge_group_review_refuses_an_actions_run_named_review(pr_checkout):
     tmp_path, path, data = pr_checkout
-    data["check_runs"] = [{"id": 9, "name": "review", "status": "completed",
-                           "conclusion": "success", "external_id": "pr-12",
-                           "app": {"id": 15368}}]
-    done, calls = _decide(tmp_path, path, data, **_queue())
+    data["check_runs"] = [_pr_run(data["head"], id=9, app={"id": 15368})]
+    done, calls, after = _decide(tmp_path, path, data, **_queue())
     assert done.returncode == 0, done.stderr
     (_, _, deciding), (_, _, refused) = _writes(calls)
     assert deciding["head_sha"] == B and deciding["external_id"] == "queue-pr-12"
     assert refused["external_id"] == "queue-pr-12" and refused["conclusion"] == "failure"
-    read = next(c for c in calls if any("/commits/" in a for a in c["args"]))
+    read = next(c for c in calls if c["token"] == _ACTIONS_TOKEN
+                and any(f"/commits/{data['head']}/" in a for a in c["args"]))
     assert read["args"][:2] == ["api", "--paginate"]
     assert (f"repos/o/r/commits/{data['head']}/check-runs"
             "?check_name=review&filter=all&per_page=100") in read["args"]
+    (group,) = _review_runs(after, B)
+    assert group["external_id"] == "queue-pr-12"
 
 
 def test_the_merge_group_review_passes_on_the_apps_newest_run_past_a_stale_one(pr_checkout):
     tmp_path, path, data = pr_checkout
-    passed = {"id": 5, "name": "review", "status": "completed", "conclusion": "success",
-              "external_id": "pr-12", "app": {"id": 777}}
+    passed = _pr_run(data["head"], id=5, app={"id": 777})
     stale = {**passed, "id": 3, "status": "in_progress", "conclusion": None}
     data["check_runs"] = [passed, stale]
-    done, calls = _decide(tmp_path, path, data, **_queue())
+    done, calls, _ = _decide(tmp_path, path, data, **_queue())
     assert done.returncode == 0, done.stderr
     (_, _, verdict) = _writes(calls)[-1]
     assert verdict["external_id"] == "queue-pr-12" and verdict["conclusion"] == "success"
     # Reversed, the newer run is the one in progress, and the group fails.
     data["check_runs"] = [stale, {**passed, "id": 2}]
-    (tmp_path / "again").mkdir()
-    done, calls = _decide(tmp_path / "again", path, data, **_queue())
+    done, calls, _ = _decide(tmp_path, path, data, **_queue())
     assert done.returncode == 0, done.stderr
     assert _writes(calls)[-1][2]["conclusion"] == "failure"
