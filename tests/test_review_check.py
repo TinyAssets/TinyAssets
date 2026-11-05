@@ -384,6 +384,19 @@ def test_only_the_latest_successful_run_made_for_this_pr_passes():
     assert gate.review_run_passed([{**done, "id": 4}, waiting], 12)
 
 
+def test_a_reader_lists_every_page_of_check_runs(monkeypatch):
+    """`gh api` returns one page unless told to page; the newest run may be on any."""
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout='{"id": 1}\n{"id": 2}\n', stderr="")
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    assert gate._gh_check_runs("repos/o/r/commits/x/check-runs") == [{"id": 1}, {"id": 2}]
+    assert seen == [["gh", "api", "--paginate", "repos/o/r/commits/x/check-runs",
+                     "--jq", ".check_runs[]"]]
+
+
 def test_only_the_review_apps_run_passes_a_reader(monkeypatch):
     """An Actions-app run named review for the PR (any PR's own job can post one) is not a
     pass: the App filter is what makes the check the review App's alone."""
@@ -609,6 +622,10 @@ def _decide(tmp_path: Path, checkout: Path, data: dict, **env: str):
 
     Returns the run, this decision's calls, and the fake's data after it, which a
     later decision can be handed to see what this one left on GitHub."""
+    # The script runs jq itself, as GitHub's ubuntu-latest runner provides it, and the
+    # fake applies `--jq` with it as gh's embedded jq would. CI's oracle image installs
+    # it (docker/linux-oracle.Dockerfile); a missing jq is a broken venue, not a skip.
+    assert shutil.which("jq"), "jq is not on PATH: review.yml's script needs it"
     _, decide = _decide_steps()
     (checkout / "scripts").mkdir(exist_ok=True)
     shutil.copy(_ROOT / "scripts" / "drain_review_gate.py", checkout / "scripts")
