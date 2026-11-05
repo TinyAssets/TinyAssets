@@ -617,7 +617,7 @@ separately in a disposable store. Paired archive transfer/verification and
 `backup-pair.py` are deleted. C3 still fails closed on unavailable current
 authority. Failed-cutover guidance invokes C4 deployment control; the obsolete
 paired restore instructions, owner-tree project readback and quiescence
-wrapper are deleted. Production setup is the a2b row in `docs/host-actions.md`.
+wrapper are deleted.
 
 ### Step 1 proof, before any lane is built
 Run on a disposable venue that matches the deployment kernel, the outer

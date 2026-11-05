@@ -41,7 +41,11 @@ import { CHUNK_BYTES } from "./manifest";
  * would pass STORE's quarter of the room under the half (`limits-audit.test.ts`).
  */
 export const SEGMENT_MIN_BYTES = 8 * 1024 * 1024;
-/** Or once it holds this many records, however small: half the hot mail's ceiling. */
+/**
+ * Or once it holds this many records, however small: half the hot mail's ceiling. Never
+ * first at these figures: the least mail's record (868 bytes) reaches `SEGMENT_MIN_BYTES`
+ * at under 10,000 records (`guards/move-cpu.test.ts`), so production seals by bytes.
+ */
 export const SEGMENT_MIN_RECORDS = 25_000;
 /**
  * The fewest bytes a record takes: a mail's three rows at their narrowest (the tests build

@@ -5,7 +5,7 @@
  * An owner's object runs in an isolate of 128 MB that objects of one class may share, so
  * what its live output keeps in memory is bounded by the code and counted here, each term
  * at its worst, against `RELAY_MEMORY_BUDGET` (an eighth of the isolate):
- * - the runs' tails: every live run's kept frames together, at most `TAIL_BYTES` UTF-16 code
+ * - the runs' tails: every live run's kept frames together, at most `TAIL_UNITS` UTF-16 code
  *   units (two bytes each);
  * - the runners' events posts the object holds while it reads and relays them (slice R's
  *   review M-4 and round 2): each its body, at most `EVENTS_BODY_MAX` bytes, once as it
@@ -17,7 +17,7 @@
  * - each socket's attachment, the platform's at most 2 KiB, and the SDK's cached copy, at
  *   `OWNER_SOCKETS`, the relay's technical ceiling;
  * - the told sign-outs held (`SIGNED_OUT_KEPT`).
- * A frame longer than `TAIL_FRAME_MAX` is relayed but never kept. What the runtime buffers of
+ * A frame longer than `TAIL_FRAME_UNITS` is relayed but never kept. What the runtime buffers of
  * frames sent and not yet read is the runtime's, not the isolate's heap. Frames are never a
  * SQL row: the relay names no storage.
  */
@@ -54,9 +54,9 @@ describe("the runs' live output's memory bound", () => {
     expect(relay).not.toMatch(/\.sql\b|storage\./);
     // The tail is trimmed to its bound as each frame is kept, the longest tail's oldest first.
     // Every object's tails in the isolate share one budget (`slots.ts`, review M5).
-    expect(relay).toContain("const tails = isolateTails(TAIL_BYTES);");
+    expect(relay).toContain("const tails = isolateTails(TAIL_UNITS);");
     expect(relay).toContain("tails.trim();");
-    expect(relay).toContain("if (text.length <= TAIL_FRAME_MAX) {");
+    expect(relay).toContain("if (text.length <= TAIL_FRAME_UNITS) {");
   });
 
   it("sees a bound that would pass the budget", () => {

@@ -20,6 +20,6 @@ The archive does not turn the old unchecked acceptance items into passes:
   keep those concerns until production acceptance supports their deletion.
 
 The second-account refusal probe is in `docs/host-actions.md`; supply tester B,
-then follow `docs/ops/owner-split-cutover-runbook.md` ?6.5. Record the refusal
+then run the two refusal probes that row names. Record the refusal
 results and the remaining app/provider acceptance, then remove this concern.
 Spec sync and archive are complete; production acceptance is not claimed.

@@ -2194,7 +2194,8 @@ R, S, M and W.
   - DCR (founder ruling): served only with `DCR_ENABLED`, and then a registration is taken
     only when its `client_name` names a `dcr` vendor (Grok, Muse, Gemini, Cursor); a CIMD
     vendor's name or none is refused `invalid_client_metadata`. Production stays
-    `DCR_ENABLED: "false"` until the go-ahead deploy.
+    `DCR_ENABLED: "false"` until the doors go live (mode `routes`; the go-ahead deploy,
+    mode `dark`, moves no route, `platform/deploy/checklist.md`).
   - Plugins (`platform/plugins/`, `build.mjs`, `--check` in the doors' guard): ChatGPT and
     Codex (Agent Plugins format, OpenAI extension, onboarding skill, first example prompt
     "Set me up on TinyAssets") and Claude (`.claude-plugin/`, `.mcp.json`), each the MCP
@@ -2211,10 +2212,10 @@ R, S, M and W.
     a nonce one appends to `USER.md` found by the other's `search` and `fetch` with the
     seeded profile whole, corrected by `file_edit` at its etag; two concurrent creates of
     `offer:connect:grok` leave exactly one row and one conflict.
-- [ ] **Owed by BRAIN, live, after the go-ahead deploy** (proof is observed tool calls and
+- [ ] **Owed by BRAIN, live, once mode `routes` has run** (proof is observed tool calls and
   `writer` values, never an agent's say-so; the user's only acts are connect, sign in and
   answer):
-  1. **Turn DCR on** in the go-ahead deploy (`DCR_ENABLED: "true"`). For each `dcr` vendor
+  1. **Turn DCR on** with the `routes` run (`DCR_ENABLED: "true"`). For each `dcr` vendor
      (Grok via Cursor's backend, Gemini, Muse, Cursor), the founder makes its first connect
      attempt while `wrangler tail` runs on the doors Worker (or with the doors' Workers logs
      open). That attempt's registration is refused, since its `match.redirects` is empty, and
@@ -2349,6 +2350,18 @@ R, S, M and W.
       would never lower a tier. Before `routes`: a billing door on the new platform, with
       Stripe's endpoint moved to it; or the founder's word that no live subscription exists,
       and Stripe's endpoint disabled until that door is built.
+
+- [ ] **Old tests leave with their code** (Direction 6). The change that deletes the old
+  stack deletes every test file `python scripts/affected_tests.py --retiring` lists. Those
+  are the tests whose reached modules all lie in its `RETIRING` paths, the old stack's
+  `tinyassets/`; widen that one list if the cutover deletes more. The same change deletes
+  any other test that fails only because the code it checked is gone. None is skipped,
+  quarantined or rewritten to pass. A test that also reaches kept code keeps its cases
+  for that code. A listed structural guard (`scripts/ci_structural_guards.py` `GUARDS`)
+  is deleted only once this line names the platform guard that replaces it, or the
+  recorded decision that retires its principle. Until then, each runs whenever a Python change could reach it, and never
+  for a `platform/` or prose change it cannot read (the merge gate's tree selection,
+  `affected_tests.provable_shape`).
 
 - [ ] **The founder's and the canary's owners start fresh** (the founder's ruling, 2026-11-04):
   the founder's main account and every canary owner account begin on the new platform with

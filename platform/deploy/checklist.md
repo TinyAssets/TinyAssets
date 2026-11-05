@@ -12,6 +12,11 @@ two jobs:
 
 Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and approve.
 
+**The go-ahead deploy** is that first approved `dark` run. It turns on the platform's storage,
+secrets, six Workers and control record (every gate closed), and nothing public: it moves no
+route, so `tinyassets.io` keeps serving the old stack. The doors go live only with mode
+`routes`, at the cutover.
+
 ## Before you run it
 
 - **Your approval.** Add yourself as the `production` environment's required reviewer

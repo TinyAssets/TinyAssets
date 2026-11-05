@@ -34,14 +34,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \".claude/hooks/session_sync_gate_hook.py\"",
-            "shell": "powershell",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/session_sync_gate_hook.py\"; [ -f \"$f\" ] || exit 0; python \"$f\"",
             "timeout": 25
           },
           {
             "type": "command",
-            "command": "python \".claude/hooks/dev_hygiene_hook.py\"",
-            "shell": "powershell",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/dev_hygiene_hook.py\"; [ -f \"$f\" ] || exit 0; python \"$f\"",
             "timeout": 50
           }
         ]
