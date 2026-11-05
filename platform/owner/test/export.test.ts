@@ -350,10 +350,11 @@ describe("a generation", () => {
     expect(digest(replay(after.lines))).toBe(after.atE);
   }, 120_000);
 
-  it("gives up one with a line longer than a part, loudly and the owner told once, never a " +
-     "part no root may name (review rvbackup 5)", async () => {
-    // Parts of 4 KiB, and one notice of 1,000 control characters: its line is past 6 KB.
-    const sizes = { page: 16 * 1024, part: 4096, gather: 8192 };
+  it("gives up one with a line longer than any part may be, loudly and the owner told " +
+     "once, never a part no root may name (review rvbackup 5)", async () => {
+    // Parts of at most 4 KiB, and one notice of 1,000 control characters: its line is past
+    // 6 KB.
+    const sizes = { page: 16 * 1024, part: 4096, gather: 8192, most: 4096 };
     const o = await owner();
     await notices(o, 20);
     await sqlIn(o.stub, "INSERT INTO owner_notices (at, type, detail) VALUES (0, 'wide', " +

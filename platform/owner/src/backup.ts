@@ -99,6 +99,12 @@ export interface GenerationSizes {
   readonly page: number;
   readonly part: number;
   readonly gather: number;
+  /**
+   * The most bytes any part may hold: `CHUNK_BYTES`, what the files Worker takes (a test
+   * shrinks it to see a line past it). A part over `part` but within it, a line wider than
+   * a test's small parts, is put as it is.
+   */
+  readonly most?: number;
 }
 export const GENERATION_SIZES: GenerationSizes = Object.freeze({
   page: EXPORT_PAGE_BYTES, part: CHUNK_BYTES, gather: GATHER_BYTES });
@@ -114,9 +120,10 @@ export const MANIFEST_LOG_OVERFLOW = "manifest_log_overflow";
 export const MANIFEST_SCHEMA = "manifest_schema";
 /**
  * The notice an owner is given, once, when one line of its stream (one row, as JSON) is
- * longer than a part: no part may hold it, so the generation is given up, loudly, and the
- * lane waits for the owner's next change. Unreachable by the schema's bounds (the widest
- * row image, `IMAGE_MAX`, is under a part), kept so a later wider column fails loudly.
+ * longer than any part may be (`CHUNK_BYTES`): the files Worker takes no such part, so the
+ * generation is given up, loudly, and the lane waits for the owner's next change.
+ * Unreachable by the schema's bounds (the widest row image, `IMAGE_MAX`, is under a
+ * chunk), kept so a later wider column fails loudly.
  */
 export const MANIFEST_LINE = "manifest_line";
 /** A generation's recorded cursor once its base is read: only its log is left. */
@@ -142,8 +149,8 @@ export function spread(owner: string): number {
 /**
  * A burst's lines (its pages' `Lines`, in order) cut into parts of whole lines, each at most
  * `part` bytes, so an export streams them as they are. A line longer than `part` is a part
- * of its own, longer than `part`: the lane gives such a generation up (`MANIFEST_LINE`),
- * since no part may hold it. Linear: each line's end is read once and each byte copied once,
+ * of its own, longer than `part`: past `CHUNK_BYTES` the lane gives such a generation up
+ * (`MANIFEST_LINE`), since the files Worker takes no such part. Linear: each line's end is read once and each byte copied once,
  * as slices of its page's buffer, never the part so far again (`guards/backup-cut.test.ts`
  * holds it, and its bytes to the cut it replaced).
  */
@@ -628,7 +635,7 @@ export class Backups {
       }
       // Parts of whole lines, at most a chunk each, so an export streams them as they are.
       const parts = cutParts(lines, sizes.part);
-      if (parts.some((bytes) => bytes.byteLength > sizes.part)) {
+      if (parts.some((bytes) => bytes.byteLength > (sizes.most ?? CHUNK_BYTES))) {
         await this.#abandon(ns, at, MANIFEST_LINE);
         return true;
       }
