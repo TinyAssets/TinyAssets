@@ -6,12 +6,9 @@ name: Platform setup (one-time, founder-dispatched)
 # and never printed: the job summary names each one and its status alone.
 #
 # It runs on SETUP_PAT, a fine-grained token the founder makes for this repo alone, one day
-# long (Actions: read; Administration, Environments, Secrets and Variables: read and
-# write), stored as a `production` secret. The last step deletes it, whatever came before.
+# long (Actions: read; Environments, Secrets and Variables: read and write), stored as a
+# `production` secret. The last step deletes it, whatever came before.
 #
-#   - the review App (optional): the code from platform/deploy/review-app.html, exchanged
-#     first, within its hour; its key into the main-only `review` environment (made when
-#     absent), its id as REVIEW_APP_ID
 #   - ROUTING_MAC_KEY (32 random bytes), GATEWAY_KEYRING and FILES_KEYRING (deploy.ts
 #     keyring-new, in RUNNER_TEMP, shredded once stored)
 #   - WORKOS_API_KEY, read from the production host over one ssh call into the API
@@ -23,15 +20,11 @@ name: Platform setup (one-time, founder-dispatched)
 #
 # Each step holds only the secrets it uses, and a step that fails leaves the rest to run.
 # Run again with a new SETUP_PAT to finish what one run could not; it changes nothing set.
+# The review App is not made here: its one-time code would sit in a public run until spent
+# (scripts/review_app_setup.py, on the founder's own computer).
 
 on:
   workflow_dispatch:
-    inputs:
-      review_app_code:
-        description: 'Optional: the code from the review App page (one-time, one hour)'
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
@@ -66,14 +59,6 @@ jobs:
       - name: Install PyNaCl from its hashed lock
         run: |
           python3 -m pip install --only-binary=:all: --require-hashes -r scripts/platform_setup.requirements.txt
-
-      # First, so the code is spent within its hour; it is read from the event file, never
-      # from a step's env, which the log prints.
-      - name: The review App
-        if: ${{ !cancelled() && inputs.review_app_code != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.SETUP_PAT }}
-        run: python3 scripts/platform_setup.py review-app
 
       - name: ROUTING_MAC_KEY
         if: ${{ !cancelled() }}

@@ -2,7 +2,9 @@
 main, in `production`, one run at a time, each secret in the steps that use it alone, every
 action and package pinned, no token left in the checkout, the setup token deleted whatever
 happened, nothing printed. Its script (scripts/platform_setup.py) sets a name only where it
-is absent, against a fake of GitHub's and E2B's APIs."""
+is absent, against a fake of GitHub's and E2B's APIs. The review App's script
+(scripts/review_app_setup.py), run on the founder's own computer with their `gh`, is held
+against the same fake: a main-only `review` environment first, the key on stdin alone."""
 
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import pytest
 import yaml
 
 from scripts import platform_setup as setup
+from scripts import review_app_setup as review
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/platform-setup.yml"
@@ -71,7 +74,6 @@ def test_each_secret_is_in_the_steps_that_use_it_alone() -> None:
     found = {step.get("name", step.get("uses")): _guard._secret_names(json.dumps(step))
              for step in job["steps"]}
     assert {name: refs for name, refs in found.items() if refs} == {
-        "The review App": {"SETUP_PAT"},
         "ROUTING_MAC_KEY": {"SETUP_PAT"},
         "GATEWAY_KEYRING": {"SETUP_PAT"},
         "FILES_KEYRING": {"SETUP_PAT"},
@@ -112,7 +114,7 @@ def test_the_setup_token_is_deleted_whatever_happened() -> None:
         assert str(step["if"]).startswith("${{ !cancelled()"), step["name"]
 
 
-def test_nothing_is_printed_and_the_code_is_never_in_a_step_env() -> None:
+def test_nothing_is_printed() -> None:
     held = {name for step in _steps() for name, value in (step.get("env") or {}).items()
             if "secrets." in str(value)}
     assert held == {"GH_TOKEN", "SSH_KEY", "DO_DROPLET_HOST", "DO_SSH_USER", "E2B_API_KEY",
@@ -125,7 +127,6 @@ def test_nothing_is_printed_and_the_code_is_never_in_a_step_env() -> None:
                 for name in held - {"DO_DROPLET_HOST"}:
                     assert name not in line or line.strip() == (
                         "(umask 077 && printf '%s\\n' \"${SSH_KEY}\" > \"${key_file}\")"), line
-        assert "inputs.review_app_code" not in json.dumps(step.get("env") or {})
     host = next(step for step in _steps() if step.get("name") == "WORKOS_API_KEY from the host")
     # The one ssh call is the script's, with its fixed remote command.
     assert "ssh " not in host["run"].replace("ssh-keyscan ", "")
@@ -429,49 +430,118 @@ def test_owner_token_claims_needs_a_receipt_naming_the_issuer_with_auth_time(rec
     assert "OWNER_TOKEN_CLAIMS" not in fake.variables
 
 
-# --- the review App -----------------------------------------------------------------------
+# --- the review App, from the founder's own computer (scripts/review_app_setup.py) --------
 
 
-def test_the_review_app_key_goes_to_a_main_only_review_environment(tmp_path):
-    fake = Fake()
-    setup.review_app(_gh(fake), "a180b1a3d263c81bc6441d7b990bae27d4c10679", "TinyAssets", fake)
+CODE = "a180b1a3d263c81bc6441d7b990bae27d4c10679"
+
+
+class _Done:
+    def __init__(self, returncode: int, stdout: str = "") -> None:
+        self.returncode, self.stdout = returncode, stdout
+
+
+def _gh_cli(fake: Fake, said: list[str]):
+    """The founder's `gh`, over the same fake: `gh api -i`, `gh secret list/set`,
+    `gh variable set`. Every argv and stdin is kept in `said`, to show no key was printed."""
+
+    def run(argv, input=None, **_):
+        said.append(" ".join(argv))
+        assert argv[0] == "gh" and "--repo" not in argv or argv[argv.index("--repo") + 1] == REPO
+        if argv[1] == "api":
+            assert argv[2:4] == ["-i", "--method"]
+            path = argv[5].removeprefix(f"repos/{REPO}")
+            fake.calls.append(f"{argv[4]} {path}")
+            status, body = fake._github(argv[4], path, json.loads(input) if input else None,
+                                        True)
+            return _Done(0 if status < 400 else 1,
+                         f"HTTP/2.0 {status} X\r\nContent-Type: json\r\n\r\n{json.dumps(body)}")
+        if argv[1:3] == ["secret", "list"]:
+            env = argv[argv.index("--env") + 1]
+            return _Done(0, json.dumps([{"name": n} for n in sorted(fake.secrets[env])]))
+        if argv[1:3] == ["secret", "set"]:
+            env = argv[argv.index("--env") + 1]
+            fake.secrets[env].add(argv[3])
+            fake.stored[(env, argv[3])] = input
+            return _Done(0)
+        if argv[1:3] == ["variable", "set"]:
+            fake.variables[argv[3]] = argv[argv.index("--body") + 1]
+            return _Done(0)
+        raise AssertionError(argv)
+
+    return run
+
+
+def _turn_in(fake: Fake):
+    def turn_in(code: str):
+        fake.calls.append(f"POST conversions {code}")
+        return fake("POST", f"{setup.GITHUB_API}/app-manifests/{code}/conversions")
+
+    return turn_in
+
+
+def test_the_review_app_key_goes_to_a_main_only_review_environment() -> None:
+    fake, said, out = Fake(), [], []
+    review.review_app(CODE, review.Gh(run=_gh_cli(fake, said)), _turn_in(fake), out.append)
     assert fake.environments["review"] == [("main", "branch")]
     assert fake.secrets["review"] == {"REVIEW_APP_PRIVATE_KEY"}
+    assert fake.stored[("review", "REVIEW_APP_PRIVATE_KEY")].startswith("-----BEGIN RSA")
     assert fake.variables == {"REVIEW_APP_ID": "77"}
+    # The environment is main-only before the code is spent.
     assert fake.calls.index("PUT /environments/review") < fake.calls.index(
-        "POST https://api.github.com/app-manifests/a180b1a3d263c81bc6441d7b990bae27d4c10679"
-        "/conversions")
-    summary = "\n".join(_summary(tmp_path))
-    assert "BEGIN" not in summary and "installations/new" in summary
+        f"POST conversions {CODE}")
+    # The key went on stdin alone: never in an argv, never said.
+    assert not [line for line in said + out if "BEGIN" in line]
+    assert out[-1].endswith("https://github.com/apps/tinyassets-review/installations/new")
     # A second code is not spent while the key is held.
-    calls = len(fake.calls)
-    setup.review_app(_gh(fake), "b" * 40, "TinyAssets", fake)
-    assert not [c for c in fake.calls[calls:] if "app-manifests" in c]
+    with pytest.raises(review.SetupError, match="already set"):
+        review.review_app("b" * 40, review.Gh(run=_gh_cli(fake, said)), _turn_in(fake),
+                          out.append)
+    assert "POST conversions " + "b" * 40 not in fake.calls
 
 
 @pytest.mark.parametrize("policy", [None, [("main", "branch"), ("release/*", "branch")],
                                     [("v*", "tag")]])
-def test_a_review_environment_open_to_other_refs_is_refused(policy):
+def test_a_review_environment_open_to_other_refs_is_refused(policy) -> None:
     fake = Fake(environments={"review": policy})
-    with pytest.raises(setup.SetupError, match="other branches than main"):
-        setup.review_app(_gh(fake), "c" * 40, "TinyAssets", fake)
-    assert not [c for c in fake.calls if "app-manifests" in c]
+    with pytest.raises(review.SetupError, match="other branches than main"):
+        review.review_app(CODE, review.Gh(run=_gh_cli(fake, [])), _turn_in(fake), print)
+    assert not [c for c in fake.calls if "conversions" in c]
 
 
-def test_no_code_is_no_change_and_a_bad_one_is_refused(tmp_path):
+def test_an_app_another_account_owns_is_not_stored(monkeypatch) -> None:
     fake = Fake()
-    setup.review_app(_gh(fake), "", "TinyAssets", fake)
-    assert fake.calls == []
-    with pytest.raises(setup.SetupError):
-        setup.review_app(_gh(fake), "../../x", "TinyAssets", fake)
-    assert fake.calls == []
+    answer = {"id": 1, "slug": "x", "owner": {"login": "someone"},
+              "pem": "-----BEGIN RSA PRIVATE KEY-----\n"}
+    with pytest.raises(review.SetupError, match="belongs to someone"):
+        review.review_app(CODE, review.Gh(run=_gh_cli(fake, [])), lambda _: (201, answer),
+                          print)
+    assert fake.secrets["review"] == set() and fake.variables == {}
 
 
-def test_the_code_is_read_from_the_event_file(monkeypatch, tmp_path):
-    event = tmp_path / "event.json"
-    event.write_text(json.dumps({"inputs": {"review_app_code": " abc "}}))
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
-    assert setup.dispatch_input("review_app_code") == "abc"
+@pytest.mark.parametrize(("given", "code"), [
+    (CODE, CODE),
+    (f"https://github.com/TinyAssets/TinyAssets?code={CODE}", CODE),
+    (f" https://github.com/TinyAssets/TinyAssets?code={CODE}&state=s ", CODE),
+    ("../../x", None),
+    ("https://github.com/TinyAssets/TinyAssets", None),
+])
+def test_the_code_is_taken_bare_or_from_the_redirect(given, code) -> None:
+    if code is None:
+        with pytest.raises(review.SetupError):
+            review.code_of(given)
+    else:
+        assert review.code_of(given) == code
+
+
+def test_the_workflow_takes_no_code_and_no_admin_scope() -> None:
+    workflow, _ = _workflow()
+    on = workflow.get("on", workflow.get(True))
+    assert on == {"workflow_dispatch": None}
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "review" not in text.replace("The review App is not made here", "").replace(
+        "scripts/review_app_setup.py", "")
+    assert "Administration" not in text
 
 
 class _Form(HTMLParser):
@@ -499,8 +569,7 @@ def test_the_manifest_page_asks_for_the_review_app_and_nothing_more() -> None:
     assert manifest == {
         "name": "TinyAssets Review", "url": "https://tinyassets.io",
         "hook_attributes": {"url": "https://tinyassets.io/", "active": False},
-        "redirect_url": "https://github.com/TinyAssets/TinyAssets/actions/workflows/"
-                        "platform-setup.yml",
+        "redirect_url": "https://github.com/TinyAssets/TinyAssets",
         "public": False,
         "default_permissions": {"checks": "write", "statuses": "write", "metadata": "read"},
         "default_events": []}

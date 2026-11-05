@@ -9,7 +9,6 @@ to the job summary: the name and its status (set, already set, registered, ...).
     secret NAME --make mac|token|keyring|host   # a production secret, only if absent
     e2b                                         # E2B_API_KEY, E2B_WEBHOOK_SECRET, the webhook
     variables --issuer URL --client-id ID       # OWNER_ISSUER, WORKOS_CLIENT_ID, OWNER_TOKEN_CLAIMS
-    review-app                                  # the review App from its manifest code
 
 GH_TOKEN is the founder's short-lived SETUP_PAT; GITHUB_REPOSITORY names the repo.
 """
@@ -37,7 +36,6 @@ ROOT = Path(__file__).resolve().parent.parent
 GITHUB_API = "https://api.github.com"
 E2B_API = "https://api.e2b.app"
 PRODUCTION = "production"
-REVIEW = "review"
 # E2B's lifecycle webhook (`platform/doors/src/e2b-hooks.ts`), disabled until the cutover:
 # the doors hold no route for it yet, and an enabled one sends the team's events nowhere.
 HOOK_NAME = "tinyassets-lifecycle"
@@ -378,92 +376,6 @@ def variables(gh: GitHub, issuer: str, client_id: str, call: Fetch = fetch) -> b
     return ok
 
 
-# --- the review App --------------------------------------------------------------------
-
-
-def _main_only(gh: GitHub, env: str) -> bool:
-    status, record = gh.call("GET", f"/environments/{env}")
-    if status != 200 or not isinstance(record, dict):
-        raise SetupError(f"reading the {env} environment failed ({status})")
-    if record.get("deployment_branch_policy") != {"protected_branches": False,
-                                                  "custom_branch_policies": True}:
-        return False
-    status, policies = gh.call("GET", f"/environments/{env}/deployment-branch-policies")
-    if status != 200 or not isinstance(policies, dict):
-        raise SetupError(f"reading the {env} environment's branches failed ({status})")
-    return [(p.get("name"), p.get("type", "branch")) for p in
-            policies.get("branch_policies") or []] == [("main", "branch")]
-
-
-def ensure_environment(gh: GitHub, env: str = REVIEW) -> None:
-    """`env`, made main-only when absent; one that exists must already be main-only."""
-    status, _ = gh.call("GET", f"/environments/{env}")
-    if status == 404:
-        status, _ = gh.call("PUT", f"/environments/{env}", {"deployment_branch_policy": {
-            "protected_branches": False, "custom_branch_policies": True}})
-        if status != 200:
-            raise SetupError(f"making the {env} environment failed ({status})")
-        status, _ = gh.call("POST", f"/environments/{env}/deployment-branch-policies",
-                            {"name": "main", "type": "branch"})
-        if status != 200:
-            raise SetupError(f"limiting the {env} environment to main failed ({status})")
-        report(f"{env} environment", "made, main only")
-    elif status == 200:
-        report(f"{env} environment", "already there")
-    else:
-        raise SetupError(f"reading the {env} environment failed ({status})")
-    if not _main_only(gh, env):
-        raise SetupError(f"the {env} environment takes other branches than main: limit it to "
-                         "main (Settings > Environments) and run this again")
-
-
-def dispatch_input(name: str) -> str:
-    """A workflow_dispatch input, read from the event file: an input in a step's `env:`
-    would be printed in that step's log."""
-    path = os.environ.get("GITHUB_EVENT_PATH", "")
-    if not path:
-        return ""
-    event = json.loads(Path(path).read_text(encoding="utf-8"))
-    return str((event.get("inputs") or {}).get(name) or "").strip()
-
-
-def review_app(gh: GitHub, code: str, owner: str, call: Fetch = fetch) -> None:
-    """The App the manifest page made: its key into `review`, its id as REVIEW_APP_ID."""
-    if not code:
-        report("REVIEW_APP_PRIVATE_KEY", "skipped: no review_app_code given")
-        return
-    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", code):
-        raise SetupError("review_app_code is not a manifest code")
-    ensure_environment(gh, REVIEW)
-    if gh.has_secret("REVIEW_APP_PRIVATE_KEY", REVIEW):
-        report("REVIEW_APP_PRIVATE_KEY", "already set: the code was not used (delete the "
-                                         "App it made)")
-        return
-    # GitHub's manifest flow, step 3: the code, within its hour, needs no token.
-    status, app = call("POST", f"{GITHUB_API}/app-manifests/{code}/conversions",
-                       headers={"Accept": "application/vnd.github+json"})
-    if status != 201 or not isinstance(app, dict):
-        raise SetupError(f"GitHub refused the manifest code ({status}): it is one-time and "
-                         "lasts an hour; make the App again from the page")
-    slug = str(app.get("slug", ""))
-    made_by = str((app.get("owner") or {}).get("login", ""))
-    if made_by.lower() != owner.lower():
-        raise SetupError(f"the App {slug} belongs to {made_by}, not {owner}: delete it and "
-                         "make it from the page again")
-    pem = str(app.get("pem", ""))
-    if not pem.startswith("-----BEGIN RSA PRIVATE KEY-----"):
-        raise SetupError(f"the App {slug} came back with no private key")
-    try:
-        gh.put_secret("REVIEW_APP_PRIVATE_KEY", pem, REVIEW)
-    except SetupError as error:
-        raise SetupError(f"{error}; the App {slug} exists: generate a private key in its "
-                         "settings and store it by hand") from None
-    report("REVIEW_APP_PRIVATE_KEY", "set (review)")
-    report("REVIEW_APP_ID", gh.set_variable("REVIEW_APP_ID", str(int(app["id"])),
-                                            replace=True))
-    report(f"App {slug}", f"made; install it: https://github.com/apps/{slug}/installations/new")
-
-
 # --- the command line ------------------------------------------------------------------
 
 
@@ -478,7 +390,6 @@ def main(argv: list[str] | None = None) -> int:
     names = sub.add_parser("variables")
     names.add_argument("--issuer", required=True)
     names.add_argument("--client-id", required=True)
-    sub.add_parser("review-app")
     args = parser.parse_args(argv)
     try:
         gh = GitHub(os.environ.get("GH_TOKEN", ""), os.environ.get("GITHUB_REPOSITORY", ""))
@@ -486,12 +397,8 @@ def main(argv: list[str] | None = None) -> int:
             report(args.name, ensure_secret(gh, args.name, MAKERS[args.make]))
         elif args.command == "e2b":
             e2b(gh, os.environ.get("E2B_API_KEY", ""), os.environ.get("E2B_WEBHOOK_SECRET", ""))
-        elif args.command == "variables":
-            if not variables(gh, args.issuer, args.client_id):
-                return 1
-        else:
-            review_app(gh, dispatch_input("review_app_code"),
-                       os.environ.get("GITHUB_REPOSITORY_OWNER", ""))
+        elif not variables(gh, args.issuer, args.client_id):
+            return 1
     except SetupError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1

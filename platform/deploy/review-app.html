@@ -45,22 +45,23 @@
        new-App page (docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). -->
   <form action="https://github.com/organizations/TinyAssets/settings/apps/new" method="post"
         target="_blank">
-    <input type="hidden" name="manifest" value='{"name": "TinyAssets Review", "url": "https://tinyassets.io", "hook_attributes": {"url": "https://tinyassets.io/", "active": false}, "redirect_url": "https://github.com/TinyAssets/TinyAssets/actions/workflows/platform-setup.yml", "public": false, "default_permissions": {"checks": "write", "statuses": "write", "metadata": "read"}, "default_events": []}'>
+    <input type="hidden" name="manifest" value='{"name": "TinyAssets Review", "url": "https://tinyassets.io", "hook_attributes": {"url": "https://tinyassets.io/", "active": false}, "redirect_url": "https://github.com/TinyAssets/TinyAssets", "public": false, "default_permissions": {"checks": "write", "statuses": "write", "metadata": "read"}, "default_events": []}'>
     <button type="submit">Make the App on GitHub</button>
   </form>
   <ol>
     <li>On GitHub, click <strong>Create GitHub App</strong> (you must be an
       owner of the organization).</li>
-    <li>GitHub opens the Platform setup workflow with <code>?code=…</code> in the address
-      bar. Copy that code. It works once, for one hour.</li>
-    <li>Click <strong>Run workflow</strong> on <code>main</code> and paste the code into
-      <em>review_app_code</em>. The workflow stores the App's key in the main-only
-      <code>review</code> environment and its id as <code>REVIEW_APP_ID</code>.</li>
-    <li>Install the App on the TinyAssets repository: the run's summary gives the link.</li>
+    <li>GitHub opens the TinyAssets repository with <code>?code=…</code> in the address
+      bar. Copy the whole address. The code works once, for one hour.</li>
+    <li>Give it to Claude on your own computer, and nowhere else: not a workflow, an issue
+      or a chat others read. It runs <code>scripts/review_app_setup.py</code> with your own
+      <code>gh</code>, which stores the App's key in the main-only <code>review</code>
+      environment and its id as <code>REVIEW_APP_ID</code>.</li>
+    <li>Install the App on the TinyAssets repository alone, from the link it prints.</li>
   </ol>
-  <p class="note">The code is the only secret on this path, and the workflow spends it in
-    its first step. If the run fails before then, make the App again: delete the first one
-    in the organization's settings (Developer settings, GitHub Apps).</p>
+  <p class="note">Whoever turns the code in first gets the App's private key, so keep it
+    off anything shared. If it went anywhere else, or the hour passed, delete the App in the
+    organization's settings (Developer settings, GitHub Apps) and make it again.</p>
 </main>
 </body>
 </html>

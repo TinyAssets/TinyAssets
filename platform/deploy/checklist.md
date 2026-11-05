@@ -33,28 +33,28 @@ Your steps, in order. The rest is a workflow's or a session's.
      shown one at repository scope; if one is there, the setup moves it here and deletes
      that copy.
    - `SETUP_PAT`: a fine-grained token for this repository only, expiring in one day, with
-     Actions: read, and Administration, Environments, Secrets and Variables: read and write.
-     Administration only makes the `review` environment; leave it out if you skip step 3.
-     The setup deletes this secret when it ends; the token itself expires the next day.
-3. **Optional, the review App.** Open the review App page (`platform/deploy/review-app.html`)
-   and click its button, then **Create GitHub App** on GitHub (you must be an owner of the
-   organization). GitHub lands on the Platform setup workflow with `?code=` in the address
-   bar: copy the code. It works once, for an hour.
-4. **Actions, Platform setup, Run workflow** on `main`, with the code from step 3 if you have
-   one. It makes or moves, each only where absent and never printed:
+     Actions: read, and Environments, Secrets and Variables: read and write. The setup
+     deletes this secret when it ends; the token itself expires the next day.
+3. **The review App, on your own computer.** Open the review App page
+   (`platform/deploy/review-app.html`) and click its button, then **Create GitHub App** on
+   GitHub (you must be an owner of the organization). GitHub lands on the repository with
+   `?code=` in the address bar. Give that address to Claude on your computer and nowhere
+   else: whoever turns the code in first gets the App's private key. It runs
+   `python3 scripts/review_app_setup.py --code '<address>'` with your own `gh` within the
+   hour: the main-only `review` environment (made when absent), `REVIEW_APP_PRIVATE_KEY`
+   there and `REVIEW_APP_ID`. Then install the App on this repository alone, from the link
+   it prints (one click).
+4. **Actions, Platform setup, Run workflow** on `main`. It makes or moves, each only where
+   absent and never printed:
    - `ROUTING_MAC_KEY`, `GATEWAY_KEYRING` and `FILES_KEYRING` (`deploy.ts keyring-new`);
    - `WORKOS_API_KEY`, read from the production host;
    - `E2B_WEBHOOK_SECRET`, and E2B's lifecycle webhook, registered **disabled**;
-   - the variables `OWNER_ISSUER`, `WORKOS_CLIENT_ID` and `OWNER_TOKEN_CLAIMS` (below);
-   - with a code, the review App's key in the main-only `review` environment and
-     `REVIEW_APP_ID`.
+   - the variables `OWNER_ISSUER`, `WORKOS_CLIENT_ID` and `OWNER_TOKEN_CLAIMS` (below).
 
    Its summary lists each name and its status. A rerun needs a new `SETUP_PAT` and changes
    nothing already set.
-5. **With the review App: install it** on the TinyAssets repository (the link is in the
-   summary; choose only that repository). One click.
-6. **Platform deploy, mode `plan`.** Read it.
-7. **A session pins the migration lock** (below) and merges it. Then **Platform deploy, mode
+5. **Platform deploy, mode `plan`.** Read it.
+6. **A session pins the migration lock** (below) and merges it. Then **Platform deploy, mode
    `dark`**.
 
 Before the cutover only, not for `dark`: the AuthKit GitHub sign-in app (absent from the
