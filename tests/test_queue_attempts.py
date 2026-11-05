@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import queue_attempts as qa  # noqa: E402
 
 pytestmark = pytest.mark.verifies(
-    "development-coordination-runtime:"
+    "ci-linux-proof-venue:"
     "A merge-queue removal counts against a head only for a test its diff selected",
 )
 

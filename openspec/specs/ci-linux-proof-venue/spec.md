@@ -73,6 +73,18 @@ a test that reads a tree the map does not give it fails.
 - **WHEN** any changed path is a `.py` file or lies outside the trees, counting a moved file's old path
 - **THEN** the selection is the whole surface
 
+### Requirement: A merge-queue removal counts against a head only for a test its diff selected
+
+The queue-attempt cap SHALL count a `failed_checks` removal against the head only when the queue entry's own failed Tests run, created after the PR's latest enqueue, failed a test the entry's diff selected. A pytest test is selected when its file is in that run's selection, or the selection is ALL. A vitest test is selected when the diff touches `platform/`. The removal SHALL be recorded as counted before any evidence is read.
+
+#### Scenario: A flake outside the diff's reach
+- **WHEN** every test the removal's run failed lies outside the diff's selection
+- **THEN** the ledger records the removal as not counted, and the head moves no closer to the cap
+
+#### Scenario: The evidence is missing
+- **WHEN** a GitHub read fails, no failed Tests run of this queue entry exists, or a failed job names no test
+- **THEN** the removal counts
+
 ### Requirement: Source-PR feedback uses the same capable venue
 The `affected-tests` job SHALL select its files from the pull-request merge
 checkout against `HEAD^1` before entering the oracle, then pass that selection,
