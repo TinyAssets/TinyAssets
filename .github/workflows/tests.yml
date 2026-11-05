@@ -175,12 +175,15 @@ jobs:
   # (its suite, and the workerd memory leg: each chunk-wise path O(1) in its data's size, by
   # differences at checkpoints, ADR-037). Each test's budget is its size class's, one a
   # project (platform/ci/classes.ts); the legs leave the large class out
-  # (`--tags-filter=!large`), which `platform-sizes` runs. Each leg within the ten
-  # minutes. Pinned by platform/ci/guards and tests/test_tests_workflow.py.
+  # (`--tags-filter=!large`), which `platform-sizes` runs. Pinned by platform/ci/guards.
+  # Full history: the owner's migration lock is held against the event's base.
+  #
+  # timeout-minutes is a watchdog, never a design figure: about 3 x the slowest leg's
+  # measured time (owner, 4m40s in merge-group run 41893742929 with its large tests in it).
   platform-tests:
     name: platform-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -210,6 +213,9 @@ jobs:
         working-directory: platform
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -220,9 +226,9 @@ jobs:
 
   # The platform's large tests (platform/ci/classes.ts): production sizes, real-size data,
   # and anything slower than its project's medium budget, sharded so no shard is longer
-  # than the medium legs' critical path. It runs on every event, and is not yet one of
-  # `required-tests`' needs: it becomes required in the change after the Python legs'
-  # tests are retired. Every workspace with a large test has its
+  # than the medium legs' critical path. Required through `required-tests`' needs, on every
+  # event: the PR's builder sees a production-size failure before anyone stamps it, and the
+  # queue and the hourly run hold main to it. Every workspace with a large test has its
   # `test:sizes` here, every shard (platform/ci/guards/legs.test.ts).
   #
   # timeout-minutes is a watchdog: about 3 x the slowest shard's measured time (owner 2/2,
@@ -246,6 +252,9 @@ jobs:
         working-directory: platform
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -650,7 +659,7 @@ jobs:
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
     needs: [select, required-tests-shard, affected-tests, structural-guards, platform-tests,
-            platform-app]
+            platform-app, platform-sizes]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -677,15 +686,16 @@ jobs:
             exit 1
           fi
 
-      # The TypeScript platform (ADR-032) and the owner app in a browser gate every event
-      # too: each must have run and succeeded; skipped or cancelled fails here.
+      # The TypeScript platform (ADR-032), its large tests and the owner app in a browser
+      # gate every event too: each must have run and succeeded; skipped or cancelled fails.
       - name: Require the platform's tests and the owner app's browser test
         env:
           PLATFORM_RESULT: ${{ needs.platform-tests.result }}
           APP_RESULT: ${{ needs.platform-app.result }}
+          SIZES_RESULT: ${{ needs.platform-sizes.result }}
         run: |
-          if [ "$PLATFORM_RESULT" != success ] || [ "$APP_RESULT" != success ]; then
-            echo "::error::Platform checks did not pass (platform-tests=$PLATFORM_RESULT, platform-app=$APP_RESULT). Fix the named job and rerun Tests."
+          if [ "$PLATFORM_RESULT" != success ] || [ "$APP_RESULT" != success ] || [ "$SIZES_RESULT" != success ]; then
+            echo "::error::Platform checks did not pass (platform-tests=$PLATFORM_RESULT, platform-sizes=$SIZES_RESULT, platform-app=$APP_RESULT). Fix the named job and rerun Tests."
             exit 1
           fi
 
