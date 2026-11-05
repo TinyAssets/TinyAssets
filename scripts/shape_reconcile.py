@@ -9,8 +9,10 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from scripts import check_shapes, openspec_flow
 
@@ -18,7 +20,9 @@ ROOT = Path(__file__).resolve().parent.parent
 TITLE = "Shape reconciliation"
 LABEL = "shape-registry"
 ROW_LINE = re.compile(r"^\ufeff?Registry row\(s\):\s*(.*)$", re.MULTILINE | re.IGNORECASE)
-ROW_ID = re.compile(r"\b(?:B[12]|S(?:[1-9]|1\d|2[0-8])|N(?:10|[1-9]))\b")
+# Any row-shaped token: the registry table, not this pattern, says which rows exist.
+ROW_ID = re.compile(r"\b[BSN]\d+\b")
+NO_ROW = re.compile(r"none\b", re.IGNORECASE)
 FLEET_PREFIXES = (
     "cursor/",
     "codex/",
@@ -62,9 +66,22 @@ def pages(path: str) -> list[dict]:
     return [item for page in result for item in page]
 
 
-def declared_rows(body: str) -> list[str]:
+class Declaration(NamedTuple):
+    rows: list[str]  # declared rows the registry defines
+    unknown: list[str]  # row-shaped tokens the registry does not define (typos)
+    none: bool  # the PR says it touches no row
+
+
+def declared_rows(body: str, known: Collection[str]) -> Declaration:
+    """Read the PR's ``Registry row(s):`` line against the registry's real rows."""
     match = ROW_LINE.search(body or "")
-    return sorted(set(ROW_ID.findall(match.group(1)))) if match else []
+    if not match:
+        return Declaration([], [], False)
+    value = match.group(1).strip()
+    if NO_ROW.match(value):
+        return Declaration([], [], True)
+    tokens = set(ROW_ID.findall(value))
+    return Declaration(sorted(tokens & set(known)), sorted(tokens - set(known)), False)
 
 
 def shape_paths(files: list[dict], *, old_only: bool = False) -> set[str]:
@@ -162,7 +179,7 @@ def lowered_ceilings(files: list[dict]) -> set[str]:
     for number, line in enumerate(
         (ROOT / "scripts/check_shapes.py").read_text(encoding="utf-8").splitlines(), 1
     ):
-        match = re.search(r'["\'](B[12]|S\d+|N\d+)["\']:\s*Shape\(', line)
+        match = re.search(r'["\']([BSN]\d+)["\']:\s*Shape\(', line)
         if match:
             source_rows.append((number, match.group(1)))
     for item in files:
@@ -180,7 +197,7 @@ def lowered_ceilings(files: list[dict]) -> set[str]:
                 )
                 removed = added = None
                 continue
-            match = re.search(r'["\'](B[12]|S\d+|N\d+)["\']:\s*Shape\(', line)
+            match = re.search(r'["\']([BSN]\d+)["\']:\s*Shape\(', line)
             if match:
                 row = match.group(1)
             pin = re.search(r"\bceiling=(\d+)", line)
@@ -229,7 +246,8 @@ def issue_body(repo: str, now: datetime) -> str:
         number = pr["number"]
         file_items = pages(f"repos/{repo}/pulls/{number}/files?per_page=100")
         files = {item["filename"] for item in file_items if overlap_file(item["filename"])}
-        declared = declared_rows(pr.get("body") or "")
+        declaration = declared_rows(pr.get("body") or "", statuses)
+        declared = declaration.rows
         touched = shape_paths(file_items)
         old_growth, old_convergence = old_path_changes(file_items)
         converges = old_convergence | lowered_ceilings(file_items)
@@ -245,7 +263,9 @@ def issue_body(repo: str, now: datetime) -> str:
         deleting = sorted(row for row in old_growth if statuses.get(row) == "drifted")
         if deleting:
             findings.append("builds on deleting path: " + ", ".join(deleting))
-        if not declared and datetime.fromisoformat(
+        if declaration.unknown:
+            findings.append("unknown registry row: " + ", ".join(declaration.unknown))
+        if not declared and not declaration.none and datetime.fromisoformat(
             pr["created_at"].replace("Z", "+00:00")
         ) < now - timedelta(days=7):
             findings.append("registry row missing")
@@ -265,7 +285,8 @@ def issue_body(repo: str, now: datetime) -> str:
             findings.append("ceiling raise: " + reason[:160].replace("|", "\\|"))
         lines.append(
             f"| [#{number}]({pr['html_url']}) | `{pr['head']['ref']}` | "
-            f"{', '.join(declared) or '—'} | {', '.join(sorted(touched)) or '—'} | "
+            f"{', '.join(declared) or ('none' if declaration.none else '—')} | "
+            f"{', '.join(sorted(touched)) or '—'} | "
             f"{'; '.join(findings) or '—'} |"
         )
     lines += ["", "# Overlap", "| Lanes | Shared row or file |", "|---|---|"]
