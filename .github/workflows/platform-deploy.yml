@@ -9,18 +9,19 @@ name: Platform deploy (manual, founder-approved)
 #            with the E2B key alone: the sandbox's template and the runner
 #            this commit ships checked together on throwaway sandboxes,
 #            unless E2B already holds their pair's tag (deploy.ts --pair).
-#   apply  - needs the plan and the pair, then waits on the main-only
-#            `production` environment: with the founder as its required
-#            reviewer (docs/host-actions.md), GitHub holds it until he
-#            approves, after the plan is on the page. It runs the kit with
-#            `--yes`, which stops unless the pair's tag is at E2B.
+#   apply  - needs the plan and the pair, in the main-only `production`
+#            environment. It runs the kit with `--yes`, which stops unless the
+#            pair's tag is at E2B. The founder's dispatch is the approval: a
+#            required reviewer on `production` would hold every scheduled job
+#            there too (platform/deploy/checklist.md).
 #
 # The apply job's secrets come from the `production` environment's store, so
 # a branch's copy of this file never reaches them
 # (tests/test_workflow_production_environment.py), and never from a host
 # (Direction 8). The kit never prints a value and never makes one in a
 # deploy; GATEWAY_KEYRING and FILES_KEYRING are each made once with `keyring-new`
-# and rotated with `keyring-add` (both local), then stored here.
+# (scripts/platform_setup.py makes the same in memory) and rotated with `keyring-add`,
+# then stored here.
 #
 # Modes:
 #   plan    - the plan job alone
@@ -63,7 +64,6 @@ jobs:
     timeout-minutes: 15
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
       OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
       OWNER_TOKEN_CLAIMS: ${{ vars.OWNER_TOKEN_CLAIMS }}
@@ -137,7 +137,6 @@ jobs:
     timeout-minutes: 30
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
       WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
       OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
