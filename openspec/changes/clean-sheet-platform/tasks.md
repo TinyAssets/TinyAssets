@@ -2579,10 +2579,11 @@ R, S, M and W.
   place before the first deploy (the owner's `migrations.json` `first_deploy` is null, and the
   deploy workflow has never run). Measured here: the bundle is 272,426 bytes (about 66 KiB
   gzipped), hashed by the loader in under 2 ms.
-- [ ] Owed by the runner by digest: the one template build with the loader (the last a runner
-  change needs), its pin and its `passed.json` entry, which also measures the upload and
-  install of a runner a sandbox does not have yet (`install` in the entry); then, at the
-  first deploy, the pair check from the deploy kit live.
+- [x] The runner by digest's one template build with the loader (the last a runner change
+  needs): `tinyassets-sandbox:s85528cdd2cd74efa`, pinned, its `passed.json` entry recording
+  5 sign-ins, 11 routes and the matcher at 4.39 ns (ceiling 6), and a runner a sandbox does
+  not have yet installed in 370 ms upload + 180 ms install (273,039 bytes).
+- [ ] Owed at the first deploy: the deploy kit's pair check, live.
 
 ## 10. The plan's later slices
 

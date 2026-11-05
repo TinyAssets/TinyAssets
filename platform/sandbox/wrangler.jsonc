@@ -28,7 +28,7 @@
   "preview_urls": false,
   "build": { "command": "node template/bundle.mjs dist" },
   "rules": [{ "type": "Data", "globs": ["**/dist/runner.mjs"], "fallthrough": false }],
-  "vars": { "E2B_TEMPLATE": "tinyassets-sandbox:s683105ce69435bb9" },
+  "vars": { "E2B_TEMPLATE": "tinyassets-sandbox:s85528cdd2cd74efa" },
   "secrets": { "required": ["E2B_API_KEY"] },
   "durable_objects": {
     "bindings": [
