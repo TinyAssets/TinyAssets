@@ -12,10 +12,17 @@ import { describe, expect, it } from "vitest";
 import { mint } from "../../files/src/datakey";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import { PLATFORM_CALLER, PLATFORM_ONLY } from "../src/admission";
-import { MANIFEST_CEILING, MANIFEST_CONTINUE_S, spread } from "../src/backup";
-import { EXPORT_LIFE_S, exported, NOT_EXPORTED } from "../src/export";
+import {
+  GENERATION_SIZES, MANIFEST_CEILING, MANIFEST_CONTINUE_S, MANIFEST_LINE, PART_ENTRY,
+  SEGMENT_ENTRY, spread,
+} from "../src/backup";
+import {
+  decodeCursor, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED, readPage,
+} from "../src/export";
 import type FilesService from "../../files/src/index";
-import { CHUNK_GONE, type Files, GC_GRACE_S, INLINE_BYTES } from "../src/files";
+import {
+  CHUNK_BYTES, CHUNK_GONE, type Files, GC_GRACE_S, INLINE_BYTES,
+} from "../src/files";
 import type { WriteGate } from "../src/gate";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
@@ -343,6 +350,31 @@ describe("a generation", () => {
     expect(digest(replay(after.lines))).toBe(after.atE);
   }, 120_000);
 
+  it("gives up one with a line longer than any part may be, loudly and the owner told " +
+     "once, never a part no root may name (review rvbackup 5)", async () => {
+    // Parts of at most 4 KiB, and one notice of 1,000 control characters: its line is past
+    // 6 KB.
+    const sizes = { page: 16 * 1024, part: 4096, gather: 8192, most: 4096 };
+    const o = await owner();
+    await notices(o, 20);
+    await sqlIn(o.stub, "INSERT INTO owner_notices (at, type, detail) VALUES (0, 'wide', " +
+                        "replace(printf('%.1000c', 'a'), 'a', char(1)))");
+    const first = await generate(o.stub, { sizes });
+    expect(first.notices).toEqual([MANIFEST_LINE]);
+    expect(first.lines).toEqual([]);  // no root: nothing finished
+    expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM owner_backups")).toEqual([{ n: 0 }]);
+    // The next change tries again, and gives it up again, the owner not told twice.
+    const again = await generate(o.stub, { sizes });
+    expect(again.notices).toEqual([]);
+    expect(again.lines).toEqual([]);
+    expect(await sqlIn(o.stub, "SELECT told FROM owner_backup_state")).toEqual([{ told: 1 }]);
+    // Without it, the generation finishes at the same sizes, every part within them.
+    await sqlIn(o.stub, "DELETE FROM owner_notices WHERE type = 'wide'");
+    const made = await generate(o.stub, { sizes });
+    expect(made.notices).toEqual([]);
+    expect(digest(replay(made.lines))).toBe(made.atE);
+  }, 120_000);
+
   it("goes on later, never at once, when a pass ends before it does", async () => {
     const o = await owner();
     await notices(o, 100);
@@ -352,6 +384,112 @@ describe("a generation", () => {
     expect(row!["retry_at"] as number)
       .toBeGreaterThan(Date.now() / 1000 + MANIFEST_CONTINUE_S - 2);
   });
+});
+
+describe("a generation at production sizes (rs_cap §2.1)", () => {
+  /** A row's most bytes (Durable Objects' SQLite limits), as `owner-bound.test.ts` costs it. */
+  const ROW_MAX = 2_000_000;
+  /** A fixture line's most bytes: a notice row's at 1,000 three-byte characters, and newline. */
+  const WIDEST = 3_300;
+  /** Notices of 1,000 characters, every other one of three-byte characters (`€`). */
+  const notices3 = (o: Owner, count: number) => sqlIn(o.stub,
+    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) " +
+    "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', CASE WHEN i % 2 = 0 THEN " +
+    "printf('%.1000c', 'a') ELSE replace(printf('%.1000c', 'a'), 'a', '€') END FROM n", count);
+
+  it("reads each page of three-byte characters within its bytes, its lines whole", async () => {
+    const o = await owner();
+    await notices3(o, 2_000);
+    const pages = await runInDurableObject(o.stub, (_instance: OwnerDO, state) => {
+      const seen: { bytes: number; rows: number }[] = [];
+      for (let cursor = decodeCursor(null); ;) {
+        const page = readPage(state.storage.sql, cursor, { schema: MIGRATIONS.length,
+                                                           owner: "owner", at: 0, gen: "g", s: 1 },
+                              Number.MAX_SAFE_INTEGER, EXPORT_PAGE_BYTES);
+        // One buffer, each line whole at its end, its newline last.
+        const { bytes, ends } = page.lines;
+        const text = Array.from(ends, (end, n) => new TextDecoder().decode(
+          bytes.subarray(n === 0 ? 0 : ends[n - 1]!, end)));
+        expect(ends.at(-1)).toBe(bytes.byteLength);
+        expect(text.every((line) => line.endsWith("\n") && JSON.parse(line) !== null)).toBe(true);
+        seen.push({ bytes: bytes.byteLength,
+                    rows: text.filter((line) => line.includes('"table":"owner_notices"')).length });
+        if (page.next === null) {
+          return seen;
+        }
+        cursor = page.next;
+      }
+    });
+    console.log(`pages of ${pages.map((page) => page.bytes).join(", ")} bytes`);
+    // Counted in UTF-16, each page of these would hold about twice its bytes.
+    for (const page of pages) {
+      expect(page.bytes).toBeLessThan(EXPORT_PAGE_BYTES + WIDEST);
+    }
+    expect(pages.length).toBeGreaterThan(3);
+    expect(pages.reduce((sum, page) => sum + page.rows, 0)).toBe(2_000);
+  }, 120_000);
+
+  it("finishes an owner of several bursts, read back exactly, each burst bounded by its " +
+     "bytes and its row under a row's 2 MB", async () => {
+    const o = await owner();
+    // 14,000 notices of 1,000 characters, every other one of three-byte characters: about
+    // 29 MB of base, so that each burst counts its UTF-8, not its UTF-16 (a third of it).
+    await notices3(o, 14_000);
+    const bursts: number[] = [];
+    let entries = 0;
+    const widest = { part: 0, segment: 0 };
+    let rowMost = 0;
+    const made = await generate(o.stub, {
+      sizes: GENERATION_SIZES,
+      // After every unit: a burst is recorded in one, its parts' entries appended at once.
+      afterUnit: async ({ gate }) => {
+        const row = gate.storage.sql.exec<{ part_list: string; segment_list: string;
+                                            bytes: number }>(
+          "SELECT part_list, segment_list, length(gen) + length(day) + length(state) + " +
+            "coalesce(length(cursor), 0) + length(part_list) + length(segment_list) + 10 * 8 " +
+            "AS bytes FROM owner_backups WHERE state = 'writing'").toArray()[0];
+        if (row === undefined) {
+          return;
+        }
+        rowMost = Math.max(rowMost, row.bytes);
+        for (const entry of row.part_list.split(",")) {
+          widest.part = Math.max(widest.part, entry.length + 1);
+        }
+        for (const entry of row.segment_list.split(",")) {
+          widest.segment = Math.max(widest.segment, entry.length + 1);
+        }
+        const listed = row.part_list === "" ? [] : row.part_list.split(",");
+        if (listed.length > entries) {
+          const sizes = listed.slice(entries).map((entry) => Number(entry.split(":")[1]));
+          expect(sizes.every((size) => size <= CHUNK_BYTES)).toBe(true);
+          bursts.push(sizes.reduce((sum, size) => sum + size, 0));
+          entries = listed.length;
+        }
+      },
+    });
+    expect(made.notices).toEqual([]);
+    expect(made.atE).toBeDefined();
+    // Every part split into lines that each parse (the harness parses them): whole lines.
+    expect(made.lines.filter((line) => line.t === "row" && line["table"] === "owner_notices"))
+      .toHaveLength(14_000);
+    expect(digest(replay(made.lines))).toBe(made.atE);
+    // Several bursts, each under the gather and its last page, every one counted in bytes
+    // (a page at most its bytes and the line that reached them). Counted in UTF-16, a burst
+    // of these would be over half again as large.
+    console.log(`bursts of ${bursts.map((bytes) => (bytes / 2 ** 20).toFixed(1)).join(", ")} ` +
+                `MiB; the row at most ${rowMost} bytes, its widest entries ` +
+                `${JSON.stringify(widest)}`);
+    expect(bursts.length).toBeGreaterThanOrEqual(3);
+    for (const bytes of bursts) {
+      expect(bytes).toBeLessThan(GENERATION_SIZES.gather + GENERATION_SIZES.page + WIDEST);
+    }
+    // The row: under a row's 2 MB as it ran, and its lists' entries, at production's sizes
+    // (a part's seven digits), within what the schema and the guard cost them at.
+    expect(rowMost).toBeLessThan(ROW_MAX);
+    expect(widest.part).toBeLessThanOrEqual(PART_ENTRY);
+    expect(widest.segment).toBeLessThanOrEqual(SEGMENT_ENTRY);
+    expect(MANIFEST_PARTS * Math.max(widest.part, widest.segment)).toBeLessThan(ROW_MAX);
+  }, 300_000);
 });
 
 /** A generation finished long ago, so tonight's is due now. */

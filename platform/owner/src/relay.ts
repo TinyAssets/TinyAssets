@@ -30,10 +30,10 @@
  * socket's authority first, and anything else closes it `frame_refused`.
  *
  * **The tail.** Frames are never committed: the object keeps, in memory only, a tail of each
- * live run's frames for late joiners, at most `TAIL_BYTES` in all, every object's in the
+ * live run's frames for late joiners, at most `TAIL_UNITS` in all, every object's in the
  * isolate together (the oldest frame of the longest tail of the object holding the most goes
  * first, so every run keeps its newest), and drops a run's at its settle,
- * when its result is the receipt's. A frame longer than `TAIL_FRAME_MAX` is relayed and
+ * when its result is the receipt's. A frame longer than `TAIL_FRAME_UNITS` is relayed and
  * never kept. The memory guard counts both.
  *
  * **Lifetime** is the credential's, each close a fixed code (`CLOSE`): the token's expiry,
@@ -69,9 +69,9 @@ export const OWNER_SOCKETS = 1024;
  * in the isolate together (`slots.ts`' `SharedBudget`, review M5): the object holding the
  * most drops its oldest frame past it.
  */
-export const TAIL_BYTES = 4_194_304;
-/** A frame longer than this is relayed but never kept in the tail. */
-export const TAIL_FRAME_MAX = 262_144;
+export const TAIL_UNITS = 4_194_304;
+/** A frame longer than this, in UTF-16 code units, is relayed but never kept in the tail. */
+export const TAIL_FRAME_UNITS = 262_144;
 /** The longest frame a client may send, in UTF-16 code units. */
 export const CLIENT_FRAME_MAX = 1024;
 /** Told sign-outs held at once; past it the oldest goes (its tickets are gone already). */
@@ -150,7 +150,7 @@ function refusedUpgrade(error: unknown): Response {
 interface Tail {
   readonly conversation: string;
   readonly frames: string[];
-  bytes: number;
+  units: number;
 }
 
 export class Relay extends LifecycleCapability {
@@ -159,7 +159,7 @@ export class Relay extends LifecycleCapability {
   readonly #parts: RelayParts;
   /** Each live run's tail, on the instance only. */
   readonly #tails = new Map<string, Tail>();
-  #tailBytes = 0;
+  #tailUnits = 0;
   /** The attachments of upgrades being accepted, by their request. */
   readonly #accepting = new WeakMap<Request, SocketState>();
   #pending = 0;
@@ -304,7 +304,7 @@ export class Relay extends LifecycleCapability {
       for (const connection of sockets) {
         this.#send(connection, text);
       }
-      if (text.length <= TAIL_FRAME_MAX) {
+      if (text.length <= TAIL_FRAME_UNITS) {
         this.#keep(frame.run, conversation, text);
       }
     }
@@ -313,24 +313,24 @@ export class Relay extends LifecycleCapability {
   #keep(run: string, conversation: string, text: string): void {
     let tail = this.#tails.get(run);
     if (tail === undefined) {
-      tail = { conversation, frames: [], bytes: 0 };
+      tail = { conversation, frames: [], units: 0 };
       this.#tails.set(run, tail);
     }
     tail.frames.push(text);
-    tail.bytes += text.length;
-    this.#tailBytes += text.length;
-    const tails = isolateTails(TAIL_BYTES);
+    tail.units += text.length;
+    this.#tailUnits += text.length;
+    const tails = isolateTails(TAIL_UNITS);
     tails.join(this.#sharer);
     tails.trim();
   }
 
   /** This relay as a member of the isolate's tails: what it holds, and its oldest dropped. */
   readonly #sharer: Sharer = {
-    held: () => this.#tailBytes,
+    held: () => this.#tailUnits,
     drop: () => {
       let longest: Tail | undefined;
       for (const each of this.#tails.values()) {
-        if (longest === undefined || each.bytes > longest.bytes) {
+        if (longest === undefined || each.units > longest.units) {
           longest = each;
         }
       }
@@ -338,8 +338,8 @@ export class Relay extends LifecycleCapability {
       if (dropped === undefined) {
         return 0;
       }
-      longest!.bytes -= dropped.length;
-      this.#tailBytes -= dropped.length;
+      longest!.units -= dropped.length;
+      this.#tailUnits -= dropped.length;
       return dropped.length;
     },
   };
@@ -348,17 +348,12 @@ export class Relay extends LifecycleCapability {
   settled(run: string): void {
     const tail = this.#tails.get(run);
     if (tail !== undefined) {
-      this.#tailBytes -= tail.bytes;
+      this.#tailUnits -= tail.units;
       this.#tails.delete(run);
     }
     if (this.#tails.size === 0) {
-      isolateTails(TAIL_BYTES).leave(this.#sharer);
+      isolateTails(TAIL_UNITS).leave(this.#sharer);
     }
-  }
-
-  /** The tails' size, in UTF-16 code units, and how many runs hold one. */
-  tailSize(): { runs: number; bytes: number } {
-    return { runs: this.#tails.size, bytes: this.#tailBytes };
   }
 
   #send(connection: Connection, text: string): void {

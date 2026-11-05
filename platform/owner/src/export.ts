@@ -73,7 +73,11 @@ import { Invalid } from "./errors";
 
 export const EXPORT_FORMAT = "tinyassets-export";
 export const EXPORT_VERSION = 3;
-/** The rows' text one page gathers before it ends: well inside one RPC's 32 MiB. */
+/**
+ * The rows' bytes one page gathers before it ends, counted as a generation's part holds them
+ * (each line's UTF-8 and its newline): well inside one RPC's 32 MiB. `export.test.ts` ("a
+ * generation at production sizes") holds a page of three-byte characters to it.
+ */
 export const EXPORT_PAGE_BYTES = 1024 * 1024;
 /** Rows read at a time while a page fills. */
 const READ_BATCH = 256;
@@ -317,9 +321,37 @@ function value(cell: unknown): unknown {
   return cell;
 }
 
+/**
+ * Lines of the stream as a generation's part holds them, encoded once: one buffer of their
+ * UTF-8, each line followed by its newline, and where each line ends in it. One buffer a
+ * page, never an array a line (review rvbackup 1: an array a line costs about 190 bytes of
+ * its own, more than a small line's bytes).
+ */
+export interface Lines {
+  readonly bytes: Uint8Array;
+  readonly ends: Uint32Array;
+}
+
+/** `lines` as `Lines`: their UTF-8 encoded once, into one buffer. */
+export function encodeLines(lines: readonly string[]): Lines {
+  const ends = new Uint32Array(lines.length);
+  let at = 0;
+  for (const [n, line] of lines.entries()) {
+    at += Buffer.byteLength(line, "utf8") + 1;
+    ends[n] = at;
+  }
+  const bytes = lines.length === 0 ? new Uint8Array(0)
+    : new TextEncoder().encode(`${lines.join("\n")}\n`);
+  if (bytes.byteLength !== at) {
+    throw new Error("a page's lines are not the bytes they were counted at");
+  }
+  return { bytes, ends };
+}
+
 /** A page of the stream: its lines, the chunks it names, and where the next one starts. */
 export interface Page {
-  readonly lines: string[];
+  /** Its lines but the chunks', encoded once (`encodeLines`). */
+  readonly lines: Lines;
   /** The chunks section 3 names in this page, in order; their bytes are the caller's to add. */
   readonly chunks: { readonly sha256: string; readonly size: number }[];
   readonly next: Cursor | null;
@@ -345,7 +377,7 @@ export const EXPORTS_OPEN = 16;
 
 /**
  * One page of a generation's base pass from `cursor`, read in the caller's unit: at most
- * `pageBytes` (`EXPORT_PAGE_BYTES`) of rows' text past the first row, or chunks up to
+ * `pageBytes` (`EXPORT_PAGE_BYTES`) of rows' bytes past the first row, or chunks up to
  * `chunkBytes` in all (at least one), then the next cursor, or null once the base is read.
  */
 export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: Header,
@@ -376,10 +408,10 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
       const line = JSON.stringify({ t: "row", table, row: Object.fromEntries(
         columns.map((column) => [column, value(row[column])])) });
       lines.push(line);
-      bytes += line.length;
+      bytes += Buffer.byteLength(line, "utf8") + 1;
       after = key.map((column) => row[column] as string | number);
       if (bytes >= pageBytes) {
-        return { lines, chunks: [], next: { section, after } };
+        return { lines: encodeLines(lines), chunks: [], next: { section, after } };
       }
     }
     if (rows.length === READ_BATCH) {
@@ -397,15 +429,17 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
   let held = 0;
   for (const chunk of chunks) {
     if (taken.length > 0 && held + chunk.size > chunkBytes) {
-      return { lines, chunks: taken, next: { section: chunksAt, after: [taken.at(-1)!.sha256] } };
+      return { lines: encodeLines(lines), chunks: taken,
+               next: { section: chunksAt, after: [taken.at(-1)!.sha256] } };
     }
     taken.push(chunk);
     held += chunk.size;
   }
   if (chunks.length === READ_BATCH) {
-    return { lines, chunks: taken, next: { section: chunksAt, after: [taken.at(-1)!.sha256] } };
+    return { lines: encodeLines(lines), chunks: taken,
+             next: { section: chunksAt, after: [taken.at(-1)!.sha256] } };
   }
-  return { lines, chunks: taken, next: null };
+  return { lines: encodeLines(lines), chunks: taken, next: null };
 }
 
 /** A chunk's line: its hash and size (its bytes are fetched by hash, `exportChunks`). */
