@@ -1,13 +1,15 @@
 name: Queue handoff
 
-# Two failed merge-queue runs on one head, then stop and hand off.
+# Two counted merge-queue failures on one head, then stop and hand off.
 #
 # Measured 2026-09-27..10-01: 39 of 65 queue removals were failed checks, and
 # one PR was removed six times on the way to merging. A blind re-queue of the
 # same head repeats a full merge-group run and holds everything behind it.
 # Each `failed_checks` dequeue is recorded against the dequeued head SHA in a
-# ledger comment. On the second one for the same SHA, scripts/queue_attempts.py
-# posts a classified failure record, labels the PR `queue-handoff` and disables
+# ledger comment. It counts only when the removal's run failed a test the
+# diff selected, pytest or vitest; a failed job that names no test counts. On
+# the second counted one for the same SHA, scripts/queue_attempts.py
+# posts the failure record, labels the PR `queue-handoff` and disables
 # auto-merge. auto-enroll-merge.yml refuses to re-arm only while the record for
 # the CURRENT head exists AND the label is on: a new head is never held, and
 # removing the label retries the head.
