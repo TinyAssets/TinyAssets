@@ -107,6 +107,10 @@ jobs:
   decide:
     name: decide review
     needs: resolve
+    # Until the founder has made the review App, there is no key to mint a token with:
+    # decide nothing, and name no environment, which GitHub would otherwise make with
+    # no branch policy.
+    if: vars.REVIEW_APP_ID != ''
     environment: review
     # One decision at a time per PR of this repository, never cancelled: each reads
     # the PR as it is when it runs, so a queued one decides the newest state.
@@ -146,23 +150,51 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          post() { GH_TOKEN="$APP_TOKEN" gh api -X POST "repos/${REPO}/check-runs" --input "$1" > /dev/null; }
-          failed() {
-            jq -n --arg sha "$1" --arg id "$2" '{name: "review", head_sha: $sha, external_id: $id,
-              status: "completed", conclusion: "failure", output: {title: "could not decide",
-              summary: "review.yml could not read the PR; see its log, then rerun it."}}' \
-              > "$RUNNER_TEMP/run.json"
-            post "$RUNNER_TEMP/run.json"
+          # One check run per decision: posted as "deciding" first, then that same run
+          # (RUN_ID) is completed with the verdict. If anything stops the decision
+          # before then, the trap completes it as a failure, so no decision leaves a
+          # run in progress, and a head never keeps showing a pass an earlier decision
+          # posted before a later BLOCK.
+          as_app() { GH_TOKEN="$APP_TOKEN" gh api "$@"; }
+          RUN_ID=""
+          DONE=0
+          on_exit() {
+            local status=$?
+            if [ "$DONE" != 1 ] && [ -n "$RUN_ID" ]; then
+              [ "$status" != 0 ] || status=1
+              jq -n '{status: "completed", conclusion: "failure", output: {title: "could not decide",
+                summary: "review.yml stopped before its verdict; see its log, then rerun it."}}' \
+                > "$RUNNER_TEMP/failed.json"
+              as_app -X PATCH "repos/${REPO}/check-runs/${RUN_ID}" --input "$RUNNER_TEMP/failed.json" \
+                > /dev/null || echo "::error::could not complete check run ${RUN_ID}"
+            fi
+            exit "$status"
+          }
+          trap on_exit EXIT
+          start() {
+            jq -n --arg sha "$1" --arg id "$2" '{name: "review", head_sha: $sha,
+              external_id: $id, status: "in_progress",
+              output: {title: "deciding", summary: "review.yml is reading the reviews."}}' \
+              > "$RUNNER_TEMP/deciding.json"
+            RUN_ID="$(as_app -X POST "repos/${REPO}/check-runs" --input "$RUNNER_TEMP/deciding.json" --jq .id)"
+            if ! [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+              RUN_ID=""
+              echo "::error::the deciding check run has no id"
+              exit 1
+            fi
+          }
+          finish() {
+            jq 'del(.name, .head_sha)' "$RUNNER_TEMP/run.json" > "$RUNNER_TEMP/verdict.json"
+            as_app -X PATCH "repos/${REPO}/check-runs/${RUN_ID}" --input "$RUNNER_TEMP/verdict.json" > /dev/null
+            DONE=1
           }
 
           if [ "$KIND" = queue ]; then
             # The group's `review`: its PR's own check at the PR's head, read as data.
-            if ! python scripts/drain_review_gate.py --queue-review --repo "$REPO" \
-                --ref "$GROUP_REF" --sha "$GROUP_SHA" > "$RUNNER_TEMP/run.json"; then
-              failed "$GROUP_SHA" "queue-pr-${PR}"
-              exit 1
-            fi
-            post "$RUNNER_TEMP/run.json"
+            start "$GROUP_SHA" "queue-pr-${PR}"
+            python scripts/drain_review_gate.py --queue-review --repo "$REPO" \
+              --ref "$GROUP_REF" --sha "$GROUP_SHA" > "$RUNNER_TEMP/run.json"
+            finish
           else
             # The head and base as they are now, from the API, never from the event.
             read -r HEAD BASE < <(gh api "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
@@ -170,13 +202,7 @@ jobs:
               echo "::error::PR #${PR} has no head or base"
               exit 1
             fi
-            # Pending first. If anything below fails, the head reads "deciding", never a
-            # pass an earlier decision posted before a later BLOCK.
-            jq -n --arg head "$HEAD" --arg id "pr-${PR}" '{name: "review", head_sha: $head,
-              external_id: $id, status: "in_progress",
-              output: {title: "deciding", summary: "review.yml is reading the reviews."}}' \
-              > "$RUNNER_TEMP/deciding.json"
-            post "$RUNNER_TEMP/deciding.json"
+            start "$HEAD" "pr-${PR}"
 
             gh api --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
               | jq -s . > "$RUNNER_TEMP/reviews.json"
@@ -192,14 +218,11 @@ jobs:
                 || echo "::warning::could not fetch ${sha}"
             done
 
-            if ! python scripts/drain_review_gate.py --review-check \
-                --reviews-file "$RUNNER_TEMP/reviews.json" \
-                --timeline-file "$RUNNER_TEMP/timeline.json" --pr "$PR" \
-                --base "$BASE" --head "$HEAD" > "$RUNNER_TEMP/run.json"; then
-              failed "$HEAD" "pr-${PR}"
-              exit 1
-            fi
-            post "$RUNNER_TEMP/run.json"
+            python scripts/drain_review_gate.py --review-check \
+              --reviews-file "$RUNNER_TEMP/reviews.json" \
+              --timeline-file "$RUNNER_TEMP/timeline.json" --pr "$PR" \
+              --base "$BASE" --head "$HEAD" > "$RUNNER_TEMP/run.json"
+            finish
           fi
           jq -r '"review for #'"$PR"' at \(.head_sha): \(.status) \(.conclusion // "") \(.output.title)"' \
             "$RUNNER_TEMP/run.json" | tee -a "$GITHUB_STEP_SUMMARY"

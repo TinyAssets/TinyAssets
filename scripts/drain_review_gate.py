@@ -416,12 +416,23 @@ def latest_verdict(reviews: list[object], *, since: str | None = None) -> Verdic
     else is an ordinary review comment and changes nothing. The latest one by
     `submitted_at` (then id) wins, so a BLOCK after an APPROVE voids it.
 
+    A dismissed review, by anyone, voids every verdict at or before it: dismissing
+    a BLOCK must not bring back the APPROVE it answered (#3989's failure), so the
+    check goes back to waiting until a newer verdict.
+
     `since` is the time the PR's base last changed (`last_base_change`): a review
     submitted before it read a diff against another base, so it counts for nothing.
 
     Raises ValueError on a review that is not the API's shape: a list the
     decision cannot read must not shrink into one it can.
     """
+    void: tuple[str, int] | None = None
+    for review in reviews:
+        if isinstance(review, dict) and review.get("state") == "DISMISSED":
+            when, ident = review.get("submitted_at"), review.get("id")
+            if not (isinstance(when, str) and isinstance(ident, int)):
+                raise ValueError(f"dismissed review {ident!r} has no time or id")
+            void = (when, ident) if void is None or (when, ident) > void else void
     best: tuple[str, int, Verdict] | None = None
     for review in reviews:
         if not isinstance(review, dict):
@@ -446,24 +457,31 @@ def latest_verdict(reviews: list[object], *, since: str | None = None) -> Verdic
             raise ValueError(f"review {ident!r} has no commit, time or id")
         if since is not None and when <= since:
             continue
+        if void is not None and (when, ident) <= void:
+            continue
         verdict = Verdict(first, commit, str(review.get("html_url") or ""))
         if best is None or (when, ident) > best[:2]:
             best = (when, ident, verdict)
     return None if best is None else best[2]
 
 
+_BASE_CHANGES = frozenset({"base_ref_changed", "automatic_base_change_succeeded"})
+
+
 def last_base_change(events: list[object]) -> str | None:
     """When the PR's base last changed, from `GET /issues/{n}/timeline`; None if never.
 
-    A retarget (`base_ref_changed`) changes the diff a review read: a PR stacked on a
-    branch of unreviewed commits, approved there and retargeted to main, would
-    otherwise merge them under that approval. Raises on an event not the API's shape.
+    A retarget changes the diff a review read: a PR stacked on a branch of
+    unreviewed commits, approved there and retargeted to main, would otherwise merge
+    them under that approval. A retarget by hand is `base_ref_changed`; GitHub's own,
+    when a stacked parent merges and its branch is deleted, is
+    `automatic_base_change_succeeded`. Raises on an event not the API's shape.
     """
     latest: str | None = None
     for event in events:
         if not isinstance(event, dict):
             raise ValueError(f"not a timeline event: {event!r}")
-        if event.get("event") != "base_ref_changed":
+        if event.get("event") not in _BASE_CHANGES:
             continue
         when = event.get("created_at")
         if not isinstance(when, str):
@@ -473,18 +491,25 @@ def last_base_change(events: list[object]) -> str | None:
 
 
 # Prose: Markdown under docs/, openspec/ and ideas/, and the top-level Markdown
-# files other than the agents' instructions. Nothing runs or loads these.
+# files, that no agent reads as instructions. Agents' instruction files bind at any
+# depth and in any variant (Codex reads AGENTS.override.md first; Claude reads
+# CLAUDE.local.md and nested CLAUDE.md), and docs/reference/ binds as the gates'
+# rules (AGENTS.md Fact 4), so none of them is prose. The refusals compare
+# case-insensitively, since a checkout on a case-insensitive disk loads either case.
 _PROSE_DIRS = ("docs/", "openspec/", "ideas/")
-_AGENT_INSTRUCTIONS = frozenset({"AGENTS.md", "CLAUDE.md", "CODEX.md"})
+_AGENT_INSTRUCTIONS_RE = re.compile(r"(?i)^(AGENTS|CLAUDE|GEMINI|CODEX)([._-].*)?\.md$")
+_BINDING_DIRS = ("docs/reference/",)
 _PROSE_MODES = frozenset({b"000000", b"100644"})
 
 
 def is_prose(path: str) -> bool:
     if not path.endswith(".md"):
         return False
-    if path.startswith(_PROSE_DIRS):
-        return True
-    return "/" not in path and path not in _AGENT_INSTRUCTIONS
+    if _AGENT_INSTRUCTIONS_RE.fullmatch(path.rsplit("/", 1)[-1]):
+        return False
+    if path.lower().startswith(_BINDING_DIRS):
+        return False
+    return path.startswith(_PROSE_DIRS) or "/" not in path
 
 
 def _modes(meta: bytes | None) -> set[bytes]:
@@ -727,20 +752,28 @@ def _gh_json(path: str) -> object:
     return json.loads(out.stdout)
 
 
+def _gh_check_runs(path: str) -> list[object]:
+    """Every check run a `check-runs` listing holds, across all its pages."""
+    out = subprocess.run(["gh", "api", "--paginate", path, "--jq", ".check_runs[]"],
+                         capture_output=True, text=True, check=True, timeout=120)
+    return [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
+
+
 def review_passed_at(repo: str, head: str, number: int, *, app_id: int | None = None) -> bool:
     """Does `head`'s latest `review` run, by the review App, for PR `number`, read success?
 
     The one reader of the decision for everything that acts on it (the merge group,
-    enqueue, the queue's freshness probe, the floor hotfix). Raises on a read that
-    fails: a caller that cannot read the check treats the head as unreviewed.
+    enqueue, the queue's freshness probe, the floor hotfix). It lists every run
+    (`filter=all`, every page), because the API's default `filter=latest` keeps one
+    run per name and suite by its own choice, not the highest id `review_run_passed`
+    takes. Raises on a read that fails: a caller that cannot read the check treats
+    the head as unreviewed.
     """
     if not _SHA_RE.fullmatch(head):
         raise ValueError(f"not a commit: {head!r}")
     app = review_app_id() if app_id is None else app_id
-    runs = _gh_json(f"repos/{repo}/commits/{head}/check-runs?check_name=review&per_page=100")
-    listed = runs.get("check_runs") if isinstance(runs, dict) else None
-    if not isinstance(listed, list):
-        raise ValueError(f"no check runs listed for {head}")
+    listed = _gh_check_runs(
+        f"repos/{repo}/commits/{head}/check-runs?check_name=review&filter=all&per_page=100")
     return review_run_passed([r for r in listed if isinstance(r, dict)
                               and (r.get("app") or {}).get("id") == app], number)
 

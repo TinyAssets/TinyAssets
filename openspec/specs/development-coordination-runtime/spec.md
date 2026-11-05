@@ -250,21 +250,42 @@ tightens the ratchet; any addition SHALL keep the receipt requirement.
 
 ### Requirement: A review verdict is a check run only the review App posts
 
-A verdict SHALL be a pull-request review on the commit read, first line `APPROVE` or
-`BLOCK`. A default-branch workflow SHALL post the latest trusted verdict since the
-last base change as a `review` check run on the head, with `external_id`
-`pr-<number>`, using only the review App's token from the main-only `review`
-environment. A verdict SHALL carry to a later head only across the same change or a
-prose-only delta. Readers SHALL count only the App's latest run for their own pull
-request.
+A verdict SHALL be a review on the commit read, by an OWNER, MEMBER or
+COLLABORATOR, whose first non-blank line, stripped, is `APPROVE` or `BLOCK`. The
+latest verdict after the last base change and dismissal SHALL become a `review`
+check run on the head, `external_id` `pr-<number>`, posted only with the review
+App's token from the main-only `review` environment. It SHALL carry only across the
+same change or a prose delta. Readers SHALL take the App's highest-id run for their
+own pull request.
 
 #### Scenario: An approval at the head passes
 - **WHEN** a trusted author's review on the head's commit opens with `APPROVE`
 - **THEN** the review App posts a successful `review` run on the head for that pull request
 
+#### Scenario: A BLOCK fails the head it carries to
+- **WHEN** the latest verdict is `BLOCK` and it carries to the head
+- **THEN** the `review` run on the head is a failure
+
+#### Scenario: Dismissing a BLOCK does not bring back the APPROVE before it
+- **WHEN** an `APPROVE` is followed by a `BLOCK` that is then dismissed
+- **THEN** the `review` check is pending until a newer verdict
+
+#### Scenario: An approval carries across a prose delta only
+- **WHEN** the change since the approved commit touches only Markdown under `docs/`, `openspec/` or `ideas/`, or top-level Markdown
+- **THEN** the approval carries to the new head
+- **AND** it does not carry when any changed path is under `docs/reference/`, or its name matches `(?i)^(AGENTS|CLAUDE|GEMINI|CODEX)([._-].*)?\.md$` at any depth
+
 #### Scenario: A retarget voids the verdict
-- **WHEN** a pull request approved at its head is retargeted to another base
+- **WHEN** a pull request approved at its head is retargeted to another base, by hand or by GitHub after its parent merged
 - **THEN** its `review` check is pending until a review after the retarget
+
+#### Scenario: The latest run is the highest id
+- **WHEN** a head holds an older in-progress `review` run and a newer successful one, both by the App for the pull request
+- **THEN** readers, listing every run on every page, count the head as reviewed
+
+#### Scenario: A merge group passes only on its pull request's own review
+- **WHEN** a merge group is made for a pull request
+- **THEN** the review App posts the group's `review` run as a success only when that pull request's own latest App run at its head is a success
 
 #### Scenario: A forged review context does not pass
 - **WHEN** a pull request's own workflow job named `review` reports success on its head

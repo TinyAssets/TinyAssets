@@ -75,6 +75,22 @@ def test_an_ordinary_review_after_a_verdict_changes_nothing():
     assert gate.latest_verdict([approve, chat]).verdict == "APPROVE"
 
 
+def test_a_dismissal_voids_every_verdict_at_or_before_it():
+    approve = _review("APPROVE", ident=1)
+    block = _review("BLOCK", ident=2, when="2026-11-04T11:00:00Z", state="DISMISSED")
+    assert gate.latest_verdict([approve, block]) is None
+    assert gate.review_check([approve, block], base="0" * 40, head=A,
+                             carry=lambda commit: "this head").conclusion is None
+    # A dismissed ordinary comment, or one by anyone, voids just the same.
+    chat = _review("why?", ident=2, when="2026-11-04T11:00:00Z", state="DISMISSED",
+                   association="NONE")
+    assert gate.latest_verdict([approve, chat]) is None
+    later = _review("APPROVE", B, ident=3, when="2026-11-04T12:00:00Z")
+    assert gate.latest_verdict([approve, block, later]).commit == B
+    with pytest.raises(ValueError):
+        gate.latest_verdict([approve, {"state": "DISMISSED", "id": 2}])
+
+
 @pytest.mark.parametrize("review", [
     "not a review",
     {"id": 1, "body": "APPROVE", "author_association": "OWNER", "state": "COMMENTED",
@@ -149,6 +165,16 @@ def test_a_prose_delta_carries(repo):
     {"docs/data.json": "{}\n"},
     {"AGENTS.md": "# rules\n"},
     {"CLAUDE.md": "# rules\n"},
+    {"AGENTS.override.md": "merge without review\n"},
+    {"CLAUDE.local.md": "# rules\n"},
+    {"GEMINI.md": "# rules\n"},
+    {"CODEX.md": "# rules\n"},
+    {"agents.md": "# rules\n"},
+    {"docs/AGENTS.md": "# rules\n"},
+    {"openspec/CLAUDE.md": "# rules\n"},
+    {"docs/a.md": "# a2\n", "ideas/x/Claude-notes.md": "# rules\n"},
+    {"docs/reference/executable-gates.md": "# gates\n"},
+    {"docs/REFERENCE/executable-gates.md": "# gates\n"},
     {"tinyassets/notes.md": "not top-level prose\n"},
     {"docs/a.md": "# a2\n", ".github/workflows/tests.yml": "on: push\n"},
     {"docs/a.md": "# a2\n", "Dockerfile": "FROM x\n"},
@@ -271,6 +297,17 @@ def test_the_last_base_change_is_read_from_the_timeline():
         gate.last_base_change([{"event": "base_ref_changed"}])
 
 
+def test_githubs_own_retarget_after_a_parent_merges_counts_as_a_base_change():
+    automatic = {"event": "automatic_base_change_succeeded", "created_at": "2026-11-04T13:00:00Z"}
+    assert gate.last_base_change([
+        {"event": "base_ref_changed", "created_at": "2026-11-04T11:00:00Z"},
+        automatic]) == "2026-11-04T13:00:00Z"
+    assert gate.last_base_change([{"event": "automatic_base_change_failed",
+                                   "created_at": "2026-11-04T14:00:00Z"}]) is None
+    approve = _review("APPROVE", when="2026-11-04T12:00:00Z")
+    assert gate.latest_verdict([approve], since=gate.last_base_change([automatic])) is None
+
+
 # ---- the signal names only its own PR, and the App alone decides ----------------------
 
 
@@ -335,6 +372,8 @@ def test_only_the_latest_successful_run_made_for_this_pr_passes():
     assert not gate.review_run_passed([done, waiting], 12)
     assert not gate.review_run_passed([failed, done], 12)
     assert not gate.review_run_passed([{**done, "name": "required-tests"}], 12)
+    # A stale run left in progress does not hold back a newer pass.
+    assert gate.review_run_passed([{**done, "id": 4}, waiting], 12)
 
 
 def test_only_the_review_apps_run_passes_a_reader(monkeypatch, capsys):
@@ -346,20 +385,24 @@ def test_only_the_review_apps_run_passes_a_reader(monkeypatch, capsys):
     ours = {**actions, "id": 3, "app": {"id": 777}}
 
     def api(runs):
-        def fake(path):
-            if path.endswith("/pulls/12"):
-                return {"head": {"sha": head}}
-            assert path == f"repos/o/r/commits/{head}/check-runs?check_name=review&per_page=100"
-            return {"check_runs": runs}
-        return fake
+        def pull(path):
+            assert path.endswith("/pulls/12")
+            return {"head": {"sha": head}}
+
+        def check_runs(path):
+            assert path == (f"repos/o/r/commits/{head}/check-runs"
+                            "?check_name=review&filter=all&per_page=100")
+            return runs
+        monkeypatch.setattr(gate, "_gh_json", pull)
+        monkeypatch.setattr(gate, "_gh_check_runs", check_runs)
 
     monkeypatch.setenv("REVIEW_APP_ID", "777")
-    monkeypatch.setattr(gate, "_gh_json", api([actions]))
+    api([actions])
     assert not gate.review_passed_at("o/r", head, 12)
     assert gate._queue_review(["--repo", "o/r", "--ref", f"gh-readonly-queue/main/pr-12-{A}",
                                "--sha", B]) == 0
     assert json.loads(capsys.readouterr().out)["conclusion"] == "failure"
-    monkeypatch.setattr(gate, "_gh_json", api([actions, ours]))
+    api([actions, ours])
     assert gate.review_passed_at("o/r", head, 12)
     assert gate._queue_review(["--repo", "o/r", "--ref", f"gh-readonly-queue/main/pr-12-{A}",
                                "--sha", B]) == 0
@@ -368,15 +411,16 @@ def test_only_the_review_apps_run_passes_a_reader(monkeypatch, capsys):
 
 # ---- the App's token, and review.yml's decision run against a fake GitHub --------------
 
-# The review App's repository permissions, as its manifest makes it (docs/host-actions.md,
-# "The review App"). review.yml may request no more than these.
-_APP_PERMISSIONS = {"checks": "write", "statuses": "write", "metadata": "read"}
+# The review App's repository permissions (docs/host-actions.md, "The review App"):
+# review.yml may request no more than these.
+_APP_PERMISSIONS = {"checks": "write", "metadata": "read"}
 _ACTIONS_TOKEN = "actions-token"
 _APP_TOKEN = "app-token"
+_WORKFLOWS = _ROOT / ".github" / "workflows"
 
 
 def _review_workflow() -> dict:
-    return yaml.safe_load((_ROOT / ".github" / "workflows" / "review.yml").read_text())
+    return yaml.safe_load((_WORKFLOWS / "review.yml").read_text())
 
 
 def _decide_steps() -> tuple[dict, dict]:
@@ -405,16 +449,50 @@ def test_the_app_token_is_minted_in_the_review_environment_with_no_more_than_the
     for name, job in wf["jobs"].items():
         if name != "decide":
             assert "environment" not in job and "secrets." not in yaml.safe_dump(job), name
-    # Only the poster switches to the App's token; every read stays on the Actions token.
+    # Only the App's calls switch to its token; every read stays on the Actions token.
     assert decide["run"].count('GH_TOKEN="$APP_TOKEN"') == 1
-    assert re.search(r'^\s*post\(\) \{ GH_TOKEN="\$APP_TOKEN" gh api -X POST '
-                     r'"repos/\$\{REPO\}/check-runs"', decide["run"], re.M)
+    assert re.search(r'^\s*as_app\(\) \{ GH_TOKEN="\$APP_TOKEN" gh api "\$@"; \}$',
+                     decide["run"], re.M)
+
+
+def test_the_triggers_and_conditions_are_exactly_these():
+    """Each one is load-bearing: a head with no `synchronize` gets no check; a resolve
+    that took any workflow_run event, or a failed signal, would decide on noise."""
+    wf = _review_workflow()
+    on = wf[True] if True in wf else wf["on"]
+    assert on == {
+        "pull_request_target": {"types": ["opened", "reopened", "synchronize", "edited"]},
+        "workflow_run": {"workflows": ["review-signal", "review (merge queue)"],
+                         "types": ["completed"]},
+    }
+    assert wf["permissions"] == {"contents": "read", "pull-requests": "read", "actions": "read"}
+    assert set(wf["jobs"]) == {"resolve", "decide"}
+    assert " ".join(wf["jobs"]["resolve"]["if"].split()) == (
+        "github.event_name == 'pull_request_target' || "
+        "(github.event.workflow_run.conclusion == 'success' && "
+        "(github.event.workflow_run.event == 'pull_request_review' || "
+        "github.event.workflow_run.event == 'merge_group'))")
+    # No App, no decision, and no environment GitHub would make with no branch policy.
+    assert wf["jobs"]["decide"]["if"] == "vars.REVIEW_APP_ID != ''"
+    assert wf["jobs"]["decide"]["needs"] == "resolve"
+    for name, signal in (("review-signal.yml", "review-signal"),
+                         ("review-queue.yml", "review (merge queue)")):
+        data = yaml.safe_load((_WORKFLOWS / name).read_text())
+        assert data["name"] == signal
+        assert data["permissions"] == {}, name
+        assert all("permissions" not in job and job.get("name") != "review"
+                   for job in data["jobs"].values()), name
+    signal_on = yaml.safe_load((_WORKFLOWS / "review-signal.yml").read_text())
+    assert signal_on[True] == {
+        "pull_request_review": {"types": ["submitted", "edited", "dismissed"]}}
+    queue_on = yaml.safe_load((_WORKFLOWS / "review-queue.yml").read_text())
+    assert queue_on[True] == {"merge_group": {"types": ["checks_requested"]}}
 
 
 @pytest.mark.parametrize("name", ["review.yml", "review-signal.yml", "review-queue.yml"])
 def test_no_review_workflow_script_expands_an_expression(name):
     """Event data reaches a script only through `env:`, never spliced into its text."""
-    wf = yaml.safe_load((_ROOT / ".github" / "workflows" / name).read_text())
+    wf = yaml.safe_load((_WORKFLOWS / name).read_text())
     for job in wf["jobs"].values():
         for step in job.get("steps") or []:
             assert "${{" not in str(step.get("run", "")), (name, step.get("name"))
@@ -425,13 +503,17 @@ def test_host_actions_names_what_review_yml_reads():
     section = text[text.index("## The review App"):]
     section = section[:section.index("\n## ", 1)]
     for name in ("`review`", "`REVIEW_APP_PRIVATE_KEY`", "`REVIEW_APP_ID`", "`main` only",
-                 "checks: write", "commit statuses: write", "metadata: read"):
+                 "`main` alone", "no repository-level `REVIEW_APP_PRIVATE_KEY`",
+                 "checks: write", "metadata: read"):
         assert name in section, name
-    wf = (_ROOT / ".github" / "workflows" / "review.yml").read_text(encoding="utf-8")
+    assert "commit statuses: write" not in section
+    wf = (_WORKFLOWS / "review.yml").read_text(encoding="utf-8")
     assert "vars.REVIEW_APP_ID" in wf and "secrets.REVIEW_APP_PRIVATE_KEY" in wf
 
 
-# A stand-in for `gh`: logs each call with the token it carried, and answers from data.json.
+# A stand-in for `gh`: logs each call with the token it carried, and answers from
+# data.json. A POST makes a check run with the next id; data["fail"] names a path
+# fragment whose read exits 1, as a 502 would.
 _FAKE_GH = '''\
 import json, os, sys
 args = sys.argv[1:]
@@ -442,16 +524,25 @@ call = {"token": os.environ.get("GH_TOKEN", ""), "args": args}
 if "--input" in args:
     with open(args[args.index("--input") + 1], encoding="utf-8") as f:
         call["input"] = json.load(f)
-with open(os.path.join(state, "calls.jsonl"), "a", encoding="utf-8") as f:
+log = os.path.join(state, "calls.jsonl")
+made = 0
+if os.path.exists(log):
+    with open(log, encoding="utf-8") as f:
+        made = sum('"POST"' in line for line in f)
+with open(log, "a", encoding="utf-8") as f:
     f.write(json.dumps(call) + "\\n")
 path = next(a for a in args if a.startswith("repos/"))
+if data.get("fail") and data["fail"] in path:
+    sys.exit(1)
 if "-X" in args:
-    print("{}")
+    method = args[args.index("-X") + 1]
+    print(700 + made if method == "POST" and "--jq" in args else "{}")
 elif "/reviews" in path or "/timeline" in path:
     for item in data["reviews" if "/reviews" in path else "timeline"]:
         print(json.dumps(item))
 elif "/check-runs" in path:
-    print(json.dumps({"check_runs": data["check_runs"]}))
+    for run in data["check_runs"]:
+        print(json.dumps(run))
 elif "--jq" in args:
     print(data["head"], data["base"])
 else:
@@ -487,11 +578,21 @@ def _decide(tmp_path: Path, checkout: Path, data: dict, **env: str):
     return done, calls
 
 
-def _posts(calls: list[dict]) -> list[dict]:
-    posts = [c for c in calls if "-X" in c["args"]]
-    assert all(c["token"] == _APP_TOKEN for c in posts), "a check run not posted as the App"
-    assert all(c["token"] == _ACTIONS_TOKEN for c in calls if c not in posts)
-    return [c["input"] for c in posts]
+def _writes(calls: list[dict]) -> list[tuple[str, str, dict]]:
+    """(method, path, body) of each check-run write, all made as the App, and the one
+    run each decision makes: one POST, then PATCHes of that same run."""
+    writes = [c for c in calls if "-X" in c["args"]]
+    assert all(c["token"] == _APP_TOKEN for c in writes), "a check run not written as the App"
+    assert all(c["token"] == _ACTIONS_TOKEN for c in calls if c not in writes)
+    out = []
+    for c in writes:
+        method = c["args"][c["args"].index("-X") + 1]
+        path = next(a for a in c["args"] if a.startswith("repos/"))
+        out.append((method, path, c["input"]))
+    if out:
+        assert out[0][:2] == ("POST", "repos/o/r/check-runs")
+        assert all(w[:2] == ("PATCH", "repos/o/r/check-runs/700") for w in out[1:])
+    return out
 
 
 @pytest.fixture
@@ -501,17 +602,17 @@ def pr_checkout(tmp_path: Path, repo):
                             "check_runs": []}
 
 
-def test_the_decision_posts_deciding_then_the_verdict_as_the_app_for_its_pr(pr_checkout):
+def test_the_decision_completes_its_own_deciding_run_with_the_verdict(pr_checkout):
     tmp_path, path, data = pr_checkout
     data["reviews"] = [_review("APPROVE\n\nread it", data["head"])]
     done, calls = _decide(tmp_path, path, data)
     assert done.returncode == 0, done.stderr
-    deciding, verdict = _posts(calls)
+    (_, _, deciding), (_, _, verdict) = _writes(calls)
     assert deciding == {"name": "review", "head_sha": data["head"], "external_id": "pr-12",
                         "status": "in_progress",
                         "output": {"title": "deciding",
                                    "summary": "review.yml is reading the reviews."}}
-    assert verdict["head_sha"] == data["head"] and verdict["external_id"] == "pr-12"
+    assert verdict["external_id"] == "pr-12" and "head_sha" not in verdict
     assert verdict["status"] == "completed" and verdict["conclusion"] == "success"
 
 
@@ -521,27 +622,42 @@ def test_the_decision_waits_when_the_base_changed_after_the_verdict(pr_checkout)
     data["timeline"] = [{"event": "base_ref_changed", "created_at": "2026-11-04T11:00:00Z"}]
     done, calls = _decide(tmp_path, path, data)
     assert done.returncode == 0, done.stderr
-    verdict = _posts(calls)[-1]
+    _, _, verdict = _writes(calls)[-1]
     assert verdict["status"] == "in_progress" and "conclusion" not in verdict
     assert verdict["output"]["title"] == (
         f"waiting for review of {data['head']} (the base changed at 2026-11-04T11:00:00Z)")
 
 
-def test_a_decision_that_cannot_read_the_reviews_posts_a_failure(pr_checkout):
+def test_a_decision_that_cannot_read_the_reviews_fails_its_run(pr_checkout):
     tmp_path, path, data = pr_checkout
     data["reviews"] = ["not a review"]
     done, calls = _decide(tmp_path, path, data)
-    assert done.returncode == 1
-    failed = _posts(calls)[-1]
-    assert failed["external_id"] == "pr-12" and failed["head_sha"] == data["head"]
+    assert done.returncode != 0
+    _, _, failed = _writes(calls)[-1]
     assert failed["conclusion"] == "failure" and failed["output"]["title"] == "could not decide"
 
 
-def test_a_pr_with_no_head_posts_nothing(pr_checkout):
+@pytest.mark.parametrize("fail", ["/reviews", "/timeline", "/check-runs/700"])
+def test_a_decision_that_stops_after_deciding_fails_that_run(pr_checkout, fail):
+    """A read that dies (a 502), or the verdict's own write, leaves no run in progress
+    and no earlier pass showing: the trap completes the deciding run as a failure."""
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"])]
+    data["fail"] = fail
+    done, calls = _decide(tmp_path, path, data)
+    assert done.returncode != 0
+    writes = _writes(calls)
+    assert writes[-1][2] == {"status": "completed", "conclusion": "failure",
+                             "output": {"title": "could not decide", "summary":
+                                        "review.yml stopped before its verdict; see its log, "
+                                        "then rerun it."}}
+
+
+def test_a_pr_with_no_head_writes_nothing(pr_checkout):
     tmp_path, path, data = pr_checkout
     data["head"] = "null"
     done, calls = _decide(tmp_path, path, data)
-    assert done.returncode == 1 and _posts(calls) == []
+    assert done.returncode == 1 and _writes(calls) == []
 
 
 def _queue(**more: str) -> dict:
@@ -556,19 +672,28 @@ def test_the_merge_group_review_refuses_an_actions_run_named_review(pr_checkout)
                            "app": {"id": 15368}}]
     done, calls = _decide(tmp_path, path, data, **_queue())
     assert done.returncode == 0, done.stderr
-    (refused,) = _posts(calls)
-    assert refused["head_sha"] == B and refused["external_id"] == "queue-pr-12"
-    assert refused["conclusion"] == "failure"
-    read = next(c for c in calls if any("/check-runs" in a for a in c["args"]))
-    assert f"repos/o/r/commits/{data['head']}/check-runs?check_name=review&per_page=100" in (
-        read["args"])
+    (_, _, deciding), (_, _, refused) = _writes(calls)
+    assert deciding["head_sha"] == B and deciding["external_id"] == "queue-pr-12"
+    assert refused["external_id"] == "queue-pr-12" and refused["conclusion"] == "failure"
+    read = next(c for c in calls if any("/commits/" in a for a in c["args"]))
+    assert read["args"][:2] == ["api", "--paginate"]
+    assert (f"repos/o/r/commits/{data['head']}/check-runs"
+            "?check_name=review&filter=all&per_page=100") in read["args"]
 
 
-def test_the_merge_group_review_passes_on_the_apps_own_run(pr_checkout):
+def test_the_merge_group_review_passes_on_the_apps_newest_run_past_a_stale_one(pr_checkout):
     tmp_path, path, data = pr_checkout
-    data["check_runs"] = [{"id": 3, "name": "review", "status": "completed",
-                           "conclusion": "success", "external_id": "pr-12", "app": {"id": 777}}]
+    passed = {"id": 5, "name": "review", "status": "completed", "conclusion": "success",
+              "external_id": "pr-12", "app": {"id": 777}}
+    stale = {**passed, "id": 3, "status": "in_progress", "conclusion": None}
+    data["check_runs"] = [passed, stale]
     done, calls = _decide(tmp_path, path, data, **_queue())
     assert done.returncode == 0, done.stderr
-    (passed,) = _posts(calls)
-    assert passed["external_id"] == "queue-pr-12" and passed["conclusion"] == "success"
+    (_, _, verdict) = _writes(calls)[-1]
+    assert verdict["external_id"] == "queue-pr-12" and verdict["conclusion"] == "success"
+    # Reversed, the newer run is the one in progress, and the group fails.
+    data["check_runs"] = [stale, {**passed, "id": 2}]
+    (tmp_path / "again").mkdir()
+    done, calls = _decide(tmp_path / "again", path, data, **_queue())
+    assert done.returncode == 0, done.stderr
+    assert _writes(calls)[-1][2]["conclusion"] == "failure"
