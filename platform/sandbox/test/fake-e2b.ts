@@ -72,6 +72,11 @@ const fake = {
   commands: [] as { sandbox: string; argv: string[]; runner: string | null; user: string }[],
   rings: [] as unknown[],
   script: null as unknown as Script,
+  /**
+   * The last sandbox id handed out. It counts on across resets, so a look still running from
+   * the test before (an alarm the runtime fired) never meets a new test's sandbox under its
+   * old id: it finds none, and forgets it.
+   */
   next: 0,
 };
 
@@ -82,7 +87,6 @@ function reset(): void {
   fake.incoming.clear();
   fake.commands = [];
   fake.rings = [];
-  fake.next = 0;
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
                   full: false, pauseMode: "full", noCount: false, down: 0,
                   refuseResume: false, broken: null, tampered: null, protocol: 1,
