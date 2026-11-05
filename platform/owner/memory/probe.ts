@@ -250,6 +250,20 @@ async function moveRecords(env: LegEnv, records: number): Promise<number> {
   }
 }
 
+/**
+ * The widest row the change log takes (`IMAGE_MAX`'s own: a connection's models at their
+ * 640 KiB, every one a character JSON escapes, and its egress scope at its own), its name
+ * one character past U+00FF, so its line is a two-byte string in V8: inserted, and its
+ * image logged by `widen`, a change while capture is on (the change log test's L5-1 row).
+ */
+const WIDEN = "UPDATE connections SET expires_at = coalesce(expires_at, 0) + 1";
+function wideRow(sql: Pick<SqlStorage, "exec">): void {
+  sql.exec("INSERT INTO connections (id, source, kind, display_name, provider, models, " +
+           "status, version, created_at, revocable, egress) VALUES (?, 'src', 'oauth2', " +
+           "?, 'p', ?, 'active', 1, 0, 1, ?)", "c".repeat(25), "wide \u20ac",
+           '"'.repeat(655_360), "\\".repeat(16_384));
+}
+
 /** The real owner object, with the body paths and the control in reach. */
 export class LegOwner extends OwnerDO {
   readonly #leg: LegEnv;
@@ -282,6 +296,7 @@ export class LegOwner extends OwnerDO {
     await this.#gate.write(() => sql.exec(
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 130000) " +
       "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', '' FROM n"));
+    await this.#gate.write(() => wideRow(sql));
     let parts = 0;
     let widest = 0;
     const put = async (bytes: Uint8Array) => {
@@ -297,9 +312,11 @@ export class LegOwner extends OwnerDO {
           // ship after this part builds and puts a full segment inside the burst's units;
           // each line ASCII but one character past U+00FF, the worst mix for its heap (a
           // two-byte string in V8, twice its UTF-8: review rvburst V1).
-          await this.#gate.write(() => sql.exec(
-            "UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
-            "WHERE seq <= 4200"));
+          await this.#gate.write(() => {
+            sql.exec(WIDEN);  // the widest row first: the segment holds it and the rest
+            sql.exec("UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
+                     "WHERE seq <= 4200");
+          });
         }
         return put(bytes);
       },
@@ -341,6 +358,7 @@ export class LegOwner extends OwnerDO {
     await this.#gate.write(() => sql.exec(
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4200) " +
       "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', 'a' FROM n"));
+    await this.#gate.write(() => wideRow(sql));
     let segments = 0;
     let widest = 0;
     const store = {
@@ -366,9 +384,11 @@ export class LegOwner extends OwnerDO {
     });
     await this.#gate.write(() => sql.exec("UPDATE owner_backup_state SET changed = 1"));
     await this.#gate.quiet(() => lane.forExport(Date.now() / 1000));
-    await this.#gate.write(() => sql.exec(
-      "UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
-      "WHERE seq <= 4200"));
+    await this.#gate.write(() => {
+      sql.exec(WIDEN);  // the widest row first: the first segment holds it and the rest
+      sql.exec("UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
+               "WHERE seq <= 4200");
+    });
     await lane.run(Date.now() / 1000, Date.now() + 120_000);
     if (segments < 2) {
       throw new Error(`the ship case shipped ${segments} segments, not a full one and more`);

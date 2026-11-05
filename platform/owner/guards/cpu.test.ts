@@ -29,13 +29,14 @@ describe("the CPU guards' clock", () => {
   }, 30_000);
 
   it("counts its own thread's work", () => {
+    // Spun until its own clock reads 100 ms, within 10 s of wall time: a loaded host that
+    // takes the thread off its core slows it, never stops it; a clock that counted none of
+    // the thread's work would never get there.
     const start = threadMs();
-    const end = performance.now() + 200;
-    let spins = 0;
-    while (performance.now() < end) {
-      spins += 1;
+    const until = performance.now() + 10_000;
+    while (threadMs(start) < 100 && performance.now() < until) {
+      // spin
     }
-    expect(spins).toBeGreaterThan(0);
-    expect(threadMs(start)).toBeGreaterThan(150);
-  });
+    expect(threadMs(start)).toBeGreaterThanOrEqual(100);
+  }, 30_000);
 });

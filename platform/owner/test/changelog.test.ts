@@ -49,7 +49,7 @@ describe("a log segment's build", () => {
   it("makes byte for byte the segment the build it replaced made, every line's last per key, " +
      "of any characters", async () => {
     const o = await owner();
-    const made = await runInDurableObject(o.stub, (_instance: OwnerDO, state) => {
+    const made = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
       const chars = ["a", "Z", " ", "\"", "\\", "\n", "\u0001", "é", "€", "語", "😀", "\ud800"];
       let seed = 7;
@@ -74,12 +74,18 @@ describe("a log segment's build", () => {
       const rows = sql.exec<{ seq: number; line: string }>(
         "SELECT seq, line FROM change_log ORDER BY seq").toArray();
       const first = rows[0]!.seq - 1;
-      return [[first, first + 400], [first + 17, first + 233], [first + 399, first + 400]]
-        .map(([a, b]) => {
-          const built = log.segment(a!, b!);
-          const reference = replacedSegment(rows.filter((row) => row.seq > a! && row.seq <= b!));
-          return Buffer.compare(Buffer.from(built), Buffer.from(reference));
+      const compared: number[] = [];
+      for (const [a, b] of [[first, first + 400], [first + 17, first + 233],
+                            [first + 399, first + 400]]) {
+        let sampled = 0;
+        const built = await log.segment(a!, b!, async () => {
+          sampled++;
         });
+        expect(sampled).toBe(1);
+        const reference = replacedSegment(rows.filter((row) => row.seq > a! && row.seq <= b!));
+        compared.push(Buffer.compare(Buffer.from(built), Buffer.from(reference)));
+      }
+      return compared;
     });
     expect(made).toEqual([0, 0, 0]);
   });
@@ -129,7 +135,7 @@ describe("the change log", () => {
       await gate.write(() => gate.storage.sql.exec(
         "UPDATE owner_notices SET detail = 'x' WHERE 0"));  // touches nothing, logs nothing
       const { last, s } = log.state();
-      const lines = new TextDecoder().decode(log.segment(s - 1, last)).trimEnd().split("\n")
+      const lines = new TextDecoder().decode(await log.segment(s - 1, last)).trimEnd().split("\n")
         .map((line) => JSON.parse(line) as Line);
       return { lines, now: standing(state.storage.sql) };
     });

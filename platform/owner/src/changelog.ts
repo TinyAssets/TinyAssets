@@ -136,22 +136,30 @@ export class ChangeLog {
    * its UTF-8): a first pass keeps each key's last seq and counts the stored bytes, and a
    * second, in seq order, encodes only the kept rows straight into one buffer of at most
    * those bytes (`pending` holds them to a part, or one wider line), one row's text at a
-   * time. A read.
+   * time (`holds.ts`'s `SHIP_BYTES` derives the most this holds). `sample`, the memory
+   * leg's, is awaited at the widest kept row's encode, its stored text, parsed value and
+   * JSON all in hand. A read.
    */
-  segment(a: number, b: number): Uint8Array {
+  async segment(a: number, b: number, sample?: () => Promise<void>): Promise<Uint8Array> {
     const tables = exported();
     const rows = () => this.#sql.exec<{ seq: number; line: string }>(
       "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq", a, b);
-    const last = new Map<string, number>();
+    const last = new Map<string, { seq: number; bytes: number }>();
     let most = 0;
     for (const row of rows()) {
       const line = parsed(row.line);
       const shape = tables[line.table]!;
       const key = line.t === "row" ? shape.key.map((column) => line.row![column]) : line.key!;
-      last.set(JSON.stringify([line.table, key]), row.seq);
-      most += Buffer.byteLength(row.line, "utf8") + SEQ_BYTES;
+      const bytes = Buffer.byteLength(row.line, "utf8");
+      last.set(JSON.stringify([line.table, key]), { seq: row.seq, bytes });
+      most += bytes + SEQ_BYTES;
     }
-    const kept = new Set(last.values());
+    const kept = new Set<number>();
+    let widest = { seq: -1, bytes: -1 };
+    for (const each of last.values()) {
+      kept.add(each.seq);
+      widest = each.bytes > widest.bytes ? each : widest;
+    }
     last.clear();
     const encoder = new TextEncoder();
     let out = new Uint8Array(most);
@@ -176,6 +184,12 @@ export class ChangeLog {
       }
       at += encoder.encodeInto(text, out.subarray(at)).written;
       out[at++] = 0x0a;
+      if (sample !== undefined && row.seq === widest.seq) {
+        await sample();
+        if (text.length === 0 || line.table === "" || row.line === "") {
+          throw new Error("a sampled log line is empty");  // each held to here
+        }
+      }
     }
     return out.subarray(0, at);
   }

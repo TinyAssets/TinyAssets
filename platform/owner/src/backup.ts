@@ -47,7 +47,7 @@ import {
 } from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
-import { BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
+import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
 import { type Slot, SLOT_WAIT_MS, SlotBusy, type SlotPool } from "./slots";
 
 /** The manifest lane's name in the schedule. */
@@ -81,7 +81,7 @@ export const SEGMENT_ENTRY = 16 + 1 + 16 + 1 + 64 + 1 + 7 + 1;
  * `BURST_UNITS` of the isolate's pool, which it holds from its first page to its last part's
  * put (`holds.ts`; the memory leg's "a generation's burst" holds it there).
  */
-const GATHER_BYTES = 2 * CHUNK_BYTES;
+const GATHER_BYTES = BURST_GATHER_BYTES;
 /**
  * When a pass whose burst or log ship found the pool full goes on: the turnover of a full queue
  * (`SLOT_WAIT_MS`), as the archive's lane's (`ARCHIVE_BUSY_RETRY_S`). Not a failure.
@@ -587,13 +587,15 @@ export class Backups {
 
   /**
    * A log segment's bytes (`ChangeLog.segment`: one buffer, never its lines held), the memory
-   * leg sampling it built (`units`, the hold it is built in).
+   * leg sampling it at its widest row's encode and built (`units`, the hold it is built in).
    */
   async #segment(a: number, b: number, units: number): Promise<Uint8Array> {
-    const bytes = this.#parts.log.segment(a, b);
     const pool = this.#pool;
-    if (pool.observe !== null) {
-      await pool.observe(units);
+    const observe = pool.observe;
+    const bytes = await this.#parts.log.segment(a, b, observe === null ? undefined
+      : () => observe(units));
+    if (observe !== null) {
+      await observe(units);
     }
     return bytes;
   }
