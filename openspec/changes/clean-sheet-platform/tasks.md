@@ -2351,6 +2351,18 @@ R, S, M and W.
       Stripe's endpoint moved to it; or the founder's word that no live subscription exists,
       and Stripe's endpoint disabled until that door is built.
 
+- [ ] **Old tests leave with their code** (Direction 6). The change that deletes the old
+  stack deletes every test file `python scripts/affected_tests.py --retiring` lists. Those
+  are the tests whose reached modules all lie in its `RETIRING` paths, the old stack's
+  `tinyassets/`; widen that one list if the cutover deletes more. The same change deletes
+  any other test that fails only because the code it checked is gone. None is skipped,
+  quarantined or rewritten to pass. A test that also reaches kept code keeps its cases
+  for that code. A listed structural guard (`scripts/ci_structural_guards.py` `GUARDS`)
+  is deleted only once this line names the platform guard that replaces it, or the
+  recorded decision that retires its principle. Until then, each runs whenever a Python change could reach it, and never
+  for a `platform/` or prose change it cannot read (the merge gate's tree selection,
+  `affected_tests.provable_shape`).
+
 - [ ] **The founder's and the canary's owners start fresh** (the founder's ruling, 2026-11-04):
   the founder's main account and every canary owner account begin on the new platform with
   nothing imported, so the founder goes through the whole onboarding from the first
