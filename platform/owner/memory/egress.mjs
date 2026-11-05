@@ -25,15 +25,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { freePorts } from "./ports.mjs";
+
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(OWNER, "package.json"));
 const MIB = 1024 * 1024;
 const CHUNK = 4 * MIB;
-const DOORS = 8921;
-const GATEWAY = 8922;
-const UPSTREAM = 8923;
-const DRIVER = 8924;
-const INSPECT = 9421;
 /** The pool's wait (`SLOT_WAIT_MS`), and a hold past it. */
 const SLOT_WAIT_MS = 10_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -87,6 +84,7 @@ function body(model, bytes) {
 }
 
 export async function egressLeg() {
+  const [DOORS, GATEWAY, UPSTREAM, DRIVER, INSPECT] = await freePorts(5);
   const rows = [];
   const problems = [];
   const work = mkdtempSync(join(tmpdir(), "egress-memory-"));

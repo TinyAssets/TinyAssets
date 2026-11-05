@@ -49,13 +49,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { egressLeg } from "./egress.mjs";
+import { freePorts } from "./ports.mjs";
 
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(OWNER, "package.json"));
 const MIB = 1024 * 1024;
-const PORT = 8899;
-const INSPECT = 9399;
-const DRIVER = 8898;
+const [PORT, INSPECT, DRIVER] = await freePorts(3);
 const HTTP = `http://127.0.0.1:${PORT}`;
 const CPU_MS = 30_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
