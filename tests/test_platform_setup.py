@@ -204,17 +204,17 @@ def test_workos_stores_a_pasted_key_and_leaves_the_repository_copies(capsys) -> 
 
     def ask(prompt: str) -> str:
         asked.append(prompt)
-        return '  "sk_live_pasted"\r\n'
+        return '  "sk_pasted_0123456789abcdef"\r\n'
 
     setup.workos(_gh(fake, said), ask)
-    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_live_pasted"
+    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_pasted_0123456789abcdef"
     assert len(asked) == 1
     # The first step never deletes: the founder checks production's key first.
     assert fake.secrets[None] == {"WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN"}
     out = capsys.readouterr().out
     assert out.splitlines()[0] == "WORKOS_API_KEY: set (updated 2026-11-05T10:00:01Z)"
     assert "--delete-repo-copies" in out.splitlines()[1]
-    _no_value_shown(said, out, ["sk_live_pasted"])
+    _no_value_shown(said, out, ["sk_pasted_0123456789abcdef"])
     # Held already: nothing asked, nothing stored again, and its time shown.
     setup.workos(_gh(fake, said), lambda _: pytest.fail("asked again"))
     assert capsys.readouterr().out.splitlines()[0] == (
@@ -256,13 +256,13 @@ def test_workos_deletes_the_repository_copies_only_when_asked_and_production_hol
 def test_workos_reads_one_line_of_stdin_when_it_is_not_a_terminal(monkeypatch) -> None:
     """An agent's shell, or `Get-Clipboard | python ...`: Windows' getpass reads only the
     console, so a pipe is read as one line, its CR/LF stripped."""
-    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_live_piped\r\nignored\n"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_piped_0123456789abcdef\r\nignored\n"))
     monkeypatch.setattr(setup.getpass, "getpass", lambda _: pytest.fail("prompted"))
-    assert setup.read_key("p") == "sk_live_piped"
+    assert setup.read_key("p") == "sk_piped_0123456789abcdef"
     fake = Fake()
-    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_live_piped\r\n"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_piped_0123456789abcdef\r\n"))
     assert setup.main(["workos"], gh=_gh(fake)) == 0
-    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_live_piped"
+    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_piped_0123456789abcdef"
 
 
 @pytest.mark.verifies(
@@ -280,7 +280,7 @@ def test_workos_fails_loudly_when_the_stored_key_does_not_read_back(capsys) -> N
         return done
 
     with pytest.raises(setup.SetupError, match="does not read back from production"):
-        setup.workos(setup.Gh(run=run), lambda _: "sk_live_pasted")
+        setup.workos(setup.Gh(run=run), lambda _: "sk_pasted_0123456789abcdef")
     assert "WORKOS_API_KEY: set" not in capsys.readouterr().out
     assert fake.secrets[None] == {"WORKOS_API_KEY"}
 
@@ -288,7 +288,18 @@ def test_workos_fails_loudly_when_the_stored_key_does_not_read_back(capsys) -> N
 @pytest.mark.verifies(
     "clean-sheet-platform:Sign-up is the platform's explicit admit, "
     "and erasure its outside record")
-@pytest.mark.parametrize("pasted", ["sk_test_staging", "", "sk_live_a b", "client_01"])
+@pytest.mark.parametrize("key", ["sk_" + "a1B2" * 18, "sk_live_" + "a1B2" * 18])
+def test_workos_takes_a_secret_key_with_or_without_a_label(key) -> None:
+    """WorkOS's current keys are `sk_` with no environment label."""
+    assert setup.live_workos_key(key)
+
+
+@pytest.mark.verifies(
+    "clean-sheet-platform:Sign-up is the platform's explicit admit, "
+    "and erasure its outside record")
+@pytest.mark.parametrize("pasted", ["sk_test_staging", "sk_test_" + "a1B2" * 18,
+                                    "sk_Test_" + "a1B2" * 18, "sk_", "sk_short", "",
+                                    "sk_live_a b", "client_01"])
 def test_workos_refuses_anything_but_one_production_key(pasted) -> None:
     fake = Fake(secrets={None: {"WORKOS_API_KEY"}})
     with pytest.raises(setup.SetupError) as refused:
@@ -553,7 +564,9 @@ def test_the_real_gh_call_sends_bytes_and_no_shell(tmp_path, monkeypatch) -> Non
         "sys.stdout.buffer.write('HTTP/2.0 200 OK\\r\\n\\r\\n{\"n\": \"\\u00e9\"}'.encode())\n",
         encoding="utf-8")
     stand_in.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    # The stand-in alone: where it cannot run (Windows ignores the shebang), the call fails
+    # rather than reaching a signed-in real gh and replacing a live secret.
+    monkeypatch.setenv("PATH", str(tmp_path))
     gh = setup.Gh()
     gh.set_secret("REVIEW_APP_PRIVATE_KEY", PEM, "review")
     seen = json.loads(log.read_text())
