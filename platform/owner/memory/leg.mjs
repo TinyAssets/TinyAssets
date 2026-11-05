@@ -219,10 +219,15 @@ try {
     let ends = 0;
     // The most units the pool held at a sample.
     let heldMost = 0;
+    // The most live while a log segment's ship hold (`SHIP_UNITS`) is what the pool holds.
+    let shipMost = 0;
     sample = async (held, at) => {
       points += 1;
       heldMost = Math.max(heldMost, held ?? 0);
       const now = await live() - floor;
+      if (held === costs.SHIP_UNITS) {
+        shipMost = Math.max(shipMost, now);
+      }
       if (now > most) {
         where = `${at} (${held} units)`;
       }
@@ -265,6 +270,7 @@ try {
     }
     peak.ends = ends;
     peak.held = heldMost;
+    peak.ship = shipMost;
     peak.answer = answer;
     return most;
   };
@@ -341,6 +347,8 @@ try {
   // it holds (above, at every checkpoint), and its peak within BURST_UNITS (review rvbackup 1).
   check("a generation's burst: peak, the smallest lines", await peak("burst", 0),
         costs.BURST_UNITS * UNIT, "BURST_UNITS");
+  // Its log's ships after it (each under `SHIP_UNITS` alone): compared with a ship alone below.
+  const burstShips = peak.ship;
   check("a generation's burst: its puts inside its units of the pool",
         costs.BURST_UNITS - peak.held, 0, "the units held at its puts");
   if (peak.answer[0] < 3 * MIB) {
@@ -354,6 +362,10 @@ try {
   if (peak.answer[0] < 3 * MIB) {
     throw new Error(`the ship case's widest segment was ${peak.answer[0]} bytes, not a full one`);
   }
+  // A burst's log ships with nothing of the burst live, and each segment's bytes let go before
+  // the next is built (rvburst X2): its ships read about what a ship alone does.
+  check("a generation's burst: its log's ships after it, about a ship alone",
+        burstShips - peak.ship, QUARTER, "a quarter chunk past the ship alone");
 
   // The archive: each pass of its move and rewrite within the units it holds (above, at
   // every checkpoint), each run's peak within its table's and its pass's units, and a move

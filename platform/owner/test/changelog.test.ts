@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { MANIFEST_LOG_OVERFLOW } from "../src/backup";
 import { ChangeLog, IMAGE_MAX, LOG_BYTES, LOG_WIDE } from "../src/changelog";
 import { exported } from "../src/export";
-import { INLINE_BYTES } from "../src/files";
+import { CHUNK_BYTES, INLINE_BYTES } from "../src/files";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { LOGGED } from "../src/schema";
@@ -90,8 +90,8 @@ describe("a log segment's build", () => {
     expect(made).toEqual([0, 0, 0]);
   });
 
-  it("allocates its one buffer once, exactly its bytes as written, though JSON writes a " +
-     "number SQLite stored with an exponent wider (the log's own bytes undercount it)",
+  it("returns its own bytes exactly, never grown nor a view of a larger buffer, though JSON " +
+     "writes a number SQLite stored with an exponent wider (the log's own bytes undercount it)",
      async () => {
     const o = await owner();
     const made = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
@@ -114,8 +114,80 @@ describe("a log segment's build", () => {
                same: Buffer.compare(Buffer.from(built), Buffer.from(replacedSegment(rows))) };
     });
     expect(made.bytes).toBeGreaterThan(made.stored + 200 * 32);  // wider than stored and seq
-    expect(made.buffer).toBe(made.bytes);  // one buffer, its own bytes: never grown
+    // Its own bytes: a view of a larger buffer would cross RPC whole (rvburst X1).
+    expect(made.buffer).toBe(made.bytes);
     expect(made.same).toBe(0);
+  });
+
+  it("ships a log full of large REAL values a part at most each, every line shipped: never a " +
+     "span whose segment as written is past a part (rvburst W2)", { tags: ["large"] },
+     async () => {
+    const o = await owner();
+    const shipped = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      const log = new ChangeLog(state.storage);
+      log.begin("0123456789abcdef");
+      // 4,000 lines of a hundred numbers SQLite writes with an exponent: 1.0e+20, 21 digits
+      // as JSON, so each line as written is about twice its stored bytes.
+      const numbers = Array.from({ length: 100 }, (_, n) => `"f${n}":1.0e+20`).join(",");
+      for (let n = 1; n <= 4000; n++) {
+        sql.exec("INSERT INTO change_log (line) VALUES (?)",
+                 `{"t":"row","table":"model_reservations","row":{"seq":${n},${numbers}}}`);
+      }
+      const { last } = log.state();
+      const sizes: number[] = [];
+      for (let span = log.pending(last); span !== null; span = log.pending(last)) {
+        const bytes = await log.segment(span.a, span.b);
+        sizes.push(bytes.byteLength);
+        log.acknowledge(span.b);
+      }
+      return { sizes, shipped: log.state().shipped, last,
+               left: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM change_log").one().n };
+    });
+    expect(shipped.sizes.length).toBeGreaterThan(1);
+    expect(Math.max(...shipped.sizes)).toBeLessThanOrEqual(CHUNK_BYTES);
+    expect(shipped).toMatchObject({ shipped: shipped.last, left: 0 });
+  });
+
+  it("sizes again a span pinned under the old sizing that is past a part as written, once, " +
+     "and ships every line (rvburst X3)", { tags: ["large"] }, async () => {
+    const o = await owner();
+    const shipped = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      const log = new ChangeLog(state.storage);
+      log.begin("0123456789abcdef");
+      const numbers = Array.from({ length: 100 }, (_, n) => `"f${n}":1.0e+20`).join(",");
+      for (let n = 1; n <= 4000; n++) {
+        sql.exec("INSERT INTO change_log (line) VALUES (?)",
+                 `{"t":"row","table":"model_reservations","row":{"seq":${n},${numbers}}}`);
+      }
+      // Pinned as the old sizing pinned it: the stored bytes and 32 a line to a part.
+      const { shipped: from, last } = log.state();
+      let b = from;
+      let size = 0;
+      for (const row of sql.exec<{ seq: number; n: number }>(
+             "SELECT seq, length(CAST(line AS BLOB)) AS n FROM change_log WHERE seq > ? " +
+               "ORDER BY seq LIMIT 4096", from).toArray()) {
+        if (size > 0 && size + row.n + 32 > CHUNK_BYTES) {
+          break;
+        }
+        size += row.n + 32;
+        b = row.seq;
+      }
+      sql.exec("UPDATE log_capture SET pending_a = ?, pending_b = ?", from, b);
+      const first = log.pending(last)!;
+      const sizes: number[] = [];
+      for (let span: { a: number; b: number } | null = first; span !== null;
+           span = log.pending(last)) {
+        sizes.push((await log.segment(span.a, span.b)).byteLength);
+        log.acknowledge(span.b);
+      }
+      return { pinned: b, first: first.b, sizes, done: log.state().shipped === last,
+               left: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM change_log").one().n };
+    });
+    expect(shipped.first).toBeLessThan(shipped.pinned);  // sized again, shorter
+    expect(Math.max(...shipped.sizes)).toBeLessThanOrEqual(CHUNK_BYTES);
+    expect(shipped).toMatchObject({ done: true, left: 0 });
   });
 });
 
