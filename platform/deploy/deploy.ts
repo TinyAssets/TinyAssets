@@ -362,6 +362,18 @@ export async function zoneOf(api: CfApi): Promise<{ id: string; account: string 
   return { id, account };
 }
 
+/**
+ * Masks `value` in a GitHub Actions job's log (`::add-mask::`), as the probe workflows mask
+ * the account id: not a credential, but once a secret, and a wrangler error the kit quotes
+ * names `/accounts/<id>/...` in a public log. Outside Actions it prints nothing.
+ */
+export function maskInLog(value: string, env: NodeJS.ProcessEnv = process.env,
+                          log: (line: string) => void = console.log): void {
+  if (env["GITHUB_ACTIONS"] !== undefined) {
+    log(`::add-mask::${value}`);
+  }
+}
+
 /** The zone's Worker routes; a failed read throws. */
 export async function routesOf(api: CfApi, zone: string): Promise<Route[]> {
   const routes = await api(`/zones/${zone}/workers/routes`);
@@ -927,11 +939,7 @@ async function main(): Promise<void> {
   const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
   // The account is the zone's (`zoneOf`), and wrangler is handed that one.
   const { id: zone, account } = await zoneOf(api);
-  if (process.env["GITHUB_ACTIONS"] !== undefined) {
-    // Not a credential, but once a secret, so masked as the probe workflows mask it: a
-    // wrangler error quoted below names `/accounts/<id>/...` in a public log.
-    console.log(`::add-mask::${account}`);
-  }
+  maskInLog(account);
   process.env["CLOUDFLARE_ACCOUNT_ID"] = account;
   // The live checks, before anything is changed.
   const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"),

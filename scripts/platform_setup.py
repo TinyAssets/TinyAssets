@@ -8,6 +8,7 @@ on disk or in the output, which names each value and its status, nothing more.
     python scripts/platform_setup.py secrets    # ROUTING_MAC_KEY, E2B_WEBHOOK_SECRET, the keyrings
     python scripts/platform_setup.py variables  # OWNER_ISSUER, WORKOS_CLIENT_ID, OWNER_TOKEN_CLAIMS
     Get-Clipboard | python scripts/platform_setup.py workos   # a WorkOS key into `production`
+    # (Git Bash: powershell.exe -NoProfile -Command Get-Clipboard | python ... workos)
     python scripts/platform_setup.py workos --delete-repo-copies  # then the repository copies
     python scripts/platform_setup.py review-app --code "<code, or the URL GitHub landed on>"
 

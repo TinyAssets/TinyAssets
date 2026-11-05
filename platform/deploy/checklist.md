@@ -37,9 +37,12 @@ absent, goes to GitHub on stdin, and is never shown. Your part is in bold.
 2. **Make a production WorkOS API key** in the WorkOS dashboard (API Keys, the production
    environment; name it `github-production`) and **copy it**: it goes from your clipboard
    straight to the script, never into the chat or a command line. Two steps:
-   - `Get-Clipboard | python scripts/platform_setup.py workos` (PowerShell) stores it in
-     `production` if `production` holds none, after checking it starts `sk_live_`, and
-     prints when `production`'s key was last updated. A held key is never replaced.
+   - `Get-Clipboard | python scripts/platform_setup.py workos` in PowerShell, or from Git
+     Bash (the shell a Windows Claude session usually runs)
+     `powershell.exe -NoProfile -Command Get-Clipboard | python scripts/platform_setup.py workos`,
+     stores it in `production` if `production` holds none, after checking it starts
+     `sk_live_`, and prints when `production`'s key was last updated. A held key is never
+     replaced.
    - Once that time is the key you just made, `python scripts/platform_setup.py workos
      --delete-repo-copies` deletes the repository-level `WORKOS_API_KEY` and
      `WORKOS_AUTHKIT_DOMAIN` (only `production` jobs read them). The host keeps its own key.

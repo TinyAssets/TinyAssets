@@ -22,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  DOORS, E2B_HOOK, handover, heldHook, hookPlan, hookSetsSecret, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  DOORS, E2B_HOOK, handover, heldHook, hookPlan, hookSetsSecret, maskInLog, keyring, kvPresent, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
@@ -603,7 +603,7 @@ describe("the deploy kit", () => {
     };
     const order = [
       at("const { id: zone, account } = await zoneOf(api);"),
-      at("console.log(`::add-mask::${account}`);"),
+      at("maskInLog(account);"),
       at("process.env[\"CLOUDFLARE_ACCOUNT_ID\"] = account;"),
       at("const listed = open ? undefined : await heldHook(input(\"E2B_API_KEY\")!);"),
       at("const hookAt = hookPlan({ open, routes, missing: listed === null });"),
@@ -613,13 +613,22 @@ describe("the deploy kit", () => {
       at("if (hookAt.at === \"secrets\") {\n      plan.push(`E2B lifecycle webhook ${" +
          "E2B_HOOK.url}: ${await hook(apply, hookSecret)}`);"),
       at("await runHandover(api, zone, DOORS, steps);"),
-      at("if (hookAt.at === \"routes\") {"),
+      at("if (hookAt.at === \"routes\") {\n        plan.push(`E2B lifecycle webhook ${" +
+         "E2B_HOOK.url}, after the routes: ${\n          await hook(apply, hookSecret)}`);"),
     ];
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(body.match(/lifecycleHook\(/g)).toHaveLength(1);
     expect(body.match(/heldHook\(/g)).toHaveLength(1);
     expect(body).toContain("input(\"E2B_WEBHOOK_SECRET\")!, change, hookAt.enable, setSecret)");
     expect(body.match(/await hook\(/g)).toHaveLength(2);
+  });
+
+  it("masks the account id in an Actions log, and prints nothing outside one", () => {
+    const lines: string[] = [];
+    maskInLog("a".repeat(32), { GITHUB_ACTIONS: "true" }, (line) => lines.push(line));
+    expect(lines).toEqual([`::add-mask::${"a".repeat(32)}`]);
+    maskInLog("b".repeat(32), {}, (line) => lines.push(line));
+    expect(lines).toHaveLength(1);
   });
 
   it("starts the pair equal: a dark run that makes the hook sets the doors' secret too",

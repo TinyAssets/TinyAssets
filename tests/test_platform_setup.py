@@ -239,7 +239,16 @@ def test_workos_deletes_the_repository_copies_only_when_asked_and_production_hol
     assert capsys.readouterr().out.splitlines() == [
         "WORKOS_API_KEY: already set (updated 2026-11-05T09:00:00Z)",
         "WORKOS_API_KEY (repository): deleted", "WORKOS_AUTHKIT_DOMAIN (repository): deleted"]
-    assert setup.main(["workos", "--delete-repo-copies"], gh=_gh(fake)) == 0
+
+    # The command line's flag, end to end: a fresh repository whose production holds the key.
+    fresh = Fake(secrets={None: {"WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN"},
+                          "production": {"WORKOS_API_KEY"}})
+    assert setup.main(["workos", "--delete-repo-copies"], gh=_gh(fresh)) == 0
+    assert fresh.secrets[None] == set() and fresh.stored == {}
+    # Without the flag the same command keeps them.
+    kept = Fake(secrets={None: {"WORKOS_API_KEY"}, "production": {"WORKOS_API_KEY"}})
+    assert setup.main(["workos"], gh=_gh(kept)) == 0
+    assert kept.secrets[None] == {"WORKOS_API_KEY"}
 
 
 @pytest.mark.verifies(
@@ -255,6 +264,26 @@ def test_workos_reads_one_line_of_stdin_when_it_is_not_a_terminal(monkeypatch) -
     monkeypatch.setattr(sys, "stdin", io.StringIO("sk_live_piped\r\n"))
     assert setup.main(["workos"], gh=_gh(fake)) == 0
     assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_live_piped"
+
+
+@pytest.mark.verifies(
+    "clean-sheet-platform:Sign-up is the platform's explicit admit, "
+    "and erasure its outside record")
+def test_workos_fails_loudly_when_the_stored_key_does_not_read_back(capsys) -> None:
+    fake = Fake(secrets={None: {"WORKOS_API_KEY"}})
+    inner = _gh_cli(fake, [])
+
+    def run(argv, input=None, **kwargs):
+        done = inner(argv, input=input, **kwargs)
+        if argv[1:3] == ["secret", "set"]:
+            # GitHub took the write, but the key is not there when read back.
+            fake.secrets["production"].discard(argv[3])
+        return done
+
+    with pytest.raises(setup.SetupError, match="does not read back from production"):
+        setup.workos(setup.Gh(run=run), lambda _: "sk_live_pasted")
+    assert "WORKOS_API_KEY: set" not in capsys.readouterr().out
+    assert fake.secrets[None] == {"WORKOS_API_KEY"}
 
 
 @pytest.mark.verifies(
@@ -547,3 +576,7 @@ def test_the_docs_give_the_windows_command() -> None:
         assert "SETUP_PAT" not in text and "platform-setup.yml" not in text, doc
     for command in ("secrets", "variables", "workos", 'review-app --code "'):
         assert f"python scripts/platform_setup.py {command}" in checklist, command
+    # The key comes from the clipboard, in PowerShell or from Git Bash, never the chat.
+    assert "`Get-Clipboard | python scripts/platform_setup.py workos`" in checklist
+    assert ("`powershell.exe -NoProfile -Command Get-Clipboard | python "
+            "scripts/platform_setup.py workos`") in checklist
