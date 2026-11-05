@@ -692,83 +692,13 @@ export class Backups {
       if (this.#parts.halted()) {
         return true;  // an erasure begun while the log shipped: no burst begins
       }
-      // A burst of whole base pages, each read in a unit of its own, with no outside call
-      // between them; the unit that reads the last fixes E, the log's last seq then. Each
-      // page's lines encoded once, into one buffer, as its parts will hold them: the burst
-      // bounded by their bytes. Its units of the pool taken first, now or refused `busy`
-      // (nothing read yet: the lane goes on after `MANIFEST_BUSY_RETRY_S`), and held to its
-      // parts' record, its pages and parts in hand throughout.
-      let e: number | null = null;
-      const pool = this.#pool;
-      const slot = await unitsNow(pool, BURST_UNITS);
-      try {
-        const lines: Lines[] = [];
-        let size = 0;
-        let next: string | null = at.cursor;
-        let endedAt = 0;
-        const sizes = this.#parts.sizes ?? GENERATION_SIZES;
-        while (size < sizes.gather) {
-          const page = await this.#page(at, next, sizes.page);
-          for (const each of page.lines) {
-            lines.push(each);
-            size += each.bytes.byteLength;
-          }
-          if (page.next === null) {
-            e = page.last;
-            endedAt = page.at;
-            break;
-          }
-          next = encodeCursor(page.next);
-        }
-        // Parts of whole lines, at most a chunk each, so an export streams them as they are.
-        const parts = cutParts(lines, sizes.part);
-        // The pages let go once cut: the parts hold their bytes from here on (the memory
-        // leg samples the cut, the pages and parts both in hand).
-        if (pool.observe !== null) {
-          await pool.observe(BURST_UNITS);
-        }
-        lines.length = 0;
-        if (parts.some((bytes) => bytes.byteLength > (sizes.most ?? CHUNK_BYTES))) {
-          await this.#abandon(ns, at, MANIFEST_LINE);
-          return true;
-        }
-        if (at.parts + at.segments + parts.length > MANIFEST_PARTS) {
-          await this.#abandon(ns, at, MANIFEST_CEILING);
-          return true;
-        }
-        const written: { sha256: string; size: number }[] = [];
-        for (const bytes of parts) {
-          if (this.#parts.halted()) {
-            return true;
-          }
-          // No segment is built between them: the log a burst's puts leave is shipped once
-          // its parts are recorded and let go, under its own hold (rvburst W1), so a burst
-          // never holds its parts and a segment's build at once.
-          written.push(await this.#parts.store.putManifestPart(ns, key, at.gen,
-                                                               at.parts + written.length, bytes));
-        }
-        const added = written.map((put) => `${put.sha256}:${put.size}`).join(",");
-        await this.#write(() => this.#parts.storage.transactionSync(() => {
-          this.#sql.exec(
-            "UPDATE owner_backups SET cursor = ?, parts = ?, bytes = bytes + ?, retry_at = NULL, " +
-              "part_list = part_list || CASE WHEN part_list = '' OR ? = '' THEN '' ELSE ',' END " +
-              "|| ? WHERE gen = ? AND parts = ?",
-            e === null ? next : ENDED, at.parts + written.length,
-            written.reduce((sum, put) => sum + put.size, 0), added, added, at.gen, at.parts);
-          if (e !== null) {
-            // The base's last page is held: E stands, and capture stops.
-            this.#sql.exec("UPDATE owner_backups SET e = ?, ended_at = ? WHERE gen = ?", e,
-                           endedAt / 1000, at.gen);
-            log.end(e);
-          }
-        }));
-        parts.length = 0;  // recorded: let go before the log ships
-        if (pool.observe !== null) {
-          await pool.observe(BURST_UNITS);
-        }
-      } finally {
-        slot.release();
+      // A burst of whole base pages, its parts put and recorded (`#burst`), in a frame of
+      // its own, so nothing of it is live once its log ships (rvburst X2).
+      const burst = await this.#burst(ns, key, at);
+      if (burst === "ended") {
+        return true;
       }
+      const e = burst.e;
       // And the log written while the burst's parts were put and recorded, before the next
       // burst, each segment under its own hold (cut at E once fixed).
       if (await this.#ship(ns, key, at, log.state().last, until, e) === null) {
@@ -777,5 +707,92 @@ export class Backups {
       }
     }
     return false;
+  }
+
+  /**
+   * One burst of generation `at`: whole base pages, each read in a unit of its own, with no
+   * outside call between them (the unit that reads the last fixes E, the log's last seq
+   * then), cut into parts, put, and recorded. Each page's lines encoded once, into one
+   * buffer, as its parts will hold them: the burst bounded by their bytes. Its units of the
+   * pool taken first, now or refused `busy` (nothing read yet: the lane goes on after
+   * `MANIFEST_BUSY_RETRY_S`), and held to its parts' record, its pages and parts in hand
+   * throughout. A frame of its own, so all it held is let go before the log ships. E if
+   * the base is read, or "ended" (given up or halted).
+   */
+  async #burst(ns: string, key: string, at: GenerationRow):
+      Promise<{ e: number | null } | "ended"> {
+    const log = this.#parts.log;
+    let e: number | null = null;
+    const pool = this.#pool;
+    const slot = await unitsNow(pool, BURST_UNITS);
+    try {
+      const lines: Lines[] = [];
+      let size = 0;
+      let next: string | null = at.cursor;
+      let endedAt = 0;
+      const sizes = this.#parts.sizes ?? GENERATION_SIZES;
+      while (size < sizes.gather) {
+        const page = await this.#page(at, next, sizes.page);
+        for (const each of page.lines) {
+          lines.push(each);
+          size += each.bytes.byteLength;
+        }
+        if (page.next === null) {
+          e = page.last;
+          endedAt = page.at;
+          break;
+        }
+        next = encodeCursor(page.next);
+      }
+      // Parts of whole lines, at most a chunk each, so an export streams them as they are.
+      const parts = cutParts(lines, sizes.part);
+      // The pages let go once cut: the parts hold their bytes from here on (the memory
+      // leg samples the cut, the pages and parts both in hand).
+      if (pool.observe !== null) {
+        await pool.observe(BURST_UNITS);
+      }
+      lines.length = 0;
+      if (parts.some((bytes) => bytes.byteLength > (sizes.most ?? CHUNK_BYTES))) {
+        await this.#abandon(ns, at, MANIFEST_LINE);
+        return "ended";
+      }
+      if (at.parts + at.segments + parts.length > MANIFEST_PARTS) {
+        await this.#abandon(ns, at, MANIFEST_CEILING);
+        return "ended";
+      }
+      const written: { sha256: string; size: number }[] = [];
+      for (const bytes of parts) {
+        if (this.#parts.halted()) {
+          return "ended";
+        }
+        // No segment is built between them: the log a burst's puts leave is shipped once
+        // its parts are recorded and let go, under its own hold (rvburst W1), so a burst
+        // never holds its parts and a segment's build at once.
+        written.push(await this.#parts.store.putManifestPart(ns, key, at.gen,
+                                                             at.parts + written.length, bytes));
+      }
+      const added = written.map((put) => `${put.sha256}:${put.size}`).join(",");
+      await this.#write(() => this.#parts.storage.transactionSync(() => {
+        this.#sql.exec(
+          "UPDATE owner_backups SET cursor = ?, parts = ?, bytes = bytes + ?, retry_at = NULL, " +
+            "part_list = part_list || CASE WHEN part_list = '' OR ? = '' THEN '' ELSE ',' END " +
+            "|| ? WHERE gen = ? AND parts = ?",
+          e === null ? next : ENDED, at.parts + written.length,
+          written.reduce((sum, put) => sum + put.size, 0), added, added, at.gen, at.parts);
+        if (e !== null) {
+          // The base's last page is held: E stands, and capture stops.
+          this.#sql.exec("UPDATE owner_backups SET e = ?, ended_at = ? WHERE gen = ?", e,
+                         endedAt / 1000, at.gen);
+          log.end(e);
+        }
+      }));
+      parts.length = 0;  // recorded: let go before the log ships
+      if (pool.observe !== null) {
+        await pool.observe(BURST_UNITS);
+      }
+    } finally {
+      slot.release();
+    }
+    return { e };
   }
 }

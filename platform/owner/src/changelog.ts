@@ -106,7 +106,12 @@ export class ChangeLog {
    */
   pending(through: number): { a: number; b: number } | null {
     const at = this.state();
-    if (at.pending_a !== null && at.pending_b !== null) {
+    // A span pinned before `pending` sized as written (rvburst X3) whose segment is past a
+    // part as written was never put (`segment` refuses it, and the files Worker would), so
+    // it is sized again from `shipped`; any other pinned span stands, as a put of it may
+    // have landed.
+    if (at.pending_a !== null && at.pending_b !== null
+        && this.#writtenBytes(at.pending_a, at.pending_b) <= CHUNK_BYTES) {
       return { a: at.pending_a, b: at.pending_b };
     }
     let b = at.shipped;
@@ -144,10 +149,7 @@ export class ChangeLog {
   async segment(a: number, b: number, sample?: () => Promise<void>): Promise<Uint8Array> {
     // Each key's last seq, and its stored bytes, found by SQLite (its key columns read by
     // `json_extract`): no line read into the isolate for it (rvburst W1).
-    const kept = this.#sql.exec<{ seq: number; n: number }>(
-      "SELECT max(seq) AS seq, n FROM (SELECT seq, length(CAST(line AS BLOB)) AS n, " +
-        `json_extract(line, '$.table') AS tbl, ${keyOf()} AS k FROM change_log WHERE seq > ? ` +
-        "AND seq <= ?) GROUP BY tbl, k ORDER BY seq", a, b).toArray();
+    const kept = this.#kept(a, b);
     const wide = this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM change_log WHERE seq > ? AND seq <= ? AND " +
         "json_extract(line, '$.t') NOT IN ('row', 'gone')", a, b).one().n;
@@ -181,7 +183,29 @@ export class ChangeLog {
         }
       }
     }
-    return out.subarray(0, at);
+    // Its own bytes, exactly: a view of the part's buffer would carry all of it over RPC
+    // (workerd serializes a view's whole backing buffer: rvburst X1). The rows' texts are let
+    // go by now, so the copy sits beside the buffer alone, within `SHIP_BYTES`.
+    return out.slice(0, at);
+  }
+
+  /** Each key's last seq after `a` through `b`, and its stored bytes (`keyOf`). A read. */
+  #kept(a: number, b: number): { seq: number; n: number }[] {
+    return this.#sql.exec<{ seq: number; n: number }>(
+      "SELECT max(seq) AS seq, n FROM (SELECT seq, length(CAST(line AS BLOB)) AS n, " +
+        `json_extract(line, '$.table') AS tbl, ${keyOf()} AS k FROM change_log WHERE seq > ? ` +
+        "AND seq <= ?) GROUP BY tbl, k ORDER BY seq", a, b).toArray();
+  }
+
+  /** The bytes the segment after `a` through `b` takes as written, each kept line once. */
+  #writtenBytes(a: number, b: number): number {
+    let bytes = 0;
+    for (const { seq } of this.#kept(a, b)) {
+      const stored = this.#sql.exec<{ line: string }>(
+        "SELECT line FROM change_log WHERE seq = ?", seq).one().line;
+      bytes += Buffer.byteLength(writtenLine(seq, stored), "utf8") + 1;
+    }
+    return bytes;
   }
 
   /** In a unit: the segment through `b` acknowledged: shipped, and its lines gone. */

@@ -110,7 +110,9 @@ export const MOVE_PASS_UNITS = 3;
 /**
  * A log segment's one buffer at most (`ChangeLog.segment`): exactly its bytes as written,
  * allocated once and never grown, never past a part (`CHUNK_BYTES`): `pending` sizes it by
- * its lines as written, so it always fits one.
+ * its lines as written, so it always fits one. It is returned as an exact copy (a view would
+ * carry the whole part over RPC: rvburst X1), beside the buffer once its rows are let go,
+ * so twice it at most, within `SHIP_BYTES`.
  */
 export const SEGMENT_BUFFER_BYTES = CHUNK_BYTES;
 

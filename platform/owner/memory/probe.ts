@@ -165,6 +165,11 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
   /** A log segment as the files Worker takes it: a checkpoint while its call holds it. */
   async putManifestSegment(_ns: string, _key: string, _gen: string, _a: number, _b: number,
                            bytes: Uint8Array): Promise<{ sha256: string; size: number }> {
+    // What crossed the RPC is the segment's own bytes, never a larger buffer (rvburst X1).
+    if (bytes.buffer.byteLength !== bytes.byteLength) {
+      throw new Error(`a segment arrived as a view of ${bytes.byteLength} bytes of a ` +
+                      `${bytes.buffer.byteLength}-byte buffer`);
+    }
     await checkpoint(this.env, undefined, "store-segment");
     return { sha256: sha(bytes), size: bytes.byteLength };
   }
