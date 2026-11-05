@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "test": "npm run test:workerd && npm run test:memory",
-    "test:workerd": "vitest run",
-    "test:memory": "node memory/leg.mjs"
+    "test:workerd": "vitest run --tags-filter=!large",
+    "test:memory": "node memory/leg.mjs",
+    "test:sizes": "vitest run --tags-filter=large"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.9",

@@ -10,6 +10,8 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
+import { CLASS_CHECK, LARGE, medium } from "../ci/classes";
+
 const PLATFORM = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = join(PLATFORM, "files");
 const GATEWAY = join(PLATFORM, "gateway");
@@ -186,6 +188,7 @@ const FILES_RING = JSON.stringify({
 
 export default defineConfig({
   test: {
+    tags: [LARGE],
     projects: [
       {
         // Runs in workerd. OWNER is bound for the tests only: wrangler.jsonc gives the
@@ -232,8 +235,8 @@ export default defineConfig({
           }),
         ],
         // `test/admitted.ts` admits each owner a test names, as sign-up does (slice L).
-        test: { name: "workerd", include: ["test/**/*.test.ts"],
-                setupFiles: ["./test/admitted.ts"] },
+        test: { name: "workerd", ...medium("owner/workerd"), include: ["test/**/*.test.ts"],
+                setupFiles: [CLASS_CHECK, "./test/admitted.ts"] },
       },
       {
         // Static guards over the source and config, in Node. The migrations guard imports
@@ -241,7 +244,8 @@ export default defineConfig({
         // (`guards/lifecycle-stub.ts`), since the real one loads `cloudflare:` modules.
         resolve: { alias: { "agents/lifecycle": join(PLATFORM, "owner", "guards",
                                                      "lifecycle-stub.ts") } },
-        test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node" },
+        test: { name: "guards", ...medium("owner/guards"), include: ["guards/**/*.test.ts"],
+                environment: "node" },
       },
     ],
   },

@@ -6,6 +6,8 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
+import { LARGE, medium } from "../ci/classes";
+
 const SANDBOX = dirname(fileURLToPath(import.meta.url));
 
 /** The fake E2B (`test/fake-e2b.ts`), transpiled: E2B's two hosts, in tests only. */
@@ -26,6 +28,7 @@ function fakeE2b() {
 
 export default defineConfig({
   test: {
+    tags: [LARGE],
     projects: [
       {
         // Runs in workerd, from the config's own bindings: its class, the directory and its
@@ -43,16 +46,17 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd", include: ["test/**/*.test.ts"] },
+        test: { name: "workerd", ...medium("sandbox/workerd"), include: ["test/**/*.test.ts"] },
       },
       {
         // The runner, in Node, against fake CLIs and a fake doors server.
-        test: { name: "runner", include: ["runner/**/*.test.ts"], environment: "node",
-                testTimeout: 30_000 },
+        test: { name: "runner", ...medium("sandbox/runner"), include: ["runner/**/*.test.ts"],
+                environment: "node" },
       },
       {
         // Static guards over the source and config, in Node.
-        test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node" },
+        test: { name: "guards", ...medium("sandbox/guards"), include: ["guards/**/*.test.ts"],
+                environment: "node" },
       },
     ],
   },

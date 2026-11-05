@@ -118,7 +118,7 @@ describe("the change log", () => {
       expect(await sqlIn(o.stub, "SELECT capturing, gen FROM log_capture"))
         .toEqual([{ capturing: 0, gen: null }]);
     }
-  }, 120_000);
+  });
 
   it("logs a connection's widest row whole: its token refresh fails no generation (review " +
      "L5-1)", async () => {
@@ -147,7 +147,7 @@ describe("the change log", () => {
     const images = made.lines.filter((line) => line.t === "row" && line.table === "connections");
     expect(images.length).toBeGreaterThan(1);
     expect(made.lines.some((line) => (line as { t: string }).t === "wide")).toBe(false);
-  }, 120_000);
+  });
 
   it("marks an image past IMAGE_MAX, the backstop: the write lands and the generation fails",
      async () => {

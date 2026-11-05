@@ -84,7 +84,7 @@ interface Passed {
 describe("the template", () => {
   it("is the one built from the runner and the records as they stand", () => {
     expect(pinned()).toBe(`tinyassets-sandbox:${tag()}`);
-  }, 60_000);
+  });
 
   it("is pinned only once it passed both standing checks, for every record (review L-b)",
      () => {

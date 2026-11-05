@@ -10,6 +10,8 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
+import { LARGE, medium } from "../ci/classes";
+
 const DOORS = dirname(fileURLToPath(import.meta.url));
 const GATEWAY = join(DOORS, "..", "gateway");
 const HOOKS = join(DOORS, "..", "hooks");
@@ -143,6 +145,7 @@ const KEYRING = JSON.stringify({ active: "k1", keys: { k1: randomBytes(32).toStr
 
 export default defineConfig({
   test: {
+    tags: [LARGE],
     projects: [
       {
         // Runs in workerd, against the config's own KV namespaces, flags and GATEWAY
@@ -173,11 +176,12 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd", include: ["test/**/*.test.ts"] },
+        test: { name: "workerd", ...medium("doors/workerd"), include: ["test/**/*.test.ts"] },
       },
       {
         // Static guards over the source and config, in Node.
-        test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node" },
+        test: { name: "guards", ...medium("doors/guards"), include: ["guards/**/*.test.ts"],
+                environment: "node" },
       },
     ],
   },

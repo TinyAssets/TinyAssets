@@ -124,7 +124,7 @@ describe("the manifest charge", () => {
         expect(sql.databaseSize - size).toBeLessThanOrEqual(charged() - bytesBefore);
       });
       await counted(r);
-    }, 120_000);
+    });
 });
 
 describe("path lengths", () => {
@@ -465,7 +465,7 @@ describe("the manifest charge at worst fill", () => {
   });
 
   it("bounds what a database filled, thinned and filled again grows by, at WORST_FILL",
-     async () => {
+     { tags: ["large"] }, async () => {
     const r = await rig();
     const ratios = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const files = filesOn(state.storage, new WriteGate(state.storage).write, undefined, {
@@ -506,7 +506,7 @@ describe("the manifest charge at worst fill", () => {
     expect(Math.max(...ratios)).toBeGreaterThan(ratios[0]!);
     expect(Math.max(...ratios)).toBeLessThanOrEqual(WORST_FILL);
     await counted(r);
-  }, 300_000);
+  });
 
   it("charges a history row's entries in the prune-time and released indexes", async () => {
     const r = await rig();
@@ -697,7 +697,7 @@ describe("the model calls and spend counters", () => {
       expect(() => sql.exec("INSERT INTO model_spend (period, source, cost) VALUES " +
                             "('d:x', 'one more', 0)")).toThrow(/model_spend_full/);
     });
-  }, 120_000);
+  });
 });
 
 /** A small deterministic PRNG. */
@@ -711,7 +711,7 @@ function prng(seed: number): () => number {
 
 describe("a random sequence of changes", () => {
   it.each([1, 2, 3, 4])("keeps every counter and scope reference equal to a recount, seed %i",
-                        async (seed) => {
+                        { tags: ["large"] }, async (seed) => {
     const r = await rig();
     const rand = prng(seed);
     const pick = <T,>(items: readonly T[]): T => items[Math.floor(rand() * items.length)]!;
@@ -769,7 +769,7 @@ describe("a random sequence of changes", () => {
     expect(broken).toEqual([]);
     expect(done).toBeGreaterThan(40);
     await counted(r);
-  }, 300_000);
+  });
 });
 
 describe("the files policy's byte quota and shares", () => {

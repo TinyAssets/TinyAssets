@@ -192,7 +192,7 @@ describe("the owner export", () => {
         cursor: bad, export_id: whole.exportId }))).message)
         .toBe("an export cursor is one a page handed out");
     }
-  }, 120_000);
+  });
 
   it("is the owner's alone, in its session: no outside client, no call without the session",
      async () => {
@@ -232,7 +232,7 @@ describe("the owner export", () => {
     expect(a.lines).toEqual(b.lines);
     expect(await sqlIn(o.stub, "SELECT COUNT(DISTINCT gen) AS n FROM owner_exports"))
       .toEqual([{ n: 1 }]);
-  }, 60_000);
+  });
 });
 
 describe("a generation", () => {
@@ -254,7 +254,7 @@ describe("a generation", () => {
     expect(after).toBeGreaterThan(5);
     expect(made.atE).toBeDefined();
     expect(digest(replay(made.lines))).toBe(made.atE);
-  }, 120_000);
+  });
 
   it("carries the starter's receipts as they change while it runs (slice STARTER)",
      async () => {
@@ -294,9 +294,10 @@ describe("a generation", () => {
     expect(Object.keys(rows["starter_receipts"]!)).toHaveLength(2);
     expect(Object.values(rows["starter_state"]!).map((row) => JSON.parse(row)["version"]))
       .toEqual([2]);
-  }, 120_000);
+  });
 
-  it("settles though a 5,000-file sync runs through its pass (review R4-3)", async () => {
+  it("settles though a 5,000-file sync runs through its pass (review R4-3)", { tags: ["large"] },
+     async () => {
     const o = await owner();
     await notices(o, 1_600);  // some twenty-five bursts: hundreds of units and calls
     let written = 0;
@@ -311,10 +312,10 @@ describe("a generation", () => {
       .toMatchObject({ written: 5000, notices: [] });
     expect(made.atE).toBeDefined();
     expect(digest(replay(made.lines))).toBe(made.atE);
-  }, 120_000);
+  });
 
   it("repeats only what was not acknowledged, wherever a pass is cut: before or after " +
-     "each outside call (review R4-1; crash points)", async () => {
+     "each outside call (review R4-1; crash points)", { tags: ["large"] }, async () => {
     const plain = await owner();
     await notices(plain, 100);  // two bursts: segments before E and after
     const { calls, lines } = await generate(plain.stub, { duringCall: busy(3) });
@@ -330,7 +331,7 @@ describe("a generation", () => {
         expect([call, when, digest(replay(made.lines))]).toEqual([call, when, made.atE]);
       }
     }
-  }, 600_000);
+  });
 
   it("gives up one a migration ran under, loudly, and begins a fresh one under the new " +
      "schema: never two schemas in one (review L5-2)", async () => {
@@ -348,7 +349,7 @@ describe("a generation", () => {
     // Its lines are one schema's, and replayed they are the owner at E.
     expect(after.lines[0]).toMatchObject({ t: "header", schema: MIGRATIONS.length + 1 });
     expect(digest(replay(after.lines))).toBe(after.atE);
-  }, 120_000);
+  });
 
   it("gives up one with a line longer than any part may be, loudly and the owner told " +
      "once, never a part no root may name (review rvbackup 5)", async () => {
@@ -584,7 +585,7 @@ describe("an open export", () => {
     await drainDue(o.stub);
     expect(await bucket().getManifestRoot(ns, gen)).toBeNull();
     expect(await bucket().getManifestRoot(ns, made.gen)).not.toBeNull();
-  }, 60_000);
+  });
 });
 
 describe("the nightly manifest", () => {
