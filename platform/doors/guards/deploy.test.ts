@@ -364,7 +364,7 @@ describe("the deploy kit", () => {
       const method = init?.method ?? "GET";
       calls.push(`${method} ${path}`);
       if (path === "/zones?name=tinyassets.io") {
-        return ok([{ id: "z" }]);
+        return ok([{ id: "z", account: { id: "a".repeat(32) } }]);
       }
       if (method === "GET" && path === "/zones/z/workers/routes") {
         return ok([...table.values()]);
@@ -397,7 +397,8 @@ describe("the deploy kit", () => {
   it("hands each route from the old proxy to the doors one at a time, no path unserved " +
      "(review D3)", async () => {
     const fake = zoneApi(LIVE);
-    const zone = await zoneOf(fake);
+    const { id: zone, account } = await zoneOf(fake);
+    expect(account).toBe("a".repeat(32));
     const steps = handover(await routesOf(fake, zone), DOORS, ROUTES);
     // Identical patterns move in place; a narrower old one is deleted after the doors' wider
     // one exists; a wider old one (app*, api*) keeps only the paths the doors do not cover.
@@ -424,6 +425,14 @@ describe("the deploy kit", () => {
     await expect(runHandover(fake, "z", DOORS, steps)).rejects.toThrow(/the steps before it/);
     expect(fake.calls.filter((call) => call.startsWith("DELETE"))).toEqual([]);
     await expect(zoneOf(api({}))).rejects.toThrow(/could not be read/);
+    // The account is the zone's own: one zone, with its account, or the kit stops.
+    const zones = (result: unknown) => api({ "/zones?name=tinyassets.io": ok(result) });
+    await expect(zoneOf(zones([{ id: "z" }]))).rejects.toThrow(/could not be read/);
+    await expect(zoneOf(zones([{ id: "z", account: { id: "a".repeat(32) } },
+                               { id: "y", account: { id: "b".repeat(32) } }])))
+      .rejects.toThrow(/2 found/);
+    await expect(zoneOf(zones([{ id: "z", account: { id: "../x" } }])))
+      .rejects.toThrow(/could not be read/);
     await expect(routesOf(api({}), "z")).rejects.toThrow(/could not be read/);
   });
 
@@ -531,6 +540,9 @@ describe("the deploy kit", () => {
     for (const name of SECRET_INPUTS) {
       expect(plan).not.toContain(name);
     }
+    // The account is read from the zone (`zoneOf`), never held as an input.
+    expect(PUBLIC_INPUTS).not.toContain("CLOUDFLARE_ACCOUNT_ID");
+    expect(workflow).not.toContain("CLOUDFLARE_ACCOUNT_ID");
     for (const name of PUBLIC_INPUTS) {
       expect(plan).toMatch(new RegExp(`${name}: \\$\\{\\{ (secrets|vars)\\.${name} \\}\\}`));
     }

@@ -6,9 +6,9 @@
  *
  * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, from `main`: a
  * `plan` job runs `--public` with the Cloudflare token alone and prints the plan to the job
- * summary; the `apply` job then waits for the main-only `production` environment (and its
- * required reviewer, when set) and runs `--yes` with that environment's secrets, never a
- * host's (Direction 8).
+ * summary; the `apply` job then runs `--yes` in the main-only `production` environment,
+ * with that environment's secrets, never a host's (Direction 8). The Cloudflare account is
+ * the zone's (`zoneOf`).
  *
  *   node --experimental-strip-types platform/deploy/deploy.ts               # the plan
  *   node --experimental-strip-types platform/deploy/deploy.ts --public      # the plan job's
@@ -41,7 +41,7 @@
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that
  *   the API says does not exist yet; the kit never makes a secret's value. The keyrings
  *   and `ROUTING_MAC_KEY` come from the secret store like the rest (`keyring-new` makes the
- *   first keyring locally, for the founder to store); a held one is never replaced, unless
+ *   first keyring, which platform-setup.yml stores); a held one is never replaced, unless
  *   `--rotate` names it, and a keyring is rotated only by adding a key (the new keyring
  *   must hold two or more keys, the active one among them). Cloudflare never shows a held
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
@@ -119,7 +119,7 @@ export const CALLBACK = "https://tinyassets.io/oauth/upstream/callback";
 export const DOORS = "tinyassets-doors";
 /** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
-  "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
+  "CLOUDFLARE_API_TOKEN", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
 /** What only the apply job holds: the production environment's secrets. */
 export const SECRET_INPUTS: readonly string[] = Object.freeze([
   "WORKOS_API_KEY", "E2B_API_KEY", "ROUTING_MAC_KEY", "GATEWAY_KEYRING", "FILES_KEYRING",
@@ -329,15 +329,23 @@ export function narrower(narrow: string, wide: string): boolean {
   return narrow !== wide && wide.endsWith("*") && narrow.startsWith(base(wide));
 }
 
-/** The zone's id, by its name; a failed read throws. */
-export async function zoneOf(api: CfApi): Promise<string> {
+/**
+ * The zone, by its name: its id, and the id of the account that holds it. That account is
+ * the one the doors' routes need their Workers in, so the kit reads it here and holds no
+ * account id of its own. A failed read, or any answer but one zone with its account, throws.
+ */
+export async function zoneOf(api: CfApi): Promise<{ id: string; account: string }> {
   const zones = await api(`/zones?name=${ZONE}`);
-  const zone = Array.isArray(zones.body.result)
-    ? (zones.body.result as { id?: string }[])[0]?.id : undefined;
-  if (zones.status !== 200 || zones.body.success !== true || zone === undefined) {
-    throw new Error(`the zone ${ZONE} could not be read (${zones.status})`);
+  const rows = Array.isArray(zones.body.result)
+    ? zones.body.result as { id?: unknown; account?: { id?: unknown } }[] : [];
+  const id = rows[0]?.id;
+  const account = rows[0]?.account?.id;
+  if (zones.status !== 200 || zones.body.success !== true || rows.length !== 1
+      || typeof id !== "string" || typeof account !== "string"
+      || !/^[0-9a-f]{32}$/.test(account)) {
+    throw new Error(`the zone ${ZONE} could not be read (${zones.status}, ${rows.length} found)`);
   }
-  return zone;
+  return { id, account };
 }
 
 /** The zone's Worker routes; a failed read throws. */
@@ -799,8 +807,10 @@ async function main(): Promise<void> {
     throw new Error(refused);
   }
   plan.push("the migration lock pins every migration the owner Worker ships");
-  const account = input("CLOUDFLARE_ACCOUNT_ID")!;
   const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
+  // The account is the zone's (`zoneOf`), and wrangler is handed that one.
+  const { id: zone, account } = await zoneOf(api);
+  process.env["CLOUDFLARE_ACCOUNT_ID"] = account;
   // The live checks, before anything is changed.
   const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"),
                                       input("OWNER_TOKEN_CLAIMS"));
@@ -825,10 +835,8 @@ async function main(): Promise<void> {
     throw new Error(`the pair ${pair} has not passed its standing checks in this E2B team: ` +
                     "run the pair job (--pair) first; nothing is deployed");
   }
-  let zone: string | undefined;
   let steps: RouteStep[] = [];
   if (routes) {
-    zone = await zoneOf(api);
     steps = handover(await routesOf(api, zone), DOORS, ROUTES);
   }
   const titles = await namespacesOf(api, account);
@@ -862,6 +870,8 @@ async function main(): Promise<void> {
   for (const queue of queues) {
     ensure("queue", queue, apply, plan);
   }
+  // Reached only when every listing answered: a token without the scope stops above.
+  plan.push("the Cloudflare token listed the account's KV namespaces, R2 buckets and queues");
   const out = mkdtempSync(join(tmpdir(), "tinyassets-deploy-"));
   try {
     const paths: Record<string, string> = {};
@@ -920,7 +930,7 @@ async function main(): Promise<void> {
       plan.push(...steps.map((step) => describeStep(step, DOORS)));
       plan.push(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
       if (apply) {
-        await runHandover(api, zone!, DOORS, steps);
+        await runHandover(api, zone, DOORS, steps);
         const routed = join(out, "doors", "routed.json");
         writeFileSync(routed, JSON.stringify(deployedConfig("doors", ids, upstream, true),
                                              null, 2));

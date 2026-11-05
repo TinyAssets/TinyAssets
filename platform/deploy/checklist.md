@@ -2,81 +2,102 @@
 
 The kit is `platform/deploy/deploy.ts`. It runs from the manual workflow **Platform deploy
 (manual, founder-approved)** (`.github/workflows/platform-deploy.yml`), on `main` only, in
-two jobs:
+three jobs:
 
 1. **`plan`** prints what the run would change to the job summary. It holds only the
    Cloudflare token and the repo's variables, and changes nothing.
-2. **`apply`** waits for the plan job, then for the main-only `production` environment. With
-   you as that environment's required reviewer, GitHub holds it until you approve it, with
-   the plan already on the page. It then runs the kit with `--yes`.
+2. **`pair`** (modes `dark` and `routes`) checks the pinned E2B template with the runner this
+   commit ships, unless E2B already holds their pair's tag (`deploy.ts --pair`: three
+   throwaway sandboxes, up to about 50 minutes, the E2B key alone).
+3. **`apply`** runs the kit with `--yes`, in the main-only `production` environment.
 
-Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and approve.
+Starting a run with a mode other than `plan` is the approval. Do not add a required reviewer
+to `production`: the uptime canary, the DR drill, deploy-prod and the host installs run there
+on their own, and a reviewer would hold every one of them for a click.
 
-**The go-ahead deploy** is that first approved `dark` run. It turns on the platform's storage,
-secrets, six Workers and control record (every gate closed), and nothing public: it moves no
-route, so `tinyassets.io` keeps serving the old stack. The doors go live only with mode
-`routes`, at the cutover.
+**The go-ahead deploy** is the first `dark` run. It turns on the platform's storage, secrets,
+six Workers and control record (every gate closed), and nothing public: it moves no route,
+so `tinyassets.io` keeps serving the old stack. The doors go live only with mode `routes`,
+at the cutover.
 
 ## Before you run it
 
-- **Your approval.** Add yourself as the `production` environment's required reviewer
-  (`docs/host-actions.md`), so the apply job waits for you after its plan. Whether it has
-  one today is **unverified** here. Without one, starting a run with a mode other than
-  `plan` is the approval.
-- **The secrets and variables.** The kit reads nothing from a host.
-  - The `production` environment's secrets: `WORKOS_API_KEY`, `E2B_API_KEY`,
-    `ROUTING_MAC_KEY`, `GATEWAY_KEYRING`, `FILES_KEYRING`, `E2B_WEBHOOK_SECRET`,
-    `TINYASSETS_WIKI_CANARY_TOKEN` (the handles canary's), and, if you want Slack events,
-    `INBOUND_SLACK_SIGNING_SECRET`.
-  - `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets, where
-    `deploy-worker.yml` already reads them. The plan job reads them too; the repo's
-    workflow guard counts neither as a production secret.
-  - Repository variables, which are not secrets: `OWNER_ISSUER` (AuthKit's production issuer
-    URL), `WORKOS_CLIENT_ID`, and `OWNER_TOKEN_CLAIMS` (below).
-  - `WORKOS_API_KEY` lives on the production host today. Move it once, the way
-    `copy-secrets-to-production.yml` moved the others.
-  - `ROUTING_MAC_KEY` is one random 32-byte value you make and store. The kit never makes it.
-  - `GATEWAY_KEYRING` and `FILES_KEYRING` (the files Worker's data keys' ring), each its own:
-    make the first one locally with
-    `node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>`, store the
-    file's contents, then delete the file.
-  - `E2B_WEBHOOK_SECRET`: the signature secret you register with E2B's sandbox lifecycle
-    webhook (`/hooks/e2b/lifecycle`). Its registration at E2B is owed (tasks.md).
+Your steps, in order. The rest is a workflow's or a session's.
+
+1. **Cloudflare: done** (founder, 2026-11-05). The account is on Workers Paid, and the
+   token behind `CLOUDFLARE_API_TOKEN` has R2 Storage, KV Storage and Queues edit. The
+   `plan` job lists all three, so a missing scope stops it. Zone: Workers Routes Edit is
+   still owed before mode `routes`.
+2. **GitHub: Settings, Environments, `production`, Add secret**, twice:
+   - `E2B_API_KEY`, from the E2B dashboard of the team that holds the template. No run has
+     shown one at repository scope; if one is there, the setup moves it here and deletes
+     that copy.
+   - `SETUP_PAT`: a fine-grained token for this repository only, expiring in one day, with
+     Actions: read, and Administration, Environments, Secrets and Variables: read and write.
+     Administration only makes the `review` environment; leave it out if you skip step 3.
+     The setup deletes this secret when it ends; the token itself expires the next day.
+3. **Optional, the review App.** Open the review App page (`platform/deploy/review-app.html`)
+   and click its button, then **Create GitHub App** on GitHub (you must be an owner of the
+   organization). GitHub lands on the Platform setup workflow with `?code=` in the address
+   bar: copy the code. It works once, for an hour.
+4. **Actions, Platform setup, Run workflow** on `main`, with the code from step 3 if you have
+   one. It makes or moves, each only where absent and never printed:
+   - `ROUTING_MAC_KEY`, `GATEWAY_KEYRING` and `FILES_KEYRING` (`deploy.ts keyring-new`);
+   - `WORKOS_API_KEY`, read from the production host;
+   - `E2B_WEBHOOK_SECRET`, and E2B's lifecycle webhook, registered **disabled**;
+   - the variables `OWNER_ISSUER`, `WORKOS_CLIENT_ID` and `OWNER_TOKEN_CLAIMS` (below);
+   - with a code, the review App's key in the main-only `review` environment and
+     `REVIEW_APP_ID`.
+
+   Its summary lists each name and its status. A rerun needs a new `SETUP_PAT` and changes
+   nothing already set.
+5. **With the review App: install it** on the TinyAssets repository (the link is in the
+   summary; choose only that repository). One click.
+6. **Platform deploy, mode `plan`.** Read it.
+7. **A session pins the migration lock** (below) and merges it. Then **Platform deploy, mode
+   `dark`**.
+
+Before the cutover only, not for `dark`: the AuthKit GitHub sign-in app (absent from the
+login page today; Google is live), or a decision to drop GitHub sign-in; the optional Slack
+app (`INBOUND_SLACK_SIGNING_SECRET`); `tinyassets.io/hooks/e2b/*` added to `ROUTES` in
+`deploy.ts`; then E2B's webhook enabled.
+
+What the kit reads, all from the store, never a host:
+
+- `production` secrets: `WORKOS_API_KEY`, `E2B_API_KEY`, `ROUTING_MAC_KEY`,
+  `GATEWAY_KEYRING`, `FILES_KEYRING`, `E2B_WEBHOOK_SECRET`, `TINYASSETS_WIKI_CANARY_TOKEN`
+  (the handles canary's, there since 2026-10-14) and, for Slack events,
+  `INBOUND_SLACK_SIGNING_SECRET`.
+- The repository secret `CLOUDFLARE_API_TOKEN`. The account is the `tinyassets.io` zone's,
+  read from the zone (`zoneOf`), so no account id is stored.
+- The repository variables `OWNER_ISSUER`, `WORKOS_CLIENT_ID` and `OWNER_TOKEN_CLAIMS`.
+
+More on three of them:
+
 - **The migration lock, pinned at the commit you deploy.** The kit refuses to run unless
   `platform/owner/migrations.json` marks the first deploy and pins every migration the code
   ships, in order. To pin it:
-  1. **Who and when.** You, or a session you ask, do it once, in the same sitting as the
-     first deploy. The deploy itself is yours to approve.
+  1. **Who and when.** A session does it once, in the same sitting as the first deploy.
   2. **Pin.** On a branch made from the current `main`, run this in `platform/owner`:
      `PIN_MIGRATIONS=$(git rev-parse HEAD) npx vitest run --project guards guards/migrations.test.ts`.
      It writes `platform/owner/migrations.json`: the first-deploy marker (time and commit)
      and a digest for every migration.
   3. **Land it.** Commit only that file and merge it to `main` by pull request. The workflow
      runs only from `main`, and the kit reads the lock there.
-  4. **Deploy.** Run the Platform deploy workflow from `main`: `plan`, then `dark`.
-  5. **Every later deploy that adds a migration** repeats steps 2 and 3 first. The pin only
+  4. **Every later deploy that adds a migration** repeats steps 2 and 3 first. The pin only
      appends, and the kit refuses until it is done.
-  6. **Pin only when you deploy.** Pinning freezes the baseline for good: from then on a
+  5. **Pin only when you deploy.** Pinning freezes the baseline for good: from then on a
      schema change is a new migration, even if no deploy follows.
 - **`auth_time`, settled before anything changes.** Every sign-in needs AuthKit's tokens to
-  carry `auth_time`. Store one real AuthKit token's `iss` and `auth_time`, copied from it, as
-  the variable `OWNER_TOKEN_CLAIMS`, a JSON object (the `fetch-prod-logs` workflow shows a
-  claim receipt). The kit reads only those two, so leave out `sub` and the rest. Without it, the kit uses the
-  discovery's `claims_supported`. A field that is absent counts as unknown, and unknown stops
-  the kit; it never passes. If the token has no `auth_time`, the kit stops. The way on is
-  to have AuthKit send it (`max_age=0`). Taking the binder's clock at the code exchange
-  instead is not something the code can do: it would need its own change and your approval.
-- **The sandbox's template is built.** `E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`
-  must have a ready build at E2B (`platform/sandbox/template/build.py`, or the manual
-  `sandbox-template.yml` workflow in the production team). The kit checks this through E2B's
-  API and stops if it is missing. The runner is the sandbox Worker's own: the workflow's
-  `pair` job, before the apply job, looks for the pair's tag (the template and the runner it
-  deploys) and, when absent, runs the pair check (`deploy.ts --pair`, `build.py
-  --check-pair`, three throwaway sandboxes, up to about 50 minutes) with the E2B key alone; a
-  failure stops the run, and the apply job stops without the tag.
-- **The Cloudflare plan is Workers Paid.** The owner Worker needs it for its subrequests and
-  for Durable Objects on SQLite.
-- **AuthKit's production Google and GitHub apps exist** (WorkOS dashboard).
+  carry `auth_time`, and AuthKit's discovery lists no `claims_supported`. So the uptime
+  canary keeps a receipt of its renewed AuthKit token's `iss` and `auth_time` alone (until
+  the variable is set), and the setup stores it as `OWNER_TOKEN_CLAIMS`. That is AuthKit's
+  access token; the doors check the ID token, so the first real sign-in at the cutover is
+  the final test (`oidc.ts` refuses loudly). An absent field counts as unknown, and unknown
+  stops the kit. If the token has no `auth_time`, the way on is to have AuthKit send it
+  (`max_age=0`).
+- **The sandbox's template is built** (`E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`,
+  pinned in #5428). The kit checks E2B has a ready build, and the `pair` job checks the pair.
 
 ## What mode `dark` changes
 

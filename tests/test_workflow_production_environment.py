@@ -46,6 +46,15 @@ PRODUCTION_SECRETS = (
     "TINYASSETS_CANARY_SESSION_SEED_DEPLOY",
     "TINYASSETS_CANARY_SESSION_SEED_UPTIME",
     "TINYASSETS_CANARY_HMAC_KEY",
+    # The platform's (platform-deploy.yml), made or moved once by platform-setup.yml on
+    # the setup token, which deletes itself.
+    "WORKOS_API_KEY",
+    "E2B_API_KEY",
+    "ROUTING_MAC_KEY",
+    "GATEWAY_KEYRING",
+    "FILES_KEYRING",
+    "E2B_WEBHOOK_SECRET",
+    "SETUP_PAT",
 )
 
 # Secrets a job may read WITHOUT `environment: production`. A branch dispatch
@@ -118,6 +127,7 @@ _KNOWN_PRODUCTION_WORKFLOWS = {
     "fetch-prod-logs.yml",
     "install-host-services.yml",
     "p0-outage-triage.yml",
+    "platform-setup.yml",
     "restart-daemon.yml",
     "uptime-canary.yml",
 }
