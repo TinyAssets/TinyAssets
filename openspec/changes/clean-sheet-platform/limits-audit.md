@@ -290,7 +290,7 @@ reason; none refuses a write.
 | `owner/src/run-events.ts` `FRAME_UNITS_MAX` | 32 Ki units | one frame's JSON | the runner cuts a longer CLI event, marked | technical ceiling | As above. |
 | `doors/src/config.ts` `ACCESS_TOKEN_TTL_S` | 3,600 s | an MCP or app access token's life | the client refreshes | technical ceiling | A bearer credential's short life (OAuth 2.0 Security BCP, RFC 9700), renewed by its refresh token. |
 | `doors/src/config.ts` `REFRESH_TOKEN_TTL_S` | 30 days | a refresh token's life | an unused client signs in again | technical ceiling | As above: a refresh token's grant slides while used and ends when unused (RFC 9700). |
-| `doors/src/config.ts` consent freshness | 600 s | how fresh a sign-in is for consent | the owner signs in again | technical ceiling | `prompt=login`: a consent needs a sign-in the owner just made. |
+| `doors/src/config.ts` consent freshness | 600 s | how fresh a sign-in is for consent | the owner signs in again | technical ceiling | `max_age=0`: a consent needs a sign-in the owner just made. |
 | `doors/src/config.ts` `AUTHORIZE_BODY_MAX` | 4 KiB | the consent form's body | refused `413` | technical ceiling | The form's own few short fields. |
 | `doors/src/config.ts` `API_BODY_MAX`, `APP_BODY_MAX` | 16 MiB | an `/api/tools/*` or owner-surface request body | refused `413` | technical ceiling | As `EGRESS_BODY_MAX`, held equal to it by a test. Streaming is not taken: a tool call's arguments are parsed whole as JSON at the door. |
 | `gateway/src/oauth.ts` token answer | 64 KiB | a provider's token endpoint answer | the connect fails | technical ceiling | It must fit the sealed blob it becomes (`BLOB_MAX`). |
@@ -318,7 +318,7 @@ reason; none refuses a write.
 | `owner/src/inbound-proof.ts` `MAX_SKEW_S` | 300 s | how old a signed inbound event's timestamp may be | refused `401` | vendor limit | Slack's own five minutes for its `v0` signature; past it a captured request is a replay. |
 | `doors/src/inbound.ts` headers | 64 headers, 8 KiB each | an inbound event's headers carried to the object | refused `400` | technical ceiling | The RPC to the object; Cloudflare's own request header bound is larger. |
 | `doors/src/config.ts` `INBOUND_BODY_MAX` | 16 MiB | an inbound event's body | refused `413` | technical ceiling | The platform's one request ceiling (`API_BODY_MAX`), held equal by a test; a body past 2 KiB is placed in R2 as mail's is. |
-| `doors/src/oidc.ts` token and JWKS sizes | 16 KiB ID token (64 KiB answer), 64 KiB JWKS | what the doors read from the owner issuer | the sign-in fails loudly | technical ceiling | The issuer's answers are read whole into memory; real ones are a few KiB. |
+| `doors/src/oidc.ts` token and JWKS sizes | 16 KiB access token (64 KiB answer), 64 KiB JWKS | what the doors read from the owner issuer | the sign-in fails loudly | technical ceiling | The issuer's answers are read whole into memory; real ones are a few KiB. |
 
 ## One answer, paged (the platform memory fix, PR 1)
 

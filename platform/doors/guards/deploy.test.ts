@@ -2,7 +2,9 @@
  * The deploy kit (`platform/deploy/deploy.ts`, slice L), built and never run here: it names
  * every Worker, binding, namespace and secret the platform's configs declare; the config it
  * deploys is the checked-in one with only the namespace ids, the doors' upstream and (with
- * `--routes`) the routes filled; it holds the owner issuer to its live discovery exactly;
+ * `--routes`) the routes filled; it writes User Management's sign-in, the JWKS from the owner
+ * issuer's live discovery held to it exactly, and checks WorkOS's authorize takes the doors'
+ * client and callback before anyone signs in;
  * it registers the WorkOS redirect URI only when missing and never deletes one; and it sets
  * the routing key on the doors and the owner together or not at all.
  *
@@ -22,7 +24,7 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../owner/guards/sources";
 import {
-  admitsNobody, BUCKET, CALLBACK, type CfAnswer, codeDigests, configOf, DARK_CONTROL,
+  admitsNobody, authorizeCheck, authorizeLink, BUCKET, CALLBACK, type CfAnswer, codeDigests, configOf, DARK_CONTROL,
   deployedConfig, EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,
   maskInLog, keyring, kvValue, lifecycleHook, listed, lockRefusal, MIGRATED,
   NAMESPACES, namespacesOf,
@@ -35,16 +37,20 @@ import { APP_RESOURCE, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT } from "../sr
 import { outsideOpen, ownerOpen } from "../src/control";
 import { parseControl } from "../src/directory";
 import { E2B_HOOK_PATH } from "../src/e2b-hooks";
-import { upstreamConfig } from "../src/oidc";
+import { oidcUpstream, upstreamConfig } from "../src/oidc";
 
 type Json = Record<string, unknown>;
 
 const present = WORKERS.filter((worker) => existsSync(join(PLATFORM, worker, "wrangler.jsonc")));
 const UPSTREAM = { issuer: "https://auth.test",
-                   record: { client_id: "c", authorization_endpoint: "https://auth.test/a",
-                             token_endpoint: "https://auth.test/t",
+                   record: { client_id: "c",
+                             authorization_endpoint:
+                               "https://api.workos.com/user_management/authorize",
+                             token_endpoint: "https://api.workos.com/user_management/authenticate",
                              jwks_uri: "https://auth.test/j",
-                             user_delete: "https://api.workos.com/user_management/users/{sub}" } };
+                             token_issuer: "https://api.workos.com/user_management/c",
+                             user_delete: "https://api.workos.com/user_management/users/{sub}",
+                             authorize_params: { provider: "authkit" } } };
 const IDS = Object.fromEntries(Object.keys(NAMESPACES).map((binding) => [binding, `id-${binding}`]));
 const NONE = () => undefined;
 const RING = JSON.stringify({ active: "k1", keys: { k1: "a" } });
@@ -168,19 +174,26 @@ describe("the deploy kit", () => {
   });
 
   const discovery = (body: Json) => async () => Response.json(body);
-  const good = { issuer: "https://auth.test", authorization_endpoint: "https://auth.test/a",
-                 token_endpoint: "https://auth.test/t", jwks_uri: "https://auth.test/j",
-                 token_endpoint_auth_methods_supported: ["client_secret_post"] };
+  const good = { issuer: "https://auth.test", jwks_uri: "https://auth.test/j" };
 
-  it("holds the owner issuer to its live discovery exactly, in a record the doors accept",
-     async () => {
+  it("writes User Management's sign-in for the client, the JWKS from the issuer's discovery " +
+     "held to it exactly, in a record the doors accept", async () => {
     const made = await upstreamFrom("https://auth.test", "c", discovery(good));
-    expect(made.record).toEqual(UPSTREAM.record);
+    expect(made).toEqual(UPSTREAM);
+    expect(made.record).toEqual({
+      client_id: "c", authorization_endpoint: "https://api.workos.com/user_management/authorize",
+      token_endpoint: "https://api.workos.com/user_management/authenticate",
+      jwks_uri: "https://auth.test/j",
+      token_issuer: "https://api.workos.com/user_management/c",
+      user_delete: "https://api.workos.com/user_management/users/{sub}",
+      authorize_params: { provider: "authkit" } });
     expect(() => upstreamConfig(JSON.stringify(made.record))).not.toThrow();
     await expect(upstreamFrom("https://auth.test", "c",
                               discovery({ ...good, issuer: "https://auth.test/" })))
       .rejects.toThrow(/not OWNER_ISSUER/);
     await expect(upstreamFrom("https://auth.test", "", discovery(good)))
+      .rejects.toThrow(/WORKOS_CLIENT_ID/);
+    await expect(upstreamFrom("https://auth.test", "c/../x", discovery(good)))
       .rejects.toThrow(/WORKOS_CLIENT_ID/);
     await expect(upstreamFrom("http://auth.test", "c", discovery(good)))
       .rejects.toThrow();
@@ -188,20 +201,59 @@ describe("the deploy kit", () => {
       new Response("down", { status: 503 }))).rejects.toThrow(/503/);
   });
 
-  it("stops on an absent discovery field: unknown never passes (research 3b)", async () => {
-    const without = (field: string) => {
-      const body: Json = { ...good };
-      delete body[field];
-      return discovery(body);
-    };
-    for (const field of ["token_endpoint_auth_methods_supported", "token_endpoint", "jwks_uri",
-                         "authorization_endpoint"]) {
-      await expect(upstreamFrom("https://auth.test", "c", without(field)))
-        .rejects.toThrow(/unknown/);
-    }
+  it("stops on an absent or plain-http JWKS in the discovery: unknown never passes", async () => {
+    await expect(upstreamFrom("https://auth.test", "c", discovery({ issuer: good.issuer })))
+      .rejects.toThrow(/jwks_uri: unknown/);
     await expect(upstreamFrom("https://auth.test", "c",
-      discovery({ ...good, token_endpoint_auth_methods_supported: ["private_key_jwt"] })))
-      .rejects.toThrow(/client_secret_post/);
+                              discovery({ ...good, jwks_uri: "http://auth.test/j" })))
+      .rejects.toThrow(/jwks_uri: unknown/);
+  });
+
+  it("builds the authorize URL the doors build, for the early sign-in check", () => {
+    const doors = oidcUpstream(UPSTREAM.issuer, upstreamConfig(JSON.stringify(UPSTREAM.record)),
+                               "k");
+    expect(authorizeLink(UPSTREAM, "s1", "c1")).toBe(doors.authorizeUrl({
+      state: "s1", code_challenge: "c1", redirect_uri: UPSTREAM_CALLBACK }));
+    expect(CALLBACK).toBe(UPSTREAM_CALLBACK);
+  });
+
+  it("checks, before any sign-in, that WorkOS's authorize sends the browser to AuthKit's " +
+     "sign-in, and stops on a refused client or redirect", async () => {
+    const sent: { url: string; init: RequestInit | undefined }[] = [];
+    const answering = (status: number, location: string | null) =>
+      async (url: string, init?: RequestInit) => {
+        sent.push({ url, init });
+        return new Response(null, { status,
+                                    headers: location === null ? {} : { Location: location } });
+      };
+    expect(await authorizeCheck(UPSTREAM, answering(302,
+      "https://auth.test/bootstrap?client_id=c&authorization_session_id=x&max_age=0")))
+      .toMatch(/auth\.test's sign-in/);
+    // The URL sent is the doors' own, with a throwaway state and S256 challenge.
+    const asked = new URL(sent[0]!.url);
+    expect(sent[0]!.init?.redirect).toBe("manual");
+    expect(`${asked.origin}${asked.pathname}`)
+      .toBe("https://api.workos.com/user_management/authorize");
+    expect(asked.href).toBe(authorizeLink(UPSTREAM, asked.searchParams.get("state")!,
+                                          asked.searchParams.get("code_challenge")!));
+    expect(asked.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await authorizeCheck(UPSTREAM, answering(302, "https://auth.test/bootstrap"));
+    expect(new URL(sent[1]!.url).searchParams.get("state"))
+      .not.toBe(asked.searchParams.get("state"));
+    for (const [status, location, named] of [
+      [302, "https://error.workos.com/sso/client-id-invalid", /client-id-invalid/],
+      [302, "https://error.workos.com/redirect-uri-invalid?redirect_uri=x", /redirect-uri-invalid/],
+      [302, "https://auth.test/oauth2/error?error=application_not_found", /oauth2\/error/],
+      [302, "https://auth.test/oauth2/error", /oauth2\/error/],
+      [302, "https://auth.test/?error=access_denied", /refused/],
+      [302, "https://evil.test/bootstrap", /evil\.test/],
+      [302, "http://auth.test/bootstrap", /refused/],
+      [200, null, /answered 200/],
+      [302, null, /answered 302/],
+      [400, "https://auth.test/bootstrap", /answered 400/],
+    ] as const) {
+      await expect(authorizeCheck(UPSTREAM, answering(status, location))).rejects.toThrow(named);
+    }
   });
 
   it("registers the WorkOS redirect URI only when missing, and never deletes one", async () => {
@@ -259,8 +311,9 @@ describe("the deploy kit", () => {
       .toEqual([{ worker: "files", name: "FILES_KEYRING" }]);
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     // The kit never makes a secret's value in a deploy: only keyring-new and keyring-add,
-    // which write a local file for the founder to store. The probe's link is random too, its
-    // verifier dropped where it is made: never stored, printed or sent.
+    // which write a local file for the founder to store. The probe's link and the early
+    // sign-in check are random too (`throwaway`), the verifier dropped where it is made:
+    // never stored, printed or sent.
     const link = kit.slice(kit.indexOf("export function probeLink()"),
                            kit.indexOf("export const PROBE_SIGNS"));
     expect(link.match(/randomBytes\(/g)).toHaveLength(2);

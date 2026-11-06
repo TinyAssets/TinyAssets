@@ -1,28 +1,31 @@
 /**
- * The owner's upstream sign-in, live (tasks 2, "Live AuthKit wiring"; slice L): an OpenID
- * Connect authorization-code flow with PKCE against the owner issuer, WorkOS AuthKit, as
- * data. Nothing here names a provider: the issuer is `OWNER_ISSUER`, and its endpoints,
- * client and identity-deletion URL are the `UPSTREAM` record, which the deploy fills from
- * the issuer's live discovery document after checking its `issuer` is `OWNER_ISSUER`
- * exactly (`deploy/deploy.mjs`). The client secret is the Worker secret `WORKOS_API_KEY`.
+ * The owner's upstream sign-in, live (tasks 2, "Live AuthKit wiring"): AuthKit's User
+ * Management authorization-code flow with PKCE, for the environment's own client, as data
+ * (ADR-032, "the owner's sign-in"). Its endpoints, client, token issuer and identity-deletion
+ * URL are the `UPSTREAM` record, which the deploy writes after holding the owner issuer's
+ * discovery to `OWNER_ISSUER` exactly for the JWKS (`deploy/deploy.ts` `upstreamFrom`). The
+ * client secret is the Worker secret `WORKOS_API_KEY`.
  *
- * - `authorizeUrl`: `response_type=code`, `scope=openid`, our `state`, the S256 challenge,
- *   `prompt=login`, and the challenge again as the ID token's `nonce`, so a token is bound
- *   to this flow as well as its code is; the record's `authorize_params` may add a
- *   provider's own parameter, never one of these.
- * - `finish`: the code exchanged at the token endpoint with the verifier and the client
- *   secret; then the ID token checked whole: RS256 under a key the issuer's JWKS names by
- *   `kid` (fetched for each sign-in: no module state), `iss` exactly `OWNER_ISSUER`, `aud`
- *   our client (with `azp` our client when it names several), `exp` and `iat` within the
- *   clock margin, `nonce` our challenge, `sub` present, and `auth_time` present as whole
- *   seconds. A token without `auth_time` is refused: there is no clock fallback, since the
- *   fence and the session's 600 s bound rest on the sign-in's real time.
+ * - `authorizeUrl`: `response_type=code`, our `state`, the S256 challenge and `max_age=0`,
+ *   which forces a fresh sign-in; the record's `authorize_params` add the provider's own
+ *   (`provider=authkit`), never one of ours.
+ * - `finish`: the code exchanged (JSON) at the token endpoint with the verifier and the
+ *   client secret. No ID token comes back, so the answer's access token is checked whole:
+ *   RS256 under a key the issuer's JWKS names by `kid` (fetched for each sign-in: no module
+ *   state), `iss` exactly the record's `token_issuer`, `client_id` our client (no `aud` is
+ *   minted), `exp` and `iat` within the clock margin, `sub` present and the answer's
+ *   `user.id`, `sid` a session id when present, a user's token (`sub_profile` absent or
+ *   `user`, no `sub_type`), and `auth_time` present as whole seconds. A token without
+ *   `auth_time` is refused: there is no clock fallback, since the fence and the session's
+ *   600 s bound rest on the sign-in's real time. There is no nonce: the flow takes none, and
+ *   no token crosses the front channel, since the single-use code is redeemable only with
+ *   our verifier and our secret, on our own request.
  * - `forget`: the person's identity deleted at the issuer (the owner's erasure,
  *   `erase.ts`), by the record's `user_delete` URL with the subject in place of `{sub}`.
  *
  * Any failure throws, its message naming the check or the status (a refused exchange's
- * OAuth error code with it) and never a value: a sign-in is never taken on less than every
- * check.
+ * error code with it) and never a token or a secret; a wrong issuer names the issuer the
+ * token carries, which is no secret. A sign-in is never taken on less than every check.
  */
 import { CLOCK_MARGIN_S, now } from "./config";
 import type { SignIn, Upstream } from "./upstream";
@@ -33,26 +36,37 @@ export interface UpstreamConfig {
   readonly authorization_endpoint: string;
   readonly token_endpoint: string;
   readonly jwks_uri: string;
+  /** The access token's `iss`, exactly: the deploy derives it, in one place. */
+  readonly token_issuer: string;
   /** The identity-deletion URL, `{sub}` in place of the subject. */
   readonly user_delete: string;
   /** A provider's own authorize parameters (AuthKit's `provider`), never a flow one. */
   readonly authorize_params?: Readonly<Record<string, string>>;
 }
 
-/** The parameters our flow sets, which a record may never set. */
+/** The parameters our flow sets, or that would change what it asks: never a record's. */
 const FLOW_PARAMS: readonly string[] = Object.freeze([
-  "response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge",
-  "code_challenge_method", "prompt", "nonce"]);
+  "response_type", "client_id", "redirect_uri", "state", "code_challenge",
+  "code_challenge_method", "max_age", "prompt", "scope", "nonce"]);
 const HTTPS = /^https:\/\/[^\s/?#]+(?:\/[^\s?#]*)?$/;
-/** An ID token's largest size we read, and a JWKS's. */
+/** An access token's largest size we read, and a JWKS's. */
 const TOKEN_MAX = 16 * 1024;
 const JWKS_MAX = 64 * 1024;
 /** A refused exchange's answer, read only for its error code. */
 const REFUSAL_MAX = 4 * 1024;
-/** The token endpoint's error codes (RFC 6749 §5.2): the only part of a refusal named. */
+/**
+ * The refusal codes a code exchange can meet (the token endpoint's OpenAPI document, read
+ * 2026-11-06, names each as `code` or as `error`): the only part of a refusal named.
+ */
 const REFUSAL_CODES: readonly string[] = Object.freeze([
   "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client",
-  "unsupported_grant_type", "invalid_scope"]);
+  "access_denied", "pkce_not_supported", "sign_up_not_allowed", "too_many_requests",
+  "invalid_credentials", "code_challenge_not_found", "user_mismatch", "mfa_enrollment",
+  "mfa_challenge", "email_verification_required", "organization_selection_required",
+  "authentication_method_not_allowed", "radar_challenge", "policy_denied", "action_denied",
+  "application_consent_required"]);
+/** A claim value short and plain enough to name on the page: visible ASCII. */
+const SHOWN = /^[\x21-\x7e]{1,256}$/;
 
 function https(value: unknown, what: string): string {
   if (typeof value !== "string" || !HTTPS.test(value)) {
@@ -74,7 +88,7 @@ export function upstreamConfig(text: string): UpstreamConfig {
   }
   const record = value as Record<string, unknown>;
   const allowed = ["client_id", "authorization_endpoint", "token_endpoint", "jwks_uri",
-                   "user_delete", "authorize_params"];
+                   "token_issuer", "user_delete", "authorize_params"];
   if (Object.keys(record).some((key) => !allowed.includes(key))) {
     throw new Error(`UPSTREAM holds only ${allowed.join(", ")}`);
   }
@@ -97,6 +111,7 @@ export function upstreamConfig(text: string): UpstreamConfig {
     authorization_endpoint: https(record["authorization_endpoint"], "authorization_endpoint"),
     token_endpoint: https(record["token_endpoint"], "token_endpoint"),
     jwks_uri: https(record["jwks_uri"], "jwks_uri"),
+    token_issuer: https(record["token_issuer"], "token_issuer"),
     user_delete: userDelete,
     authorize_params: Object.freeze({ ...(params as Record<string, string>) }),
   });
@@ -109,7 +124,7 @@ function base64url(bytes: Uint8Array): string {
 
 function unbase64url(text: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]*$/.test(text)) {
-    throw new Error("the ID token is not base64url");
+    throw new Error("the access token is not base64url");
   }
   const padded = text.replace(/-/g, "+").replace(/_/g, "/")
     + "=".repeat((4 - (text.length % 4)) % 4);
@@ -124,7 +139,7 @@ function json(bytes: Uint8Array, what: string): Record<string, unknown> {
     value = null;
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`the ID token's ${what} is not a JSON object`);
+    throw new Error(`the access token's ${what} is not a JSON object`);
   }
   return value as Record<string, unknown>;
 }
@@ -161,17 +176,19 @@ async function bounded(response: Response, max: number, what: string): Promise<u
 }
 
 /**
- * A refused exchange's OAuth error code (RFC 6749 §5.2, such as `invalid_client`), as
- * ` (code)`, or nothing: never its description or any other field, which may quote a value.
+ * A refused exchange's error code (one of `REFUSAL_CODES`, as its `code` or its `error`), as
+ * ` (code)`, or nothing: never its message or any other field, which may quote a value.
  */
 async function refusalCode(response: Response): Promise<string> {
-  let code: unknown;
+  let refusal: { code?: unknown; error?: unknown } | null;
   try {
-    code = (await bounded(response, REFUSAL_MAX, "refusal") as { error?: unknown } | null)?.error;
+    refusal = await bounded(response, REFUSAL_MAX, "refusal") as typeof refusal;
   } catch {
     return "";
   }
-  return typeof code === "string" && REFUSAL_CODES.includes(code) ? ` (${code})` : "";
+  const code = [refusal?.code, refusal?.error]
+    .find((value) => typeof value === "string" && REFUSAL_CODES.includes(value));
+  return code === undefined ? "" : ` (${String(code)})`;
 }
 
 function whole(value: unknown): value is number {
@@ -179,79 +196,85 @@ function whole(value: unknown): value is number {
 }
 
 /**
- * The verified sign-in an ID token is, under `issuer` and `config`, for `nonce`, its RS256
- * signature checked against the JWKS `keys` holds. Throws on anything short of every check.
+ * The verified sign-in a token answer is (`answer`: the token endpoint's JSON), under
+ * `issuer` (`OWNER_ISSUER`, the binder's) and `config`, its access token's RS256 signature
+ * checked against the JWKS `keys` holds. Throws on anything short of every check.
  */
-export async function verifiedIdToken(token: unknown, issuer: string, config: UpstreamConfig,
-                                      nonce: string, keys: unknown, at: number = now()):
-    Promise<SignIn> {
+export async function verifiedAccessToken(answer: unknown, issuer: string,
+                                          config: UpstreamConfig, keys: unknown,
+                                          at: number = now()): Promise<SignIn> {
+  const held = (typeof answer === "object" && answer !== null ? answer : {}) as
+    { access_token?: unknown; user?: { id?: unknown } | null };
+  const token = held.access_token;
   if (typeof token !== "string" || token.length > TOKEN_MAX) {
-    throw new Error("the upstream answered no ID token");
+    throw new Error("the upstream answered no access token");
   }
   const parts = token.split(".");
   if (parts.length !== 3) {
-    throw new Error("the ID token is not a signed JWT");
+    throw new Error("the access token is not a signed JWT");
   }
   const [head, body, signature] = parts as [string, string, string];
   const header = json(unbase64url(head), "header");
   if (header["alg"] !== "RS256" || typeof header["kid"] !== "string") {
-    throw new Error("the ID token is not RS256 under a named key");
+    throw new Error("the access token is not RS256 under a named key");
   }
   const listed = (keys as { keys?: unknown } | null)?.keys;
   const matching = Array.isArray(listed)
     ? listed.filter((key) => typeof key === "object" && key !== null
                              && (key as Record<string, unknown>)["kid"] === header["kid"]) : [];
   if (matching.length !== 1) {
-    throw new Error("the issuer's JWKS holds no one key the ID token names");
+    throw new Error("the issuer's JWKS holds no one key the access token names");
   }
   const jwk = matching[0] as Record<string, unknown>;
   if (jwk["kty"] !== "RSA" || typeof jwk["n"] !== "string" || typeof jwk["e"] !== "string"
       || (jwk["use"] !== undefined && jwk["use"] !== "sig")
       || (jwk["alg"] !== undefined && jwk["alg"] !== "RS256")) {
-    throw new Error("the ID token's key is not an RS256 signing key");
+    throw new Error("the access token's key is not an RS256 signing key");
   }
   const key = await crypto.subtle.importKey(
     "jwk", { kty: "RSA", n: jwk["n"], e: jwk["e"], alg: "RS256", ext: true },
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
   const signed = new TextEncoder().encode(`${head}.${body}`);
   if (!await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, unbase64url(signature), signed)) {
-    throw new Error("the ID token's signature does not verify");
+    throw new Error("the access token's signature does not verify");
   }
   const claims = json(unbase64url(body), "claims");
-  if (claims["iss"] !== issuer) {
-    throw new Error("the ID token's issuer is not the owner issuer");
+  const iss = claims["iss"];
+  if (iss !== config.token_issuer) {
+    // Signed by the issuer, so the value is the issuer's, and no secret: the probe reads it.
+    const seen = typeof iss === "string" && SHOWN.test(iss) ? JSON.stringify(iss)
+      : "no plain string";
+    throw new Error(`the access token's issuer is ${seen}, not ${JSON.stringify(
+      config.token_issuer)}`);
   }
-  const audience = claims["aud"];
-  const audiences = typeof audience === "string" ? [audience]
-    : Array.isArray(audience) ? audience : [];
-  if (!audiences.includes(config.client_id)
-      || ((audiences.length > 1 || claims["azp"] !== undefined)
-          && claims["azp"] !== config.client_id)) {
-    throw new Error("the ID token is not for our client");
+  if (claims["client_id"] !== config.client_id) {
+    throw new Error("the access token is not for our client (client_id)");
   }
   if (!whole(claims["exp"]) || claims["exp"] <= at - CLOCK_MARGIN_S) {
-    throw new Error("the ID token is expired");
+    throw new Error("the access token is expired");
   }
   if (!whole(claims["iat"]) || claims["iat"] > at + CLOCK_MARGIN_S) {
-    throw new Error("the ID token was issued in the future");
-  }
-  if (claims["nonce"] !== nonce) {
-    throw new Error("the ID token is not this sign-in's (nonce)");
+    throw new Error("the access token was issued in the future");
   }
   const subject = claims["sub"];
   if (typeof subject !== "string" || subject === "") {
-    throw new Error("the ID token names no subject");
+    throw new Error("the access token names no subject");
+  }
+  if (held.user?.id !== subject) {
+    throw new Error("the answer's user.id is not the access token's subject");
+  }
+  if (claims["sid"] !== undefined && (typeof claims["sid"] !== "string" || claims["sid"] === "")) {
+    throw new Error("the access token's sid is not a session id");
+  }
+  if ((claims["sub_profile"] !== undefined && claims["sub_profile"] !== "user")
+      || claims["sub_type"] !== undefined) {
+    throw new Error("the access token is not a user's (sub_profile, sub_type)");
   }
   if (!whole(claims["auth_time"])) {
     // No clock fallback: the fence and the session's bound rest on the real sign-in time.
-    throw new Error("the ID token carries no auth_time");
+    throw new Error("the access token carries no auth_time");
   }
   return { issuer, subject, authenticated_at: claims["auth_time"] };
-}
-
-async function challengeOf(verifier: string): Promise<string> {
-  return base64url(new Uint8Array(await crypto.subtle.digest(
-    "SHA-256", new TextEncoder().encode(verifier))));
 }
 
 /**
@@ -274,24 +297,21 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
         url.searchParams.set(name, value);
       }
       for (const [name, value] of Object.entries({
-        response_type: "code", client_id: config.client_id, redirect_uri, scope: "openid",
-        state, code_challenge, code_challenge_method: "S256", prompt: "login",
-        nonce: code_challenge,
+        response_type: "code", client_id: config.client_id, redirect_uri, state,
+        code_challenge, code_challenge_method: "S256", max_age: "0",
       })) {
         url.searchParams.set(name, value);
       }
       return url.href;
     },
-    finish: async ({ code, code_verifier, redirect_uri }: {
+    finish: async ({ code, code_verifier }: {
       code: string; code_verifier: string; redirect_uri: string;
     }): Promise<SignIn> => {
       const exchanged = await fetcher(config.token_endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded",
-                   Accept: "application/json" },
-        body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri,
-                                    code_verifier, client_id: config.client_id,
-                                    client_secret: secret }),
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ grant_type: "authorization_code", client_id: config.client_id,
+                               client_secret: secret, code, code_verifier }),
         redirect: "manual",
       });
       if (exchanged.status !== 200) {
@@ -304,9 +324,7 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
       if (keys.status !== 200) {
         throw new Error(`the issuer's JWKS answered ${keys.status}`);
       }
-      return verifiedIdToken((answer as { id_token?: unknown } | null)?.id_token, issuer,
-                             config, await challengeOf(code_verifier),
-                             await bounded(keys, JWKS_MAX, "JWKS"));
+      return verifiedAccessToken(answer, issuer, config, await bounded(keys, JWKS_MAX, "JWKS"));
     },
     forget: async (subject: string): Promise<void> => {
       const url = config.user_delete.replace("{sub}", encodeURIComponent(subject));

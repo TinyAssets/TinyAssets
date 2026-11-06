@@ -32,8 +32,8 @@ test, cutover.
   binder (`binder.ts`, the only `getByName` and the only `Binding`, every field from
   the verified credential), our authorization server on Workers OAuth Provider 1.2.4
   (issuer `https://tinyassets.io`, resources `/mcp` and `/app`, CIMD on with
-  `global_fetch_strictly_public`, DCR only behind `DCR_ENABLED`, `prompt=login` on every
-  sign-in, consent never remembered, `authenticated_at` in the grant's props and never
+  `global_fetch_strictly_public`, DCR only behind `DCR_ENABLED`, a forced fresh sign-in
+  (`max_age=0`) on every sign-in, consent never remembered, `authenticated_at` in the grant's props and never
   moved by a refresh), the stateless MCP door on SDK v2's `createMcpHandler` 2.3.1 for
   2026-07-28 and 2025-11-25, one tool per outside-callable owner door with all four
   hints (`tools.ts`), `/api` keys in the Python's format, the owner surface
@@ -69,7 +69,7 @@ test, cutover.
 - [x] Live AuthKit wiring (slice L; its live check owed to the founder's deploy): an
   `Upstream` (`doors/src/upstream.ts`) for AuthKit's
   production environment, with its redirect URI `https://tinyassets.io/oauth/upstream/callback`,
-  the code exchange and the ID token's signature, issuer, audience and `auth_time`
+  the code exchange and the access token's signature, issuer, client and `auth_time`
   against its JWKS; `OWNER_ISSUER` set to AuthKit's issuer (the config guard pins it
   unset until then); production Google and GitHub apps (founder dashboard work). Until
   then the deployed entry refuses every sign-in loudly (`UNWIRED`). No person registers
@@ -81,19 +81,23 @@ test, cutover.
   Owner creation by explicit platform admit at sign-up (the binder can't tell sign-up from
   sign-in today); until then a fresh object is created admitted on first sign-in, and
   erasure ends in `deleteAll` plus the `erased` row.
-  Built (slice L): `doors/src/oidc.ts`, a generic OpenID Connect code flow with PKCE, as
-  data: `OWNER_ISSUER` and the `UPSTREAM` record (endpoints, client id, the identity's
-  deletion URL), both `not-configured` as checked in (the config guard), filled by the
-  deploy kit (`platform/deploy/deploy.ts`) from the issuer's live discovery, which must name
-  `OWNER_ISSUER` exactly and declare `client_secret_post` and https endpoints (an absent
-  field is unknown, and unknown stops the kit), or nothing deploys (review, research 3b).
-  No discovery shows whether the ID token carries `auth_time`, so the kit's `--probe` mode,
-  after `dark` and before `routes`, hands the doors only `/authorize*` and `/oauth/*` behind
-  the closed gates and prints one first-party sign-in link; that sign-in proves `auth_time`,
-  the doors' client and secret at the issuer and the callback, or names the check that
-  failed at the callback; the secret
-  `WORKOS_API_KEY`. `prompt=login`, `scope=openid` and the PKCE challenge again as the ID
-  token's `nonce`. A half-configured Worker throws (`upstreamOf`), and only at sign-in:
+  Built (slice L; changed to User Management on 2026-11-06, ADR-032): `doors/src/oidc.ts`,
+  AuthKit's User Management code flow with PKCE for the environment's client, as data:
+  `OWNER_ISSUER` and the `UPSTREAM` record (User Management's authorize and authenticate
+  endpoints, client id, the token issuer, the JWKS, the identity's deletion URL), both
+  `not-configured` as checked in (the config guard), written by the deploy kit
+  (`platform/deploy/deploy.ts` `upstreamFrom`), the JWKS from the issuer's live discovery,
+  which must name `OWNER_ISSUER` exactly (an absent field is unknown, and unknown stops the
+  kit), or nothing deploys (review, research 3b). AuthKit's `/oauth2/*` takes Connect
+  applications only, so the environment client got `application_not_found` there. Before any change the kit sends the doors'
+  authorize URL with a throwaway challenge and stops unless WorkOS redirects to AuthKit's
+  sign-in (`authorizeCheck`). Only a real sign-in shows the access token's exact `iss` and
+  `auth_time`, so the kit's `--probe` mode, after `dark` and before `routes`, hands the
+  doors only `/authorize*` and `/oauth/*` behind the closed gates and prints one
+  first-party sign-in link; that sign-in proves them, the doors' secret at `authenticate`
+  and the callback, or names the check that failed at the callback; the secret
+  `WORKOS_API_KEY`. `max_age=0` and `provider=authkit`; no `scope` and no nonce, since
+  PKCE and the back-channel exchange cover it. A half-configured Worker throws (`upstreamOf`), and only at sign-in:
   `upstreamOf` is read lazily, so a bad `UPSTREAM` breaks sign-in alone and every other
   door serves (review L1). The deploy kit sets the key and registers the redirect URI
   idempotently; it is not run. **Explicit platform
@@ -106,20 +110,22 @@ test, cutover.
   callback refuses the sign-in. Owners migrated at cutover are admitted by the import
   (task 9): it admits each imported owner's object through the platform caller and writes
   its `o:` record, as sign-up does, so no imported owner is ever `pending` (review L8). The admit is idempotent and lifts no suspension. Owed live: the
-  probe's sign-in (the exact `iss` and `auth_time` against a live ID token), and AuthKit's
+  probe's sign-in (the exact `iss` and `auth_time` against a live access token), and AuthKit's
   production Google and GitHub apps.
-- [x] The AuthKit upstream refuses an ID token without `auth_time`: there is no clock
+- [x] The AuthKit upstream refuses an access token without `auth_time`: there is no clock
   fallback (this replaces the research's "use the binder's own clock"), since the fence
   and the session's 600 s bound both rest on the sign-in's real time. The binder names
   the owner from the token's issuer and subject: AuthKit's subjects stay owner ids as
   today, and a later issuer's (Sign in with ChatGPT) are namespaced `iss-<hash>-<sub>`
   once that provider's slice lists it in `FOREIGN_ISSUERS` (any unlisted issuer is
   refused), so linking a second provider to an existing owner is that slice's own act.
-  The AuthKit slice sets `OWNER_ISSUER` to the exact `iss` its tokens carry, checked
-  against a live token, since any other spelling refuses every sign-in.
-  Slice L: `verifiedIdToken` refuses no `auth_time`, a wrong or trailing-slash issuer,
-  another audience, another flow's nonce, an expired or future token, HS256 or `none`, an
-  unknown key and a forged body (`doors/test/authkit.test.ts`, a real RSA key).
+  The kit derives the token's expected `iss` in one place (`upstreamFrom`'s
+  `token_issuer`), checked against a live token by the probe, whose 502 names the `iss`
+  seen, since any other spelling refuses every sign-in.
+  `verifiedAccessToken` refuses no `auth_time`, a wrong or trailing-slash issuer, another
+  `client_id`, a `sub` that is not the answer's `user.id`, an empty `sid`, a machine's
+  token, an expired or future token, HS256 or `none`, an unknown key and a forged body
+  (`doors/test/authkit.test.ts`, a real RSA key).
 - [ ] DNS, routes and deploy: the doors Worker's routes on `tinyassets.io` (`/mcp`,
   `/api/*`, `/hooks/inbound/*`, `/app/api/*`, `/authorize`, `/oauth/*`,
   `/.well-known/oauth-*`), the `OAUTH_KV` and `DIRECTORY` namespaces, then the handles
@@ -204,7 +210,7 @@ test, cutover.
   the same handler"; Claude channels are local stdio plugins that cannot use 2026-07-28,
   so a TinyAssets channel is a stdio plugin calling the door as an ordinary client (S9).
 - [x] Owed by 3.5 (slice 7). The owner's sign-in: the binder runs it (server PKCE,
-  `prompt=login`, the browser-bound callback, the cookie's attributes) and calls
+  `max_age=0`, the browser-bound callback, the cookie's attributes) and calls
   `sessionOpen` with the verified sign-in's time, which the object takes only when
   at most 600 s old; it forwards the browser's session cookie as the binding's
   `session` and never vouches for it. The cookie carries no owner: the edge takes the
@@ -501,7 +507,7 @@ account and no deploy.
   research: the callback cannot finish the flow itself, since a cross-site navigation
   carries neither the owner's token nor its Strict session cookie, so the app page posts
   the code back in session (the binding is checked at both steps); no `prompt` is forced
-  on a provider's authorize URL (the sign-in's `prompt=login` exists for the session's
+  on a provider's authorize URL (the sign-in's `max_age=0` exists for the session's
   fresh `auth_time`; a source record may set `prompt` in its `authorize_params`, which may
   never set a flow parameter); the gateway gains the `pkce_user_key_v1` exchange
   (`key_exchange` in the sealed source; G1 had RFC 6749 only), whose key is sealed as an
