@@ -1,4 +1,12 @@
 {
-  "first_deploy": null,
-  "deployed": []
+  "first_deploy": {
+    "at": "2026-11-06T01:04:37.051Z",
+    "commit": "9ea1bbd2b87edf5452794538214f348583ef7f81"
+  },
+  "deployed": [
+    "709b1dd3fe474d48c6f01327685825c48fff86335afb3d51ef93398f0d3778df",
+    "a9a3bf7978a320c359696af824d37a72ec146a4972b37550943261f2023f2902",
+    "bb8e8cb09fe98b5ece3580c04392146cc00a157705eea046e2f22b1a9b140a18",
+    "523f014efb2e04a18da72ed0b72d5183f0745f35fe5bac00ad81334004846705"
+  ]
 }
