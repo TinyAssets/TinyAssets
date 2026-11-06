@@ -241,6 +241,8 @@ jobs:
             command: npm run test:sizes -w owner -- --shard=2/2
           - leg: runner
             command: npm run test:sizes -w sandbox
+          - leg: doors
+            command: npm run test:sizes -w doors
     defaults:
       run:
         working-directory: platform
