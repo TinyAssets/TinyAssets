@@ -3,9 +3,10 @@
  * check-ignore` the oracle: GitHub's 310 templates (github/gitignore at `df4087095eb4`, CC0,
  * in `test-data/gitignore/`) and random lists, every path's answer git's; the hostile lists
  * of the review's rounds 1 to 6, answered as git does with the lines that fit, at a cost a
- * path within the automaton's own (`STEP_NS` a word step); its memory a list byte within
- * what the sandbox's heap leaves (`LIST_BYTES`); what it remembers of a tree the same at
- * any size, its answers the same in any order, and a walk's path its own segment's cost.
+ * path within the automaton's own (in this host's own units, `overBound`); its memory a list
+ * byte within what the sandbox's heap leaves (`LIST_BYTES`); what it remembers of a tree the
+ * same at any size, its answers the same in any order, and a walk's path its own segment's
+ * cost.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync,
@@ -20,7 +21,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
   AGENT_PEAK, AUTOMATON_STATES, automatonStates, defaultSyncIgnore, HEAP_PER_LIST_BYTE,
-  ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, STEP_NS, unappliedLines,
+  ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, unappliedLines,
 } from "../../owner/src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -317,8 +318,7 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     }
     const matcher = ignoredBy(lines);
     expect(asked.filter((each) => ignored.has(each) !== (matcher(each) !== null))).toEqual([]);
-    // Its cost a path: within the automaton's bound, (name + segment + 1) bytes of ⌈S/32⌉
-    // words at `STEP_NS`, half again for this host, and the indexes' walk of the same bytes.
+    // Its cost a path: within the automaton's bound (`pathWork`), in this host's units.
     let states = 0;
     const seen = new Set<string>();
     for (const line of applied) {
@@ -329,29 +329,18 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     }
     expect(states).toBeLessThanOrEqual(AUTOMATON_STATES);
     const words = Math.max(1, Math.ceil(states / 32));
-    // Warmed first (the JIT's), then the best of three rounds of fresh paths.
+    // Warmed first (the JIT's), then rounds of fresh paths.
     for (let i = 0; i < 300; i++) {
       matcher(path(5000 + i));
     }
-    let perPath = Number.POSITIVE_INFINITY;
-    for (let round = 0; round < 3; round++) {
+    expect(overBound((round) => {
       const fresh = Array.from({ length: 300 }, (_, i) => path(10_000 * (round + 1) + i));
-      // The process's CPU time, not wall-clock: another process's load does not stretch it.
-      const began = process.cpuUsage();
-      for (const each of fresh) {
-        matcher(each);
-      }
-      const spent = process.cpuUsage(began);
-      perPath = Math.min(perPath, (spent.user + spent.system) / 1000 / fresh.length);
-    }
-    const fresh = [path(1)];
-    const name = bytesOf(fresh[0]!.split("/").at(-1)!);
-    // Its folder's remembered Aho–Corasick node may be as deep as its folder (R7-2): the
-    // walk from it falls back at most that far, a step an index byte.
-    const folder = bytesOf(fresh[0]!.slice(0, Math.max(0, fresh[0]!.lastIndexOf("/"))));
-    const bound = ((2 * name + 1) * (words * STEP_NS + INDEX_NS) + folder * INDEX_NS) * 1.5
-      / 1e6;
-    expect(perPath).toBeLessThanOrEqual(bound);
+      return [fresh.map((each) => pathWork(each, words)), () => {
+        for (const each of fresh) {
+          matcher(each);
+        }
+      }];
+    }), "CPU time over the automaton's bound").toBeLessThanOrEqual(1);
   });
 
   it("R7 in the sync's own orders: each folder stepped once, a path its own segment", () => {
@@ -375,40 +364,185 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     // The walk's bound an entry (R7's, above), summed: a pass asks each entry once, the
     // folders among them, and the removal pass, asking only the files, steps each of their
     // folders once (the paths under a folder adjacent), so it is held to the same sum.
-    const bound = walk.reduce((sum, [each]) => sum + walkCost(each, words), 0);
-    const took = (entries: readonly [string, boolean][]) => {
-      let least = Number.POSITIVE_INFINITY;
-      for (let round = 0; round < 3; round++) {
-        const matcher = ignoredBy(lines);
-        const began = performance.now();
+    const bound = walk.map(([each]) => pathWork(each, words));
+    const over = (entries: readonly [string, boolean][]) => overBound(() => {
+      const matcher = ignoredBy(lines);
+      return [bound, () => {
         for (const [each, isDir] of entries) {
           matcher(each, isDir);
         }
-        least = Math.min(least, performance.now() - began);
-      }
-      return least;
-    };
-    expect(took(walk)).toBeLessThanOrEqual(bound);
-    expect(took(files.map((file) => [file, false]))).toBeLessThanOrEqual(bound);
+      }];
+    });
+    expect(over(walk), "the walk's CPU time over its bound").toBeLessThanOrEqual(1);
+    expect(over(files.map((file) => [file, false])), "the removal pass's, over the walk's")
+      .toBeLessThanOrEqual(1);
   });
 });
 
+/** A path's share of the automaton's bound: its word steps and its index bytes. */
+interface Work { readonly steps: number; readonly bytes: number }
+
 /**
- * The walk's bound a path, in ms (R7's, the review's): its name and its `/` and segment at
- * `words` words of `STEP_NS` and the indexes' walk, Aho–Corasick's fallback from its folder's
- * node (at most its folder's depth), half again for this host.
+ * A path's work in the automaton's bound (R7's, the review's): its name, then its `/` and
+ * segment, each byte `words` word steps and an index byte; and Aho–Corasick's fallback from
+ * its folder's remembered node (R7-2), at most its folder's bytes, an index byte each.
+ * `folder` false: a path whose folder the walk has already stepped, its own segment alone.
  */
-function walkCost(path: string, words: number): number {
+function pathWork(path: string, words: number, folder = true): Work {
   const name = bytesOf(path.split("/").at(-1)!);
-  const folder = bytesOf(path.slice(0, Math.max(0, path.lastIndexOf("/"))));
-  return ((2 * name + 1) * (words * STEP_NS + INDEX_NS) + folder * INDEX_NS) * 1.5 / 1e6;
+  const above = folder ? bytesOf(path.slice(0, Math.max(0, path.lastIndexOf("/")))) : 0;
+  return { steps: (2 * name + 1) * words, bytes: 2 * name + 1 + above };
 }
 
 /**
- * What the indexes take a byte of text, in ns: a map lookup a byte of a name's tries and of
- * a path's trie and automaton of lines (an index's cost does not grow with its lines).
+ * An index byte of the bound, in the reference's index bytes (`hostUnits`): what the matcher
+ * does a path beside its bare lookups (a segment's bytes made, its states copied from its
+ * folder's, its remembered names and literal lines looked up, its folders compared). Measured
+ * at most 1.8 (R7's deep folders; R2's literal lines 1.5: no automaton, so all index), over 45
+ * runs idle and under load; a path that scans the list's literal lines is 3 times past 5. A
+ * word step needs no such allowance: the reference's is the automaton's slowest branch itself.
  */
-const INDEX_NS = 200;
+const INDEX_WORK = 5;
+
+/**
+ * How far a cost is within the automaton's bound, whatever CPU the runner has: over five
+ * rounds, each its work (`timed(round)`: the paths' `Work`, and the work, made untimed) timed
+ * beside this host's units (`hostUnits`), the least of its CPU time over the bound's at the
+ * least units seen. At most 1 within the bound.
+ */
+function overBound(timed: (round: number) => [readonly Work[], () => void]): number {
+  const rounds: { took: number; steps: number; bytes: number }[] = [];
+  let step = Number.POSITIVE_INFINITY;
+  let index = Number.POSITIVE_INFINITY;
+  for (let round = 0; round < 5; round++) {
+    const [works, work] = timed(round);
+    let steps = 0;
+    let bytes = 0;
+    for (const each of works) {
+      steps += each.steps;
+      bytes += each.bytes;
+    }
+    const units = hostUnits();
+    step = Math.min(step, units.step);
+    index = Math.min(index, units.index);
+    rounds.push({ took: cpuNanos(work), steps, bytes });
+  }
+  return Math.min(...rounds.map((each) =>
+    each.took / (each.steps * step + each.bytes * index * INDEX_WORK)));
+}
+
+/** The process's CPU time `work` takes, in ns: another process's load does not stretch it. */
+function cpuNanos(work: () => void): number {
+  const began = process.cpuUsage();
+  work();
+  const spent = process.cpuUsage(began);
+  return (spent.user + spent.system) * 1000;
+}
+
+let references: { readonly steps: () => number; readonly lookups: () => number } | undefined;
+
+/**
+ * This host's own word step and index byte, in ns, timed as the matcher is (CPU time, the
+ * least of three), so the cost bounds are the automaton's in this host's units: the bound is
+ * a complexity claim, and CI's runners differ in speed by more than any fixed allowance.
+ * (`STEP_NS` is the sandbox's own figure, its template build's check of `stepNanos`.)
+ * - A step: a byte of text over one 32-state word on the automaton's slowest branch (a `/`:
+ *   its passed states read and written, and re-armed), at `AUTOMATON_STATES`' words.
+ * - An index byte: a fresh name made and encoded, each byte one step into a trie of byte maps
+ *   (`Trie`'s) from its start and one from its end (a name's `L*` and `*L`), bests read.
+ */
+function hostUnits(): { readonly step: number; readonly index: number } {
+  references ??= makeReferences();
+  const least = (run: () => number) => Math.min(run(), run(), run());
+  return { step: least(references.steps), index: least(references.lookups) };
+}
+
+/** The reference loops of `hostUnits`, each warmed (the JIT's), each its ns a unit. */
+function makeReferences(): NonNullable<typeof references> {
+  let seed = 20261106;
+  const random = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0);
+  let sink = 0;
+  // The step: Shift-And's `/` branch, word for word.
+  const W = AUTOMATON_STATES / 32;
+  const mask = Uint32Array.from({ length: 256 * W }, random);
+  const loopAll = Uint32Array.from({ length: W }, random);
+  const rearm = Uint32Array.from({ length: W }, () => random() & 0x01010101);
+  const gadget = Uint32Array.from({ length: W }, () => random() & 0x00010001);
+  const text = Buffer.from("a/b/c".repeat(51));
+  const RUNS = 8;
+  const steps = () => cpuNanos(() => {
+    for (let run = 0; run < RUNS; run++) {
+      const D = new Uint32Array(W).fill(0xFFFFFFFF);
+      const I = new Uint32Array(W);
+      for (let k = 0; k < text.length; k++) {
+        const off = text[k]! * W;
+        let carry = 0;
+        let alive = 0;
+        for (let w = 0; w < W; w++) {
+          const d = D[w]!;
+          const inside = I[w]! | (d & gadget[w]!);
+          const v = (((d << 1) | carry) & mask[off + w]!) | (d & loopAll[w]!) | rearm[w]!
+            | inside;
+          carry = d >>> 31;
+          D[w] = v;
+          I[w] = inside;
+          alive |= v | inside;
+        }
+        sink ^= alive;
+      }
+    }
+  }) / (RUNS * text.length * W);
+  // The index byte: two tries of byte maps, every byte of every name found.
+  const next: (Map<number, number> | undefined)[] = new Array(256).fill(undefined);
+  const best = new Int32Array(1 << 16).fill(-1);
+  let nodes = 1;
+  const encode = (name: string) => {
+    const out = new Uint8Array(name.length * 3);
+    for (let i = 0; i < name.length; i++) {
+      out[i] = name.charCodeAt(i) & 0x7F;
+    }
+    return out.subarray(0, name.length);
+  };
+  const named = (i: number) => `component-file-${i % 200}.ts`;
+  for (let i = 0; i < 200; i++) {
+    const bytes = encode(named(i));
+    for (const order of [bytes, bytes.toReversed()]) {
+      let node = 0;
+      for (const b of order) {
+        let to = next[b]?.get(node) ?? -1;
+        if (to < 0) {
+          to = nodes++;
+          (next[b] ??= new Map()).set(node, to);
+          best[to] = to;
+        }
+        node = to;
+      }
+    }
+  }
+  const lookups = () => {
+    let bytes = 0;
+    return cpuNanos(() => {
+      for (let i = 0; i < 4_000; i++) {
+        const name = encode(named(i));
+        bytes += name.length;
+        let from = 0;
+        let back = 0;
+        let found = -1;
+        for (let k = 0; k < name.length; k++) {
+          from = next[name[k]!]?.get(from) ?? -1;
+          back = next[name[name.length - 1 - k]!]?.get(back) ?? -1;
+          found = Math.max(found, best[from]!, best[back]!);
+        }
+        sink ^= found;
+      }
+    }) / bytes;
+  };
+  steps();
+  lookups();
+  // The loops' results used, so neither is optimised away.
+  expect(Number.isInteger(sink)).toBe(true);
+  return { steps, lookups };
+}
 
 describe("its memory", () => {
   // `gc` for this test alone, so a list's heap is read after the garbage of its making.
@@ -694,20 +828,18 @@ describe("what it remembers of a tree, and what that buys", () => {
         }
       }
     }
-    // The review's bound a path (above): its name and `/` and segment, at ⌈S/32⌉ words of
-    // `STEP_NS` and the indexes' walk, half again for this host; a folder twice (the walk's
-    // entry, and once more as the folder of the paths under it).
-    const bound = entries.reduce((sum, [path, isDir]) => sum + (isDir ? 2 : 1)
-      * (2 * bytesOf(path.split("/").at(-1)!) + 1) * (words * STEP_NS + INDEX_NS) * 1.5, 0) / 1e6;
-    let took = Number.POSITIVE_INFINITY;
-    for (let round = 0; round < 3; round++) {
+    // The review's bound a path (`pathWork`): its name and `/` and segment, at ⌈S/32⌉ words a
+    // step, none of its folder; a folder twice (the walk's entry, and once more as the folder
+    // of the paths under it).
+    const bound = entries.flatMap(([path, isDir]) =>
+      Array.from({ length: isDir ? 2 : 1 }, () => pathWork(path, words, false)));
+    expect(overBound(() => {
       const matcher = ignoredBy(lines);
-      const began = performance.now();
-      for (const [path, isDir] of entries) {
-        matcher(path, isDir);
-      }
-      took = Math.min(took, performance.now() - began);
-    }
-    expect(took).toBeLessThanOrEqual(bound);
+      return [bound, () => {
+        for (const [path, isDir] of entries) {
+          matcher(path, isDir);
+        }
+      }];
+    }), "CPU time over the automaton's bound").toBeLessThanOrEqual(1);
   });
 });
