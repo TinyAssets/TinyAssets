@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import type { Lock } from "./migrations.test";
+import type { Lock } from "./lock";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const LOCK = "platform/owner/migrations.json";

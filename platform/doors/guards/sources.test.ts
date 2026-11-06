@@ -4,7 +4,6 @@
  * - Every file is bundled by the doors, and every bundled record passes the schema
  *   (`sourceRecord`), whose gateway part is the gateway's own check: so a record naming an
  *   API outside the gateway's `SUPPORTED_APIS` fails here, from that one list.
- * - The nine Python records (`tinyassets/providers/source_records/`) are all ported.
  * - pi-ai's catalog supplies a known provider: a record of one restates its base URL and
  *   speaks an API its catalog has models for, so a record overrides only as `custom`.
  * - A record that breaks the schema fails loudly, naming itself.
@@ -30,7 +29,6 @@ import {
 } from "../src/sources";
 
 const SOURCES = join(PLATFORM, "sources");
-const PYTHON = join(PLATFORM, "..", "tinyassets", "providers", "source_records");
 
 function files(dir: string): Map<string, unknown> {
   return new Map(readdirSync(dir).filter((name) => name.endsWith(".json")).sort()
@@ -75,12 +73,6 @@ describe("the source records", () => {
       expect(sourceRecord(record).id).toBe(name);
     }
     expect(catalogOf(bundledRecords()).ids()).toHaveLength(records.size);
-  });
-
-  it("port every one of the Python's", () => {
-    for (const id of files(PYTHON).keys()) {
-      expect(records.has(id), id).toBe(true);
-    }
   });
 
   it("restate pi-ai's catalog for a known provider, and speak an API it has models for", () => {

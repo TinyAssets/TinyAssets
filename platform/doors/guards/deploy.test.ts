@@ -24,7 +24,8 @@ import { PLATFORM } from "../../owner/guards/sources";
 import {
   admitsNobody, BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig,
   EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,
-  maskInLog, keyring, kvValue, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf,
+  maskInLog, keyring, kvValue, lifecycleHook, listed, lockRefusal, MIGRATED, NAMESPACES,
+  namespacesOf,
   PROBE_ROUTES, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
@@ -242,20 +243,28 @@ describe("the deploy kit", () => {
     expect(kit.replace(link, "").match(/randomBytes\(/g)).toHaveLength(2);
   });
 
-  it("refuses to deploy the owner Worker unless the migration lock pins every migration it " +
-     "ships, in order (review M5-2)", () => {
+  it("refuses to deploy unless each migration lock pins every migration it ships, in order " +
+     "(review M5-2)", () => {
     const code = ["a".repeat(64), "b".repeat(64)];
     const first = { at: "2026-11-04T00:00:00.000Z", commit: "abc123" };
-    expect(lockRefusal({ first_deploy: first, deployed: code }, code)).toBeNull();
+    const owner = "owner/migrations.json";
+    expect(lockRefusal({ first_deploy: first, deployed: code }, code, owner)).toBeNull();
     // Unmarked: the first deploy pins first.
-    expect(lockRefusal({ first_deploy: null, deployed: [] }, code)).toMatch(/no first deploy/);
+    expect(lockRefusal({ first_deploy: null, deployed: [] }, code, owner))
+      .toMatch(/no first deploy/);
     // A migration the lock does not pin, one it pins that is gone, one changed, or reordered.
     for (const deployed of [[code[0]], [...code, "c".repeat(64)], [code[0], "c".repeat(64)],
                             [code[1], code[0]]]) {
-      expect(lockRefusal({ first_deploy: first, deployed }, code)).toMatch(/PIN_MIGRATIONS/);
+      expect(lockRefusal({ first_deploy: first, deployed }, code, owner))
+        .toMatch(/PIN_MIGRATIONS/);
     }
-    expect(lockRefusal({ deployed: code }, code)).toMatch(/out of shape/);
-    expect(lockRefusal(null, code)).toMatch(/out of shape/);
+    expect(lockRefusal({ deployed: code }, code, owner)).toMatch(/out of shape/);
+    expect(lockRefusal(null, code, owner)).toMatch(/out of shape/);
+    // The sandbox Worker's objects are locked too (S25), each named, pinned in its folder.
+    expect(MIGRATED).toContain("sandbox");
+    expect(lockRefusal({ first_deploy: first, deployed: [code[0]] }, code,
+                       "sandbox/migrations/SandboxSlots.json"))
+      .toMatch(/^the migration lock sandbox\/migrations\/SandboxSlots\.json pins 1 .* in platform\/sandbox,/);
     // The kit checks it before any change, on the lock the commit holds.
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     const main = kit.slice(kit.indexOf("async function main()"));

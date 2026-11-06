@@ -35,7 +35,7 @@
  *   (`/scratch`, `scratch.ts`) is outside `/workspace`, so never synced.
  */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, rmSync, type Stats } from "node:fs";
+import { existsSync, lstatSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -210,9 +210,9 @@ export function memoryMirror(init: { cursor?: number; files?: Record<string, Kno
 
 /**
  * The sync agent's mirror on disk (`path`, a SQLite database), so its size never sits in
- * memory: a legacy `mirror.json` (`legacy`) is taken in once, then removed.
+ * memory.
  */
-export function openMirror(path: string, legacy?: string): Mirror {
+export function openMirror(path: string): Mirror {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; " +
           "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, version INTEGER NOT NULL, " +
@@ -226,7 +226,7 @@ export function openMirror(path: string, legacy?: string): Mirror {
   const knows = db.prepare("SELECT 1 FROM files WHERE path = ? OR (path > ? AND path < ?) " +
                            "LIMIT 1");
   const page = db.prepare("SELECT path FROM files WHERE path > ? ORDER BY path LIMIT ?");
-  const mirror: Mirror = {
+  return {
     cursor: () => (db.prepare("SELECT cursor FROM meta").get() as { cursor: number }).cursor,
     setCursor: (cursor) => { db.prepare("UPDATE meta SET cursor = ?").run(cursor); },
     get: (at) => {
@@ -263,18 +263,6 @@ export function openMirror(path: string, legacy?: string): Mirror {
     resetEnd: () => { db.exec("DROP TABLE IF EXISTS seen"); },
     close: () => { db.close(); },
   };
-  if (legacy !== undefined && existsSync(legacy)) {
-    const old = JSON.parse(readFileSync(legacy, "utf8")) as
-      { cursor: number; files: Record<string, Known> };
-    mirror.batch(() => {
-      mirror.setCursor(old.cursor);
-      for (const [at, known] of Object.entries(old.files)) {
-        mirror.put(at, known);
-      }
-    });
-    rmSync(legacy, { force: true });
-  }
-  return mirror;
 }
 
 function sha256(bytes: Uint8Array): string {

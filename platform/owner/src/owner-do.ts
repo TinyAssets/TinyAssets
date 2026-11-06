@@ -206,7 +206,8 @@ import {
   ABILITY_TREES, AGENTS_DIR, AGENTS_OWNER_ONLY, MAX_NAME_BYTES, nameOf, ownersOnly, parentOf,
   storedPath, within,
 } from "./paths";
-import { MIGRATIONS, migrate } from "./schema";
+import { migrate } from "./migrate";
+import { MIGRATIONS } from "./schema";
 import { decodeExportCursor, encodeExportCursor } from "./export";
 import { Backups, MANIFEST_PROTECT_S } from "./backup";
 import { OpenExports } from "./open-exports";
@@ -2443,7 +2444,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (this.#tombstone) {
         return;  // an erased owner: nothing is made here again
       }
-      await write(() => migrate(storage));
+      await write(() => migrate(storage, MIGRATIONS));
       // From here on, a unit that writes (not a quiet one) marks the owner changed for the
       // nightly manifest.
       this.#gate.onChange((sql) => {
@@ -6495,6 +6496,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
         authority: begun.row.authority, lease: begun.lease,
         tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
+        route: sealRoute(this.env.ROUTING_MAC_KEY, { owner: this.#ownerName(),
+                                                     authority: begun.row.authority }),
         urls: { events: `${EGRESS_ORIGIN}/signin/${begun.row.id}/events`,
                 signin: runUrls(`run_${"0".repeat(32)}`, "0".repeat(64)).signin } }));
     } catch {
