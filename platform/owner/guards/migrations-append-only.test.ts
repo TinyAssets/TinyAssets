@@ -1,14 +1,14 @@
 /**
- * The owner schema's migration lock only grows, held against the base branch (slice P
- * review M3; ported from the Python suite, which the cutover deletes).
+ * Each migration lock only grows, held against the base branch (slice P review M3; ported
+ * from the Python suite, which the cutover deletes): the owner's and the sandbox Worker's.
  *
- * `migrations.json` pins every migration a deploy shipped (`deployed`, each one's digest) and
- * when the first deploy was (`first_deploy`). `migrations.test.ts` holds the code to the lock
- * in the same tree, so a change that edits a deployed migration *and* its pin passes it.
- * This holds the lock itself against the base: once the base marks a first deploy, that
- * marker never changes, and the base's pins stay the head's first pins, in order. A new
- * migration is appended; nothing is edited or taken away. The owner object's start check
- * (`migrate`) is the backstop in production; this is the one that stops it in review.
+ * A lock pins every migration a deploy shipped (`deployed`, each one's digest) and when the
+ * first deploy was (`first_deploy`; `lock.ts`). Each Worker's `migrations.test.ts` holds the
+ * code to its locks in the same tree, so a change that edits a deployed migration *and* its
+ * pin passes it. This holds each lock itself against the base: once the base marks a first
+ * deploy, that marker never changes, and the base's pins stay the head's first pins, in
+ * order. A new migration is appended; nothing is edited or taken away. Each object's start
+ * check (`migrate`) is the backstop in production; this is the one that stops it in review.
  *
  * The base is `MIGRATION_LOCK_BASE` when set, else the event's own (a pull request's base,
  * a merge group's base, a push's previous main, from `GITHUB_EVENT_PATH`), else
@@ -25,7 +25,9 @@ import { describe, expect, it } from "vitest";
 import type { Lock } from "./lock";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const LOCK = "platform/owner/migrations.json";
+/** Every migration lock, from the repository's root. */
+const LOCKS = ["platform/owner/migrations.json", "platform/sandbox/migrations/SandboxControl.json",
+               "platform/sandbox/migrations/SandboxSlots.json"];
 
 /** Each way `head` is not `base` with pins appended. */
 export function lockGrowthProblems(base: Lock, head: Lock): string[] {
@@ -66,28 +68,30 @@ function git(...args: string[]): string {
 }
 
 /**
- * The lock on `base`; null only when the base's tree has no lock file. Throws when `base` is
- * unknown, and when the lock is in its tree but cannot be read: the legs check out without
- * file contents (`filter: blob:none`), so reading it fetches its blob, and a fetch that fails
- * is an error, never "no lock". Whether the file exists is read from the tree, which is local.
+ * The lock at `path` on `base`; null only when the base's tree has no such file. Throws when
+ * `base` is unknown, and when the lock is in its tree but cannot be read: the legs check out
+ * without file contents (`filter: blob:none`), so reading it fetches its blob, and a fetch
+ * that fails is an error, never "no lock". Whether the file exists is read from the tree,
+ * which is local.
  */
-export function baseLock(base: string, run: (...args: string[]) => string = git): Lock | null {
+export function baseLock(base: string, path: string,
+                         run: (...args: string[]) => string = git): Lock | null {
   try {
     run("rev-parse", "--verify", "--quiet", `${base}^{commit}`);
   } catch {
     throw new Error(`${base} is not in this checkout: fetch it (the guard never passes ` +
                     "without its base)");
   }
-  if (run("ls-tree", "--name-only", base, "--", LOCK).trim() !== LOCK) {
+  if (run("ls-tree", "--name-only", base, "--", path).trim() !== path) {
     return null;
   }
-  return JSON.parse(run("show", `${base}:${LOCK}`)) as Lock;
+  return JSON.parse(run("show", `${base}:${path}`)) as Lock;
 }
 
 describe("the migration lock against the base branch", () => {
-  it("only grows", () => {
-    const base = baseLock(lockBase()) ?? { first_deploy: null, deployed: [] };
-    const head = JSON.parse(readFileSync(join(REPO, LOCK), "utf8")) as Lock;
+  it.each(LOCKS)("only grows: %s", (path) => {
+    const base = baseLock(lockBase(), path) ?? { first_deploy: null, deployed: [] };
+    const head = JSON.parse(readFileSync(join(REPO, path), "utf8")) as Lock;
     expect(lockGrowthProblems(base, head)).toEqual([]);
   });
 
@@ -112,20 +116,21 @@ describe("the migration lock against the base branch", () => {
   it("fails when the base's lock is in its tree but cannot be read", () => {
     const tree = (...args: string[]): string => {
       if (args[0] === "ls-tree") {
-        return `${LOCK}\n`;
+        return `${LOCKS[0]}\n`;
       }
       if (args[0] === "show") {
         throw new Error("fatal: could not fetch the blob");
       }
       return "";
     };
-    expect(() => baseLock("abc", tree)).toThrow(/could not fetch/);
-    expect(baseLock("abc", (...args) => (args[0] === "ls-tree" ? "" : ""))).toBeNull();
+    expect(() => baseLock("abc", LOCKS[0]!, tree)).toThrow(/could not fetch/);
+    expect(baseLock("abc", LOCKS[0]!, (...args) => (args[0] === "ls-tree" ? "" : "")))
+      .toBeNull();
   });
 
   it("reads its base from the event, and refuses one it does not have", () => {
     expect(lockBase({ MIGRATION_LOCK_BASE: "abc" })).toBe("abc");
     expect(lockBase({})).toBe("origin/main");
-    expect(() => baseLock("0".repeat(40))).toThrow(/not in this checkout/);
+    expect(() => baseLock("0".repeat(40), LOCKS[0]!)).toThrow(/not in this checkout/);
   });
 });
