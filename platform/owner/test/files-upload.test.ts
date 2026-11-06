@@ -9,11 +9,12 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import {
-  CHUNK_BYTES, type ChunkStore, chunkedId, DELETE_FLOOR_MS, type Entry, GC_GRACE_S,
-  HOUSEKEEPING_SLACK_S, INLINE_BYTES, inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS,
-  MAX_OPEN_INTENTS, sha256Hex, WHOLE_BYTES,
+  chunkedId, type ChunkStore, DELETE_FLOOR_MS, type Entry, GC_GRACE_S, HOUSEKEEPING_SLACK_S,
+  inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS, MAX_OPEN_INTENTS, WHOLE_BYTES,
 } from "../src/files";
+import { sha256Hex } from "../../contract/src/digest";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";

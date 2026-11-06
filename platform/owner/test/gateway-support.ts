@@ -9,10 +9,11 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { ANTHROPIC, OPENAI } from "../../ci/fixtures";
-import type { Credential, EgressScope, Source } from "../../gateway/src/credential";
+import type { Credential } from "../../gateway/src/credential";
+import type { EgressScope, Source } from "../../contract/src/egress-scope";
 import { seal } from "../../gateway/src/keyring";
 
-import type { ModelInfo } from "../src/connections";
+import type { ModelRecord } from "../../contract/src/model-record";
 import type { Binding } from "../src/owner-do";
 import { signedIn } from "./ledger-support";
 import { EVERY_SIGNIN, TIERS } from "./support";
@@ -45,11 +46,11 @@ export async function scopeOf(record: Source): Promise<EgressScope> {
  * its verify URL answers 2xx. Only the fake's Anthropic models endpoint answers a check, so
  * a throwaway working key is checked there, under the source's own provider and API.
  */
-export async function catalog(record: Source): Promise<ModelInfo[]> {
+export async function catalog(record: Source): Promise<ModelRecord[]> {
   return (await checked(record)).models;
 }
 
-async function checked(record: Source): Promise<{ models: ModelInfo[]; egress: EgressScope }> {
+async function checked(record: Source): Promise<{ models: ModelRecord[]; egress: EgressScope }> {
   const probe: Source = {
     upstream: { ...record.upstream, auth: ANTHROPIC.upstream.auth,
                 verify_url: ANTHROPIC.upstream.verify_url! },
@@ -57,7 +58,7 @@ async function checked(record: Source): Promise<{ models: ModelInfo[]; egress: E
   };
   const { blob } = await env.GATEWAY.seal("catalog", "c-catalog", 1, "sk-good", probe);
   return await env.GATEWAY.verify("catalog", "c-catalog", 1, blob) as unknown as
-    { models: ModelInfo[]; egress: EgressScope };
+    { models: ModelRecord[]; egress: EgressScope };
 }
 
 /** The keyring the gateway holds, with `active` made the active kid. */
@@ -84,7 +85,7 @@ export async function gated() {
 
   /** Connect a pasted key: prepare, seal, the models, commit; returns the connection. */
   const connect = async (key: string, record: Source = ANTHROPIC, display = "Key",
-                         models?: ModelInfo[]) => {
+                         models?: ModelRecord[]) => {
     const prepared = await stub.connectionPrepare(session(), {
       source: record.upstream.provider, kind: "api_key", display_name: display,
       provider: record.upstream.provider, revocable: false });

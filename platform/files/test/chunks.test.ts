@@ -9,9 +9,8 @@ import { describe, expect, it } from "vitest";
 
 import { chunkName, KEY_REFUSED, KEYRING_UNAVAILABLE, unwrap } from "../src/datakey";
 import FilesService from "../src/index";
-import {
-  BATCH_BYTES, CHUNK_BYTES, chunkKey, DELETE_BATCH, MANIFEST_PARTS, manifestKey,
-} from "../src/keys";
+import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
+import { chunkKey, manifestKey } from "../src/keys";
 
 import { ringKey } from "../../ci/fixtures";
 

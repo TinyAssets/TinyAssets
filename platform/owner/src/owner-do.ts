@@ -93,21 +93,25 @@
  * `wakes` lane's claim). Only the platform, as the reserved `PLATFORM_CALLER`, sets it, at
  * `admissionSet`, the one door that caller reaches.
  */
+import { HEX64, randomHex, SIGNIN_ID } from "../../contract/src/ids";
+import { codePoints, principal, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { sha256Hex } from "../../contract/src/digest";
 import { type Edited, letGo, planEdit, type Refusal } from "./edit";
 import {
   APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, MOVE_PASS_UNITS, moveTableUnits, ownerSlots,
 } from "./holds";
 import {
-  type Lease as PoolLease, SLOT_WAIT_MS, SlotBusy, slotted, type SlotPool,
-} from "./slots";
-import { createHash, randomBytes } from "node:crypto";
+  type Lease as PoolLease, SlotBusy, type SlotPool, slotted,
+} from "../../contract/src/slots";
+import { BATCH_BYTES, CHUNK_BYTES, INLINE_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits";
+import { createHash } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import type { Vendor } from "../../doors/src/apps";
 import { APP_RESOURCE } from "../../doors/src/config";
-import { LEASE_LIVED, mintToken, sealRoute } from "../../doors/src/routing-mac";
+import { LEASE_LIVED, mintToken, sealRoute } from "../../contract/src/routing-mac";
 import {
   type ProfileName, profileNames, refusal, takesRequest, type Tool, toolsNamed,
 } from "../../doors/src/tools";
@@ -126,22 +130,24 @@ import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay"
 import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type MailAnswer,
          mailConversation,
          type PostedFrame, QUEUE_FULL, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
-         scheduleAuthority, secretHash } from "./runs";
-import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
+         scheduleAuthority, } from "./runs";
+import {
+  ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
+} from "../../contract/src/run-rows";
 import {
   EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, FRAME_VERSION, PostGate,
-} from "./run-events";
+} from "../../contract/src/run-events";
 import {
   SANDBOX_ABSENT, SANDBOX_WAITING, type SandboxService, type Started, started,
 } from "./sandbox";
-import { TICKET_REFUSED } from "./socket-shape";
+import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
 import { type ApiKey, keyId, keyName, Keys } from "./keys";
 import {
   bindingId, created as inboundCreated, Inbound, type InboundBinding, type InboundRow,
   ownerProof, PROOF_INVALID,
 } from "./inbound";
-import { proves } from "./inbound-proof";
+import { proves } from "../../contract/src/inbound-proof";
 import {
   keepTiers, keptTiers, PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers,
 } from "./tier";
@@ -149,7 +155,7 @@ import {
   Bodies, bodyOffset, inlineWindow, type Located, PLACE_BYTES, type Placed, placedAs,
   type Placing, type Window, WINDOWS_BYTES,
 } from "./bodies";
-import { fitted, jsonBytes, utf8Length } from "./encoded";
+import { fitted, jsonBytes } from "../../contract/src/encoded";
 import {
   bodied, type Cut, fitList, fitPage, PAGE_BYTES, RESULT_TOO_LARGE, whole as fits,
 } from "./pages";
@@ -158,16 +164,15 @@ import {
   type HistoryEntry, type Page, type Row,
 } from "./collections";
 import {
-  CONNECTION_UNAVAILABLE, type ConnectionView, Connections, CREDENTIAL_EXPIRED,
-  type GatewayService, type ModelInfo, type Prepared,
+  CONNECTION_UNAVAILABLE, Connections, type ConnectionView, CREDENTIAL_EXPIRED,
+  type GatewayService, type Prepared,
 } from "./connections";
-import { Invalid, Refused } from "./errors";
+import type { ModelRecord } from "../../contract/src/model-record";
+import { ERASING, Invalid, Refused } from "../../contract/src/errors";
 import {
-  BATCH_BYTES, type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef,
-  type ChunkStore, type Content, type Entry, FileConflict, FileFault, Files, GC_GRACE_S,
-  INLINE_BYTES, type Lease, MAX_OPEN_INTENTS, WHOLE_BYTES,
-  OWNER_AUTHORITY, type SandboxLease, type SyncOp,
-  type SyncOutcome, type Usage,
+  type Change as FileChange, CHUNK_DELETING, type ChunkRef, type ChunkStore, type Content,
+  type Entry, FileConflict, FileFault, Files, GC_GRACE_S, type Lease, MAX_OPEN_INTENTS,
+  OWNER_AUTHORITY, type SandboxLease, type SyncOp, type SyncOutcome, type Usage, WHOLE_BYTES,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
 import { type Capability, type Client, type ConnectedApp, type Grant, Grants, holds, type Scope }
@@ -193,9 +198,7 @@ import {
   type Source as Run,
 } from "./segments";
 import { Erasure } from "./erase";
-import {
-  ERASE_RETRY_MS, ERASING, erasing, markOutside, outsideDone, PUT_GRACE_MS, wiped,
-} from "./erasure";
+import { ERASE_RETRY_MS, erasing, markOutside, outsideDone, PUT_GRACE_MS, wiped } from "./erasure";
 import {
   type Change, customTools, fileLimits, hookSettings, modelSettings, Policy,
   type PolicyDocument, type Projection, type Receipt,
@@ -221,29 +224,28 @@ import {
 import { carried, type Receipt as StarterReceipt, Starter, type StarterPackage }
   from "./starter";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
-import { codePoints, principal, utf8Bytes } from "./text";
 import { storageFull, storageFullMessage } from "./storage-full";
 import {
   AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
-} from "./sync-ignore";
+} from "../../contract/src/sync-ignore";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, type EgressReserved,
   egressRequest, reserveRequest,
   type SandboxBinding, sandboxBinding, settleRequest,
 } from "./egress";
+import { EGRESS_ORIGIN, runUrls, sandboxEnv } from "../../contract/src/egress";
+import { type EgressPolicy, networkDocument, type NetworkPlan } from "./network";
 import {
-  EGRESS_ORIGIN, type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
-} from "./network";
-import {
-  pastedCode, SIGNIN_ID, SIGNIN_OFF, signinAuthority, type SigninMode, type SigninView,
-  Signins, signinView, switchedOn,
+  pastedCode, SIGNIN_OFF, signinAuthority, type SigninMode, Signins, type SigninView, signinView,
+  switchedOn,
 } from "./signins";
 import {
   CLOSED, Doorbell, type RingAnswer, runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender,
   WAKES_PER_ALARM,
 } from "./wakes";
-import { eventKind, type Events, follows, kindFor, wakeKinds } from "./wake-kinds";
+import { eventKind, type Events, kindFor, wakeKinds } from "../../contract/src/wake-records";
+import { follows } from "../../contract/src/wake-kinds";
 
 /**
  * Whose object this is, who is asking and through what: set by the binder from a
@@ -709,7 +711,7 @@ export interface OwnerEnv {
    */
   readonly CONTROL: KVNamespace;
   /**
-   * The routing key the sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), a
+   * The routing key the sandbox tokens are MAC'd under (`contract/src/routing-mac.ts`), a
    * Worker secret the doors Worker holds too; a lease is never opened without it.
    */
   readonly ROUTING_MAC_KEY: string;
@@ -1504,7 +1506,7 @@ export type WrittenRow = Omit<Row, "body" | "content_id"> & { readonly body_byte
 
 function writtenRow(row: Row): WrittenRow {
   const { body, content_id: _placed, ...rest } = row;
-  return { ...rest, body_bytes: utf8Length(body) };
+  return { ...rest, body_bytes: utf8Bytes(body) };
 }
 
 /** A conflict's current row, read back as `get` shows it: fitted to one answer. */
@@ -1528,7 +1530,7 @@ function filerOf(account: Account): string {
     return `client:${account.origin.client}`;
   }
   return account.caller === account.owner ? "owner"
-    : `client:${createHash("sha256").update(`visitor\n${account.caller}`, "utf8").digest("hex")}`;
+    : `client:${sha256Hex(`visitor\n${account.caller}`)}`;
 }
 
 /** Who a file change is by, in its history: the owner, or the outside client it came through. */
@@ -1624,7 +1626,7 @@ function requestKey(client: string | null, sendId: unknown): string {
   if (typeof sendId !== "string" || !SEND_ID.test(sendId)) {
     throw new Invalid("client_send_id is 1 to 128 letters, digits, - and _");
   }
-  return createHash("sha256").update(`${client ?? "owner"}\0${sendId}`, "utf8").digest("hex");
+  return sha256Hex(`${client ?? "owner"}\0${sendId}`);
 }
 
 /** The engine, its reports in one batch at most `ENGINE_SIGNINS`, each engine once. */
@@ -2020,7 +2022,7 @@ export interface Internals {
 }
 
 /** A model's cost record with its input at its dearest rate: what a token can cost at most. */
-function dearest(model: ModelInfo): ModelInfo {
+function dearest(model: ModelRecord): ModelRecord {
   const top = (rates: { input: number; cacheRead: number; cacheWrite: number }) =>
     Math.max(rates.input, rates.cacheRead, rates.cacheWrite);
   return { ...model, cost: { ...model.cost, input: top(model.cost),
@@ -2033,7 +2035,7 @@ function dearest(model: ModelInfo): ModelInfo {
  * The most µ$ a sandbox call of `input` and `output` tokens can cost on any of `models`,
  * each model's tokens at most its own context window and output cap, at its dearest rates.
  */
-export function egressPrice(models: readonly ModelInfo[], input: number, output: number):
+export function egressPrice(models: readonly ModelRecord[], input: number, output: number):
     number {
   return Math.max(...models.map((model) => priced(dearest(model),
                                                   Math.min(input, model.contextWindow),
@@ -2282,7 +2284,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // The call's model is unknown until the gateway reads the body: priced at the most
       // any of the connection's models charges, input at its dearest of uncached,
       // cache-read and cache-write rates, by pi-ai's `calculateCost` (`priced`).
-      price: (models, input, output) => egressPrice(models as readonly ModelInfo[], input,
+      price: (models, input, output) => egressPrice(models as readonly ModelRecord[], input,
                                                     output),
       pruned: (now) => this.#usage.spendPruned(now),
     });
@@ -3350,10 +3352,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const unstamped = proof?.profile.method === "hmac-sha256"
       && proof.profile.timestamp_header === undefined;
     const identity = unstamped
-      ? `body:${createHash("sha256").update(body).digest("hex")}` : `id:${eventId}`;
-    const key = createHash("sha256")
-      .update(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${identity}`, "utf8")
-      .digest("hex");
+      ? `body:${sha256Hex(body)}` : `id:${eventId}`;
+    const key = sha256Hex(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${identity}`);
     const envelope = JSON.stringify({ inbound: {
       binding: row.binding_id, event_id: eventId, event_at: eventAt,
       raw_base64: Buffer.from(body).toString("base64") } });
@@ -4271,7 +4271,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** A segment's trailer, read alone by its fence's range. */
   async #trailer(fence: Fence, chunks: readonly string[]):
       Promise<ReturnType<typeof parseTrailer>> {
-    return parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+    return parseTrailer(utf8Decoder("keep").decode(
       await this.#segmentBytes(chunks, fence.trailer_offset, fence.trailer_bytes)));
   }
 
@@ -4600,7 +4600,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const ref = table.addContent(fence.bytes, located.get(fence.content_id)!.chunks, null);
     const content = table.contentOf(ref);
     const read = (reader ?? new MoveReader(this.#files, table)).read;
-    const trailer = parseTrailer(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+    const trailer = parseTrailer(utf8Decoder("keep")
       .decode(await lineAt(content, fence.trailer_offset, fence.trailer_bytes, read)));
     let kept = 0;
     for (const [key, offset, length] of trailer.keys) {
@@ -4643,7 +4643,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         const each: string[] = [];
         for (let n = 0; n < plan.chunks; n++) {
           const made = await makeChunk(plan, n, sources, reader.read);
-          each.push(createHash("sha256").update(made).digest("hex"));
+          each.push(sha256Hex(made));
           letGo(made);
         }
         hashes.push(each);
@@ -5902,7 +5902,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         // A small file, kept inline: edited whole, its bytes at most `INLINE_BYTES`.
         let text: string;
         try {
-          text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content.inline);
+          text = utf8Decoder("keep").decode(content.inline);
         } catch {
           return refused("not_utf8");
         }
@@ -6117,7 +6117,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // A client's sandbox whose readable set changed since its last read (a new agent's run,
       // a widened file scope) reads the feed again from its start: `reset`.
       const moved = readable.scope !== null && this.#files.leaseReadable(
-        readable.lease, createHash("sha256").update(readable.scope, "utf8").digest("hex")
+        readable.lease, sha256Hex(readable.scope)
           .slice(0, 16));
       const test = readable.test;
       return { ...changes, reset: changes.reset || moved,
@@ -6775,7 +6775,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     let text: string;
     try {
-      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+      text = utf8Decoder("strip").decode(bytes);
     } catch {
       throw new Invalid(`${path} is not UTF-8 text`);
     }
@@ -7098,8 +7098,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         initiator: "mail", stamp, origin, agent: mail.agent,
         conversation: this.#runs.kept(conversation, mail.agent, origin?.client ?? null)
           ? conversation : null,
-        request: createHash("sha256").update(`mail\0${mail.message_id}\0${mail.agent_id}`,
-                                             "utf8").digest("hex"),
+        request: sha256Hex(`mail\0${mail.message_id}\0${mail.agent_id}`),
         tiers: tierNumbers(this.#storage, undefined, clock()), unattended: !mail.attended,
         prompt, mail: { message: mail.message_id, conversation } }), null,
                          () => this.#ledger.taken(mail.message_id, mail.agent_id, clock()));
@@ -7284,11 +7283,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } catch (error) {
       throw error instanceof SourceRecordError ? new Invalid(error.message) : error;
     }
-    if (typeof run.secret !== "string" || !/^[0-9a-f]{64}$/.test(run.secret)) {
+    if (typeof run.secret !== "string" || !HEX64.test(run.secret)) {
       throw new Invalid("a sandbox run carries its own secret, 64 hex");
     }
     const keyed = sandboxEnv(this.#connections.egressible(),
-                             () => randomBytes(16).toString("hex"),
+                             () => randomHex(16),
                              { ...engine, run: run.run, secret: run.secret,
                                connection: run.connection ?? null });
     // The record's own variables are never shaped like a key's, so the two never meet.
@@ -7311,9 +7310,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   #openLease(owner: () => string, now: number, authority: string) {
     const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), LEASE_LIVED);
     const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), LEASE_LIVED);
-    const runner = randomBytes(32).toString("hex");
+    const runner = randomHex(32);
     const lease = this.#files.leaseAcquire(authority, "sandbox", {
-      egress: egress.hash, sync: sync.hash, runner: secretHash(runner) });
+      egress: egress.hash, sync: sync.hash, runner: sha256Hex(runner) });
     const live = new Set(this.#files.liveLeases(now).map((each) => each.lease_id));
     this.#egress.end("lease", (stream) => !live.has(stream.lease));
     const { document } = this.#policy.read();

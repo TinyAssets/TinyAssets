@@ -23,12 +23,11 @@
  * chunk no scope references any more is garbage until it is deleted, charged to the scope
  * that let it go last.
  *
- * This module imports nothing, so the owner-bound guard reads the same charge the schema
- * keeps.
+ * This module imports only the contract's chunk size, so the owner-bound guard reads the same
+ * charge the schema keeps.
  */
+import { CHUNK_BYTES } from "../../contract/src/limits";
 
-/** A chunk's most bytes: the files Worker's `CHUNK_BYTES` (a test ties the two). */
-export const CHUNK_BYTES = 4 * 1024 * 1024;
 /**
  * The placement rule's threshold (ADR-035): a collection row's, a history entry's or a
  * message's body of more UTF-8 bytes than this is never kept in the object's SQLite but in

@@ -11,7 +11,7 @@
  * A migration is append-only from its Worker's first deploy: a new shape is a new entry at
  * the end, held by the Worker's migration lock and its migrations guard.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../contract/src/digest";
 
 export type Migration = readonly string[];
 
@@ -23,7 +23,7 @@ export interface MigrationStorage {
 
 /** A migration's digest: SHA-256 over its statements as JSON, as the code evaluates them. */
 export function migrationDigest(migration: Migration): string {
-  return createHash("sha256").update(JSON.stringify(migration)).digest("hex");
+  return sha256Hex(JSON.stringify(migration));
 }
 
 /** What a start answers when a migration it applied before reads differently now. */

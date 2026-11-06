@@ -20,8 +20,8 @@ import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { bundledSources, runEnv } from "../../doors/src/sources";
-import { sandboxEnv } from "../../owner/src/network";
-import { readEvent } from "../../owner/src/run-events";
+import { sandboxEnv } from "../../contract/src/egress";
+import { readEvent } from "../../contract/src/run-events";
 
 import { invocation, type StartDoc } from "./engine";
 import { lineEvent } from "./frames";

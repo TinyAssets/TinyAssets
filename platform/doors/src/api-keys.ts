@@ -30,7 +30,8 @@
  * calls are bounded by the tier's simultaneous runs, the owner's own settings and vendors'
  * limits.
  */
-import { MAX_KEYS } from "../../owner/src/keys";
+import { HEX16 } from "../../contract/src/ids";
+import { MAX_KEYS } from "../../contract/src/limits";
 
 import { apiKeyOrigin, bindApiKey, type Bound } from "./binder";
 import type { DoorsEnv } from "./config";
@@ -99,7 +100,7 @@ export async function verifyKey(env: DoorsEnv, token: string): Promise<Bound | n
 }
 
 function keyId(value: unknown): string {
-  if (typeof value !== "string" || !/^[0-9a-f]{16}$/.test(value)) {
+  if (typeof value !== "string" || !HEX16.test(value)) {
     throw new KeyRefused(400, "key_id is 16 hex");
   }
   return value;

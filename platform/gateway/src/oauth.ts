@@ -20,16 +20,17 @@
  * never followed; an answer's body is read only as the token response it must be, and
  * nothing from it reaches an error (`failure.ts`).
  */
+import { utf8Decoder } from "../../contract/src/text";
 import type { FetchFunction, OAuthCredential } from "@earendil-works/pi-ai";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 
 import { type Catalog, providerFor } from "./catalog";
+import { type Credential, type OAuthGrant } from "./credential";
 import {
-  type Credential, keyExchangeSource, type OAuthClient, type OAuthGrant, PROVIDER_REFRESH,
-  type Source, source,
-} from "./credential";
+  keyExchangeSource, type OAuthClient, PROVIDER_REFRESH, source, type Source,
+} from "../../contract/src/egress-scope";
 import { nativeFetch, within } from "./egress";
-import { type Code, Failure } from "./failure";
+import { type Code, Failure } from "../../contract/src/failure";
 import { type Binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
 
 /** How long one token-endpoint call may take (pi-ai's own refresh bound). */
@@ -104,7 +105,7 @@ async function boundedJson(answer: Response): Promise<unknown> {
     at += part.byteLength;
   }
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(whole));
+    return JSON.parse(utf8Decoder("strip").decode(whole));
   } catch {
     return undefined;
   }

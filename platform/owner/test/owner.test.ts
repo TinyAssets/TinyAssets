@@ -4,7 +4,8 @@ import { DurableObject, env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { LIMITS } from "../src/collections";
-import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
+import { CHUNK_BYTES } from "../../contract/src/limits";
+import { PLACE_BYTES } from "../src/manifest";
 import { OwnerDO } from "../src/owner-do";
 import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../src/migrate";
 import { MIGRATIONS } from "../src/schema";

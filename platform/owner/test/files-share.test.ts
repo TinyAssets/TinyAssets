@@ -9,9 +9,9 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import {
-  CHUNK_BYTES, type Files, FILE_QUOTA, FILE_SHARE, INLINE_BYTES, MAX_OPEN_INTENTS, sha256Hex,
-} from "../src/files";
+import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
+import { FILE_QUOTA, FILE_SHARE, type Files, MAX_OPEN_INTENTS } from "../src/files";
+import { sha256Hex } from "../../contract/src/digest";
 import { WriteGate } from "../src/gate";
 import {
   CHUNK_LIST_ROW_BYTES, HISTORY_BYTES, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PAGE_ROOM,

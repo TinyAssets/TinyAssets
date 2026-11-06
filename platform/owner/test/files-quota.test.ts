@@ -8,9 +8,8 @@ import { describe, expect, it } from "vitest";
 
 import { storageFull, storageFullMessage, storageFullOf } from "../src/storage-full";
 
-import {
-  CHUNK_BYTES, type FileLimits, INLINE_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS,
-} from "../src/files";
+import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
+import { type FileLimits, KEEP_CEILING, MAX_INTENT_CHUNKS } from "../src/files";
 import { canonical, DEFAULT_POLICY_JSON, FILE_DEFAULTS, FILE_SETTINGS } from "../src/policy";
 import type { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";

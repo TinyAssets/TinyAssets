@@ -11,30 +11,14 @@
  * NFC-normalizes keys, and uploads are verbatim (Fact 9): two names a sandbox can create
  * would meet in one object. The r2-keys guard keeps every other source from building one.
  */
-/** A request that is malformed: a wrong field, type or size, or bytes that miss their hash. */
-export class Invalid extends Error {
-  override readonly name = "Invalid";
-}
+import { Invalid } from "../../contract/src/errors";
+import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
+import { MANIFEST_PARTS } from "../../contract/src/limits";
 
-/** A chunk's most bytes; the owner's chunker cuts files at exactly this size. */
-export const CHUNK_BYTES = 4 * 1024 * 1024;
-/** The most bytes one put or get call moves: two whole chunks, well under RPC's 32 MiB. */
-export const BATCH_BYTES = 2 * CHUNK_BYTES;
-/** R2's most keys in one delete. */
-export const DELETE_BATCH = 1000;
-
-const NS = /^[0-9a-f]{32}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
+const NS = HEX32;
+const SHA256 = HEX64;
 /** A generation's id: 16 lowercase hex characters, the owner's object makes it. */
-const GEN = /^[0-9a-f]{16}$/;
-/**
- * The most objects one generation has, its base parts and its log segments together: 4 MiB
- * each, 64 GiB. Past the worst case of the stream the owner's object can hold, escaping
- * included (`owner/guards/owner-bound.test.ts`, "the nightly manifest's stream"), and its
- * lists (`PART_ENTRY` each) fit a SQLite row's 2 MB. A generation past it is never retried:
- * the owner is told (`owner/src/backup.ts`).
- */
-export const MANIFEST_PARTS = 16_384;
+const GEN = HEX16;
 
 /** An owner namespace: 32 lowercase hex characters. */
 export function namespace(ns: unknown): string {

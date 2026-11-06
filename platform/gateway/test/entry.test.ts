@@ -10,11 +10,12 @@ import { describe, expect, it } from "vitest";
 
 import { builtinCatalog } from "../src/catalog";
 import { learnMeter, meteredRecord } from "../src/meter";
-import { Failure, guarded } from "../src/failure";
-import { BODY_MAX, GATEWAY_POOL_SLOTS, type Metering, type Reserve } from "../src/forward";
+import { Failure, guarded } from "../../contract/src/failure";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
+import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
+import { type Metering, type Reserve } from "../src/forward";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { open } from "../src/keyring";
-import { isolatePool } from "../../owner/src/slots";
 import { ALICE, ANTHROPIC, OPENAI, sealed } from "./support";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
@@ -23,7 +24,7 @@ const gateway = (exports as unknown as { default: Service<Gateway> }).default;
 function granting(asked: unknown[] = [], fields: Partial<Metering> = {}): Reserve {
   return async (call) => {
     asked.push(call);
-    return { metering: { max_output_tokens: 100, input_bytes: BODY_MAX, model: call.model,
+    return { metering: { max_output_tokens: 100, input_bytes: EGRESS_BODY_MAX, model: call.model,
                          tier: call.tier, ...fields } };
   };
 }
@@ -301,7 +302,7 @@ describe("the gateway Worker", () => {
     // A tier the body names, or none (null); the last of duplicate keys, as JSON.parse reads
     // them and as the provider receives the gateway's own parse; a model after a field of
     // almost the whole bound.
-    const large = "x".repeat(BODY_MAX - 200);
+    const large = "x".repeat(EGRESS_BODY_MAX - 200);
     for (const [text, expected] of [
       [JSON.stringify({ model: model.id, input: "hi" }), { model: model.id, tier: null }],
       [JSON.stringify({ model: model.id, input: "hi", service_tier: "priority" }),
@@ -344,7 +345,7 @@ describe("the gateway Worker", () => {
         method: "POST", body: new Blob([body]).stream(),
         headers: length === null ? {} : { "content-length": length } }),
       granting(asked), new ReadableStream());
-    for (const length of [String(text.length - 1), null, String(BODY_MAX + 1), "-1"]) {
+    for (const length of [String(text.length - 1), null, String(EGRESS_BODY_MAX + 1), "-1"]) {
       expect(await (await declared(length)).response.json())
         .toMatchObject({ error: { code: "invalid_request" } });
     }
@@ -353,7 +354,8 @@ describe("the gateway Worker", () => {
       .json()).toMatchObject({ error: { code: "invalid_request" } });
     // An object that reserved another call than it was asked is the platform's bug: loud.
     const other: Reserve = async (asking) => ({ metering: {
-      max_output_tokens: 10, input_bytes: BODY_MAX, model: "another-model", tier: asking.tier } });
+      max_output_tokens: 10, input_bytes: EGRESS_BODY_MAX, model: "another-model",
+      tier: asking.tier } });
     const wrong = await call(text, other);
     expect([wrong.response.status, await wrong.response.json()])
       .toEqual([500, { error: { code: "internal", message: "internal" } }]);
@@ -422,7 +424,7 @@ describe("the gateway Worker", () => {
     const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
-    const pool = isolatePool(GATEWAY_POOL_SLOTS);
+    const pool = gatewaySlots();
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
     // A call that weighs the whole pool (15 MiB, a non-ASCII character in it: `held.ts`) takes
     // every slot while its reserve is pending.

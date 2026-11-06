@@ -23,7 +23,8 @@
  *   after the last entry it read, so no match is ever out of reach. It stops at whichever
  *   comes first of `SEARCH_SCAN` entries read and `SEARCH_ANSWER_BYTES` of results.
  */
-import { escapedBytes, fitted, jsonBytes } from "./encoded";
+import { utf8Decoder } from "../../contract/src/text";
+import { escapedBytes, fitted, jsonBytes } from "../../contract/src/encoded";
 import { PAGE_BYTES } from "./pages";
 import { nameOf } from "./paths";
 
@@ -69,7 +70,7 @@ export interface Front {
 /** Bytes as UTF-8 text, or null when they are not. */
 export function textOf(bytes: Uint8Array): string | null {
   try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+    return utf8Decoder("strip").decode(bytes);
   } catch {
     return null;
   }

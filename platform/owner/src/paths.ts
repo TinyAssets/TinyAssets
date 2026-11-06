@@ -27,8 +27,8 @@
  * sync). The owner's own app changes them only in its live session. The roots are never
  * removed or renamed, so no change outside the trees reaches into them.
  */
-import { Invalid } from "./errors";
-import { utf8Bytes } from "./text";
+import { Invalid } from "../../contract/src/errors";
+import { utf8Bytes } from "../../contract/src/text";
 
 export const WORKSPACE = "/workspace";
 export const TEMP = "/.ta/tmp";

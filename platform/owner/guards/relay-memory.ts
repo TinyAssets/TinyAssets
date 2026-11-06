@@ -7,6 +7,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { PLATFORM } from "../../ci/paths";
+import {
+  EVENT_FRAMES_MAX, EVENTS_BODY_MAX, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX,
+} from "../../contract/src/run-events";
 
 const SRC = join(PLATFORM, "owner", "src");
 
@@ -33,13 +36,15 @@ const SIGNED_OUT_BYTES = 256;
 /** One posted frame's own objects beside its text: the frame, its relayed copy, numbers. */
 const FRAME_OVERHEAD = 512;
 
-export const MEMORY = Object.freeze({
+/** The relay's memory terms' inputs, each a count. */
+export const MEMORY: Readonly<Record<"tailUnits" | "frameMax" | "eventsBody" | "eventFrames"
+  | "frameUnits" | "postsHeld" | "ownerSockets" | "signedOut" | "liveRuns", number>> = Object.freeze({
   tailUnits: constant("relay", "TAIL_UNITS"),
   frameMax: constant("relay", "TAIL_FRAME_UNITS"),
-  eventsBody: constant("run-events", "EVENTS_BODY_MAX"),
-  eventFrames: constant("run-events", "EVENT_FRAMES_MAX"),
-  frameUnits: constant("run-events", "FRAME_UNITS_MAX"),
-  postsHeld: constant("run-events", "EVENTS_IN_FLIGHT"),
+  eventsBody: EVENTS_BODY_MAX,
+  eventFrames: EVENT_FRAMES_MAX,
+  frameUnits: FRAME_UNITS_MAX,
+  postsHeld: EVENTS_IN_FLIGHT,
   ownerSockets: constant("relay", "OWNER_SOCKETS"),
   signedOut: constant("relay", "SIGNED_OUT_KEPT"),
   liveRuns: constant("tier", "RUNS_CEILING"),

@@ -71,17 +71,19 @@
  * finish within the gateway's 5-minute deadline: here a policy write ends it, as it ends
  * the owner's in-flight turns.
  */
-import { randomBytes } from "node:crypto";
+import { CONNECTION_ID, HEX32, HEX64, randomHex, RUN_ID } from "../../contract/src/ids";
 
-import { apiRules, freeCall, tierMultiplier } from "../../gateway/src/api-rules";
-import { type EgressScope, egressTarget, meteredCall, meteredModel }
-  from "../../gateway/src/credential";
+import { apiRules, freeCall, tierMultiplier } from "../../contract/src/api-rules";
+import {
+  type EgressScope, egressTarget, meteredCall, meteredModel,
+} from "../../contract/src/egress-scope";
 
-import { Invalid } from "./errors";
+import { Invalid } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, largestFitting, periods } from "./money";
-import { EGRESS_BEAT_S, EGRESS_DEADLINE_S, type EgressCode, type Outcome, OUTCOMES } from "./network";
+import { EGRESS_BEAT_S, type EgressCode, type Outcome, OUTCOMES } from "../../contract/src/egress";
+import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 
 export { EGRESS_DEADLINE_S, type EgressCode, type Outcome };
 
@@ -317,15 +319,9 @@ export interface EgressDeps {
 
 /** The fewest output tokens a sandbox model call is worth reserving, as a loop call's. */
 export const MIN_OUTPUT = 1_024;
-/** The calls that carry no model use: a sealed endpoint's reads (a model list). */
-const FREE_METHODS: readonly string[] = Object.freeze(["GET", "HEAD"]);
 
 const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", "PATCH",
                                                   "DELETE"]);
-const CONNECTION = /^c[0-9a-f]{24}$/;
-const RUN = /^run_[0-9a-f]{32}$/;
-const HEX32 = /^[0-9a-f]{32}$/;
-const HEX64 = /^[0-9a-f]{64}$/;
 /** A model id or a tier value the gateway read: visible ASCII. */
 const HINT = /^[\x21-\x7e]{1,256}$/;
 /** A served model's id, as a receipt keeps it: visible ASCII. */
@@ -366,8 +362,8 @@ export function egressRequest(value: unknown): EgressRequest {
     throw new Invalid("invalid egress request");
   }
   const { run, connection, method, path, bytes_hint: hint } = value;
-  if (typeof run !== "string" || !RUN.test(run)
-      || typeof connection !== "string" || !CONNECTION.test(connection)
+  if (typeof run !== "string" || !RUN_ID.test(run)
+      || typeof connection !== "string" || !CONNECTION_ID.test(connection)
       || typeof method !== "string" || !METHODS.includes(method)
       || typeof path !== "string" || !PATH.test(path) || path.length > EGRESS_PATH_MAX
       || (hint !== null && (typeof hint !== "number" || !Number.isSafeInteger(hint) || hint < 0))) {
@@ -526,9 +522,8 @@ export class Egress {
     // A read of a sealed endpoint carries no model use, nor does a call its API's rules
     // cite as free (a token count); every other call must be the source's model call as
     // pi-ai makes it, which the gateway meters.
-    const free = FREE_METHODS.includes(request.method)
-      || freeCall(apiRules(connection.scope.api), connection.provider, request.method,
-                  request.path);
+    const free = freeCall(apiRules(connection.scope.api), connection.provider, request.method,
+                          request.path);
     if (!free && (!meteredCall(connection.scope, request.method, request.path)
                   || connection.models.length === 0)) {
       return refuse("egress_unmetered");
@@ -755,7 +750,7 @@ export class Egress {
   #record(sandbox: SandboxBinding, request: EgressRequest, lease: SandboxLease | null,
           generation: number, now: number,
           fields: { code?: EgressCode; version?: number }): string {
-    const id = randomBytes(16).toString("hex");
+    const id = randomHex(16);
     // Uncharged: a model call's charge is set once the gateway's parse reserved it.
     this.#sql.exec(
       "INSERT INTO egress_reservations (id, lease_id, epoch, run, token, connection_id, " +

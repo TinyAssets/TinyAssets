@@ -4,7 +4,7 @@
  * should have made impossible, logged in full and failed as `internal error` (Fact 8),
  * never cut.
  */
-import { jsonBytes, RESULT_CHARS } from "../../owner/src/encoded";
+import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 
 /** A tool's result's one text, its JSON, held to `RESULT_CHARS`. */
 export function resultText(name: string, result: unknown): string {

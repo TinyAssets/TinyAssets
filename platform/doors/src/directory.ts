@@ -23,13 +23,13 @@
  * Nothing here, or anywhere, maps a session cookie or its hash to an owner (the binder
  * guard).
  */
-import { principal } from "../../owner/src/text";
+import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
+import { principal } from "../../contract/src/text";
 import { parseTiers, type Tiers } from "../../owner/src/tier";
 
 import type { DoorsEnv } from "./config";
 
-const HEX64 = /^[0-9a-f]{64}$/;
-const KEY_ID = /^[0-9a-f]{16}$/;
+const KEY_ID = HEX16;
 const CONTROL = "c:control";
 /** Canary owners the maintenance gate admits; far past a real canary. */
 const MAX_CANARY = 100;
@@ -61,7 +61,6 @@ export interface RouteEntry {
   readonly r: number;
 }
 
-const HEX32 = /^[0-9a-f]{32}$/;
 const ROUTE = /^(?:h:[0-9a-f]{64}|i:[a-z][a-z0-9_]{0,31}:(?:workspace|enterprise):[0-9a-f]{64})$/;
 
 function ownerName(owner: string): string {

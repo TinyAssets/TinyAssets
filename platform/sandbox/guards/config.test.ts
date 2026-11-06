@@ -3,27 +3,20 @@
  * entry for `SANDBOX` relies on it):
  *
  * - its config holds to its allow-list (`rules.ts`), by the platform's config checker;
- * - the runner's copies of the object's numbers (its bundle takes nothing of the object's
- *   storage modules) are the object's own: the lease's TTL and the sync bounds;
+ * - the runner's own kill wait is its heartbeat;
  * - in its source, `fetch` is named in `e2b.ts` alone, and every URL there is built on
  *   E2B's two origins (`E2B_API`, `E2B_ENVD`), which are E2B's own hosts; no source names
  *   `connect` (a raw socket) or another way out.
  *
  * A tripwire for our own code, read from the syntax tree, not proof against evasion.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { configTests } from "../../ci/kit/config";
-import { PLATFORM } from "../../ci/paths";
 import { parse, sourcesOf } from "../../ci/kit/sources";
-import { HEARTBEAT_MS, LEASE_TTL_MS } from "../runner/runner";
+import { HEARTBEAT_MS } from "../runner/runner";
 import { KILL_WITHIN_MS } from "../runner/users";
-import { CHUNK_BYTES, COMMIT_OPS, FEED_LIMIT, INLINE_BYTES, INTENT_ID_CHARS, SYNC_BODY }
-  from "../runner/sync";
 import { E2B_API, E2B_ENVD } from "../src/e2b";
 
 import { CONFIG } from "./rules";
@@ -91,24 +84,8 @@ describe("the sandbox Worker", () => {
     expect(problems).toEqual([]);
   });
 
-  it("holds the runner's copies of the object's numbers to the object's", () => {
-    // Read from the object's source: its modules load only in workerd.
-    const files = readFileSync(join(PLATFORM, "owner", "src", "files.ts"), "utf8");
-    const manifest = readFileSync(join(PLATFORM, "owner", "src", "manifest.ts"), "utf8");
-    const number = (source: string, name: string) => {
-      const found = new RegExp(`export const ${name} = ([0-9_ *]+);`).exec(source);
-      expect(found, name).not.toBeNull();
-      return found![1]!.replaceAll("_", "").split("*")
-        .reduce((product, factor) => product * Number(factor.trim()), 1);
-    };
-    expect(LEASE_TTL_MS).toBe(number(files, "LEASE_TTL_S") * 1000);
+  it("holds a user's processes no longer past their kill than one heartbeat", () => {
     expect(KILL_WITHIN_MS).toBe(HEARTBEAT_MS);
-    const egress = readFileSync(join(PLATFORM, "doors", "src", "egress.ts"), "utf8");
-    expect([CHUNK_BYTES, INLINE_BYTES, COMMIT_OPS, FEED_LIMIT, SYNC_BODY]).toEqual([
-      number(manifest, "CHUNK_BYTES"), number(files, "INLINE_BYTES"),
-      number(files, "MAX_SYNC_OPS"), number(files, "MAX_LIST"),
-      number(egress, "SYNC_BODY_MAX")]);
-    expect(INTENT_ID_CHARS).toBe(2 * number(files, "INTENT_ID_BYTES"));
   });
 
   it("finds a fetch outside e2b.ts, and a URL off E2B's origins", () => {

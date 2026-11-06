@@ -23,15 +23,14 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { OPEN } from "../../ci/fixtures";
-import { EGRESS_ORIGIN } from "../src/network";
+import { EGRESS_ORIGIN } from "../../contract/src/egress";
 import { serveEgress } from "../../doors/src/egress";
-import { LEASE_LIVED, mintToken } from "../../doors/src/routing-mac";
+import { LEASE_LIVED, mintToken } from "../../contract/src/routing-mac";
 import { builtinCatalog } from "../../gateway/src/catalog";
-import { secret, source } from "../../gateway/src/credential";
-import { GATEWAY_POOL_SLOTS, weighedBody } from "../../gateway/src/held";
+import { secret, source } from "../../contract/src/egress-scope";
+import { gatewaySlots, weighedBody } from "../../gateway/src/held";
 import { binding, seal } from "../../gateway/src/keyring";
 import { learnMeter, meteredRecord } from "../../gateway/src/meter";
-import { isolatePool } from "../src/slots";
 
 export { EgressGateway } from "../../gateway/src/index";
 
@@ -169,7 +168,7 @@ export default class Probe extends WorkerEntrypoint<Env> {
                              dropped: text === null && tree === null && out === null });
     }
     if (url.pathname === "/pool") {
-      return Response.json(isolatePool(GATEWAY_POOL_SLOTS).state());
+      return Response.json(gatewaySlots().state());
     }
     // `/seal`: the provider's key sealed for the door's connection, and a model the meter
     // can cap (pi-ai's call for it sets its output cap).

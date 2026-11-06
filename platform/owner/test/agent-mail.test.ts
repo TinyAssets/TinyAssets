@@ -23,7 +23,7 @@ import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
          TIERS } from "./runs-support";
-import { QUEUE_ROWS } from "../src/run-rows";
+import { QUEUE_ROWS } from "../../contract/src/run-rows";
 import { drainDue, failure } from "./support";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */

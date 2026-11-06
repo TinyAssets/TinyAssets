@@ -39,7 +39,7 @@
  * `collection_clock`. A new table, or a raised bound, must stay under half the limit, or the
  * guard fails.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -48,16 +48,18 @@ import { LIMITS as COLLECTIONS } from "../src/collections";
 import { exported } from "../src/export";
 import { LEDGER_LIMITS } from "../src/ledger";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
+import { CHUNK_BYTES, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
-  CHUNK_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES,
-  RECORD_FIXED, recordLayout, TABLE_KEPT, WORST_FILL,
+  INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES, RECORD_FIXED,
+  recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import { AUTOINDEXES } from "./autoindexes";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
-import { MANIFEST_PARTS } from "../../files/src/keys";
 import { USAGE_LIMITS } from "../src/usage";
-import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "../src/wake-kinds";
+import {
+  ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT,
+} from "../../contract/src/wake-records";
 import { PLATFORM } from "../../ci/paths";
 
 const SRC = join(PLATFORM, "owner", "src");
@@ -70,29 +72,35 @@ function source(module: string): string {
 const NUMERIC = (name: string) =>
   new RegExp(`(?:^|\\n)(?:export )?const ${name}(?:: number)? = ([0-9A-Z_ *+()-]+);`);
 
+/** Where the bounds the schema reads are spelled: the owner's sources and the contract's. */
+const BOUND_SOURCES: readonly string[] = Object.freeze([SRC, join(PLATFORM, "contract", "src")]);
+
 /**
  * A name a bound is spelled with, read from its source: the module's own constant, else
- * the one constant of that name another owner module exports.
+ * the one constant of that name another owner or contract module exports.
  */
-function named(word: string, module: string): number {
-  const own = NUMERIC(word).exec(source(module));
+function named(word: string, module: string, from: string = SRC): number {
+  const dir = existsSync(join(from, `${module}.ts`)) ? from
+    : BOUND_SOURCES.find((at) => existsSync(join(at, `${module}.ts`))) ?? from;
+  const own = NUMERIC(word).exec(readFileSync(join(dir, `${module}.ts`), "utf8"));
   if (own !== null) {
-    return evaluate(own[1]!, word, module);
+    return evaluate(own[1]!, word, module, dir);
   }
-  const found = readdirSync(SRC).filter((file) => file.endsWith(".ts"))
-    .map((file) => [file.slice(0, -3), new RegExp(`(?:^|\\n)export const ${word}(?:: number)? = ` +
-      "([0-9A-Z_ *+()-]+);").exec(readFileSync(join(SRC, file), "utf8"))] as const)
-    .filter(([, match]) => match !== null);
+  const found = BOUND_SOURCES.flatMap((at) => readdirSync(at)
+    .filter((file) => file.endsWith(".ts"))
+    .map((file) => [at, file.slice(0, -3), new RegExp(`(?:^|\\n)export const ${word}(?:: number)? = ` +
+      "([0-9A-Z_ *+()-]+);").exec(readFileSync(join(at, file), "utf8"))] as const))
+    .filter(([, , match]) => match !== null);
   if (found.length !== 1) {
-    throw new Error(`${word} is no one numeric constant of the owner's sources`);
+    throw new Error(`${word} is no one numeric constant of the owner's or the contract's sources`);
   }
-  return evaluate(found[0]![1]![1]!, word, found[0]![0]);
+  return evaluate(found[0]![2]![1]!, word, found[0]![1], found[0]![0]);
 }
 
 /** A numeric expression of constants, as `module` spells it. */
-function evaluate(expression: string, what: string, module: string): number {
+function evaluate(expression: string, what: string, module: string, dir: string = SRC): number {
   const value = expression.replace(/(?<=[0-9])_(?=[0-9])/g, "")
-    .replace(/[A-Z][A-Z0-9_]*/g, (word) => String(named(word, module)));
+    .replace(/[A-Z][A-Z0-9_]*/g, (word) => String(named(word, module, dir)));
   if (!/^[0-9 *+()-]+$/.test(value)) {
     throw new Error(`${what} is no numeric expression`);
   }

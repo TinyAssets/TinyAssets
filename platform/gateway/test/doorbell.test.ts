@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   doorbellSecret, ECHO_MAX_BYTES, ringDoorbell, sealDoorbell, type Send, verifyDoorbell,
 } from "../src/doorbell";
-import { Failure } from "../src/failure";
+import { Failure } from "../../contract/src/failure";
 import { open } from "../src/keyring";
 import { ring, rotate } from "./support";
 

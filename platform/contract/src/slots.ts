@@ -25,25 +25,17 @@
  * **Retained data** (the relay's tails) is one exact budget an isolate (`SharedBudget`),
  * split across the objects holding any, the largest dropping its oldest past it.
  *
- * It imports nothing, so any Worker uses it (the owner object, the gateway). Its one
- * module-scope holder (`isolatePool`, `isolateTails`) is one of the platform's two pinned
- * exemptions from the no-module-state rule (`module-state.test.ts`, the gateway's interposer
- * the other): it holds a count of units in use, the calls waiting, and which objects' tails
- * share the budget, never an owner's data.
+ * It holds no state of its own: an isolate's one pool and one tails budget are its
+ * Worker's, held at module scope by that Worker (`owner/src/holds.ts`,
+ * `gateway/src/held.ts`), each one of the platform's pinned exemptions from the
+ * no-module-state rule (`module-state.test.ts`), and made through `isolatePool` and
+ * `isolateTails` here. What they hold is a count of units in use, the calls waiting, and
+ * which objects' tails share the budget, never an owner's data.
  */
+import { CHUNK_BYTES, SLOT_WAIT_MS } from "./limits";
 
-/** A unit: one 4 MiB chunk, the files plane's own. */
-export const UNIT_BYTES = 4 * 1024 * 1024;
-/**
- * How long a call waits for units before it is refused `busy`: the queue's own term. Neither
- * Claude's nor ChatGPT's connectors document how long they wait for a tool call (users
- * report about 60 s to 5 minutes, 2026-11-04); the MCP SDK's default request timeout is 60 s
- * (`DEFAULT_REQUEST_TIMEOUT_MSEC`), the shortest a client is known to keep. A waiting call
- * is answered within a sixth of it, so the refusal is told and retried while the client
- * still waits, the rest left to the call's own work. The leg checks that a full queue turns
- * over well within it at the measured step.
- */
-export const SLOT_WAIT_MS = 10_000;
+/** A unit: one chunk, the files plane's own (`CHUNK_BYTES`). */
+export const UNIT_BYTES = CHUNK_BYTES;
 /** The refusal: retryable, never a loss (the doors answer it `503` with `Retry-After`). */
 export const BUSY = "busy: this server is holding as much as it may at once; try again shortly";
 
@@ -635,31 +627,34 @@ export class SharedBudget {
   }
 }
 
-const ISOLATE: { pool: SlotPool | null; tails: SharedBudget | null } = { pool: null,
-                                                                          tails: null };
+/** Where a Worker keeps its isolate's one pool and one tails budget, at module scope. */
+export interface Isolate {
+  pool: SlotPool | null;
+  tails: SharedBudget | null;
+}
 
 /**
- * The isolate's one pool, made on first use with its Worker's `capacity`, `reserve` and
- * waiters' caps; every object and request in the isolate shares it. Asked for another, it is
- * a bug: one Worker, one figure.
+ * The isolate's one pool, made on first use in `isolate` with its Worker's `capacity`,
+ * `reserve` and waiters' caps; every object and request in the isolate shares it. Asked for
+ * another, it is a bug: one Worker, one figure.
  */
-export function isolatePool(capacity: number, reserve = 0, waiters = 4 * capacity,
-                            smallWaiters = waiters): SlotPool {
-  if (ISOLATE.pool === null) {
-    ISOLATE.pool = new SlotPool(capacity, SLOT_WAIT_MS, waiters, reserve, smallWaiters);
-  } else if (ISOLATE.pool.capacity !== capacity || ISOLATE.pool.reserve !== reserve) {
-    throw new Error(`the isolate's pool holds ${ISOLATE.pool.capacity} units ` +
-                    `(${ISOLATE.pool.reserve} reserved), not ${capacity} (${reserve})`);
+export function isolatePool(isolate: Isolate, capacity: number, reserve = 0,
+                            waiters = 4 * capacity, smallWaiters = waiters): SlotPool {
+  if (isolate.pool === null) {
+    isolate.pool = new SlotPool(capacity, SLOT_WAIT_MS, waiters, reserve, smallWaiters);
+  } else if (isolate.pool.capacity !== capacity || isolate.pool.reserve !== reserve) {
+    throw new Error(`the isolate's pool holds ${isolate.pool.capacity} units ` +
+                    `(${isolate.pool.reserve} reserved), not ${capacity} (${reserve})`);
   }
-  return ISOLATE.pool;
+  return isolate.pool;
 }
 
 /** The isolate's one budget of the relay's tails, of `budget` units, made on first use. */
-export function isolateTails(budget: number): SharedBudget {
-  if (ISOLATE.tails === null) {
-    ISOLATE.tails = new SharedBudget(budget);
-  } else if (ISOLATE.tails.budget !== budget) {
-    throw new Error(`the isolate's tails hold ${ISOLATE.tails.budget} units, not ${budget}`);
+export function isolateTails(isolate: Isolate, budget: number): SharedBudget {
+  if (isolate.tails === null) {
+    isolate.tails = new SharedBudget(budget);
+  } else if (isolate.tails.budget !== budget) {
+    throw new Error(`the isolate's tails hold ${isolate.tails.budget} units, not ${budget}`);
   }
-  return ISOLATE.tails;
+  return isolate.tails;
 }

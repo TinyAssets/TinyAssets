@@ -18,7 +18,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { OPEN_GATES } from "../../ci/fixtures";
 import type { SandboxStart } from "../../owner/src/sandbox";
-import { LEASE_TTL_S } from "../../owner/src/files";
+import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../owner/src/migrate";
 import { backoff, CODES, INCOMING, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
 import { PROTOCOL, SPEAKS } from "../runner/protocol";

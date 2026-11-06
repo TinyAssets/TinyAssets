@@ -273,7 +273,7 @@ describe("the sandbox's spend", () => {
   it("runs nothing of pi's engine: its rows and counters are its own and the schema's", () => {
     const reach = runtimeReach(workerSources(), ["owner/src/egress.ts", "owner/src/money.ts"]);
     expect(reach.modules).toContain("owner/src/money.ts");
-    expect(reach.modules).toContain("doors/src/routing-mac.ts");
+    expect(reach.modules).toContain("contract/src/egress-scope.ts");
     expect(reach.unresolved).toEqual([]);
     expect(engine(reach)).toEqual([]);
   });

@@ -3,7 +3,7 @@
  * in session as grant-then-entry, use bound to the key's origin and mint time, a wrong
  * key never reaching an object, and the revoke and delete orders.
  */
-import { BUSY, SlotBusy } from "../../owner/src/slots";
+import { BUSY, SlotBusy } from "../../contract/src/slots";
 import { refusal } from "../src/tools";
 import { BUSY_ONCE } from "./entry";
 import { createHash } from "node:crypto";

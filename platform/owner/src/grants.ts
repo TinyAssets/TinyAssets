@@ -83,12 +83,13 @@
  *   directory's key ids, so it comes with the key store (tasks 2).
  * - Rows are bounded as above; the Python kept every row.
  */
-import { Invalid, Refused } from "./errors";
+import { HEX64 } from "../../contract/src/ids";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import { appList, connectUrl, type Vendor } from "../../doors/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../doors/src/tools";
 import { canonical, plain, type Policy, policyDigest } from "./policy";
-import { codePoints, utf8Bytes } from "./text";
+import { codePoints, utf8Bytes } from "../../contract/src/text";
 
 export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
 /** The capabilities a scoped grant's triples name at the object's doors. */
@@ -99,7 +100,6 @@ export type Capability = (typeof CAPABILITIES)[number];
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
 /** Clients one owner forget names at most. */
 const MAX_FORGET = 100;
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /**
  * `seenIntervalS`: a client's `last_seen` is coarse, so admission is a read most calls.

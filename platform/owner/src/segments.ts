@@ -29,10 +29,12 @@
  * hold at least it), and the fence's rows are at most the storage over
  * that, plus one: no count, the one number bounds them.
  */
+import { utf8Decoder } from "../../contract/src/text";
+import { HEX32 } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
-import { CHUNK_BYTES } from "./manifest";
+import { CHUNK_BYTES } from "../../contract/src/limits";
 
 /**
  * A segment is sealed once its records' own bytes reach this (never their trailer shares,
@@ -201,11 +203,6 @@ export function recordParts(record: SegmentRecord): Uint8Array[] {
 /** A record's bytes in its segment. */
 export function recordBytes(record: SegmentRecord): number {
   return lengthOf(recordParts(record));
-}
-
-/** The UTF-8 bytes of `text`. */
-export function bytesOf(text: string): number {
-  return new TextEncoder().encode(text).byteLength;
 }
 
 /** A stored content a segment's bytes are read from: its chunks by hash, and its size. */
@@ -669,7 +666,7 @@ export type ParsedRow = [table: string, row: Record<string, unknown>, raw?: [Uin
  * `bytes` (never decoded nor copied here).
  */
 export function parseRecord(bytes: Uint8Array): ParsedRow[] {
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const decoder = utf8Decoder("keep");
   const rows: ParsedRow[] = [];
   let at = 0;
   while (at < bytes.byteLength) {
@@ -705,7 +702,7 @@ export function parseRecord(bytes: Uint8Array): ParsedRow[] {
  * them, a raw row's bytes decoded (UTF-8, as written) back into its `body` column.
  */
 export function recordRows(bytes: Uint8Array): [string, Record<string, unknown>][] {
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const decoder = utf8Decoder("keep");
   return parseRecord(bytes).map(([table, row, raw]) =>
     [table, raw === undefined ? row : { ...row, body: decoder.decode(raw[0]) }]);
 }
@@ -818,7 +815,7 @@ export function orderedId(idKeyBytes: Uint8Array, key: number): string {
 
 /** The key an `orderedId` carries, or null for text that is not one (any 32 hex decodes). */
 export function idOrder(idKeyBytes: Uint8Array, id: string): number | null {
-  if (!/^[0-9a-f]{32}$/.test(id)) {
+  if (!HEX32.test(id)) {
     return null;
   }
   const whole = Buffer.from(id, "hex");

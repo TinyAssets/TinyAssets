@@ -19,9 +19,10 @@ import { runInNewContext } from "node:vm";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
-  AGENT_PEAK, AUTOMATON_STATES, automatonStates, defaultSyncIgnore, HEAP_PER_LIST_BYTE,
-  ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, STEP_NS, unappliedLines,
-} from "../../owner/src/sync-ignore";
+  AGENT_PEAK, AUTOMATON_STATES, automatonStates, defaultSyncIgnore, HEAP_PER_LIST_BYTE, ignoredBy,
+  LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, unappliedLines,
+} from "../../contract/src/sync-ignore";
+import { STEP_NS } from "../../owner/src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES = join(HERE, "test-data", "gitignore");

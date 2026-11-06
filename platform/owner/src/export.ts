@@ -69,7 +69,8 @@
  * exactly one of the two lists and every column of an exported table to its columns or its
  * omissions, so a table or column a later change adds is decided, never exported by default.
  */
-import { Invalid } from "./errors";
+import { HEX16 } from "../../contract/src/ids";
+import { Invalid } from "../../contract/src/errors";
 
 export const EXPORT_FORMAT = "tinyassets-export";
 export const EXPORT_VERSION = 3;
@@ -259,7 +260,7 @@ export interface Cursor {
 export const START: Cursor = Object.freeze({ section: -1, after: null });
 
 /** A generation's id: 16 lowercase hex characters. */
-const GEN = /^[0-9a-f]{16}$/;
+const GEN = HEX16;
 
 /** An export's cursor: its generation and the index of the object to read next. */
 export function encodeExportCursor(gen: string, index: number): string {

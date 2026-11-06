@@ -35,7 +35,7 @@
  * and an erased owner is never set again.
  */
 import { wiped } from "./erasure";
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import { ADMISSION_TABLE } from "./schema";
 import { type TierName, tierName } from "./tier";

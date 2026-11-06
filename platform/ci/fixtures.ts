@@ -3,7 +3,7 @@
  * import): the founder's tier numbers and the control records the tests write, keyrings,
  * and the model sources the gateway's fake upstream answers for.
  */
-import type { Source } from "../gateway/src/credential";
+import type { Source } from "../contract/src/egress-scope";
 
 /** The founder's tier numbers (ADR-034 decision 8), as the control record holds them. */
 export const TIERS = Object.freeze({

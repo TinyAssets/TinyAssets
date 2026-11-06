@@ -21,7 +21,7 @@
  *   A failure retries the message; the object's job sends it again anyway, so a half-done
  *   erasure always finishes.
  */
-import { principal } from "../../owner/src/text";
+import { principal } from "../../contract/src/text";
 
 import { bindPlatformFor, type Bound } from "./binder";
 import { type DoorsEnv, ISSUER_NOT_CONFIGURED, now } from "./config";

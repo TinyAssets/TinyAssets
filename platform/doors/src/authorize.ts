@@ -50,7 +50,7 @@ import {
 } from "./config";
 import { outsideOpen, ownerOpen } from "./control";
 import { putOwner, readControl, readOwner } from "./directory";
-import { ERASING } from "../../owner/src/erasure";
+import { ERASING } from "../../contract/src/errors";
 import { authorizationServer } from "./oauth";
 import { replaceInstallation } from "./revoke";
 import { mediaType, sessionCookie } from "./session";

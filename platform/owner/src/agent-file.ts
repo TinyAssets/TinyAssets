@@ -18,26 +18,12 @@
  * Nothing defaults an agent into being: a missing or malformed file refuses its run
  * (`AGENT_UNDEFINED`, `Invalid`), never a stand-in.
  */
+import { CONNECTION_ID } from "../../contract/src/ids";
 import { CREDENTIAL_KINDS, type CredentialKind } from "../../doors/src/sources";
 
-import { Invalid } from "./errors";
-import { isPrintable } from "./text";
-
-/** What a run's MCP door can hold: every door capability but code mode's (slice M). */
-export const RUN_CAPABILITIES = Object.freeze(
-  ["read_graph", "write_graph", "propose_policy", "read_files", "write_files", "converse",
-   "run_graph"] as const);
-export type RunCapability = (typeof RUN_CAPABILITIES)[number];
-/** Each capability in plain words, for the owner's app: what a holder of it may do. */
-export const CAPABILITY_WORDS: Readonly<Record<RunCapability, string>> = Object.freeze({
-  read_graph: "Read rooms, the board and mail",
-  write_graph: "Post to rooms and the board",
-  propose_policy: "Propose changes to your settings",
-  read_files: "Read your files",
-  write_files: "Write your files",
-  converse: "Talk to your agents",
-  run_graph: "Start your agents' runs",
-});
+import { RUN_CAPABILITIES, type RunCapability } from "../../contract/src/capabilities";
+import { Invalid } from "../../contract/src/errors";
+import { isPrintable } from "../../contract/src/text";
 
 export const AUTO = "auto";
 export const AGENT_UNDEFINED = "agent_undefined: the agent has no agent.json";
@@ -46,7 +32,6 @@ export const AGENT_DISABLED = "agent_disabled: the agent is disabled in its agen
 const KEYS: readonly string[] = Object.freeze(["connection", "credential", "enabled", "engine",
                                                "model", "scopes"]);
 const RECORD = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const CONNECTION = /^c[0-9a-f]{24}$/;
 
 export interface AgentFile {
   readonly engine: string;
@@ -83,7 +68,7 @@ export function agentFile(text: string): AgentFile {
     throw new Invalid(`agent.json's credential is one of ${CREDENTIAL_KINDS.join(", ")}`);
   }
   if (connection !== undefined && (typeof connection !== "string"
-                                   || !CONNECTION.test(connection))) {
+                                   || !CONNECTION_ID.test(connection))) {
     throw new Invalid("agent.json's connection is a connection id");
   }
   if (connection !== undefined && credential === "vendor_login_in_sandbox") {

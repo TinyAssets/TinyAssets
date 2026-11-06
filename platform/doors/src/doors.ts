@@ -42,9 +42,10 @@ import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
 import { bindMcp, withTiers } from "./binder";
 import {
-  CONNECT_CALLBACK_PATH, type DoorsEnv, EGRESS_ORIGIN, INBOUND_PATH, MCP_ORIGINS, PUBLIC_ORIGIN,
-  WEB_CLIENT, WEB_REDIRECT,
+  CONNECT_CALLBACK_PATH, type DoorsEnv, INBOUND_PATH, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT,
+  WEB_REDIRECT,
 } from "./config";
+import { EGRESS_ORIGIN } from "../../contract/src/egress";
 import { outsideRead } from "./control";
 import { serveInbound } from "./inbound";
 import { serveMcp } from "./mcp";

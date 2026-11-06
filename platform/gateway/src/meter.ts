@@ -32,10 +32,12 @@
 import type { Api, AssistantMessageEvent, Context, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 
-import { type ApiRules, apiRules, valueAt } from "./api-rules";
+import { type ApiRules, apiRules, valueAt } from "../../contract/src/api-rules";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
-import { GLOBAL_FETCH_APIS, type Meter, meteredModel, type Upstream } from "./credential";
+import {
+  GLOBAL_FETCH_APIS, type Meter, meteredModel, type Upstream,
+} from "../../contract/src/egress-scope";
 
 export type { Meter };
 export { meteredModel };

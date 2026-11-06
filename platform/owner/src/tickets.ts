@@ -4,11 +4,11 @@
  * expiry, single-use and good for `SOCKET_TICKET_S`, at most `SOCKET_TICKETS` outstanding
  * (migration 12's trigger; the minting unit forgets the expired ones first).
  */
-import { Invalid, Refused } from "./errors";
+import { HEX64 } from "../../contract/src/ids";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
-import { SOCKET_TICKET_S, TICKET_REFUSED } from "./socket-shape";
+import { SOCKET_TICKET_S, TICKET_REFUSED } from "../../contract/src/socket-shape";
 
-const HEX64 = /^[0-9a-f]{64}$/;
 
 export class Tickets {
   readonly #storage: OwnerStorage;

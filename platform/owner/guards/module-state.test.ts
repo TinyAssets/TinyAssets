@@ -14,8 +14,9 @@
  * global it holds (`Math`, `console`, `Object.prototype`, `crypto`, `JSON` and the rest):
  * a member written, or a built-in handed to a call that changes it
  * (`Object.defineProperty(Math, ...)`). Every script extension a bundler takes is
- * scanned, not only `.ts`. One file is exempt, for three pinned findings and at one
- * pinned hash: the gateway's global-fetch interposer (`EXEMPT`).
+ * scanned, not only `.ts`. Three files are exempt, each for its pinned findings and at one
+ * pinned hash: the gateway's global-fetch interposer (`EXEMPT`), and the owner's and the
+ * gateway's holders of their isolate's one pool (`HOLDERS`).
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -300,8 +301,8 @@ export function moduleState(fileName: string, source: string): string[] {
 }
 
 /**
- * The two exemptions, each pinned to exactly its findings in its one file and to the file's
- * SHA-256, so neither can widen nor outlive a change to its file without a review here:
+ * The three exemptions, each pinned to exactly its findings in its one file and to the file's
+ * SHA-256, so none can widen nor outlive a change to its file without a review here:
  * - the gateway's global-fetch interposer (`gateway/src/egress.ts`). pi-ai's Google
  *   adapters take no custom fetch, so the gateway replaces the global `fetch`, once, by a
  *   function that is the current call's endpoint guard inside that call's
@@ -309,10 +310,12 @@ export function moduleState(fileName: string, source: string): string[] {
  *   module-level scope, the captured runtime fetch and one write of the global, and nothing
  *   else: no owner's data lives in any of them (gateway spec, "Every adapter request goes
  *   through the call's guard");
- * - the isolate's chunk slots (`owner/src/slots.ts`): its one pool is module state by
- *   design, since the pool is the isolate's, shared by every object and request in it;
- *   what it holds is a count of slots in use, the calls waiting and the leases holding units,
- *   each with the owner id it waits or holds for, never an owner's data.
+ * - the isolate's chunk slots, held by each Worker that keeps a pool (`owner/src/holds.ts`,
+ *   with the relay's tails, and `gateway/src/held.ts`; the pool itself is the contract's,
+ *   `contract/src/slots.ts`, which holds no state): its one pool is module state by design,
+ *   since the pool is the isolate's, shared by every object and request in it; what it holds
+ *   is a count of slots in use, the calls waiting and the leases holding units, each with
+ *   the owner id it waits or holds for, never an owner's data.
  */
 const EXEMPTIONS = Object.freeze([
   Object.freeze({
@@ -325,12 +328,18 @@ const EXEMPTIONS = Object.freeze([
     ]),
   }),
   Object.freeze({
-    path: "owner/src/slots.ts",
-    sha256: "2c4092ff59a8bf5d57d29a2acef1fd813146dc744b184d00d3f1912baf6b7db6",
-    problems: Object.freeze(["owner/src/slots.ts:638: ISOLATE holds a mutable value"]),
+    path: "owner/src/holds.ts",
+    sha256: "c085d06fd864f4540da6489f15edf43bd2072231c9471c274a24ad7f69313992",
+    problems: Object.freeze(["owner/src/holds.ts:221: ISOLATE holds a mutable value"]),
+  }),
+  Object.freeze({
+    path: "gateway/src/held.ts",
+    sha256: "b8b736883158d37e50c50e1042c61a9848c41572f97ed679057c5cc9af80b82d",
+    problems: Object.freeze(["gateway/src/held.ts:54: ISOLATE holds a mutable value"]),
   }),
 ]);
-const [EXEMPT, MEMORY] = EXEMPTIONS as unknown as [typeof EXEMPTIONS[0], typeof EXEMPTIONS[0]];
+const EXEMPT = EXEMPTIONS[0]!;
+const HOLDERS = EXEMPTIONS.slice(1);
 
 /** Every finding in `sources` the exemptions do not cover, and every way one is off. */
 export function unexempted(sources: ReadonlyMap<string, string>): string[] {
@@ -365,7 +374,7 @@ describe("module-state guard", () => {
     const sources = workerSources();
     const exempt = sources.get(EXEMPT.path)!;
     expect([...sources].flatMap(([path, source]) => moduleState(path, source)).sort())
-      .toEqual([...EXEMPT.problems, ...MEMORY.problems].sort());
+      .toEqual([...EXEMPT.problems, ...HOLDERS.flatMap((holder) => holder.problems)].sort());
     // A fourth finding in the file, or any edit to it, is refused.
     expect(unexempted(new Map([[EXEMPT.path, `${exempt}\nexport let calls = 0;\n`]])))
       .toHaveLength(3);
@@ -378,13 +387,14 @@ describe("module-state guard", () => {
       exempt.replace("globalThis.fetch = interposed;", "void interposed;")]]))).not.toEqual([]);
   });
 
-  it("exempts the slot pool's one holder, in that one file, at that one hash", () => {
-    const guard = workerSources().get(MEMORY.path)!;
-    expect(unexempted(new Map([[MEMORY.path, guard]]))).toEqual([]);
-    expect(unexempted(new Map([[MEMORY.path, `${guard}\nexport let spare = 0;\n`]])))
-      .toHaveLength(3);
-    expect(unexempted(new Map([["owner/src/other.ts", guard]]))).toHaveLength(1);
-  });
+  it.each(HOLDERS.map((holder) => [holder.path, holder] as const))(
+    "exempts the slot pool's one holder in %s, at that one hash", (_path, holder) => {
+      const guard = workerSources().get(holder.path)!;
+      expect(unexempted(new Map([[holder.path, guard]]))).toEqual([]);
+      expect(unexempted(new Map([[holder.path, `${guard}\nexport let spare = 0;\n`]])))
+        .toHaveLength(3);
+      expect(unexempted(new Map([["owner/src/other.ts", guard]]))).toHaveLength(1);
+    });
 
   it.each([
     "let count = 0;",

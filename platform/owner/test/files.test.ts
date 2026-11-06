@@ -7,7 +7,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { CHUNK_BYTES, type Entry, INLINE_BYTES, sha256Hex } from "../src/files";
+import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
+import { type Entry } from "../src/files";
+import { sha256Hex } from "../../contract/src/digest";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { apiKeyOrigin } from "../src/ledger";

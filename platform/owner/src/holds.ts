@@ -11,8 +11,10 @@
  */
 import { IMAGE_MAX } from "./changelog";
 import { CHUNK_LINE_BYTES, EXPORT_PAGE_BYTES, EXPORT_READ_BATCH } from "./export";
-import { CHUNK_BYTES } from "./manifest";
-import { isolatePool, type SlotPool, UNIT_BYTES } from "./slots";
+import { CHUNK_BYTES } from "../../contract/src/limits";
+import {
+  type Isolate, isolatePool, isolateTails, type SharedBudget, type SlotPool, UNIT_BYTES,
+} from "../../contract/src/slots";
 
 /**
  * The pool's capacity, in units (48 MiB): three edits' making steps (`EDIT_MAKE_UNITS`) at
@@ -209,8 +211,22 @@ export function bodyUnits(chunks: number): number {
  */
 export const OWNER_BASELINE_BYTES = 8 * 1024 * 1024;
 
+/**
+ * The owner isolate's one pool and one budget of the relay's tails, held at module scope:
+ * one of the platform's pinned exemptions from the no-module-state rule
+ * (`guards/module-state.test.ts`), since the pool is the isolate's, shared by every object
+ * and request in it. It holds a count of units in use, the calls waiting and which objects'
+ * tails share the budget, never an owner's data.
+ */
+const ISOLATE: Isolate = { pool: null, tails: null };
+
 /** The isolate's pool, at the owner Worker's capacity and reserve. */
 export function ownerSlots(): SlotPool {
-  return isolatePool(OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_WAITERS,
+  return isolatePool(ISOLATE, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_WAITERS,
                      OWNER_SMALL_WAITERS);
+}
+
+/** The isolate's one budget of the relay's tails, of `units`, made on first use. */
+export function ownerTails(units: number): SharedBudget {
+  return isolateTails(ISOLATE, units);
 }

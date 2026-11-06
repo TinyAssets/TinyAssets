@@ -25,7 +25,7 @@ isolationTests(IMPORTS, {
     ["a dot-slash path out", "import { OwnerDO } from './../../owner/src/owner-do';"],
     ["a path out and back", "import { x } from '../src/../../owner/src/owner-do';"],
     ["a dynamic import", "export async function f() { return import('../../owner/src/owner-do'); }"],
-    ["a dynamic import of the grammar", "export async function f() { return import('../../owner/src/text'); }"],
+    ["a dynamic import of the grammar", "export async function f() { return import('../../contract/src/text'); }"],
     ["require", "export const x = require('node:fs');"],
     ["import-equals", "import fs = require('node:fs');"],
     ["node:process", "import { env } from 'node:process';\nexport const k = () => env;"],
@@ -42,41 +42,41 @@ isolationTests(IMPORTS, {
       "import type { Api } from '@earendil-works/pi-ai';",
       "import { WorkerEntrypoint } from 'cloudflare:workers';",
       "import { open } from './keyring';",
-      "import { principal } from './../../owner/src/text';",
+      "import { principal } from './../../contract/src/text';",
     ].join("\n")],
     ["node:async_hooks in egress.ts", "gateway/src/egress.ts",
      "import { AsyncLocalStorage } from 'node:async_hooks';"],
     ["the keyring in keyring.ts", KEYRING_HOME,
      "export function f(env: { GATEWAY_KEYRING?: unknown }) { return env.GATEWAY_KEYRING; }"],
     ["the owner grammar import beside the word owner", "gateway/src/probe.ts",
-     "import { principal } from '../../owner/src/text';\nexport const owner = 'owner';"],
+     "import { principal } from '../../contract/src/text';\nexport const owner = 'owner';"],
   ],
 });
 
 describe("gateway isolation guards", () => {
-  it("reach the keyring's home and the owner modules they may, through the closure", () => {
+  it("reach the keyring's home and the contract's modules they may, through the closure", () => {
     const sources = closure("gateway");
     expect([...sources.keys()]).toContain(KEYRING_HOME);
     expect([...sources.keys()]).toEqual(expect.arrayContaining(
-      ["owner/src/wake-records.ts", "owner/src/text.ts", "owner/src/errors.ts"]));
+      ["contract/src/wake-records.ts", "contract/src/text.ts", "contract/src/errors.ts"]));
     expect(sources.get(KEYRING_HOME)).toContain("GATEWAY_KEYRING");
   });
 
   it("walks the closure: a module an allowed one imports is checked as a gateway source",
      () => {
     const all = new Map([
-      ["gateway/src/probe.ts", "import { x } from '../../owner/src/wake-records';"],
-      ["owner/src/wake-records.ts",
+      ["gateway/src/probe.ts", "import { x } from '../../contract/src/wake-records';"],
+      ["contract/src/wake-records.ts",
        "import { createHash } from 'node:crypto';\nimport { y } from './owner-do';"],
-      ["owner/src/owner-do.ts", "export const y = 1;"],
+      ["contract/src/owner-do.ts", "export const y = 1;"],
     ]);
     const reached = closure("gateway", all);
     expect([...reached.keys()].sort()).toEqual(
-      ["gateway/src/probe.ts", "owner/src/owner-do.ts", "owner/src/wake-records.ts"]);
+      ["contract/src/owner-do.ts", "contract/src/wake-records.ts", "gateway/src/probe.ts"]);
     expect([...reached].flatMap(([path, source]) => isolationProblems(IMPORTS, path, source)))
       .toEqual([
-        "owner/src/wake-records.ts:1: imports node:crypto, not a module the gateway may use",
-        "owner/src/wake-records.ts:2: imports ./owner-do (owner/src/owner-do), outside the gateway",
+        "contract/src/wake-records.ts:1: imports node:crypto, not a module the gateway may use",
+        "contract/src/wake-records.ts:2: imports ./owner-do (contract/src/owner-do), outside the gateway",
       ]);
   });
 });

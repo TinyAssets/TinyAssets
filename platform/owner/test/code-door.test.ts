@@ -18,7 +18,7 @@ import { OUTSIDE_OFF } from "../../doors/src/control";
 
 import { profileNames } from "../../doors/src/tools";
 import type { Origin } from "../src/ledger";
-import { jsonBytes } from "../src/encoded";
+import { jsonBytes } from "../../contract/src/encoded";
 import { CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, type OwnerDO } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
 import { customTools, validate } from "../src/policy";

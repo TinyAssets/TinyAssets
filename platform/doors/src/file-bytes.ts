@@ -26,7 +26,7 @@
  */
 import { createHash } from "node:crypto";
 
-import { CHUNK_BYTES } from "../../files/src/keys";
+import { CHUNK_BYTES } from "../../contract/src/limits";
 
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";

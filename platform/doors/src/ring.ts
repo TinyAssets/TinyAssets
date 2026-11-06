@@ -7,7 +7,7 @@
  * fails is retried by the queue; one the queue gives up on is rung again by the line's own
  * back-off.
  */
-import { principal } from "../../owner/src/text";
+import { principal } from "../../contract/src/text";
 
 import { ringOwner } from "./binder";
 import type { DoorsEnv } from "./config";

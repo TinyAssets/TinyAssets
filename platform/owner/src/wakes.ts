@@ -25,14 +25,16 @@
  * doors' own rule: the lane asks `open()` once a pass, before it claims, and claims nothing
  * on closed, a failure or no answer.
  */
-import { Invalid } from "./errors";
+import { Invalid } from "../../contract/src/errors";
 import type { Write } from "./gate";
 import {
   type Ledger, type LiveCallback, type Outcome, outcome, WAKE_LEASE_S, type WakeTarget,
 } from "./ledger";
 import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
-import { type Change, type DoorbellRequest, doorbellRequest, kindNamed, type WakeContent }
-  from "./wake-kinds";
+import {
+  type Change, type DoorbellRequest, doorbellRequest, type WakeContent,
+} from "../../contract/src/wake-kinds";
+import { kindNamed } from "../../contract/src/wake-records";
 
 /** At most this many rows per pass per lane run; a run with more due runs again at once. */
 export const WAKES_PER_ALARM = 16;

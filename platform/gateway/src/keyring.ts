@@ -24,10 +24,10 @@
  * which the owner object stores by compare-and-swap. A kid leaves the ring only after a
  * sweep has resealed every blob under it.
  */
-import { principal } from "../../owner/src/text";
+import { principal, utf8Decoder } from "../../contract/src/text";
 
 import { type Credential, credential } from "./credential";
-import { Failure } from "./failure";
+import { Failure } from "../../contract/src/failure";
 
 /** The one secret this Worker holds, as its config declares it. */
 export interface KeyringEnv {
@@ -137,7 +137,7 @@ function ring(env: KeyringEnv): Ring {
   return { active, keys: decoded };
 }
 
-/** The binding, checked: the owner grammar is the owner object's own (`text.ts`). */
+/** The binding, checked: the owner grammar is the contract's (`text.ts`). */
 export function binding(owner: unknown, connection: unknown, version: unknown): Binding {
   try {
     principal(owner);
@@ -233,7 +233,7 @@ async function openWith(keys: Ring, bound: Binding, blob: unknown):
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(plain));
+    parsed = JSON.parse(utf8Decoder("strip").decode(plain));
   } catch {
     throw new Failure("credential_refused");
   }

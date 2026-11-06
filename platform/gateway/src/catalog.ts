@@ -19,9 +19,9 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { createProvider, isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-import { SUPPORTED_APIS, type Upstream } from "./credential";
-import { Failure } from "./failure";
-import { type ModelRecord, recordOf } from "./model-record";
+import { SUPPORTED_APIS, type Upstream } from "../../contract/src/egress-scope";
+import { Failure } from "../../contract/src/failure";
+import type { ModelRecord } from "../../contract/src/model-record";
 
 /** The providers the gateway can stream through, by pi-ai provider id. */
 export interface Catalog {
@@ -96,8 +96,25 @@ export function providerFor(catalog: Catalog, upstream: Upstream): Provider {
 }
 
 /**
+ * The record pi-ai's catalog holds for `model` (`contract/src/model-record.ts`): only the
+ * kept fields, each as pi-ai has it.
+ */
+export function recordOf(model: Model<Api>): ModelRecord {
+  const { id, name, reasoning, thinkingLevelMap, promptCache, input, inputLimits,
+          contextWindow, maxTokens, cost } = model;
+  return Object.freeze({
+    id, name, reasoning,
+    ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap }),
+    ...(promptCache === undefined ? {} : { promptCache }),
+    input: input.filter((kind) => kind === "text" || kind === "image"),
+    ...(inputLimits === undefined ? {} : { inputLimits }),
+    contextWindow, maxTokens, cost,
+  });
+}
+
+/**
  * The models a sealed upstream serves, each with its whole capability record
- * (`model-record.ts`): its provider's catalog, or its declared list. The owner object
+ * (`recordOf`): its provider's catalog, or its declared list. The owner object
  * loads no catalog of its own, so this is where it learns them, at connect time: it lists,
  * prices (pi-ai's `calculateCost`, tiers included), compacts and offers thinking levels by
  * them.
