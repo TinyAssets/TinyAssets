@@ -45,8 +45,8 @@ def _production_guard():
 
 
 class Fake:
-    """The repo's secrets, variables, environments and the canary's runs, as GitHub holds
-    them; every REST call recorded as `METHOD path`, every value stored by name."""
+    """The repo's secrets, variables and environments, as GitHub holds them; every REST
+    call recorded as `METHOD path`, every value stored by name."""
 
     def __init__(self, secrets: dict[str | None, set[str]] | None = None,
                  variables: dict[str, str] | None = None,
@@ -57,10 +57,6 @@ class Fake:
         self.variables = dict(variables or {})
         self.environments = dict(environments or {})
         self.calls: list[str] = []
-        self.runs = [{"databaseId": 1, "headBranch": "feature"},
-                     {"databaseId": 2, "headBranch": "main"},
-                     {"databaseId": 3, "headBranch": "main"}]
-        self.receipts: dict[int, object] = {}
 
     def rest(self, method: str, path: str, body: object) -> tuple[int, object]:
         self.calls.append(f"{method} {path}")
@@ -131,17 +127,6 @@ def _gh_cli(fake: Fake, said: list[str]):
             return _Done(0)
         if argv[1:3] == ["variable", "set"]:
             fake.variables[argv[3]] = value
-            return _Done(0)
-        if argv[1:3] == ["run", "list"]:
-            assert argv[argv.index("--workflow") + 1] == "uptime-canary.yml"
-            return _Done(0, json.dumps(fake.runs).encode())
-        if argv[1:3] == ["run", "download"]:
-            run_id = int(argv[3])
-            assert argv[argv.index("--name") + 1] == "owner-token-claims"
-            if run_id not in fake.receipts:
-                return _Done(1)
-            into = Path(argv[argv.index("--dir") + 1])
-            (into / "owner-token-claims.json").write_text(json.dumps(fake.receipts[run_id]))
             return _Done(0)
         raise AssertionError(argv)
 
@@ -334,17 +319,11 @@ def _discovery(url: str):
 @pytest.mark.verifies(
     "clean-sheet-platform:The owner's sign-in is the configured issuer's "
     "OpenID Connect flow")
-def test_the_variables_are_set_once_from_the_newest_main_receipt(capsys) -> None:
+def test_the_variables_are_set_once(capsys) -> None:
     fake, said = Fake(), []
-    fake.receipts = {1: {"iss": "https://other", "auth_time": 1},
-                     3: {"iss": ISSUER, "auth_time": 1767225600}}
     assert setup.variables(_gh(fake, said), _discovery)
     assert fake.variables == {
-        "OWNER_ISSUER": ISSUER, "WORKOS_CLIENT_ID": setup.WORKOS_CLIENT_ID,
-        "OWNER_TOKEN_CLAIMS": json.dumps({"iss": ISSUER, "auth_time": 1767225600})}
-    # The feature branch's run is never read; main's run 2 kept none, so run 3 is used.
-    downloads = [line.split()[3] for line in said if line.startswith("gh run download")]
-    assert downloads == ["2", "3"]
+        "OWNER_ISSUER": ISSUER, "WORKOS_CLIENT_ID": setup.WORKOS_CLIENT_ID}
     _no_value_shown(said, capsys.readouterr().out, fake.variables.values())
     # Run again: every one already set, nothing written.
     calls = len(said)
@@ -354,22 +333,6 @@ def test_the_variables_are_set_once_from_the_newest_main_receipt(capsys) -> None
     fake.variables["WORKOS_CLIENT_ID"] = "client_other"
     assert not setup.variables(_gh(fake, said), _discovery)
     assert fake.variables["WORKOS_CLIENT_ID"] == "client_other"
-
-
-@pytest.mark.verifies(
-    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
-    "OpenID Connect flow")
-@pytest.mark.parametrize("receipt", [None, {"iss": ISSUER}, {"iss": "https://other",
-                                                             "auth_time": 1},
-                                     {"iss": ISSUER, "auth_time": "1"},
-                                     {"iss": ISSUER, "auth_time": True}])
-def test_owner_token_claims_needs_a_receipt_naming_the_issuer_with_auth_time(receipt):
-    fake = Fake()
-    if receipt is not None:
-        fake.receipts = {2: receipt}
-    with pytest.raises(setup.SetupError):
-        setup.variables(_gh(fake), _discovery)
-    assert "OWNER_TOKEN_CLAIMS" not in fake.variables
 
 
 @pytest.mark.verifies(

@@ -54,9 +54,7 @@ absent, goes to GitHub on stdin, and is never shown. Your part is in bold.
    `python scripts/platform_setup.py review-app --code "<address>"`: the main-only `review`
    environment (made when absent), `REVIEW_APP_PRIVATE_KEY` there and the variable
    `REVIEW_APP_ID`. **Install the App** on this repository alone, from the link it prints.
-4. After this change is on `main` and one uptime canary run has passed there (every five
-   minutes): `python scripts/platform_setup.py variables` sets `OWNER_ISSUER`,
-   `WORKOS_CLIENT_ID` and `OWNER_TOKEN_CLAIMS` (below).
+4. `python scripts/platform_setup.py variables` sets `OWNER_ISSUER` and `WORKOS_CLIENT_ID`.
 5. **Approve** the session's `gh workflow run platform-deploy.yml -f mode=plan`, and read
    the plan.
 6. A session pins the migration lock (below) and merges it. Then **approve**
@@ -75,9 +73,9 @@ What the kit reads, all from the store, never a host:
   `INBOUND_SLACK_SIGNING_SECRET`.
 - The repository secret `CLOUDFLARE_API_TOKEN`. The account is the `tinyassets.io` zone's,
   read from the zone (`zoneOf`), so no account id is stored.
-- The repository variables `OWNER_ISSUER`, `WORKOS_CLIENT_ID` and `OWNER_TOKEN_CLAIMS`.
+- The repository variables `OWNER_ISSUER` and `WORKOS_CLIENT_ID`.
 
-More on three of them:
+More on two of them:
 
 - **The migration lock, pinned at the commit you deploy.** The kit refuses to run unless
   `platform/owner/migrations.json` marks the first deploy and pins every migration the code
@@ -93,14 +91,6 @@ More on three of them:
      appends, and the kit refuses until it is done.
   5. **Pin only when you deploy.** Pinning freezes the baseline for good: from then on a
      schema change is a new migration, even if no deploy follows.
-- **`auth_time`, settled before anything changes.** Every sign-in needs AuthKit's tokens to
-  carry `auth_time`, and AuthKit's discovery lists no `claims_supported`. So the uptime
-  canary keeps a receipt of its renewed AuthKit token's `iss` and `auth_time` alone (until
-  the variable is set), and `platform_setup.py variables` stores it as `OWNER_TOKEN_CLAIMS`. That is AuthKit's
-  access token; the doors check the ID token, so the first real sign-in at the cutover is
-  the final test (`oidc.ts` refuses loudly). An absent field counts as unknown, and unknown
-  stops the kit. If the token has no `auth_time`, the way on is to have AuthKit send it
-  (`max_age=0`).
 - **The sandbox's template is built** (`E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`,
   pinned in #5428). The kit checks E2B has a ready build, and the `pair` job checks the pair.
 
@@ -110,8 +100,9 @@ Each step reads before it writes. A failed listing or read stops the kit with it
 It never counts as "absent".
 
 1. **Checks, before any change.** The issuer's discovery must name `OWNER_ISSUER` exactly,
-   declare `client_secret_post`, and name https endpoints. `auth_time` must be present, as
-   above. The E2B template must be ready. Any miss stops the kit.
+   declare `client_secret_post`, and name https endpoints. The E2B template must be ready.
+   Any miss stops the kit. Whether AuthKit's ID token carries `auth_time` no discovery
+   shows: mode `probe` settles it, after `dark` and before `routes`.
 2. **Storage, created only when its listing answered and lacks it:** three KV namespaces
    (`tinyassets-oauth`, `tinyassets-directory`, `tinyassets-control`), one R2 bucket
    (`tinyassets-files`), and the queues the Workers send to (`tinyassets-sandbox-ring`,
@@ -163,6 +154,37 @@ It never counts as "absent".
 
 ## Later steps, each its own approved run
 
+- **Mode `probe`: one real sign-in through the doors, between `dark` and `routes`.** Every
+  sign-in at `routes` rests on four things only a real sign-in through the doors' own code
+  shows: AuthKit's ID token carries `auth_time` (WorkOS documents it on access tokens, not
+  ID tokens), the doors' client works at `/oauth2/*`, AuthKit takes the API key as its
+  `client_secret_post`, and the callback is the redirect it checks. The probe:
+  - runs only after `dark`: the doors deployed, the control record admitting nobody, and
+    WorkOS listing `https://tinyassets.io/oauth/upstream/callback`. It reads each live and
+    stops otherwise;
+  - hands the doors `tinyassets.io/authorize*` and `tinyassets.io/oauth/*` alone, by the
+    same handover. No Worker serves those paths today (they answer `404`), and the probe
+    stops if one does. It deploys nothing and changes no gate. Then the handles canary;
+  - prints one sign-in link, the doors' own app's (`/authorize`, its client, its
+    `/app/signed-in` redirect, the `/app` resource and a fresh S256 challenge).
+
+  **Open the link and sign in once.** Read where the browser ends:
+  - **Pass:** the address begins
+    `https://tinyassets.io/app/signed-in?error=temporarily_unavailable` (more follows
+    it). The page is still the old app's and reads "Sign in to TinyAssets to continue":
+    that is expected. Every check passed and the closed gate refused the sign-in, so no
+    owner is made.
+  - **Fail:** a `400` at `/authorize` (the doors could not read their app's client
+    document); an error page at AuthKit (the client or the callback refused); a `502` at
+    `/oauth/upstream/callback` naming the failed check (the token endpoint's status and
+    error code, `auth_time`, `iss`, the nonce...), the same line in the doors' log; or
+    `/app/signed-in?error=access_denied` ("sign in again": `auth_time` over 600 s old).
+
+  If it fails on `auth_time`, the next step is a second probe with AuthKit asked for it
+  (`max_age=0` in the doors' `UPSTREAM.authorize_params`), a change of its own. `routes`
+  later finds both paths already the doors'. Until `routes`, never delete the control
+  record (`c:control`): the doors read a missing record as open and would admit owners on
+  these two paths.
 - **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
   the doors' routes over (`/mcp*`, `/api/*`, `/hooks/inbound/*`, `/hooks/e2b/*`,
   `/app/api/*`, `/authorize*`, `/oauth/*`, `/.well-known/oauth-*`) one route at a time, through

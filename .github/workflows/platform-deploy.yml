@@ -9,9 +9,10 @@ name: Platform deploy (manual, founder-approved)
 #            with the E2B key alone: the sandbox's template and the runner
 #            this commit ships checked together on throwaway sandboxes,
 #            unless E2B already holds their pair's tag (deploy.ts --pair).
-#   apply  - needs the plan and the pair, in the main-only `production`
-#            environment. It runs the kit with `--yes`, which stops unless the
-#            pair's tag is at E2B. The founder's dispatch is the approval: a
+#   apply  - needs the plan and the pair (none for probe and h2, which deploy
+#            nothing), in the main-only `production` environment. It runs the
+#            kit with `--yes`, which stops a deploy unless the pair's tag is at
+#            E2B. The founder's dispatch is the approval: a
 #            required reviewer on `production` would hold every scheduled job
 #            there too (platform/deploy/checklist.md).
 #
@@ -27,18 +28,21 @@ name: Platform deploy (manual, founder-approved)
 #   plan    - the plan job alone
 #   dark    - storage, secrets, six Workers with no route, the control record
 #             when absent, the WorkOS redirect URI, then the handles canary
-#   routes  - the same, then the routes handed to the doors one at a time
+#   probe   - after dark: the sign-in's two paths alone handed to the doors,
+#             nothing deployed and no gate changed, then the handles canary and
+#             the one sign-in link to open, with its pass and fail signs
+#   routes  - the same as dark, then the routes handed to the doors one at a time
 #   h2      - H2's probes alone, once a probe owner exists; nothing deployed
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | routes | h2'
+        description: 'plan | dark | probe | routes | h2'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, routes, h2]
+        options: [plan, dark, probe, routes, h2]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -66,7 +70,6 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
       OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
-      OWNER_TOKEN_CLAIMS: ${{ vars.OWNER_TOKEN_CLAIMS }}
       MODE: ${{ inputs.mode }}
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}
@@ -85,6 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           args=(--public)
+          if [ "${MODE}" = "probe" ]; then args+=(--probe); fi
           if [ "${MODE}" = "routes" ]; then args+=(--routes); fi
           if [ "${MODE}" = "h2" ]; then args+=(--h2); fi
           if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
@@ -131,7 +135,8 @@ jobs:
       always() && github.ref == 'refs/heads/main' && inputs.mode != 'plan'
       && needs.plan.result == 'success'
       && (needs.pair.result == 'success'
-          || (inputs.mode == 'h2' && needs.pair.result == 'skipped'))
+          || ((inputs.mode == 'h2' || inputs.mode == 'probe')
+              && needs.pair.result == 'skipped'))
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -140,7 +145,6 @@ jobs:
       WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
       WORKOS_CLIENT_ID: ${{ vars.WORKOS_CLIENT_ID }}
       OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
-      OWNER_TOKEN_CLAIMS: ${{ vars.OWNER_TOKEN_CLAIMS }}
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       ROUTING_MAC_KEY: ${{ secrets.ROUTING_MAC_KEY }}
       GATEWAY_KEYRING: ${{ secrets.GATEWAY_KEYRING }}
@@ -174,6 +178,7 @@ jobs:
             exit 0
           fi
           args=(--yes)
+          if [ "${MODE}" = "probe" ]; then args+=(--probe); fi
           if [ "${MODE}" = "routes" ]; then args+=(--routes); fi
           if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
           if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
 
 import pytest
 
@@ -45,30 +44,6 @@ def test_renewal_stores_the_rotated_handle_before_returning(chain):
     assert all(
         path == "/app/token" and body["grant_type"] == "refresh_token" for path, body in sent
     )
-
-
-def _jwt(claims: dict) -> str:
-    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-    return f"h.{body}.s"
-
-
-@pytest.mark.verifies("canary-sign-in:The canary is an ordinary account")
-def test_renewal_keeps_only_the_tokens_iss_and_auth_time_when_asked(chain, monkeypatch,
-                                                                    tmp_path):
-    _, _, post = chain
-    receipt = tmp_path / "claims.json"
-    token = _jwt({"iss": "https://i", "auth_time": 7, "sub": "user_x", "sid": "s"})
-    post([(200, {"access_token": token, "session_ref": "h1"})])
-    canary_session.access_token("https://x")
-    assert not receipt.exists()
-    monkeypatch.setenv("TINYASSETS_OWNER_CLAIMS_RECEIPT", str(receipt))
-    post([(200, {"access_token": token, "session_ref": "h3"})])
-    assert canary_session.access_token("https://x") == token
-    assert json.loads(receipt.read_text()) == {"iss": "https://i", "auth_time": 7}
-    receipt.unlink()
-    post([(200, {"access_token": "opaque", "session_ref": "h4"})])
-    canary_session.access_token("https://x")
-    assert not receipt.exists()
 
 
 @pytest.mark.verifies("canary-sign-in:Each workflow keeps its own sealed chain")
