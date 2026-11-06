@@ -226,10 +226,10 @@ describe("the deploy kit", () => {
         return new Response(null, { status,
                                     headers: location === null ? {} : { Location: location } });
       };
-    expect(await authorizeCheck(UPSTREAM, answering(302,
+    expect(await authorizeCheck(UPSTREAM, false, answering(302,
       "https://auth.test/bootstrap?client_id=c&authorization_session_id=x&max_age=0")))
       .toMatch(/auth\.test's sign-in/);
-    // The URL sent is the doors' own, with a throwaway state and S256 challenge.
+    // The URL sent is the WorkOS one the doors build, with a throwaway state and challenge.
     const asked = new URL(sent[0]!.url);
     expect(sent[0]!.init?.redirect).toBe("manual");
     expect(`${asked.origin}${asked.pathname}`)
@@ -237,7 +237,7 @@ describe("the deploy kit", () => {
     expect(asked.href).toBe(authorizeLink(UPSTREAM, asked.searchParams.get("state")!,
                                           asked.searchParams.get("code_challenge")!));
     expect(asked.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    await authorizeCheck(UPSTREAM, answering(302, "https://auth.test/bootstrap"));
+    await authorizeCheck(UPSTREAM, false, answering(302, "https://auth.test/bootstrap"));
     expect(new URL(sent[1]!.url).searchParams.get("state"))
       .not.toBe(asked.searchParams.get("state"));
     for (const [status, location, named] of [
@@ -252,8 +252,51 @@ describe("the deploy kit", () => {
       [302, null, /answered 302/],
       [400, "https://auth.test/bootstrap", /answered 400/],
     ] as const) {
-      await expect(authorizeCheck(UPSTREAM, answering(status, location))).rejects.toThrow(named);
+      await expect(authorizeCheck(UPSTREAM, false, answering(status, location)))
+        .rejects.toThrow(named);
     }
+  });
+
+  it("reports an unlisted callback as dark's to register while it cannot be listed, and " +
+     "stops on every other refusal", async () => {
+    const answering = (location: string) => async () =>
+      new Response(null, { status: 302, headers: { Location: location } });
+    expect(await authorizeCheck(UPSTREAM, true, answering(
+      "https://error.workos.com/redirect-uri-invalid?redirect_uri=x")))
+      .toMatch(/dark registers it/);
+    expect(await authorizeCheck(UPSTREAM, true, answering("https://auth.test/bootstrap")))
+      .toMatch(/auth\.test's sign-in/);
+    for (const location of ["https://error.workos.com/sso/client-id-invalid",
+                            "https://error.workos.com/redirect-uri-invalid-not",
+                            "https://evil.test/redirect-uri-invalid",
+                            "https://auth.test/oauth2/error?error=application_not_found"]) {
+      await expect(authorizeCheck(UPSTREAM, true, answering(location))).rejects.toThrow(/refused/);
+    }
+  });
+
+  it("lists or registers the callback before the authorize check, both before any " +
+     "Cloudflare change, and the probe checks before a route moves", () => {
+    const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
+    const main = kit.slice(kit.indexOf("async function main()"), kit.indexOf("function report("));
+    const at = (text: string) => main.indexOf(text);
+    // main runs the check exactly once, after the callback's listing or registration, and
+    // treats the callback as unlisted only where it could not list it or found it missing.
+    expect(main.match(/authorizeCheck\(/g)).toHaveLength(1);
+    expect(main.match(/registerRedirect\(/g)).toHaveLength(1);
+    expect(at('registerRedirect(input("WORKOS_API_KEY")!, apply)')).toBeGreaterThan(-1);
+    expect(at('authorizeCheck(upstream, redirect === undefined || redirect === "missing")'))
+      .toBeGreaterThan(at("registerRedirect("));
+    for (const change of ["handover(", 'ensure("bucket"', 'wrangler(["kv"', "deployWorker(",
+                          "secretPlan("]) {
+      expect([change, at(change) > at("authorizeCheck(")]).toEqual([change, true]);
+    }
+    const probe = kit.slice(kit.indexOf("async function probe("),
+                            kit.indexOf("async function main()"));
+    expect(probe.match(/authorizeCheck\(/g)).toHaveLength(1);
+    expect(probe.indexOf("registerRedirect(")).toBeLessThan(probe.indexOf("authorizeCheck("));
+    expect(probe.indexOf('input("WORKOS_CLIENT_ID")), false)'))
+      .toBeGreaterThan(probe.indexOf("authorizeCheck("));
+    expect(probe.indexOf("authorizeCheck(")).toBeLessThan(probe.indexOf("runHandover("));
   });
 
   it("registers the WorkOS redirect URI only when missing, and never deletes one", async () => {

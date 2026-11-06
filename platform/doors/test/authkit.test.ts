@@ -3,8 +3,10 @@
  * token's checks against the issuer's JWKS, against a fake issuer that signs with a real RSA
  * key. Every refusal the brief names fails closed: a wrong `iss` (named with the value seen),
  * a wrong `client_id`, no `auth_time`, a `sub` that is not the answer's `user.id`, a bad
- * signature; and the rest of the checks (`sid`, a user's token, key, algorithm, time), the
- * authorize URL's exact parameters, the exchange's exact body, the record's grammar, the
+ * signature; and the rest of the checks (`sid` required, a user's token, one key per `kid`,
+ * the key's own `alg` and `use`, algorithm, time), the authorize URL's exact parameters, the
+ * exchange's exact body sent to `api.workos.com` and never through a redirect, the record's
+ * grammar (the secret's one origin among it), the
  * half-configured Worker, and the identity's deletion. An `auth_time` past the 600 s window
  * is the callback's to refuse (`oauth.test.ts`, "older than ten minutes").
  */
@@ -17,7 +19,8 @@ import { UNWIRED } from "../src/upstream";
 import { doorsEnv } from "./support";
 
 const ISSUER = "https://auth.tinyassets.test";
-const API = "https://api.issuer.test";
+/** The one origin the secret may go to (`oidc.ts`); every fetch here is a fake. */
+const API = "https://api.workos.com";
 const CONFIG: UpstreamConfig = upstreamConfig(JSON.stringify({
   client_id: "client_01TEST",
   authorization_endpoint: `${API}/user_management/authorize`,
@@ -90,12 +93,25 @@ describe("the access token", () => {
     expect(signed.authenticated_at).toBeLessThan(now());
   });
 
-  it("is taken without a sid, and as a user's token (sub_profile user)", async () => {
-    for (const change of [{ drop: ["sid"] }, { claims: { sub_profile: "user" } }]) {
-      const { answer, jwks } = await issued(change);
-      expect((await verifiedAccessToken(answer, ISSUER, CONFIG, jwks)).subject)
-        .toBe("user_01ALICE");
-    }
+  it("is taken as a user's token (sub_profile user)", async () => {
+    const { answer, jwks } = await issued({ claims: { sub_profile: "user" } });
+    expect((await verifiedAccessToken(answer, ISSUER, CONFIG, jwks)).subject)
+      .toBe("user_01ALICE");
+  });
+
+  it("is refused under a key the JWKS lists twice, or one not for RS256 signing", async () => {
+    const { answer, jwks } = await issued();
+    const [key] = (jwks as { keys: Record<string, unknown>[] }).keys;
+    const under = (keys: Record<string, unknown>[]) =>
+      verifiedAccessToken(answer, ISSUER, CONFIG, { keys });
+    // The right key listed twice under its kid: ambiguous, never the first one taken.
+    await expect(under([key!, key!])).rejects.toThrow(/no one key/);
+    await expect(under([key!, { ...key!, n: "AQAB" }])).rejects.toThrow(/no one key/);
+    await expect(under([{ ...key!, alg: "RS512" }])).rejects.toThrow(/RS256 signing key/);
+    await expect(under([{ ...key!, use: "enc" }])).rejects.toThrow(/RS256 signing key/);
+    // Neither field is required: a key that names neither is taken.
+    const { alg: _alg, use: _use, ...bare } = key!;
+    expect((await under([bare])).subject).toBe("user_01ALICE");
   });
 
   it.each([
@@ -113,7 +129,9 @@ describe("the access token", () => {
     ["no subject", { drop: ["sub"] }, /names no subject/],
     ["no subject, and no user.id either", { drop: ["sub"], user: null }, /names no subject/],
     ["a subject that is not the answer's user.id", { user: "user_01MALLORY" }, /user\.id/],
-    ["an empty sid", { claims: { sid: "" } }, /sid/],
+    ["no sid (a user's token always carries one)", { drop: ["sid"] }, /\(sid\)/],
+    ["an empty sid", { claims: { sid: "" } }, /\(sid\)/],
+    ["a sid that is no string", { claims: { sid: 7 } }, /\(sid\)/],
     ["a machine's token", { claims: { sub_profile: "m2m" } }, /not a user's/],
     ["a sub_type", { claims: { sub_type: "application" } }, /not a user's/],
     ["HS256", { header: { alg: "HS256" } }, /RS256/],
@@ -190,6 +208,8 @@ describe("the live upstream", () => {
     expect(seen.map((request) => `${request.method} ${request.url}`)).toEqual([
       `POST ${CONFIG.token_endpoint}`, `GET ${CONFIG.jwks_uri}`]);
     expect(seen[0]!.headers.get("Content-Type")).toBe("application/json");
+    // The secret-bearing request never follows a redirect.
+    expect(seen[0]!.redirect).toBe("manual");
     expect(JSON.parse(await seen[0]!.text())).toEqual({
       grant_type: "authorization_code", client_id: CONFIG.client_id, client_secret: SECRET,
       code: "code-1", code_verifier: "verifier-1" });
@@ -206,6 +226,20 @@ describe("the live upstream", () => {
     await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(200)).finish({
       code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
       .rejects.toThrow(/user\.id/);
+  });
+
+  it("refuses a redirect from the token endpoint, sending the secret nowhere else", async () => {
+    const seen: string[] = [];
+    for (const status of [301, 302, 307, 308]) {
+      const redirecting = (async (input: RequestInfo | URL) => {
+        seen.push(String(input));
+        return new Response(null, { status, headers: { Location: "https://evil.test/t" } });
+      }) as typeof fetch;
+      await expect(oidcUpstream(ISSUER, CONFIG, SECRET, redirecting).finish({
+        code: "c", code_verifier: "verifier-1", redirect_uri: UPSTREAM_CALLBACK }))
+        .rejects.toThrow(new RegExp(`answered ${status}$`));
+    }
+    expect(seen).toEqual(Array(4).fill(CONFIG.token_endpoint));
   });
 
   it("names a refused exchange's error code, and nothing else of its answer", async () => {
@@ -232,7 +266,7 @@ describe("the live upstream", () => {
     await expect(oidcUpstream(ISSUER, CONFIG, SECRET, answering(500)).forget("user_01ALICE"))
       .rejects.toThrow(/500/);
     expect(seen[0]!.method).toBe("DELETE");
-    expect(seen[0]!.url).toBe("https://api.issuer.test/user_management/users/user_01ALICE");
+    expect(seen[0]!.url).toBe("https://api.workos.com/user_management/users/user_01ALICE");
     expect(seen[0]!.headers.get("Authorization")).toBe(`Bearer ${SECRET}`);
   });
 
@@ -249,6 +283,12 @@ describe("the UPSTREAM record", () => {
   it.each([
     ["not JSON", "{"],
     ["an http endpoint", JSON.stringify({ ...base, token_endpoint: "http://auth.test/t" })],
+    ["a token endpoint off api.workos.com", JSON.stringify({ ...base,
+                                                            token_endpoint: `${ISSUER}/t` })],
+    ["a token endpoint on a lookalike host", JSON.stringify({
+      ...base, token_endpoint: "https://api.workos.com.evil.test/t" })],
+    ["a deletion URL off api.workos.com", JSON.stringify({ ...base,
+                                                          user_delete: `${ISSUER}/u/{sub}` })],
     ["no token issuer", JSON.stringify({ ...base, token_issuer: undefined })],
     ["an http token issuer", JSON.stringify({ ...base, token_issuer: "http://auth.test" })],
     ["a flow parameter among its own", JSON.stringify({ ...base,
@@ -256,7 +296,7 @@ describe("the UPSTREAM record", () => {
     ["a max_age of its own", JSON.stringify({ ...base, authorize_params: { max_age: "600" } })],
     ["a nonce of its own", JSON.stringify({ ...base, authorize_params: { nonce: "x" } })],
     ["a deletion URL without the subject", JSON.stringify({ ...base,
-                                                           user_delete: "https://a.test/u" })],
+                                                           user_delete: `${API}/u` })],
     ["another key", JSON.stringify({ ...base, client_secret: "s" })],
   ])("is refused with %s", (_what, value) => {
     expect(() => upstreamConfig(value)).toThrow();

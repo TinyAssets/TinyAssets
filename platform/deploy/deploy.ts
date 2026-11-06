@@ -58,7 +58,8 @@
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
- *   POST; never a delete);
+ *   POST; never a delete), after every other live check and before any Cloudflare change,
+ *   and only then is the early sign-in check run, which needs it listed;
  * - E2B's lifecycle webhook is listed and checked before any change, registered, disabled,
  *   only when E2B's listing lacks it, its secret changed only with the doors' copy, and
  *   enabled only by `--routes` after the handover; the run that registers it sets the
@@ -71,10 +72,12 @@
  *
  * Before anything is changed it checks, live: the owner issuer's discovery names
  * `OWNER_ISSUER` exactly and an https JWKS (an absent field is unknown, and unknown stops the
- * kit); WorkOS's User Management authorize, sent the doors' own authorize URL with a
- * throwaway challenge, redirects to AuthKit's sign-in, so it takes the doors' client and
- * `CALLBACK` (`authorizeCheck`). The access token's exact `iss` and `auth_time` only a real
- * sign-in shows: the sign-in probe settles them; the sandbox's
+ * kit); WorkOS's User Management authorize, sent the WorkOS authorize URL the doors build
+ * (not `tinyassets.io/authorize`) with a throwaway challenge, redirects to AuthKit's sign-in,
+ * so it takes the doors' client and `CALLBACK` (`authorizeCheck`, run once `CALLBACK` is
+ * listed or registered; the plan job, which cannot list it, reports an unlisted one as
+ * dark's to register). The access token's exact `iss` and `auth_time` only a real sign-in
+ * shows: the sign-in probe settles them; the sandbox's
  * `E2B_TEMPLATE` exists at E2B with a ready build; and the pair it deploys, that template
  * and the runner the sandbox Worker ships (its SHA-256, built as the Worker's build makes
  * it), passed its standing checks in this E2B team: E2B holds the pair's tag
@@ -603,15 +606,24 @@ export function authorizeLink(upstream: UpstreamValues, state: string, challenge
   return url.href;
 }
 
+/** Where WorkOS sends a browser whose `redirect_uri` the client does not list. */
+export const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
+
 /**
- * The early sign-in check, before any person signs in: a `GET` of the doors' authorize URL
- * with a throwaway state and S256 challenge (its verifier dropped, so no code it could end in
- * is redeemable), which must answer a 302 to the owner issuer's host, AuthKit's sign-in page.
- * A refused client or redirect (`error.workos.com/…/client-id-invalid`,
+ * The early sign-in check, before any person signs in: a `GET` of the WorkOS authorize URL
+ * the doors build (`authorizeLink`, User Management's; never `tinyassets.io/authorize`)
+ * with a throwaway state and S256 challenge (its verifier dropped, so no code it could end
+ * in is redeemable), which must answer a 302 to the owner issuer's host, AuthKit's sign-in
+ * page. A refused client or redirect (`error.workos.com/sso/client-id-invalid`,
  * `…/redirect-uri-invalid`, an `error=` answer) stops the kit, naming where it was sent.
+ *
+ * `unlisted`: `CALLBACK` is not known to be on the client's list yet (the plan job cannot
+ * list it, and a run without `--yes` leaves it missing), so a `redirect-uri-invalid` answer
+ * is reported as `dark`'s to register, not a stop; every other refusal still stops. `dark`
+ * and `routes` register the callback first and run the check with `unlisted` false.
  */
-export async function authorizeCheck(upstream: UpstreamValues, fetcher: Fetch = fetch):
-    Promise<string> {
+export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean,
+                                     fetcher: Fetch = fetch): Promise<string> {
   const { state, challenge } = throwaway();
   const link = authorizeLink(upstream, state, challenge);
   const answer = await fetcher(link, { redirect: "manual" });
@@ -627,6 +639,10 @@ export async function authorizeCheck(upstream: UpstreamValues, fetcher: Fetch = 
     throw new Error("WorkOS's authorize redirected to no URL");
   }
   const host = new URL(upstream.issuer).host;
+  if (unlisted && `${to.origin}${to.pathname}` === REDIRECT_UNLISTED) {
+    return `WorkOS's authorize does not take ${CALLBACK} yet: dark registers it, then ` +
+           "checks the client and it again";
+  }
   if (to.protocol !== "https:" || to.host !== host || to.searchParams.has("error")
       || /error/i.test(to.pathname)) {
     throw new Error(`WorkOS's authorize refused the doors' client or ${CALLBACK}: it sent ` +
@@ -1086,9 +1102,10 @@ async function probe(apply: boolean, open: boolean): Promise<void> {
   }
   const steps = probeSteps(await routesOf(api, zone));
   if (apply) {
-    // The early sign-in check, before a route moves: WorkOS takes the client and CALLBACK.
+    // The early sign-in check, before a route moves: WorkOS takes the client and CALLBACK,
+    // which it lists (checked above), so a redirect-uri-invalid answer stops the probe.
     plan.push(await authorizeCheck(await upstreamFrom(input("OWNER_ISSUER"),
-                                                      input("WORKOS_CLIENT_ID"))));
+                                                      input("WORKOS_CLIENT_ID")), false));
   }
   plan.push(...(steps.length === 0 ? [`${DOORS} holds ${PROBE_ROUTES.join(" and ")} already`]
     : steps.map((step) => describeStep(step, DOORS))));
@@ -1185,7 +1202,6 @@ async function main(): Promise<void> {
   // The live checks, before anything is changed.
   const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"));
   plan.push(`set the doors' OWNER_ISSUER to ${upstream.issuer}, held to its discovery`);
-  plan.push(await authorizeCheck(upstream));
   const template = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
   if (open) {
     plan.push(`E2B's ready build of ${template}: ${later}`);
@@ -1212,6 +1228,13 @@ async function main(): Promise<void> {
   const hookAt = hookPlan({ open, routes, missing: listed === null });
   const hook = (change: boolean, setSecret: boolean) => lifecycleHook(
     input("E2B_API_KEY")!, input("E2B_WEBHOOK_SECRET")!, change, hookAt.enable, setSecret);
+  // The WorkOS redirect URI, then the early sign-in check, which needs CALLBACK listed: so
+  // a fresh environment's dark registers it (GET, then POST; additive, never a delete)
+  // before checking it, ahead of any Cloudflare change. The plan job cannot list it, and a
+  // run without --yes leaves it missing: there a redirect-uri-invalid answer is dark's to fix.
+  const redirect = open ? undefined : await registerRedirect(input("WORKOS_API_KEY")!, apply);
+  plan.push(`WorkOS redirect URI ${CALLBACK}: ${redirect ?? later}`);
+  plan.push(await authorizeCheck(upstream, redirect === undefined || redirect === "missing"));
   let steps: RouteStep[] = [];
   if (routes) {
     steps = handover(await routesOf(api, zone), DOORS, ROUTES);
@@ -1303,8 +1326,6 @@ async function main(): Promise<void> {
         }
       }
     }
-    plan.push(`WorkOS redirect URI ${CALLBACK}: ${open ? later
-      : await registerRedirect(input("WORKOS_API_KEY")!, apply)}`);
     // E2B's lifecycle webhook, once the doors hold E2B_WEBHOOK_SECRET (`hookPlan`).
     if (hookAt.at === "none") {
       plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${later}`);

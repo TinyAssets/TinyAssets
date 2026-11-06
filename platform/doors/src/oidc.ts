@@ -9,17 +9,18 @@
  * - `authorizeUrl`: `response_type=code`, our `state`, the S256 challenge and `max_age=0`,
  *   which forces a fresh sign-in; the record's `authorize_params` add the provider's own
  *   (`provider=authkit`), never one of ours.
- * - `finish`: the code exchanged (JSON) at the token endpoint with the verifier and the
- *   client secret. No ID token comes back, so the answer's access token is checked whole:
- *   RS256 under a key the issuer's JWKS names by `kid` (fetched for each sign-in: no module
- *   state), `iss` exactly the record's `token_issuer`, `client_id` our client (no `aud` is
- *   minted), `exp` and `iat` within the clock margin, `sub` present and the answer's
- *   `user.id`, `sid` a session id when present, a user's token (`sub_profile` absent or
- *   `user`, no `sub_type`), and `auth_time` present as whole seconds. A token without
- *   `auth_time` is refused: there is no clock fallback, since the fence and the session's
- *   600 s bound rest on the sign-in's real time. There is no nonce: the flow takes none, and
- *   no token crosses the front channel, since the single-use code is redeemable only with
- *   our verifier and our secret, on our own request.
+ * - `finish`: the code exchanged (JSON) at the token endpoint, on `api.workos.com` alone
+ *   and never through a redirect, with the verifier and the client secret. No ID token
+ *   comes back, so the answer's access token is checked whole: RS256 under the one key the
+ *   issuer's JWKS names by `kid` (fetched for each sign-in: no module state), `iss` exactly
+ *   the record's `token_issuer`, `client_id` our client (no `aud` is minted), `exp` and
+ *   `iat` within the clock margin, `sub` present and the answer's `user.id`, `sid` present,
+ *   a user's token (`sub_profile` absent or `user`, no `sub_type`), and `auth_time` present
+ *   as whole seconds. A token without `auth_time` is refused: there is no clock fallback,
+ *   since the fence and the session's 600 s bound rest on the sign-in's real time. There is
+ *   no nonce: the flow takes none, and no token crosses the front channel. A stolen code is
+ *   stopped only by WorkOS checking our `code_verifier` while the API key is also sent,
+ *   which WorkOS does not document: an assumption (ADR-032), not a check of ours.
  * - `forget`: the person's identity deleted at the issuer (the owner's erasure,
  *   `erase.ts`), by the record's `user_delete` URL with the subject in place of `{sub}`.
  *
@@ -67,12 +68,28 @@ const REFUSAL_CODES: readonly string[] = Object.freeze([
   "application_consent_required"]);
 /** A claim value short and plain enough to name on the page: visible ASCII. */
 const SHOWN = /^[\x21-\x7e]{1,256}$/;
+/**
+ * The only origin the client secret (WorkOS's API key) is ever sent to: the record's token
+ * endpoint and identity-deletion URL must be on it, so a mis-edited `UPSTREAM` cannot send
+ * the key anywhere else.
+ */
+const SECRET_ORIGIN = "https://api.workos.com";
 
 function https(value: unknown, what: string): string {
   if (typeof value !== "string" || !HTTPS.test(value)) {
     throw new Error(`UPSTREAM's ${what} is an https URL`);
   }
   return value;
+}
+
+/** An https URL on `SECRET_ORIGIN`, the one origin the secret may go to. */
+function secretBearing(value: unknown, what: string): string {
+  const url = https(value, what);
+  if (new URL(url).origin !== SECRET_ORIGIN) {
+    throw new Error(`UPSTREAM's ${what} is on ${SECRET_ORIGIN}, the only origin the secret ` +
+                    "is sent to");
+  }
+  return url;
 }
 
 /** The `UPSTREAM` record checked whole, or a throw naming what is wrong. */
@@ -96,7 +113,7 @@ export function upstreamConfig(text: string): UpstreamConfig {
   if (typeof clientId !== "string" || !/^[\x21-\x7e]{1,256}$/.test(clientId)) {
     throw new Error("UPSTREAM's client_id is visible ASCII");
   }
-  const userDelete = https(record["user_delete"], "user_delete");
+  const userDelete = secretBearing(record["user_delete"], "user_delete");
   if (userDelete.split("{sub}").length !== 2) {
     throw new Error("UPSTREAM's user_delete names {sub} once");
   }
@@ -109,7 +126,7 @@ export function upstreamConfig(text: string): UpstreamConfig {
   return Object.freeze({
     client_id: clientId,
     authorization_endpoint: https(record["authorization_endpoint"], "authorization_endpoint"),
-    token_endpoint: https(record["token_endpoint"], "token_endpoint"),
+    token_endpoint: secretBearing(record["token_endpoint"], "token_endpoint"),
     jwks_uri: https(record["jwks_uri"], "jwks_uri"),
     token_issuer: https(record["token_issuer"], "token_issuer"),
     user_delete: userDelete,
@@ -223,6 +240,7 @@ export async function verifiedAccessToken(answer: unknown, issuer: string,
     ? listed.filter((key) => typeof key === "object" && key !== null
                              && (key as Record<string, unknown>)["kid"] === header["kid"]) : [];
   if (matching.length !== 1) {
+    // None, or several under one `kid` (ambiguous, so refused, never the first taken).
     throw new Error("the issuer's JWKS holds no one key the access token names");
   }
   const jwk = matching[0] as Record<string, unknown>;
@@ -263,8 +281,10 @@ export async function verifiedAccessToken(answer: unknown, issuer: string,
   if (held.user?.id !== subject) {
     throw new Error("the answer's user.id is not the access token's subject");
   }
-  if (claims["sid"] !== undefined && (typeof claims["sid"] !== "string" || claims["sid"] === "")) {
-    throw new Error("the access token's sid is not a session id");
+  // A user's access token always carries `sid` with `auth_time` (workos-node's
+  // `hasRequiredAccessTokenClaims`): one without is no user's sign-in.
+  if (typeof claims["sid"] !== "string" || claims["sid"] === "") {
+    throw new Error("the access token names no session (sid)");
   }
   if ((claims["sub_profile"] !== undefined && claims["sub_profile"] !== "user")
       || claims["sub_type"] !== undefined) {
@@ -307,6 +327,8 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
     finish: async ({ code, code_verifier }: {
       code: string; code_verifier: string; redirect_uri: string;
     }): Promise<SignIn> => {
+      // The secret goes in this body alone, and never follows a redirect: a 3xx is refused
+      // as any other answer than 200 is.
       const exchanged = await fetcher(config.token_endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },

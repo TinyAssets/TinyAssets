@@ -484,18 +484,26 @@ The MCP door SHALL advertise `events` in its `initialize` and `server/discover` 
 - **THEN** the lines begin with the header and end with `{"t":"end"}`
 
 ### Requirement: The owner's sign-in is the owner issuer's User Management code flow
-The doors SHALL sign the owner in through AuthKit's User Management code flow with PKCE for the environment's client, as the `UPSTREAM` record names it (written at deploy, its JWKS the owner issuer's). The code SHALL be exchanged on the doors' own request with the verifier and the client secret, which stand for a nonce. The access token SHALL be RS256 under that JWKS, with its `iss`, `client_id`, times, `sub` (the answer's `user.id`) and `auth_time` checked, and no clock fallback.
+The doors SHALL sign the owner in through AuthKit's User Management code flow with PKCE for the environment's client, as the deploy-written `UPSTREAM` record names it. The code SHALL be exchanged on the doors' own request to `api.workos.com`, never redirected, with the verifier and the secret, which stand for a nonce. The access token SHALL be RS256 under the one JWKS key its `kid` names, its `iss`, `client_id`, times, `sub` (the answer's `user.id`), `sid` and `auth_time` checked.
 
 #### Scenario: A token without auth_time, from another issuer or for another client
-- **WHEN** the token endpoint answers an access token missing `auth_time`, naming another `iss` or another `client_id`, signed by another key, or whose `sub` is not the answer's `user.id`
+- **WHEN** the token endpoint answers an access token missing `auth_time` or `sid`, naming another `iss` or another `client_id`, signed by another key, or whose `sub` is not the answer's `user.id`
 - **THEN** the sign-in fails with a 502 naming the check and never a token or a secret, a wrong `iss` named as the token carries it, and no owner is bound
 
+#### Scenario: A stolen code played into another flow
+- **WHEN** someone redeems the owner's code in their own doors flow, with another PKCE verifier
+- **THEN** WorkOS refuses the exchange. This is an assumption, not a check of the doors': WorkOS does not document that it checks `code_verifier` when the client secret is also sent
+
 ### Requirement: The deploy proves the sign-in's client and callback before anyone signs in
-Before any change, the deploy SHALL send the doors' own authorize URL, with a throwaway S256 challenge, and stop unless WorkOS redirects it to the owner issuer's sign-in.
+Before any Cloudflare change, the deploy SHALL list the callback at WorkOS (registering it when missing, outside the plan), then request the WorkOS authorize URL the doors build (not `tinyassets.io/authorize`), with a throwaway S256 challenge, and stop unless WorkOS redirects it to the owner issuer's sign-in.
 
 #### Scenario: WorkOS refuses the doors' client or callback
 - **WHEN** the deploy's authorize check is redirected to an error page (`client-id-invalid`, `redirect-uri-invalid`) or anywhere but the owner issuer's host
-- **THEN** the deploy stops before any change, naming where it was sent
+- **THEN** the deploy stops before any Cloudflare change, naming where it was sent
+
+#### Scenario: A fresh environment's callback is not registered yet
+- **WHEN** WorkOS does not list the callback
+- **THEN** `dark` registers it and then runs the check, and the plan, which cannot list it, reports a `redirect-uri-invalid` answer as `dark`'s to register rather than stopping
 
 ### Requirement: Sign-up is the platform's explicit admit, and erasure its outside record
 The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased or whose object is marked erasing. The erasure door SHALL only mark the object erasing, durable before it answers. The object's erasure job SHALL then put the owner on the erasure queue at its mark and at each attempt until the doors confirm, and the doors' consumer SHALL, each step safe to run again, write the owner's `o:` record erased, delete its `k:`, `h:` and `i:` entries, revoke its every OAuth grant and delete the identity at the issuer, then confirm; the object SHALL wipe only after that confirmation, so a half-done erasure always finishes.

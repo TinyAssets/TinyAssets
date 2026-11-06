@@ -89,15 +89,18 @@ test, cutover.
   (`platform/deploy/deploy.ts` `upstreamFrom`), the JWKS from the issuer's live discovery,
   which must name `OWNER_ISSUER` exactly (an absent field is unknown, and unknown stops the
   kit), or nothing deploys (review, research 3b). AuthKit's `/oauth2/*` takes Connect
-  applications only, so the environment client got `application_not_found` there. Before any change the kit sends the doors'
-  authorize URL with a throwaway challenge and stops unless WorkOS redirects to AuthKit's
-  sign-in (`authorizeCheck`). Only a real sign-in shows the access token's exact `iss` and
+  applications only, so the environment client got `application_not_found` there. Before any Cloudflare change the kit requests
+  the WorkOS authorize URL the doors build (not `tinyassets.io/authorize`) with a
+  throwaway challenge and stops unless WorkOS redirects to AuthKit's sign-in
+  (`authorizeCheck`). Only a real sign-in shows the access token's exact `iss` and
   `auth_time`, so the kit's `--probe` mode, after `dark` and before `routes`, hands the
   doors only `/authorize*` and `/oauth/*` behind the closed gates and prints one
   first-party sign-in link; that sign-in proves them, the doors' secret at `authenticate`
   and the callback, or names the check that failed at the callback; the secret
   `WORKOS_API_KEY`. `max_age=0` and `provider=authkit`; no `scope` and no nonce, since
-  PKCE and the back-channel exchange cover it. A half-configured Worker throws (`upstreamOf`), and only at sign-in:
+  PKCE and the back-channel exchange cover it. The kit lists the callback at WorkOS, and
+  in `dark` registers it, before the authorize check, so a fresh environment is set up by
+  `dark` alone; the plan job reports an unlisted callback as `dark`'s to register. A half-configured Worker throws (`upstreamOf`), and only at sign-in:
   `upstreamOf` is read lazily, so a bad `UPSTREAM` breaks sign-in alone and every other
   door serves (review L1). The deploy kit sets the key and registers the redirect URI
   idempotently; it is not run. **Explicit platform
@@ -123,9 +126,12 @@ test, cutover.
   `token_issuer`), checked against a live token by the probe, whose 502 names the `iss`
   seen, since any other spelling refuses every sign-in.
   `verifiedAccessToken` refuses no `auth_time`, a wrong or trailing-slash issuer, another
-  `client_id`, a `sub` that is not the answer's `user.id`, an empty `sid`, a machine's
-  token, an expired or future token, HS256 or `none`, an unknown key and a forged body
-  (`doors/test/authkit.test.ts`, a real RSA key).
+  `client_id`, a `sub` that is not the answer's `user.id`, no `sid`, a machine's token,
+  an expired or future token, HS256 or `none`, an unknown key, a `kid` listed twice, a
+  key whose own `alg` or `use` is another, and a forged body; its record sends the secret
+  to `api.workos.com` alone, never through a redirect (`doors/test/authkit.test.ts`, a
+  real RSA key). Assumed, not checked: WorkOS checks `code_verifier` even when the API
+  key is sent, so a stolen code is useless to another flow (undocumented; ADR-032).
 - [ ] DNS, routes and deploy: the doors Worker's routes on `tinyassets.io` (`/mcp`,
   `/api/*`, `/hooks/inbound/*`, `/app/api/*`, `/authorize`, `/oauth/*`,
   `/.well-known/oauth-*`), the `OAUTH_KV` and `DIRECTORY` namespaces, then the handles

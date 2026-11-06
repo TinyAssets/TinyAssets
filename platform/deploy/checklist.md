@@ -102,11 +102,15 @@ Each step reads before it writes. A failed listing or read stops the kit with it
 It never counts as "absent".
 
 1. **Checks, before any change.** The issuer's discovery must name `OWNER_ISSUER` exactly
-   and an https JWKS, the key set the doors check the sign-in's token against. The doors'
-   own authorize URL (User Management's, for `WORKOS_CLIENT_ID` and the callback, with a
-   throwaway challenge) must answer a 302 to AuthKit's sign-in on `OWNER_ISSUER`'s host; a
-   `client-id-invalid` or `redirect-uri-invalid` page stops the kit, naming it. The E2B
-   template must be ready. Any miss stops the kit. The access token's exact `iss` and its
+   and an https JWKS, the key set the doors check the sign-in's token against. The E2B
+   template must be ready. Then the callback is listed at WorkOS, and registered if missing
+   (step 6, still before any Cloudflare change), and only then the early sign-in check:
+   the WorkOS authorize URL the doors build (User Management's, for `WORKOS_CLIENT_ID` and
+   the callback, with a throwaway challenge; not `tinyassets.io/authorize`) must answer a
+   302 to AuthKit's sign-in on `OWNER_ISSUER`'s host. A `client-id-invalid` or
+   `redirect-uri-invalid` page stops the kit, naming it. Mode `plan` cannot list the
+   callback, so there a `redirect-uri-invalid` answer reads "dark registers it"; every
+   other refusal still stops. Any miss stops the kit. The access token's exact `iss` and its
    `auth_time` only a real sign-in shows: mode `probe` settles them, after `dark` and
    before `routes`.
 2. **Storage, created only when its listing answered and lacks it:** three KV namespaces
@@ -140,7 +144,8 @@ It never counts as "absent".
    off. It also holds your tier numbers: free 5 runs and 25 GB, paid 10 runs and 250 GB. If the
    record is there, the kit leaves it alone. If the read fails, the whole run stops.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:**
-   `https://tinyassets.io/oauth/upstream/callback`. The kit never deletes one.
+   `https://tinyassets.io/oauth/upstream/callback`, with the checks in step 1, before any
+   Cloudflare change, since the early sign-in check needs it. The kit never deletes one.
 7. **E2B's lifecycle webhook** (`https://tinyassets.io/hooks/e2b/lifecycle`, matched by
    its URL, listed with the checks before any change): registered **disabled** if E2B's
    listing lacks it, and the run that registers it sets the doors' `E2B_WEBHOOK_SECRET` from
@@ -188,8 +193,9 @@ It never counts as "absent".
     doors' log; or `/app/signed-in?error=access_denied` ("sign in again": `auth_time` over
     600 s old, so `max_age=0` did not force a fresh sign-in).
 
-  If the `502` names the issuer, it quotes the `iss` the token carries. That value becomes
-  `token_issuer` in `upstreamFrom` (`deploy.ts`, one line), a change of its own, then
+  If the `502` names the issuer, it quotes the `iss` the token carries. Only a WorkOS value
+  (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer` in `upstreamFrom`
+  (`deploy.ts`, one line), a change of its own, then
   `dark` and the probe again. `routes`
   later finds both paths already the doors'. Until `routes`, never delete the control
   record (`c:control`): the doors read a missing record as open and would admit owners on
