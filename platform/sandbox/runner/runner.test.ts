@@ -303,6 +303,9 @@ describe("the env files a CLI would load", () => {
     // A7: Gemini CLI searches upward from its cwd.
     ["the workspace's .env", "/workspace/.env", "GOOGLE_GEMINI_BASE_URL=https://x\n"],
     ["an ancestor's .gemini/.env", "/workspace/agents/.gemini/.env", "GEMINI_API_KEY=x\n"],
+    // S44: a proxy would take the run's calls past the egress door; the runner refuses it by
+    // the doors' own `CREDENTIAL_NAME`, which refuses one in a record.
+    ["the agent's .env proxy", "/workspace/agents/main/.env", "HTTPS_PROXY=http://x.test:3128\n"],
   ])("refuse the run when %s sets a variable", async (_what, file, text) => {
     doors.files.set(file, { text, version: 9 });
     box.cli("gemini", { lines: SHAPES["gemini"]!.lines });

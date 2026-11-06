@@ -77,15 +77,17 @@ What the kit reads, all from the store, never a host:
 
 More on two of them:
 
-- **The migration lock, pinned at the commit you deploy.** The kit refuses to run unless
-  `platform/owner/migrations.json` marks the first deploy and pins every migration the code
-  ships, in order. To pin it:
+- **The migration locks, pinned at the commit you deploy.** The kit refuses to run unless
+  each lock (`platform/owner/migrations.json`, and the sandbox Worker's
+  `platform/sandbox/migrations/<class>.json`, both pinned) marks the first deploy and pins
+  every migration the code ships, in order. To pin one:
   1. **Who and when.** A session does it once, in the same sitting as the first deploy.
-  2. **Pin.** On a branch made from the current `main`, run this in `platform/owner`:
+  2. **Pin.** On a branch made from the current `main`, run this in `platform/owner` (or
+     `platform/sandbox`):
      `PIN_MIGRATIONS=$(git rev-parse HEAD) npx vitest run --project guards guards/migrations.test.ts`.
-     It writes `platform/owner/migrations.json`: the first-deploy marker (time and commit)
-     and a digest for every migration.
-  3. **Land it.** Commit only that file and merge it to `main` by pull request. The workflow
+     It writes that Worker's locks: the first-deploy marker (time and commit) and a digest
+     for every migration.
+  3. **Land it.** Commit only those files and merge them to `main` by pull request. The workflow
      runs only from `main`, and the kit reads the lock there.
   4. **Every later deploy that adds a migration** repeats steps 2 and 3 first. The pin only
      appends, and the kit refuses until it is done.

@@ -688,9 +688,10 @@ export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<stri
 
 /**
  * Every table the owner's schema makes, by its final name: its statements in order, a
- * rename moving a table and a drop taking one away.
+ * rename moving a table and a drop taking one away. The migration mechanism's own two
+ * (`migrate.ts`) are the owner's too.
  */
-export function ownerTables(schema: string = source("schema")): string[] {
+export function ownerTables(schema = `${source("migrate")}\n${source("schema")}`): string[] {
   const tables = new Set<string>();
   const statements = /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?([a-zA-Z_0-9]+)|ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)|DROP TABLE (?:IF EXISTS )?([a-zA-Z_0-9]+)/g;
   for (const [, made, from, to, dropped] of schema.matchAll(statements)) {

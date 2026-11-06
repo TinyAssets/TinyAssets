@@ -446,11 +446,12 @@ const EMPTY_COLLECTION = /\[\s*\]|\{\s*\}/;
 /** A variable `forbid_env` names: a name, or every name with a prefix (`OPENAI_*`). */
 const FORBID = /^[A-Z][A-Z0-9_]{0,63}\*?$/;
 /**
- * A variable name shaped like a credential or an endpoint: a record's own variables, which
- * every run carries, are never one, so nothing credential-shaped is set but a key run's
- * own placeholder (`sandboxEnv`).
+ * A variable name shaped like a credential, an endpoint or a proxy: a record's own variables,
+ * which every run carries, are never one, so nothing credential-shaped is set but a key run's
+ * own placeholder (`sandboxEnv`); and the runner refuses a run whose agent's files set one
+ * (`sandbox/runner/guards.ts`).
  */
-const CREDENTIAL_NAME =
+export const CREDENTIAL_NAME =
   /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT|PROXY)(?:_|$)/;
 /**
  * A variable that loads code into a process or changes what its runtime loads (Node's

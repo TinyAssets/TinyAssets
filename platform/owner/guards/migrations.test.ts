@@ -1,101 +1,19 @@
 /**
- * Append-only migrations from the first deploy (tasks "Append-only migrations from the first
- * deploy"; slice P).
- *
- * Once a migration has run on a live owner object it is never edited: a new shape is a new
- * migration at the end. `migrations.json` is the lock:
- * - `first_deploy`: null until the owner Worker's first deploy, then `{ at, commit }`. Slice
- *   L's deploy kit sets it, as part of the deploy (below). Until it is set, nothing is
- *   deployed and slices may still edit migrations in place.
- * - `deployed`: each deployed migration's SHA-256, in order (version n at index n - 1), over
- *   its statements as the code evaluates them (`digest`), so a change to a constant a
- *   statement spells changes the digest too.
- *
- * This guard fails when a pinned migration's text differs from its pin, when a pinned one is
- * gone, or when anything is pinned without the first-deploy marker. A deploy pins with
- * `PIN_MIGRATIONS=<commit> npx vitest run --project guards guards/migrations.test.ts` in
- * `platform/owner`: the marker is set once, the migrations already pinned are checked
- * first (a changed one refuses the pin), and every migration the code now holds is pinned;
- * the deploy commits the lock with the code it deployed. The deploy kit refuses to deploy
- * the owner Worker unless the lock is marked and pins every migration the code ships, in
- * order (`deploy/deploy.ts` `lockRefusal`, its digests from this test's `MIGRATION_DIGESTS`).
+ * The owner's migrations held to their lock, `owner/migrations.json` (`lock.ts`, which says
+ * what a lock holds and how a deploy pins it).
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { describe, expect, it } from "vitest";
 
 import { exported } from "../src/export";
-import { MIGRATIONS, type Migration, migrationDigest } from "../src/schema";
+import { type Migration, migrationDigest as digest } from "../src/migrate";
+import { MIGRATIONS } from "../src/schema";
+import { holdLocks, type Lock, lockProblems, pinned } from "./lock";
 import { workerSources } from "../../ci/kit/sources";
-
-const LOCK = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations.json");
-
-/** The lock, as `migrations.json` holds it. */
-export interface Lock {
-  readonly first_deploy: { readonly at: string; readonly commit: string } | null;
-  readonly deployed: readonly string[];
-}
-
-/** One migration's digest, the object's own (`migrationDigest`), which its start checks too. */
-export function digest(migration: Migration): string {
-  return migrationDigest(migration);
-}
-
-/** Each way `migrations` breaks `lock`: a pinned one changed or gone, or a pin unmarked. */
-export function lockProblems(migrations: readonly Migration[], lock: Lock): string[] {
-  const problems: string[] = [];
-  if (lock.first_deploy === null && lock.deployed.length > 0) {
-    problems.push("migrations are pinned with no first deploy marked");
-  }
-  for (const [index, pinned] of lock.deployed.entries()) {
-    const migration = migrations[index];
-    if (migration === undefined) {
-      problems.push(`migration ${index + 1} was deployed and is gone`);
-    } else if (digest(migration) !== pinned) {
-      problems.push(`migration ${index + 1} was deployed and its text changed: add a new ` +
-                    "migration instead");
-    }
-  }
-  return problems;
-}
-
-/** The lock after a deploy of `migrations` at `commit`: marked once, every migration pinned. */
-export function pinned(migrations: readonly Migration[], lock: Lock, commit: string,
-                       at: string): Lock {
-  const problems = lockProblems(migrations, lock);
-  if (problems.length > 0) {
-    throw new Error(`refusing to pin: ${problems.join("; ")}`);
-  }
-  return { first_deploy: lock.first_deploy ?? { at, commit },
-           deployed: migrations.map(digest) };
-}
-
-function readLock(): Lock {
-  const lock = JSON.parse(readFileSync(LOCK, "utf8")) as Lock;
-  if (Object.keys(lock).sort().join() !== "deployed,first_deploy"
-      || !Array.isArray(lock.deployed)
-      || lock.deployed.some((pin) => typeof pin !== "string" || !/^[0-9a-f]{64}$/.test(pin))) {
-    throw new Error("migrations.json is out of shape");
-  }
-  return lock;
-}
 
 describe("append-only migrations", () => {
   it("hold every deployed migration to its pinned text", () => {
-    const commit = process.env["PIN_MIGRATIONS"];
-    if (commit !== undefined && commit !== "") {
-      const next = pinned(MIGRATIONS, readLock(), commit, new Date().toISOString());
-      writeFileSync(LOCK, `${JSON.stringify(next, null, 2)}\n`);
-    }
-    expect(lockProblems(MIGRATIONS, readLock())).toEqual([]);
-    // The deploy kit's check (`deploy/deploy.ts` `lockRefusal`): the code's digests, as
-    // this project evaluates the schema, written where the kit asks.
-    const out = process.env["MIGRATION_DIGESTS"];
-    if (out !== undefined && out !== "") {
-      writeFileSync(out, JSON.stringify(MIGRATIONS.map(digest)));
-    }
+    // The code's digests as this project evaluates the schema, for the deploy kit too.
+    expect(holdLocks({ "owner/migrations.json": MIGRATIONS })).toEqual([]);
   });
 
   const first = { at: "2026-11-04T00:00:00.000Z", commit: "abc123" };
