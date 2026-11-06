@@ -24,8 +24,8 @@ import { PLATFORM } from "../../owner/guards/sources";
 import {
   admitsNobody, BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig,
   EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,
-  maskInLog, keyring, kvValue, lifecycleHook, listed, lockRefusal, MIGRATED, NAMESPACES,
-  namespacesOf,
+  maskInLog, keyring, kvValue, lifecycleHook, listed, locksOf, lockRefusal, MIGRATED,
+  NAMESPACES, namespacesOf,
   PROBE_ROUTES, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
@@ -289,6 +289,12 @@ describe("the deploy kit", () => {
     expect(lockRefusal({ first_deploy: first, deployed: [code[0]] }, code,
                        "sandbox/migrations/SandboxSlots.json"))
       .toMatch(/^the migration lock sandbox\/migrations\/SandboxSlots\.json pins 1 .* in platform\/sandbox,/);
+    // A guard that reports no lock (or the old bare list) is refused, never read as none to check.
+    for (const reported of [{}, [], null, code]) {
+      expect(() => locksOf("sandbox", reported)).toThrow(/sandbox's migrations guard reported no/);
+    }
+    const locks = { "sandbox/migrations/SandboxSlots.json": code };
+    expect(locksOf("sandbox", locks)).toEqual(locks);
     // The kit checks it before any change, on the lock the commit holds.
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     const main = kit.slice(kit.indexOf("async function main()"));

@@ -260,10 +260,23 @@ export function codeDigests(worker: string): Record<string, string[]> {
       throw new Error(`${worker}'s migration lock guard failed (exit ${result.status}): ` +
                       `${result.stdout.slice(-2000)}`);
     }
-    return JSON.parse(readFileSync(out, "utf8")) as Record<string, string[]>;
+    return locksOf(worker, JSON.parse(readFileSync(out, "utf8")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * `worker`'s locks as its guard reported them (`codeDigests`): a Worker in `MIGRATED` whose
+ * guard reports none is refused, so the kit's check never passes with nothing checked.
+ */
+export function locksOf(worker: string, reported: unknown): Record<string, string[]> {
+  if (typeof reported !== "object" || reported === null || Array.isArray(reported)
+      || Object.keys(reported).length === 0) {
+    throw new Error(`${worker}'s migrations guard reported no migration lock: each Worker in ` +
+                    "MIGRATED holds its objects to at least one");
+  }
+  return reported as Record<string, string[]>;
 }
 
 /** Cloudflare's API answer: its status and its parsed body, or a throw on no answer. */
