@@ -13,6 +13,7 @@
  *   node --experimental-strip-types platform/deploy/deploy.ts               # the plan
  *   node --experimental-strip-types platform/deploy/deploy.ts --public      # the plan job's
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes         # the dark deploy
+ *   node --experimental-strip-types platform/deploy/deploy.ts --yes --probe   # the sign-in probe
  *   node --experimental-strip-types platform/deploy/deploy.ts --yes --routes  # + the routes
  *   node --experimental-strip-types platform/deploy/deploy.ts --h2          # H2's probes only
  *   node --experimental-strip-types platform/deploy/deploy.ts --pair        # the pair check
@@ -34,6 +35,15 @@
  * Cloudflare would prefer to the doors' (the most specific pattern wins, its routes page),
  * deleted, so its paths pass from that Worker straight to the doors. Then `wrangler
  * triggers deploy` adds the egress custom domain.
+ *
+ * `--probe` (`--yes --probe`, between `dark` and `--routes`) hands the doors only the
+ * sign-in's two paths, `PROBE_ROUTES`, which no Worker serves before it, by the same
+ * handover; it deploys nothing and changes no gate. It runs only after a dark run: the
+ * doors deployed, the control record admitting nobody, and WorkOS listing `CALLBACK`. It
+ * then prints the one first-party sign-in link, whose end settles everything sign-in
+ * needs at the cutover in the doors' own code: the doors' client and secret at the
+ * issuer, the callback, and the ID token's checks, `auth_time` among them (`PROBE_SIGNS`).
+ * `--routes` later finds both paths already the doors' and hands over the rest.
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
@@ -58,9 +68,9 @@
  *   and commit the lock with the code first, so a deployed migration is never edited.
  *
  * Before anything is changed it checks, live: the owner issuer's discovery names
- * `OWNER_ISSUER` exactly and declares its token endpoint auth methods, and one real
- * AuthKit token's claims (`OWNER_TOKEN_CLAIMS`) or the discovery's `claims_supported` show
- * `auth_time`; an absent field is unknown, and unknown stops the kit; the sandbox's
+ * `OWNER_ISSUER` exactly, takes `client_secret_post` at its token endpoint and names https
+ * endpoints; an absent field is unknown, and unknown stops the kit. Whether the issuer's
+ * ID token carries `auth_time` no discovery shows: the sign-in probe settles it; the sandbox's
  * `E2B_TEMPLATE` exists at E2B with a ready build; and the pair it deploys, that template
  * and the runner the sandbox Worker ships (its SHA-256, built as the Worker's build makes
  * it), passed its standing checks in this E2B team: E2B holds the pair's tag
@@ -120,6 +130,17 @@ export const ZONE = "tinyassets.io";
 /** The sandbox's egress host, a custom domain of the doors Worker (`--routes`). */
 export const EGRESS_DOMAIN = "egress.tinyassets.io";
 export const CALLBACK = "https://tinyassets.io/oauth/upstream/callback";
+/**
+ * The sign-in probe's routes (`--probe`): the sign-in's own two paths, which no Worker
+ * serves before the cutover, so handing them to the doors early serves no user.
+ */
+export const PROBE_ROUTES: readonly string[] = Object.freeze([
+  "tinyassets.io/authorize*", "tinyassets.io/oauth/*"]);
+/** The doors' own app's sign-in (`doors/src/config.ts`): its client, redirect and resource. */
+export const FIRST_PARTY = Object.freeze({
+  client: `https://${ZONE}/oauth/clients/web.json`, redirect: `https://${ZONE}/app/signed-in`,
+  resource: `https://${ZONE}/app`,
+});
 /** The doors Worker, which the routes are handed to. */
 export const DOORS = "tinyassets-doors";
 /** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
@@ -142,6 +163,8 @@ export const E2B_HOOK = Object.freeze({
   name: "tinyassets-lifecycle", url: "https://tinyassets.io/hooks/e2b/lifecycle",
   events: Object.freeze(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]),
 });
+/** The control record's key in the `CONTROL` namespace (`doors/src/directory.ts`). */
+const CONTROL_KEY = "c:control";
 /** The control record a first deploy writes when there is none: every outside door closed. */
 export const DARK_CONTROL = Object.freeze({
   outside: "off", ordinary: "canary", canary: [], inbound: false,
@@ -281,18 +304,19 @@ export async function secretsOf(api: CfApi, account: string, script: string):
 }
 
 /**
- * Whether a KV key is present: true, false only when the API answers that it is absent (404
- * with Cloudflare's 10009, "key not found"); any other answer throws.
+ * A KV key's value, as JSON (`{}` when it is not JSON), or undefined only when the API
+ * answers that it is absent (404 with Cloudflare's 10009, "key not found"); any other
+ * answer throws.
  */
-export async function kvPresent(api: CfApi, account: string, namespace: string, key: string):
-    Promise<boolean> {
+export async function kvValue(api: CfApi, account: string, namespace: string, key: string):
+    Promise<unknown> {
   const answer = await api(`/accounts/${account}/storage/kv/namespaces/${namespace}/values/${
     encodeURIComponent(key)}`);
   if (answer.status === 200) {
-    return true;
+    return answer.body;
   }
   if (answer.status === 404 && codes(answer).includes(10009)) {
-    return false;
+    return undefined;
   }
   throw new Error(`reading ${key} failed (${answer.status}, ${JSON.stringify(codes(answer))})`);
 }
@@ -477,14 +501,13 @@ export function deployedConfig(worker: string, ids: Readonly<Record<string, stri
 
 /**
  * The owner issuer's discovery, held to `issuer` exactly, and the doors' `UPSTREAM` from it,
- * which the doors' own parser accepts. `auth_time`'s presence is settled by one real
- * token's claims (`claims`, an object as production logs show it) or by the discovery's
- * `claims_supported`; an absent field is unknown, and unknown stops the kit. The token
- * endpoint must declare `client_secret_post`, the way the doors exchange a code.
+ * which the doors' own parser accepts. The token endpoint must declare
+ * `client_secret_post`, the way the doors exchange a code, and every endpoint is https; an
+ * absent field is unknown, and unknown stops the kit. What the ID token carries is the
+ * sign-in probe's to show (`--probe`).
  */
 export async function upstreamFrom(issuer: string | undefined, clientId: string | undefined,
-                                   claims: string | undefined, fetcher: Fetch = fetch):
-    Promise<UpstreamValues> {
+                                   fetcher: Fetch = fetch): Promise<UpstreamValues> {
   if (typeof issuer !== "string" || !/^https:\/\/\S+$/.test(issuer)) {
     throw new Error("OWNER_ISSUER is the owner issuer's https URL");
   }
@@ -508,30 +531,6 @@ export async function upstreamFrom(issuer: string | undefined, clientId: string 
   }
   if (!methods.includes("client_secret_post")) {
     throw new Error("the issuer takes no client_secret_post at its token endpoint");
-  }
-  if (claims !== undefined) {
-    let token: Json;
-    try {
-      token = JSON.parse(claims) as Json;
-    } catch {
-      throw new Error("OWNER_TOKEN_CLAIMS is one token's claims as a JSON object");
-    }
-    if (token["iss"] !== issuer) {
-      throw new Error("the sample token's iss is not OWNER_ISSUER");
-    }
-    if (typeof token["auth_time"] !== "number" || !Number.isSafeInteger(token["auth_time"])) {
-      throw new Error("the sample AuthKit token carries no auth_time: every sign-in would be " +
-                      "refused (the founder's choice, research §7)");
-    }
-  } else {
-    const supported = discovery["claims_supported"];
-    if (!Array.isArray(supported)) {
-      throw new Error("the issuer's discovery lists no claims_supported, and no sample " +
-                      "token's claims were given: auth_time is unknown");
-    }
-    if (!supported.includes("auth_time")) {
-      throw new Error("the issuer lists no auth_time claim: every sign-in would be refused");
-    }
   }
   const endpoint = (name: string): string => {
     const value = discovery[name];
@@ -874,6 +873,131 @@ function keyringAdd(file: string): void {
               "with --rotate naming that keyring");
 }
 
+/**
+ * The probe's handover (`--probe`): `PROBE_ROUTES` alone, each added for the doors, or left
+ * when the doors hold it already. A path another Worker (or no Worker) serves, by the same,
+ * a narrower or a wider pattern, stops it: the probe takes only paths nothing serves.
+ */
+export function probeSteps(routes: readonly Route[]): RouteStep[] {
+  const served = routes.filter((route) => route.script !== DOORS && PROBE_ROUTES.some(
+    (pattern) => route.pattern === pattern || narrower(route.pattern, pattern)
+      || narrower(pattern, route.pattern)));
+  if (served.length > 0) {
+    throw new Error(`the probe takes only paths nothing serves, and ${served.map((route) =>
+      `${route.pattern} is ${route.script ?? "no Worker"}'s`).join(", ")}: nothing is changed`);
+  }
+  return handover(routes, DOORS, PROBE_ROUTES);
+}
+
+/**
+ * Whether a control record, as KV holds it, admits nobody: no owner's sign-in and no outside
+ * client (`doors/src/control.ts`), as the dark record does. Missing or any other shape is
+ * not.
+ */
+export function admitsNobody(record: unknown): boolean {
+  const held = record as { ordinary?: unknown; canary?: unknown } | null | undefined;
+  return typeof held === "object" && held !== null
+    && (held.ordinary === "none"
+        || (held.ordinary === "canary" && Array.isArray(held.canary) && held.canary.length === 0));
+}
+
+/**
+ * The one first-party sign-in link the probe prints: the doors' own app's authorization
+ * (`doors/app/api.js`), with a fresh S256 challenge whose verifier is dropped, so no code it
+ * could end in is ever redeemable.
+ */
+export function probeLink(): string {
+  const challenge = createHash("sha256").update(randomBytes(32).toString("base64url"))
+    .digest("base64url");
+  const query = new URLSearchParams({
+    response_type: "code", client_id: FIRST_PARTY.client, redirect_uri: FIRST_PARTY.redirect,
+    state: randomBytes(16).toString("base64url"), code_challenge: challenge,
+    code_challenge_method: "S256", resource: FIRST_PARTY.resource });
+  return `https://${ZONE}/authorize?${query}`;
+}
+
+/** What the probe's sign-in shows, read from where the browser ends. */
+export const PROBE_SIGNS = [
+  `Pass: the browser's address begins ${FIRST_PARTY.redirect}?error=temporarily_unavailable ` +
+  "(more follows it; the page itself is the old app's and reads as a sign-in error, " +
+  "which is expected): the closed gate refused the sign-in after every " +
+  "check passed, and no owner was made. The doors' client and API key were taken at the " +
+  "issuer's token endpoint, the callback was its registered redirect, and the ID token's " +
+  "signature, iss, aud, nonce and auth_time held.",
+  `Fail, at https://${ZONE}/authorize: a 400 page, so the doors could not read their own ` +
+  "app's client document.",
+  "Fail, at the issuer: an error page before or after the sign-in, so it refused the doors' " +
+  "client or the callback.",
+  `Fail, at ${CALLBACK}: a 502 page naming the check that failed (the token endpoint's ` +
+  "status and error code, auth_time, iss, the nonce...), the same line in the doors' log.",
+  `Fail, at ${FIRST_PARTY.redirect}?error=access_denied ("sign in again"): auth_time is more ` +
+  "than 600 s old or ahead of the clock.",
+].join("\n");
+
+/**
+ * Fact 11: after a deploy or a route change, the handles canary (it reads
+ * TINYASSETS_WIKI_CANARY_TOKEN).
+ */
+function handlesCanary(): void {
+  const canary = spawnSync("python3", [join(REPO, "scripts", "mcp_public_canary.py"),
+                                       "--assert-handles"], { stdio: "inherit", cwd: REPO });
+  if (canary.status !== 0) {
+    throw new Error(`the handles canary failed (exit ${canary.status})`);
+  }
+}
+
+/**
+ * The sign-in probe (`--probe`): after a dark run (the doors deployed, the control record
+ * admitting nobody, WorkOS listing `CALLBACK`; each a live read, so the kit keeps no state of
+ * its own), the sign-in's two paths handed to the doors (`probeSteps`); nothing deployed, no
+ * gate changed. Then the handles canary, and the link to sign in by with its signs. Without
+ * `apply` it checks and plans only; the plan job (`open`) leaves the WorkOS listing, which
+ * needs the production key, to the apply job.
+ */
+async function probe(apply: boolean, open: boolean): Promise<void> {
+  for (const name of ["CLOUDFLARE_API_TOKEN", ...(open ? [] : ["WORKOS_API_KEY"])]) {
+    if (input(name) === undefined) {
+      throw new Error(`${name} is not set`);
+    }
+  }
+  const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
+  const { id: zone, account } = await zoneOf(api);
+  maskInLog(account);
+  const plan: string[] = [];
+  if (await secretsOf(api, account, DOORS) === null) {
+    throw new Error(`${DOORS} is not deployed: the probe runs after a dark run`);
+  }
+  plan.push(`${DOORS} is deployed`);
+  const control = (await namespacesOf(api, account)).get(NAMESPACES["CONTROL"]!);
+  if (control === undefined
+      || !admitsNobody(await kvValue(api, account, control, CONTROL_KEY))) {
+    throw new Error("the control record is missing or admits someone: the probe runs only " +
+                    "with every gate closed, as a dark run writes it");
+  }
+  plan.push("the control record admits no owner and no outside client; no gate is changed");
+  if (open) {
+    plan.push(`WorkOS lists ${CALLBACK}, as a dark run registers it: checked by the apply ` +
+              "job before any change");
+  } else if (await registerRedirect(input("WORKOS_API_KEY")!, false) !== "present") {
+    throw new Error(`WorkOS lists no ${CALLBACK}: run dark first, which registers it`);
+  } else {
+    plan.push(`WorkOS lists ${CALLBACK}, as a dark run registers it`);
+  }
+  const steps = probeSteps(await routesOf(api, zone));
+  plan.push(...(steps.length === 0 ? [`${DOORS} holds ${PROBE_ROUTES.join(" and ")} already`]
+    : steps.map((step) => describeStep(step, DOORS))));
+  if (apply) {
+    await runHandover(api, zone, DOORS, steps);
+  }
+  report(plan, apply);
+  if (!apply) {
+    console.log("\nNothing was changed. The apply job prints the sign-in link.");
+    return;
+  }
+  handlesCanary();
+  console.log(`\nSign in once, in a browser, at:\n${probeLink()}\n\n${PROBE_SIGNS}`);
+}
+
 async function main(): Promise<void> {
   if (process.argv[2] === "keyring-new" || process.argv[2] === "keyring-add") {
     const file = process.argv[3];
@@ -909,6 +1033,13 @@ async function main(): Promise<void> {
   if (migrate.has("doors")) {
     throw new Error("the doors hold no Durable Object migration: --migrate never names them");
   }
+  if (flag("--probe")) {
+    if (routes || rotate.size > 0 || migrate.size > 0) {
+      throw new Error("--probe deploys nothing: it takes no --routes, --rotate or --migrate");
+    }
+    await probe(apply, open);
+    return;
+  }
   const plan: string[] = [];
   for (const worker of WORKERS) {
     if (!existsSync(join(PLATFORM, worker, "wrangler.jsonc"))) {
@@ -942,8 +1073,7 @@ async function main(): Promise<void> {
   maskInLog(account);
   process.env["CLOUDFLARE_ACCOUNT_ID"] = account;
   // The live checks, before anything is changed.
-  const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"),
-                                      input("OWNER_TOKEN_CLAIMS"));
+  const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"));
   plan.push(`set the doors' OWNER_ISSUER to ${upstream.issuer}, held to its discovery`);
   const template = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
   if (open) {
@@ -1049,7 +1179,7 @@ async function main(): Promise<void> {
       }
     }
     if (ids["CONTROL"]!.startsWith("planned-")
-        || !await kvPresent(api, account, ids["CONTROL"]!, "c:control")) {
+        || await kvValue(api, account, ids["CONTROL"]!, CONTROL_KEY) === undefined) {
       plan.push("write the control record closed (outside off, canary none, inbound off, the " +
                 "founder's tier numbers): the API answered there is none");
       if (apply) {
@@ -1094,12 +1224,7 @@ async function main(): Promise<void> {
     console.log("\nNothing was changed.");
     return;
   }
-  // Fact 11: after a deploy, the handles canary (it reads TINYASSETS_WIKI_CANARY_TOKEN).
-  const canary = spawnSync("python3", [join(REPO, "scripts", "mcp_public_canary.py"),
-                                       "--assert-handles"], { stdio: "inherit", cwd: REPO });
-  if (canary.status !== 0) {
-    throw new Error(`the handles canary failed (exit ${canary.status})`);
-  }
+  handlesCanary();
   console.log("H2's probes wait for a routed door and a probe owner's key: run with --h2 " +
               "(h2-probes.ts names what it needs).");
 }

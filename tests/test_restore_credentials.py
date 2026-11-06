@@ -437,6 +437,64 @@ def test_apply_reports_start_failure(tmp_path):
     assert facts["broker_stopped"] is True
 
 
+def test_each_restore_pass_closes_every_store_it_opens(tmp_path):
+    """No pass leaves a connection for the collector to close later.
+
+    A leaked writer's late close deletes the WAL under the next reader, and the
+    assignment pass then read the store as unreadable. Apply covers the rollback
+    copy, the merge (snapshot, groups, definitions, ledger write), the assignment
+    pass and verify (definitions, owner identities); the dry-run plan and
+    measure_root open the rest.
+    """
+    from tests.support.open_connections import no_connection_left_open
+
+    live = _tree(tmp_path, "live", {"outbound_connections": [_conn(OWNER_A, "c-live")]})
+    identities = live / ".broker" / "state" / "owner-identities.db"
+    _db(identities, "CREATE TABLE owner_volumes (uid INTEGER, principal TEXT);",
+        {"owner_volumes": [{"uid": 300001, "principal": OWNER_B}]})
+    source = _tree(tmp_path, "source", {
+        "outbound_connections": [_conn(OWNER_B, "c-b")],
+        "outbound_connection_grants": [_grant(OWNER_B, "g-b", "c-b")],
+    }, owners=(OWNER_B,))
+    with no_connection_left_open():
+        assert rc.measure_root(live)["outbound_connections"] == 1
+    with no_connection_left_open():
+        planned = rc._plan_only(live, source)
+    assert planned["tables"]["outbound_connections"]["insert"] == 1
+    with no_connection_left_open():
+        plan, facts, _checked, error = rc.apply_tree(
+            live, source, tmp_path / "credential-restore-2026-10-25T01-02-03Z",
+            run=lambda argv, timeout=0: SimpleNamespace(returncode=0))
+    assert error is None and facts["rollback_kept"] is True
+    assert plan["tables"]["outbound_connections"]["insert"] == 1
+
+
+def test_a_connection_left_open_in_another_thread_is_still_reported(tmp_path):
+    """Another thread's connection raises ProgrammingError for this one; it is open."""
+    import threading
+
+    from tests.support.open_connections import no_connection_left_open
+
+    opened, release = threading.Event(), threading.Event()
+
+    def hold():
+        conn = sqlite3.connect(tmp_path / "held.db")
+        opened.set()
+        release.wait(30)
+        conn.close()
+
+    holder = threading.Thread(target=hold)
+    try:
+        with pytest.raises(AssertionError, match=r"1 sqlite connection\(s\) left open"):
+            with no_connection_left_open():
+                holder.start()
+                assert opened.wait(30)
+    finally:
+        release.set()
+        holder.join(30)
+    assert not holder.is_alive()
+
+
 def test_remote_archive_is_downloaded_and_checked(tmp_path, monkeypatch):
     archive = tmp_path / "packed.tar.gz"
     payload = tmp_path / "outbound.db"
