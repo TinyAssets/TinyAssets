@@ -22,7 +22,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../owner/guards/sources";
+import { PLATFORM } from "../../ci/paths";
 import {
   admitsNobody, authorizeCheck, authorizeLink, BUCKET, CALLBACK, type CfAnswer, codeDigests, configOf, DARK_CONTROL,
   deployedConfig, EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,

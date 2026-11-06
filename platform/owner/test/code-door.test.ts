@@ -13,6 +13,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { OPEN_GATES } from "../../ci/fixtures";
 import { OUTSIDE_OFF } from "../../doors/src/control";
 
 import { profileNames } from "../../doors/src/tools";
@@ -46,7 +47,7 @@ async function profiled(r: Rig, origin: Origin, profile: string, mode = "full",
 const lines = (...script: string[]): string => script.join("\n");
 
 /** The platform's control record, outside access on, as the founder's admin path writes it. */
-const OPEN = Object.freeze({ outside: "on", ordinary: "all", canary: [], inbound: false });
+const OPEN = OPEN_GATES;
 
 beforeEach(async () => {
   await env.CONTROL.put("c:control", JSON.stringify(OPEN));

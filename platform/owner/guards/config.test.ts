@@ -1,160 +1,78 @@
 /**
- * The owner Worker's config binds nothing that reaches another owner's object (ADR-032).
- *
- * `OwnerDO` must have no way to another owner's object, so its Worker's config is an
- * allow-list, at top level and in every environment: the keys that name the Worker, its
- * entry, its runtime and its SQLite class migrations, and no binding but the service
- * bindings `SERVICES` names: no Durable Object namespace at all (ADR-034 removed the
- * agent's thread stores), and `OwnerDO` itself is never bound.
- * Each service names one Worker and exactly the binding kinds that Worker's own config may
- * hold, each a kind that reaches no object, service, queue,
- * workflow or other Worker: for `FILES`, the files Worker and its one R2 bucket. The
- * bound Worker's config is checked against that allow-list too, so any other binding it
- * gains (a Durable Object, a service, a queue, a workflow, a dispatch namespace, a
- * Worker loader, a tail consumer, a shared store, an unsafe binding) refuses the owner's
- * binding. For `GATEWAY`, the model gateway, that is no binding at all, and its one secret,
- * the keyring, declared by name (`secrets.required`), which binds nothing either. For
- * `HOOKS`, the hooks Worker (H0, narrowed to code mode by ADR-034), that is the namespace
- * of its own one class, exactly (`CodemodeSandbox`, no `script_name`, so no other Worker's
- * class), made by its migrations as SQLite, and its `limits` exactly: no `OWNER`, no
- * storage binding and no Worker Loader, so a script reaches no owner. Its
- * compatibility flags carry
- * `disable_ctx_exports`, so the runtime does not hand the object its own namespaces as
- * `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top level: the platform's count
- * of subrequests per invocation (50 on Free, 10,000 by default on Paid, at most 10,000,000),
- * whose own error is the object's only call limit, so the number the object relies on is
- * explicit and moves only with a review here. It is Paid's most, 10,000,000: live probe P1
- * found calls stopped at exactly 10,000 at the default and passed at 1,000,000. It is the only
- * wrangler config in the owner Worker. Edge Workers bind `OWNER` from their own configs.
- *
- * Its one store, at top level only, is `CONTROL` (slice M review M1): the namespace of the
- * platform's control record alone, the doors' own `CONTROL` by the same id, so the object
- * reads the gates again at code mode's calls and reaches no directory entry or other
- * owner's state. Only `control-gate.ts` reads it, by `readControl`, and nothing writes it.
+ * The owner Worker's config binds nothing that reaches another owner's object (ADR-032):
+ * its allow-list (`rules.ts`), at top level and in every environment, with each Worker it
+ * binds held to the allowance its binding gives, by the platform's rule checks
+ * (`ci/kit/config.ts`). It is the only wrangler config in the owner Worker.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { configFiles, PLATFORM, workerSources } from "./sources";
+import { classProblems, exactProblems, flagProblems, keyProblems, NO_EXPORTS, secretProblems }
+  from "../../ci/kit/config";
+import { PLATFORM } from "../../ci/paths";
+import { type Config, configFiles, platformConfigs, workerSources } from "../../ci/kit/sources";
+import { readWrangler, wranglerKeys } from "../../ci/workers";
+
+import { BOUND_KEYS, type Bound, CLASSES, ENV_KEYS, LIMITS, OWNER_QUEUES, RING_QUEUES, SECRETS,
+         SERVICES,
+         TOP_KEYS } from "./rules";
 
 const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
-const NO_EXPORTS = "disable_ctx_exports";
 
-/** The classes the Worker's migrations make, each SQLite-backed. */
-const CLASSES = Object.freeze(["OwnerDO"]);
-/** The keys an environment may set besides `services`: none of them binds anything. */
-const ENV_KEYS: ReadonlySet<string> = new Set([
-  "name", "main", "compatibility_date", "compatibility_flags", "workers_dev", "preview_urls",
-  "migrations", "limits",
-]);
-/** The owner Worker's limits, wherever they are set: subrequests, as live probe P1 set them. */
-const LIMITS = Object.freeze({ subrequests: 10_000_000 });
-/** The keys the top level may set: an environment's, the schema, the environments, its secret. */
-const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env", "secrets",
-                                                 "kv_namespaces", "queues"]);
-/**
- * The owner Worker's one queue (slice L): the producer of the erasure queue, whose one
- * consumer, the doors Worker, makes an erasure's outside record and confirms it to that
- * owner's object (`doors/src/erase.ts`); a message is `{owner}`, granting nothing.
- */
-export const OWNER_QUEUES = Object.freeze({ producers: Object.freeze([
-  Object.freeze({ binding: "ERASURES", queue: "tinyassets-erasure" })]) });
-/**
- * The owner Worker's one secret, declared by name (it binds nothing): the routing key the
- * sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), the doors Worker's too.
- */
-const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
-/**
- * The keys a bound Worker may set that bind nothing: among them its own build step and its
- * modules' types (`build`, `rules`: the sandbox Worker's runner, built and imported as data).
- */
-const BOUND_KEYS: ReadonlySet<string> = new Set([
-  "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "build", "rules",
-]);
-
-interface Bound {
-  /** The Worker the binding names. */
-  readonly service: string;
-  /** The binding kinds its own config may hold, and how many of each, exactly. */
-  readonly bindings: Readonly<Record<string, number>>;
-  /** The secrets its config may declare by name (each binds nothing); none by default. */
-  readonly secrets?: readonly string[];
-  /**
-   * The namespaces of its own classes it may bind, exactly as given (none with a
-   * `script_name`), and the classes its migrations make, SQLite; none by default.
-   */
-  readonly own?: { readonly durable_objects: unknown; readonly classes: readonly string[] };
-  /** Its `limits`, exactly, when it may set any; none by default. */
-  readonly limits?: unknown;
-  /** The plain-text variables it may set, by name exactly (each binds nothing); none. */
-  readonly vars?: readonly string[];
-  /** Its queues, exactly: a producer of a queue whose consumer reaches nothing but a ring. */
-  readonly queues?: unknown;
-}
-
-/** The hooks Worker's own class, as its config binds it. */
-const HOOKS_OWN = Object.freeze({
-  durable_objects: Object.freeze({ bindings: Object.freeze([
-    Object.freeze({ name: "CODEMODE", class_name: "CodemodeSandbox" })]) }),
-  classes: Object.freeze(["CodemodeSandbox"]),
-});
-
-/** The sandbox Worker's own classes, as its config binds them. */
-const SANDBOX_OWN = Object.freeze({
-  durable_objects: Object.freeze({ bindings: Object.freeze([
-    Object.freeze({ name: "SANDBOXES", class_name: "SandboxControl" }),
-    Object.freeze({ name: "SLOTS", class_name: "SandboxSlots" })]) }),
-  classes: Object.freeze(["SandboxControl", "SandboxSlots"]),
-});
-/**
- * The sandbox Worker's one queue: the producer of the ring queue, whose one consumer, the
- * doors Worker, turns `{owner}` into that owner's `sandboxRung` (its waiting runs started
- * again through their whole admission) and nothing else: a ring grants nothing.
- */
-const SANDBOX_QUEUES = Object.freeze({ producers: Object.freeze([
-  Object.freeze({ binding: "RING", queue: "tinyassets-sandbox-ring" })]) });
-
-/** The service bindings the owner Worker may hold, by binding name. */
-const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
-  FILES: Object.freeze({ service: "tinyassets-files",
-                         bindings: Object.freeze({ r2_buckets: 1 }),
-                         secrets: Object.freeze(["FILES_KEYRING"]),
-                         vars: Object.freeze(["FILES_CIPHER"]) }),
-  GATEWAY: Object.freeze({ service: "tinyassets-gateway", bindings: Object.freeze({}),
-                           secrets: Object.freeze(["GATEWAY_KEYRING"]) }),
-  HOOKS: Object.freeze({ service: "tinyassets-hooks",
-                         bindings: Object.freeze({}), own: HOOKS_OWN,
-                         limits: Object.freeze({ cpu_ms: 300_000 }) }),
-  // The sandbox Worker (slice S): its own classes (one per owner, its E2B calls; one for
-  // the platform's line), the control record's namespace read for its sandbox numbers
-  // alone, the ring queue's producer, and its one secret, the E2B key. It reaches nothing
-  // but E2B and the ring (`sandbox/guards/config.test.ts` reads its every fetch).
-  SANDBOX: Object.freeze({ service: "tinyassets-sandbox",
-                           bindings: Object.freeze({ kv_namespaces: 1 }),
-                           own: SANDBOX_OWN, vars: Object.freeze(["E2B_TEMPLATE"]),
-                           secrets: Object.freeze(["E2B_API_KEY"]),
-                           queues: SANDBOX_QUEUES }),
-});
-
-type Config = Record<string, unknown>;
-
-function parseConfig(text: string): Config {
-  const parsed = ts.parseConfigFileTextToJson(CONFIG, text);
-  if (parsed.error) {
-    throw new Error(ts.flattenDiagnosticMessageText(parsed.error.messageText, "\n"));
-  }
-  return parsed.config as Config;
-}
+const HOOKS_OWN = SERVICES["HOOKS"]!.own! as {
+  durable_objects: { bindings: object[] }; classes: readonly string[] };
+const SANDBOX_OWN = SERVICES["SANDBOX"]!.own! as {
+  durable_objects: { bindings: object[] }; classes: readonly string[] };
+const SANDBOX_QUEUES = SERVICES["SANDBOX"]!.queues as { producers: object[] };
 
 function object(value: unknown): value is Config {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Each way a bound Worker's own classes, as its rules state them, could reach another
+ * Worker's object: the owner's own invariant, whatever the bound Worker's rules say. Every
+ * namespace is of a class the Worker itself makes (no `script_name`, a class among its own),
+ * and none of those classes is `OwnerDO`.
+ */
+export function ownProblems(own: NonNullable<Bound["own"]>): string[] {
+  const problems: string[] = [];
+  const objects = own.durable_objects as { bindings?: unknown } | undefined;
+  const bindings = Array.isArray(objects?.bindings) ? objects.bindings as Config[] : null;
+  if (bindings === null || Object.keys(objects ?? {}).join() !== "bindings") {
+    problems.push("its own classes are not a list of namespace bindings");
+  }
+  for (const binding of bindings ?? []) {
+    if (Object.hasOwn(binding, "script_name")) {
+      problems.push(`its namespace ${String(binding["name"])} names another Worker's class`);
+    }
+    if (!own.classes.includes(String(binding["class_name"]))) {
+      problems.push(`its namespace ${String(binding["name"])} binds ` +
+                    `${String(binding["class_name"])}, not a class of its own`);
+    }
+  }
+  if (own.classes.includes("OwnerDO")) {
+    problems.push("its own classes hold OwnerDO");
+  }
+  return problems;
+}
+
+/**
+ * Each way a bound Worker's queues, as its rules state them, reach past a ring: the owner's
+ * own invariant. It may only produce, and only onto `RING_QUEUES`.
+ */
+export function queueProblems(queues: unknown): string[] {
+  const held = queues as { producers?: unknown } | undefined;
+  const producers = Array.isArray(held?.producers) ? held.producers as Config[] : null;
+  if (producers === null || Object.keys(held ?? {}).join() !== "producers") {
+    return ["its queues are other than producers"];
+  }
+  return producers.filter((producer) => !RING_QUEUES.includes(String(producer["queue"])))
+    .map((producer) => `it produces onto ${String(producer["queue"])}, not a ring`);
 }
 
 /**
@@ -175,22 +93,21 @@ export function boundProblems(config: Config, allowed: Bound): string[] {
                      && !(key === "queues" && allowed.queues !== undefined))
     .map((key) => `${key} is not a binding the owner's ${allowed.service} binding allows`);
   if (own !== undefined) {
+    problems.push(...ownProblems(own));
     if (JSON.stringify(config["durable_objects"]) !== JSON.stringify(own.durable_objects)) {
       problems.push("durable_objects binds other than its own classes");
     }
-    const made = (Array.isArray(config["migrations"]) ? config["migrations"] as Config[] : [])
-      .flatMap((migration) => Object.entries(migration)).filter(([field]) => field !== "tag");
-    if (JSON.stringify(made) !== JSON.stringify([["new_sqlite_classes", own.classes]])) {
-      problems.push(`migrations make other than ${own.classes.join(" and ")}, SQLite`);
-    }
+    problems.push(...classProblems(config["migrations"], own.classes));
+  }
+  if (allowed.queues !== undefined) {
+    problems.push(...queueProblems(allowed.queues));
   }
   if (allowed.queues !== undefined
       && JSON.stringify(config["queues"]) !== JSON.stringify(allowed.queues)) {
     problems.push(`queues are other than ${JSON.stringify(allowed.queues)}`);
   }
-  if (allowed.limits !== undefined && config["limits"] !== undefined
-      && JSON.stringify(config["limits"]) !== JSON.stringify(allowed.limits)) {
-    problems.push(`limits are other than ${JSON.stringify(allowed.limits)}`);
+  if (allowed.limits !== undefined && config["limits"] !== undefined) {
+    problems.push(...exactProblems(config, "limits", allowed.limits));
   }
   if (allowed.vars !== undefined && config["vars"] !== undefined
       && (!object(config["vars"]) || Object.keys(config["vars"]).sort().join()
@@ -198,10 +115,8 @@ export function boundProblems(config: Config, allowed: Bound): string[] {
           || !Object.values(config["vars"]).every((value) => typeof value === "string"))) {
     problems.push(`vars are other than ${allowed.vars.join(", ")}, as text`);
   }
-  const declared = config["secrets"];
-  if (declared !== undefined && secrets.length > 0
-      && JSON.stringify(declared) !== JSON.stringify({ required: secrets })) {
-    problems.push(`secrets declares other than ${secrets.join(", ")}`);
+  if (config["secrets"] !== undefined && secrets.length > 0) {
+    problems.push(...secretProblems(config["secrets"], secrets));
   }
   for (const [key, many] of Object.entries(allowed.bindings)) {
     const held = config[key];
@@ -258,39 +173,29 @@ export function configProblems(config: Config,
                                bound: ReadonlyMap<string, Config> = new Map()): string[] {
   const problems: string[] = [];
   const check = (scope: Config, where: string, allowed: ReadonlySet<string>, top: boolean) => {
-    for (const key of Object.keys(scope)) {
-      if (key === "services") {
-        problems.push(...serviceProblems(scope[key], where, bound));
-      } else if (!allowed.has(key)) {
-        problems.push(`${where}${key} is not an allowed key`);
-      } else if (key === "kv_namespaces" && !controlOnly(scope[key])) {
-        problems.push(`${where}kv_namespaces is other than the doors' CONTROL namespace`);
-      } else if (key === "limits" && JSON.stringify(scope[key]) !== JSON.stringify(LIMITS)) {
-        problems.push(`${where}limits are not ${JSON.stringify(LIMITS)}`);
-      } else if (key === "queues"
-                 && JSON.stringify(scope[key]) !== JSON.stringify(OWNER_QUEUES)) {
-        problems.push(`${where}queues are other than the erasure queue's producer`);
-      } else if (key === "secrets" && JSON.stringify(scope[key]) !== JSON.stringify(SECRETS)) {
-        problems.push(`${where}secrets declares other than ROUTING_MAC_KEY`);
-      } else if (key === "migrations") {
-        const made = (Array.isArray(scope[key]) ? scope[key] as Config[] : [])
-          .flatMap((migration) => Object.entries(migration))
-          .filter(([field]) => field !== "tag");
-        if (JSON.stringify(made) !== JSON.stringify([["new_sqlite_classes", CLASSES]])) {
-          problems.push(`${where}migrations make other than ${CLASSES.join(" and ")}, SQLite`);
-        }
-      }
+    problems.push(...keyProblems(scope, [...allowed, "services"], where));
+    if (scope["services"] !== undefined) {
+      problems.push(...serviceProblems(scope["services"], where, bound));
     }
-    if (top && scope["limits"] === undefined) {
-      problems.push(`${where}limits are not set`);
+    if (allowed.has("kv_namespaces") && scope["kv_namespaces"] !== undefined
+        && !controlOnly(scope["kv_namespaces"])) {
+      problems.push(`${where}kv_namespaces is other than the doors' CONTROL namespace`);
     }
-    const flags = scope["compatibility_flags"];
-    if (flags !== undefined || top) {
-      if (!Array.isArray(flags) || !flags.includes(NO_EXPORTS)) {
-        problems.push(`${where}compatibility_flags lacks ${NO_EXPORTS}`);
-      } else if (flags.some((flag) => flag !== NO_EXPORTS && /ctx_exports/.test(String(flag)))) {
-        problems.push(`${where}compatibility_flags turns ctx.exports back on`);
-      }
+    if (top || scope["limits"] !== undefined) {
+      problems.push(...exactProblems(scope, "limits", LIMITS, where));
+    }
+    if (allowed.has("queues") && scope["queues"] !== undefined
+        && JSON.stringify(scope["queues"]) !== JSON.stringify(OWNER_QUEUES)) {
+      problems.push(`${where}queues are other than the erasure queue's producer`);
+    }
+    if (allowed.has("secrets") && scope["secrets"] !== undefined) {
+      problems.push(...secretProblems(scope["secrets"], SECRETS, where));
+    }
+    if (scope["migrations"] !== undefined) {
+      problems.push(...classProblems(scope["migrations"], CLASSES, where));
+    }
+    if (scope["compatibility_flags"] !== undefined || top) {
+      problems.push(...flagProblems(scope["compatibility_flags"], { carries: [NO_EXPORTS] }, where));
     }
   };
   check(config, "", TOP_KEYS, true);
@@ -307,41 +212,6 @@ export function configProblems(config: Config,
     }
   }
   return problems;
-}
-
-/**
- * Every wrangler config file under `root` (not dependencies, nor wrangler's own `.wrangler`
- * state, which a local run leaves), by path from `root`.
- */
-export function wranglerConfigs(root: string): string[] {
-  return configFiles(root);
-}
-
-/** The platform's configs, read and parsed once: they do not change while the guards run. */
-let PLATFORM_CONFIGS: ReadonlyMap<string, Readonly<Config>> | null = null;
-
-/** Every Worker config in the platform, by its Worker's name; a map of the caller's own. */
-export function platformConfigs(): Map<string, Config> {
-  if (PLATFORM_CONFIGS === null) {
-    const found = new Map<string, Config>();
-    for (const path of wranglerConfigs(PLATFORM)) {
-      const parsed = parseConfig(readFileSync(join(PLATFORM, path), "utf8"));
-      found.set(String(parsed["name"]), deepFreeze(parsed));
-    }
-    PLATFORM_CONFIGS = found;
-  }
-  return new Map(PLATFORM_CONFIGS);
-}
-
-/** `value` frozen all the way down, so a cached config is never changed by a probe. */
-function deepFreeze<T>(value: T): T {
-  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const inner of Object.values(value)) {
-      deepFreeze(inner);
-    }
-  }
-  return value;
 }
 
 /**
@@ -411,7 +281,7 @@ function storeWrites(text: string): string[] {
   return writes;
 }
 
-const config = parseConfig(readFileSync(join(OWNER, CONFIG), "utf8"));
+const config = readWrangler(OWNER);
 /**
  * The Workers' sources, read once, and the owner's uses of `CONTROL` in them, parsed once at
  * load (no test's time bound holds a whole parse of the source): each probe below then
@@ -677,7 +547,7 @@ describe("owner Worker config", () => {
 
 
   it("is the only wrangler config in the owner Worker", () => {
-    expect(wranglerConfigs(OWNER)).toEqual([CONFIG]);
+    expect(configFiles(OWNER)).toEqual([CONFIG]);
     expect(relative(PLATFORM, OWNER)).toBe("owner");
   });
 
@@ -689,11 +559,8 @@ describe("owner Worker config", () => {
   });
 
   it("allows only keys wrangler knows, and none of the other binding keys", () => {
-    const schema = JSON.parse(readFileSync(
-      join(PLATFORM, "node_modules", "wrangler", "config-schema.json"), "utf8")) as
-      { definitions: Record<string, { properties: Record<string, unknown> }> };
-    const top = Object.keys(schema.definitions["RawConfig"]!.properties);
-    const env = Object.keys(schema.definitions["RawEnvironment"]!.properties);
+    const top = wranglerKeys("RawConfig");
+    const env = wranglerKeys("RawEnvironment");
     expect([...TOP_KEYS, "services"].filter((key) => !top.includes(key))).toEqual([]);
     // The one store the top level may hold is the doors' control namespace (controlOnly).
     expect(TOP_KEYS.has("kv_namespaces") && !ENV_KEYS.has("kv_namespaces")).toBe(true);
@@ -756,21 +623,47 @@ describe("owner Worker config", () => {
     expect(configProblems({ ...base, services, env: { prod: { services } } }, bound))
       .toEqual([]);
   });
+});
 
-  it("sees a second config file", () => {
-    const root = mkdtempSync(join(tmpdir(), "owner-config-"));
-    try {
-      mkdirSync(join(root, "src"), { recursive: true });
-      mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
-      mkdirSync(join(root, ".wrangler", "tmp"), { recursive: true });
-      // A dependency's, and wrangler's own local state's, are none of the Worker's.
-      for (const path of [CONFIG, "wrangler.toml", "src/wrangler.json",
-                          "node_modules/dep/wrangler.toml", ".wrangler/tmp/wrangler.json"]) {
-        writeFileSync(join(root, path), "");
-      }
-      expect(wranglerConfigs(root)).toEqual(["src/wrangler.json", CONFIG, "wrangler.toml"]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+describe("the owner's own hold on the Workers it binds, whatever their rules say", () => {
+  // Each probe grows a bound Worker's rules (the allowance the owner reads from them) and its
+  // config together, so only the owner's own invariant can refuse it.
+  const hooks = readWrangler(join(PLATFORM, "hooks"));
+  const sandbox = readWrangler(join(PLATFORM, "sandbox"));
+  const grown = (bindings: object[], classes: readonly string[]) => ({
+    config: { ...hooks, durable_objects: { bindings },
+              migrations: [{ tag: "v1", new_sqlite_classes: classes }] } as Config,
+    allowed: { ...SERVICES["HOOKS"]!, own: { durable_objects: { bindings }, classes } },
+  });
+
+  it.each([
+    ["a namespace of another Worker's class", grown([...HOOKS_OWN.durable_objects.bindings,
+      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }],
+                                                    HOOKS_OWN.classes)],
+    ["a namespace of a class not its own", grown([...HOOKS_OWN.durable_objects.bindings,
+      { name: "OTHER", class_name: "Other" }], HOOKS_OWN.classes)],
+    ["OwnerDO among its own classes", grown([...HOOKS_OWN.durable_objects.bindings,
+      { name: "OWNER", class_name: "OwnerDO" }], [...HOOKS_OWN.classes, "OwnerDO"])],
+  ])("refuses HOOKS when the hooks Worker's rules and config both gain %s",
+     (_what, { config: probe, allowed }) => {
+    expect(boundProblems(probe, allowed)).not.toEqual([]);
+  });
+
+  it.each([
+    ["a queue consumer", { ...SANDBOX_QUEUES, consumers: [{ queue: "tinyassets-sandbox-ring" }] }],
+    ["a producer onto another queue", { producers: [...SANDBOX_QUEUES.producers,
+      { binding: "OUT", queue: "tinyassets-erasure" }] }],
+  ])("refuses SANDBOX when the sandbox Worker's rules and config both gain %s",
+     (_what, queues) => {
+    expect(boundProblems({ ...sandbox, queues }, { ...SERVICES["SANDBOX"]!, queues }))
+      .not.toEqual([]);
+  });
+
+  it("holds every Worker it binds today", () => {
+    for (const [binding, allowed] of Object.entries(SERVICES)) {
+      const config = platformConfigs().get(allowed.service);
+      expect(config, binding).toBeDefined();
+      expect(boundProblems(config!, allowed), binding).toEqual([]);
     }
   });
 });

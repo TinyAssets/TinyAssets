@@ -8,7 +8,7 @@ import { exported } from "../src/export";
 import { type Migration, migrationDigest as digest } from "../src/migrate";
 import { MIGRATIONS } from "../src/schema";
 import { holdLocks, type Lock, lockProblems, pinned } from "./lock";
-import { workerSources } from "./sources";
+import { workerSources } from "../../ci/kit/sources";
 
 describe("append-only migrations", () => {
   it("hold every deployed migration to its pinned text", () => {

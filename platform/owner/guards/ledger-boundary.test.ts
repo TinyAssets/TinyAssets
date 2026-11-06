@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { workerSources } from "./sources";
+import { workerSources } from "../../ci/kit/sources";
 
 const LEDGER = "owner/src/ledger.ts";
 const IMPORTERS = new Set(["owner/src/owner-do.ts", "owner/src/wakes.ts"]);

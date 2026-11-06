@@ -25,7 +25,7 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, reporter, workerSources } from "../../owner/guards/sources";
+import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const BINDER = "doors/src/binder.ts";
 /** The owner's object, which names no object. */

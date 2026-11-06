@@ -8,6 +8,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { ANTHROPIC, OPENAI } from "../../ci/fixtures";
 import type { Credential, EgressScope, Source } from "../../gateway/src/credential";
 import { seal } from "../../gateway/src/keyring";
 
@@ -17,20 +18,7 @@ import { signedIn } from "./ledger-support";
 import { EVERY_SIGNIN, TIERS } from "./support";
 import type { GatedOwnerDO } from "./worker";
 
-export const ANTHROPIC: Source = Object.freeze({
-  upstream: { provider: "anthropic", api: "anthropic-messages", base_url: "https://api.anthropic.com",
-              auth: { header: "x-api-key", scheme: "" },
-              verify_url: "https://api.anthropic.com/v1/models" },
-  endpoints: [{ origin: "https://api.anthropic.com", paths: ["/v1/messages", "/v1/models"],
-                methods: ["GET", "POST"] }],
-});
-
-export const OPENAI: Source = Object.freeze({
-  upstream: { provider: "openai", api: "openai-responses", base_url: "https://api.openai.com/v1",
-              auth: { header: "authorization", scheme: "Bearer" } },
-  endpoints: [{ origin: "https://api.openai.com", paths: ["/v1/responses", "/v1/models"],
-                methods: ["GET", "POST"] }],
-});
+export { ANTHROPIC, OPENAI };
 
 /** An OAuth source on the fake token and revocation endpoints, its model calls OpenAI's. */
 export const OAUTH: Source = Object.freeze({

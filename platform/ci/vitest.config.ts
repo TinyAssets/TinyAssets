@@ -1,17 +1,12 @@
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium } from "./classes";
+import { project } from "./project";
 
 // The repository's own gates that outlive the Python suite: the platform's CI legs, the
-// test-timeout ban and the production-environment rule. Static, in Node.
+// test-timeout ban, the production-environment rule and the guard kit's own invariants.
+// Static, in Node.
 export default defineConfig({
   test: {
-    tags: [LARGE],
-    projects: [
-      {
-        test: { name: "guards", ...medium("ci/guards"), include: ["guards/**/*.test.ts"],
-                environment: "node" },
-      },
-    ],
+    projects: [project("ci", "guards")],
   },
 });

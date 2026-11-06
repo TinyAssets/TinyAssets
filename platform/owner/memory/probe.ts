@@ -34,6 +34,7 @@ import { createHash } from "node:crypto";
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 
+import { TIERS } from "../../ci/fixtures";
 import { bundledSources, signinsOn } from "../../doors/src/sources";
 import { PLATFORM_CALLER } from "../src/admission";
 import { Backups } from "../src/backup";
@@ -589,8 +590,6 @@ export class LegSegments extends ArchiveObject {
 
 const SIGNINS = Object.freeze(signinsOn(
   bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
-const TIERS = Object.freeze({ free: { runs: 5, storage_bytes: 25_000_000_000 },
-                              paid: { runs: 10, storage_bytes: 250_000_000_000 } });
 
 /** The owner's own binding, as the doors hand it. */
 function owner(name: string): Binding {

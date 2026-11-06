@@ -7,23 +7,21 @@
  *
  *   node ci/budgets.mjs [--write] [--measured "<where and when>"] <report.json>...
  *
- * A test's project is read from its path: `<workspace>/test/` is `workerd`,
- * `<workspace>/guards/` is `guards`, `sandbox/runner/` is `runner`, as the configs name
- * them. Only passed tests count; a failed or skipped one measures nothing.
+ * A test's project is read from its path: the folder each project's tests are in
+ * (`classes.ts`'s `PROJECTS`, which every config's projects are made from). Only passed
+ * tests count; a failed or skipped one measures nothing.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const CI = dirname(fileURLToPath(import.meta.url));
-const PLATFORM = join(CI, "..");
-const BUDGETS = join(CI, "budgets.json");
-const SMALL_MS = 5_000;
-const PROJECTS = { test: "workerd", guards: "guards", runner: "runner" };
+import { derived, PROJECTS as FOLDERS } from "./classes.ts";
+import { PLATFORM } from "./paths.ts";
 
-function derived(slowest, factor) {
-  return Math.max(SMALL_MS, Math.ceil((factor * slowest.slowest_ms) / 1000) * 1000);
-}
+const CI = dirname(fileURLToPath(import.meta.url));
+const BUDGETS = join(CI, "budgets.json");
+/** Each project's name, by the folder its tests are in. */
+const PROJECTS = Object.fromEntries(Object.entries(FOLDERS).map(([name, folder]) => [folder, name]));
 
 /** Every passed test in `reports` as { project, test, ms, large }. */
 export function measured(reports) {

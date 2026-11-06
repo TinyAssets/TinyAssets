@@ -1,46 +1,21 @@
 /**
  * The doors Worker's config binds exactly what the doors need, and cannot deploy
- * (research §13). Mirrors the owner Worker's config guard: an allow-list of keys, and
- * each binding pinned.
+ * (research §13): its allow-list (`rules.ts`), held by the platform's config checker
+ * (`ci/kit/config.ts`), and what it binds held against the other Workers:
  *
  * - `OWNER`: the owner Worker's `OwnerDO` namespace, by `script_name`, which must be the
- *   owner Worker's own SQLite class in the platform. The binder is the trust root and
- *   reaches every owner's object by name; only `src/binder.ts` names it.
- * - `OAUTH_KV`, `DIRECTORY` and `CONTROL`: three KV namespaces, distinct, with placeholder ids
- *   (`not-provisioned-…`), so a deploy fails until cutover creates them.
- * - Four vars: `DCR_ENABLED` `"false"`; `OWNER_ISSUER` and `UPSTREAM` unset
- *   (`not-configured`) as checked in, so every sign-in fails loudly until the deploy kit
- *   fills both from the issuer's live discovery (`deploy/deploy.ts`); and
- *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's slice lists its issuer, so any other
- *   issuer is refused, never taken for a new owner.
+ *   owner Worker's own SQLite class in the platform; the owner Worker declares the same
+ *   routing key, `ROUTING_MAC_KEY`.
  * - `GATEWAY`: the gateway Worker's `ConnectGateway` entrypoint, whose class in the
  *   gateway's source serves exactly `seal`, `exchange` and `verify` (the connect steps),
  *   so the doors can make no model call through it and hold no keyring. Only
  *   `src/connect.ts` names it (the binder guard).
  * - `EGRESS`: the gateway Worker's `EgressGateway` entrypoint, whose class serves exactly
  *   `forward` (G4's egress door). Only `src/egress.ts` names it.
- * - Three secrets, declared by name (`secrets.required`, which binds nothing):
- *   `ROUTING_MAC_KEY`, the routing key sandbox tokens are MAC'd under, the owner Worker's
- *   too; `WORKOS_API_KEY`, the upstream's client secret; and `E2B_WEBHOOK_SECRET`, E2B's
- *   lifecycle webhook's signature secret (slice P).
  * - `FILES`: the files Worker's `FilesUpload` entrypoint, whose class serves exactly
  *   `putChunks`, what the file door's bytes call (slice L), and nothing that reads a chunk,
  *   a generation or a key (review M5-1: the doors carry an owner's wrapped key); only
  *   `src/file-bytes.ts` names it.
- * - No `ratelimits`: no number of ours bounds any caller (the founder's rule, slice L's
- *   review); Cloudflare's own DDoS protection is in front of every Worker.
- * - `ASSETS`: the owner app's files (`app/`), Workers Static Assets, the Worker first on every
- *   request, so only `src/pages.ts`'s named pages and files are served, each with its
- *   headers; no HTML handling or not-found page of the assets' own.
- * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
- *   (the doors define no Durable Object class).
- * - Flags: `nodejs_compat` (the owner's shared code), `disable_ctx_exports` (no way to the
- *   Worker's own namespaces), and `global_fetch_strictly_public`, which Client ID Metadata
- *   Documents require: the provider fetches each client's metadata URL, the flag keeps
- *   that fetch off same-zone routing (its SSRF protection), and without it the provider
- *   neither fetches nor advertises CIMD (OP docs/authorization-server.md:62-68); and
- *   `enable_request_signal`, so a sandbox client that leaves before the answer aborts the
- *   egress door's request and its settle comes at once.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -49,41 +24,20 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { configFiles, PLATFORM } from "../../owner/guards/sources";
+import { configProblems, configTests } from "../../ci/kit/config";
+import { PLATFORM } from "../../ci/paths";
+import { type Config, platformConfigs } from "../../ci/kit/sources";
+import { readWrangler } from "../../ci/workers";
+
+import { CONFIG } from "./rules";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
-const CONFIG = "wrangler.jsonc";
-const FLAGS: readonly string[] = Object.freeze(["nodejs_compat", "disable_ctx_exports",
-                                                "global_fetch_strictly_public",
-                                                "enable_request_signal"]);
-const KEYS: ReadonlySet<string> = new Set([
-  "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",
-  "queues", "assets",
-]);
 /** The sandbox tokens' routing key (`routing-mac.ts`), the owner's one secret too. */
 const OWNER_SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
-/**
- * The doors' secrets: the routing key, the upstream's client secret (`oidc.ts`), and E2B's
- * lifecycle webhook's signature secret (`e2b-hooks.ts`).
- */
-const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY", "WORKOS_API_KEY",
-                                                         "E2B_WEBHOOK_SECRET"]) });
 /** The files Worker, for the file door's bytes. */
 const FILES = Object.freeze({ binding: "FILES", service: "tinyassets-files",
                              entrypoint: "FilesUpload" });
 const UPLOAD_METHODS: readonly string[] = Object.freeze(["putChunks"]);
-/** The owner app's files, served only through the Worker (`src/pages.ts`). */
-const ASSETS = Object.freeze({ directory: "./app", binding: "ASSETS", run_worker_first: true,
-                               html_handling: "none", not_found_handling: "none" });
-/**
- * The doors' one queue: the consumer of the sandbox line's ring queue (slice S,
- * `src/ring.ts`), which turns `{owner}` into that owner's `sandboxRung` and nothing else.
- * No producer: the doors put nothing on a queue.
- */
-const QUEUES = Object.freeze({ consumers: Object.freeze([
-  Object.freeze({ queue: "tinyassets-sandbox-ring" }),
-  Object.freeze({ queue: "tinyassets-erasure" })]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
 const GATEWAY = Object.freeze({ binding: "GATEWAY", service: "tinyassets-gateway",
                                 entrypoint: "ConnectGateway" });
@@ -92,37 +46,11 @@ const CONNECT_METHODS: readonly string[] = Object.freeze(["exchange", "seal", "s
 const EGRESS = Object.freeze({ binding: "EGRESS", service: "tinyassets-gateway",
                                entrypoint: "EgressGateway" });
 const EGRESS_METHODS: readonly string[] = Object.freeze(["forward"]);
-const KV: readonly string[] = Object.freeze(["CONTROL", "DIRECTORY", "OAUTH_KV"]);
-const VARS = Object.freeze({ DCR_ENABLED: "false", OWNER_ISSUER: "not-configured",
-                             FOREIGN_ISSUERS: "[]", UPSTREAM: "not-configured" });
-
-type Config = Record<string, unknown>;
-
-function parseConfig(text: string): Config {
-  const parsed = ts.parseConfigFileTextToJson(CONFIG, text);
-  if (parsed.error) {
-    throw new Error(ts.flattenDiagnosticMessageText(parsed.error.messageText, "\n"));
-  }
-  return parsed.config as Config;
-}
-
-/**
- * Every wrangler config under `root` (not dependencies, nor wrangler's own `.wrangler`
- * state, which a local run leaves), by path from `root`.
- */
-function wranglerConfigs(root: string): string[] {
-  return configFiles(root);
-}
-
-/** Every Worker config in the platform, by its Worker's name. */
-function platformConfigs(): Map<string, Config> {
-  const found = new Map<string, Config>();
-  for (const path of wranglerConfigs(PLATFORM)) {
-    const parsed = parseConfig(readFileSync(join(PLATFORM, path), "utf8"));
-    found.set(String(parsed["name"]), parsed);
-  }
-  return found;
-}
+const VARS = Object.fromEntries(Object.entries(CONFIG.vars!).map(([name, values]) =>
+  [name, values![0]!]));
+const QUEUES = CONFIG.exact!["queues"] as { consumers: object[] };
+const ASSETS = CONFIG.exact!["assets"] as Config;
+const FLAGS = (CONFIG.flags as { exactly: readonly string[] }).exactly;
 
 /**
  * The members each class a source exports serves, by class name: its own public methods
@@ -169,31 +97,10 @@ export function extendsOf(source: string, name: string): string | null {
 export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string, Config>,
                                     gatewaySource: string,
                                     filesSource: string = FILES_SOURCE): string[] {
-  const problems: string[] = [];
-  for (const key of Object.keys(config)) {
-    if (!KEYS.has(key)) {
-      problems.push(`${key} is not an allowed key`);
-    }
-  }
-  if (config["workers_dev"] !== false || config["preview_urls"] !== false) {
-    problems.push("workers_dev and preview_urls are false");
-  }
-  const flags = config["compatibility_flags"];
-  if (!Array.isArray(flags) || FLAGS.some((flag) => !flags.includes(flag))
-      || flags.some((flag) => !FLAGS.includes(String(flag)))) {
-    problems.push(`compatibility_flags are exactly ${FLAGS.join(", ")}`);
-  }
-  if (JSON.stringify(config["secrets"]) !== JSON.stringify(SECRETS)) {
-    problems.push("secrets declares exactly ROUTING_MAC_KEY, WORKOS_API_KEY and " +
-                  "E2B_WEBHOOK_SECRET");
-  }
+  const problems = configProblems(config, CONFIG, platform);
   const ownerConfig = platform.get("tinyassets-owner");
   if (JSON.stringify(ownerConfig?.["secrets"]) !== JSON.stringify(OWNER_SECRETS)) {
     problems.push("the owner Worker declares the same ROUTING_MAC_KEY");
-  }
-  if (JSON.stringify(config["vars"]) !== JSON.stringify(VARS)) {
-    problems.push("vars are exactly DCR_ENABLED \"false\", OWNER_ISSUER and UPSTREAM unset " +
-                  "and no FOREIGN_ISSUERS");
   }
   const objects = config["durable_objects"] as { bindings?: unknown } | undefined;
   const bindings = objects?.bindings;
@@ -234,48 +141,19 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
                     "serves exactly putChunks");
     }
   }
-  if (JSON.stringify(config["assets"]) !== JSON.stringify(ASSETS)) {
-    problems.push("assets serves ./app as ASSETS, only through the Worker");
-  }
-  const kv = config["kv_namespaces"];
-  if (!Array.isArray(kv) || kv.length !== KV.length
-      || JSON.stringify(kv.map((n: { binding?: unknown }) => n.binding).sort())
-        !== JSON.stringify(KV)
-      || kv.some((n: Record<string, unknown>) => Object.keys(n).sort().join() !== "binding,id"
-                                                 || !/^not-provisioned-[a-z]+$/.test(String(n["id"])))
-      || new Set(kv.map((n: { id?: unknown }) => n.id)).size !== kv.length) {
-    problems.push("kv_namespaces are exactly OAUTH_KV, DIRECTORY and CONTROL, distinct " +
-                  "placeholders");
-  }
-  if (JSON.stringify(config["queues"]) !== JSON.stringify(QUEUES)) {
-    problems.push("queues is the sandbox ring's consumer alone");
-  }
   return problems;
 }
 
-const config = parseConfig(readFileSync(join(DOORS, CONFIG), "utf8"));
+const config = readWrangler(DOORS);
 const platform = platformConfigs();
 const gatewaySource = readFileSync(join(PLATFORM, "gateway", "src", "index.ts"), "utf8");
 const FILES_SOURCE = readFileSync(join(PLATFORM, "files", "src", "index.ts"), "utf8");
 
-describe("doors Worker config", () => {
-  it("binds OWNER, the gateway's connect and egress entrypoints, OAUTH_KV, DIRECTORY and " +
-     "CONTROL, " +
-     "and cannot deploy", () => {
-    expect(doorsConfigProblems(config, platform, gatewaySource)).toEqual([]);
-    expect(exportedMethods(gatewaySource).get("ConnectGateway"))
-      .toEqual(["exchange", "seal", "sealDoorbell", "verify", "verifyDoorbell"]);
-    expect(exportedMethods(gatewaySource).get("EgressGateway")).toEqual(["forward"]);
-    expect(exportedMethods(FILES_SOURCE).get("FilesUpload")).toEqual(["putChunks"]);
-  });
-
-  it("is the only wrangler config in the doors Worker", () => {
-    expect(wranglerConfigs(DOORS)).toEqual([CONFIG]);
-    expect(platform.get("tinyassets-doors")).toEqual(config);
-    expect(PLATFORM).toBe(join(DOORS, ".."));
-  });
-
-  it.each([
+configTests(CONFIG, {
+  refused: ["routes", "route", "env", "migrations", "r2_buckets", "ratelimits", "d1_databases",
+            "worker_loaders", "unsafe", "tail_consumers", "dispatch_namespaces"],
+  problems: (probe) => doorsConfigProblems(probe, platform, gatewaySource),
+  probes: [
     ["a route", { routes: [{ pattern: "tinyassets.io/mcp*", zone_name: "tinyassets.io" }] }],
     ["a custom domain", { route: { pattern: "tinyassets.io", custom_domain: true } }],
     ["workers.dev", { workers_dev: true }],
@@ -350,9 +228,23 @@ describe("doors Worker config", () => {
       { binding: "DIRECTORY", id: "not-provisioned-directory" },
       { binding: "CONTROL", id: "not-provisioned-control" },
       { binding: "CACHE", id: "not-provisioned-cache" }] }],
-  ])("sees %s", (_what, change) => {
-    expect(doorsConfigProblems({ ...config, ...change }, platform, gatewaySource))
-      .not.toEqual([]);
+  ],
+});
+
+describe("doors Worker config", () => {
+  it("binds OWNER, the gateway's connect and egress entrypoints, OAUTH_KV, DIRECTORY and " +
+     "CONTROL, " +
+     "and cannot deploy", () => {
+    expect(doorsConfigProblems(config, platform, gatewaySource)).toEqual([]);
+    expect(exportedMethods(gatewaySource).get("ConnectGateway"))
+      .toEqual(["exchange", "seal", "sealDoorbell", "verify", "verifyDoorbell"]);
+    expect(exportedMethods(gatewaySource).get("EgressGateway")).toEqual(["forward"]);
+    expect(exportedMethods(FILES_SOURCE).get("FilesUpload")).toEqual(["putChunks"]);
+  });
+
+  it("is the platform's doors config", () => {
+    expect(platform.get("tinyassets-doors")).toEqual(config);
+    expect(PLATFORM).toBe(join(DOORS, ".."));
   });
 
   it("sees OWNER bound to a script whose class is not in the platform", () => {

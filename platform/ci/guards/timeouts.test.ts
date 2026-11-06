@@ -13,13 +13,67 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { classProblem } from "../class-rule";
-import { BUDGETS, budget, CLASS_CHECK, derived, LARGE, medium, SMALL_MS } from "../classes";
+import { BUDGETS, budget, CLASS_CHECK, derived, LARGE, medium, type ProjectName, PROJECTS,
+         SMALL_MS } from "../classes";
+import { project } from "../project";
 import { largeTests, timeoutLiterals } from "../timeouts";
-import { json, REPO } from "../workflows";
+import { PLATFORM, REPO } from "../paths";
+import { json } from "../workflows";
 
 function tracked(...globs: string[]): string[] {
   return execFileSync("git", ["-C", REPO, "ls-files", ...globs], { encoding: "utf8" })
     .split("\n").filter(Boolean);
+}
+
+// A config is read as vitest reads it: its default export, loaded. Each one builds its
+// auxiliary Workers only when its project runs (`ci/workers.ts`'s `once`).
+type Options = Record<string, unknown>;
+type Project = { test: Options & { name: string } } & Options;
+
+/** Every workspace's vitest config, loaded: its root test options and its projects. */
+async function configs(): Promise<{ ws: string; root: Options; projects: Project[] }[]> {
+  return Promise.all((json("package.json").workspaces as string[]).map(async (ws) => {
+    const config = (await import(join(PLATFORM, ws, "vitest.config.ts"))).default as
+      { test: Options & { projects: Project[] } };
+    const { projects, ...root } = config.test;
+    return { ws, root, projects };
+  }));
+}
+
+/** Each way a project's options are other than its size class's, from its one key. */
+function projectProblems(ws: string, each: Project): string[] {
+  const { name } = each.test;
+  const key = `${ws}/${name}`;
+  const want = Object.hasOwn(BUDGETS.medium, key) ? medium(key) : null;
+  const problems: string[] = [];
+  const say = (what: string) => problems.push(`${key}: ${what}`);
+  if (!Object.hasOwn(PROJECTS, name)) {
+    say(`not one of the projects ${Object.keys(PROJECTS).join(", ")}`);
+  } else if (JSON.stringify(each.test["include"])
+             !== JSON.stringify([`${PROJECTS[name as ProjectName]}/**/*.test.ts`])) {
+    say("its tests are not its folder's");
+  }
+  if (want === null) {
+    say("no measured budget");
+  } else {
+    for (const option of ["testTimeout", "hookTimeout", "provide"] as const) {
+      if (JSON.stringify(each.test[option]) !== JSON.stringify(want[option])) {
+        say(`${option} is not its class's`);
+      }
+    }
+  }
+  if (!(each.test["tags"] as unknown[] | undefined)?.includes(LARGE)) {
+    say("the large tag is not its");
+  }
+  if ((each.test["setupFiles"] as unknown[] | undefined)?.[0] !== CLASS_CHECK) {
+    say("the class check is not its first setup file");
+  }
+  for (const option of ["reporters", "strictTags"]) {
+    if (each.test[option] !== undefined || each[option] !== undefined) {
+      say(`sets ${option}`);
+    }
+  }
+  return problems;
 }
 
 describe("test timeouts", () => {
@@ -67,22 +121,35 @@ describe("size classes", () => {
     expect(() => budget("nowhere/workerd")).toThrow(/no measured budget/);
   });
 
-  it("set every project's budget from its class, and the large tag, in every config", () => {
-    const configs = tracked("platform/*/vitest.config.ts");
-    expect(configs.length).toBe((json("package.json").workspaces as string[]).length);
-    for (const file of configs) {
-      const ws = file.split("/")[1]!;
-      const text = readFileSync(join(REPO, file), "utf8");
-      expect(text, file).toMatch(/from "(?:\.\.\/ci|\.)\/classes"/);
-      expect(text, file).toMatch(/tags: \[LARGE\]/);
-      expect(text, file).not.toMatch(/reporters?\s*:/);
-      expect(text, file).not.toMatch(/(?:testTimeout|hookTimeout|strictTags)\s*:/);
-      const projects = [...text.matchAll(/test: \{\s*name: "([\w-]+)"/g)].map((match) => match[1]);
-      expect(projects.length, file).toBeGreaterThan(0);
-      for (const project of projects) {
-        expect(text, `${file} ${project}`).toContain(`...medium("${ws}/${project}")`);
-        expect(BUDGETS.medium[`${ws}/${project}`], `${ws}/${project}`).toBeDefined();
-      }
+  it("set every project's budget from its class, and the large tag, in every config",
+     async () => {
+    expect(tracked("platform/*/vitest.config.ts").length)
+      .toBe((json("package.json").workspaces as string[]).length);
+    for (const { ws, root, projects } of await configs()) {
+      expect(Object.keys(root), ws).toEqual([]);
+      expect(projects.length, ws).toBeGreaterThan(0);
+      expect(projects.flatMap((each) => projectProblems(ws, each)), ws).toEqual([]);
+    }
+  });
+
+  it("are made from one key each, by project()", () => {
+    const made = project("ci", "guards") as Project;
+    expect(made.test).toEqual({ name: "guards", include: ["guards/**/*.test.ts"], tags: [LARGE],
+                                environment: "node", ...medium("ci/guards") });
+    expect(projectProblems("ci", made)).toEqual([]);
+    const own = project("owner", "workerd", { test: { setupFiles: ["./x.ts"] } }) as Project;
+    expect(own.test["environment"]).toBeUndefined();
+    expect(own.test["setupFiles"]).toEqual([CLASS_CHECK, "./x.ts"]);
+    expect(() => project("nowhere", "guards")).toThrow(/no measured budget/);
+  });
+
+  it("see a project that is not its class's", () => {
+    const made = project("ci", "guards") as Project;
+    const changed = (test: Options) => ({ ...made, test: { ...made.test, ...test } }) as Project;
+    for (const test of [{ testTimeout: 60_000 }, { hookTimeout: 1 }, { tags: [] },
+                        { setupFiles: [] }, { include: ["test/**/*.test.ts"] },
+                        { name: "unit" }, { strictTags: false }, { reporters: ["dot"] }]) {
+      expect(projectProblems("ci", changed(test)), JSON.stringify(test)).not.toEqual([]);
     }
   });
 });
@@ -103,15 +170,16 @@ describe("the run-time check", () => {
     expect(classProblem({ name: "c", timeout: want.medium }, undefined)).toMatch(/provides no/);
   });
 
-  it("is every project's setup file, carried by medium()", () => {
+  it("is every project's setup file, carried by medium()", async () => {
     expect(medium("ci/guards").setupFiles).toEqual([CLASS_CHECK]);
     expect(medium("ci/guards").provide.classTimeouts).toEqual(want);
-    const owner = readFileSync(join(REPO, "platform", "owner", "vitest.config.ts"), "utf8");
-    expect(owner).toContain('setupFiles: [CLASS_CHECK, "./test/admitted.ts"]');
-    for (const file of tracked("platform/*/vitest.config.ts")) {
-      const text = readFileSync(join(REPO, file), "utf8");
-      for (const match of text.matchAll(/setupFiles:\s*\[([^\]]*)\]/g)) {
-        expect(match[1], file).toMatch(/^CLASS_CHECK\b/);
+    const owner = (await configs()).find(({ ws }) => ws === "owner")!.projects
+      .find((each) => each.test.name === "workerd")!;
+    expect(owner.test["setupFiles"]).toEqual([CLASS_CHECK, "./test/admitted.ts"]);
+    for (const { ws, projects } of await configs()) {
+      for (const each of projects) {
+        expect((each.test["setupFiles"] as string[])[0], `${ws}/${each.test.name}`)
+          .toBe(CLASS_CHECK);
       }
     }
   });

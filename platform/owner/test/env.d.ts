@@ -1,26 +1,16 @@
-// The test-only OWNER, AGENT, GATED, BOUNDED, SWITCHED, CACHED, BARE and RUNG bindings
-// (vitest.config.ts; the last seven are the test Worker's classes, test/worker.ts), the test
-// keyring (the one the gateway Worker run
-// beside the tests holds), and the Worker's three bindings: FILES, to the files Worker,
-// GATEWAY, to the gateway Worker, and HOOKS, to the hooks Worker, each run beside it; and
-// its one secret, ROUTING_MAC_KEY.
+// The test-only namespaces of the owner object (`namespaces.ts`, each a class of the test
+// Worker, `worker.ts`), the test keyring (the one the gateway Worker run beside the tests
+// holds), and the Worker's own bindings: FILES, GATEWAY, HOOKS and SANDBOX, each to its
+// Worker run beside it, CONTROL, and its one secret, ROUTING_MAC_KEY.
 declare namespace Cloudflare {
-  interface Env {
-    OWNER: DurableObjectNamespace<import("../src/owner-do").OwnerDO>;
-    AGENT: DurableObjectNamespace<import("./worker").FauxOwnerDO>;
-    GATED: DurableObjectNamespace<import("./worker").GatedOwnerDO>;
-    BARE: DurableObjectNamespace<import("./worker").UnboundOwnerDO>;
-    BOUNDED: DurableObjectNamespace<import("./worker").BoundedOwnerDO>;
-    ARCHIVING: DurableObjectNamespace<import("./worker").ArchivingOwnerDO>;
-    BIGARCHIVING: DurableObjectNamespace<import("./worker").BigArchivingOwnerDO>;
-    DIVERGING: DurableObjectNamespace<import("./worker").DivergingOwnerDO>;
-    PURGING: DurableObjectNamespace<import("./worker").PurgingOwnerDO>;
-    SWITCHED: DurableObjectNamespace<import("./worker").SwitchedOwnerDO>;
-    CACHED: DurableObjectNamespace<import("./worker").CachedOwnerDO>;
+  type TestNamespaces = typeof import("./namespaces").NAMESPACES;
+  type TestNamespace<Binding extends keyof TestNamespaces> =
+    DurableObjectNamespace<InstanceType<typeof import("./worker")[TestNamespaces[Binding]]>>;
+
+  type TestNamespaceBindings = { [Binding in keyof TestNamespaces]: TestNamespace<Binding> };
+
+  interface Env extends TestNamespaceBindings {
     SANDBOX: import("../src/sandbox").SandboxService;
-    RUNG: DurableObjectNamespace<import("./worker").RungOwnerDO>;
-    /** The owner object exactly as production builds it, starter package and all. */
-    SEEDED: DurableObjectNamespace<import("./worker").SeededOwnerDO>;
     /** The gateway's connect entrypoint, test-only: a test seals a doorbell's token as the doors do. */
     CONNECT: import("../../doors/src/config").ConnectService;
     FILES: import("../src/files").ChunkStore;
