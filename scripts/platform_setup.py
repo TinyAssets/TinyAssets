@@ -205,11 +205,8 @@ def made_secrets(gh: Gh) -> None:
 
 
 def live_workos_key(value: str) -> bool:
-    """A WorkOS secret key, never a labelled staging one. WorkOS's current keys carry no
-    environment label (`sk_` alone; 2026-11-05), so the environment is the dashboard's:
-    the key is made with Production selected. A staging label in any case, or a body too
-    short to be a key, is refused."""
-    return re.fullmatch(r"sk_(?!(?i:test_))[A-Za-z0-9_]{20,}", value) is not None
+    """The production WorkOS environment's key (since 2026-08-29), never a staging one."""
+    return re.fullmatch(r"sk_live_[A-Za-z0-9_]+", value) is not None
 
 
 def bare(text: str) -> str:
@@ -249,9 +246,9 @@ def workos(gh: Gh, ask: Callable[[str], str] = read_key, *,
     if held is not None:
         say(WORKOS_KEY, _held(held))
     else:
-        value = bare(ask("Paste the production WorkOS API key (sk_..., not shown): "))
+        value = bare(ask("Paste the production WorkOS API key (sk_live_..., not shown): "))
         if not live_workos_key(value):
-            raise SetupError("that is not a production WorkOS secret key: nothing stored")
+            raise SetupError("that is not a production WorkOS key (sk_live_): nothing stored")
         gh.set_secret(WORKOS_KEY, value, PRODUCTION)
         stored = gh.secret(WORKOS_KEY, PRODUCTION)
         if stored is None:
