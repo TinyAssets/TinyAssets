@@ -11,6 +11,7 @@ import json
 import os
 import socket
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from tinyassets.boxes.bootstrap import RUNTIME
@@ -170,7 +171,11 @@ def repair(owner_root: Path, ledger: Path, *, dry_run: bool = False):
     # reads the canonical name instead.
     if dry_run:
         return _preview(owner_root / DB_FILENAME, owner_root, grant_ids)
-    with sqlite3.connect(db_path(owner_root).resolve().as_uri() + "?mode=rw", uri=True) as conn:
+    # A connection's own `with` ends the transaction and leaves it open, and an
+    # unclosed connection lives until the garbage collector: its WAL and index
+    # stay beside the store, then vanish under whoever is reading it.
+    owner = sqlite3.connect(db_path(owner_root).resolve().as_uri() + "?mode=rw", uri=True)
+    with closing(owner), owner as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
         centers = _center_ids(conn)

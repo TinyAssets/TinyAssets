@@ -19,6 +19,7 @@ import sys
 import tarfile
 import tempfile
 import zlib
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -385,7 +386,7 @@ def _ensure_snapshot(source_root):
             if not origin.is_file():
                 continue
             dest = snap.root / name
-            with _open_ro(origin) as src, sqlite3.connect(dest) as dst:
+            with closing(_open_ro(origin)) as src, closing(sqlite3.connect(dest)) as dst:
                 src.backup(dst)
             snap.paths[name] = dest
     except Exception as exc:
@@ -599,7 +600,7 @@ def _ledger_counts(path):
     if _source_closed(path) or not path.is_file() or path.is_symlink():
         return counts
     try:
-        with _open_ro(path) as db:
+        with closing(_open_ro(path)) as db:
             for table in TABLES:
                 if _table_exists(db, table):
                     counts[table] = db.execute(
@@ -844,7 +845,7 @@ def _owner_groups(db_path, centers):
     if _source_closed(path):
         return _custody_refused(centers), True
     try:
-        with _open_ro(path) as db:
+        with closing(_open_ro(path)) as db:
             if not _table_exists(db, "llm_credential_deposit_owners"):
                 return groups, False
             columns = set(_columns(db, "llm_credential_deposit_owners"))
@@ -1498,7 +1499,7 @@ def _restrict_ledger(source_root, kept_ids):
     if ledger is None or _source_closed(ledger):
         return
     ids = list(kept_ids)
-    with _open_source(ledger) as db:
+    with closing(_open_source(ledger)) as db, db:
         def delete_except(table, extra=""):
             if not _table_exists(db, table):
                 return
@@ -1639,7 +1640,7 @@ def _restrict_definitions(source_root):
     if ledger is None or _source_closed(ledger):
         return
     try:
-        with _open_source(ledger) as db:
+        with closing(_open_source(ledger)) as db, db:
             if not _table_exists(db, "box_model_sources"):
                 return
             grants = set()
@@ -1982,7 +1983,7 @@ def _groups(root):
     rows = {table: [] for table in TABLES}
     if ledger is not None and ledger.is_file() and not _source_closed(ledger):
         try:
-            with _open_ro(ledger) as db:
+            with closing(_open_ro(ledger)) as db:
                 loaded = {}
                 for table in TABLES:
                     loaded[table] = _rows(db, table)
@@ -2173,7 +2174,7 @@ def _copy_definitions(live_db, source_root, live_root):
         return 0
     pending = []
     try:
-        with _open_ro(ledger) as src:
+        with closing(_open_ro(ledger)) as src:
             if not _table_exists(src, "box_model_sources"):
                 return 0
             skipped = set()
@@ -2361,7 +2362,7 @@ def _merge_snapshot(live_root, source_root, snap):
     files = {kind: _slot() for kind in FILES}
     tables = {table: _slot() for table in TABLES}
     affected = failed = unchanged = 0
-    with sqlite3.connect(ledger) as db:
+    with closing(sqlite3.connect(ledger)) as db, db:
         db.execute("PRAGMA busy_timeout=5000")
         # A released account savepoint would commit if it opened the transaction.
         db.execute("BEGIN")
@@ -2434,7 +2435,7 @@ def _definitions(root):
     if _source_closed(ledger) or not ledger.is_file() or ledger.is_symlink():
         return []
     try:
-        with _open_ro(ledger) as db:
+        with closing(_open_ro(ledger)) as db:
             if not _table_exists(db, "box_model_sources"):
                 return []
             return [row[0] for row in db.execute(
@@ -2486,7 +2487,7 @@ def _uids(root):
     if not ledger.is_file() or ledger.is_symlink():
         return found
     try:
-        with _open_ro(ledger) as db:
+        with closing(_open_ro(ledger)) as db:
             for query in (
                 "SELECT uid, principal FROM owner_volumes",
                 "SELECT machine, principal FROM box_records",
@@ -2640,9 +2641,10 @@ def take_rollback(live_root, dest):
     ledger = live_root / ".broker" / "outbound.db"
     if ledger.is_symlink() or not ledger.is_file():
         raise SourceRefused("ledger_missing")
-    with sqlite3.connect(ledger) as source, sqlite3.connect(dest / "outbound.db") as copy:
-        source.backup(copy)
-    with sqlite3.connect(dest / "outbound.db") as copy:
+    with closing(sqlite3.connect(ledger)) as source:
+        with closing(sqlite3.connect(dest / "outbound.db")) as copy:
+            source.backup(copy)
+    with closing(sqlite3.connect(dest / "outbound.db")) as copy:
         if copy.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise SourceRefused("unreadable")
     for digest, files in account_files(live_root).items():
@@ -3543,8 +3545,9 @@ def _plan_only(live_root, source_root, mounts=None):
         ledger = live_root / ".broker" / "outbound.db"
         if ledger.is_symlink() or not ledger.is_file():
             raise SourceRefused("ledger_missing")
-        with _open_ro(ledger) as src, sqlite3.connect(broker_dir / "outbound.db") as dst:
-            src.backup(dst)
+        with closing(_open_ro(ledger)) as src:
+            with closing(sqlite3.connect(broker_dir / "outbound.db")) as dst:
+                src.backup(dst)
         for digest, files in account_files(live_root).items():
             for kind, path in files.items():
                 target = broker_dir / "accounts" / digest / "credentials" / FILES[kind]

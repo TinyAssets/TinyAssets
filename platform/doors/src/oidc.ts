@@ -20,7 +20,9 @@
  * - `forget`: the person's identity deleted at the issuer (the owner's erasure,
  *   `erase.ts`), by the record's `user_delete` URL with the subject in place of `{sub}`.
  *
- * Any failure throws: a sign-in is never taken on less than every check.
+ * Any failure throws, its message naming the check or the status (a refused exchange's
+ * OAuth error code with it) and never a value: a sign-in is never taken on less than every
+ * check.
  */
 import { CLOCK_MARGIN_S, now } from "./config";
 import type { SignIn, Upstream } from "./upstream";
@@ -45,6 +47,12 @@ const HTTPS = /^https:\/\/[^\s/?#]+(?:\/[^\s?#]*)?$/;
 /** An ID token's largest size we read, and a JWKS's. */
 const TOKEN_MAX = 16 * 1024;
 const JWKS_MAX = 64 * 1024;
+/** A refused exchange's answer, read only for its error code. */
+const REFUSAL_MAX = 4 * 1024;
+/** The token endpoint's error codes (RFC 6749 §5.2): the only part of a refusal named. */
+const REFUSAL_CODES: readonly string[] = Object.freeze([
+  "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client",
+  "unsupported_grant_type", "invalid_scope"]);
 
 function https(value: unknown, what: string): string {
   if (typeof value !== "string" || !HTTPS.test(value)) {
@@ -150,6 +158,20 @@ async function bounded(response: Response, max: number, what: string): Promise<u
   } catch {
     throw new Error(`the upstream's ${what} is not JSON`);
   }
+}
+
+/**
+ * A refused exchange's OAuth error code (RFC 6749 §5.2, such as `invalid_client`), as
+ * ` (code)`, or nothing: never its description or any other field, which may quote a value.
+ */
+async function refusalCode(response: Response): Promise<string> {
+  let code: unknown;
+  try {
+    code = (await bounded(response, REFUSAL_MAX, "refusal") as { error?: unknown } | null)?.error;
+  } catch {
+    return "";
+  }
+  return typeof code === "string" && REFUSAL_CODES.includes(code) ? ` (${code})` : "";
 }
 
 function whole(value: unknown): value is number {
@@ -273,7 +295,8 @@ export function oidcUpstream(issuer: string, config: UpstreamConfig, secret: str
         redirect: "manual",
       });
       if (exchanged.status !== 200) {
-        throw new Error(`the upstream's token endpoint answered ${exchanged.status}`);
+        throw new Error(`the upstream's token endpoint answered ${exchanged.status}${
+          await refusalCode(exchanged)}`);
       }
       const answer = await bounded(exchanged, TOKEN_MAX * 4, "token answer");
       const keys = await fetcher(config.jwks_uri, { headers: { Accept: "application/json" },

@@ -29,7 +29,11 @@ export interface Upstream {
    */
   authorizeUrl(request: { state: string; code_challenge: string; redirect_uri: string }):
     string;
-  /** The verified sign-in a callback's code is, given the PKCE verifier. */
+  /**
+   * The verified sign-in a callback's code is, given the PKCE verifier. A failure throws an
+   * Error whose message names the check or the status that failed, never a token's or a
+   * secret's value: the callback shows it to the person signing in.
+   */
   finish(callback: { code: string; code_verifier: string; redirect_uri: string }):
     Promise<SignIn>;
   /** The person's identity deleted at the issuer (the owner's erasure); gone already is done. */

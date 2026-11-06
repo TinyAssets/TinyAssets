@@ -45,8 +45,8 @@ def _production_guard():
 
 
 class Fake:
-    """The repo's secrets, variables, environments and the canary's runs, as GitHub holds
-    them; every REST call recorded as `METHOD path`, every value stored by name."""
+    """The repo's secrets, variables and environments, as GitHub holds them; every REST
+    call recorded as `METHOD path`, every value stored by name."""
 
     def __init__(self, secrets: dict[str | None, set[str]] | None = None,
                  variables: dict[str, str] | None = None,
@@ -57,10 +57,6 @@ class Fake:
         self.variables = dict(variables or {})
         self.environments = dict(environments or {})
         self.calls: list[str] = []
-        self.runs = [{"databaseId": 1, "headBranch": "feature"},
-                     {"databaseId": 2, "headBranch": "main"},
-                     {"databaseId": 3, "headBranch": "main"}]
-        self.receipts: dict[int, object] = {}
 
     def rest(self, method: str, path: str, body: object) -> tuple[int, object]:
         self.calls.append(f"{method} {path}")
@@ -132,17 +128,6 @@ def _gh_cli(fake: Fake, said: list[str]):
         if argv[1:3] == ["variable", "set"]:
             fake.variables[argv[3]] = value
             return _Done(0)
-        if argv[1:3] == ["run", "list"]:
-            assert argv[argv.index("--workflow") + 1] == "uptime-canary.yml"
-            return _Done(0, json.dumps(fake.runs).encode())
-        if argv[1:3] == ["run", "download"]:
-            run_id = int(argv[3])
-            assert argv[argv.index("--name") + 1] == "owner-token-claims"
-            if run_id not in fake.receipts:
-                return _Done(1)
-            into = Path(argv[argv.index("--dir") + 1])
-            (into / "owner-token-claims.json").write_text(json.dumps(fake.receipts[run_id]))
-            return _Done(0)
         raise AssertionError(argv)
 
     return run
@@ -204,17 +189,17 @@ def test_workos_stores_a_pasted_key_and_leaves_the_repository_copies(capsys) -> 
 
     def ask(prompt: str) -> str:
         asked.append(prompt)
-        return '  "sk_live_pasted"\r\n'
+        return '  "sk_pasted_0123456789abcdef"\r\n'
 
     setup.workos(_gh(fake, said), ask)
-    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_live_pasted"
+    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_pasted_0123456789abcdef"
     assert len(asked) == 1
     # The first step never deletes: the founder checks production's key first.
     assert fake.secrets[None] == {"WORKOS_API_KEY", "WORKOS_AUTHKIT_DOMAIN"}
     out = capsys.readouterr().out
     assert out.splitlines()[0] == "WORKOS_API_KEY: set (updated 2026-11-05T10:00:01Z)"
     assert "--delete-repo-copies" in out.splitlines()[1]
-    _no_value_shown(said, out, ["sk_live_pasted"])
+    _no_value_shown(said, out, ["sk_pasted_0123456789abcdef"])
     # Held already: nothing asked, nothing stored again, and its time shown.
     setup.workos(_gh(fake, said), lambda _: pytest.fail("asked again"))
     assert capsys.readouterr().out.splitlines()[0] == (
@@ -256,13 +241,13 @@ def test_workos_deletes_the_repository_copies_only_when_asked_and_production_hol
 def test_workos_reads_one_line_of_stdin_when_it_is_not_a_terminal(monkeypatch) -> None:
     """An agent's shell, or `Get-Clipboard | python ...`: Windows' getpass reads only the
     console, so a pipe is read as one line, its CR/LF stripped."""
-    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_live_piped\r\nignored\n"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_piped_0123456789abcdef\r\nignored\n"))
     monkeypatch.setattr(setup.getpass, "getpass", lambda _: pytest.fail("prompted"))
-    assert setup.read_key("p") == "sk_live_piped"
+    assert setup.read_key("p") == "sk_piped_0123456789abcdef"
     fake = Fake()
-    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_live_piped\r\n"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk_piped_0123456789abcdef\r\n"))
     assert setup.main(["workos"], gh=_gh(fake)) == 0
-    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_live_piped"
+    assert fake.stored[("production", "WORKOS_API_KEY")] == "sk_piped_0123456789abcdef"
 
 
 @pytest.mark.verifies(
@@ -280,7 +265,7 @@ def test_workos_fails_loudly_when_the_stored_key_does_not_read_back(capsys) -> N
         return done
 
     with pytest.raises(setup.SetupError, match="does not read back from production"):
-        setup.workos(setup.Gh(run=run), lambda _: "sk_live_pasted")
+        setup.workos(setup.Gh(run=run), lambda _: "sk_pasted_0123456789abcdef")
     assert "WORKOS_API_KEY: set" not in capsys.readouterr().out
     assert fake.secrets[None] == {"WORKOS_API_KEY"}
 
@@ -288,7 +273,18 @@ def test_workos_fails_loudly_when_the_stored_key_does_not_read_back(capsys) -> N
 @pytest.mark.verifies(
     "clean-sheet-platform:Sign-up is the platform's explicit admit, "
     "and erasure its outside record")
-@pytest.mark.parametrize("pasted", ["sk_test_staging", "", "sk_live_a b", "client_01"])
+@pytest.mark.parametrize("key", ["sk_" + "a1B2" * 18, "sk_live_" + "a1B2" * 18])
+def test_workos_takes_a_secret_key_with_or_without_a_label(key) -> None:
+    """WorkOS's current keys are `sk_` with no environment label."""
+    assert setup.live_workos_key(key)
+
+
+@pytest.mark.verifies(
+    "clean-sheet-platform:Sign-up is the platform's explicit admit, "
+    "and erasure its outside record")
+@pytest.mark.parametrize("pasted", ["sk_test_staging", "sk_test_" + "a1B2" * 18,
+                                    "sk_Test_" + "a1B2" * 18, "sk_", "sk_short", "",
+                                    "sk_live_a b", "client_01"])
 def test_workos_refuses_anything_but_one_production_key(pasted) -> None:
     fake = Fake(secrets={None: {"WORKOS_API_KEY"}})
     with pytest.raises(setup.SetupError) as refused:
@@ -323,17 +319,11 @@ def _discovery(url: str):
 @pytest.mark.verifies(
     "clean-sheet-platform:The owner's sign-in is the configured issuer's "
     "OpenID Connect flow")
-def test_the_variables_are_set_once_from_the_newest_main_receipt(capsys) -> None:
+def test_the_variables_are_set_once(capsys) -> None:
     fake, said = Fake(), []
-    fake.receipts = {1: {"iss": "https://other", "auth_time": 1},
-                     3: {"iss": ISSUER, "auth_time": 1767225600}}
     assert setup.variables(_gh(fake, said), _discovery)
     assert fake.variables == {
-        "OWNER_ISSUER": ISSUER, "WORKOS_CLIENT_ID": setup.WORKOS_CLIENT_ID,
-        "OWNER_TOKEN_CLAIMS": json.dumps({"iss": ISSUER, "auth_time": 1767225600})}
-    # The feature branch's run is never read; main's run 2 kept none, so run 3 is used.
-    downloads = [line.split()[3] for line in said if line.startswith("gh run download")]
-    assert downloads == ["2", "3"]
+        "OWNER_ISSUER": ISSUER, "WORKOS_CLIENT_ID": setup.WORKOS_CLIENT_ID}
     _no_value_shown(said, capsys.readouterr().out, fake.variables.values())
     # Run again: every one already set, nothing written.
     calls = len(said)
@@ -343,22 +333,6 @@ def test_the_variables_are_set_once_from_the_newest_main_receipt(capsys) -> None
     fake.variables["WORKOS_CLIENT_ID"] = "client_other"
     assert not setup.variables(_gh(fake, said), _discovery)
     assert fake.variables["WORKOS_CLIENT_ID"] == "client_other"
-
-
-@pytest.mark.verifies(
-    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
-    "OpenID Connect flow")
-@pytest.mark.parametrize("receipt", [None, {"iss": ISSUER}, {"iss": "https://other",
-                                                             "auth_time": 1},
-                                     {"iss": ISSUER, "auth_time": "1"},
-                                     {"iss": ISSUER, "auth_time": True}])
-def test_owner_token_claims_needs_a_receipt_naming_the_issuer_with_auth_time(receipt):
-    fake = Fake()
-    if receipt is not None:
-        fake.receipts = {2: receipt}
-    with pytest.raises(setup.SetupError):
-        setup.variables(_gh(fake), _discovery)
-    assert "OWNER_TOKEN_CLAIMS" not in fake.variables
 
 
 @pytest.mark.verifies(
@@ -553,7 +527,9 @@ def test_the_real_gh_call_sends_bytes_and_no_shell(tmp_path, monkeypatch) -> Non
         "sys.stdout.buffer.write('HTTP/2.0 200 OK\\r\\n\\r\\n{\"n\": \"\\u00e9\"}'.encode())\n",
         encoding="utf-8")
     stand_in.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    # The stand-in alone: where it cannot run (Windows ignores the shebang), the call fails
+    # rather than reaching a signed-in real gh and replacing a live secret.
+    monkeypatch.setenv("PATH", str(tmp_path))
     gh = setup.Gh()
     gh.set_secret("REVIEW_APP_PRIVATE_KEY", PEM, "review")
     seen = json.loads(log.read_text())
