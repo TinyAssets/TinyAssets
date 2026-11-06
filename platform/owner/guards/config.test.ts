@@ -12,11 +12,12 @@ import { describe, expect, it } from "vitest";
 
 import { classProblems, exactProblems, flagProblems, keyProblems, NO_EXPORTS, secretProblems }
   from "../../ci/kit/config";
-import { type Config, configFiles, PLATFORM, platformConfigs, workerSources }
-  from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
+import { type Config, configFiles, platformConfigs, workerSources } from "../../ci/kit/sources";
 import { readWrangler, wranglerKeys } from "../../ci/workers";
 
-import { BOUND_KEYS, type Bound, CLASSES, ENV_KEYS, LIMITS, OWNER_QUEUES, SECRETS, SERVICES,
+import { BOUND_KEYS, type Bound, CLASSES, ENV_KEYS, LIMITS, OWNER_QUEUES, RING_QUEUES, SECRETS,
+         SERVICES,
          TOP_KEYS } from "./rules";
 
 const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,6 +31,48 @@ const SANDBOX_QUEUES = SERVICES["SANDBOX"]!.queues as { producers: object[] };
 
 function object(value: unknown): value is Config {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Each way a bound Worker's own classes, as its rules state them, could reach another
+ * Worker's object: the owner's own invariant, whatever the bound Worker's rules say. Every
+ * namespace is of a class the Worker itself makes (no `script_name`, a class among its own),
+ * and none of those classes is `OwnerDO`.
+ */
+export function ownProblems(own: NonNullable<Bound["own"]>): string[] {
+  const problems: string[] = [];
+  const objects = own.durable_objects as { bindings?: unknown } | undefined;
+  const bindings = Array.isArray(objects?.bindings) ? objects.bindings as Config[] : null;
+  if (bindings === null || Object.keys(objects ?? {}).join() !== "bindings") {
+    problems.push("its own classes are not a list of namespace bindings");
+  }
+  for (const binding of bindings ?? []) {
+    if (Object.hasOwn(binding, "script_name")) {
+      problems.push(`its namespace ${String(binding["name"])} names another Worker's class`);
+    }
+    if (!own.classes.includes(String(binding["class_name"]))) {
+      problems.push(`its namespace ${String(binding["name"])} binds ` +
+                    `${String(binding["class_name"])}, not a class of its own`);
+    }
+  }
+  if (own.classes.includes("OwnerDO")) {
+    problems.push("its own classes hold OwnerDO");
+  }
+  return problems;
+}
+
+/**
+ * Each way a bound Worker's queues, as its rules state them, reach past a ring: the owner's
+ * own invariant. It may only produce, and only onto `RING_QUEUES`.
+ */
+export function queueProblems(queues: unknown): string[] {
+  const held = queues as { producers?: unknown } | undefined;
+  const producers = Array.isArray(held?.producers) ? held.producers as Config[] : null;
+  if (producers === null || Object.keys(held ?? {}).join() !== "producers") {
+    return ["its queues are other than producers"];
+  }
+  return producers.filter((producer) => !RING_QUEUES.includes(String(producer["queue"])))
+    .map((producer) => `it produces onto ${String(producer["queue"])}, not a ring`);
 }
 
 /**
@@ -50,10 +93,14 @@ export function boundProblems(config: Config, allowed: Bound): string[] {
                      && !(key === "queues" && allowed.queues !== undefined))
     .map((key) => `${key} is not a binding the owner's ${allowed.service} binding allows`);
   if (own !== undefined) {
+    problems.push(...ownProblems(own));
     if (JSON.stringify(config["durable_objects"]) !== JSON.stringify(own.durable_objects)) {
       problems.push("durable_objects binds other than its own classes");
     }
     problems.push(...classProblems(config["migrations"], own.classes));
+  }
+  if (allowed.queues !== undefined) {
+    problems.push(...queueProblems(allowed.queues));
   }
   if (allowed.queues !== undefined
       && JSON.stringify(config["queues"]) !== JSON.stringify(allowed.queues)) {
@@ -575,5 +622,48 @@ describe("owner Worker config", () => {
     const services = [{ binding: "FILES", service: "tinyassets-files" }];
     expect(configProblems({ ...base, services, env: { prod: { services } } }, bound))
       .toEqual([]);
+  });
+});
+
+describe("the owner's own hold on the Workers it binds, whatever their rules say", () => {
+  // Each probe grows a bound Worker's rules (the allowance the owner reads from them) and its
+  // config together, so only the owner's own invariant can refuse it.
+  const hooks = readWrangler(join(PLATFORM, "hooks"));
+  const sandbox = readWrangler(join(PLATFORM, "sandbox"));
+  const grown = (bindings: object[], classes: readonly string[]) => ({
+    config: { ...hooks, durable_objects: { bindings },
+              migrations: [{ tag: "v1", new_sqlite_classes: classes }] } as Config,
+    allowed: { ...SERVICES["HOOKS"]!, own: { durable_objects: { bindings }, classes } },
+  });
+
+  it.each([
+    ["a namespace of another Worker's class", grown([...HOOKS_OWN.durable_objects.bindings,
+      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }],
+                                                    HOOKS_OWN.classes)],
+    ["a namespace of a class not its own", grown([...HOOKS_OWN.durable_objects.bindings,
+      { name: "OTHER", class_name: "Other" }], HOOKS_OWN.classes)],
+    ["OwnerDO among its own classes", grown([...HOOKS_OWN.durable_objects.bindings,
+      { name: "OWNER", class_name: "OwnerDO" }], [...HOOKS_OWN.classes, "OwnerDO"])],
+  ])("refuses HOOKS when the hooks Worker's rules and config both gain %s",
+     (_what, { config: probe, allowed }) => {
+    expect(boundProblems(probe, allowed)).not.toEqual([]);
+  });
+
+  it.each([
+    ["a queue consumer", { ...SANDBOX_QUEUES, consumers: [{ queue: "tinyassets-sandbox-ring" }] }],
+    ["a producer onto another queue", { producers: [...SANDBOX_QUEUES.producers,
+      { binding: "OUT", queue: "tinyassets-erasure" }] }],
+  ])("refuses SANDBOX when the sandbox Worker's rules and config both gain %s",
+     (_what, queues) => {
+    expect(boundProblems({ ...sandbox, queues }, { ...SERVICES["SANDBOX"]!, queues }))
+      .not.toEqual([]);
+  });
+
+  it("holds every Worker it binds today", () => {
+    for (const [binding, allowed] of Object.entries(SERVICES)) {
+      const config = platformConfigs().get(allowed.service);
+      expect(config, binding).toBeDefined();
+      expect(boundProblems(config!, allowed), binding).toEqual([]);
+    }
   });
 });

@@ -10,7 +10,6 @@ import ts from "typescript";
 import { PLATFORM } from "../paths.ts";
 import { type Config, parseWrangler } from "../workers.ts";
 
-export { PLATFORM, REPO } from "../paths.ts";
 export type { Config } from "../workers.ts";
 
 /** Directories no config guard looks in: dependencies, and wrangler's own local state. */

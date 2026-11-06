@@ -11,8 +11,10 @@
  * Each service names one Worker and exactly the binding kinds that Worker's own config may
  * hold, each a kind that reaches no object, service, queue, workflow or other Worker; the
  * rest of what it may hold (its secrets, vars, own classes, limits and queue) is that
- * Worker's own allow-list (its `guards/rules.ts`). The bound Worker's config is checked
- * against that allowance too, so any other binding it gains (a Durable Object, a service, a
+ * Worker's own allow-list (its `guards/rules.ts`), held to the owner's own invariants
+ * whatever that Worker's rules say (`config.test.ts`'s `ownProblems` and `queueProblems`):
+ * no namespace of another Worker's class, never `OwnerDO`, no queue but a ring. The bound
+ * Worker's config is checked against that allowance too, so any other binding it gains (a Durable Object, a service, a
  * queue, a workflow, a dispatch namespace, a Worker loader, a tail consumer, a shared store,
  * an unsafe binding) refuses the owner's binding:
  * - `FILES`, the files Worker: its one R2 bucket, its keyring and its cipher var;
@@ -76,6 +78,12 @@ export const BOUND_KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
   "preview_urls", "build", "rules",
 ]);
+/**
+ * The only queues a bound Worker may produce onto, whatever its own rules say: the sandbox
+ * line's ring, whose one consumer, the doors Worker, turns `{owner}` into that owner's
+ * `sandboxRung` and nothing else.
+ */
+export const RING_QUEUES: readonly string[] = Object.freeze(["tinyassets-sandbox-ring"]);
 
 export interface Bound {
   /** The Worker the binding names. */

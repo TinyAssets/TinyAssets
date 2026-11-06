@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { readWrangler, wranglerKeys } from "../workers.ts";
-import { type Config, configFiles, PLATFORM, platformConfigs } from "./sources.ts";
+import { PLATFORM } from "../paths.ts";
+import { type Config, configFiles, platformConfigs } from "./sources.ts";
 
 /** The flag that keeps a Worker's own namespaces out of its `ctx.exports`. */
 export const NO_EXPORTS = "disable_ctx_exports";
@@ -144,6 +145,9 @@ export function configProblems(config: Config, rules: ConfigRules,
   }
   if (typeof config["compatibility_date"] !== "string") {
     problems.push("the compatibility date is set");
+  }
+  if (typeof config["$schema"] !== "string") {
+    problems.push("the config names wrangler's schema ($schema)");
   }
   if (config["workers_dev"] !== false || config["preview_urls"] !== false) {
     problems.push("workers_dev and preview_urls are false");

@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +8,8 @@ import { project } from "../ci/project";
 import { fake, once } from "../ci/workers";
 
 const SANDBOX = dirname(fileURLToPath(import.meta.url));
+/** Builds the runner the Worker ships before the tests that need it (`runner-build.ts`). */
+const RUNNER_BUILD = join(SANDBOX, "runner-build.ts");
 
 export default defineConfig({
   test: {
@@ -19,31 +20,25 @@ export default defineConfig({
       // (`E2B`) to script it and read back what it received.
       project("sandbox", "workerd", {
         plugins: [
-          cloudflareTest(once(() => {
-            // The runner the Worker ships (`src/runner-bytes.ts` imports it as data), built
-            // as the Worker's own build makes it (`build.command` in wrangler.jsonc): tests
-            // run what deploys.
-            execFileSync(process.execPath, [join(SANDBOX, "template", "bundle.mjs"),
-                                            join(SANDBOX, "dist")], { stdio: "ignore" });
-            return {
-              main: "./src/index.ts",
-              wrangler: { configPath: "./wrangler.jsonc" },
-              miniflare: {
-                bindings: { E2B_API_KEY: "e2b_test_key_0000" },
-                serviceBindings: { E2B: "fake-e2b" },
-                outboundService: "fake-e2b",
-                // The ring queue's consumer in tests: each ring recorded at once.
-                workers: [fake(join(SANDBOX, "test", "fake-e2b.ts"), { queueConsumers: {
-                  "tinyassets-sandbox-ring": { maxBatchSize: 1, maxBatchTimeout: 0 } } })],
-              },
-            };
-          })),
+          cloudflareTest(once(() => ({
+            main: "./src/index.ts",
+            wrangler: { configPath: "./wrangler.jsonc" },
+            miniflare: {
+              bindings: { E2B_API_KEY: "e2b_test_key_0000" },
+              serviceBindings: { E2B: "fake-e2b" },
+              outboundService: "fake-e2b",
+              // The ring queue's consumer in tests: each ring recorded at once.
+              workers: [fake(join(SANDBOX, "test", "fake-e2b.ts"), { queueConsumers: {
+                "tinyassets-sandbox-ring": { maxBatchSize: 1, maxBatchTimeout: 0 } } })],
+            },
+          }))),
         ],
+        test: { globalSetup: [RUNNER_BUILD] },
       }),
       // The runner, in Node, against fake CLIs and a fake doors server.
       project("sandbox", "runner"),
       // Static guards over the source and config, in Node.
-      project("sandbox", "guards"),
+      project("sandbox", "guards", { test: { globalSetup: [RUNNER_BUILD] } }),
     ],
   },
 });

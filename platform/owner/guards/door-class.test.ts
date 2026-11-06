@@ -16,7 +16,8 @@ import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, PLATFORM } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
+import { parse } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
 const HELPERS: ReadonlySet<string> = new Set(["#bind", "#account", "#owner", "#widening",

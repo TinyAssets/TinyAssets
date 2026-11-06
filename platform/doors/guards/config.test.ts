@@ -25,7 +25,8 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { configProblems, configTests } from "../../ci/kit/config";
-import { type Config, PLATFORM, platformConfigs } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
+import { type Config, platformConfigs } from "../../ci/kit/sources";
 import { readWrangler } from "../../ci/workers";
 
 import { CONFIG } from "./rules";

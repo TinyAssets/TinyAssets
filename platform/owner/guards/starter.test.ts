@@ -18,7 +18,7 @@ import {
   applied, blobId, hiddenUnicode, prBody, quoted, relocation, report, vendoredSpec, versionOf,
 } from "../../starter/okf-watch";
 import { agentFile } from "../src/agent-file";
-import { PLATFORM } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
 
 const STARTER = join(PLATFORM, "starter");
 

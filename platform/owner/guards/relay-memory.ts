@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { PLATFORM } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
 
 const SRC = join(PLATFORM, "owner", "src");
 

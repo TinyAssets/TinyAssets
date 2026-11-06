@@ -37,17 +37,18 @@ isolationTests(IMPORTS, {
     ["a type import by path", "export type T = import('../../owner/src/owner-do').OwnerDO;"],
   ],
   allows: [
-    ["gateway/src/probe.ts", [
+    ["pi-ai, the runtime module and sibling sources", "gateway/src/probe.ts", [
       "import { createModels } from '@earendil-works/pi-ai/models';",
       "import type { Api } from '@earendil-works/pi-ai';",
       "import { WorkerEntrypoint } from 'cloudflare:workers';",
       "import { open } from './keyring';",
       "import { principal } from './../../owner/src/text';",
     ].join("\n")],
-    ["gateway/src/egress.ts", "import { AsyncLocalStorage } from 'node:async_hooks';"],
-    [KEYRING_HOME,
+    ["node:async_hooks in egress.ts", "gateway/src/egress.ts",
+     "import { AsyncLocalStorage } from 'node:async_hooks';"],
+    ["the keyring in keyring.ts", KEYRING_HOME,
      "export function f(env: { GATEWAY_KEYRING?: unknown }) { return env.GATEWAY_KEYRING; }"],
-    ["gateway/src/probe.ts",
+    ["the owner grammar import beside the word owner", "gateway/src/probe.ts",
      "import { principal } from '../../owner/src/text';\nexport const owner = 'owner';"],
   ],
 });

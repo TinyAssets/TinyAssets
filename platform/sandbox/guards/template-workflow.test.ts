@@ -14,7 +14,7 @@ import { pathToFileURL } from "node:url";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
 
 const ROOT = join(PLATFORM, "..");
 const WORKFLOW = join(ROOT, ".github", "workflows", "sandbox-template.yml");

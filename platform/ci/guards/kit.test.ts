@@ -10,8 +10,16 @@ import { extname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { configFiles, PLATFORM, workerSources } from "../kit/sources";
+import { PLATFORM } from "../paths";
+import { configFiles, workerSources } from "../kit/sources";
 import { fake, once, parseWrangler, readWrangler, workerConfig } from "../workers";
+
+/**
+ * The files under a Worker's `src/` that are no script, each named: data a source imports
+ * and the guards check by its import's path. Any other file there is a script the source
+ * guards must scan.
+ */
+const DATA_FILES: readonly string[] = Object.freeze(["owner/src/model-ranking.json"]);
 
 describe("the guard kit", () => {
   it("finds every wrangler config under a root, in order, and none of a dependency's", () => {
@@ -33,7 +41,8 @@ describe("the guard kit", () => {
     }
   });
 
-  it("holds every Worker's every source, as the source guards scan them", () => {
+  it("holds every Worker's every file, a source the source guards scan unless it is a " +
+     "named data file", () => {
     const sources = [...workerSources().keys()];
     const workers = readdirSync(PLATFORM, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && entry.name !== "node_modules")
@@ -41,14 +50,14 @@ describe("the guard kit", () => {
       .filter((name) => readdirSync(join(PLATFORM, name)).includes("src"));
     expect(workers).toEqual(expect.arrayContaining(["doors", "files", "gateway", "hooks",
                                                     "owner", "sandbox"]));
-    for (const worker of workers) {
-      const src = join(PLATFORM, worker, "src");
-      const files = readdirSync(src, { recursive: true, encoding: "utf8" })
-        .filter((path) => [".ts", ".js", ".mjs"].includes(extname(path)))
-        .map((path) => `${worker}/src/${path.split("\\").join("/")}`).sort();
-      expect(sources.filter((path) => path.startsWith(`${worker}/src/`)).sort(), worker)
-        .toEqual(files);
+    const files = workers.flatMap((worker) =>
+      readdirSync(join(PLATFORM, worker, "src"), { recursive: true, encoding: "utf8" })
+        .filter((path) => extname(path) !== "")
+        .map((path) => `${worker}/src/${path.split("\\").join("/")}`));
+    for (const data of DATA_FILES) {
+      expect(files, data).toContain(data);
     }
+    expect([...sources].sort()).toEqual(files.filter((path) => !DATA_FILES.includes(path)).sort());
   });
 });
 

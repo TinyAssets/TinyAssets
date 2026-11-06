@@ -48,7 +48,8 @@ import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, PLATFORM, reporter, workerSources } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
+import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlarm",
                                              "disableAlarms", "deleteAll"]);

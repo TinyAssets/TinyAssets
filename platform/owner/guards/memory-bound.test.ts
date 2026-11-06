@@ -29,7 +29,7 @@ import { describe, expect, it } from "vitest";
 import {
   ISOLATE_BYTES, MEMORY, memoryTerms, memoryWorstCase, RELAY_MEMORY_BUDGET,
 } from "./relay-memory";
-import { PLATFORM } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
 
 const SRC = join(PLATFORM, "owner", "src");
 const MIB = 1024 * 1024;

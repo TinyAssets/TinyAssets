@@ -149,8 +149,8 @@ export function closure(worker: string,
 export interface IsolationTests {
   /** Sources a new file of the Worker could hold, each of which must be refused. */
   readonly sees: readonly (readonly [string, string])[];
-  /** Sources, by path, that must pass. */
-  readonly allows: readonly (readonly [string, string])[];
+  /** Sources that must pass, each named, at its path. */
+  readonly allows: readonly (readonly [string, string, string])[];
 }
 
 /**
@@ -171,7 +171,7 @@ export function isolationTests(rules: ImportRules, tests: IsolationTests): void 
       expect(isolationProblems(rules, `${rules.worker}/src/probe.ts`, source)).not.toEqual([]);
     });
 
-    it.each(tests.allows)("allows %s", (path, source) => {
+    it.each(tests.allows)("allows %s", (_what, path, source) => {
       expect(isolationProblems(rules, path, source)).toEqual([]);
     });
   });

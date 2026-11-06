@@ -18,7 +18,8 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { configTests } from "../../ci/kit/config";
-import { parse, PLATFORM, sourcesOf } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
+import { parse, sourcesOf } from "../../ci/kit/sources";
 import { HEARTBEAT_MS, LEASE_TTL_MS } from "../runner/runner";
 import { KILL_WITHIN_MS } from "../runner/users";
 import { CHUNK_BYTES, COMMIT_OPS, FEED_LIMIT, INLINE_BYTES, INTENT_ID_CHARS, SYNC_BODY }

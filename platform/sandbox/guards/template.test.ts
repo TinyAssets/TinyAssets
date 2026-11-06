@@ -18,7 +18,7 @@ import { join, relative } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
 import { readWrangler } from "../../ci/workers";
 import { STEP_NS } from "../../owner/src/sync-ignore";
 

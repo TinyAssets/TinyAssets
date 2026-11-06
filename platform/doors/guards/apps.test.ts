@@ -10,7 +10,7 @@ import { join, relative } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../ci/kit/sources";
+import { PLATFORM } from "../../ci/paths";
 import raw from "../apps.json" with { type: "json" };
 import { appList, checkedApps, connectUrl, refusedRegistrationLine, registrationRefusal,
          vendorOf } from "../src/apps";

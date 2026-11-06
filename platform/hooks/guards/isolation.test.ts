@@ -25,12 +25,12 @@ isolationTests(IMPORTS, {
     ["a type import by path", "export type T = import('../../owner/src/owner-do').OwnerDO;"],
   ],
   allows: [
-    ["hooks/src/probe.ts", [
+    ["the runtime, code mode's portable types and sibling sources", "hooks/src/probe.ts", [
       "import { WorkerEntrypoint } from 'cloudflare:workers';",
       "import type { CodemodeRemote } from '@earendil-works/pi-codemode/portable';",
       "import { CodemodeSandbox } from './codemode';",
     ].join("\n")],
-    ["hooks/src/codemode.ts",
+    ["QuickJS in codemode.ts", "hooks/src/codemode.ts",
      "import { CodemodeSandboxDurableObject } from '@earendil-works/pi-codemode/cloudflare';"],
   ],
 });
