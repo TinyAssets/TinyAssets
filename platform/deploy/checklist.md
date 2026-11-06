@@ -169,9 +169,11 @@ It never counts as "absent".
     `/app/signed-in` redirect, the `/app` resource and a fresh S256 challenge).
 
   **Open the link and sign in once.** Read where the browser ends:
-  - **Pass:** `https://tinyassets.io/app/signed-in?error=temporarily_unavailable` (the
-    address, whatever the page shows). Every check passed and the closed gate refused the
-    sign-in, so no owner is made.
+  - **Pass:** the address begins
+    `https://tinyassets.io/app/signed-in?error=temporarily_unavailable` (more follows
+    it). The page is still the old app's and reads "Sign in to TinyAssets to continue":
+    that is expected. Every check passed and the closed gate refused the sign-in, so no
+    owner is made.
   - **Fail:** a `400` at `/authorize` (the doors could not read their app's client
     document); an error page at AuthKit (the client or the callback refused); a `502` at
     `/oauth/upstream/callback` naming the failed check (the token endpoint's status and
@@ -180,7 +182,9 @@ It never counts as "absent".
 
   If it fails on `auth_time`, the next step is a second probe with AuthKit asked for it
   (`max_age=0` in the doors' `UPSTREAM.authorize_params`), a change of its own. `routes`
-  later finds both paths the doors' already.
+  later finds both paths already the doors'. Until `routes`, never delete the control
+  record (`c:control`): the doors read a missing record as open and would admit owners on
+  these two paths.
 - **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
   the doors' routes over (`/mcp*`, `/api/*`, `/hooks/inbound/*`, `/hooks/e2b/*`,
   `/app/api/*`, `/authorize*`, `/oauth/*`, `/.well-known/oauth-*`) one route at a time, through

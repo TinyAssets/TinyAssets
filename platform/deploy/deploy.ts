@@ -43,7 +43,7 @@
  * then prints the one first-party sign-in link, whose end settles everything sign-in
  * needs at the cutover in the doors' own code: the doors' client and secret at the
  * issuer, the callback, and the ID token's checks, `auth_time` among them (`PROBE_SIGNS`).
- * `--routes` later finds both paths the doors' already and hands over the rest.
+ * `--routes` later finds both paths already the doors' and hands over the rest.
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
@@ -918,8 +918,9 @@ export function probeLink(): string {
 
 /** What the probe's sign-in shows, read from where the browser ends. */
 export const PROBE_SIGNS = [
-  `Pass: the browser ends at ${FIRST_PARTY.redirect}?error=temporarily_unavailable (the ` +
-  "address, whatever that page shows): the closed gate refused the sign-in after every " +
+  `Pass: the browser's address begins ${FIRST_PARTY.redirect}?error=temporarily_unavailable ` +
+  "(more follows it; the page itself is the old app's and reads as a sign-in error, " +
+  "which is expected): the closed gate refused the sign-in after every " +
   "check passed, and no owner was made. The doors' client and API key were taken at the " +
   "issuer's token endpoint, the callback was its registered redirect, and the ID token's " +
   "signature, iss, aud, nonce and auth_time held.",
