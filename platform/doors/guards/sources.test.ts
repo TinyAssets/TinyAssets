@@ -22,7 +22,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
 import { SUPPORTED_APIS } from "../../gateway/src/credential";
-import { PLATFORM } from "../../owner/guards/sources";
+import { PLATFORM } from "../../ci/kit/sources";
 import {
   bundledRecords, catalogOf, forbids, type Install, RUN_BASICS, runEnv, sealedSource,
   type LoginSpec, type SourceRecord,

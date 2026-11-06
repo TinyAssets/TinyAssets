@@ -9,6 +9,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { OPEN_GATES } from "../../ci/fixtures";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
 import type { SandboxSignin, SandboxStart } from "../src/sandbox";
 import { WriteGate } from "../src/gate";
@@ -444,7 +445,7 @@ describe("the per-source switch, in the owner's object (review H1)", () => {
 });
 
 describe("the runs lane's own read of the switches (review round 2, N1)", () => {
-  const OPEN = Object.freeze({ outside: "on", ordinary: "all", canary: [], inbound: false });
+  const OPEN = OPEN_GATES;
 
   /** `agent`'s schedule due now, the lane run once, with no door call handing a list. */
   async function laneRuns(r: Gated, agent: string):

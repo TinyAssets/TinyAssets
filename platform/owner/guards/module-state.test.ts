@@ -25,7 +25,7 @@ import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, reporter, workerSources } from "./sources";
+import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 function unwrap(node: ts.Expression): ts.Expression {
   let current = node;

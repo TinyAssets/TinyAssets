@@ -6,19 +6,17 @@
 // built, migrated and served, by the memory leg (`memory/leg.mjs`), which holds it within
 // `OWNER_BASELINE_BYTES`; the doors' and files' pools (PR 3b, PR 4) measure theirs the same
 // way. Run by hand: `node memory/baselines.mjs`.
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
+import { PLATFORM } from "../../ci/paths.ts";
+import { bundle, workerConfig } from "../../ci/workers.ts";
 import { freePorts } from "./ports.mjs";
 import { ownWorkerd } from "./workerd.mjs";
 
-const PLATFORM = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const require = createRequire(join(PLATFORM, "owner", "package.json"));
-const wrangler = join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
 const workerd = join(dirname(require.resolve("workerd/package.json")), "bin", "workerd");
 const MIB = 1024 * 1024;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,11 +26,7 @@ for (const name of ["doors", "files"]) {
   const [port, inspector] = await freePorts(2);
   const out = mkdtempSync(join(tmpdir(), `baseline-${name}-`));
   try {
-    execFileSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", out, "--config",
-                                    join(PLATFORM, name, "wrangler.jsonc")],
-                 { cwd: join(PLATFORM, name), stdio: "pipe",
-                   env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
-    const modules = readdirSync(out).filter((file) => /\.(js|mjs|wasm)$/.test(file));
+    const modules = bundle(join(PLATFORM, name), out).map(({ file }) => file);
     writeFileSync(join(out, "rest.js"), `import * as bundle from "./index.js";
 void bundle;
 export default {
@@ -55,7 +49,7 @@ const config :Workerd.Config = (
 );
 const w :Workerd.Worker = (
   modules = [ ${embed} ],
-  compatibilityDate = "2026-10-23",
+  compatibilityDate = "${workerConfig(join(PLATFORM, name)).compatibility_date}",
   compatibilityFlags = ["nodejs_compat"],
 );
 `);

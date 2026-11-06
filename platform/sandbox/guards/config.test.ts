@@ -2,10 +2,7 @@
  * The sandbox Worker reaches nothing but E2B (slice S; the owner config guard's `SERVICES`
  * entry for `SANDBOX` relies on it):
  *
- * - its config binds its own two classes' namespaces, the control record's namespace and the
- *   ring queue's producer, and nothing else (no `OWNER`, no service, no bucket, no consumer,
- *   no route), carries `global_fetch_strictly_public` and `disable_ctx_exports`, and
- *   declares its one secret by name;
+ * - its config holds to its allow-list (`rules.ts`), by the platform's config checker;
  * - the runner's copies of the object's numbers (its bundle takes nothing of the object's
  *   storage modules) are the object's own: the lease's TTL and the sync bounds;
  * - in its source, `fetch` is named in `e2b.ts` alone, and every URL there is built on
@@ -20,14 +17,16 @@ import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, PLATFORM, workerSources } from "../../owner/guards/sources";
+import { configTests } from "../../ci/kit/config";
+import { parse, PLATFORM, sourcesOf } from "../../ci/kit/sources";
 import { HEARTBEAT_MS, LEASE_TTL_MS } from "../runner/runner";
 import { KILL_WITHIN_MS } from "../runner/users";
 import { CHUNK_BYTES, COMMIT_OPS, FEED_LIMIT, INLINE_BYTES, INTENT_ID_CHARS, SYNC_BODY }
   from "../runner/sync";
 import { E2B_API, E2B_ENVD } from "../src/e2b";
 
-const CONFIG = join(PLATFORM, "sandbox", "wrangler.jsonc");
+import { CONFIG } from "./rules";
+
 const E2B = "sandbox/src/e2b.ts";
 
 /** Each way a sandbox source reaches out other than through `e2b.ts` to E2B. */
@@ -59,36 +58,34 @@ export function reachProblems(fileName: string, source: string): string[] {
   return problems;
 }
 
-describe("the sandbox Worker", () => {
-  it("binds its own classes, the control record and the ring's producer, and nothing else",
-     () => {
-    const config = ts.parseConfigFileTextToJson(CONFIG, readFileSync(CONFIG, "utf8"))
-      .config as Record<string, unknown>;
-    expect(Object.keys(config).sort()).toEqual([
-      "$schema", "build", "compatibility_date", "compatibility_flags", "durable_objects",
-      "kv_namespaces", "main", "migrations", "name", "preview_urls", "queues", "rules",
-      "secrets", "vars", "workers_dev"]);
-    // Its build makes the runner it ships, and the runner alone is imported as data.
-    expect(config["build"]).toEqual({ command: "node template/bundle.mjs dist" });
-    expect(config["rules"]).toEqual([{ type: "Data", globs: ["**/dist/runner.mjs"],
-                                       fallthrough: false }]);
-    expect(config["durable_objects"]).toEqual({ bindings: [
+configTests(CONFIG, {
+  refused: ["routes", "route", "services", "r2_buckets", "d1_databases", "env", "unsafe",
+            "worker_loaders", "tail_consumers", "dispatch_namespaces"],
+  probes: [
+    ["the owner's class", { durable_objects: { bindings: [
       { name: "SANDBOXES", class_name: "SandboxControl" },
-      { name: "SLOTS", class_name: "SandboxSlots" }] });
-    expect(config["kv_namespaces"]).toEqual([{ binding: "CONTROL",
-                                               id: "not-provisioned-control" }]);
-    expect(config["queues"]).toEqual({ producers: [{ binding: "RING",
-                                                     queue: "tinyassets-sandbox-ring" }] });
-    expect(config["secrets"]).toEqual({ required: ["E2B_API_KEY"] });
-    expect(config["compatibility_flags"]).toEqual(expect.arrayContaining([
-      "global_fetch_strictly_public", "disable_ctx_exports"]));
-    expect([config["workers_dev"], config["preview_urls"]]).toEqual([false, false]);
-  });
+      { name: "SLOTS", class_name: "SandboxSlots" },
+      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
+    ["a second KV namespace", { kv_namespaces: [{ binding: "CONTROL", id: "not-provisioned-control" },
+                                                { binding: "OAUTH_KV", id: "not-provisioned-oauth" }] }],
+    ["a queue consumer", { queues: { producers: [{ binding: "RING",
+                                                   queue: "tinyassets-sandbox-ring" }],
+                                     consumers: [{ queue: "tinyassets-sandbox-ring" }] } }],
+    ["no ring", { queues: undefined }],
+    ["another var", { vars: { E2B_TEMPLATE: "t", OWNER: "alice" } }],
+    ["another secret", { secrets: { required: ["E2B_API_KEY", "ROUTING_MAC_KEY"] } }],
+    ["another build", { build: { command: "node other.mjs" } }],
+    ["the runner not as data", { rules: undefined }],
+    ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],
+    ["a workers.dev URL", { workers_dev: true }],
+  ],
+});
 
+describe("the sandbox Worker", () => {
   it("reaches E2B's own hosts alone", () => {
     expect([new URL(E2B_API).host, new URL(E2B_ENVD).host]).toEqual(["api.e2b.app",
                                                                      "sandbox.e2b.app"]);
-    const problems = [...workerSources()].filter(([path]) => path.startsWith("sandbox/src/"))
+    const problems = [...sourcesOf("sandbox")]
       .flatMap(([path, source]) => reachProblems(path, source));
     expect(problems).toEqual([]);
   });

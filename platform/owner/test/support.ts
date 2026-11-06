@@ -1,6 +1,8 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { TIERS } from "../../ci/fixtures";
+import { sqlIn } from "../../ci/workerd";
 import { bundledSources, signinsOn } from "../../doors/src/sources";
 import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files, type Full } from "../src/files";
@@ -23,11 +25,7 @@ export const text = (value: string): Uint8Array => new TextEncoder().encode(valu
 export const EVERY_SIGNIN: readonly string[] = Object.freeze(signinsOn(
   bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
 
-/** The founder's numbers (ADR-034 decision 8), as the tests' control record holds them. */
-export const TIERS = Object.freeze({
-  free: Object.freeze({ runs: 5, storage_bytes: 25_000_000_000 }),
-  paid: Object.freeze({ runs: 10, storage_bytes: 250_000_000_000 }),
-});
+export { TIERS };
 
 /**
  * `act` in `stub`'s object, with a write gate of its own over the object's storage: it
@@ -162,12 +160,7 @@ export function alarmOf(stub: DurableObjectStub<OwnerDO>): Promise<number | null
   });
 }
 
-/** Rows a query returns in `stub`'s own storage. */
-export function sqlIn(stub: DurableObjectStub<OwnerDO>, statement: string,
-                      ...params: SqlStorageValue[]): Promise<Row[]> {
-  return runInDurableObject(stub, (_instance: OwnerDO, state) =>
-    state.storage.sql.exec<Row>(statement, ...params).toArray());
-}
+export { sqlIn };
 
 /** The tables of `stub`'s own database whose names begin `prefix`. */
 export async function tablesIn(stub: DurableObjectStub<OwnerDO>, prefix: string):

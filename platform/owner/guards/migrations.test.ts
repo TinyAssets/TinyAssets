@@ -28,7 +28,7 @@ import { describe, expect, it } from "vitest";
 
 import { exported } from "../src/export";
 import { MIGRATIONS, type Migration, migrationDigest } from "../src/schema";
-import { workerSources } from "./sources";
+import { workerSources } from "../../ci/kit/sources";
 
 const LOCK = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations.json");
 

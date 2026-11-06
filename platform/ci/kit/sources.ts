@@ -1,11 +1,17 @@
+/**
+ * The platform's guard kit: what every workspace's static guards read (each Worker's
+ * config files and source, parsed) and how they report.
+ */
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, extname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { extname, join, relative } from "node:path";
 
 import ts from "typescript";
 
-/** The platform workspace root (`platform/`). */
-export const PLATFORM = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+import { PLATFORM } from "../paths.ts";
+import { type Config, parseWrangler } from "../workers.ts";
+
+export { PLATFORM, REPO } from "../paths.ts";
+export type { Config } from "../workers.ts";
 
 /** Directories no config guard looks in: dependencies, and wrangler's own local state. */
 const UNWALKED: ReadonlySet<string> = new Set(["node_modules", ".wrangler"]);
@@ -32,6 +38,33 @@ export function configFiles(root: string): string[] {
   };
   walk(root, "");
   return found.sort();
+}
+
+/** The platform's configs, read and parsed once: they do not change while the guards run. */
+let PLATFORM_CONFIGS: ReadonlyMap<string, Readonly<Config>> | null = null;
+
+/** Every Worker config in the platform, by its Worker's name; a map of the caller's own. */
+export function platformConfigs(): Map<string, Config> {
+  if (PLATFORM_CONFIGS === null) {
+    const found = new Map<string, Config>();
+    for (const path of configFiles(PLATFORM)) {
+      const parsed = parseWrangler(readFileSync(join(PLATFORM, path), "utf8"), path);
+      found.set(String(parsed["name"]), deepFreeze(parsed));
+    }
+    PLATFORM_CONFIGS = found;
+  }
+  return new Map(PLATFORM_CONFIGS);
+}
+
+/** `value` frozen all the way down, so a cached config is never changed by a probe. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const inner of Object.values(value)) {
+      deepFreeze(inner);
+    }
+  }
+  return value;
 }
 
 /** Every extension a Worker's bundler would take as script, and how to parse it. */
@@ -63,6 +96,12 @@ export function workerSources(root: string = PLATFORM): Map<string, string> {
     }
   }
   return found;
+}
+
+/** The sources of one Worker (`<worker>/src/`), from `all`. */
+export function sourcesOf(worker: string,
+                          all: ReadonlyMap<string, string> = workerSources()): Map<string, string> {
+  return new Map([...all].filter(([path]) => path.startsWith(`${worker}/src/`)));
 }
 
 /** `source` parsed as its extension says, with parent links. */

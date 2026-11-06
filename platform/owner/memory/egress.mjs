@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { keyring as newKeyring } from "../../ci/fixtures.ts";
 import { freePorts } from "./ports.mjs";
 import { ownWorkerd } from "./workerd.mjs";
 
@@ -94,7 +95,7 @@ export async function egressLeg() {
                 conditions: ["workerd", "worker", "browser"], mainFields: ["module", "main"],
                 outfile: join(work, "probe.js"), external: ["cloudflare:*", "node:*"],
                 logLevel: "error" });
-  const keyring = JSON.stringify({ active: "k1", keys: { k1: randomBytes(32).toString("base64") } });
+  const keyring = newKeyring();
   const worker = (role, extra = "", flags = "\"nodejs_compat\"") => `(
   modules = [ (name = "probe.js", esModule = embed "probe.js") ],
   compatibilityDate = "2026-10-23",

@@ -25,7 +25,7 @@ import * as holds from "../src/holds";
 import { MOVE_RECORDS } from "../src/segments";
 import { UNIT_BYTES } from "../src/slots";
 import { ISOLATE_BYTES, memoryTerms } from "./relay-memory";
-import { PLATFORM } from "./sources";
+import { PLATFORM } from "../../ci/kit/sources";
 
 const MIB = 1024 * 1024;
 

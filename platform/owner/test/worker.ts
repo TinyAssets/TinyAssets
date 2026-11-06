@@ -7,6 +7,7 @@
  * (`GatedOwnerDO`); and one with no `SANDBOX` at all (`UnboundOwnerDO`), whose every run is
  * refused (`SANDBOX_ABSENT`).
  */
+import { OPEN_GATES } from "../../ci/fixtures";
 import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
 import {
@@ -200,9 +201,8 @@ export class BigArchivingOwnerDO extends OwnerDO {
 /** A control record that reads open three times, then has outside access off; reads counted. */
 function switching(): { store: KVNamespace; reads: () => number } {
   let reads = 0;
-  const open = { outside: "on", ordinary: "all", canary: [], inbound: false };
   const store = {
-    get: async () => (reads++ < 3 ? open : { ...open, outside: "off" }),
+    get: async () => (reads++ < 3 ? OPEN_GATES : { ...OPEN_GATES, outside: "off" }),
   } as unknown as KVNamespace;
   return { store, reads: () => reads };
 }

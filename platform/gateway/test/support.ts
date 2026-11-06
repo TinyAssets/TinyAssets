@@ -1,23 +1,18 @@
 /**
  * Shared test helpers: keyrings, and source records like the ones the binder will pass.
  */
+import { keyring } from "../../ci/fixtures";
 import type { Credential, Source } from "../src/credential";
 import { type Binding, seal } from "../src/keyring";
 
-export type Env = { GATEWAY_KEYRING: string };
+export { ANTHROPIC, OPENAI } from "../../ci/fixtures";
 
-function randomKey(): string {
-  return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
-}
+export type Env = { GATEWAY_KEYRING: string };
 
 /** A keyring env holding `kids` (each a fresh random key) with `active` active. */
 export function ring(active: string, kids: readonly string[] = [active],
                      keys: Record<string, string> = {}): Env {
-  const all: Record<string, string> = {};
-  for (const kid of kids) {
-    all[kid] = keys[kid] ?? randomKey();
-  }
-  return { GATEWAY_KEYRING: JSON.stringify({ active, keys: all }) };
+  return { GATEWAY_KEYRING: keyring(active, kids, keys) };
 }
 
 /** The same keys as `env`, with `active` active. */
@@ -27,21 +22,6 @@ export function rotate(env: Env, active: string, extra: readonly string[] = []):
 }
 
 export const ALICE: Binding = Object.freeze({ owner: "alice", connection: "c1", version: 1 });
-
-export const ANTHROPIC: Source = Object.freeze({
-  upstream: { provider: "anthropic", api: "anthropic-messages", base_url: "https://api.anthropic.com",
-              auth: { header: "x-api-key", scheme: "" },
-              verify_url: "https://api.anthropic.com/v1/models" },
-  endpoints: [{ origin: "https://api.anthropic.com", paths: ["/v1/messages", "/v1/models"],
-                methods: ["GET", "POST"] }],
-});
-
-export const OPENAI: Source = Object.freeze({
-  upstream: { provider: "openai", api: "openai-responses", base_url: "https://api.openai.com/v1",
-              auth: { header: "authorization", scheme: "Bearer" } },
-  endpoints: [{ origin: "https://api.openai.com", paths: ["/v1/responses", "/v1/models"],
-                methods: ["GET", "POST"] }],
-});
 
 export const GOOGLE: Source = Object.freeze({
   upstream: { provider: "google", api: "google-generative-ai",

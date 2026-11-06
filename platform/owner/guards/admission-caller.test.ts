@@ -19,7 +19,7 @@ import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, PLATFORM, reporter, workerSources } from "./sources";
+import { parse, PLATFORM, reporter, workerSources } from "../../ci/kit/sources";
 
 /** The reserved name, as this guard spells it apart from the sources it reads. */
 const NAME = ["plat", "form"].join("");

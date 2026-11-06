@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 import ts from "typescript";
 
-import { parse, reporter, workerSources } from "./sources";
+import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const RUNTIME = "cloudflare:workers";
 /** What a source may import from the runtime module: the classes it extends. */

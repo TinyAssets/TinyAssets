@@ -25,7 +25,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { largeTests } from "../timeouts";
-import { type Data, json, PLATFORM, REPO, workflow } from "../workflows";
+import { PLATFORM, REPO } from "../paths";
+import { type Data, json, workflow } from "../workflows";
 
 const STEPS = [
   { uses: "actions/checkout@v4" },

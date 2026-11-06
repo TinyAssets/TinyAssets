@@ -22,7 +22,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-import { type Data, REPO, workflow, workflowNames } from "../workflows";
+import { REPO } from "../paths";
+import { type Data, workflow, workflowNames } from "../workflows";
 
 /** The secrets the `production` environment must own (docs/host-actions.md row). */
 const PRODUCTION_SECRETS = [

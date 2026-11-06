@@ -1,69 +1,49 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium } from "../ci/classes";
+import { project } from "../ci/project";
+import { fake, once } from "../ci/workers";
 
 const SANDBOX = dirname(fileURLToPath(import.meta.url));
 
-// The runner the Worker ships (`src/runner-bytes.ts` imports it as data), built as the
-// Worker's own build makes it (`build.command` in wrangler.jsonc): tests run what deploys.
-execFileSync(process.execPath, [join(SANDBOX, "template", "bundle.mjs"), join(SANDBOX, "dist")],
-             { stdio: "ignore" });
-
-/** The fake E2B (`test/fake-e2b.ts`), transpiled: E2B's two hosts, in tests only. */
-function fakeE2b() {
-  const path = join(SANDBOX, "test", "fake-e2b.ts");
-  return {
-    name: "fake-e2b",
-    modulesRoot: SANDBOX,
-    modules: [{ type: "ESModule" as const, path: join(SANDBOX, "test", "fake-e2b.js"),
-                contents: ts.transpileModule(readFileSync(path, "utf8"), {
-                  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-                }).outputText }],
-    compatibilityDate: "2026-10-23",
-    // The ring queue's consumer in tests: each ring recorded at once.
-    queueConsumers: { "tinyassets-sandbox-ring": { maxBatchSize: 1, maxBatchTimeout: 0 } },
-  };
-}
-
 export default defineConfig({
   test: {
-    tags: [LARGE],
     projects: [
-      {
-        // Runs in workerd, from the config's own bindings: its class, the directory and its
-        // template var. Every global fetch the Worker makes reaches the fake E2B, which the
-        // tests also reach (`E2B`) to script it and read back what it received.
+      // Runs in workerd, from the config's own bindings: its class, the directory and its
+      // template var. Every global fetch the Worker makes reaches the fake E2B
+      // (`test/fake-e2b.ts`: E2B's two hosts, in tests only), which the tests also reach
+      // (`E2B`) to script it and read back what it received.
+      project("sandbox", "workerd", {
         plugins: [
-          cloudflareTest({
-            main: "./src/index.ts",
-            wrangler: { configPath: "./wrangler.jsonc" },
-            miniflare: {
-              bindings: { E2B_API_KEY: "e2b_test_key_0000" },
-              serviceBindings: { E2B: "fake-e2b" },
-              outboundService: "fake-e2b",
-              workers: [fakeE2b()],
-            },
-          }),
+          cloudflareTest(once(() => {
+            // The runner the Worker ships (`src/runner-bytes.ts` imports it as data), built
+            // as the Worker's own build makes it (`build.command` in wrangler.jsonc): tests
+            // run what deploys.
+            execFileSync(process.execPath, [join(SANDBOX, "template", "bundle.mjs"),
+                                            join(SANDBOX, "dist")], { stdio: "ignore" });
+            return {
+              main: "./src/index.ts",
+              wrangler: { configPath: "./wrangler.jsonc" },
+              miniflare: {
+                bindings: { E2B_API_KEY: "e2b_test_key_0000" },
+                serviceBindings: { E2B: "fake-e2b" },
+                outboundService: "fake-e2b",
+                // The ring queue's consumer in tests: each ring recorded at once.
+                workers: [fake(join(SANDBOX, "test", "fake-e2b.ts"), { queueConsumers: {
+                  "tinyassets-sandbox-ring": { maxBatchSize: 1, maxBatchTimeout: 0 } } })],
+              },
+            };
+          })),
         ],
-        test: { name: "workerd", ...medium("sandbox/workerd"), include: ["test/**/*.test.ts"] },
-      },
-      {
-        // The runner, in Node, against fake CLIs and a fake doors server.
-        test: { name: "runner", ...medium("sandbox/runner"), include: ["runner/**/*.test.ts"],
-                environment: "node" },
-      },
-      {
-        // Static guards over the source and config, in Node.
-        test: { name: "guards", ...medium("sandbox/guards"), include: ["guards/**/*.test.ts"],
-                environment: "node" },
-      },
+      }),
+      // The runner, in Node, against fake CLIs and a fake doors server.
+      project("sandbox", "runner"),
+      // Static guards over the source and config, in Node.
+      project("sandbox", "guards"),
     ],
   },
 });

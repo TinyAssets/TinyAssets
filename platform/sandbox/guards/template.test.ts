@@ -16,10 +16,10 @@ import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, write
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
-import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../owner/guards/sources";
+import { PLATFORM } from "../../ci/kit/sources";
+import { readWrangler } from "../../ci/workers";
 import { STEP_NS } from "../../owner/src/sync-ignore";
 
 const TEMPLATE = join(PLATFORM, "sandbox", "template");
@@ -102,10 +102,8 @@ function bundled(): Buffer {
 }
 
 function pinned(): string {
-  const config = ts.parseConfigFileTextToJson("wrangler.jsonc", readFileSync(
-    join(PLATFORM, "sandbox", "wrangler.jsonc"), "utf8")).config as {
-      vars: { E2B_TEMPLATE: string } };
-  return config.vars.E2B_TEMPLATE;
+  return (readWrangler(join(PLATFORM, "sandbox")) as { vars: { E2B_TEMPLATE: string } })
+    .vars.E2B_TEMPLATE;
 }
 
 interface Passed {

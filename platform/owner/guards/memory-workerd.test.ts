@@ -12,7 +12,7 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { PLATFORM } from "./sources";
+import { PLATFORM } from "../../ci/kit/sources";
 
 const OWN = pathToFileURL(join(PLATFORM, "owner", "memory", "workerd.mjs")).href;
 const dirs: string[] = [];

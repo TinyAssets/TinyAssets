@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM, workerSources } from "../../owner/guards/sources";
+import { PLATFORM, workerSources } from "../../ci/kit/sources";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 

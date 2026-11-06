@@ -2,7 +2,7 @@
 // workerd: the doors' test Worker (`e2e-entry.ts`: the fake upstream sign-in, the real
 // owner object with a recording sandbox) with the real gateway, hooks and files Workers and
 // the fake providers, each bundled by wrangler from its own config as `vitest.config.ts`
-// does. The files Worker is bound as production binds it: the doors' FILES its upload
+// does (`ci/workers.ts`). The files Worker is bound as production binds it: the doors' FILES its upload
 // entrypoint, the owner object's (OWNER_FILES here) its whole service, so a new owner's
 // starter seed really writes its files.
 //
@@ -17,56 +17,25 @@
 // pins, and its Chromium must be installed (`npx playwright install chromium`, or the host's
 // PLAYWRIGHT_BROWSERS_PATH): with either missing the run fails, never skips.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { chromium } from "playwright";
-import ts from "typescript";
 import { unstable_getMiniflareWorkerOptions } from "wrangler";
 
+import { keyring as newKeyring, OPEN } from "../../ci/fixtures.ts";
+import { PLATFORM } from "../../ci/paths.ts";
+import { auxiliary, bundled, fake, workerConfig } from "../../ci/workers.ts";
+
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
-const PLATFORM = join(DOORS, "..");
-const WRANGLER = join(PLATFORM, "node_modules", "wrangler", "bin", "wrangler.js");
 const ORIGIN = "https://tinyassets.io";
 const EGRESS = "https://egress.tinyassets.io";
 const UPSTREAM = "https://upstream.test";
 const SOURCE_AUTH = "https://auth.test";
 const WHO = `user_${randomBytes(16).toString("hex")}`;
-const TIERS = { free: { runs: 5, storage_bytes: 25_000_000_000 },
-                paid: { runs: 10, storage_bytes: 250_000_000_000 } };
-const OPEN = { outside: "on", ordinary: "all", canary: [], inbound: false, tiers: TIERS };
-
-function config(dir) {
-  return ts.parseConfigFileTextToJson("wrangler.jsonc",
-                                      readFileSync(join(dir, "wrangler.jsonc"), "utf8")).config;
-}
-
-/** A Worker bundled by wrangler from its own config, as a deploy bundles it. */
-function bundled(dir, entry) {
-  const out = mkdtempSync(join(tmpdir(), "app-e2e-"));
-  try {
-    execFileSync(process.execPath, [WRANGLER, "deploy", "--dry-run", "--outdir", out,
-                                    "--config", join(dir, "wrangler.jsonc"),
-                                    ...(entry === undefined ? [] : [entry])],
-                 { cwd: dir, stdio: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
-    const main = entry === undefined ? "index.js" : `${entry.split("/").at(-1).replace(/\.ts$/, "")}.js`;
-    return readdirSync(out).filter((file) => /\.(?:js|wasm)$/.test(file))
-      .sort((a, b) => Number(b === main) - Number(a === main) || a.localeCompare(b))
-      .map((file) => ({
-        type: file.endsWith(".wasm") ? "CompiledWasm" : "ESModule",
-        path: join(dir, file), contents: readFileSync(join(out, file)),
-      }));
-  } finally {
-    rmSync(out, { recursive: true, force: true });
-  }
-}
-
 /**
  * The hand-off hosts' Worker: the identity provider signs `WHO` in at once, its code the
  * fake upstream's (`fake-upstream.ts`'s `fakeCode`), and the test source's authorization
@@ -104,12 +73,11 @@ const seen = [];
 const errors = [];
 
 async function doors() {
-  const gateway = config(join(PLATFORM, "gateway"));
-  const hooks = config(join(PLATFORM, "hooks"));
-  const files = config(join(PLATFORM, "files"));
+  const gateway = workerConfig(join(PLATFORM, "gateway"));
+  const hooks = workerConfig(join(PLATFORM, "hooks"));
+  const files = workerConfig(join(PLATFORM, "files"));
   const { workerOptions } = unstable_getMiniflareWorkerOptions(join(DOORS, "wrangler.jsonc"));
-  const providers = readFileSync(join(DOORS, "test", "fake-providers.ts"), "utf8");
-  const keyring = JSON.stringify({ active: "k1", keys: { k1: randomBytes(32).toString("base64") } });
+  const keyring = newKeyring();
   const webClient = `${ORIGIN}/oauth/clients/web.json`;
   mf = new Miniflare(convertV4MiniflareOptions({
     host: "127.0.0.1", port: 0, https: true,
@@ -133,37 +101,13 @@ async function doors() {
         outboundService: (request) => request.url === webClient ? mf.dispatchFetch(webClient)
           : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
       },
-      {
-        name: gateway.name, modulesRoot: join(PLATFORM, "gateway"),
-        modules: bundled(join(PLATFORM, "gateway")),
-        compatibilityDate: gateway.compatibility_date,
-        compatibilityFlags: gateway.compatibility_flags,
-        bindings: { GATEWAY_KEYRING: keyring }, outboundService: "fake-providers",
-      },
-      {
-        // The files Worker: its one bucket, its config's cipher and a test keyring.
-        name: files.name, modulesRoot: join(PLATFORM, "files"),
-        modules: bundled(join(PLATFORM, "files")),
-        compatibilityDate: files.compatibility_date,
-        compatibilityFlags: files.compatibility_flags,
-        r2Buckets: (files.r2_buckets ?? []).map((bucket) => bucket.binding),
-        bindings: { ...(files.vars ?? {}), FILES_KEYRING: keyring },
-      },
-      {
-        name: hooks.name, modulesRoot: join(PLATFORM, "hooks"),
-        modules: bundled(join(PLATFORM, "hooks")),
-        compatibilityDate: hooks.compatibility_date,
-        compatibilityFlags: hooks.compatibility_flags,
-        durableObjects: Object.fromEntries((hooks.durable_objects?.bindings ?? [])
-          .map((b) => [b.name, { className: b.class_name, useSQLite: true }])),
-      },
-      {
-        name: "fake-providers", modulesRoot: DOORS,
-        modules: [{ type: "ESModule", path: join(DOORS, "test", "fake-providers.js"),
-                    contents: ts.transpileModule(providers, { compilerOptions: {
-                      module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText }],
-        compatibilityDate: gateway.compatibility_date,
-      },
+      auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
+                                             outboundService: "fake-providers" }),
+      // The files Worker: its one bucket, its config's cipher and a test keyring.
+      auxiliary(join(PLATFORM, "files"), { bindings: { ...(files.vars ?? {}),
+                                                       FILES_KEYRING: keyring } }),
+      auxiliary(join(PLATFORM, "hooks"), {}),
+      fake(join(DOORS, "test", "fake-providers.ts")),
       {
         // The two hand-off hosts, each answering the browser's top-level navigation at once.
         name: "hand-off", routes: ["upstream.test/*", "auth.test/*"],

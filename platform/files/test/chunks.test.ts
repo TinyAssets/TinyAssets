@@ -13,11 +13,9 @@ import {
   BATCH_BYTES, CHUNK_BYTES, chunkKey, DELETE_BATCH, MANIFEST_PARTS, manifestKey,
 } from "../src/keys";
 
-import { type Presented, ssec } from "./ssec";
+import { ringKey } from "../../ci/fixtures";
 
-function ringKey(): string {
-  return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
-}
+import { type Presented, ssec } from "./ssec";
 
 /** The keyring, rotated: `k1` an older kid, `k2` the active one. */
 const OLD = JSON.stringify({ active: "k1", keys: { k1: ringKey() } });

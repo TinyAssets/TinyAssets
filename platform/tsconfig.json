@@ -14,6 +14,7 @@
     "isolatedModules": true,
     "resolveJsonModule": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
   "include": ["owner/src/**/*.ts", "owner/test/**/*.ts", "owner/guards/**/*.ts", "owner/*.ts",

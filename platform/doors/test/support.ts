@@ -1,12 +1,12 @@
 /**
  * Driving the doors as a browser, an MCP client and the fake upstream would, in workerd.
  */
-import { createExecutionContext, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
 import { ADMIN_CALLER } from "../../admin/src/caller";
-import type { OwnerDO } from "../../owner/src/owner-do";
+import { type Row, sqlIn as rowsIn } from "../../ci/workerd";
 import { APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now, PUBLIC_ORIGIN, WEB_CLIENT,
          WEB_REDIRECT } from "../src/config";
 import { authorizationServer } from "../src/oauth";
@@ -15,13 +15,7 @@ import { fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
 
 export const ORIGIN = PUBLIC_ORIGIN;
 export const doorsEnv = env as unknown as DoorsEnv;
-/** The founder's tier numbers (ADR-034 decision 8), as the control record holds them. */
-export const TIERS = Object.freeze({
-  free: Object.freeze({ runs: 5, storage_bytes: 25_000_000_000 }),
-  paid: Object.freeze({ runs: 10, storage_bytes: 250_000_000_000 }),
-});
-export const OPEN = Object.freeze({ outside: "on", ordinary: "all", canary: [], inbound: false,
-                                    tiers: TIERS });
+export { OPEN, TIERS } from "../../ci/fixtures";
 export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
 
 /** One request through the doors, its waitUntil work finished. */
@@ -344,13 +338,10 @@ export async function legacyTool(token: string, name: string, args: unknown):
   return body["result"] as ToolResult;
 }
 
-type Row = Record<string, SqlStorageValue>;
-
 /** Rows a query returns in an owner's object. */
 export function sqlIn(owner: string, statement: string, ...params: SqlStorageValue[]):
     Promise<Row[]> {
-  return runInDurableObject(env.OWNER.getByName(owner), (_instance: OwnerDO, state) =>
-    state.storage.sql.exec<Row>(statement, ...params).toArray());
+  return rowsIn(env.OWNER.getByName(owner), statement, ...params);
 }
 
 /** Whether a door was ever served in an owner's object: its owner is stored on first use. */

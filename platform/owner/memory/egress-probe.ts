@@ -22,6 +22,7 @@
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 
+import { OPEN } from "../../ci/fixtures";
 import { EGRESS_ORIGIN } from "../src/network";
 import { serveEgress } from "../../doors/src/egress";
 import { LEASE_LIVED, mintToken } from "../../doors/src/routing-mac";
@@ -100,10 +101,7 @@ async function doors(request: Request, env: Env, ctx: ExecutionContext): Promise
     return Response.json({ length: kept.byteLength });
   }
   const blob = request.headers.get("x-ta-probe-blob") ?? "";
-  const open = { outside: "on", ordinary: "all", canary: [], inbound: false,
-                 tiers: { free: { runs: 5, storage_bytes: 25_000_000_000 },
-                          paid: { runs: 10, storage_bytes: 250_000_000_000 } } };
-  const doorsEnv = { ...env, CONTROL: { get: async () => open },
+  const doorsEnv = { ...env, CONTROL: { get: async () => OPEN },
                      OWNER: { getByName: () => owner(blob) } };
   return serveEgress(new Request(`${EGRESS_ORIGIN}${url.pathname}`, request),
                      doorsEnv as never, ctx);

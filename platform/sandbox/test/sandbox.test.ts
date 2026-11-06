@@ -16,6 +16,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { OPEN_GATES } from "../../ci/fixtures";
 import type { SandboxStart } from "../../owner/src/sandbox";
 import { LEASE_TTL_S } from "../../owner/src/files";
 import { backoff, CODES, INCOMING, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
@@ -23,7 +24,7 @@ import { PROTOCOL, SPEAKS } from "../runner/protocol";
 import { runnerBytes, runnerDigest } from "../src/runner-bytes";
 import { SLOTS } from "../src/slots";
 
-const OPEN = { outside: "on", ordinary: "all", canary: [], inbound: false };
+const OPEN = OPEN_GATES;
 const CEILING = 3600;
 const WINDOW = 600;
 const NUMBERS = { sandbox_runtime_ceiling_s: CEILING, sandbox_concurrency_ceiling: 20,
