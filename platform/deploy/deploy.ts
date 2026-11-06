@@ -242,20 +242,29 @@ export function lockRefusal(lock: unknown, digests: readonly string[],
   return null;
 }
 
+/** A run of `worker`'s migrations guard, its digests written to `out`: its exit and output. */
+export type GuardRun = (worker: string, out: string) => { status: number | null; stdout: string };
+
+/** The real run: `worker`'s guards project, as it evaluates its schema. */
+function guardRun(worker: string, out: string): { status: number | null; stdout: string } {
+  const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
+  return spawnSync(process.execPath, [vitest, "run", "--project", "guards",
+                                      "guards/migrations.test.ts"], {
+    cwd: join(PLATFORM, worker), encoding: "utf8",
+    env: { ...process.env, MIGRATION_DIGESTS: out, PIN_MIGRATIONS: "" },
+  });
+}
+
 /**
  * The code's migrations' digests, by lock path, as `worker`'s guards project evaluates its
- * schema.
+ * schema (`run`).
  */
-export function codeDigests(worker: string): Record<string, string[]> {
+export function codeDigests(worker: string, run: GuardRun = guardRun):
+    Record<string, string[]> {
   const dir = mkdtempSync(join(tmpdir(), "ta-migrations-"));
   const out = join(dir, "digests.json");
   try {
-    const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
-    const result = spawnSync(process.execPath, [vitest, "run", "--project", "guards",
-                                                "guards/migrations.test.ts"], {
-      cwd: join(PLATFORM, worker), encoding: "utf8",
-      env: { ...process.env, MIGRATION_DIGESTS: out, PIN_MIGRATIONS: "" },
-    });
+    const result = run(worker, out);
     if (result.status !== 0) {
       throw new Error(`${worker}'s migration lock guard failed (exit ${result.status}): ` +
                       `${result.stdout.slice(-2000)}`);
@@ -270,7 +279,7 @@ export function codeDigests(worker: string): Record<string, string[]> {
  * `worker`'s locks as its guard reported them (`codeDigests`): a Worker in `MIGRATED` whose
  * guard reports none is refused, so the kit's check never passes with nothing checked.
  */
-export function locksOf(worker: string, reported: unknown): Record<string, string[]> {
+function locksOf(worker: string, reported: unknown): Record<string, string[]> {
   if (typeof reported !== "object" || reported === null || Array.isArray(reported)
       || Object.keys(reported).length === 0) {
     throw new Error(`${worker}'s migrations guard reported no migration lock: each Worker in ` +
