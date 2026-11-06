@@ -88,7 +88,7 @@ export function medium(project: string): {
            provide: { classTimeouts: { project, medium: ms, large: derived(BUDGETS.large) } } };
 }
 
-/** The large tag, shared by every config (`tags: [LARGE]`; `strictTags` stays on). */
+/** The large tag, carried by every project (`project.ts`; `strictTags` stays on). */
 export const LARGE = Object.freeze({
   name: "large",
   description: "production sizes and anything slower than its project's medium budget; " +
