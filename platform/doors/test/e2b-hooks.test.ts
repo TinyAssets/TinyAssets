@@ -6,14 +6,19 @@
  */
 import { createHash } from "node:crypto";
 
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import type { SandboxSignin } from "../../owner/src/sandbox";
 import type { DoorsEnv } from "../src/config";
 import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
 import { E2B_HOOK_PATH, HOOK_BODY_MAX, lifecycleEvent, signed } from "../src/e2b-hooks";
 import { openRoute, sealRoute } from "../src/routing-mac";
-import { admitOwner, call, doorsEnv, url } from "./support";
+import type { OwnerDO } from "./entry";
+import {
+  admitOwner, appPost, call, doorsEnv, OPEN, serveFirstPartyDocument, setControl, signInApp, url,
+} from "./support";
 
 const SECRET = "test-e2b-webhook-signature-secret";
 
@@ -177,5 +182,29 @@ describe("E2B's lifecycle webhook", () => {
     expect(signed(SECRET, "{}", signature("{}"))).toBe(true);
     expect(signed(SECRET, "{}", `${signature("{}")}=`)).toBe(true);
     expect(signed(SECRET, "{}", signature("{ }"))).toBe(false);
+  });
+
+  it("routes the events of a sandbox a sign-in first made, by the route the sign-in sealed " +
+     "(S14)", async () => {
+    await setControl(OPEN);
+    const restore = serveFirstPartyDocument();
+    try {
+      const who = `user_${crypto.randomUUID().replace(/-/g, "")}`;
+      const app = await signInApp({ owner: who });
+      expect((await appPost("signin/start", app.access_token, null,
+                            { engine: "claude-code" })).status).toBe(200);
+      const [asked] = await runInDurableObject(env.OWNER.getByName(who), (instance: unknown) =>
+        (instance as OwnerDO).recorder.signins) as SandboxSignin[];
+      expect(openRoute(env.ROUTING_MAC_KEY, asked!.route)).toEqual({ owner: who,
+                                                                     authority: "owner" });
+      const paused = event(who);
+      paused.event_data.sandbox_metadata = { ta_route: asked!.route };
+      expect(await (await deliver(JSON.stringify(paused))).json()).toEqual({ counted: true });
+      const { days } = await env.OWNER.getByName(who).sandboxDays(
+        { owner: who, caller: who, origin: null }, {});
+      expect(days.reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(120);
+    } finally {
+      restore();
+    }
   });
 });

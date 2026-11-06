@@ -137,6 +137,12 @@ export interface SandboxSignin {
   readonly lease: { readonly lease_id: string; readonly epoch: number };
   readonly tokens: SandboxStart["tokens"];
   readonly network: NetworkPlan | null;
+  /**
+   * Whose sandbox this is, sealed for E2B's metadata, as a start's (`SandboxStart.route`): a
+   * sandbox a sign-in first makes costs as any other, and its lifecycle events reach this
+   * owner's object by it.
+   */
+  readonly route: string;
   readonly urls: { readonly events: string; readonly signin: string };
 }
 

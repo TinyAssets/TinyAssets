@@ -948,8 +948,8 @@ async function syncCommand(): Promise<number> {
                     records: RECORDS };
     safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
     // The mirror is a database on disk, written as each change lands (`openMirror`): a sync
-    // cut short keeps what it sent. The one JSON file of before is taken in once.
-    const mirror = openMirror(`${SYNC_HOME}/mirror.db`, `${SYNC_HOME}/mirror.json`);
+    // cut short keeps what it sent.
+    const mirror = openMirror(`${SYNC_HOME}/mirror.db`);
     try {
       if (job.direction === "known") {
         // What the owner's files hold of each path, as this sandbox last synced it.

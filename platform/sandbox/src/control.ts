@@ -68,12 +68,14 @@ import { bundledSources } from "../../doors/src/sources";
 import { LEASE_TTL_S } from "../../owner/src/files";
 import { DNS_SERVERS, EGRESS_HOST } from "../../owner/src/network";
 import type { SandboxSignin, SandboxStart, Started } from "../../owner/src/sandbox";
+import { migrate } from "../../owner/src/migrate";
 import { METER_BATCH, type MeterEvent } from "../../owner/src/sandbox-time";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
 import { SPEAKS } from "../runner/protocol";
 
 import { runnerBytes, runnerDigest } from "./runner-bytes";
+import { CONTROL_MIGRATIONS } from "./schema";
 import { SLOTS, type SandboxSlots } from "./slots";
 
 /** The runner's loader in the template, and its root-only state directory. */
@@ -198,6 +200,8 @@ interface Box extends Handle {
 const RUN = /^run_[0-9a-f]{32}$/;
 const LEASE = /^[0-9a-f]{32}$/;
 const AUTHORITY = /^(?:owner|[0-9a-f]{64})$/;
+/** A sealed route (`sealRoute`), as E2B's metadata carries it. */
+const ROUTE = /^[A-Za-z0-9_-]{40,2048}$/;
 
 function json(value: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value));
@@ -309,37 +313,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   constructor(ctx: DurableObjectState, env: SandboxEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
-    this.#schema();
+    migrate(ctx.storage, CONTROL_MIGRATIONS);
     this.#e2b = () => new E2b(env.E2B_API_KEY);
     this.#digest = runnerDigest();
-  }
-
-  /**
-   * This object's tables. The platform's migration rule (the owner's `migrations.json`):
-   * until the first deploy (`first_deploy` null there, and no deploy kit run has ever
-   * deployed this Worker) the baseline is edited in place, as `runner` was added to it;
-   * from the first deploy on, a change is a migration after it, never an edit.
-   */
-  #schema(): void {
-    this.#sql.exec("CREATE TABLE IF NOT EXISTS sandboxes (authority TEXT PRIMARY KEY, " +
-                     "sandbox_id TEXT NOT NULL, lease_id TEXT, end_at REAL NOT NULL, " +
-                     "renewing INTEGER NOT NULL DEFAULT 0, releasing INTEGER NOT NULL " +
-                     "DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0, idle_since REAL, retry_at REAL, " +
-                     "tries INTEGER NOT NULL DEFAULT 0, runner TEXT NOT NULL)");
-    this.#sql.exec("CREATE TABLE IF NOT EXISTS launched (run TEXT PRIMARY KEY, " +
-                     "authority TEXT NOT NULL, lease_id TEXT NOT NULL)");
-    // The control record's sandbox numbers as last read, and the looks failed in a row.
-    // The meter's log (slice P): each sandbox started, resumed, paused or killed, as this
-    // object did it or saw it, for the owner's object to read after its cursor (`meter`).
-    this.#sql.exec("CREATE TABLE IF NOT EXISTS meter_log (seq INTEGER PRIMARY KEY " +
-                     "AUTOINCREMENT, authority TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN " +
-                     "('start', 'resume', 'pause', 'kill')), at INTEGER NOT NULL)");
-    this.#sql.exec("CREATE TABLE IF NOT EXISTS known (only INTEGER PRIMARY KEY CHECK " +
-                     "(only = 1), runtime_s INTEGER NOT NULL, concurrency INTEGER NOT NULL, " +
-                     "window_s INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0)");
-    // The control record's scratch retention as last read (`days` null: the record names none).
-    this.#sql.exec("CREATE TABLE IF NOT EXISTS known_retention (only INTEGER PRIMARY KEY " +
-                     "CHECK (only = 1), days REAL)");
   }
 
   /**
@@ -599,7 +575,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * none.
    */
   async #ensure(owner: string, authority: string, network: E2bNetwork | null,
-                ceilings: SandboxCeilings, route?: string):
+                ceilings: SandboxCeilings, route: string):
       Promise<{ handle: Box } | "waiting" | "lost"> {
     const e2b = this.#e2b();
     const row = this.#row(authority);
@@ -660,7 +636,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         metadata: { ta_sandbox: await opaque(`${owner}\n${authority}`),
                     ta_owner: await ownerTag(owner),
                     // Sealed, so only the doors open it: the route of E2B's lifecycle events.
-                    ...(route === undefined ? {} : { ta_route: route }) },
+                    ta_route: route },
       });
       const info = await e2b.info(created.sandboxID);
       const digest = await this.#digest;
@@ -688,7 +664,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async start(owner: string, start: SandboxStart): Promise<Started> {
     if (!RUN.test(start.run) || !AUTHORITY.test(start.authority)
         || !LEASE.test(start.lease.lease_id) || (start.tokens === null) !== (start.network === null)
-        || typeof start.route !== "string" || !/^[A-Za-z0-9_-]{40,2048}$/.test(start.route)
+        || typeof start.route !== "string" || !ROUTE.test(start.route)
         || !httpsDoors(start.urls)) {
       throw new Error("a sandbox start names its run, its authority, its lease and its " +
                       "https doors on the egress host");
@@ -755,9 +731,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async signin(owner: string, signin: SandboxSignin): Promise<Started> {
     if (!SIGNIN.test(signin.id) || !AUTHORITY.test(signin.authority)
         || !LEASE.test(signin.lease.lease_id) || (signin.tokens === null) !== (signin.network === null)
+        || typeof signin.route !== "string" || !ROUTE.test(signin.route)
         || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")) {
-      throw new Error("a sign-in names its id, its authority, its lease and its https doors " +
-                      "on the egress host");
+      throw new Error("a sign-in names its id, its authority, its lease, its route and its " +
+                      "https doors on the egress host");
     }
     const hosts = engineHosts(signin.engine, signin.region);
     const ceilings = await this.#ceilings();
@@ -768,7 +745,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const e2b = this.#e2b();
       const network = signin.network === null ? null : e2bNetwork(signin.network.network);
       const first = network === null ? null : widened(network, hosts) ?? network;
-      const got = await this.#ensure(owner, signin.authority, first, ceilings);
+      const got = await this.#ensure(owner, signin.authority, first, ceilings, signin.route);
       if (got === "waiting") {
         return { started: false, code: CODES.waiting };
       }
@@ -788,7 +765,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
           await e2b.network(handle.sandboxID, more);
         }
       }
-      const { tokens: _tokens, network: _network, lease: _lease, ...doc } = signin;
+      const { tokens: _tokens, network: _network, lease: _lease, route: _route, ...doc } = signin;
       await e2b.upload(handle, `${STATE_DIR}/inbox/${signin.id}.json`, json(doc));
       const launched = await this.#run(handle, ["login-launch", signin.id]);
       if (launched.code !== OK) {
@@ -1296,7 +1273,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       await this.#slots().leave(owner);
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
-      this.#schema();
+      migrate(this.ctx.storage, CONTROL_MIGRATIONS);
       if (ids.size > 0) {
         await this.#freed();
       }

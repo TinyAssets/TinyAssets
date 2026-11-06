@@ -2579,9 +2579,11 @@ R, S, M and W.
   runs the pair check (`deploy.ts --pair`, `build.py --check-pair`) before the apply job,
   which stops without the pair's tag at E2B (`pairTag`); a manual workflow
   (`sandbox-template.yml`, production environment, the key in its build step alone) builds
-  templates with no host. The `runner` column is in the sandbox object's baseline, edited in
-  place before the first deploy (the owner's `migrations.json` `first_deploy` is null, and the
-  deploy workflow has never run). Measured here: the bundle is 272,426 bytes (about 66 KiB
+  templates with no host. The `runner` column is in the sandbox object's baseline, which is
+  now migration 1 of `SandboxControl` (untangle wave 0): both sandbox objects migrate on wake
+  through the owner's `migrate`, their locks `sandbox/migrations/<class>.json` are pinned, and
+  the deploy kit checks them with the owner's (`lockRefusal`, each Worker in `MIGRATED`
+  reporting at least one lock). Measured here: the bundle is 272,426 bytes (about 66 KiB
   gzipped), hashed by the loader in under 2 ms.
 - [x] The runner by digest's one template build with the loader (the last a runner change
   needs): `tinyassets-sandbox:s85528cdd2cd74efa`, pinned, its `passed.json` entry recording

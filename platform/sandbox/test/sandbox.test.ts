@@ -18,9 +18,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { SandboxStart } from "../../owner/src/sandbox";
 import { LEASE_TTL_S } from "../../owner/src/files";
+import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../owner/src/migrate";
 import { backoff, CODES, INCOMING, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
 import { PROTOCOL, SPEAKS } from "../runner/protocol";
 import { runnerBytes, runnerDigest } from "../src/runner-bytes";
+import { CONTROL_MIGRATIONS, SLOTS_MIGRATIONS } from "../src/schema";
 import { SLOTS } from "../src/slots";
 
 const OPEN = { outside: "on", ordinary: "all", canary: [], inbound: false };
@@ -965,9 +967,10 @@ describe("the runner, by digest", () => {
 
 describe("a sign-in", () => {
   const SI = `si_${"5".repeat(32)}`;
+  const ROUTE = "s".repeat(64);
   function signin(over: Record<string, unknown> = {}) {
     return { id: SI, engine: "kimi", region: "global", mode: "in" as const, authority: "owner",
-             lease: LEASE, tokens: start().tokens, network: NETWORK as never,
+             lease: LEASE, tokens: start().tokens, network: NETWORK as never, route: ROUTE,
              urls: { events: `https://egress.tinyassets.io/signin/${SI}/events`,
                      signin: "https://egress.tinyassets.io/signin" }, ...over };
   }
@@ -980,6 +983,9 @@ describe("a sign-in", () => {
     const box = state.sandboxes[0]!;
     expect(box.network.allowOut).toEqual(expect.arrayContaining(["auth.kimi.ai", "api.kimi.ai"]));
     expect(box.network.allowOut).not.toContain("auth.kimi.com");
+    // The sandbox a sign-in first makes carries its route, so its lifecycle events reach the
+    // owner's object as a run's sandbox's do (S14).
+    expect(box.metadata["ta_route"]).toBe(ROUTE);
     expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
       ["install", await runnerDigest()], ["prepare", "1.1.1.1"], ["login-launch", SI]]);
     const doc = JSON.parse(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.json`]!);
@@ -1031,6 +1037,7 @@ describe("a sign-in", () => {
   it("refuses a sign-in that is not one: its id, a region the record lacks, plain HTTP", async () => {
     const who = owner();
     for (const bad of [signin({ id: "run_x" }), signin({ region: "moon" }),
+                       signin({ route: undefined }), signin({ route: "short" }),
                        signin({ urls: { events: "http://egress.tinyassets.io/x",
                                         signin: "https://egress.tinyassets.io/signin" } })]) {
       const refused = await stub(who).signin(who, bad as never)
@@ -1066,6 +1073,31 @@ describe("an erasure", () => {
     expect(await runInDurableObject(stub(who), (_i, state) => state.storage.sql
       .exec("SELECT COUNT(*) AS n FROM sandboxes").one().n)).toBe(0);
     expect(await alarmOf(who)).toBeNull();
+  });
+});
+
+describe("the schema (S25)", () => {
+  it("is each object's migrations, applied once, each one's digest kept: an applied one " +
+     "changed since stops the object", async () => {
+    const who = owner();
+    await stub(who).start(who, start());
+    const kept = (state: DurableObjectState) => state.storage.sql
+      .exec("SELECT version, sha256 FROM schema_digests").toArray();
+    const digests = (migrations: readonly (readonly string[])[]) =>
+      migrations.map((each, i) => ({ version: i + 1, sha256: migrationDigest(each) }));
+    await runInDurableObject(stub(who), (_instance, state) => {
+      expect(kept(state)).toEqual(digests(CONTROL_MIGRATIONS));
+      const edited = [[...CONTROL_MIGRATIONS[0]!, "CREATE TABLE probe (n INTEGER)"]];
+      expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_CHANGED);
+    });
+    await runInDurableObject(env.SLOTS.getByName(SLOTS), (_instance, state) => {
+      expect(kept(state)).toEqual(digests(SLOTS_MIGRATIONS));
+    });
+    // An erasure deletes the storage whole, and the schema is made again from its migrations.
+    await stub(who).erase(who);
+    await runInDurableObject(stub(who), (_instance, state) => {
+      expect(kept(state)).toEqual(digests(CONTROL_MIGRATIONS));
+    });
   });
 });
 
