@@ -6,9 +6,8 @@ import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/collections";
 import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
 import { OwnerDO } from "../src/owner-do";
-import {
-  MIGRATION_CHANGED, MIGRATION_UNPINNED, MIGRATIONS, migrate, migrationDigest,
-} from "../src/schema";
+import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../src/migrate";
+import { MIGRATIONS } from "../src/schema";
 import { failure, ownerObject } from "./support";
 
 function version(state: DurableObjectState): number {
@@ -140,7 +139,7 @@ describe("schema migration on wake", () => {
       const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_unpinned (n INTEGER)"],
                       ...MIGRATIONS.slice(1)];
       expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_UNPINNED);
-      expect(() => migrate(state.storage)).toThrow(MIGRATION_UNPINNED);
+      expect(() => migrate(state.storage, MIGRATIONS)).toThrow(MIGRATION_UNPINNED);
       expect(state.storage.sql.exec(
         "SELECT name FROM sqlite_master WHERE name = 'probe_unpinned'").toArray()).toEqual([]);
     });
@@ -150,7 +149,7 @@ describe("schema migration on wake", () => {
     const { stub, as, name } = ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       state.storage.sql.exec("UPDATE schema_version SET version = ?", MIGRATIONS.length + 1);
-      expect(() => migrate(state.storage)).toThrow(/newer than this code/);
+      expect(() => migrate(state.storage, MIGRATIONS)).toThrow(/newer than this code/);
     });
     await evictDurableObject(stub);
     expect((await failure(() => stub.collectionPull(as(name), PULL))).message)

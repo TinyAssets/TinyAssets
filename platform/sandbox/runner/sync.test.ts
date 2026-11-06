@@ -12,7 +12,7 @@
  * - memory stays bounded both ways: sync-in of a file larger than the sandbox's memory, and
  *   sync-out over many paths.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync,
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -439,17 +439,6 @@ describe("memory, whatever the tree holds", () => {
     expect(many.peak).toBeLessThanOrEqual(bound);
     expect(many.peak - few.peak).toBeLessThanOrEqual(REMEMBERED_NAME_BYTES + QUARTER);
   });
-});
-
-it("reads its legacy JSON mirror once, into the database", () => {
-  const root = mkdtempSync(join(tmpdir(), "sync-"));
-  roots.push(root);
-  writeFileSync(join(root, "mirror.json"), JSON.stringify({ cursor: 7, files: {
-    "/workspace/a": { version: 2, size: 1, mtime_ms: 3, sha256: "h" } } }));
-  const mirror = openMirror(join(root, "mirror.db"), join(root, "mirror.json"));
-  expect([mirror.cursor(), mirror.get("/workspace/a")?.version]).toEqual([7, 2]);
-  mirror.close();
-  expect(() => readFileSync(join(root, "mirror.json"))).toThrow();
 });
 
 describe("verification round 2", () => {

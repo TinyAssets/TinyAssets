@@ -22,9 +22,10 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../owner/guards/sources";
 import {
-  admitsNobody, BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig,
-  EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,
-  maskInLog, keyring, kvValue, lifecycleHook, listed, lockRefusal, NAMESPACES, namespacesOf,
+  admitsNobody, BUCKET, CALLBACK, type CfAnswer, codeDigests, configOf, DARK_CONTROL,
+  deployedConfig, EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,
+  maskInLog, keyring, kvValue, lifecycleHook, listed, lockRefusal, MIGRATED,
+  NAMESPACES, namespacesOf,
   PROBE_ROUTES, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
   zoneOf,
@@ -266,20 +267,42 @@ describe("the deploy kit", () => {
     expect(kit.replace(link, "").match(/randomBytes\(/g)).toHaveLength(2);
   });
 
-  it("refuses to deploy the owner Worker unless the migration lock pins every migration it " +
-     "ships, in order (review M5-2)", () => {
+  it("refuses to deploy unless each migration lock pins every migration it ships, in order " +
+     "(review M5-2)", () => {
     const code = ["a".repeat(64), "b".repeat(64)];
     const first = { at: "2026-11-04T00:00:00.000Z", commit: "abc123" };
-    expect(lockRefusal({ first_deploy: first, deployed: code }, code)).toBeNull();
+    const owner = "owner/migrations.json";
+    expect(lockRefusal({ first_deploy: first, deployed: code }, code, owner)).toBeNull();
     // Unmarked: the first deploy pins first.
-    expect(lockRefusal({ first_deploy: null, deployed: [] }, code)).toMatch(/no first deploy/);
+    expect(lockRefusal({ first_deploy: null, deployed: [] }, code, owner))
+      .toMatch(/no first deploy/);
     // A migration the lock does not pin, one it pins that is gone, one changed, or reordered.
     for (const deployed of [[code[0]], [...code, "c".repeat(64)], [code[0], "c".repeat(64)],
                             [code[1], code[0]]]) {
-      expect(lockRefusal({ first_deploy: first, deployed }, code)).toMatch(/PIN_MIGRATIONS/);
+      expect(lockRefusal({ first_deploy: first, deployed }, code, owner))
+        .toMatch(/PIN_MIGRATIONS/);
     }
-    expect(lockRefusal({ deployed: code }, code)).toMatch(/out of shape/);
-    expect(lockRefusal(null, code)).toMatch(/out of shape/);
+    expect(lockRefusal({ deployed: code }, code, owner)).toMatch(/out of shape/);
+    expect(lockRefusal(null, code, owner)).toMatch(/out of shape/);
+    // The sandbox Worker's objects are locked too (S25), each named, pinned in its folder.
+    expect(MIGRATED).toContain("sandbox");
+    expect(lockRefusal({ first_deploy: first, deployed: [code[0]] }, code,
+                       "sandbox/migrations/SandboxSlots.json"))
+      .toMatch(/^the migration lock sandbox\/migrations\/SandboxSlots\.json pins 1 .* in platform\/sandbox,/);
+    // The kit's digests, from a guard that reports no lock (or the old bare list): refused,
+    // never read as nothing to check.
+    const reporting = (reported: unknown) => (_worker: string, out: string) => {
+      writeFileSync(out, JSON.stringify(reported));
+      return { status: 0, stdout: "" };
+    };
+    for (const worker of MIGRATED) {
+      for (const reported of [{}, [], null, code]) {
+        expect(() => codeDigests(worker, reporting(reported)))
+          .toThrow(`${worker}'s migrations guard reported no migration lock`);
+      }
+    }
+    const locks = { "sandbox/migrations/SandboxSlots.json": code };
+    expect(codeDigests("sandbox", reporting(locks))).toEqual(locks);
     // The kit checks it before any change, on the lock the commit holds.
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     const main = kit.slice(kit.indexOf("async function main()"));

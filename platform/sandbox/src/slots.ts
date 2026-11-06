@@ -30,6 +30,9 @@
 import { DurableObject } from "cloudflare:workers";
 
 import { LEASE_TTL_S } from "../../owner/src/files";
+import { migrate } from "../../owner/src/migrate";
+
+import { SLOTS_MIGRATIONS } from "./schema";
 
 export interface SlotsEnv {
   /** The ring queue: `{owner}` to the doors Worker's consumer, which rings that owner. */
@@ -45,11 +48,7 @@ export class SandboxSlots extends DurableObject<SlotsEnv> {
   constructor(ctx: DurableObjectState, env: SlotsEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
-    this.#sql.exec("CREATE TABLE IF NOT EXISTS waiting (owner TEXT PRIMARY KEY, " +
-                     "seq INTEGER NOT NULL UNIQUE, misses INTEGER NOT NULL DEFAULT 0)");
-    this.#sql.exec("CREATE TABLE IF NOT EXISTS line (only INTEGER PRIMARY KEY CHECK " +
-                     "(only = 1), next_seq INTEGER NOT NULL, ceiling_s INTEGER NOT NULL)");
-    this.#sql.exec("CREATE TABLE IF NOT EXISTS held (sandbox_id TEXT PRIMARY KEY)");
+    migrate(ctx.storage, SLOTS_MIGRATIONS);
   }
 
   #head(): { owner: string; misses: number } | null {

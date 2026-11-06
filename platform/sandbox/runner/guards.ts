@@ -8,8 +8,8 @@
  *   `.claude/settings.json` `env` and `apiKeyHelper`, Gemini's `.env` and `.gemini/.env`,
  *   any CLI's own). The runner reads every `.env` file at the agent's top and one dot
  *   directory down, and every JSON settings file one dot directory down, and refuses the
- *   run when one sets a variable its credential forbids, or any credential- or
- *   endpoint-shaped one, or names a credential helper. That last holds on a key run too:
+ *   run when one sets a variable its credential forbids, or any credential-, endpoint- or
+ *   proxy-shaped one, or names a credential helper. That last holds on a key run too:
  *   a project's own key or base URL would take the run's model calls past the egress
  *   door, and with them past the owner's caps.
  * - **The content backstop** (doors spec, "The runner never syncs a secret's bytes"): no
@@ -18,10 +18,8 @@
  *   least `ATOM_MIN` characters; a file holding any is refused whole, whatever path it was
  *   written to.
  */
+import { CREDENTIAL_NAME } from "../../doors/src/sources";
 
-/** A variable name shaped like a credential or an endpoint (`doors/src/sources.ts`). */
-const CREDENTIAL_NAME =
-  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT)(?:_|$)/;
 /** A settings key naming a credential helper. */
 const HELPER_KEY = /helper/i;
 /**
