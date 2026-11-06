@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../owner/guards/sources";
+import { PLATFORM } from "../../ci/paths";
 import { bundledSources, runEnv, SourceRecordError, sourceRecord } from "../src/sources";
 
 type Json = Record<string, unknown>;

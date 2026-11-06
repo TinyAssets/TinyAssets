@@ -37,6 +37,14 @@ export interface Budgets {
   readonly large: Slowest;
 }
 
+/**
+ * Each project a workspace may hold, by its name, and the folder its tests are in: a
+ * project's budget is `<workspace>/<name>` (`project.ts` makes every project from it, and
+ * `budgets.mjs` reads a test's project from its folder).
+ */
+export const PROJECTS = Object.freeze({ workerd: "test", guards: "guards", runner: "runner" });
+export type ProjectName = keyof typeof PROJECTS;
+
 /** Vitest's default timeout: the small class's, and every budget's floor. */
 export const SMALL_MS = 5_000;
 
@@ -80,7 +88,7 @@ export function medium(project: string): {
            provide: { classTimeouts: { project, medium: ms, large: derived(BUDGETS.large) } } };
 }
 
-/** The large tag, shared by every config (`tags: [LARGE]`; `strictTags` stays on). */
+/** The large tag, carried by every project (`project.ts`; `strictTags` stays on). */
 export const LARGE = Object.freeze({
   name: "large",
   description: "production sizes and anything slower than its project's medium budget; " +

@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { workerSources } from "./sources";
+import { workerSources } from "../../ci/kit/sources";
 
 const PRIMITIVES = new Set(["owner/src/collections.ts", "owner/src/files.ts"]);
 const CAS = /^(?=[^\n]*etag)(?=[^\n]*expected)(?=[^\n]*[!=]=)[^\n]*$|\betag\s*=\s*\?/im;

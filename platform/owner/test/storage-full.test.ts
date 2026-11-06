@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { TIERS } from "../../ci/fixtures";
 import { PLATFORM_CALLER } from "../src/admission";
 import {
   heldOnly, shownBytes, STORAGE_FULL, storageFull, storageFullMessage, storageFullOf,
@@ -327,9 +328,6 @@ describe("the sync's ignore list", () => {
 });
 
 describe("the storage_full message", () => {
-  const TIERS = { free: { runs: 5, storage_bytes: 25_000_000_000 },
-                  paid: { runs: 10, storage_bytes: 250_000_000_000 } };
-
   it("round-trips its facts and reads plainly", () => {
     const facts = storageFull(24_500_000_000, 2_000_000_000, 0, 25_000_000_000, "free", TIERS);
     const message = storageFullMessage(facts);

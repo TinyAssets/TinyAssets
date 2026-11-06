@@ -20,7 +20,8 @@ import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, PLATFORM } from "../../owner/guards/sources";
+import { PLATFORM } from "../../ci/paths";
+import { parse } from "../../ci/kit/sources";
 import profiles from "../profiles.json" with { type: "json" };
 import { CLIENT_INSTRUCTIONS, CLIENT_KEY, RUN_INSTRUCTIONS } from "../src/instructions";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, profileNames, type Tool, toolNames, toolTable }

@@ -22,7 +22,7 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, reporter, workerSources } from "../../owner/guards/sources";
+import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const KEYS = "files/src/keys.ts";
 const FILES = "files/src/";

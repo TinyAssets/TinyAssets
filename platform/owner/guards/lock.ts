@@ -25,7 +25,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { type Migration, migrationDigest } from "../src/migrate";
-import { PLATFORM } from "./sources";
+import { PLATFORM } from "../../ci/paths";
 
 /** A lock, as its file holds it. */
 export interface Lock {

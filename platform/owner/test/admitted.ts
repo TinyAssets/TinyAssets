@@ -13,16 +13,12 @@
 import { env } from "cloudflare:workers";
 
 import { PLATFORM_CALLER } from "../src/admission";
+import { NAMESPACES } from "./namespaces";
 
 type Admitting = { admissionSet(binding: unknown, request: unknown): Promise<unknown> };
 
-/** The owner object's namespaces the tests bind (`vitest.config.ts`). */
-const OWNER_NAMESPACES = ["OWNER", "AGENT", "GATED", "BARE", "BOUNDED", "RUNG", "SWITCHED",
-                          "CACHED", "ARCHIVING", "BIGARCHIVING", "DIVERGING", "PURGING",
-                          "SEEDED"];
-
 const namespaces = env as unknown as Record<string, unknown>;
-for (const name of OWNER_NAMESPACES) {
+for (const name of Object.keys(NAMESPACES)) {
   const namespace = namespaces[name] as { getByName: (owner: string) => unknown };
   const getByName = namespace.getByName.bind(namespace);
   const admitted = new Set<string>();

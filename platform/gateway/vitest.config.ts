@@ -1,66 +1,36 @@
-import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
-import { LARGE, medium } from "../ci/classes";
-
-const TEST = join(dirname(fileURLToPath(import.meta.url)), "test");
-
-/**
- * The fake outside world (test/fake-upstream.ts), as the Worker every global fetch of
- * the gateway goes to: miniflare runs auxiliary Workers from JavaScript, so it is
- * transpiled here.
- */
-function fakeUpstream() {
-  return {
-    name: "fake-upstream",
-    modules: [{
-      type: "ESModule" as const,
-      path: join(TEST, "fake-upstream.js"),
-      contents: ts.transpileModule(readFileSync(join(TEST, "fake-upstream.ts"), "utf8"), {
-        compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-      }).outputText,
-    }],
-    compatibilityDate: "2026-10-23",
-  };
-}
+import { keyring } from "../ci/fixtures";
+import { PLATFORM } from "../ci/paths";
+import { project } from "../ci/project";
+import { fake, once } from "../ci/workers";
 
 /** A keyring made fresh for each run: a rotated ring, so `k1` is an older kid. */
-const KEYRING = JSON.stringify({
-  active: "k2",
-  keys: { k1: randomBytes(32).toString("base64"), k2: randomBytes(32).toString("base64") },
-});
+const KEYRING = keyring("k2", ["k1", "k2"]);
 
 export default defineConfig({
   test: {
-    tags: [LARGE],
     projects: [
-      {
-        // Runs in workerd, under the config's own runtime and flags. The keyring is the
-        // tests' (the config declares the secret and holds no value), and every global
-        // fetch goes to the fake upstream.
+      // Runs in workerd, under the config's own runtime and flags. The keyring is the
+      // tests' (the config declares the secret and holds no value), and every global
+      // fetch goes to the fake outside world (`test/fake-upstream.ts`).
+      project("gateway", "workerd", {
         plugins: [
-          cloudflareTest({
+          cloudflareTest(once(() => ({
             wrangler: { configPath: "./wrangler.jsonc" },
             miniflare: {
               bindings: { GATEWAY_KEYRING: KEYRING },
               outboundService: "fake-upstream",
-              workers: [fakeUpstream()],
+              workers: [fake(join(PLATFORM, "gateway", "test", "fake-upstream.ts"))],
             },
-          }),
+          }))),
         ],
-        test: { name: "workerd", ...medium("gateway/workerd"), include: ["test/**/*.test.ts"] },
-      },
-      {
-        // Static guards over the source and config, in Node.
-        test: { name: "guards", ...medium("gateway/guards"), include: ["guards/**/*.test.ts"],
-                environment: "node" },
-      },
+      }),
+      // Static guards over the source and config, in Node.
+      project("gateway", "guards"),
     ],
   },
 });

@@ -26,7 +26,7 @@ import { posix } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { workerSources } from "./sources";
+import { workerSources } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
 /** The owner export: it names tables only to read them (held below). */

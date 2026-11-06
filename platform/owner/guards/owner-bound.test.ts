@@ -58,7 +58,7 @@ import { SESSION_LIMITS } from "../src/sessions";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import { USAGE_LIMITS } from "../src/usage";
 import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "../src/wake-kinds";
-import { PLATFORM } from "./sources";
+import { PLATFORM } from "../../ci/paths";
 
 const SRC = join(PLATFORM, "owner", "src");
 

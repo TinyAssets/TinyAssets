@@ -24,7 +24,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { largeTests } from "../timeouts";
-import { type Data, json, PLATFORM, REPO, workflow } from "../workflows";
+import { PLATFORM, REPO } from "../paths";
+import { type Data, json, workflow } from "../workflows";
 
 const STEPS = [
   // Full history, no file contents until read: the migration lock's guard reads its base.
