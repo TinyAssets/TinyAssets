@@ -3,7 +3,7 @@
  * folder its tests are in (`PROJECTS`), its size class's budget and the setup file that
  * holds each test to it (`medium()`), and the large tag. Static projects (every one but
  * `workerd`) run in Node. What a project adds of its own (a pool plugin, an alias, setup
- * files after the class check, an exclude) is `extra`.
+ * files after the class check) is `extra`.
  */
 import type { TestProjectInlineConfiguration } from "vitest/config";
 
@@ -13,7 +13,7 @@ type Inline = TestProjectInlineConfiguration;
 type Test = NonNullable<Inline["test"]>;
 
 export interface Extra extends Omit<Inline, "test"> {
-  readonly test?: Pick<Test, "exclude" | "setupFiles">;
+  readonly test?: Pick<Test, "setupFiles">;
 }
 
 export function project(workspace: string, name: ProjectName, extra: Extra = {}): Inline {
@@ -25,7 +25,6 @@ export function project(workspace: string, name: ProjectName, extra: Extra = {})
     test: {
       name,
       include: [`${PROJECTS[name]}/**/*.test.ts`],
-      ...(own.exclude === undefined ? {} : { exclude: own.exclude }),
       tags: [LARGE],
       ...(name === "workerd" ? {} : { environment: "node" }),
       ...options,

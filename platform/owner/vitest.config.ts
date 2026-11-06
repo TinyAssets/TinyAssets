@@ -69,12 +69,9 @@ export default defineConfig({
       // Static guards over the source and config, in Node. The migrations guard imports
       // the schema, whose imports reach the Agents SDK's Lifecycle: Node takes a stub of it
       // (`guards/lifecycle-stub.ts`), since the real one loads `cloudflare:` modules.
-      // `migrations-append-only` reads its base's history, which the legs' checkout
-      // does not fetch yet: tests/test_migration_lock_append_only.py holds the lock.
       project("owner", "guards", {
         resolve: { alias: { "agents/lifecycle": join(PLATFORM, "owner", "guards",
                                                      "lifecycle-stub.ts") } },
-        test: { exclude: ["guards/migrations-append-only.test.ts"] },
       }),
     ],
   },
