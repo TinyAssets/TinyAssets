@@ -14,7 +14,7 @@
  * behind a control record that admits nobody, and `--routes` then finds both held.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -107,15 +107,18 @@ describe("the deploy kit", () => {
     for (const worker of present) {
       const checked = configOf(worker);
       const deployed = deployedConfig(worker, IDS, UPSTREAM, false);
-      const { kv_namespaces: kv, main, vars, assets, $schema: _schema, ...rest } =
+      const { kv_namespaces: kv, main, vars, assets, build, $schema: _schema, ...rest } =
         checked as Json;
       const { kv_namespaces: deployedKv, main: deployedMain, vars: deployedVars,
-              assets: deployedAssets, ...others } = deployed;
+              assets: deployedAssets, build: deployedBuild, ...others } = deployed;
       expect([worker, others]).toEqual([worker, rest]);
       expect(String(deployedMain)).toBe(join(PLATFORM, worker, String(main)));
       // Written outside the Worker's folder: the app files' directory is absolute too.
       expect(deployedAssets).toEqual(assets === undefined ? undefined : {
         ...(assets as Json), directory: join(PLATFORM, worker, String((assets as Json)["directory"])) });
+      // And a custom build runs in the Worker's own folder, not wrangler's.
+      expect(deployedBuild).toEqual(build === undefined ? undefined : {
+        ...(build as Json), cwd: join(PLATFORM, worker, String((build as Json)["cwd"] ?? ".")) });
       expect(deployedKv).toEqual(((kv ?? undefined) as { binding: string }[] | undefined)
         ?.map((namespace) => ({ ...namespace, id: IDS[namespace.binding] })));
       expect(deployed["routes"]).toBeUndefined();
@@ -134,6 +137,27 @@ describe("the deploy kit", () => {
                             "tinyassets.io/app/api/*",
                             "tinyassets.io/authorize*", "tinyassets.io/oauth/*",
                             "tinyassets.io/.well-known/oauth-*"]);
+  });
+
+  it("bundles every Worker from the config it stages, as wrangler deploys it", { tags: ["large"] },
+     () => {
+    // The kit writes each config outside its Worker's folder (`deployedConfig`), so a path
+    // that stays relative resolves elsewhere; the first dark run stopped on the sandbox's
+    // custom build for exactly that. Only a real bundle of the staged config shows it.
+    const wrangler = join(PLATFORM, "node_modules", "wrangler", "bin", "wrangler.js");
+    const out = mkdtempSync(join(tmpdir(), "ta-staged-"));
+    try {
+      for (const worker of present) {
+        const config = join(out, `${worker}.json`);
+        writeFileSync(config, JSON.stringify(deployedConfig(worker, IDS, UPSTREAM, true)));
+        execFileSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir",
+                                        join(out, worker), "--config", config],
+                     { cwd: PLATFORM, stdio: "pipe",
+                       env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+      }
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
   });
 
   it("writes a control record its gates read, every outside door closed", () => {
