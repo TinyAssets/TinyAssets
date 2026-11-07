@@ -81,8 +81,8 @@ import { createHash } from "node:crypto";
 
 import { sha256Hex } from "../../contract/src/digest";
 import {
-  BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, INLINE_BYTES, INTENT_ID_BYTES, LEASE_TTL_S, MAX_LIST,
-  MAX_SYNC_OPS,
+  BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, GC_GRACE_S, INLINE_BYTES, INTENT_ID_BYTES, LEASE_TTL_S,
+  MAX_LIST, MAX_SYNC_OPS,
 } from "../../contract/src/limits";
 
 import { letGo } from "./edit";
@@ -120,17 +120,6 @@ export const INTENT_TTL_S = 86_400;
  * door call, so a crashed placement holds its quota and its upload slot for minutes only.
  */
 export const PLACE_TTL_S = 600;
-/**
- * How long a garbage chunk waits before it is deleted (the schema's trigger sets it): 30
- * days, the object's own point-in-time recovery window (Durable Objects restore "to any point
- * in the past 30 days"), so a restored object, or a manifest, never names a chunk the sweep
- * took. A garbage chunk counts in no owner's storage; once an owner's garbage in its grace
- * passes the owner's storage figure, the oldest is collected early (`collect`), never one the
- * newest manifest names, so what the platform keeps uncounted for an owner is bounded by what
- * it counts. What the owner is told: "Deleted files are kept up to 30 days, within your
- * storage; past that the oldest go first."
- */
-export const GC_GRACE_S = 30 * 86_400;
 /** When a failed chunk delete is tried again. */
 export const GC_RETRY_S = 300;
 /** The owner's own work's sandbox: the authority every run the owner started holds. */

@@ -13,7 +13,6 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { toolsNamed } from "../../doors/src/tools";
-import { PLACE_BYTES } from "../src/bodies";
 import { AGENT_RETIRED, type Ledger, MAIL_HEADER_BYTES, mailInput, NO_AGENT, nativeId,
          RUN_NO_MAILBOX } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
@@ -23,7 +22,7 @@ import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
          TIERS } from "./runs-support";
-import { QUEUE_ROWS } from "../../contract/src/run-rows";
+import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { drainDue, failure } from "./support";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */

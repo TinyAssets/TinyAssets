@@ -71,6 +71,7 @@
  */
 import { HEX16 } from "../../contract/src/ids";
 import { Invalid } from "../../contract/src/errors";
+import { CURSOR_CHARS } from "../../contract/src/limits";
 
 export const EXPORT_FORMAT = "tinyassets-export";
 export const EXPORT_VERSION = 3;
@@ -88,11 +89,6 @@ const READ_BATCH = EXPORT_READ_BATCH;
  * its hash, `","size":`, at most seven digits (a chunk is at most `CHUNK_BYTES`), `}`.
  */
 export const CHUNK_LINE_BYTES = 23 + 64 + 9 + 7 + 1 + 1;
-/**
- * A cursor's most characters: past the widest key it can hold (a file entry's parent path,
- * at most 4 KiB, and its name), as base64url JSON.
- */
-export const CURSOR_CHARS = 16_384;
 
 /** One exported table: its columns, and the key it is read in order of. */
 export interface ExportTable {

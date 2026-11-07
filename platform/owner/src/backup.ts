@@ -40,14 +40,16 @@
 import { randomHex } from "../../contract/src/ids";
 import { createHash } from "node:crypto";
 
-import { CHUNK_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS } from "../../contract/src/limits";
+import {
+  CHUNK_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY, SLOT_WAIT_MS,
+} from "../../contract/src/limits";
 import type { ChangeLog } from "./changelog";
 import {
   chunkLine, type Cursor, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES,
   type Lines,
   readPage,
 } from "./export";
-import { type ChunkSpace, type ChunkStore } from "./files";
+import type { ChunkSpace, ChunkStore } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
 import { type Slot, SlotBusy, type SlotPool } from "../../contract/src/slots";
@@ -70,10 +72,6 @@ export const MANIFEST_PROTECT_S = 2 * 86_400;
 export const MANIFEST_RETRY_S = 300;
 /** When a generation a pass did not finish goes on: never at once. */
 export const MANIFEST_CONTINUE_S = 5;
-/** A part's entry in its generation's list: its hash, a colon, its size, a comma. */
-export const PART_ENTRY = 64 + 1 + 7 + 1;
-/** A segment's entry: its span (two seqs and a dash), a colon, its hash, size and comma. */
-export const SEGMENT_ENTRY = 16 + 1 + 16 + 1 + 64 + 1 + 7 + 1;
 /**
  * The stream's bytes one burst gathers, with no outside call, before it puts them as parts:
  * two parts' worth, counted as the parts hold them (each line's UTF-8 and its newline), so

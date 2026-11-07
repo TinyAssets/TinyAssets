@@ -9,9 +9,8 @@
  * within it. The counts test (`guards/memory-counts.test.ts`) holds the pool, with the
  * isolate's other live holds and its resting baseline, within the isolate's 128 MB.
  */
-import { IMAGE_MAX } from "./changelog";
 import { CHUNK_LINE_BYTES, EXPORT_PAGE_BYTES, EXPORT_READ_BATCH } from "./export";
-import { CHUNK_BYTES } from "../../contract/src/limits";
+import { CHUNK_BYTES, IMAGE_MAX } from "../../contract/src/limits";
 import {
   type Isolate, isolatePool, isolateTails, type SharedBudget, type SlotPool, UNIT_BYTES,
 } from "../../contract/src/slots";

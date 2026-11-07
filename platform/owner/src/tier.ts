@@ -30,14 +30,13 @@
  * record past it is malformed.
  */
 import { Invalid, Refused } from "../../contract/src/errors";
+import { RUNS_CEILING } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { TIER_STORAGE_MAX } from "./segments";
 
 export const TIER_NAMES = Object.freeze(["free", "paid"] as const);
 export type TierName = (typeof TIER_NAMES)[number];
 
-/** The most live runs any tier record may give: what the owner-bound guard costs. */
-export const RUNS_CEILING = 1000;
 
 export interface TierNumbers {
   /** Simultaneous runs. */

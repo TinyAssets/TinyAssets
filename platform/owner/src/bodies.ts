@@ -30,11 +30,9 @@ import { windowEnd } from "./file-search";
 import type { Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { bodyUnits, ownerSlots, WINDOW_UNITS } from "./holds";
-import { CHUNK_BYTES } from "../../contract/src/limits";
-import { PLACE_BYTES } from "./manifest";
+import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { slotted } from "../../contract/src/slots";
 
-export { PLACE_BYTES } from "./manifest";
 
 /**
  * The most bytes a body takes: half of a request body's one ceiling (`limits.ts`'s

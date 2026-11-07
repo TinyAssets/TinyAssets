@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkLimits, clock, LEDGER_LIMITS, type Ledger, type LedgerLimits, type Origin, OWNER,
 } from "../src/ledger";
-import { PLACE_BYTES } from "../src/manifest";
+import { PLACE_BYTES } from "../../contract/src/limits";
 import { counters, DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
 import { failure } from "./support";
 

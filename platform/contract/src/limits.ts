@@ -3,12 +3,15 @@
  * and read by every side (the owner's object, the doors, the gateway, the files Worker, the
  * sandbox Worker and the runner). Each is a technical ceiling with its reason beside it
  * (`limits-audit.md`).
+ *
+ * And, in their own section below, the bounds the owner's frozen migrations spell
+ * (`owner/src/schema.ts`): frozen with that SQL text.
  */
 
 /**
  * A chunk's most bytes, the files plane's unit: the owner's chunker cuts files at exactly
  * this size, the files Worker stores them so, the sync carries them so, and an isolate's
- * pool counts its holds in it (`slots.ts`).
+ * pool counts its holds in it (`slots.ts`). Frozen: the owner's schema spells it.
  */
 export const CHUNK_BYTES = 4 * 1024 * 1024;
 /**
@@ -23,7 +26,7 @@ export const DELETE_BATCH = 1000;
  * 4 MiB each, 64 GiB. Past the worst case of the stream the owner's object can hold, escaping
  * included (`owner/guards/owner-bound.test.ts`, "the nightly manifest's stream"), and its
  * lists (`PART_ENTRY` each) fit a SQLite row's 2 MB. A generation past it is never retried:
- * the owner is told (`owner/src/backup.ts`).
+ * the owner is told (`owner/src/backup.ts`). Frozen: the owner's schema spells it.
  */
 export const MANIFEST_PARTS = 16_384;
 
@@ -86,3 +89,173 @@ export const SLOT_WAIT_MS = 10_000;
  * it before they reach the owner's object.
  */
 export const MAX_KEYS = 1_000;
+
+/**
+ * A pasted sign-in code, one line typed to the CLI's terminal: at most what a Linux terminal
+ * line holds (`N_TTY_BUF_SIZE`, 4096 bytes, its newline among them), so a longer one is no
+ * code. The owner's object refuses one past it, and the runner types no more.
+ */
+export const SIGNIN_PASTE_MAX = 4095;
+
+// The owner's frozen bounds. Each number below is spelled in the owner's migrations, whose
+// SQL text is frozen from its first deploy (`owner/src/schema.ts`, pinned by
+// `owner/migrations.json`), and each module that enforces it in code reads it from here.
+// So a bound is frozen too: changing one here is a new migration that changes the SQL with
+// it, never an edit of this line alone. The owner's frozen-bounds guard holds each one equal
+// to every place the SQL spells it (`owner/guards/frozen-bounds.test.ts`), so one changed
+// without the other fails. Each is a technical ceiling of the owner's database, its 10 GB of
+// which the owner-bound guard holds the worst case under half (`limits-audit.md`).
+
+/**
+ * The placement rule's threshold (ADR-035): a collection row's, a history entry's or a
+ * message's body of more UTF-8 bytes than this is never kept in the object's SQLite but in
+ * R2, through the files plane. A rowid table keeps a record of at most 4,061 bytes in place
+ * (`owner/src/manifest.ts` `TABLE_KEPT`); past it the record spills onto overflow pages read
+ * with every read of the row. Half of that room is the body's, the other half the row's own
+ * names, ids and numbers (a collection row's collection, row id, writer, creator, etag,
+ * content id and files scope take up to about 1,700 bytes at the names a caller usually
+ * picks), so a row at the threshold keeps in its page. Past it a body costs an R2 put ($4.50
+ * a million) and get ($0.36 a million), which its SQLite storage ($0.20 a GB-month against
+ * R2's $0.015) pays for within a year at 2 KiB.
+ */
+export const PLACE_BYTES = 2048;
+/**
+ * How long a garbage chunk waits before it is deleted (the schema's trigger sets it): 30
+ * days, the object's own point-in-time recovery window (Durable Objects restore "to any point
+ * in the past 30 days"), so a restored object, or a manifest, never names a chunk the sweep
+ * took. A garbage chunk counts in no owner's storage; once an owner's garbage in its grace
+ * passes the owner's storage figure, the oldest is collected early (`files.ts` `collect`),
+ * never one the newest manifest names, so what the platform keeps uncounted for an owner is
+ * bounded by what it counts. What the owner is told: "Deleted files are kept up to 30 days,
+ * within your storage; past that the oldest go first."
+ */
+export const GC_GRACE_S = 30 * 86_400;
+/** A backup part's entry in its generation's list: its hash, a colon, its size, a comma. */
+export const PART_ENTRY = 64 + 1 + 7 + 1;
+/** A segment's entry: its span (two seqs and a dash), a colon, its hash, size and comma. */
+export const SEGMENT_ENTRY = 16 + 1 + 16 + 1 + 64 + 1 + 7 + 1;
+/**
+ * An export cursor's most characters: past the widest key it can hold (a file entry's parent
+ * path, at most 4 KiB, and its name), as base64url JSON.
+ */
+export const CURSOR_CHARS = 16_384;
+/**
+ * The unshipped change log the object holds at most, in bytes: a quarter of the room under
+ * the owner database's half once every other table is at its worst, an equal share with
+ * each slice still to land (`limits-audit.test.ts` derives it: the largest whole MiB within
+ * that share). The room is there so a generation's held changes survive an R2 outage; it
+ * binds only while R2 refuses puts, or when one unit changes more than it.
+ */
+export const LOG_BYTES = 68 * 1024 * 1024;
+/** A change log row's own bytes past its line, as the log counts it: its seq and record. */
+export const LOG_ROW_BYTES = 64;
+/**
+ * The widest row image the change log takes, under a Durable Object row's 2 MB: derived from
+ * the widest real row (review L5-1), every exported table's at its ceiling escaped at JSON's
+ * worst, a connection's models list at its 640 KiB among them, rounded up to a quarter MiB
+ * (the owner-bound guard holds it equal). So no change, a token refresh's included, ever
+ * writes the wide mark (`changelog.ts` `LOG_WIDE`); that mark stays the backstop should a
+ * later column outgrow it before the guard catches it, failing the generation, never the
+ * write.
+ */
+export const IMAGE_MAX = 1536 * 1024;
+/** A schedule's cron expression's most characters (`owner/src/cron.ts`). */
+export const CRON_MAX_CHARS = 256;
+/**
+ * The most live runs any tier record may give (`owner/src/tier.ts`): what the owner-bound
+ * guard costs each live run's rows at, and the most sandbox leases and sign-ins live at once.
+ */
+export const RUNS_CEILING = 1000;
+/**
+ * Model calls open at once (`reserved` or `dispatched`), past which a reservation is
+ * refused (`model_calls_full`).
+ */
+export const CALLS_OPEN = 1000;
+/**
+ * Spend counters kept (`usage.ts`'s): a day's or a month's per source, for the days and
+ * months the usage module keeps (40 and 3), each at a hundred sources, past which a new
+ * source's first call in a period is refused (`model_spend_full`).
+ */
+export const SPEND_KEPT = 4300;
+/**
+ * Socket tickets outstanding at once, each single-use and at most `SOCKET_TICKET_S` long
+ * (`socket-shape.ts`); past it a mint is refused (`socket_tickets_full`).
+ */
+export const SOCKET_TICKETS = 1024;
+/**
+ * A subscription's canonical arguments' characters at most (`wake-records.ts`, beside its
+ * callback URL's and secret's): the subscriptions' share of the owner's database.
+ */
+export const ARGUMENTS_CHARS = 1024;
+/**
+ * Doorbell subscriptions one agent holds (its client's dots and Work chats, or the owner's
+ * pasted tokens), and a sealed blob's characters at most (a callback's URL and secret,
+ * sealed and encoded): each enabled agent's share of the owner's database (`maxAgents` times
+ * this, the owner-bound guard). Per agent, so no client fills another agent's room, nor the
+ * owner's own.
+ */
+export const SUBSCRIPTIONS_PER_AGENT = 16;
+export const DOORBELL_BLOB_CHARS = 8192;
+
+// The runs' rows (`owner/src/runs.ts`, migration 12):
+// - `RESULT_BYTES`: a run's result text as its receipt keeps it; a longer one is kept to
+//   this many bytes and marked cut (`result_cut`), the whole in the engine's transcript;
+// - `ERROR_BYTES`: a run's first error, as its receipt keeps it, cut the same way;
+// - `CONVERSATIONS_KEPT`: conversations kept, the least recently run one with no live run
+//   forgotten first (its transcript stays in the owner's files; only its resume id goes);
+// - `SCHEDULES_KEPT`: the `runs` lane's schedules, past which a new one is refused with its
+//   way out (cancel one);
+// - `INPUT_BYTES`: a schedule's stored input. A door's input is stored only while it waits
+//   for its conversation (`QUEUE_ROWS`, `QUEUE_BYTES`); otherwise it goes to the sandbox
+//   with the run's start, bounded by the door's own body bound;
+// - `ENGINE_SIGNINS`: one sign-in row an engine, past every CLI record.
+
+/** `run_` and 32 hex (`ids.ts`'s `RUN_ID`). */
+export const RUN_ID_CHARS = 36;
+/** `cv_` and 32 hex (`CONVERSATION_ID`). */
+export const CONVERSATION_ID_CHARS = 35;
+/** `sch_` and 32 hex (`SCHEDULE_ID`). */
+export const SCHEDULE_ID_CHARS = 36;
+export const RESULT_BYTES = 16384;
+export const ERROR_BYTES = 1024;
+export const CONVERSATIONS_KEPT = 10000;
+export const SCHEDULES_KEPT = 1000;
+export const INPUT_BYTES = 16384;
+/**
+ * Inputs waiting for their conversation's live run, kept beside it: at most this many, and
+ * this many bytes of input in all, past which a new one is refused `run_inputs_full`. Sized
+ * to what the owner-bound guard leaves with every proposed raise applied (a waiting run's
+ * row is counted at a run's widest too); see `limits-audit.md`.
+ */
+export const QUEUE_ROWS = 256;
+export const QUEUE_BYTES = 6_291_456;
+/** Engines whose sign-in the runner reports, one row each: past every CLI record. */
+export const ENGINE_SIGNINS = 64;
+/** A sign-in report's models, as JSON: visible ASCII. */
+export const SIGNIN_MODELS_CHARS = 2048;
+/**
+ * A client's sandbox's signed-in engines, comma-joined on its lease's row: each one a
+ * served record that signs in, so far past what the records' ids join to; the lease row
+ * stays within its page share at it (the owner-bound guard costs the leases at it).
+ */
+export const SIGNIN_LIST_CHARS = 256;
+/**
+ * A sign-in's vendor URL, visible ASCII: RFC 9110 section 4.1 has senders and recipients
+ * support URIs of at least 8000 octets, so a longer one is not the vendor's page.
+ */
+export const SIGNIN_URL_MAX = 8000;
+/**
+ * The longest code a sign-in shows the owner: device codes are short by design (RFC 8628
+ * section 6.1 recommends 8 characters for the user to type; the records' shapes, `XXXX-XXXXX`
+ * and Kimi's, are within 16), so a longer "code" is not the vendor's prompt.
+ */
+export const SIGNIN_CODE_MAX = 16;
+/**
+ * The mail that starts runs (slice ID), which the schema checks without the ledger's code:
+ * a ledger message's id (`msg_` and 32 hex), the ledger id of one of the owner's own agents
+ * (`ta_` and 16 hex), and a message's authority as JSON (an outside client's id and family,
+ * 64 hex each, its grant generation and its sign-in time, and their keys).
+ */
+export const MESSAGE_ID_CHARS = 36;
+export const NATIVE_ID_CHARS = 19;
+export const AUTHORITY_CHARS = 240;

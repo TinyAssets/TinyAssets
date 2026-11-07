@@ -9,8 +9,8 @@
  * - `first_deploy`: null until its Worker's first deploy, then `{ at, commit }`. Until it is
  *   set, nothing is deployed and slices may still edit migrations in place.
  * - `deployed`: each deployed migration's SHA-256, in order (version n at index n - 1), over
- *   its statements as the code evaluates them (`migrationDigest`), so a change to a constant
- *   a statement spells changes the digest too.
+ *   its statements as the code evaluates them (`migrationDigest`). The owner's are literal
+ *   SQL text (`schema.ts`), so its digest is of the text as written.
  *
  * A guard fails when a pinned migration's text differs from its pin, when a pinned one is
  * gone, or when anything is pinned without the first-deploy marker. A deploy pins with

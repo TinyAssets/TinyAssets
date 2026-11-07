@@ -110,9 +110,8 @@ import {
   SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
-import {
-  admittedMethods, kindFor, ringingMethods, SUBSCRIPTIONS_PER_AGENT,
-} from "../../contract/src/wake-records";
+import { admittedMethods, kindFor, ringingMethods } from "../../contract/src/wake-records";
+import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { type Change, CHANGES, type Follows, follows } from "../../contract/src/wake-kinds";
 
 /**

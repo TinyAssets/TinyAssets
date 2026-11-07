@@ -14,8 +14,8 @@ import { PLATFORM_CALLER } from "../src/admission";
 import { AGENT_DISABLED } from "../src/agent-file";
 import { AGENT_CHANGED, type Binding } from "../src/owner-do";
 import { Files } from "../src/files";
+import { RUNS_KEPT } from "../src/runs";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
-import { RUNS_KEPT } from "../../contract/src/run-rows";
 import {
   EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,
 } from "../../contract/src/run-events";
