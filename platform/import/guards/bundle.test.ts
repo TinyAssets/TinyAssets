@@ -24,7 +24,7 @@ import {
 } from "../bundle";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
 import {
-  ALICE, BAD_DIR, BAD_NAME, bigBytes, BOB, type Fixture, fixture, FOUNDER, keyOf, sha, sparse,
+  ALICE, BAD_DIR, BAD_NAME, bigBytes, BOB, DORA, type Fixture, fixture, FOUNDER, keyOf, sha, sparse,
   TIERS,
 } from "./fixture";
 
@@ -69,7 +69,8 @@ describe("the bundle builder", () => {
   it("writes each owner's tree with the platform's own content ids for the backup's bytes", () => {
     const { f, out, options } = setup();
     const summary = buildBundles(f.copy, options);
-    expect(summary).toMatchObject({ dry_run: false, owners: 3, bundled: 2, excluded: 1, erased: 0,
+    expect(summary).toMatchObject({ dry_run: false, owners: 4, bundled: 2, excluded: 1, erased: 0,
+                                    erasure_pending: 1,
                                     refused: {} });
     const bundle = join(out, keyOf(ALICE));
     const entries = manifest(bundle);
@@ -299,6 +300,33 @@ describe("the bundle builder", () => {
     expect(readdirSync(out)).toEqual([keyOf(ALICE)]);
     expect(json(join(priv, keyOf(FOUNDER), "owner.json"))["admission"])
       .toEqual({ state: "absent", reasons: [] });
+  });
+
+  it("bundles an owner whose erasure is pending into neither folder, excluded or not", () => {
+    const { f, out, priv, options } = setup();
+    const summary = buildBundles(f.copy, { ...options, exclude: new Set([FOUNDER, DORA]) });
+    expect(summary).toMatchObject({ bundled: 2, excluded: 1, erasure_pending: 1, refused: {} });
+    expect(readdirSync(out)).not.toContain(keyOf(DORA));
+    expect(readdirSync(priv)).not.toContain(keyOf(DORA));
+    const record = json(join(priv, PRIVATE_RECORD))["owners"] as Record<string, unknown>[];
+    expect(record.map((owner) => owner["owner"])).not.toContain(DORA);
+    // Not a byte of hers anywhere: grep finds nothing (its exit 1).
+    for (const dir of [out, priv]) {
+      expect(() => execFileSync("grep", ["-rlF", "dora asked", dir]), dir).toThrow();
+    }
+  });
+
+  it("stops the run on what an unfinished account deletion left in the shared layer, and " +
+     "refuses the owner whose image holds one", () => {
+    const { f, out, options } = setup();
+    mkdirSync(join(f.tree(BOB), ".account-deletions"));
+    writeFileSync(join(f.tree(BOB), ".account-deletions", "receipt.json"), "{}");
+    expect(buildBundles(f.copy, options).refused).toEqual({ unfinished_erasure: 1 });
+    expect(readdirSync(out)).toEqual([keyOf(ALICE)]);
+    const again = setup();
+    mkdirSync(join(again.f.work, "data", "_data", ".deleting", "home"), { recursive: true });
+    expect(() => buildBundles(again.f.copy, again.options)).toThrow(/unfinished_erasure/);
+    expect(readdirSync(again.out)).toEqual([]);
   });
 
   it("refuses an exclusion list naming no owner of the backup, before anything is written", () => {

@@ -52,9 +52,17 @@ function exists(path: string): boolean {
   }
 }
 
-/** Whether the owner is imported at all: never one the old stack erased. */
+/** Whether the old stack erased the owner. */
 export function erased(owner: Owner): boolean {
   return owner.admission?.state === "erased" || owner.erasedMarker;
+}
+
+/**
+ * Whether the owner is withheld from every bundle: erased, or with a deletion job not
+ * finished (the person's request honoured, though the backup predates its end).
+ */
+export function withheld(owner: Owner): boolean {
+  return erased(owner) || owner.erasurePending;
 }
 
 /**
@@ -154,7 +162,7 @@ export interface Census {
 export function census(copy: Copy, tiers: Tiers): Census {
   const copyProblems = verifyCopy(copy);
   const fleet = survey(copy);
-  const live = fleet.owners.filter((owner) => !erased(owner));
+  const live = fleet.owners.filter((owner) => !withheld(owner));
   const fits = new Map<string, Fit>();
   const owned = new Map<string, Problem[]>();
   for (const owner of live) {
@@ -189,7 +197,8 @@ export function census(copy: Copy, tiers: Tiers): Census {
     owners: {
       identities: fleet.owners.length,
       imported: live.length,
-      erased: fleet.owners.length - live.length,
+      erased: fleet.owners.filter(erased).length,
+      erasure_pending: fleet.erasurePending,
       admission: tally(fleet.owners.map((owner) => owner.admission?.state ?? "absent")),
       tier: tally(live.map((owner) => owner.plan?.tier ?? "none")),
       with_customer: live.filter((owner) => owner.plan?.customer_id != null).length,
@@ -240,6 +249,7 @@ export function census(copy: Copy, tiers: Tiers): Census {
       : [owner.admission.state, ...owner.admission.reasons].join(","));
     row("tier", owner.plan?.tier ?? "none");
     row("erased", erased(owner));
+    row("erasure_pending", owner.erasurePending);
     row("centers", owner.centers.length);
     row("files", files(owner).length);
     if (fit !== undefined) {

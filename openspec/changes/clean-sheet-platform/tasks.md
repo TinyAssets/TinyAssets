@@ -2344,6 +2344,12 @@ R, S, M and W.
     owner past 30,000 entries) are not expected, and any the census finds stops it loudly
     and goes to the founder then. The exclusion list and tester B are owed from the old
     stack's records and `docs/host-actions.md`.
+  - [ ] In the window, before `routes`: the off-host deletion job records
+    (`broker/deletion_jobs.py` `load_unfinished_jobs`, read from the off-host authority, never
+    a backup copy) compared with the census's. A job made after the backup copy is not in
+    it, so the census cannot withhold that owner; any such owner is discarded from the
+    import (still `pending`) and withheld, as the census withholds `erasure_pending` owners,
+    before any owner is admitted.
 
 - [ ] Full backup; each owner's broker stores imported into their object and each
   volume into object storage, each imported owner admitted (`admissionSet` from the

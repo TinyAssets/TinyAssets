@@ -33,7 +33,18 @@ export const ARCHIVE = "tinyassets-data-2026-11-07T03-00-00Z.tar.gz";
 export const ALICE = "user_alice";
 export const BOB = "user_bob";
 export const FOUNDER = "user_founder";
-export const UIDS = Object.freeze({ [ALICE]: 300_001, [BOB]: 300_002, [FOUNDER]: 300_003 });
+/** An owner who asked to be erased: its deletion job has not passed its first step. */
+export const DORA = "user_dora";
+export const UIDS = Object.freeze({ [ALICE]: 300_001, [BOB]: 300_002, [FOUNDER]: 300_003,
+                                    [DORA]: 300_004 });
+/** The old broker's deletion job for `owner`, its steps done so far (`deletion_jobs.py`). */
+export function deletionJob(owner: string, completed: readonly string[]): [string, string] {
+  return [sha(owner), JSON.stringify({
+    id: sha(owner), owner, uid: UIDS[owner as keyof typeof UIDS] ?? 300_099,
+    status_token: "t", created_at: 1.0, completed_steps: completed, attempts: {},
+    retry_at: 0, failed_step: completed.length === 0 ? "withdrawal" : null,
+    billing_cleanup: {}, results: {} })];
+}
 /** The founder's tier numbers (ADR-034 decision 8), as the control record holds them. */
 export const TIERS = Object.freeze({ free: { storage_bytes: 25_000_000_000 },
                                      paid: { storage_bytes: 250_000_000_000 } });
@@ -118,14 +129,19 @@ export function fixture(): Fixture {
             "rewind_generation INTEGER);" +
             "CREATE TABLE owner_box_secrets (principal TEXT PRIMARY KEY NOT NULL, " +
             "secret TEXT NOT NULL);" +
-            "CREATE TABLE routing_sequence (revision INTEGER NOT NULL);", {
+            "CREATE TABLE routing_sequence (revision INTEGER NOT NULL);" +
+            "CREATE TABLE deletion_jobs (id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL);", {
               owner_identities: Object.entries(UIDS).map(([p, uid]) => [p, uid]),
               owner_admission: [[sha(ALICE), "admitted", "[]"], [sha(BOB), "suspended", '["billing"]'],
-                                [sha(FOUNDER), "admitted", "[]"], [sha("user_gone2"), "erased", "[]"]],
+                                [sha(FOUNDER), "admitted", "[]"], [sha(DORA), "admitted", "[]"],
+                                [sha("user_gone2"), "erased", "[]"]],
               owner_volumes: Object.entries(UIDS).map(([p, uid]) =>
                 [p, uid, 3, snapshot(p), sha(images[p]!), null, 0, 1.5, null]),
               owner_box_secrets: Object.keys(UIDS).map((p) => [p, `secret-${p}`]),
               routing_sequence: [[7]],
+              // Dora's withdrawal failed (`WithdrawalPending`): her job waits, and her
+              // admission still reads admitted.
+              deletion_jobs: [deletionJob(DORA, [])],
             }, true);
   makeStore(join(shared, ".broker/plans.db"),
             "CREATE TABLE plans (owner TEXT PRIMARY KEY, tier TEXT NOT NULL, " +
@@ -282,6 +298,13 @@ export function fixture(): Fixture {
             { centers: [["main", 0]] });
   file(join(b, "main", "MEMORY.md"), "bob remembers\n");
   file(join(b, "main", "workspace", "a.txt"), "a\n");
+
+  // Dora's image: what she asked to have erased.
+  const d = tree(DORA);
+  makeStore(join(d, ".centers.db"),
+            "CREATE TABLE centers (center TEXT PRIMARY KEY, retired INTEGER NOT NULL DEFAULT 0);",
+            { centers: [["diary", 0]] });
+  file(join(d, "diary", "notes", "private.md"), "dora asked for this to be erased\n");
 
   // The founder's image.
   const f = tree(FOUNDER);

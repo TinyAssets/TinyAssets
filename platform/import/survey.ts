@@ -37,6 +37,7 @@ export type Code =
   // rule 0
   | "unknown_entry" | "unknown_table" | "unknown_center" | "bad_store" | "unclean_store"
   | "integrity" | "path_collision" | "unreadable" | "orphan_row" | "never_admitted"
+  | "unfinished_erasure"
   // the new platform's limits
   | "over_entries" | "over_inline_bytes" | "over_file_bytes" | "over_storage" | "no_tier"
   | "over_tar_member";
@@ -137,6 +138,12 @@ export interface Owner {
   readonly plan: Plan | null;
   readonly volume: Volume | null;
   readonly erasedMarker: boolean;
+  /**
+   * A deletion job names the owner and the erasure it asked for has not finished (or the
+   * admission does not yet say erased): the person's request is honoured, so the owner is
+   * never bundled, neither imported nor backed up, and is counted.
+   */
+  readonly erasurePending: boolean;
   readonly centers: readonly { readonly name: string; readonly retired: boolean }[];
   readonly tree: Tree;
 }
@@ -152,6 +159,8 @@ export interface Fleet {
   readonly orphans: { readonly admission: number; readonly plans: number; readonly volumes: number };
   /** Identities with no volume row and no pin: owners who never had a box. */
   readonly noVolume: number;
+  /** Owners withheld for a deletion job not finished. */
+  readonly erasurePending: number;
 }
 
 /** The digest of a name the owner may have chosen: how a problem names it. */
@@ -293,6 +302,12 @@ export function visitLevel(dir: Buffer, rules: Level, where: string, visit: Leve
         problems.push({ code: "unknown_entry", at: `${where}/${value}` });
       } else {
         visit.user(value, path);
+      }
+    } else if (rule.kind === "empty") {
+      // Absent or empty is fine; a link, a file, or a folder holding anything is not.
+      const stat = lstatSync(path);
+      if (!stat.isDirectory() || readdirSync(path).length > 0) {
+        problems.push({ code: "unfinished_erasure", at: `${where}/${value}` });
       }
     }
   }
@@ -436,6 +451,33 @@ function fleetStores(shared: string, problems: Problem[], stores: StoreCount[]) 
   return { read };
 }
 
+/** The old broker's deletion steps, in order (`broker/deletion_jobs.py` `STEPS`). */
+const DELETION_STEPS = Object.freeze(["withdrawal", "volume", "snapshots", "custody", "billing",
+                                      "credentials", "identity", "receipt"]);
+
+/**
+ * The broker's deletion jobs (`deletion_jobs`: `id`, the owner's digest, and `record`, the
+ * job as `new_job` makes it), by owner: finished once every step is done, in order
+ * (`load_unfinished_jobs`'s own test). A row the old code could not have written stops
+ * loudly.
+ */
+function deletionJobs(rows: Record<string, unknown>[]):
+    Map<string, { readonly id: string; readonly finished: boolean }> {
+  const found = new Map<string, { id: string; finished: boolean }>();
+  for (const row of rows) {
+    const record = JSON.parse(String(row["record"])) as Record<string, unknown>;
+    const owner = record["owner"];
+    const steps = record["completed_steps"];
+    if (typeof owner !== "string" || !Array.isArray(steps) || row["id"] !== sha256Hex(owner)
+        || record["id"] !== row["id"]) {
+      throw new Error("a deletion_jobs row is no job the old broker wrote");
+    }
+    found.set(owner, { id: String(row["id"]),
+                       finished: JSON.stringify(steps) === JSON.stringify(DELETION_STEPS) });
+  }
+  return found;
+}
+
 /** Each owner's admission, by digest: the old stack's states and reasons, checked. */
 function admissions(read: (store: string, table: string) => Record<string, unknown>[]) {
   const found = new Map<string, Admission>();
@@ -477,6 +519,7 @@ export function survey(copy: Copy): Fleet {
     customer_id: row["customer_id"] as string | null,
     subscription_id: row["subscription_id"] as string | null,
   }]));
+  const jobs = deletionJobs(read(".broker/state/owner-identities.db", "deletion_jobs"));
   const deleted = read(".router-deleted-owners.sqlite3", "deleted_owners")
     .map((row) => String(row["owner"]));
   const identities = read(".broker/state/owner-identities.db", "owner_identities")
@@ -543,9 +586,11 @@ export function survey(copy: Copy): Fleet {
       uid: identity.uid, admission: admitted.get(digest) ?? null,
       plan: plans.get(identity.principal) ?? null, volume,
       erasedMarker: accountDirs.has(digest) && lstatExists(join(accounts, digest, ".deleted")),
+      erasurePending: jobs.has(identity.principal)
+        && (!jobs.get(identity.principal)!.finished || admitted.get(digest)?.state !== "erased"),
       centers: [], tree: newTree(),
     };
-    if (owner.admission?.state === "erased" || owner.erasedMarker) {
+    if (owner.admission?.state === "erased" || owner.erasedMarker || owner.erasurePending) {
       return owner;
     }
     if (accountDirs.has(digest)) {
@@ -565,7 +610,14 @@ export function survey(copy: Copy): Fleet {
   }
   const noVolume = owners.filter((owner) => owner.volume === null && !pins.has(owner.uid!))
     .length;
-  return { problems, stores, owners, orphanAccounts, orphans, noVolume,
+  // A job whose owner is no identity: whose data it would withhold cannot be told.
+  for (const [principal, job] of jobs) {
+    if (!principals.has(principal)) {
+      problems.push({ code: "orphan_row", at: `deletion_jobs/${job.id.slice(0, 16)}` });
+    }
+  }
+  const erasurePending = owners.filter((owner) => owner.erasurePending).length;
+  return { problems, stores, owners, orphanAccounts, orphans, noVolume, erasurePending,
            tombstones: { principals: deleted, digests: digestOnly } };
 }
 

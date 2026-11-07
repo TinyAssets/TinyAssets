@@ -54,7 +54,16 @@ export interface DirRule {
   readonly why: string;
 }
 
-export type EntryRule = StoreRule | UserRule | DropRule | DirRule;
+/**
+ * A folder that must be absent or empty: what it holds is an unfinished erasure, refused
+ * loudly (`unfinished_erasure`), never dropped and never carried.
+ */
+export interface EmptyRule {
+  readonly kind: "empty";
+  readonly why: string;
+}
+
+export type EntryRule = StoreRule | UserRule | DropRule | DirRule | EmptyRule;
 export type Level = Readonly<Record<string, EntryRule>>;
 
 /** Each name in each group with that group's use; a name in two groups is refused. */
@@ -93,6 +102,18 @@ const store = (tables: StoreRule["tables"], why: string): StoreRule =>
 const user = (why: string): UserRule => Object.freeze({ kind: "user", why });
 const drop = (why: string): DropRule => Object.freeze({ kind: "drop", why });
 const dir = (entries: Level, why: string): DirRule => Object.freeze({ kind: "dir", entries, why });
+const empty = (why: string): EmptyRule => Object.freeze({ kind: "empty", why });
+
+/**
+ * `account_deletion.py`'s two folders. Nothing writes them today (account deletion runs
+ * through the broker's deletion job), so what one holds was left by earlier code: a home
+ * staged for removal (`.deleting/<home>/`), or the receipt of an account deletion that did
+ * not finish every phase (`.account-deletions/<fingerprint>-<time>.json`), whose person's
+ * rows may still be in the stores the import would archive.
+ */
+const UNFINISHED_ERASURE = empty("an account deletion earlier code left unfinished " +
+                                 "(`account_deletion.py`): fine absent or empty, refused " +
+                                 "with anything in it");
 
 const CREDENTIALS = "credentials and sign-ins: every owner connects again (research §2)";
 const RUNTIME = "the platform's own runtime state, locks and receipts";
@@ -189,7 +210,8 @@ const BROKER_STATE: Level = level([
     drop: "owner_volumes owner_snapshots box_records owner_box_secrets owner_box_revocations " +
           "routing_sequence deletion_jobs center_admissions",
   }), "who the owners are (the principal is the owner's name) and their admission; the " +
-      "volume bindings are read by the census's backup gate")],
+      "volume bindings are read by the census's backup gate, and the deletion jobs withhold " +
+      "every owner whose erasure has not finished")],
   ["next-wake.db", store("drop", "old wake times: no schedule goes live (research §2)")],
   ["ops.db", store("drop", RUNTIME)],
 ], named("fence.json architecture-signing.json", drop(RUNTIME)));
@@ -257,8 +279,7 @@ export const SHARED: Level = level([
          ".ordinary-admission.json .router-credentials.json .disaster-restore.json " +
          ".platform-recovery.json platform-expected-instance.json release-state.json " +
          ".billing_webhook_verified.json .custody.lock .deploy-pending.json", drop(RUNTIME)),
-   named(".deleting .account-deletions", drop("a deletion staged, and its receipts " +
-                                              "(`account_deletion.py`)")));
+   named(".deleting .account-deletions", UNFINISHED_ERASURE));
 
 // ---------------------------------------------------------------------------------------
 // The owner's volume image
@@ -353,8 +374,7 @@ export const ROOT: Level = level(ROOT_STORES, [
    named("starter", user("the starter's owner files (`starter/muse/checkins.py`: settings, " +
                          "goals, monitors)")),
    named("founder_offers", drop("market offers (`scoped_reset.py`): no market now")),
-   named(".deleting .account-deletions", drop("a deletion the owner asked for, staged, and " +
-                                              "its receipts (`account_deletion.py`)")),
+   named(".deleting .account-deletions", UNFINISHED_ERASURE),
    named(".owner-boxd .runtime .workspace-staging .agent-turn-runners .consumer_liveness " +
          ".owner_tree .universe-tool-slots .outbound-proxy .run-execution-locks " +
          ".run-file-operation-locks .delivery-locks .workspace-family-locks " +

@@ -30,7 +30,7 @@ import { join, sep } from "node:path";
 import { sha256Hex } from "../contract/src/digest";
 
 import { type Tiers } from "./build";
-import { admissionProblems, erased, measure, verifyCopy } from "./census";
+import { admissionProblems, erased, measure, verifyCopy, withheld } from "./census";
 import { type Copy, type Owner, type Problem, survey } from "./survey";
 
 /** The bundle format this builder writes. */
@@ -61,6 +61,8 @@ export interface Summary {
   readonly bundled: number;
   readonly excluded: number;
   readonly erased: number;
+  /** Owners with a deletion job not finished: in no bundle, neither imported nor backed up. */
+  readonly erasure_pending: number;
   readonly refused: Readonly<Record<string, number>>;
   readonly entries: number;
   readonly files: number;
@@ -114,7 +116,7 @@ export function foldersProblem(out: string, privateDir: string): string | null {
 /** One owner's bundle at `dir`, or the fit's problems (and nothing left at `dir`). */
 function writeBundle(owner: Owner, copy: Copy, dir: string | null, tiers: Tiers, fit: boolean):
     { problems: Problem[]; digest: string | null; counts: Omit<Summary, "dry_run" | "owners" |
-      "bundled" | "excluded" | "erased" | "refused"> } {
+      "bundled" | "excluded" | "erased" | "erasure_pending" | "refused"> } {
   if (dir !== null) {
     mkdirSync(dir, { recursive: false, mode: 0o700 });
     for (const part of ["manifest", "rows"]) {
@@ -205,7 +207,7 @@ export function buildBundles(copy: Copy, options: Options): Summary {
       refused[code] = (refused[code] ?? 0) + 1;
     }
   };
-  const live = fleet.owners.filter((owner) => !erased(owner));
+  const live = fleet.owners.filter((owner) => !withheld(owner));
   for (const owner of live) {
     const excluded = options.exclude.has(owner.principal);
     // A backup is kept whatever the limits say; an import is held to them.
@@ -242,6 +244,6 @@ export function buildBundles(copy: Copy, options: Options): Summary {
                   `${JSON.stringify({ format: FORMAT, digests }, null, 2)}\n`,
                   { flag: "wx", mode: 0o600 });
   }
-  return { dry_run: dry, owners: fleet.owners.length, erased: fleet.owners.length - live.length,
-           refused, ...totals };
+  return { dry_run: dry, owners: fleet.owners.length, erased: fleet.owners.filter(erased).length,
+           erasure_pending: fleet.erasurePending, refused, ...totals };
 }

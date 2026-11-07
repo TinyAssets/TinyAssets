@@ -21,8 +21,8 @@ import { census } from "../census";
 import { TAR_MEMBER_MAX } from "../tar";
 import { IMPORTED, newTree, walkUser } from "../survey";
 import {
-  ALICE, BAD_NAME, BOB, type Fixture, fixture, FOUNDER, keyOf, makeStore, sha, sparse,
-  TIERS, unmergedStore,
+  ALICE, BAD_NAME, BOB, deletionJob, DORA, type Fixture, fixture, FOUNDER, keyOf, makeStore, sha,
+  sparse, TIERS, unmergedStore,
 } from "./fixture";
 
 const made: Fixture[] = [];
@@ -61,11 +61,12 @@ describe("the census", () => {
     const { report, ready } = census(f.copy, TIERS);
     expect(ready).toBe(true);
     expect(report["problems"]).toEqual({});
-    expect(report["backup"]).toEqual({ pins: 3, verified: true });
+    expect(report["backup"]).toEqual({ pins: 4, verified: true });
     expect(report["owners"]).toEqual({
-      identities: 3, imported: 3, erased: 0, admission: { admitted: 2, suspended: 1 },
+      identities: 4, imported: 3, erased: 0, erasure_pending: 1,
+      admission: { admitted: 3, suspended: 1 },
       tier: { free: 1, paid: 2 }, with_customer: 2, with_subscription: 2, not_authkit: 0,
-      with_volume: 3, no_volume: 0, centers: 4, retired_centers: 1, orphan_accounts: 0,
+      with_volume: 4, no_volume: 0, centers: 4, retired_centers: 1, orphan_accounts: 0,
       orphan_rows: { admission: 0, plans: 0, volumes: 0 },
     });
     // user_gone by principal; user_gone2 (erased admission) and user_gone3 by digest alone.
@@ -86,7 +87,8 @@ describe("the census", () => {
       "center/.conversation_memory.db/conversation_backfill drop": 1,
       "root/.runs.db/runs drop": 2, "root/.runs.db/branch_schedules archive": 1,
       "root/.tinyassets.db/branch_definitions archive": 1, "sessions/history.db/* archive": 1,
-      "shared/.broker/state/owner-identities.db/owner_identities carry": 3,
+      "shared/.broker/state/owner-identities.db/owner_identities carry": 4,
+      "shared/.broker/state/owner-identities.db/deletion_jobs drop": 1,
       "shared/.api-keys.sqlite3/api_keys drop": 2, "shared/.hook-owners.sqlite3/hook_owners drop": 1,
       "shared/.router-deleted-owners.sqlite3/deleted_owners carry": 1,
     });
@@ -296,8 +298,74 @@ describe("the fleet's rows", () => {
     const { report, table } = census(f.copy, TIERS);
     expect(report["problems"]).toEqual({ never_admitted: 1 });
     expect((report["owners"] as { admission: Record<string, number> }).admission)
-      .toEqual({ absent: 1, admitted: 2 });
+      .toEqual({ absent: 1, admitted: 3 });
     expect(table).toContain(`${keyOf(BOB)}\tadmission\tabsent`);
+  });
+});
+
+describe("an erasure the owner asked for", () => {
+  const jobs = (f: Fixture, sql: string, ...values: string[]) => {
+    const db = new DatabaseSync(join(f.work, "data", "_data", ".broker", "state",
+                                     "owner-identities.db"));
+    db.prepare(sql).run(...values);
+    db.close();
+  };
+
+  it("withholds an owner whose deletion job has not finished: counted, the run not stopped", () => {
+    const f = fresh();
+    const { report, ready, table } = census(f.copy, TIERS);
+    expect(ready).toBe(true);
+    expect(report["owners"]).toMatchObject({ identities: 4, imported: 3, erasure_pending: 1 });
+    expect(table).toContain(`${keyOf(DORA)}\terasure_pending\ttrue`);
+    // Nothing of hers is read: her files are in no count.
+    expect(table).toContain(`${keyOf(DORA)}\tfiles\t0`);
+    expect(table).not.toContain(`${keyOf(DORA)}\tentries`);
+  });
+
+  it("withholds one whose job finished but whose admission does not yet read erased", () => {
+    const f = fresh();
+    jobs(f, "DELETE FROM deletion_jobs");
+    const [id, record] = deletionJob(BOB, ["withdrawal", "volume", "snapshots", "custody",
+                                           "billing", "credentials", "identity", "receipt"]);
+    jobs(f, "INSERT INTO deletion_jobs VALUES (?, ?)", id, record);
+    expect(census(f.copy, TIERS).report["owners"])
+      .toMatchObject({ imported: 3, erasure_pending: 1 });
+  });
+
+  it("stops the run on a job whose owner is no identity", () => {
+    const f = fresh();
+    const [id, record] = deletionJob("user_unknown", []);
+    jobs(f, "INSERT INTO deletion_jobs VALUES (?, ?)", id, record);
+    const { report, ready } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toEqual({ orphan_row: 1 });
+  });
+
+  it("refuses anything an unfinished account deletion left in .deleting or .account-deletions",
+     () => {
+    // Absent is fine (the fixture), and so is empty.
+    const quiet = fresh();
+    for (const folder of [".deleting", ".account-deletions"]) {
+      mkdirSync(join(quiet.work, "data", "_data", folder));
+      mkdirSync(join(quiet.tree(ALICE), folder));
+    }
+    expect(census(quiet.copy, TIERS).ready).toBe(true);
+    for (const folder of [".deleting", ".account-deletions"]) {
+      // In the shared layer: the whole backup is not ready.
+      const shared = fresh();
+      mkdirSync(join(shared.work, "data", "_data", folder, "x"), { recursive: true });
+      const fleet = census(shared.copy, TIERS);
+      expect([fleet.ready, fleet.report["problems"]], folder)
+        .toEqual([false, { unfinished_erasure: 1 }]);
+      expect(fleet.table).toContain(`fleet\tproblem unfinished_erasure\tshared/${folder}`);
+      // In an owner's image: that owner is not ready.
+      const owner = fresh();
+      mkdirSync(join(owner.tree(BOB), folder));
+      writeFileSync(join(owner.tree(BOB), folder, "receipt.json"), "{}");
+      const one = census(owner.copy, TIERS);
+      expect(one.report["problems"], folder).toEqual({ unfinished_erasure: 1 });
+      expect(one.table).toContain(`${keyOf(BOB)}\tproblem unfinished_erasure\troot/${folder}`);
+    }
   });
 });
 
