@@ -130,6 +130,13 @@ export const INBOUND_PATH = "/hooks/inbound/";
  */
 export const INBOUND_BODY_MAX = API_BODY_MAX;
 
+/**
+ * The erasure queue (`erase.ts`), the one the owner Worker's `ERASURES` producer sends to:
+ * the queue handler takes every other batch as the sandbox's ring (`index.ts`), so
+ * `guards/config.test.ts` holds this name to the configs.
+ */
+export const ERASURE_QUEUE = "tinyassets-erasure";
+
 /** The files Worker's chunk entrypoint, as the file door's bytes reach it (`file-bytes.ts`). */
 export interface FilesService {
   putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }>;

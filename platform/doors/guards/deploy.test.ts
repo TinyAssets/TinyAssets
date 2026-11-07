@@ -84,6 +84,9 @@ const ok = (result: unknown): CfAnswer => ({ status: 200, body: { success: true,
 
 describe("the deploy kit", () => {
   it("deploys every Worker the platform holds, each after every Worker it binds", () => {
+    // The Workers the production deploy takes, pinned on purpose: a folder with a config of
+    // its own joins the deploy only once this list is changed in a reviewed change.
+    expect(workerFolders()).toEqual(["doors", "files", "gateway", "hooks", "owner", "sandbox"]);
     expect([...WORKERS].sort()).toEqual(workerFolders());
     for (const worker of WORKERS) {
       for (const bound of boundBy(worker)) {

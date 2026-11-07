@@ -29,9 +29,6 @@ import { deleteKey, deleteRoute, putOwner } from "./directory";
 import { revokeAll } from "./revoke";
 import type { Upstream } from "./upstream";
 
-/** The erasure queue (`owner/wrangler.jsonc` produces it, `doors/wrangler.jsonc` consumes). */
-export const ERASURE_QUEUE = "tinyassets-erasure";
-
 /** The door: the object's mark, then the job; the owner's own session and words. */
 export async function eraseOwner({ binding, stub }: Bound, request: unknown):
     Promise<{ erasing: true }> {
