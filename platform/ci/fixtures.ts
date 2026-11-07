@@ -1,9 +1,12 @@
 /**
- * Test fixtures more than one workspace uses, in Node and in workerd alike (no runtime
- * import): the founder's tier numbers and the control records the tests write, keyrings,
- * and the model sources the gateway's fake upstream answers for.
+ * Test fixtures more than one workspace uses, in Node and in workerd alike: the founder's
+ * tier numbers and the control records the tests write, keyrings, and the model sources the
+ * gateway's fake upstream answers for. Its one runtime import is the sealed envelope, by its
+ * file name: it imports nothing, so Node's type stripping runs both (`doors/test/app.e2e.mjs`
+ * and the owner's memory leg import this file so).
  */
 import type { Source } from "../contract/src/egress-scope";
+import { base64, fromBase64, KEY_BYTES, ringText } from "../contract/src/envelope.ts";
 
 /** The founder's tier numbers (ADR-034 decision 8), as the control record holds them. */
 export const TIERS = Object.freeze({
@@ -20,18 +23,19 @@ export const OPEN = Object.freeze({ ...OPEN_GATES, tiers: TIERS });
 
 /** A fresh random 32-byte key, base64, as a keyring holds it. */
 export function ringKey(): string {
-  return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+  return base64(crypto.getRandomValues(new Uint8Array(KEY_BYTES)));
 }
 
 /**
- * A keyring's secret (`{active, keys}`, the shape `gateway/src/keyring.ts` and
- * `files/src/datakey.ts` read): `kids`, each a fresh key unless `keys` gives one, `active`
- * the one that seals. A rotated ring lists an older kid before the active one.
+ * A keyring's secret, as the sealed envelope writes one (`contract/src/envelope.ts`, the
+ * ring `gateway/src/keyring.ts` and `files/src/datakey.ts` read): `kids`, each a fresh key
+ * unless `keys` gives one, `active` the one that seals. A rotated ring lists an older kid
+ * before the active one.
  */
 export function keyring(active = "k1", kids: readonly string[] = [active],
                         keys: Readonly<Record<string, string>> = {}): string {
-  return JSON.stringify({ active, keys: Object.fromEntries(
-    kids.map((kid) => [kid, keys[kid] ?? ringKey()])) });
+  return ringText({ active, keys: new Map(
+    kids.map((kid) => [kid, fromBase64(keys[kid] ?? ringKey())])) });
 }
 
 /** Anthropic's API, as a source record gives it to the gateway. */

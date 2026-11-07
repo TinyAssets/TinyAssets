@@ -28,6 +28,7 @@
  * Every fetch is the runtime's (`global_fetch_strictly_public`): never the egress
  * interposer's, since no model call's scope is open here.
  */
+import { base64, base64url, fromBase64, hex } from "../../contract/src/envelope";
 import { utf8Decoder } from "../../contract/src/text";
 import { SUBSCRIPTION_ID } from "../../contract/src/ids";
 import {
@@ -139,18 +140,6 @@ export async function sealDoorbell(env: KeyringEnv, owner: string, subscription:
   return sealValue(env, bound(owner, subscription, version), plaintext(input), doorbellSecret);
 }
 
-function base64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
-function base64url(bytes: Uint8Array): string {
-  return base64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 function random(size: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(size));
 }
@@ -160,7 +149,7 @@ async function signature(keys: readonly string[], id: string, stamp: number,
                          body: string): Promise<string> {
   const signed = new TextEncoder().encode(`${id}.${stamp}.${body}`);
   const each = await Promise.all([...new Set(keys)].map(async (key) => {
-    const raw = Uint8Array.from(atob(key.slice("whsec_".length)), (char) => char.charCodeAt(0));
+    const raw = fromBase64(key.slice("whsec_".length));
     const hmac = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" },
                                                false, ["sign"]);
     return "v1," + base64(new Uint8Array(await crypto.subtle.sign("HMAC", hmac, signed)));
@@ -222,8 +211,7 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
   }
   const target = bound(owner, subscription, version);
   const challenge = base64url(random(32));
-  const id = `msg_verification_${[...random(16)].map((byte) => byte.toString(16)
-    .padStart(2, "0")).join("")}`;
+  const id = `msg_verification_${hex(random(16))}`;
   const stamp = Math.floor(Date.now() / 1000);
   const body = JSON.stringify({ type: "verification", challenge });
   let response: Response;
