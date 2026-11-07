@@ -44,7 +44,8 @@ export const KEYRING_HOME = "gateway/src/keyring.ts";
  *   grammar, the errors and its own fixed codes, the ids, the limits, the egress wire and
  *   scope with the per-API rules and the model record, the wake records with their callback
  *   checks (which the doorbell applies again where it sends) and their kinds' file, and the
- *   isolate's slot pool; none of it imports anything but itself;
+ *   isolate's slot pool, and the sealed envelope its keyring seals by; none of it imports
+ *   anything but itself;
  * - its packages are pi-ai, `cloudflare:workers`, and `node:async_hooks` in `egress.ts` alone.
  */
 export const IMPORTS: ImportRules = Object.freeze({
@@ -52,7 +53,8 @@ export const IMPORTS: ImportRules = Object.freeze({
   called: "the gateway",
   outside: Object.freeze([
     "contract/src/api-rules", "contract/src/checks", "contract/src/egress",
-    "contract/src/egress-scope", "contract/src/errors", "contract/src/failure",
+    "contract/src/egress-scope", "contract/src/envelope", "contract/src/errors",
+    "contract/src/failure",
     "contract/src/ids", "contract/src/limits", "contract/src/model-record", "contract/src/slots",
     "contract/src/text", "contract/src/wake-records", "contract/wake-kinds.json",
   ]),

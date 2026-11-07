@@ -65,6 +65,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 
 import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
+import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
 import { Invalid, Refused } from "../../contract/src/errors";
@@ -207,8 +208,6 @@ export const CONNECTION_UNAVAILABLE = "connection_unavailable";
 export const CREDENTIAL_EXPIRED = "credential_expired";
 
 const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const KID = /^[A-Za-z0-9_-]{1,32}$/;
-const B64URL = /^[A-Za-z0-9_-]+$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
 /** A setup check's failure: the gateway's fixed code. */
 const FAILURE = /^[a-z][a-z_]{0,63}$/;
@@ -263,17 +262,12 @@ function modelInfo(value: unknown): ModelRecord {
   return value as ModelRecord;
 }
 
-/** A sealed blob as the gateway writes it: `v1.<kid>.<nonce>.<ciphertext>`. */
+/** A sealed blob as the gateway writes it, under `kid` (`contract/src/envelope.ts`). */
 function blobOf(value: unknown, kid: string): string {
-  if (typeof value !== "string" || value.length > CONNECTION_BLOB_MAX) {
+  if (parseBlob(value, CONNECTION_BLOB_MAX)?.kid !== kid) {
     throw new Invalid("invalid sealed credential");
   }
-  const parts = value.split(".");
-  if (parts.length !== 4 || parts[0] !== "v1" || parts[1] !== kid
-      || !B64URL.test(parts[2]!) || !B64URL.test(parts[3]!)) {
-    throw new Invalid("invalid sealed credential");
-  }
-  return value;
+  return value as string;
 }
 
 /**
@@ -292,10 +286,6 @@ function scopeJson(value: unknown): string {
     throw new Invalid("invalid connection egress scope");
   }
   return json;
-}
-
-function base64url(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64url");
 }
 
 /** An https URL with no fragment, as an OAuth redirect URI must be (RFC 6749 §3.1.2). */

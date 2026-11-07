@@ -96,6 +96,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// The envelope imports nothing, so Node's type stripping runs it here by its own name.
+import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
+
 const PLATFORM = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = resolve(PLATFORM, "..");
 const require = createRequire(join(PLATFORM, "package.json"));
@@ -860,21 +863,17 @@ export async function lifecycleHook(key: string, secret: string, apply: boolean,
   return `present, ${what}, ${state}`;
 }
 
-/** A keyring as the gateway and the files Worker hold it: `{active, keys}`, the active key among the keys. */
-export function keyring(text: string | undefined, name = "GATEWAY_KEYRING"):
-    { active: string; keys: Record<string, string> } {
-  let value: unknown;
-  try {
-    value = JSON.parse(text ?? "");
-  } catch {
-    throw new Error(`${name} is {active, keys} as JSON`);
+/**
+ * A keyring as the gateway and the files Worker read it (`contract/src/envelope.ts`
+ * `parseRing`): a ring either Worker would refuse stops the deploy before any change.
+ */
+export function keyring(text: string | undefined, name = "GATEWAY_KEYRING"): Ring {
+  const ring = parseRing(text);
+  if (ring === null) {
+    throw new Error(`${name} is {active, keys} as JSON, each key 32 bytes in base64, its ` +
+                    "active key among its keys");
   }
-  const ring = value as { active?: unknown; keys?: unknown };
-  if (typeof ring.active !== "string" || typeof ring.keys !== "object" || ring.keys === null
-      || !Object.hasOwn(ring.keys, ring.active)) {
-    throw new Error(`${name} is {active, keys}, its active key among its keys`);
-  }
-  return ring as { active: string; keys: Record<string, string> };
+  return ring;
 }
 
 /**
@@ -896,7 +895,7 @@ export function secretPlan(held: Readonly<Record<string, readonly string[] | nul
   for (const name of KEYRINGS) {
     if (rotate.has(name) && values !== null) {
       const ring = keyring(values(name), name);
-      if (Object.keys(ring.keys).length < 2) {
+      if (ring.keys.size < 2) {
         throw new Error(`a keyring is rotated by adding a key: the new ${name} holds ` +
                         "the old keys and a new active one (keyring-add)");
       }
@@ -962,21 +961,22 @@ function deployWorker(worker: string, config: string, exists: boolean,
 }
 
 /** `keyring-new <file>`: a first keyring, written for the founder to store; never printed. */
-function keyringNew(file: string): void {
-  writeFileSync(file, JSON.stringify({ active: "k1", keys: {
-    k1: randomBytes(32).toString("base64") } }), { mode: 0o600, flag: "wx" });
+export function keyringNew(file: string): void {
+  writeFileSync(file, ringText({ active: "k1", keys: new Map([["k1", randomBytes(KEY_BYTES)]]) }),
+                { mode: 0o600, flag: "wx" });
   console.log(`wrote a new keyring to ${file}; store it as ${KEYRINGS.join(" or ")}, ` +
               "one ring each");
 }
 
-/** `keyring-add <file>`: the keyring in `file` with one more key, made active; the old kept. */
-function keyringAdd(file: string): void {
-  const ring = keyring(readFileSync(file, "utf8"));
-  const next = `k${Object.keys(ring.keys).length + 1}`;
-  writeFileSync(file, JSON.stringify({ active: next, keys: {
-    ...ring.keys, [next]: randomBytes(32).toString("base64") } }), { mode: 0o600 });
-  console.log(`added ${next} to ${file}, active; store it as the keyring it was, then run ` +
-              "with --rotate naming that keyring");
+/**
+ * `keyring-add <file>`: the keyring in `file` with one more key under the kid after its
+ * highest (never a retired kid's name), made active; the old kept.
+ */
+export function keyringAdd(file: string): void {
+  const ring = ringWith(keyring(readFileSync(file, "utf8")), randomBytes(KEY_BYTES));
+  writeFileSync(file, ringText(ring), { mode: 0o600 });
+  console.log(`added ${ring.active} to ${file}, active; store it as the keyring it was, ` +
+              "then run with --rotate naming that keyring");
 }
 
 /**

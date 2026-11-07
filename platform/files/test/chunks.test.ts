@@ -7,6 +7,8 @@ import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
+import { hex } from "../../contract/src/envelope";
 import { chunkName, KEY_REFUSED, KEYRING_UNAVAILABLE, unwrap } from "../src/datakey";
 import FilesService from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
@@ -437,6 +439,27 @@ describe("data keys (SSE-C)", () => {
       .toEqual([body]);
     // Another namespace's key is refused, as a read refuses it.
     expect((await failure(() => service().rewrapKey(ns(), old))).message).toBe(KEY_REFUSED);
+  });
+
+  it("keys chunks under the data keys main wrapped (ci/keyring-vectors.json), rewrapped too",
+     async () => {
+    // Every ring's cases against main's own code are guards/datakey-main.test.ts's.
+    const { k1, k2 } = VECTORS.keys;
+    const rotated = JSON.stringify({ active: "k2", keys: { k1, k2 } });
+    const retired = JSON.stringify({ active: "k2", keys: { k2 } });
+    const { namespace: space, k1: older } = VECTORS.files;
+    const body = bytes("under main's key");
+    const hash = await sha(body);
+    const under = (ring: string) => service(ssec(env.BLOBS), ring);
+    await under(rotated).putChunks(space, older.wrapped, [{ sha256: hash, bytes: body }]);
+    expect(await under(rotated).getChunks(space, VECTORS.files.rewrapped, [{ sha256: hash }]))
+      .toEqual([body]);
+    const { key } = await under(rotated).rewrapKey(space, older.wrapped);
+    expect(await under(retired).getChunks(space, key, [{ sha256: hash }])).toEqual([body]);
+    expect((await failure(() => under(retired).getChunks(space, older.wrapped,
+                                                         [{ sha256: hash }]))).message)
+      .toBe(KEY_REFUSED);
+    expect(hex(new Uint8Array(await unwrap(rotated, space, key)))).toBe(older.key);
   });
 
   it.each([

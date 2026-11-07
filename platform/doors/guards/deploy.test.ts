@@ -22,11 +22,13 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { keyring as ringSecret } from "../../ci/fixtures";
 import { PLATFORM } from "../../ci/paths";
+import { type Domain, openBlob, sealBlob } from "../../contract/src/envelope";
 import {
   admitsNobody, authorizeCheck, authorizeLink, BUCKET, CALLBACK, type CfAnswer, codeDigests, configOf, DARK_CONTROL,
   deployedConfig, EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,
-  maskInLog, keyring, kvValue, lifecycleHook, listed, lockRefusal, MIGRATED,
+  maskInLog, keyring, keyringAdd, keyringNew, kvValue, lifecycleHook, listed, lockRefusal, MIGRATED,
   NAMESPACES, namespacesOf,
   PROBE_ROUTES, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect,
   pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
@@ -53,8 +55,8 @@ const UPSTREAM = { issuer: "https://auth.test",
                              authorize_params: { provider: "authkit" } } };
 const IDS = Object.fromEntries(Object.keys(NAMESPACES).map((binding) => [binding, `id-${binding}`]));
 const NONE = () => undefined;
-const RING = JSON.stringify({ active: "k1", keys: { k1: "a" } });
-const ROTATED = JSON.stringify({ active: "k2", keys: { k1: "a", k2: "b" } });
+const RING = ringSecret("k1");
+const ROTATED = ringSecret("k2", ["k1", "k2"]);
 
 /** A Cloudflare API that answers each path with the answer `answers` names, or a 500. */
 function api(answers: Record<string, CfAnswer | Error>) {
@@ -345,6 +347,10 @@ describe("the deploy kit", () => {
     expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]),
                             values(JSON.stringify({ active: "k3", keys: { k1: "a", k2: "b" } }))))
       .toThrow(/active key among its keys/);
+    // A ring either Worker would refuse (keys that are not 32 bytes) stops it too.
+    expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]),
+                            values(JSON.stringify({ active: "k2", keys: { k1: "a", k2: "b" } }))))
+      .toThrow(/GATEWAY_KEYRING is .*32 bytes/);
     expect(secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(ROTATED)))
       .toEqual([{ worker: "gateway", name: "GATEWAY_KEYRING" }]);
     // The files Worker's data keys' ring, by the same rule (slice P).
@@ -647,27 +653,65 @@ describe("the deploy kit", () => {
   });
 
   it("takes the keyring the founder's setup makes in memory, in keyring-new's own shape",
-     () => {
+     async () => {
     // scripts/platform_setup.py's maker, through a two-line driver: Python's ring is the one
-    // stored, and the apply job's keyring() is the check it must pass.
+    // stored, and the apply job's keyring() (the envelope's own reading) is the check it
+    // must pass. A blob sealed under it opens under it.
     const repo = join(PLATFORM, "..");
     const made = execFileSync("python3", ["-I", "-c",
       "import sys; sys.path.insert(0, sys.argv[1]); " +
       "from scripts.platform_setup import make_keyring; sys.stdout.write(make_keyring())",
       repo], { encoding: "utf8" });
     const ring = keyring(made, "FILES_KEYRING");
-    expect([ring.active, Object.keys(ring.keys)]).toEqual(["k1", ["k1"]]);
-    expect(Buffer.from(ring.keys["k1"]!, "base64").byteLength).toBe(32);
-    // The kit's own maker writes the same shape.
+    expect([ring.active, [...ring.keys.keys()]]).toEqual(["k1", ["k1"]]);
+    expect(ring.keys.get("k1")!.byteLength).toBe(32);
+    const domain: Domain = { salt: "s", info: "i", context: "c" };
+    const blob = await sealBlob(ring, domain, new TextEncoder().encode("plain"));
+    expect(new TextDecoder().decode((await openBlob(ring, domain, blob, 1024))!.plain))
+      .toBe("plain");
+    // The kit's own maker writes the same shape, run as the release runs it (Node's type
+    // stripping, so the envelope it imports runs there too).
     const out = mkdtempSync(join(tmpdir(), "keyring-"));
     try {
       execFileSync(process.execPath, ["--experimental-strip-types",
                                       join(PLATFORM, "deploy", "deploy.ts"), "keyring-new",
                                       join(out, "ring.json")], { stdio: "pipe" });
       const theirs = keyring(readFileSync(join(out, "ring.json"), "utf8"));
-      expect([theirs.active, Object.keys(theirs.keys)])
-        .toEqual([ring.active, Object.keys(ring.keys)]);
-      expect(Buffer.from(theirs.keys["k1"]!, "base64").byteLength).toBe(32);
+      expect([theirs.active, [...theirs.keys.keys()]])
+        .toEqual([ring.active, [...ring.keys.keys()]]);
+      expect(theirs.keys.get("k1")!.byteLength).toBe(32);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("makes a first keyring and adds a key under the kid after its highest, keeping the old",
+     () => {
+    const out = mkdtempSync(join(tmpdir(), "keyring-"));
+    try {
+      const file = join(out, "ring.json");
+      keyringNew(file);
+      expect(() => keyringNew(file)).toThrow(/EEXIST/);
+      const first = keyring(readFileSync(file, "utf8"));
+      keyringAdd(file);
+      const added = keyring(readFileSync(file, "utf8"));
+      expect([added.active, [...added.keys.keys()]]).toEqual(["k2", ["k1", "k2"]]);
+      expect(added.keys.get("k1")).toEqual(first.keys.get("k1"));
+      expect(added.keys.get("k2")).not.toEqual(first.keys.get("k1"));
+      // A ring that has retired k1 holds two kids, k2 and k3: the next is k4, never k3 again.
+      const retired = ringSecret("k3", ["k2", "k3"]);
+      writeFileSync(file, retired);
+      keyringAdd(file);
+      const next = keyring(readFileSync(file, "utf8"));
+      const before = keyring(retired);
+      expect([next.active, [...next.keys.keys()]]).toEqual(["k4", ["k2", "k3", "k4"]]);
+      expect(next.keys.get("k3")).toEqual(before.keys.get("k3"));
+      // One that has retired k1 and k2 holds k3 alone: the next is k4, never k2 again.
+      writeFileSync(file, ringSecret("k3"));
+      keyringAdd(file);
+      expect([...keyring(readFileSync(file, "utf8")).keys.keys()]).toEqual(["k3", "k4"]);
+      expect(() => { writeFileSync(file, "{}"); keyringAdd(file); })
+        .toThrow(/active key among its keys/);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

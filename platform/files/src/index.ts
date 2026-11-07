@@ -63,6 +63,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { type Cipher, cipherOf, open, seal } from "./cipher";
 import { chunkName, type KeyringSecret, mint, rewrap, unwrap } from "./datakey";
+import { base64, fromBase64, hex } from "../../contract/src/envelope";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedManifest, type ManifestAt,
@@ -153,29 +154,16 @@ export interface ChunkGet {
   readonly verify?: boolean;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
-function fromBase64(text: string): Uint8Array {
+function rootBytes(text: string): Uint8Array {
   try {
-    return Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
+    return fromBase64(text);
   } catch {
     throw new Error("a manifest root is out of shape");
   }
 }
 
-function hex(buffer: ArrayBuffer | undefined): string | null {
-  return buffer === undefined ? null : [...new Uint8Array(buffer)]
-    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  return hex(await crypto.subtle.digest("SHA-256", bytes)) as string;
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
 function list<T>(value: unknown, what: string): T[] {
@@ -485,7 +473,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
       s: span.s, e: span.e, at: Date.now() });
     const sealed = await seal(dataKey, manifestKey(ns, gen), new TextEncoder().encode(listed));
     const root: StoredRoot = { format: "tinyassets-manifest", version: 2, gen: generation(gen),
-                               key: wrapped, sealed: toBase64(sealed) };
+                               key: wrapped, sealed: base64(sealed) };
     await this.env.BLOBS.put(manifestKey(ns, gen), JSON.stringify(root));
   }
 
@@ -498,7 +486,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     const root = storedRoot(await object.text(), gen);
     const dataKey = await this.#key(ns, root.key);
     const listed = JSON.parse(new TextDecoder().decode(await open(
-      dataKey, manifestKey(ns, gen), fromBase64(root.sealed)))) as
+      dataKey, manifestKey(ns, gen), rootBytes(root.sealed)))) as
       Pick<ManifestRoot, "parts" | "segments" | "s" | "e" | "at">;
     return { format: root.format, version: root.version, gen: root.gen, key: root.key,
              parts: listed.parts, segments: listed.segments, s: listed.s, e: listed.e,
