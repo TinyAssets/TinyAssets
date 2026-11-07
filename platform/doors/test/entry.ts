@@ -7,7 +7,7 @@
  */
 import type { DoorsEnv } from "../src/config";
 import { serve } from "../src/doors";
-import { bundledRecords, catalogOf } from "../src/sources";
+import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
 import { type OwnerEnv, OwnerDO as RealOwnerDO, type SandboxLeases } from "../../owner/src/owner-do";

@@ -490,7 +490,7 @@ account and no deploy.
   revoke claims none and tells the owner to delete the key at the provider. Source records:
   `platform/sources/*.json`, the nine Python records ported plus `chatgpt` (Sign in with
   ChatGPT, `unwired` until OpenAI's approval: its connect is refused `501` naming why),
-  each checked whole by `doors/src/sources.ts`, whose gateway part is the gateway's own
+  each checked whole by `sources/src/check.ts`, whose gateway part is the gateway's own
   `source` check (one `SUPPORTED_APIS`); the sources guard holds every known provider to
   pi-ai's catalog base URL and API. Tests: a spy on the object stub's arguments, a scan of
   every table, the answers and the console for the key, the code and the tokens; an outside
@@ -716,7 +716,8 @@ account and no deploy.
   (for example a separate flow family, or no key exchange beside it) before such sources
   are allowed. Slice L: a record may be marked
   `curated: false`, and `catalogOf` refuses any catalog serving one with OAuth beside a key
-  exchange, naming the mix-up (`guards/registrations.test.ts`).
+  exchange, naming the mix-up: the source checker's catalog rule (`checkedTogether`), held
+  by `contract/guards/sources.test.ts`.
 - [x] Append-only migrations from the first deploy: once a migration has run on a live
   object it is never edited (G3 edited migration 6 in place only because nothing is
   deployed), held by a guard that pins each deployed migration's text by digest. Slice P:
@@ -1041,7 +1042,7 @@ R, S, M and W.
   (M6); `Files.watch` and `Notices.once` removed, and the stale comments (L1). Mutation:
   the review's 20 and 3 of mine, all 23 killed.
 - [x] E Engine records (`engines-replan.md` §5 row E), data plus its checker, nothing run.
-  `CliSpec` (`doors/src/sources.ts`) is an engine (ADR-033 decision 2): `engine.argv` and
+  `CliSpec` (`sources/src/schema.ts`) is an engine (ADR-033 decision 2): `engine.argv` and
   `resume_argv` (by `{sid}`, or `continue_in_cwd` where the stream names no id), event
   matchers (session id, final text, error, usage, tool calls), `instructions` (the
   `AGENTS.md` mapping, what shadows it, any cap) and `skills_paths`, `mcp` (a flag or file
@@ -1067,7 +1068,7 @@ R, S, M and W.
   - Every path a record names is under `{home}`, so secret and session paths compare in
     one namespace: an absolute root, `/proc`, `/workspace`, `..`, a `*` first segment and
     `{home}` itself are refused (H1). The reviewer's attacks are a guard,
-    `doors/guards/sources-attacks.test.ts`.
+    `contract/guards/sources-attacks.test.ts`.
   - pi has its built-in MCP client: `{home}/.pi/agent/mcp.json`, a user-level server that
     needs no project trust; `--approve` loads the agent's own `.pi/skills` in JSON mode;
     `PI_SKIP_VERSION_CHECK` (H2).
@@ -1115,7 +1116,7 @@ R, S, M and W.
     overrides, `OPENAI_*` and `ANTHROPIC_*`). The checker scans every settings-file template
     for an environment block, a credential-shaped key or helper (`apiKeyHelper`), a
     forbidden variable and, in a signed-in run's file, an endpoint key. The review's
-    attacks are a guard, `doors/guards/sources-attacks-r2.test.ts`.
+    attacks are a guard, `contract/guards/sources-attacks-r2.test.ts`.
   - pi's MCP door is `"exposure": "direct"`, so a `--tools` filter of plain names keeps its
     tools (pi's default, `codemode`, reaches them through codemode alone).
   - Free calls are keyed by provider and API (Anthropic's page covers Anthropic's
@@ -1127,7 +1128,7 @@ R, S, M and W.
     no spelling hides a key: a `.json` file by its parse, its real keys and decoded values
     checked; any other file as lines of bare keys, with a quoted key, an escape or an
     inline table refused outright (no TOML parser is in the lock). The round's bypasses (a
-    `\u` escape, TOML quoted keys) are a guard, `doors/guards/sources-attacks-r3.test.ts`.
+    `\u` escape, TOML quoted keys) are a guard, `contract/guards/sources-attacks-r3.test.ts`.
     The lease's `open` and `config` hand the runner the run's whole environment (`env`:
     `HOME`, the record's variables, an API-key run's key variables) and `inherit`, which
     slice S sets as is. The free-call guard reads its APIs from the rules (`ruledApis`).

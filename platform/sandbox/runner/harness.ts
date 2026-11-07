@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { EVENTS_DOOR, SIGNIN_EVENTS_DOOR } from "../../contract/src/egress";
-import { bundledSources } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
 
 import { binPath, type StartDoc } from "./engine";
 

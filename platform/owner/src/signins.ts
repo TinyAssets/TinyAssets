@@ -30,8 +30,10 @@
  */
 import { HEX64, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
-import { bundledSources, type LoginSpec, SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal,
-         signinShape } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import {
+  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape,
+} from "../../sources/src/signin";
 
 import { Invalid, Refused } from "../../contract/src/errors";
 import { LEASE_TTL_S } from "../../contract/src/limits";
@@ -104,7 +106,7 @@ const ENDS: readonly string[] = Object.freeze(["signed_in", "signed_out", "faile
  * its runner's last frame to land. A sign-out has the same bound.
  */
 export function deadline(row: { engine: string; started_at: number }): number {
-  const login = bundledSources().get(row.engine)?.cli?.login as LoginSpec | undefined;
+  const login = bundledSources().get(row.engine)?.cli?.login;
   return row.started_at + (login?.expires.s ?? 0) + LEASE_TTL_S;
 }
 
@@ -248,7 +250,7 @@ export class Signins {
         url = nextUrl;
         code = nextCode;
         // Whether it takes a pasted code is the record's, never the frame's.
-        accepts = (rec.cli?.login as unknown as LoginSpec).accepts_code === true ? 1 : 0;
+        accepts = rec.cli!.login!.accepts_code === true ? 1 : 0;
         relayed.push({ type: "ta.signin", state: "open", url, code,
                        accepts_code: accepts === 1 });
         state = "open";

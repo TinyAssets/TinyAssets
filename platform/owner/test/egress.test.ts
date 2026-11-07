@@ -33,7 +33,8 @@ import { failure, TIERS } from "./support";
 import type { SandboxRun } from "../src/owner-do";
 import type { NetworkPlan } from "../src/network";
 import { hashed, ownerRun, secretOf } from "./runs-support";
-import { bundledSources, RUN_BASICS, runEnv } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
 import type { FauxOwnerDO } from "./worker";
 
 /** What the sandbox's lease handed its first run's start: its tokens, network and itself. */

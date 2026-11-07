@@ -3,8 +3,8 @@
  * hands the gateway to seal (the pi-ai provider and API, the base URL, how the secret is
  * sent, the endpoints it may reach, an OAuth client), the egress scope a committed
  * connection keeps, and the rules that judge a request against them. The gateway seals and
- * opens by these (`gateway/src/credential.ts`), the doors check a source record by them
- * (`doors/src/sources.ts`), and the owner's object admits a sandbox call by them
+ * opens by these (`gateway/src/credential.ts`), the source records are checked by them
+ * (`sources/src/check.ts`), and the owner's object admits a sandbox call by them
  * (`owner/src/egress.ts`), so the three can never disagree.
  *
  * Every value is checked when it is sealed and again when it is opened, so a blob written
@@ -97,7 +97,8 @@ export const SUPPORTED_APIS: readonly string[] = Object.freeze([
 export const GLOBAL_FETCH_APIS: readonly string[] = Object.freeze(["google-generative-ai",
                                                                    "google-vertex"]);
 
-const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** A pi-ai provider's or API's id. */
+export const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const HEADER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SCHEME = /^(?:[A-Za-z][A-Za-z0-9-]{0,31})?$/;
 /** Visible ASCII: a secret is sent in a header, so it never holds a space, CR or LF. */

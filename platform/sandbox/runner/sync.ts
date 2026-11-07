@@ -40,7 +40,7 @@ import { existsSync, lstatSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { SourceRecord } from "../../doors/src/sources";
+import type { SourceRecord } from "../../sources/src/schema";
 
 import { isKept, keptPaths } from "./engine";
 import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,

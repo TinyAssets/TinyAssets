@@ -10,7 +10,7 @@ How the evidence is labelled:
 - **[3P]** is a third-party source.
 - **[I]** is my inference.
 
-Repo sources read: `platform/sources/{claude-code,codex,gemini,kimi}.json` and `platform/doors/src/sources.ts`
+Repo sources read: `platform/sources/{claude-code,codex,gemini,kimi}.json` and the doors' source-record checker (now `platform/sources/src/check.ts`)
 (`CliSpec`), plus `docs/decisions/ADR-031-subscription-use-follows-each-vendors-sanctioned-paths.md`.
 
 ## 0. Access notes

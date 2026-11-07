@@ -1,267 +1,26 @@
 /**
- * Model source records (gateway research §2.4, §2.6, §7.2; tasks 4 G3): what an owner can
- * connect, as data. Each is an editable JSON file in `platform/sources/` (Direction 3),
- * ported from the Python's `tinyassets/providers/source_records/`, and checked here
- * whole, so a record that does not fit fails loudly where it is used and in the tests
- * (`guards/sources.test.ts`), never half-read.
- *
- * A record names how it connects (`connect`):
- * - `api_key`: a pasted key, sealed by the gateway (`connect.ts`).
- * - `oauth`: an authorization-code flow with PKCE, its code exchanged by the gateway:
- *   `rfc6749` (RFC 6749 and 7636, tokens) or `pkce_user_key_v1` (the Python's protocol,
- *   OpenRouter's: the code buys an API key). A record marked `unwired` names why it is
- *   not served yet, and every connect of it is refused with that reason.
- * - `cli`: an engine (ADR-033 decision 2, ADR-034 decisions 1 and 5): a provider's own
- *   unmodified command-line agent, run whole in the owner's sandbox, never a backend of
- *   ours, so it has no single-inference `invoke`. It never enters the gateway, so it names
- *   no upstream. Its record is everything the sandbox runner needs, as data (`CliSpec`):
- *   install, sign-in, the new-run and resume invocations and their event matchers, the
- *   instruction and skills paths, the MCP template, tool filters and unattended flags, its
- *   home, the credentials it runs on, whether each may run unattended (with the vendor
- *   page that says so), its `session_paths`, which sync to the owner's files, and its
- *   `secret_paths`, which never leave the sandbox (ADR-031 decision 2). Every path is
- *   under `{home}`, the runner's engine home, which is sandbox-only and outside
- *   `/workspace`, so secret and session paths compare in one namespace. A prompt goes on
- *   stdin or joined to its option (`--prompt={prompt}`), never bare; no value configures
- *   the engine to nothing (an empty argument, list or map); a run on the vendor's own
- *   sign-in carries none of the variables its `forbid_env` lists, its API-key variables
- *   among them; and a sign-in with regions takes the owner's choice as `{region}`. The
- *   checker holds shape only: no vendor is named here.
- *
- * A gateway source (`api_key`, `oauth`) names the pi-ai provider (`custom` for a declared
- * endpoint), the API its models speak, the base URL, how the secret is sent (`auth`), the
- * setup check (`verify_url`), the only endpoints the secret may reach, and its `engines`:
- * the CLI records that can run on it through the egress door. pi-ai's catalog
- * supplies a known provider's base URL and models, and a record of one restates them
- * (the sources guard holds the two equal); only a `custom` record declares its own models.
- * Those values are what the gateway seals with the secret. They are checked by the
- * gateway's own `source` (so its `SUPPORTED_APIS`, its endpoint and URL grammar are the
- * one rule), here and again in the gateway when it seals.
+ * The one checker of a source record (`schema.ts`): `sourceRecord` takes a record as its
+ * file holds it and gives it back checked whole, a frozen copy, or a `SourceRecordError`
+ * naming the record and the field. The catalog runs it on every record it serves
+ * (`catalog.ts`). Its gateway part is the gateway's own check (`contract/src/egress-scope.ts`),
+ * and `sealedSource` is what the doors hand the gateway to seal.
  */
-import { HEX64 } from "../../contract/src/ids";
-import {
-  type Endpoint, keyExchangeSource, type Source, source as gatewaySource, type Upstream,
-} from "../../contract/src/egress-scope";
-import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/run-rows";
+import { object } from "../../contract/src/checks";
 import { RUN_HEADER } from "../../contract/src/egress";
+import {
+  ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
+} from "../../contract/src/egress-scope";
+import { HEX64 } from "../../contract/src/ids";
 import type { EngineEvents, EventMatcher } from "../../contract/src/run-events";
 import { forbids, SOURCE_ID } from "../../contract/src/text";
 
-import anthropic from "../../sources/anthropic.json";
-import cerebras from "../../sources/cerebras.json";
-import chatgpt from "../../sources/chatgpt.json";
-import claudeCode from "../../sources/claude-code.json";
-import codex from "../../sources/codex.json";
-import gemini from "../../sources/gemini.json";
-import googleAiStudio from "../../sources/google_ai_studio.json";
-import groq from "../../sources/groq.json";
-import kimi from "../../sources/kimi.json";
-import mistral from "../../sources/mistral.json";
-import openai from "../../sources/openai.json";
-import openrouter from "../../sources/openrouter_user_models_v1.json";
-import pi from "../../sources/pi.json";
-import xai from "../../sources/xai.json";
-
-/** The records the doors serve, as the files hold them. Never written: each read is a copy. */
-const BUNDLED: readonly unknown[] = Object.freeze([
-  anthropic, cerebras, chatgpt, claudeCode, codex, gemini, googleAiStudio, groq, kimi, mistral,
-  openai, openrouter, pi, xai,
-]);
-
-export type ConnectMethod = "api_key" | "oauth" | "cli";
-
-/** An RFC 6749 authorization-code source (`protocol: "rfc6749"`). */
-export interface Rfc6749 {
-  readonly protocol: "rfc6749";
-  readonly authorization_endpoint: string;
-  readonly authorize_params: Readonly<Record<string, string>>;
-  readonly scope?: string;
-  readonly client_id: string;
-  readonly token_endpoint: string;
-  readonly revocation_endpoint?: string;
-  readonly resource?: string;
-  readonly refresh_with: "provider" | "rfc6749";
-  /** The authorization server's issuer (RFC 8414), which an `iss` response must name. */
-  readonly issuer?: string;
-  /** Its metadata's RFC 9207 flag: every authorization response then carries `iss`. */
-  readonly authorization_response_iss_parameter_supported?: true;
-}
-
-/** The Python's `pkce_user_key_v1` (OpenRouter): the code buys an API key. */
-export interface UserKey {
-  readonly protocol: "pkce_user_key_v1";
-  readonly authorization_endpoint: string;
-  readonly authorize_params: Readonly<Record<string, string>>;
-  readonly exchange_endpoint: string;
-}
-
-export type OAuthSpec = Rfc6749 | UserKey;
-
-/** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
-export type CredentialKind = "vendor_login_in_sandbox" | "api_key";
-export const CREDENTIAL_KINDS: readonly CredentialKind[] = Object.freeze([
-  "vendor_login_in_sandbox", "api_key"]);
-
-/**
- * How the engine binary is installed into the sandbox template, pinned: an npm package by
- * version, integrity and the digest of its committed lock (`platform/sources/locks/<id>/`),
- * a pip package by version and the digest of its committed hashed requirements, or a
- * binary by its https URL and SHA-256.
- */
-export type Install =
-  | { readonly manager: "npm"; readonly package: string; readonly version: string;
-      readonly integrity: string; readonly lock_sha256: string; readonly bin: string;
-      readonly verify_argv: readonly string[]; readonly lifecycle_scripts?: true }
-  | { readonly manager: "pip"; readonly package: string; readonly version: string;
-      readonly lock_sha256: string; readonly bin: string; readonly verify_argv: readonly string[] }
-  | { readonly manager: "binary"; readonly url: string; readonly sha256: string;
-      readonly version: string; readonly bin: string; readonly verify_argv: readonly string[] };
-
-/**
- * One run of the engine (ADR-034 decision 4.3): a new conversation's argv, and the argv
- * that resumes one, by its session id (`{sid}`) or by continuing in the conversation's own
- * working directory when the stream names no id.
- */
-export interface Engine {
-  readonly argv: readonly string[];
-  readonly resume_argv: readonly string[];
-  readonly resume: "session_id" | "continue_in_cwd";
-  readonly stdin?: "{prompt}";
-  readonly model_argv?: readonly string[];
-  readonly events: EngineEvents;
-}
-
-/** Where the agent's canonical `AGENTS.md` is read, and what would shadow it. */
-export interface Instructions {
-  readonly file: string;
-  /** Files that, when present, the engine reads instead: the runner never projects them. */
-  readonly shadowed_by: readonly string[];
-  readonly max_bytes?: number;
-  /** The record's file whose template makes the engine read `file`. */
-  readonly setting?: string;
-}
-
-/** How TinyAssets' run-scoped MCP door reaches the engine, and how its trust is handled. */
-export type Mcp =
-  | { readonly argv: readonly string[]; readonly file?: string; readonly template?: string;
-      readonly trust: { readonly argv: readonly string[]; readonly note: string } }
-  | { readonly unsupported: string };
-
-/** A tool filter: joined into `{tools}`, one argv per tool (`{tool}`), or a file's key. */
-export type ToolFilter =
-  | { readonly argv: readonly string[]; readonly join: string }
-  | { readonly argv: readonly string[]; readonly each: true }
-  | { readonly file: string; readonly key: string };
-
-/** Whether unattended hosted runs on one credential are allowed, with the vendor page. */
-export type Unattended =
-  | { readonly allowed: true; readonly cite: string; readonly read: string;
-      readonly read_note?: string }
-  | { readonly allowed: false; readonly reason: string; readonly cite?: string;
-      readonly read?: string; readonly read_note?: string };
-
-/** The variables a CLI reads its egress base URL and placeholder key from, for a provider. */
-export interface ApiKeyEnv {
-  /**
-   * Null when a file template or an API-key argv (`cli.per_credential.api_key.argv`) carries
-   * `{base_url}`: the CLI takes its base URL from there, not from a variable.
-   */
-  readonly base_url: string | null;
-  readonly api_key: string;
-  /** The door, the connection and the sealed base path, or the door and connection alone. */
-  readonly base: "sealed" | "connection";
-}
-
-/** What differs by the credential a run is on. */
-export interface PerCredential {
-  readonly argv?: readonly string[];
-  readonly env?: Readonly<Record<string, string>>;
-  readonly files?: Readonly<Record<string, string>>;
-  /** Arguments no argv of the record may hold on this credential. */
-  readonly forbid_argv?: readonly string[];
-  /**
-   * Variables a run on this credential never carries (the runner unsets them): on the
-   * vendor's own sign-in, every variable that would move the run onto a key or another
-   * endpoint, its `api_key_env` names among them.
-   */
-  readonly forbid_env?: readonly string[];
-}
-
-/** A region the owner chooses for the vendor's own sign-in: its hosts, `{region}` its id. */
-export interface Region {
-  readonly display_name: string;
-  readonly hosts: Readonly<Record<"login" | "provider", readonly string[]>>;
-}
-
-/** An engine (`connect: ["cli"]`): a provider's own CLI, run whole in the sandbox. */
-export interface CliSpec {
-  readonly install: Install;
-  readonly credential: readonly CredentialKind[];
-  readonly login?: Readonly<Record<string, unknown>>;
-  /** The sign-in's regions, by id: the owner's choice fills `{region}` and adds its hosts. */
-  readonly regions?: Readonly<Record<string, Region>>;
-  readonly api_key_env?: Readonly<Record<string, ApiKeyEnv>>;
-  readonly unattended: Readonly<Partial<Record<CredentialKind, Unattended>>>;
-  readonly per_credential?: Readonly<Partial<Record<CredentialKind, PerCredential>>>;
-  readonly engine: Engine;
-  readonly instructions: Instructions;
-  readonly skills_paths: readonly string[];
-  readonly mcp: Mcp;
-  /**
-   * Where the CLI's model calls carry the run's own secret as a header (`x-ta-run`) rather
-   * than in their base URL's path: the variable it reads extra headers from, and the
-   * value, `{run_secret}` in it. Absent, the base URL's path carries it (the fallback).
-   */
-  readonly run_secret_env?: { readonly env: string; readonly value: string };
-  /**
-   * How the route probe makes the CLI compact its context at its next turn (`argv`, put
-   * after its binary on a resumed turn), and the text its compaction request carries
-   * (`marker`, its compact prompt's): the probe holds a compaction's requests to the door's
-   * rules as a turn's. Absent for a CLI the probe does not compact.
-   */
-  readonly compaction?: { readonly argv: readonly string[]; readonly marker: string };
-  readonly tools: { readonly allow?: ToolFilter; readonly deny?: ToolFilter };
-  readonly unattended_argv: readonly string[];
-  readonly home_env: Readonly<Record<string, string>>;
-  readonly env?: Readonly<Record<string, string>>;
-  readonly files?: Readonly<Record<string, string>>;
-  readonly no_update: { readonly env?: Readonly<Record<string, string>>;
-                        readonly argv?: readonly string[]; readonly file?: string }
-    | { readonly reason: string };
-  readonly secret_paths: readonly string[];
-  readonly session_paths: readonly string[];
-  readonly hosts: Readonly<Record<"registry" | "login" | "provider", readonly string[]>>;
-}
-
-export interface SourceRecord {
-  readonly id: string;
-  readonly display_name: string;
-  readonly help_url?: string;
-  readonly suggested: boolean;
-  readonly connect: readonly ConnectMethod[];
-  /** Why every connect of this source is refused for now; absent when it is served. */
-  readonly unwired?: string;
-  /** What the gateway seals with the secret: every source but a CLI's. */
-  readonly upstream?: Upstream;
-  readonly endpoints?: readonly Endpoint[];
-  readonly oauth?: OAuthSpec;
-  /** A gateway source's: the CLI records that can run on its key, through the egress door. */
-  readonly engines?: readonly string[];
-  readonly cli?: CliSpec;
-}
-
-/** A record that does not fit: a bug in a data file, never a request to act on. */
-export class SourceRecordError extends Error {
-  override readonly name = "SourceRecordError";
-}
-
-/** The records a doors Worker serves, by id. */
-export interface Sources {
-  /** The record, checked whole; undefined for an id no record has. */
-  get(id: string): SourceRecord | undefined;
-  /** Every record's id. */
-  ids(): readonly string[];
-}
+import { RUN_BASICS } from "./run-env";
+import {
+  type ApiKeyEnv, type CliSpec, type ConnectMethod, type CredentialKind, type Engine,
+  type HostedUse, type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec,
+  type PerCredential, type Region, type Rfc6749, type SourceRecord, SourceRecordError,
+  type ToolFilter, type Unattended,
+} from "./schema";
 
 const FLOW_PARAMS: readonly string[] = Object.freeze([
   "response_type", "client_id", "redirect_uri", "state", "code_challenge",
@@ -277,10 +36,6 @@ const TEXT = /^[^\p{Cc}]{1,128}$/u;
 const CITATION = /^[^\p{Cc}]{1,1024}$/u;
 const SCOPE = /^[\x21-\x7e]+(?: [\x21-\x7e]+)*$/;
 const CLIENT_ID = /^[\x21-\x7e]{1,512}$/;
-
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** The record's checks, each failing with the record and the field it is about. */
 function checker(id: string) {
@@ -406,8 +161,6 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown): OAuthSpec
 
 /** An environment variable's name. */
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
-/** A pi-ai provider id, as the gateway's `ID`. */
-const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** One argument: any text, a placeholder being `{name}` among `PLACEHOLDERS`. */
 const ARG = /^.{0,4096}$/su;
 /** The placeholders the runner fills, in an argv, an env value or a file template. */
@@ -520,16 +273,6 @@ function settingsOf(path: string, text: string):
   return { keys, values };
 }
 
-/**
- * The process basics a run keeps from the sandbox template's own environment, beside
- * `HOME`, which the runner sets to the run's engine home (`{home}`): nothing else of the
- * sandbox's environment reaches a run. `NODE_EXTRA_CA_CERTS` is E2B's egress CA (slice S's
- * probe: E2B's proxy re-signs the HTTPS it sets the egress token on, and Node trusts only
- * its own bundle), so a Node engine's calls to the egress door verify.
- */
-export const RUN_BASICS: readonly string[] = Object.freeze([
-  "PATH", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "USER", "SHELL", "NODE_EXTRA_CA_CERTS",
-]);
 
 /** A region's id, as the runner passes it in `{region}`. */
 const REGION = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -888,9 +631,9 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                  "secret never syncs (ADR-031 decision 2)");
     }
   }
-  if (signsIn) {
-    const login = loginSpec(check, fields["login"], argv);
-    for (const state of (login["state_checks"] ?? []) as { path: string }[]) {
+  const login = signsIn ? loginSpec(check, fields["login"], argv) : undefined;
+  if (login !== undefined) {
+    for (const state of login.state_checks ?? []) {
       const segments = homePath(state.path, false);
       if (segments === null || !secretSegments.some((secret) =>
         secret.length <= segments.length && overlaps(secret, segments))) {
@@ -898,7 +641,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                    "secret paths");
       }
     }
-    fields["login"] = login;
   }
 
   // The sign-in's regions: the owner's choice fills `{region}` and adds its hosts.
@@ -1008,7 +750,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   return Object.freeze({
     install,
     credential: Object.freeze(credential),
-    ...(signsIn ? { login: Object.freeze(fields["login"] as object) } : {}),
+    ...(login === undefined ? {} : { login }),
     ...(regions === undefined ? {} : { regions: Object.freeze(regions) }),
     ...(apiKeyEnv === undefined ? {} : { api_key_env: Object.freeze(apiKeyEnv) }),
     unattended: Object.freeze(unattended),
@@ -1294,190 +1036,14 @@ function noUpdateSpec(check: ReturnType<typeof checker>, value: unknown, argv: A
     ...(fields["file"] === undefined ? {} : { file: String(fields["file"]) }),
   });
 }
-
-/** The hosts a record's sign-in may send the owner to: its login hosts, and its region's. */
-export function signinHosts(rec: SourceRecord, region: string | null): string[] {
-  const cli = rec.cli;
-  if (cli === undefined) {
-    return [];
-  }
-  return [...cli.hosts.login, ...(region === null ? [] : cli.regions?.[region]?.hosts.login ?? [])];
-}
-
-/**
- * A sign-in's states, the only ones a frame from the VM may carry (review M1): no text the
- * VM chose leaves it but the record's own URL and code.
- */
-export const SIGNIN_STATES = Object.freeze(["starting", "open", "code_sent", "signed_in",
-                                            "signed_out", "failed", "cancelled", "refused",
-                                            "expired"] as const);
-export type SigninState = (typeof SIGNIN_STATES)[number];
-
-/**
- * Why a sign-in was refused, each in plain words (review L6): the reason a refusal carries,
- * one of these keys, never a text the VM chose.
- */
-export const SIGNIN_REFUSALS = Object.freeze({
-  url: "it showed a link that is not the vendor's own sign-in page",
-  code: "it showed a code that is not the vendor's kind of code",
-  credential: "it showed something that looked like a credential",
-  state: "it reported something a sign-in never reports",
-} as const);
-export type SigninRefusal = keyof typeof SIGNIN_REFUSALS;
-
-/**
- * A URL parameter or fragment key named like a credential, anywhere in its name (so a
- * suffixed or prefixed one too: `refresh_token_x`, `x_api_key`).
- */
-const CREDENTIAL_PARAM = /token|secret|passw|api_?key|credential|session/i;
-/** A JSON Web Token: three base64url segments, the first a JSON object's (`eyJ`). */
-const JWT = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
-
-/**
- * Whether `value` looks like a credential: a JSON Web Token, or, as a URL, a parameter or
- * fragment key named like one. Checked in the VM (beside the engines' own secrets' atoms)
- * and again on the trusted side.
- */
-export function credentialLike(value: string): boolean {
-  if (JWT.test(value)) {
-    return true;
-  }
-  let url: URL | null = null;
-  try {
-    url = /^https?:\/\//.test(value) ? new URL(value) : null;
-  } catch {
-    url = null;
-  }
-  return url !== null && [...url.searchParams.keys(),
-                          ...new URLSearchParams(url.hash.replace(/^#/, "")).keys()]
-    .some((key) => CREDENTIAL_PARAM.test(key));
-}
-
-/** A free parameter's value: RFC 3986 section 2.3's unreserved characters, so never a URL. */
-const UNRESERVED = /^[A-Za-z0-9._~-]{1,128}$/;
-
-/**
- * Why a sign-in's prompt is not the record's own shape (a `SigninRefusal`), or null. The URL:
- * visible ASCII at most `SIGNIN_URL_MAX`, matching the record's `url_pattern` whole,
- * `https` on one of the record's `url.hosts` that is among its login hosts (and the chosen
- * region's), no user, password, port or fragment, its path the record's `url.path` exactly, each of the record's `url.params`
- * present with exactly its value, the record's `url.free` parameters each at most once with
- * an unreserved value (a state, a PKCE challenge, a user code: never a URL, so no redirect
- * chain), and no other parameter (so no other OAuth client's page). The code: a device
- * code's characters, at most `SIGNIN_CODE_MAX`. Neither credential-shaped
- * (`credentialLike`). Checked in the VM before a prompt leaves it, and again by the owner's
- * object before the owner sees it.
- */
-export function signinShape(rec: SourceRecord, region: string | null, url: string | null,
-                            code: string | null): SigninRefusal | null {
-  const login = rec.cli?.login as LoginSpec | undefined;
-  if (login === undefined) {
-    return "state";
-  }
-  if (url !== null) {
-    if (url.length > SIGNIN_URL_MAX || !/^[\x21-\x7e]+$/.test(url)) {
-      return "url";
-    }
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return "url";
-    }
-    const whole = new RegExp(login.url_pattern).exec(url);
-    if (whole === null || whole[1] !== url || parsed.protocol !== "https:"
-        || parsed.username !== "" || parsed.password !== "" || parsed.port !== ""
-        || parsed.hash !== "" || url.includes("#")
-        || !signinHosts(rec, region).includes(parsed.hostname)
-        || !login.url.hosts.includes(parsed.hostname) || parsed.pathname !== login.url.path) {
-      return "url";
-    }
-    const seen = new Set<string>();
-    for (const [key, value] of parsed.searchParams) {
-      if (seen.has(key)) {
-        return "url";
-      }
-      seen.add(key);
-      const pinned = login.url.params[key];
-      if (pinned !== undefined ? value !== pinned
-          : !login.url.free.includes(key) || !UNRESERVED.test(value)) {
-        return "url";
-      }
-    }
-    if (Object.keys(login.url.params).some((key) => !seen.has(key))) {
-      return "url";
-    }
-    if (credentialLike(url)) {
-      return "credential";
-    }
-  }
-  // A device code: letters, digits and hyphens (RFC 8628 section 6.1), from a record that
-  // shows one at all; the runner took it from the record's `code_pattern` group.
-  if (code !== null) {
-    if (login.code_pattern === undefined || code.length > SIGNIN_CODE_MAX
-        || !/^[A-Za-z0-9-]+$/.test(code)) {
-      return "code";
-    }
-    if (credentialLike(code)) {
-      return "credential";
-    }
-  }
-  return null;
-}
-
-/**
- * Whether a source's vendor sign-in is switched on: the control record's switch for it
- * (`signins`), or else its record's verdict on the vendor's terms for hosted use (on only
- * when `allowed`).
- */
-export function signinOn(rec: SourceRecord,
-                         switches: Readonly<Record<string, boolean>> | null): boolean {
-  const login = rec.cli?.login as LoginSpec | undefined;
-  return login !== undefined && rec.unwired === undefined
-    && (switches?.[rec.id] ?? login.hosted_use.verdict === "allowed");
-}
-
-/** The served records whose sign-in is switched on, sorted: what the binder hands the object. */
-export function signinsOn(sources: Sources,
-                          switches: Readonly<Record<string, boolean>> | null): string[] {
-  return sources.ids().filter((id) => signinOn(sources.get(id)!, switches)).sort();
-}
-
 /** The verdicts on the vendor's terms for a platform hosting its CLI's sign-in. */
-const HOSTED_USE: readonly string[] = Object.freeze(["allowed", "unclear", "forbidden"]);
-
-/** A record's sign-in, as `loginSpec` checked it. */
-export interface LoginSpec {
-  readonly argv: readonly string[];
-  readonly url_pattern: string;
-  /**
-   * The vendor's sign-in page exactly: its hosts (among the login hosts), its path, its fixed
-   * parameters, its free ones.
-   */
-  readonly url: { readonly hosts: readonly string[]; readonly path: string;
-                  readonly params: Readonly<Record<string, string>>;
-                  readonly free: readonly string[] };
-  readonly code_pattern?: string;
-  readonly accepts_code?: true;
-  /** The vendor's code's lifetime, whole seconds, and where that is documented or measured. */
-  readonly expires: { readonly s: number; readonly citation: string };
-  readonly hosted_use: { readonly verdict: string; readonly citation: string };
-}
+const HOSTED_USE: readonly HostedUse[] = Object.freeze(["allowed", "unclear", "forbidden"]);
 
 /** A URL parameter's name, as a record pins it. */
 const PARAM_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
-/**
- * The vendor's own sign-in in the sandbox, as the runner drives it (always on a terminal of
- * its own): its command, what of its output is shown (`url_pattern` on the record's login
- * hosts, its page pinned by `url`, `code_pattern`), whether it takes a pasted code, its
- * status, its sign-out (`logout_argv`, the vendor's own, before its secrets are deleted),
- * the vendor's code's lifetime (`expires`, cited: the sign-in's deadline), and the verdict on
- * the vendor's terms for hosting it (`hosted_use`, cited), which sets whether the platform
- * offers it unless the control record says otherwise.
- */
-function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv):
-    Record<string, unknown> {
+/** The vendor's own sign-in in the sandbox (`LoginSpec`), checked whole, frozen. */
+function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv): LoginSpec {
   const fields = check.keys(value, "cli.login", ["argv", "url_pattern", "url", "expires",
                                                  "hosted_use"], [
     "status_argv", "status_equals", "accepts_code", "code_pattern", "state_checks",
@@ -1515,7 +1081,7 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
   }
   const hosted = check.keys(fields["hosted_use"], "cli.login.hosted_use",
                             ["verdict", "citation"]);
-  if (!HOSTED_USE.includes(String(hosted["verdict"]))) {
+  if (!(HOSTED_USE as readonly unknown[]).includes(hosted["verdict"])) {
     check.fail("cli.login.hosted_use.verdict is allowed, unclear or forbidden");
   }
   check.text(hosted["citation"], CITATION, "cli.login.hosted_use.citation");
@@ -1558,7 +1124,7 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
       }
     }
   }
-  return fields;
+  return Object.freeze(fields) as unknown as LoginSpec;
 }
 
 /** One record, checked whole: a copy, frozen, or a `SourceRecordError`. */
@@ -1576,7 +1142,7 @@ export function sourceRecord(value: unknown): SourceRecord {
     check.fail("connect lists api_key and oauth, or cli alone, each once");
   }
   const base = ["id", "display_name", "connect"];
-  const optional = ["help_url", "suggested", "unwired"];
+  const optional = ["help_url", "suggested", "unwired", "curated"];
   const cli = connect.includes("cli");
   const fields = cli ? check.keys(copy, "the record", [...base, "cli"], optional)
     : check.keys(copy, "the record",
@@ -1595,6 +1161,10 @@ export function sourceRecord(value: unknown): SourceRecord {
   }
   if (fields["unwired"] !== undefined) {
     record["unwired"] = check.text(fields["unwired"], /^[^\p{Cc}]{1,256}$/u, "unwired");
+  }
+  if (fields["curated"] !== undefined) {
+    record["curated"] = fields["curated"] === false ? false
+      : check.fail("curated is false or absent: a record is the platform's own unless marked");
   }
   if (cli) {
     record["cli"] = cliSpec(check, fields["cli"]);
@@ -1664,108 +1234,30 @@ export function sealedSource(record: SourceRecord, method: "api_key" | "oauth"):
   }, true);
 }
 
-/** `records` as the doors serve them: each checked whole when it is read. */
-export function catalogOf(records: readonly unknown[]): Sources {
+/**
+ * The rules a catalog's records hold together, read from the files as they are, so they
+ * hold over every record, whole or not (each is checked whole when it is read):
+ * - each id is one record's: which one is served would be an accident (Fact 8);
+ * - no record the platform does not curate speaks OAuth beside a key exchange (doors spec,
+ *   "No uncurated source shares the flow family with a key exchange"): the key exchange
+ *   sends no `state` and no `iss`, so its callback could not tell the two servers apart
+ *   (the residual mix-up). A record marked `curated` at all counts as uncurated here.
+ */
+export function checkedTogether(records: readonly unknown[]): void {
   const ids = records.map((record) => object(record) ? record["id"] : undefined);
-  if (new Set(ids).size !== ids.length) {
-    // Two records under one id: which one is served would be an accident (Fact 8).
-    const repeated = ids.find((id, index) => ids.indexOf(id) !== index);
+  const repeated = ids.find((id, index) => ids.indexOf(id) !== index);
+  if (ids.length !== new Set(ids).size) {
     throw new SourceRecordError(`source record ${JSON.stringify(String(repeated))}: ` +
                                 "its id is another record's");
   }
-  const byId = (id: string): unknown => records.find((record) =>
-    object(record) && record["id"] === id);
-  return {
-    get: (id) => {
-      const found = typeof id === "string" && SOURCE_ID.test(id) ? byId(id) : undefined;
-      if (found === undefined) {
-        return undefined;
-      }
-      const record = sourceRecord(found);
-      // Each engine a key names is a served CLI record that runs on a key of this provider.
-      for (const engine of record.engines ?? []) {
-        const named = byId(engine) === undefined ? undefined : sourceRecord(byId(engine));
-        if (named?.unwired !== undefined) {
-          throw new SourceRecordError(`source record ${JSON.stringify(record.id)}: engine ` +
-            `${JSON.stringify(engine)} is unwired (${named.unwired}), so no key runs it`);
-        }
-        const cli = named?.cli;
-        if (cli?.api_key_env?.[record.upstream!.provider] === undefined) {
-          throw new SourceRecordError(`source record ${JSON.stringify(record.id)}: engine ` +
-            `${JSON.stringify(engine)} is a CLI record that runs on an API key of provider ` +
-            `${JSON.stringify(record.upstream!.provider)}`);
-        }
-      }
-      return record;
-    },
-    ids: () => records.map((record) => object(record) ? String(record["id"]) : "?"),
-  };
-}
-
-/**
- * What one engine run's environment is made from (`sandboxEnv`, G4's `contract/src/egress.ts`): the
- * credential it runs on, the engine's own variables for each provider's key (an API-key
- * run's alone), and the variables that credential forbids.
- */
-export interface RunEnv {
-  readonly credential: CredentialKind;
-  readonly api_key_env: Readonly<Record<string, ApiKeyEnv>>;
-  readonly forbid_env: readonly string[];
-  /**
-   * The run's environment, as an allow-list: `HOME` at the engine home and the record's
-   * own variables for this credential (its home, `env`, `no_update` and the credential's
-   * own), each a template the runner fills. The runner starts from an empty environment
-   * and sets these, the process basics it keeps (`inherit`) and, on an API key alone, the
-   * key's variables (`sandboxEnv`); nothing else of the sandbox's environment reaches it.
-   */
-  readonly env: Readonly<Record<string, string>>;
-  readonly inherit: readonly string[];
-  /** On an API key, the header variable that carries the run's secret (`run_secret_env`). */
-  readonly secret_header?: { readonly env: string; readonly value: string };
-}
-
-/**
- * The environment `engine` runs on `credential` with, from its record: refused (a
- * `SourceRecordError`) unless the engine is a served CLI record that runs on that
- * credential. A run on the vendor's own sign-in gets no API-key variables at all.
- */
-export function runEnv(sources: Sources, engine: string, credential: CredentialKind): RunEnv {
-  const record = sources.get(engine);
-  const cli = record?.cli;
-  if (record === undefined || cli === undefined || record.unwired !== undefined
-      || !cli.credential.includes(credential)) {
-    throw new SourceRecordError(`engine ${JSON.stringify(engine)} is not a served CLI ` +
-                                `record that runs on ${credential}`);
+  const objects = records.filter(object);
+  const keyExchange = objects.some((record) => object(record["oauth"])
+    && record["oauth"]["protocol"] === "pkce_user_key_v1");
+  const mixed = objects.find((record) => record["curated"] !== undefined
+    && record["oauth"] !== undefined);
+  if (keyExchange && mixed !== undefined) {
+    throw new SourceRecordError(`source record ${JSON.stringify(String(mixed["id"]))}: an ` +
+      "authorization server the platform does not curate shares no connect flow with a key " +
+      "exchange (the mix-up)");
   }
-  const forbidEnv = cli.per_credential?.[credential]?.forbid_env ?? Object.freeze([]);
-  const env: Record<string, string> = {
-    HOME: "{home}", ...cli.home_env, ...cli.env,
-    ...("env" in cli.no_update ? cli.no_update.env : {}),
-    ...cli.per_credential?.[credential]?.env,
-  };
-  const forbidden = Object.keys(env).find((name) => forbids(forbidEnv, name));
-  if (forbidden !== undefined) {
-    throw new SourceRecordError(`engine ${JSON.stringify(engine)} sets ${forbidden}, which ` +
-                                `${credential} forbids`);
-  }
-  return Object.freeze({
-    credential,
-    api_key_env: credential === "api_key" ? cli.api_key_env ?? Object.freeze({})
-      : Object.freeze({}),
-    forbid_env: forbidEnv,
-    env: Object.freeze(env),
-    inherit: RUN_BASICS,
-    ...(credential === "api_key" && cli.run_secret_env !== undefined
-      ? { secret_header: cli.run_secret_env } : {}),
-  });
-}
-
-/** The bundled records (`platform/sources/`). */
-export function bundledSources(): Sources {
-  return catalogOf(BUNDLED);
-}
-
-/** Every record's file contents, for the guards and tests. */
-export function bundledRecords(): readonly unknown[] {
-  return BUNDLED;
 }

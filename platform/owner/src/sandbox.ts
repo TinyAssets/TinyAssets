@@ -41,7 +41,7 @@
  * Absent, nothing reaches `running`: admission refuses before it writes anything
  * (`SANDBOX_ABSENT`). Tests put a recording fake behind the interface, in tests only.
  */
-import type { CredentialKind } from "../../doors/src/sources";
+import type { CredentialKind } from "../../sources/src/schema";
 
 import type { NetworkPlan } from "./network";
 import type { MeterEvent } from "./sandbox-time";

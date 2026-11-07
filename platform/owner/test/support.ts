@@ -3,7 +3,8 @@ import { env } from "cloudflare:workers";
 
 import { TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
-import { bundledSources, signinsOn } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { signinsOn } from "../../sources/src/signin";
 import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files, type Full } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";

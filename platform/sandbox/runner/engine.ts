@@ -1,6 +1,6 @@
 /**
  * One run's invocation, from its engine's source record as data (ADR-034 decision 4.3;
- * `doors/src/sources.ts`'s `CliSpec`): the argv, stdin, environment, cwd and the files
+ * `sources/src/schema.ts`'s `CliSpec`): the argv, stdin, environment, cwd and the files
  * the record's templates make. Pure: the runner (`runner.ts`) does the I/O. No provider is
  * named here; every difference is the record's.
  *
@@ -18,7 +18,7 @@
  * - Files: the record's own templates, the credential's, and the MCP template, each filled
  *   (a `.json` file's values JSON-escaped), several templates of one JSON file merged.
  */
-import type { CliSpec, CredentialKind, SourceRecord } from "../../doors/src/sources";
+import type { CliSpec, CredentialKind, SourceRecord } from "../../sources/src/schema";
 import { envStem, MCP_DOOR } from "../../contract/src/egress";
 import { forbids } from "../../contract/src/text";
 
