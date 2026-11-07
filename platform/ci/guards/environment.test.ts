@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
+import { OPTIONAL, SECRET_INPUTS } from "../../deploy/facts";
 import { REPO } from "../paths";
 import { type Data, workflow, workflowNames } from "../workflows";
 
@@ -32,12 +33,11 @@ const PRODUCTION_SECRETS = [
   // never see them.
   "TINYASSETS_CANARY_SESSION_KEY", "TINYASSETS_CANARY_SESSION_SEED_DEPLOY",
   "TINYASSETS_CANARY_SESSION_SEED_UPTIME", "TINYASSETS_CANARY_HMAC_KEY",
-  // Spends money on E2B: sandbox-template.yml's build and checks, and platform-deploy.yml's
-  // pair check and apply.
-  "E2B_API_KEY",
-  // The platform's (platform-deploy.yml's apply), stored by the founder's own gh
-  // (scripts/platform_setup.py).
-  "WORKOS_API_KEY", "ROUTING_MAC_KEY", "GATEWAY_KEYRING", "FILES_KEYRING", "E2B_WEBHOOK_SECRET",
+  // The platform's: every secret a Worker's config requires and the shared apps' signing
+  // secrets (platform-deploy.yml's apply; the E2B key, which spends money on E2B, in
+  // sandbox-template.yml's build and checks and the deploy's pair check too), stored by the
+  // founder's own gh (scripts/platform_setup.py).
+  ...SECRET_INPUTS, ...OPTIONAL,
 ];
 
 /**

@@ -28,9 +28,11 @@ import { principal } from "../../contract/src/text";
 import { parseTiers, type Tiers } from "../../owner/src/tier";
 
 import type { DoorsEnv } from "./config";
+import identity from "./identity.json" with { type: "json" };
 
 const KEY_ID = HEX16;
-const CONTROL = "c:control";
+/** The control record's key (`identity.json`), read as text: this module holds no object. */
+const CONTROL = `${identity.control_key}`;
 /** Canary owners the maintenance gate admits; far past a real canary. */
 const MAX_CANARY = 100;
 

@@ -1,0 +1,17 @@
+{
+  "about": "What the deploy kit needs that no Worker's config can say (deploy/facts.ts reads it, with the six wrangler.jsonc). Everything a config says (each Worker's name, bindings, required secrets, bucket and queues, and the order its bindings set) is read from the config; the shared apps' signing secrets from doors/shared-apps.json; the doors' public identity from doors/src/identity.json. Each entry here carries its reason.",
+  "namespaces": {
+    "why": "A config names a KV namespace by an id the account gives when it is made (a placeholder as checked in), never by its title: the kit finds each by its title, or makes it, and fills the id in. One title per binding name: every Worker's CONTROL is the one namespace.",
+    "titles": { "OAUTH_KV": "tinyassets-oauth", "DIRECTORY": "tinyassets-directory",
+                "CONTROL": "tinyassets-control" }
+  },
+  "secret_order": {
+    "why": "The order the kit lists and sets the Workers' secrets in, so the plan names them in it. A config says which secrets its Worker needs, not this order. The hooks Worker holds no secret, so it is not here: its existence is read when it deploys.",
+    "workers": ["doors", "owner", "gateway", "sandbox", "files"]
+  },
+  "made": {
+    "why": "The secrets the founder's setup makes (scripts/platform_setup.py), each by its kind: mac is 32 random bytes in base64url, token a random URL-safe token, keyring a first keyring in keyring-new's shape (rotated only by adding a key). A config names a secret, not how its value is made; every other secret comes from its vendor or a shared app.",
+    "secrets": { "ROUTING_MAC_KEY": "mac", "E2B_WEBHOOK_SECRET": "token",
+                 "GATEWAY_KEYRING": "keyring", "FILES_KEYRING": "keyring" }
+  }
+}

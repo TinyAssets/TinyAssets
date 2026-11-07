@@ -22,8 +22,10 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 describe("doors isolation guards", () => {
   it("are the platform's own, scanning every doors source", () => {
     const scanned = [...workerSources().keys()].filter((path) => path.startsWith("doors/src/"));
+    // The public identity is data, no source (`identity.json`).
     const sources = readdirSync(SRC, { recursive: true, encoding: "utf8" })
-      .filter((path) => extname(path) !== "").map((path) => `doors/src/${path}`).sort();
+      .filter((path) => extname(path) !== "" && path !== "identity.json")
+      .map((path) => `doors/src/${path}`).sort();
     expect(scanned.sort()).toEqual(sources);
     expect(sources).toContain("doors/src/binder.ts");
     for (const guard of ["module-state.test.ts", "self-reach.test.ts"]) {

@@ -28,5 +28,6 @@
               "hooks/guards/**/*.ts", "hooks/*.ts", "sandbox/src/**/*.ts",
               "sandbox/test/**/*.ts", "sandbox/guards/**/*.ts", "sandbox/runner/**/*.ts",
               "sandbox/*.ts", "admin/src/**/*.ts", "deploy/**/*.ts",
-              "ci/**/*.ts"]
+              "ci/**/*.ts"],
+  "exclude": ["**/node_modules", "*/worker-configuration.d.ts"]
 }

@@ -99,7 +99,6 @@ describe("apps.json", () => {
     const apps = appList();
     expect(apps.map((app) => app.id)).toEqual(["claude", "chatgpt", "grok", "muse", "gemini",
                                                "cursor"]);
-    expect(checkedApps().server).toBe(MCP_RESOURCE);
     for (const app of apps) {
       expect(app.connect.steps.length, app.id).toBeGreaterThan(0);
       expect(app.source, app.id).toMatch(/^https:\/\//);
@@ -271,7 +270,7 @@ describe("apps.json", () => {
 });
 
 describe("the plugins", () => {
-  it("are current with the starter's skills and apps.json (build.mjs --check)", () => {
+  it("are current with the starter's skills and the doors' identity (build.mjs --check)", () => {
     execFileSync(process.execPath, [join(PLUGINS, "build.mjs"), "--check"], { stdio: "pipe" });
   });
 

@@ -2,7 +2,19 @@
  * The doors Worker's fixed facts: its one public origin, the OAuth issuer and resources,
  * the first-party clients, and the environment it binds (`wrangler.jsonc`, held by
  * `guards/config.test.ts`).
+ *
+ * The public identity is `identity.json`, its one copy, which the deploy kit
+ * (`deploy/facts.ts`) and the plugins (`plugins/build.mjs`) read too: `host`, the public
+ * origin's; `egress`, the sandbox's door, a custom domain of this Worker; `routes`, the
+ * route patterns the doors take at the cutover, each from the origin; the MCP door
+ * (`mcp`); where a sign-in starts and where the upstream returns it (`signin`); the doors'
+ * own app's client document, redirect and resource (`first_party`); E2B's lifecycle
+ * webhook (`hook`); and the control record's key (`control_key`). The contract's `ZONE`
+ * and `EGRESS_HOST` (`contract/src/egress.ts`) are held to `host` and `egress` by
+ * `guards/identity.test.ts`: the runner the sandbox template ships is built from that file,
+ * so it changes only with a new template pair.
  */
+import identity from "./identity.json" with { type: "json" };
 import type { Source } from "../../contract/src/egress-scope";
 import type { ChunkPut } from "../../files/src/index";
 import type { Verified } from "../../gateway/src/forward";
@@ -31,17 +43,25 @@ export interface EgressService {
     Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }>;
 }
 
+// Each fact of the identity is read as text (a template), so this module holds strings
+// alone, never the shared file object (`owner/guards/module-state.test.ts`).
 /** The one configured public origin; the Capacitor WebView loads it too. */
-export const PUBLIC_HOST = "tinyassets.io";
+export const PUBLIC_HOST = `${identity.host}`;
 export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`;
 /** The authorization server's RFC 8414 issuer: our own, not the identity vendor's. */
 export const ISSUER = PUBLIC_ORIGIN;
-/** The outside resource: MCP clients' tokens are bound to it. */
-export const MCP_RESOURCE = `${PUBLIC_ORIGIN}/mcp`;
+/** The MCP door's path, and the outside resource MCP clients' tokens are bound to. */
+export const MCP_PATH = `${identity.mcp}`;
+export const MCP_RESOURCE = `${PUBLIC_ORIGIN}${MCP_PATH}`;
 /** The first-party resource: the owner's own app's tokens, for `/app/api/*`. */
-export const APP_RESOURCE = `${PUBLIC_ORIGIN}/app`;
+export const APP_RESOURCE = `${PUBLIC_ORIGIN}${identity.first_party.resource}`;
+/** Where a sign-in starts. */
+export const AUTHORIZE_PATH = `${identity.signin.authorize}`;
 /** Where the upstream sign-in returns the browser. */
-export const UPSTREAM_CALLBACK = `${PUBLIC_ORIGIN}/oauth/upstream/callback`;
+export const UPSTREAM_CALLBACK_PATH = `${identity.signin.callback}`;
+export const UPSTREAM_CALLBACK = `${PUBLIC_ORIGIN}${UPSTREAM_CALLBACK_PATH}`;
+/** E2B's sandbox lifecycle webhook's path (`e2b-hooks.ts`). */
+export const E2B_HOOK_PATH = `${identity.hook}`;
 /**
  * Where a model source's OAuth flow returns the browser (`connect.ts`). A key-exchange
  * source, which sends no `state`, returns to it with the flow's state as one more path
@@ -56,9 +76,9 @@ export const CONNECT_CALLBACK = `${PUBLIC_ORIGIN}${CONNECT_CALLBACK_PATH}`;
  */
 export const CONNECTED_PAGE = `${PUBLIC_ORIGIN}/app/connected`;
 /** The first-party app's Client ID Metadata Document, served by this Worker. */
-export const WEB_CLIENT = `${PUBLIC_ORIGIN}/oauth/clients/web.json`;
+export const WEB_CLIENT = `${PUBLIC_ORIGIN}${identity.first_party.client}`;
 /** Where the first-party app finishes its sign-in. */
-export const WEB_REDIRECT = `${PUBLIC_ORIGIN}/app/signed-in`;
+export const WEB_REDIRECT = `${PUBLIC_ORIGIN}${identity.first_party.redirect}`;
 /**
  * The first-party clients: the only clients a token for `APP_RESOURCE` is issued to or
  * accepted from. Each is a CIMD URL on our own origin, so the list needs no registry row

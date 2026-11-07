@@ -90,14 +90,20 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { WRANGLER } from "../ci/workers.ts";
 // The envelope imports nothing, so Node's type stripping runs it here by its own name.
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
+import {
+  AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, CONTROL_KEY, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
+  FIRST_PARTY, KEYRINGS, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, ROUTES,
+  SECRET_INPUTS, SECRETS, SHARED, WORKERS, ZONE,
+} from "./facts.ts";
 
 const PLATFORM = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = resolve(PLATFORM, "..");
@@ -106,60 +112,9 @@ const require = createRequire(join(PLATFORM, "package.json"));
 type Json = Record<string, unknown>;
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
-/** The Workers, bound-first: each one's bindings are deployed before it. */
-export const WORKERS: readonly string[] = Object.freeze([
-  "files", "gateway", "hooks", "sandbox", "owner", "doors"]);
-/** The KV namespaces, by binding, and their titles in the account. */
-export const NAMESPACES: Readonly<Record<string, string>> = Object.freeze({
-  OAUTH_KV: "tinyassets-oauth", DIRECTORY: "tinyassets-directory", CONTROL: "tinyassets-control",
-});
-export const BUCKET = "tinyassets-files";
-/** Each Worker's secrets. */
-export const SECRETS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
-          "INBOUND_SLACK_SIGNING_SECRET"],
-  owner: ["ROUTING_MAC_KEY"],
-  gateway: ["GATEWAY_KEYRING"],
-  sandbox: ["E2B_API_KEY"],
-  files: ["FILES_KEYRING"],
-});
-/** The keyrings: each rotated only by adding a key. */
-export const KEYRINGS: readonly string[] = Object.freeze(["GATEWAY_KEYRING", "FILES_KEYRING"]);
-/** The one secret two Workers hold: set on both or neither. */
-const SHARED = "ROUTING_MAC_KEY";
-/** Set when given; without it that door refuses loudly. */
-const OPTIONAL: readonly string[] = Object.freeze(["INBOUND_SLACK_SIGNING_SECRET"]);
-/** The doors' public routes (`--routes`, the cutover's), on the tinyassets.io zone. */
-export const ROUTES: readonly string[] = Object.freeze([
-  "tinyassets.io/mcp*", "tinyassets.io/api/*", "tinyassets.io/hooks/inbound/*",
-  "tinyassets.io/hooks/e2b/*",
-  "tinyassets.io/app/api/*", "tinyassets.io/authorize*", "tinyassets.io/oauth/*",
-  "tinyassets.io/.well-known/oauth-*",
-]);
-export const ZONE = "tinyassets.io";
-/** The sandbox's egress host, a custom domain of the doors Worker (`--routes`). */
-export const EGRESS_DOMAIN = "egress.tinyassets.io";
-export const CALLBACK = "https://tinyassets.io/oauth/upstream/callback";
-/**
- * The sign-in probe's routes (`--probe`): the sign-in's own two paths, which no Worker
- * serves before the cutover, so handing them to the doors early serves no user.
- */
-export const PROBE_ROUTES: readonly string[] = Object.freeze([
-  "tinyassets.io/authorize*", "tinyassets.io/oauth/*"]);
-/** The doors' own app's sign-in (`doors/src/config.ts`): its client, redirect and resource. */
-export const FIRST_PARTY = Object.freeze({
-  client: `https://${ZONE}/oauth/clients/web.json`, redirect: `https://${ZONE}/app/signed-in`,
-  resource: `https://${ZONE}/app`,
-});
-/** The doors Worker, which the routes are handed to. */
-export const DOORS = "tinyassets-doors";
 /** What the plan job holds: the Cloudflare token (not a production secret) and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
   "CLOUDFLARE_API_TOKEN", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
-/** What only the apply job holds: the production environment's secrets. */
-export const SECRET_INPUTS: readonly string[] = Object.freeze([
-  "WORKOS_API_KEY", "E2B_API_KEY", "ROUTING_MAC_KEY", "GATEWAY_KEYRING", "FILES_KEYRING",
-  "E2B_WEBHOOK_SECRET"]);
 const WORKOS_API = "https://api.workos.com";
 const CF_API = "https://api.cloudflare.com/client/v4";
 /** E2B's platform API (`sandbox/src/e2b.ts`'s), its OpenAPI spec read 2026-11-03. */
@@ -170,11 +125,9 @@ const E2B_API = "https://api.e2b.app";
  * /events/webhooks`, `PATCH /events/webhooks/{id}`.
  */
 export const E2B_HOOK = Object.freeze({
-  name: "tinyassets-lifecycle", url: "https://tinyassets.io/hooks/e2b/lifecycle",
+  name: "tinyassets-lifecycle", url: E2B_HOOK_URL,
   events: Object.freeze(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]),
 });
-/** The control record's key in the `CONTROL` namespace (`doors/src/directory.ts`). */
-const CONTROL_KEY = "c:control";
 /** The control record a first deploy writes when there is none: every outside door closed. */
 export const DARK_CONTROL = Object.freeze({
   outside: "off", ordinary: "canary", canary: [], inbound: false,
@@ -196,20 +149,13 @@ function input(name: string): string | undefined {
   return value === undefined || value === "" ? undefined : value;
 }
 
-/** A Worker's checked-in config, its comments stripped. */
-export function configOf(worker: string): Json {
-  const ts = require("typescript") as typeof import("typescript");
-  const path = join(PLATFORM, worker, "wrangler.jsonc");
-  const parsed = ts.parseConfigFileTextToJson(path, readFileSync(path, "utf8"));
-  if (parsed.error) {
-    throw new Error(`${path} does not parse`);
-  }
-  return parsed.config as Json;
+/** The sandbox's pinned E2B template, `name:tag` (its config's `E2B_TEMPLATE`). */
+function template(): string {
+  return String((CONFIGS.get("sandbox")!["vars"] as Json)["E2B_TEMPLATE"]);
 }
 
 function wrangler(args: string[], stdin?: string): string {
-  const bin = join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
-  const result = spawnSync(process.execPath, [bin, ...args], {
+  const result = spawnSync(process.execPath, [WRANGLER, ...args], {
     cwd: PLATFORM, input: stdin, encoding: "utf8",
     env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
   });
@@ -516,7 +462,7 @@ export interface UpstreamValues {
  */
 export function deployedConfig(worker: string, ids: Readonly<Record<string, string>>,
                                upstream: UpstreamValues, routes: boolean): Json {
-  const config = structuredClone(configOf(worker));
+  const config = structuredClone(CONFIGS.get(worker)) as Json;
   config["main"] = join(PLATFORM, worker, String(config["main"]));
   const assets = config["assets"] as Json | undefined;
   if (assets !== undefined) {
@@ -693,8 +639,7 @@ export async function pairCheck(spawn: typeof spawnSync = spawnSync, fetcher: Fe
   if (key === undefined) {
     throw new Error("E2B_API_KEY is not set (the production environment's secrets)");
   }
-  const template = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
-  const pair = pairTag(template, shippedRunner());
+  const pair = pairTag(template(), shippedRunner());
   if (await templateReady(pair, key, fetcher)) {
     console.log(`the pair ${pair} passed its standing checks in this E2B team`);
     return;
@@ -887,9 +832,12 @@ export function secretPlan(held: Readonly<Record<string, readonly string[] | nul
                            hookCreated = false):
     { worker: string; name: string }[] {
   const has = (worker: string, name: string) => (held[worker] ?? []).includes(name);
-  if (has("doors", SHARED) !== has("owner", SHARED) && !rotate.has(SHARED)) {
-    throw new Error(`only one of the doors and the owner holds ${SHARED}: pass --rotate ` +
-                    `${SHARED} to set both again`);
+  for (const name of SHARED) {
+    const holders = Object.keys(SECRETS).filter((worker) => SECRETS[worker]!.includes(name));
+    if (new Set(holders.map((worker) => has(worker, name))).size > 1 && !rotate.has(name)) {
+      throw new Error(`only one of ${holders.map((worker) => `the ${worker}`).join(" and ")} ` +
+                      `holds ${name}: pass --rotate ${name} to set both again`);
+    }
   }
   // `values` null: the plan job, which holds no secret; the apply job checks the ring.
   for (const name of KEYRINGS) {
@@ -1018,7 +966,7 @@ export function probeLink(): string {
     response_type: "code", client_id: FIRST_PARTY.client, redirect_uri: FIRST_PARTY.redirect,
     state, code_challenge: challenge, code_challenge_method: "S256",
     resource: FIRST_PARTY.resource });
-  return `https://${ZONE}/authorize?${query}`;
+  return `${AUTHORIZE}?${query}`;
 }
 
 /**
@@ -1039,7 +987,7 @@ export const PROBE_SIGNS = [
   "check passed, and no owner was made. The doors' client and API key were taken at User " +
   "Management's authenticate, the callback was its registered redirect, and the access " +
   "token's signature, iss, client_id, sub (the answer's user.id) and auth_time held.",
-  `Fail, at https://${ZONE}/authorize: a 400 page, so the doors could not read their own ` +
+  `Fail, at ${AUTHORIZE}: a 400 page, so the doors could not read their own ` +
   "app's client document.",
   "Fail, at error.workos.com or another error page before or after the sign-in: WorkOS " +
   "refused the doors' client or the callback.",
@@ -1164,11 +1112,6 @@ async function main(): Promise<void> {
     return;
   }
   const plan: string[] = [];
-  for (const worker of WORKERS) {
-    if (!existsSync(join(PLATFORM, worker, "wrangler.jsonc"))) {
-      throw new Error(`platform/${worker} is missing: its slice has not landed`);
-    }
-  }
   for (const name of [...PUBLIC_INPUTS, ...(open ? [] : SECRET_INPUTS)]) {
     if (input(name) === undefined) {
       throw new Error(`${name} is not set (${SECRET_INPUTS.includes(name)
@@ -1202,15 +1145,15 @@ async function main(): Promise<void> {
   // The live checks, before anything is changed.
   const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"));
   plan.push(`set the doors' OWNER_ISSUER to ${upstream.issuer}, held to its discovery`);
-  const template = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
+  const pinned = template();
   if (open) {
-    plan.push(`E2B's ready build of ${template}: ${later}`);
-  } else if (!await templateReady(template, input("E2B_API_KEY")!)) {
-    throw new Error(`E2B has no ready build of ${template}: build it (sandbox/template/build.py)`);
+    plan.push(`E2B's ready build of ${pinned}: ${later}`);
+  } else if (!await templateReady(pinned, input("E2B_API_KEY")!)) {
+    throw new Error(`E2B has no ready build of ${pinned}: build it (sandbox/template/build.py)`);
   }
   // The pair this deploy makes: the template, and the runner the sandbox Worker ships.
   const runner = shippedRunner();
-  const pair = pairTag(template, runner);
+  const pair = pairTag(pinned, runner);
   if (open) {
     plan.push(`the pair ${pair} passed its standing checks: ${later}`);
   } else if (await templateReady(pair, input("E2B_API_KEY")!)) {
@@ -1259,15 +1202,10 @@ async function main(): Promise<void> {
       ids[binding] = `planned-${title}`;
     }
   }
-  ensure("bucket", BUCKET, apply, plan);
-  const queues = new Set<string>();
-  for (const worker of ["sandbox", "owner"]) {
-    const config = configOf(worker)["queues"] as { producers?: { queue: string }[] } | undefined;
-    for (const { queue } of config?.producers ?? []) {
-      queues.add(queue);
-    }
+  for (const bucket of BUCKETS) {
+    ensure("bucket", bucket, apply, plan);
   }
-  for (const queue of queues) {
+  for (const queue of QUEUES) {
     ensure("queue", queue, apply, plan);
   }
   // Reached only when every listing answered: a token without the scope stops above.
@@ -1284,7 +1222,7 @@ async function main(): Promise<void> {
     // Secrets first: `secrets.required` refuses a deploy without them.
     const held: Record<string, string[] | null> = {};
     for (const worker of Object.keys(SECRETS)) {
-      held[worker] = await secretsOf(api, account, `tinyassets-${worker}`);
+      held[worker] = await secretsOf(api, account, NAMES[worker]!);
     }
     const setting = secretPlan(held, rotate, open ? null : input, hookAt.creates);
     const hookSecret = hookSetsSecret(setting);
@@ -1294,9 +1232,9 @@ async function main(): Promise<void> {
         if (OPTIONAL.includes(name)) {
           continue;
         }
-        throw new Error(`${name} has no value for tinyassets-${worker}`);
+        throw new Error(`${name} has no value for ${NAMES[worker]}`);
       }
-      plan.push(`set the secret ${name} on tinyassets-${worker}${open
+      plan.push(`set the secret ${name} on ${NAMES[worker]}${open
         ? ` (its value, or its absence if optional: ${later})` : ""}`);
       if (apply) {
         wrangler(["secret", "put", name, "--config", paths[worker]!], value);
@@ -1305,9 +1243,9 @@ async function main(): Promise<void> {
     for (const worker of WORKERS) {
       // Whether it exists: its secret listing's answer (null when the API says it does not).
       const exists = (worker in held ? held[worker]
-        : await secretsOf(api, account, `tinyassets-${worker}`)) !== null;
+        : await secretsOf(api, account, NAMES[worker]!)) !== null;
       plan.push(`${exists && !migrate.has(worker) ? "upload and deploy a version of"
-        : "deploy"} tinyassets-${worker}, touching no route`);
+        : "deploy"} ${NAMES[worker]}, touching no route`);
       if (apply) {
         deployWorker(worker, paths[worker]!, exists, migrate);
       }
@@ -1318,7 +1256,7 @@ async function main(): Promise<void> {
                 "founder's tier numbers): the API answered there is none");
       if (apply) {
         const put = await api(`/accounts/${account}/storage/kv/namespaces/${ids["CONTROL"]}/` +
-                              "values/c%3Acontrol", {
+                              `values/${encodeURIComponent(CONTROL_KEY)}`, {
           method: "PUT", body: JSON.stringify(DARK_CONTROL),
           headers: { "Content-Type": "application/json" } });
         if (put.status !== 200) {

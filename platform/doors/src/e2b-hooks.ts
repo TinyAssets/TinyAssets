@@ -31,7 +31,6 @@ import { sandboxHookOwner } from "./binder";
 import type { DoorsEnv } from "./config";
 import { openRoute } from "../../contract/src/routing-mac";
 
-export const E2B_HOOK_PATH = "/hooks/e2b/lifecycle";
 /** A lifecycle event's most bytes: a few hundred in practice, the metadata's included. */
 export const HOOK_BODY_MAX = 64 * 1024;
 

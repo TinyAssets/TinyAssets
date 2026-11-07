@@ -8,7 +8,7 @@
  * `owner/memory/baselines.mjs` import it, so its own imports name their `.ts` files.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -50,6 +50,14 @@ export function readWrangler(where: string): Config {
 /** A Worker's config, typed for the fields its auxiliary Worker is built from. */
 export function workerConfig(dir: string): WorkerConfig {
   return readWrangler(dir) as unknown as WorkerConfig;
+}
+
+/** The platform's Workers: each folder of `platform/` that holds a `wrangler.jsonc`, sorted. */
+export function workerFolders(): string[] {
+  return readdirSync(PLATFORM, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory()
+                       && existsSync(join(PLATFORM, entry.name, "wrangler.jsonc")))
+    .map((entry) => entry.name).sort();
 }
 
 /** The wrangler package the platform installs (hoisted to `platform/node_modules`). */

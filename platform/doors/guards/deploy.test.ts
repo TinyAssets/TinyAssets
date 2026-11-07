@@ -16,7 +16,7 @@
  * behind a control record that admits nobody, and `--routes` then finds both held.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,25 +25,33 @@ import { describe, expect, it } from "vitest";
 import { keyring as ringSecret } from "../../ci/fixtures";
 import { PLATFORM } from "../../ci/paths";
 import { type Domain, openBlob, sealBlob } from "../../contract/src/envelope";
+import { workflow } from "../../ci/workflows";
+import { workerFolders } from "../../ci/workers";
 import {
-  admitsNobody, authorizeCheck, authorizeLink, BUCKET, CALLBACK, type CfAnswer, codeDigests, configOf, DARK_CONTROL,
-  deployedConfig, EGRESS_DOMAIN, DOORS, E2B_HOOK, FIRST_PARTY, handover, heldHook, hookPlan, hookSetsSecret,
+  admitsNobody, authorizeCheck, authorizeLink, type CfAnswer, codeDigests, DARK_CONTROL,
+  deployedConfig, E2B_HOOK, handover, heldHook, hookPlan, hookSetsSecret,
   maskInLog, keyring, keyringAdd, keyringNew, kvValue, lifecycleHook, listed, lockRefusal, MIGRATED,
-  NAMESPACES, namespacesOf,
-  PROBE_ROUTES, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect,
-  pairCheck, pairTag, ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, shippedRunner,
-  zoneOf,
-  SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
+  namespacesOf, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect,
+  pairCheck, pairTag, type Route, routesOf, runHandover, shippedRunner, zoneOf,
+  secretPlan, secretsOf, templateReady, upstreamFrom, versionOf,
 } from "../../deploy/deploy";
-import { APP_RESOURCE, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT } from "../src/config";
+import {
+  boundBy, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMESPACES, OPTIONAL,
+  PROBE_ROUTES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
+} from "../../deploy/facts";
+import { INPUTS as H2_INPUTS } from "../../deploy/h2-probes";
+import platform from "../../deploy/platform.json" with { type: "json" };
+import {
+  APP_RESOURCE, AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
+  WEB_REDIRECT,
+} from "../src/config";
 import { outsideOpen, ownerOpen } from "../src/control";
 import { parseControl } from "../src/directory";
-import { E2B_HOOK_PATH } from "../src/e2b-hooks";
 import { oidcUpstream, upstreamConfig } from "../src/oidc";
 
 type Json = Record<string, unknown>;
 
-const present = WORKERS.filter((worker) => existsSync(join(PLATFORM, worker, "wrangler.jsonc")));
+const configOf = (worker: string) => CONFIGS.get(worker)!;
 const UPSTREAM = { issuer: "https://auth.test",
                    record: { client_id: "c",
                              authorization_endpoint:
@@ -75,44 +83,37 @@ function api(answers: Record<string, CfAnswer | Error>) {
 const ok = (result: unknown): CfAnswer => ({ status: 200, body: { success: true, result } });
 
 describe("the deploy kit", () => {
-  it("names every Worker the platform holds, each after the Workers it binds", () => {
-    const configs = readdirSync(PLATFORM, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && existsSync(join(PLATFORM, entry.name,
-                                                                "wrangler.jsonc")))
-      .map((entry) => entry.name);
-    expect(configs.filter((worker) => !WORKERS.includes(worker))).toEqual([]);
-    for (const worker of present) {
-      const services = (configOf(worker)["services"] ?? []) as { service: string }[];
-      for (const { service } of services) {
-        const target = service.replace(/^tinyassets-/, "");
-        if (present.includes(target)) {
-          expect([worker, WORKERS.indexOf(target) < WORKERS.indexOf(worker)])
-            .toEqual([worker, true]);
-        }
+  it("deploys every Worker the platform holds, each after every Worker it binds", () => {
+    expect([...WORKERS].sort()).toEqual(workerFolders());
+    for (const worker of WORKERS) {
+      for (const bound of boundBy(worker)) {
+        expect([worker, bound, WORKERS.indexOf(bound) < WORKERS.indexOf(worker)])
+          .toEqual([worker, bound, true]);
       }
     }
+    // The doors bind the owner by its objects' script alone: the order holds it too.
+    expect(boundBy("doors")).toContain("owner");
   });
 
-  it("names every namespace, bucket and secret the configs declare", () => {
-    for (const worker of present) {
-      const config = configOf(worker);
-      for (const kv of (config["kv_namespaces"] ?? []) as { binding: string }[]) {
-        expect(Object.keys(NAMESPACES)).toContain(kv.binding);
-      }
-      for (const bucket of (config["r2_buckets"] ?? []) as { bucket_name: string }[]) {
-        expect(bucket.bucket_name).toBe(BUCKET);
-      }
-      const required = ((config["secrets"] as { required?: string[] } | undefined)?.required
-                        ?? []);
-      expect([worker, required.filter((name) => !(SECRETS[worker] ?? []).includes(name))])
-        .toEqual([worker, []]);
-    }
-    expect(SECRETS["sandbox"]).toEqual(["E2B_API_KEY"]);
-    expect(Object.values(NAMESPACES)).toHaveLength(3);
+  it("holds only what no config says, and that for exactly what the configs declare", () => {
+    // A title for each KV binding the configs make, and none for a binding none makes.
+    const bindings = new Set(WORKERS.flatMap((worker) =>
+      ((configOf(worker)["kv_namespaces"] ?? []) as { binding: string }[]).map((kv) => kv.binding)));
+    expect(Object.keys(NAMESPACES).sort()).toEqual([...bindings].sort());
+    // A place in the secret order for each Worker that holds a secret, and only for those.
+    expect([...platform.secret_order.workers].sort()).toEqual(WORKERS.filter((worker) =>
+      ((configOf(worker)["secrets"] as { required?: string[] } | undefined)?.required ?? [])
+        .length > 0).sort());
+    // The founder's setup makes only secrets a config requires; the keyrings are its own.
+    expect(Object.keys(MADE).filter((name) => !SECRET_INPUTS.includes(name))).toEqual([]);
+    expect(KEYRINGS.length).toBeGreaterThan(0);
+    // The shared apps' signing secrets, which no config requires, ride on the doors.
+    expect(OPTIONAL.filter((name) => SECRET_INPUTS.includes(name))).toEqual([]);
+    expect(OPTIONAL.every((name) => SECRETS["doors"]!.includes(name))).toBe(true);
   });
 
   it("deploys the checked-in config with only its ids, the upstream and the routes filled", () => {
-    for (const worker of present) {
+    for (const worker of WORKERS) {
       const checked = configOf(worker);
       const deployed = deployedConfig(worker, IDS, UPSTREAM, false);
       const { kv_namespaces: kv, main, vars, assets, build, $schema: _schema, ...rest } =
@@ -138,13 +139,8 @@ describe("the deploy kit", () => {
       }
     }
     const routed = deployedConfig("doors", IDS, UPSTREAM, true)["routes"];
-    expect(routed).toEqual([...ROUTES.map((pattern) => ({ pattern, zone_name: "tinyassets.io" })),
+    expect(routed).toEqual([...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
                             { pattern: EGRESS_DOMAIN, custom_domain: true }]);
-    expect(ROUTES).toEqual(["tinyassets.io/mcp*", "tinyassets.io/api/*",
-                            "tinyassets.io/hooks/inbound/*", "tinyassets.io/hooks/e2b/*",
-                            "tinyassets.io/app/api/*",
-                            "tinyassets.io/authorize*", "tinyassets.io/oauth/*",
-                            "tinyassets.io/.well-known/oauth-*"]);
   });
 
   it("bundles every Worker from the config it stages, as wrangler deploys it", { tags: ["large"] },
@@ -155,7 +151,7 @@ describe("the deploy kit", () => {
     const wrangler = join(PLATFORM, "node_modules", "wrangler", "bin", "wrangler.js");
     const out = mkdtempSync(join(tmpdir(), "ta-staged-"));
     try {
-      for (const worker of present) {
+      for (const worker of WORKERS) {
         const config = join(out, `${worker}.json`);
         writeFileSync(config, JSON.stringify(deployedConfig(worker, IDS, UPSTREAM, true)));
         execFileSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir",
@@ -216,7 +212,6 @@ describe("the deploy kit", () => {
                                "k");
     expect(authorizeLink(UPSTREAM, "s1", "c1")).toBe(doors.authorizeUrl({
       state: "s1", code_challenge: "c1", redirect_uri: UPSTREAM_CALLBACK }));
-    expect(CALLBACK).toBe(UPSTREAM_CALLBACK);
   });
 
   it("checks, before any sign-in, that WorkOS's authorize sends the browser to AuthKit's " +
@@ -563,7 +558,6 @@ describe("the deploy kit", () => {
 
   it("probes the sign-in on its two unheld paths alone; routes then finds both the doors'",
      async () => {
-    expect(PROBE_ROUTES).toEqual(["tinyassets.io/authorize*", "tinyassets.io/oauth/*"]);
     expect(PROBE_ROUTES.every((pattern) => ROUTES.includes(pattern))).toBe(true);
     const fake = zoneApi(LIVE);
     const steps = probeSteps(await routesOf(fake, "z"));
@@ -620,10 +614,8 @@ describe("the deploy kit", () => {
   });
 
   it("prints the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
-    expect([FIRST_PARTY.client, FIRST_PARTY.redirect, FIRST_PARTY.resource, CALLBACK])
-      .toEqual([WEB_CLIENT, WEB_REDIRECT, APP_RESOURCE, UPSTREAM_CALLBACK]);
     const link = new URL(probeLink());
-    expect(`${link.origin}${link.pathname}`).toBe("https://tinyassets.io/authorize");
+    expect(`${link.origin}${link.pathname}`).toBe(`${PUBLIC_ORIGIN}${AUTHORIZE_PATH}`);
     const { code_challenge: challenge, state, ...rest } = Object.fromEntries(link.searchParams);
     expect(rest).toEqual({ response_type: "code", client_id: WEB_CLIENT,
                            redirect_uri: WEB_REDIRECT, code_challenge_method: "S256",
@@ -793,10 +785,9 @@ describe("the deploy kit", () => {
                                e2b([{ id: "a", url: E2B_HOOK.url },
                                     { id: "b", url: E2B_HOOK.url }]).fetcher))
       .rejects.toThrow(/holds 2 webhooks/);
-    // The hook's path is the doors' own, and a route hands it to them.
-    expect(E2B_HOOK.url).toBe(`https://tinyassets.io${E2B_HOOK_PATH}`);
+    // A route hands the hook's path to the doors.
     expect(ROUTES.some((pattern) => pattern.endsWith("*")
-      && `tinyassets.io${E2B_HOOK_PATH}`.startsWith(pattern.slice(0, -1)))).toBe(true);
+      && `${ZONE}${E2B_HOOK_PATH}`.startsWith(pattern.slice(0, -1)))).toBe(true);
   });
 
   it("changes E2B's webhook secret only with the doors' copy: both or neither", async () => {
@@ -1026,24 +1017,38 @@ describe("the deploy kit", () => {
     // The account is read from the zone (`zoneOf`), never held as an input.
     expect(PUBLIC_INPUTS).not.toContain("CLOUDFLARE_ACCOUNT_ID");
     expect(workflow).not.toContain("CLOUDFLARE_ACCOUNT_ID");
-    for (const name of PUBLIC_INPUTS) {
-      expect(plan).toMatch(new RegExp(`${name}: \\$\\{\\{ (secrets|vars)\\.${name} \\}\\}`));
-    }
     // The apply job: after the plan, in the repo's main-only environment
-    // (tests/test_workflow_production_environment.py), with every input the kit reads.
+    // (ci/guards/environment.test.ts), with every input the kit reads (the next test).
     expect(apply).toMatch(/^    environment: production$/m);
-    for (const name of [...PUBLIC_INPUTS, ...SECRET_INPUTS]) {
-      expect(apply).toMatch(new RegExp(`${name}: \\$\\{\\{ (secrets|vars)\\.${name} \\}\\}`));
-    }
-    for (const name of SECRET_INPUTS) {
-      expect(apply).toContain(`${name}: \${{ secrets.${name} }}`);
-    }
-    // The handles canary's own bearer (scripts/_canary_common.py), so Fact 11's canary runs.
-    const canary = /CANARY_TOKEN_ENV = "([A-Z_]+)"/.exec(readFileSync(
-      join(PLATFORM, "..", "scripts", "_canary_common.py"), "utf8"))![1]!;
-    expect(apply).toContain(`${canary}: \${{ secrets.${canary} }}`);
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     expect(kit).not.toMatch(/\/etc\/tinyassets/);
     expect(kit).toContain("mcp_public_canary.py");
+  });
+
+  it("hands the plan and apply jobs exactly what the kit reads, every secret a config " +
+     "requires among them", () => {
+    const { plan, apply } = workflow("platform-deploy.yml").jobs as
+      Record<string, { env: Record<string, string> }>;
+    // The dispatch's own inputs, which both jobs turn into the kit's flags.
+    const dispatch = ["MODE", "ROTATE", "MIGRATE"];
+    // The handles canary's own bearer (scripts/_canary_common.py), so Fact 11's canary runs.
+    const canary = /CANARY_TOKEN_ENV = "([A-Z_]+)"/.exec(readFileSync(
+      join(PLATFORM, "..", "scripts", "_canary_common.py"), "utf8"))![1]!;
+    const secrets = [...SECRET_INPUTS, ...OPTIONAL, canary, ...Object.values(H2_INPUTS)];
+    expect(Object.keys(plan!.env).sort()).toEqual([...PUBLIC_INPUTS, ...dispatch].sort());
+    expect(Object.keys(apply!.env).sort())
+      .toEqual([...PUBLIC_INPUTS, ...secrets, ...dispatch].sort());
+    for (const name of secrets) {
+      expect([name, apply!.env[name]]).toEqual([name, `\${{ secrets.${name} }}`]);
+    }
+    for (const env of [plan!.env, apply!.env]) {
+      for (const name of PUBLIC_INPUTS) {
+        expect([name, env[name]]).toEqual([name, expect.stringMatching(
+          new RegExp(`^\\$\\{\\{ (secrets|vars)\\.${name} \\}\\}$`))]);
+      }
+      for (const name of dispatch) {
+        expect([name, env[name]]).toEqual([name, `\${{ inputs.${name.toLowerCase()} }}`]);
+      }
+    }
   });
 });
