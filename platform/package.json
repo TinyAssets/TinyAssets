@@ -11,6 +11,7 @@
     "hooks",
     "sandbox",
     "import",
+    "deploy",
     "ci"
   ],
   "scripts": {

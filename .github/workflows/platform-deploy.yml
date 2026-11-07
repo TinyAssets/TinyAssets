@@ -1,17 +1,18 @@
 name: Platform deploy (manual, founder-approved)
 
-# The platform's dark-deploy kit (platform/deploy/deploy.ts, slice L), run by
-# hand from `main`, in three jobs:
-#   plan   - prints what the run would change to the job summary. It holds
-#            only the Cloudflare token (not a production secret) and the
-#            repo's variables, and changes nothing.
+# The platform's deploy kit (platform/deploy/deploy.ts), run by hand from
+# `main`, the dispatch's mode passed to it whole (`--mode`, the kit's mode
+# table, MODES), in three jobs:
+#   plan   - the mode's plan (`--public`), to the job summary. It holds only the
+#            Cloudflare token (not a production secret) and the repo's
+#            variables, and changes nothing.
 #   pair   - (dark, routes) after the plan, in the `production` environment
 #            with the E2B key alone: the sandbox's template and the runner
 #            this commit ships checked together on throwaway sandboxes,
-#            unless E2B already holds their pair's tag (deploy.ts --pair).
+#            unless E2B already holds their pair's tag (`--mode pair`).
 #   apply  - needs the plan and the pair (none for probe and h2, which deploy
-#            nothing), in the main-only `production` environment. It runs the
-#            kit with `--yes`, which stops a deploy unless the pair's tag is at
+#            nothing), in the main-only `production` environment: the mode
+#            with `--yes`, which stops a deploy unless the pair's tag is at
 #            E2B. The founder's dispatch is the approval: a
 #            required reviewer on `production` would hold every scheduled job
 #            there too (platform/deploy/checklist.md).
@@ -20,19 +21,11 @@ name: Platform deploy (manual, founder-approved)
 # a branch's copy of this file never reaches them
 # (platform/ci/guards/environment.test.ts), and never from a host
 # (Direction 8). The kit never prints a value and never makes one in a
-# deploy; GATEWAY_KEYRING and FILES_KEYRING are each made once with `keyring-new`
-# (scripts/platform_setup.py makes the same in memory) and rotated with `keyring-add`,
-# then stored here.
+# deploy; each keyring is made once with `keyring-new` (scripts/platform_setup.py
+# makes the same in memory) and rotated with `keyring-add`, then stored here.
 #
-# Modes:
-#   plan    - the plan job alone
-#   dark    - storage, secrets, six Workers with no route, the control record
-#             when absent, the WorkOS redirect URI, then the handles canary
-#   probe   - after dark: the sign-in's two paths alone handed to the doors,
-#             nothing deployed and no gate changed, then the handles canary and
-#             the one sign-in link to open, with its pass and fail signs
-#   routes  - the same as dark, then the routes handed to the doors one at a time
-#   h2      - H2's probes alone, once a probe owner exists; nothing deployed
+# The modes are the kit's own (deploy.ts says what each does): plan, dark,
+# probe, routes and h2 here; pair is its own job.
 
 on:
   workflow_dispatch:
@@ -87,17 +80,14 @@ jobs:
       - name: The plan (changes nothing)
         run: |
           set -euo pipefail
-          args=(--public)
-          if [ "${MODE}" = "probe" ]; then args+=(--probe); fi
-          if [ "${MODE}" = "routes" ]; then args+=(--routes); fi
-          if [ "${MODE}" = "h2" ]; then args+=(--h2); fi
+          args=(--mode "${MODE}" --public)
           if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
           if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
           node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"
 
   # The pair check, in a job of its own before apply: the pinned E2B template and the
   # runner this commit's sandbox Worker ships, unless E2B already holds their pair's tag
-  # (deploy.ts --pair runs sandbox/template/build.py --check-pair: three throwaway
+  # (deploy.ts --mode pair runs sandbox/template/build.py --check-pair: three throwaway
   # sandboxes of at most 900, 1800 and 300 s, one after another). It holds only the E2B
   # key, and its SDK is installed from a hashed lock.
   pair:
@@ -127,7 +117,7 @@ jobs:
       - name: The pair check
         env:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
-        run: node --experimental-strip-types platform/deploy/deploy.ts --pair
+        run: node --experimental-strip-types platform/deploy/deploy.ts --mode pair
 
   apply:
     needs: [plan, pair]
@@ -173,13 +163,7 @@ jobs:
       - name: Apply
         run: |
           set -euo pipefail
-          if [ "${MODE}" = "h2" ]; then
-            node --experimental-strip-types platform/deploy/deploy.ts --h2
-            exit 0
-          fi
-          args=(--yes)
-          if [ "${MODE}" = "probe" ]; then args+=(--probe); fi
-          if [ "${MODE}" = "routes" ]; then args+=(--routes); fi
+          args=(--mode "${MODE}" --yes)
           if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
           if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
           node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"

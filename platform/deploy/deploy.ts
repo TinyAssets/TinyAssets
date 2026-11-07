@@ -1,92 +1,69 @@
 /**
- * The dark deploy (tasks 5, "0c (live, slice L)"; tasks 2, "DNS, routes and deploy"): one
- * reviewed step that deploys the six platform Workers to the production Cloudflare account
- * with no public route, runs the handles canary (AGENTS.md Fact 11) and, once a probe owner
- * exists, H2's probes (`h2-probes.ts`). Built in slice L, never run by it.
+ * The platform's deploy kit (tasks 5, "0c (live, slice L)"; tasks 2, "DNS, routes and
+ * deploy"): the six platform Workers deployed to the production Cloudflare account, the
+ * doors' routes handed over at the cutover, the handles canary after each change (AGENTS.md
+ * Fact 11), and H2's probes (`h2-probes.ts`).
  *
- * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, from `main`: a
- * `plan` job runs `--public` with the Cloudflare token alone and prints the plan to the job
- * summary; the `apply` job then runs `--yes` in the main-only `production` environment,
- * with that environment's secrets, never a host's (Direction 8). The Cloudflare account is
- * the zone's (`zoneOf`).
+ * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, from `main`, one
+ * mode a run (`MODES`, each a row of steps):
  *
- *   node --experimental-strip-types platform/deploy/deploy.ts               # the plan
- *   node --experimental-strip-types platform/deploy/deploy.ts --public      # the plan job's
- *   node --experimental-strip-types platform/deploy/deploy.ts --yes         # the dark deploy
- *   node --experimental-strip-types platform/deploy/deploy.ts --yes --probe   # the sign-in probe
- *   node --experimental-strip-types platform/deploy/deploy.ts --yes --routes  # + the routes
- *   node --experimental-strip-types platform/deploy/deploy.ts --h2          # H2's probes only
- *   node --experimental-strip-types platform/deploy/deploy.ts --pair        # the pair check
- *   node --experimental-strip-types platform/deploy/deploy.ts --yes --migrate owner
+ *   node --experimental-strip-types platform/deploy/deploy.ts --mode <mode> [--public | --yes]
+ *        [--rotate <secrets>] [--migrate <Workers>]
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
- *   (for each keyring: `GATEWAY_KEYRING`, the gateway's, and `FILES_KEYRING`, the files
- *   Worker's data keys' ring; each its own secret)
  *
- * A Worker's first deploy is `wrangler deploy`, with no route and no workers.dev; later
- * ones upload a version and then deploy it (Cloudflare's staged path), so a deploy never
- * touches a route. A Worker with a pending Durable Object migration is deployed whole only
- * when `--migrate` names it.
+ * - `plan`: `dark`'s checks and plan, never a change.
+ * - `dark`: storage, secrets and every Worker with no public route, the control record when
+ *   absent, the WorkOS redirect URI and E2B's lifecycle webhook (disabled), then the handles
+ *   canary.
+ * - `probe`: after `dark`, the sign-in's two paths alone handed to the doors (`PROBE_ROUTES`),
+ *   nothing deployed and no gate changed, then the canary and the one sign-in link to open,
+ *   with its pass and fail signs (`PROBE_SIGNS`).
+ * - `routes`: `dark`, then the doors' routes handed over one at a time, the egress custom
+ *   domain, and the webhook enabled.
+ * - `h2`: H2's probes alone, once a probe owner exists.
+ * - `pair`: the pinned template with the runner this checkout ships, checked together on
+ *   throwaway sandboxes unless E2B already holds their pair's tag (`build.py --check-pair`).
  *
- * `--routes` hands the doors' routes over after the doors are deployed, one route at a time
- * through Cloudflare's routes API (`handover`), so no path is ever served by nothing: a
- * pattern another Worker holds is moved to the doors in place (`PUT`, one atomic change), a
- * new one is added (`POST`), and only then is another Worker's narrower pattern, which
- * Cloudflare would prefer to the doors' (the most specific pattern wins, its routes page),
- * deleted, so its paths pass from that Worker straight to the doors. Then `wrangler
- * triggers deploy` adds the egress custom domain.
- *
- * `--probe` (`--yes --probe`, between `dark` and `--routes`) hands the doors only the
- * sign-in's two paths, `PROBE_ROUTES`, which no Worker serves before it, by the same
- * handover; it deploys nothing and changes no gate. It runs only after a dark run: the
- * doors deployed, the control record admitting nobody, and WorkOS listing `CALLBACK`; before
- * a route moves, the early sign-in check (`authorizeCheck`) must pass. It then prints the
- * one first-party sign-in link, whose end settles everything sign-in needs at the cutover in
- * the doors' own code: the doors' client and secret at User Management, the callback, and
- * the access token's checks, its exact `iss` and `auth_time` among them (`PROBE_SIGNS`).
- * `--routes` later finds both paths already the doors' and hands over the rest.
+ * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
+ * variables alone, every Cloudflare read and the discovery check, the checks that need a
+ * production secret left to the apply job and said so in the plan. `--yes` is the `apply`
+ * job's, in the main-only `production` environment, with that environment's secrets, never a
+ * host's (Direction 8). With neither, a mode checks and plans with the secrets it is given,
+ * and changes nothing. The Cloudflare account is the zone's (`Cloudflare.zone`).
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
  * - a namespace, bucket or queue is created only when its listing answered and lacks it;
- * - a secret is set only on a Worker whose secret listing answered and lacks it, or that
- *   the API says does not exist yet; the kit never makes a secret's value. The keyrings
- *   and `ROUTING_MAC_KEY` come from the secret store like the rest (`keyring-new` makes the
- *   first keyring; scripts/platform_setup.py stores one); a held one is never replaced, unless
- *   `--rotate` names it, and a keyring is rotated only by adding a key (the new keyring
- *   must hold two or more keys, the active one among them). Cloudflare never shows a held
+ * - a secret is set only on a Worker whose secret listing answered and lacks it, or that the
+ *   API says does not exist yet; the kit never makes a secret's value (`keyring-new` makes a
+ *   first keyring, `scripts/platform_setup.py` stores one). A held one is never replaced
+ *   unless `--rotate` names it, a keyring only by adding a key; Cloudflare never shows a held
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
- *   POST; never a delete), after every other live check and before any Cloudflare change,
- *   and only then is the early sign-in check run, which needs it listed;
- * - E2B's lifecycle webhook is listed and checked before any change, registered, disabled,
- *   only when E2B's listing lacks it, its secret changed only with the doors' copy, and
- *   enabled only by `--routes` after the handover; the run that registers it sets the
- *   doors' copy too (`hookPlan`, `secretPlan`, `lifecycleHook`);
- * - nothing is deployed unless every migration lock (`owner/migrations.json`, and the
- *   sandbox Worker's `sandbox/migrations/<class>.json`) marks the first deploy and pins
- *   every migration the code ships, in order (`lockRefusal`): pin with
- *   `PIN_MIGRATIONS=<commit>` (each Worker's `guards/migrations.test.ts`, `owner/guards/lock.ts`)
- *   and commit the locks with the code first, so a deployed migration is never edited.
+ *   POST; never a delete), after the other live checks and before any Cloudflare change, and
+ *   only then is the early sign-in check run, which needs it listed;
+ * - E2B's lifecycle webhook is listed and checked before any change, registered disabled only
+ *   when E2B's listing lacks it, its secret changed only with the doors' copy, and enabled
+ *   only by `routes` after the handover; the run that registers it sets the doors' copy too;
+ * - nothing is deployed unless every migration lock (`owner/migrations.json`, and the sandbox
+ *   Worker's `sandbox/migrations/<class>.json`) marks the first deploy and pins every
+ *   migration the code ships, in order (`lockRefusal`);
+ * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it,
+ *   which never touches a route; `--migrate` names a Worker with a pending Durable Object
+ *   migration to deploy whole;
+ * - a route handover moves a pattern another Worker holds in place (`PUT`), adds a missing
+ *   one (`POST`), and only then deletes another Worker's narrower pattern, so no path is ever
+ *   served by nothing (`handover`).
  *
  * Before anything is changed it checks, live: the owner issuer's discovery names
- * `OWNER_ISSUER` exactly and an https JWKS (an absent field is unknown, and unknown stops the
- * kit); WorkOS's User Management authorize, sent the WorkOS authorize URL the doors build
- * (not `tinyassets.io/authorize`) with a throwaway challenge, redirects to AuthKit's sign-in,
- * so it takes the doors' client and `CALLBACK` (`authorizeCheck`, run once `CALLBACK` is
- * listed or registered; the plan job, which cannot list it, reports an unlisted one as
- * dark's to register). The access token's exact `iss` and `auth_time` only a real sign-in
- * shows: the sign-in probe settles them; the sandbox's
- * `E2B_TEMPLATE` exists at E2B with a ready build; and the pair it deploys, that template
- * and the runner the sandbox Worker ships (its SHA-256, built as the Worker's build makes
- * it), passed its standing checks in this E2B team: E2B holds the pair's tag
- * (`pairTag`), which the workflow's `pair` job makes before the apply job starts (`--pair`:
- * `sandbox/template/build.py --check-pair`, a few throwaway sandboxes, the founder's
- * standing approval of 2026-11-04, given only `PATH`, `HOME` and `E2B_API_KEY`); without it
- * the kit stops. `--public` makes every Cloudflare read and the discovery
- * check, and leaves to the apply job the checks that need the production secrets (E2B,
- * WorkOS, each secret's value), saying so in its plan.
+ * `OWNER_ISSUER` exactly and an https JWKS (an absent field is unknown, and unknown stops
+ * the kit); WorkOS's authorize, sent the URL the doors build with a throwaway challenge,
+ * redirects to AuthKit's sign-in (`authorizeCheck`); the sandbox's `E2B_TEMPLATE` has a ready
+ * build, and E2B holds the tag of the pair this deploy makes (`pairTag`), which `pair` makes.
+ * The access token's exact `iss` and `auth_time` only a real sign-in shows: `probe` settles
+ * them.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -97,8 +74,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { WRANGLER } from "../ci/workers.ts";
-// The envelope imports nothing, so Node's type stripping runs it here by its own name.
+// The envelope and the E2B client import nothing, so Node's type stripping runs them here by
+// their own names.
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
+import { E2b } from "../sandbox/src/e2b.ts";
+import {
+  cfApi, Cloudflare, describeStep, handover, narrower, type Route, type RouteStep,
+} from "./cloudflare.ts";
 import {
   AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, CONTROL_KEY, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
   FIRST_PARTY, KEYRINGS, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, ROUTES,
@@ -116,13 +98,9 @@ type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
   "CLOUDFLARE_API_TOKEN", "WORKOS_CLIENT_ID", "OWNER_ISSUER"]);
 const WORKOS_API = "https://api.workos.com";
-const CF_API = "https://api.cloudflare.com/client/v4";
-/** E2B's platform API (`sandbox/src/e2b.ts`'s), its OpenAPI spec read 2026-11-03. */
-const E2B_API = "https://api.e2b.app";
 /**
  * E2B's sandbox lifecycle webhook, the doors' one E2B hook (`doors/src/e2b-hooks.ts`), its
- * API read in e2b-dev/infra's `spec/openapi.yml` (2026-11-04): `GET` and `POST
- * /events/webhooks`, `PATCH /events/webhooks/{id}`.
+ * API read in e2b-dev/infra's `spec/openapi.yml` (2026-11-04).
  */
 export const E2B_HOOK = Object.freeze({
   name: "tinyassets-lifecycle", url: E2B_HOOK_URL,
@@ -134,19 +112,88 @@ export const DARK_CONTROL = Object.freeze({
   tiers: { free: { runs: 5, storage_bytes: 25_000_000_000 },
            paid: { runs: 10, storage_bytes: 250_000_000_000 } },
 });
+/** What the plan job says of a check that needs a production secret. */
+const LATER = "checked by the apply job before any change";
 
-function flag(name: string): boolean {
-  return process.argv.includes(name);
+// --- The run ----------------------------------------------------------------------------
+
+/** The outside world the kit acts on: replaced whole by the tests. */
+export interface Io {
+  readonly fetch: Fetch;
+  readonly spawn: typeof spawnSync;
+  readonly exec: typeof execFileSync;
+  readonly log: (line: string) => void;
 }
 
-function option(name: string): string | undefined {
-  const at = process.argv.indexOf(name);
-  return at < 0 ? undefined : process.argv[at + 1];
+export const IO: Io = Object.freeze({
+  fetch: (url: string, init?: RequestInit) => fetch(url, init),
+  spawn: ((...args: Parameters<typeof spawnSync>) => spawnSync(...args)) as typeof spawnSync,
+  exec: ((...args: Parameters<typeof execFileSync>) => execFileSync(...args)) as
+    typeof execFileSync,
+  log: (line: string) => console.log(line),
+});
+
+export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair";
+
+/** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
+export interface Run {
+  readonly mode: Mode;
+  /** `--public`: the plan job's, which holds no production secret. */
+  readonly reach: "public" | "secrets";
+  /** `--yes`: the apply job's, which changes what its plan says. */
+  readonly apply: boolean;
+  readonly rotate: ReadonlySet<string>;
+  readonly migrate: ReadonlySet<string>;
+  /** The environment as the run began: its inputs, and what the tools it runs are given. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly io: Io;
 }
 
-function input(name: string): string | undefined {
-  const value = process.env[name];
+/** What a run's steps have learned and made so far, in order. */
+export interface Work {
+  readonly plan: string[];
+  cloudflare?: Cloudflare;
+  zone?: string;
+  account?: string;
+  wrangler?: Wrangler;
+  e2b?: E2b;
+  upstream?: UpstreamValues;
+  /** E2B's listing of the lifecycle hook: null when it holds none. */
+  hook?: Json | null;
+  redirect?: "present" | "missing" | "registered";
+  routes?: RouteStep[];
+  ids?: Record<string, string>;
+  /** The namespaces a plan would make: not there yet. */
+  unmade?: Set<string>;
+  out?: string;
+  paths?: Record<string, string>;
+  held?: Record<string, string[] | null>;
+  setting?: { worker: string; name: string }[];
+  /** The run ends here: a plan says what it would change, and stops. */
+  done?: boolean;
+}
+
+/** One step of a mode: what it reads from the run and the work so far, and adds to it. */
+export interface Step {
+  readonly name: string;
+  readonly run: (run: Run, work: Work) => Promise<void> | void;
+}
+
+function step(name: string, run: Step["run"]): Step {
+  return Object.freeze({ name, run });
+}
+
+function input(run: Run, name: string): string | undefined {
+  const value = run.env[name];
   return value === undefined || value === "" ? undefined : value;
+}
+
+/** What an earlier step of the row made: a step run out of order fails loudly. */
+function made<T>(value: T | undefined, what: string): T {
+  if (value === undefined) {
+    throw new Error(`the kit's row is out of order: ${what} is not made yet`);
+  }
+  return value;
 }
 
 /** The sandbox's pinned E2B template, `name:tag` (its config's `E2B_TEMPLATE`). */
@@ -154,18 +201,30 @@ function template(): string {
   return String((CONFIGS.get("sandbox")!["vars"] as Json)["E2B_TEMPLATE"]);
 }
 
-function wrangler(args: string[], stdin?: string): string {
-  const result = spawnSync(process.execPath, [WRANGLER, ...args], {
-    cwd: PLATFORM, input: stdin, encoding: "utf8",
-    env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
-  });
-  if (result.status !== 0) {
-    // Its stderr alone: wrangler never echoes a secret's value.
-    throw new Error(`wrangler ${args.slice(0, 3).join(" ")} failed (exit ${result.status}): ` +
-                    `${result.stderr.trim()}`);
+/** The plan, printed and written to the job summary. */
+export function report(plan: readonly string[], applied: boolean, run: Run): void {
+  const summary = `${applied ? "Changed" : "Would change"}:\n${plan.map((line) => `- ${line}`)
+    .join("\n")}`;
+  run.io.log(summary);
+  const file = run.env["GITHUB_STEP_SUMMARY"];
+  if (file !== undefined) {
+    writeFileSync(file, `${summary}\n`, { flag: "a" });
   }
-  return result.stdout;
 }
+
+/**
+ * Masks `value` in a GitHub Actions job's log (`::add-mask::`), as the probe workflows mask
+ * the account id: not a credential, but once a secret, and a wrangler error the kit quotes
+ * names `/accounts/<id>/...` in a public log. Outside Actions it prints nothing.
+ */
+export function maskInLog(value: string, env: Readonly<Record<string, string | undefined>>,
+                          log: (line: string) => void): void {
+  if (env["GITHUB_ACTIONS"] !== undefined) {
+    log(`::add-mask::${value}`);
+  }
+}
+
+// --- The migration locks ----------------------------------------------------------------
 
 /** The Workers whose Durable Objects keep tables, each with its migrations guard. */
 export const MIGRATED = ["owner", "sandbox"] as const;
@@ -201,21 +260,22 @@ export function lockRefusal(lock: unknown, digests: readonly string[],
 export type GuardRun = (worker: string, out: string) => { status: number | null; stdout: string };
 
 /** The real run: `worker`'s guards project, as it evaluates its schema. */
-function guardRun(worker: string, out: string): { status: number | null; stdout: string } {
-  const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
-  return spawnSync(process.execPath, [vitest, "run", "--project", "guards",
-                                      "guards/migrations.test.ts"], {
-    cwd: join(PLATFORM, worker), encoding: "utf8",
-    env: { ...process.env, MIGRATION_DIGESTS: out, PIN_MIGRATIONS: "" },
-  });
+export function guardRun(run: Run): GuardRun {
+  return (worker, out) => {
+    const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
+    return run.io.spawn(process.execPath, [vitest, "run", "--project", "guards",
+                                           "guards/migrations.test.ts"], {
+      cwd: join(PLATFORM, worker), encoding: "utf8",
+      env: { ...run.env, MIGRATION_DIGESTS: out, PIN_MIGRATIONS: "" },
+    });
+  };
 }
 
 /**
  * The code's migrations' digests, by lock path, as `worker`'s guards project evaluates its
  * schema (`run`).
  */
-export function codeDigests(worker: string, run: GuardRun = guardRun):
-    Record<string, string[]> {
+export function codeDigests(worker: string, run: GuardRun): Record<string, string[]> {
   const dir = mkdtempSync(join(tmpdir(), "ta-migrations-"));
   const out = join(dir, "digests.json");
   try {
@@ -243,212 +303,329 @@ function locksOf(worker: string, reported: unknown): Record<string, string[]> {
   return reported as Record<string, string[]>;
 }
 
-/** Cloudflare's API answer: its status and its parsed body, or a throw on no answer. */
-export interface CfAnswer {
-  readonly status: number;
-  readonly body: { success?: boolean; result?: unknown; errors?: { code?: number }[] };
-}
-
-export type CfApi = (path: string, init?: RequestInit) => Promise<CfAnswer>;
-
-/** The Cloudflare API with the account's token. */
-export function cfApi(token: string, fetcher: Fetch = fetch): CfApi {
-  return async (path, init = {}) => {
-    const response = await fetcher(`${CF_API}${path}`, {
-      ...init, headers: { Authorization: `Bearer ${token}`, ...(init.headers ?? {}) } });
-    const text = await response.text();
-    let body: CfAnswer["body"];
-    try {
-      body = JSON.parse(text) as CfAnswer["body"];
-    } catch {
-      body = {};
-    }
-    return { status: response.status, body };
-  };
-}
-
-function codes(answer: CfAnswer): number[] {
-  return (answer.body.errors ?? []).map((error) => error.code ?? 0);
-}
-
-/**
- * A Worker's secrets' names, or null when the API answers that the Worker does not exist
- * (404 with Cloudflare's 10007, "workers.api.error.script_not_found"); any other failure
- * throws: a failed lookup is never "no secrets".
- */
-export async function secretsOf(api: CfApi, account: string, script: string):
-    Promise<string[] | null> {
-  const answer = await api(`/accounts/${account}/workers/scripts/${script}/secrets`);
-  if (answer.status === 404 && codes(answer).includes(10007)) {
-    return null;
-  }
-  if (answer.status !== 200 || answer.body.success !== true || !Array.isArray(answer.body.result)) {
-    throw new Error(`the secret listing of ${script} failed (${answer.status}, ${
-      JSON.stringify(codes(answer))})`);
-  }
-  return (answer.body.result as { name?: unknown }[]).map((secret) => String(secret.name));
-}
-
-/**
- * A KV key's value, as JSON (`{}` when it is not JSON), or undefined only when the API
- * answers that it is absent (404 with Cloudflare's 10009, "key not found"); any other
- * answer throws.
- */
-export async function kvValue(api: CfApi, account: string, namespace: string, key: string):
-    Promise<unknown> {
-  const answer = await api(`/accounts/${account}/storage/kv/namespaces/${namespace}/values/${
-    encodeURIComponent(key)}`);
-  if (answer.status === 200) {
-    return answer.body;
-  }
-  if (answer.status === 404 && codes(answer).includes(10009)) {
-    return undefined;
-  }
-  throw new Error(`reading ${key} failed (${answer.status}, ${JSON.stringify(codes(answer))})`);
-}
-
-/** The account's KV namespaces by title, every page read; a failure throws. */
-export async function namespacesOf(api: CfApi, account: string): Promise<Map<string, string>> {
-  const found = new Map<string, string>();
-  for (let page = 1; ; page += 1) {
-    const answer = await api(`/accounts/${account}/storage/kv/namespaces?per_page=100&page=${page}`);
-    if (answer.status !== 200 || answer.body.success !== true
-        || !Array.isArray(answer.body.result)) {
-      throw new Error(`listing the KV namespaces failed (${answer.status})`);
-    }
-    const rows = answer.body.result as { id: string; title: string }[];
-    for (const row of rows) {
-      found.set(row.title, row.id);
-    }
-    if (rows.length < 100) {
-      return found;
-    }
-  }
-}
-
-/** A Worker route on the zone, as Cloudflare's routes API lists it. */
-export interface Route {
-  readonly id: string;
-  readonly pattern: string;
-  readonly script?: string;
-}
-
-/** One change of the handover, in order. */
-export type RouteStep =
-  | { readonly method: "PUT"; readonly id: string; readonly pattern: string;
-      readonly from: string }
-  | { readonly method: "POST"; readonly pattern: string }
-  | { readonly method: "DELETE"; readonly id: string; readonly pattern: string;
-      readonly from: string };
-
-function base(pattern: string): string {
-  return pattern.endsWith("*") ? pattern.slice(0, -1) : pattern;
-}
-
-/**
- * Whether `narrow` is a more specific pattern than `wide`, matching a part of its URLs:
- * Cloudflare sends those URLs to `narrow` (the most specific pattern wins).
- */
-export function narrower(narrow: string, wide: string): boolean {
-  return narrow !== wide && wide.endsWith("*") && narrow.startsWith(base(wide));
-}
-
-/**
- * The zone, by its name: its id, and the id of the account that holds it. That account is
- * the one the doors' routes need their Workers in, so the kit reads it here and holds no
- * account id of its own. A failed read, or any answer but one zone with its account, throws.
- */
-export async function zoneOf(api: CfApi): Promise<{ id: string; account: string }> {
-  const zones = await api(`/zones?name=${ZONE}`);
-  const rows = Array.isArray(zones.body.result)
-    ? zones.body.result as { id?: unknown; account?: { id?: unknown } }[] : [];
-  const id = rows[0]?.id;
-  const account = rows[0]?.account?.id;
-  if (zones.status !== 200 || zones.body.success !== true || rows.length !== 1
-      || typeof id !== "string" || typeof account !== "string"
-      || !/^[0-9a-f]{32}$/.test(account)) {
-    throw new Error(`the zone ${ZONE} could not be read (${zones.status}, ${rows.length} found)`);
-  }
-  return { id, account };
-}
-
-/**
- * Masks `value` in a GitHub Actions job's log (`::add-mask::`), as the probe workflows mask
- * the account id: not a credential, but once a secret, and a wrangler error the kit quotes
- * names `/accounts/<id>/...` in a public log. Outside Actions it prints nothing.
- */
-export function maskInLog(value: string, env: NodeJS.ProcessEnv = process.env,
-                          log: (line: string) => void = console.log): void {
-  if (env["GITHUB_ACTIONS"] !== undefined) {
-    log(`::add-mask::${value}`);
-  }
-}
-
-/** The zone's Worker routes; a failed read throws. */
-export async function routesOf(api: CfApi, zone: string): Promise<Route[]> {
-  const routes = await api(`/zones/${zone}/workers/routes`);
-  if (routes.status !== 200 || routes.body.success !== true
-      || !Array.isArray(routes.body.result)) {
-    throw new Error(`the zone's routes could not be read (${routes.status})`);
-  }
-  return routes.body.result as Route[];
-}
-
-/**
- * The handover of `patterns` to `script`, in order: each pattern another route holds moved
- * in place (`PUT`), each missing one added (`POST`), and after each, every other route's
- * narrower pattern deleted, so its paths fall to `script` with no gap. A wider pattern of
- * another Worker is left: `script`'s narrower one already takes its own paths from it.
- */
-export function handover(routes: readonly Route[], script: string,
-                         patterns: readonly string[]): RouteStep[] {
-  const steps: RouteStep[] = [];
-  const deleted = new Set<string>();
-  for (const pattern of patterns) {
-    const held = routes.find((route) => route.pattern === pattern);
-    if (held === undefined) {
-      steps.push({ method: "POST", pattern });
-    } else if (held.script !== script) {
-      steps.push({ method: "PUT", id: held.id, pattern, from: held.script ?? "no Worker" });
-    }
-    for (const route of routes) {
-      if (route.script !== script && !patterns.includes(route.pattern) && !deleted.has(route.id)
-          && narrower(route.pattern, pattern)) {
-        deleted.add(route.id);
-        steps.push({ method: "DELETE", id: route.id, pattern: route.pattern,
-                     from: route.script ?? "no Worker" });
-      }
-    }
-  }
-  return steps;
-}
-
-/** A step, as the plan says it. */
-export function describeStep(step: RouteStep, script: string): string {
-  return step.method === "PUT" ? `move the route ${step.pattern} from ${step.from} to ${script}`
-    : step.method === "POST" ? `add the route ${step.pattern} for ${script}`
-    : `delete ${step.from}'s narrower route ${step.pattern}, its paths now ${script}'s`;
-}
-
-/** Runs the handover's steps in order, each answer checked; the first failure stops it. */
-export async function runHandover(api: CfApi, zone: string, script: string,
-                                  steps: readonly RouteStep[]): Promise<void> {
-  for (const step of steps) {
-    const path = `/zones/${zone}/workers/routes${step.method === "POST" ? "" : `/${step.id}`}`;
-    const answer = await api(path, step.method === "DELETE" ? { method: "DELETE" } : {
-      method: step.method, headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pattern: step.pattern, script }) });
-    if (answer.status !== 200 || answer.body.success !== true) {
-      throw new Error(`${describeStep(step, script)} failed (${answer.status}, ${
-        JSON.stringify(codes(answer))}); the steps before it are done, the rest are not`);
-    }
-  }
-}
+// --- WorkOS and the owner issuer --------------------------------------------------------
 
 /** The doors' upstream: the issuer, and its `UPSTREAM` record. */
 export interface UpstreamValues {
   readonly issuer: string;
   readonly record: Json;
+}
+
+/**
+ * The doors' `UPSTREAM` record, which the doors' own parser accepts: User Management's
+ * sign-in for the environment's client (ADR-032), its authorize and authenticate endpoints
+ * fixed WorkOS URLs, and the JWKS the owner issuer's discovery names, that discovery held
+ * to `issuer` exactly (an absent or non-https `jwks_uri` is unknown, and unknown stops the
+ * kit). The access token's expected `iss` is derived here alone (`token_issuer`); a wrong
+ * one is the sign-in probe's 502, which names the issuer the token carries.
+ */
+export async function upstreamFrom(issuer: string | undefined, clientId: string | undefined,
+                                   fetcher: Fetch): Promise<UpstreamValues> {
+  if (typeof issuer !== "string" || !/^https:\/\/\S+$/.test(issuer)) {
+    throw new Error("OWNER_ISSUER is the owner issuer's https URL");
+  }
+  if (typeof clientId !== "string" || clientId === "") {
+    throw new Error("WORKOS_CLIENT_ID is not set");
+  }
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(clientId)) {
+    throw new Error("WORKOS_CLIENT_ID is a WorkOS client id (letters, digits, _ and -)");
+  }
+  const url = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+  const response = await fetcher(url, { headers: { Accept: "application/json" } });
+  if (response.status !== 200) {
+    throw new Error(`${url} answered ${response.status}`);
+  }
+  const discovery = await response.json() as Json;
+  if (discovery["issuer"] !== issuer) {
+    // Any other spelling refuses every sign-in (tasks 2): stop before deploying it.
+    throw new Error(`the issuer's discovery names ${JSON.stringify(discovery["issuer"])}, ` +
+                    `not OWNER_ISSUER ${JSON.stringify(issuer)}`);
+  }
+  const jwks = discovery["jwks_uri"];
+  if (typeof jwks !== "string" || !/^https:\/\/\S+$/.test(jwks)) {
+    throw new Error("the issuer's discovery names no https jwks_uri: unknown");
+  }
+  // The doors' parser (`upstreamConfig`) accepts this record: the kit's tests hold it so.
+  const record = { client_id: clientId,
+                   authorization_endpoint: `${WORKOS_API}/user_management/authorize`,
+                   token_endpoint: `${WORKOS_API}/user_management/authenticate`,
+                   jwks_uri: jwks,
+                   // WorkOS's docs and SDK fixtures (research, 2026-11-06); the probe proves it.
+                   token_issuer: `${WORKOS_API}/user_management/${clientId}`,
+                   user_delete: `${WORKOS_API}/user_management/users/{sub}`,
+                   authorize_params: { provider: "authkit" } };
+  return { issuer, record };
+}
+
+/**
+ * The authorize URL the doors build from `upstream` (`doors/src/oidc.ts` `authorizeUrl`),
+ * for `state` and `challenge` and `CALLBACK`.
+ */
+export function authorizeLink(upstream: UpstreamValues, state: string, challenge: string):
+    string {
+  const record = upstream.record as { authorization_endpoint: string; client_id: string;
+                                      authorize_params?: Record<string, string> };
+  const url = new URL(record.authorization_endpoint);
+  for (const [name, value] of Object.entries({
+    ...record.authorize_params, response_type: "code", client_id: record.client_id,
+    redirect_uri: CALLBACK, state, code_challenge: challenge, code_challenge_method: "S256",
+    max_age: "0" })) {
+    url.searchParams.set(name, value);
+  }
+  return url.href;
+}
+
+/** Where WorkOS sends a browser whose `redirect_uri` the client does not list. */
+export const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
+
+/**
+ * The early sign-in check, before any person signs in: a `GET` of the WorkOS authorize URL
+ * the doors build (`authorizeLink`, User Management's; never the doors' own `/authorize`)
+ * with a throwaway state and S256 challenge (its verifier dropped, so no code it could end
+ * in is redeemable), which must answer a 302 to the owner issuer's host, AuthKit's sign-in
+ * page. A refused client or redirect (`error.workos.com/sso/client-id-invalid`,
+ * `…/redirect-uri-invalid`, an `error=` answer) stops the kit, naming where it was sent.
+ *
+ * `unlisted`: `CALLBACK` is not known to be on the client's list yet (the plan job cannot
+ * list it, and a run without `--yes` leaves it missing), so a `redirect-uri-invalid` answer
+ * is reported as `dark`'s to register, not a stop; every other refusal still stops.
+ */
+export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean,
+                                     fetcher: Fetch): Promise<string> {
+  const { state, challenge } = throwaway();
+  const link = authorizeLink(upstream, state, challenge);
+  const answer = await fetcher(link, { redirect: "manual" });
+  const location = answer.headers.get("Location");
+  if (answer.status !== 302 || location === null) {
+    throw new Error(`WorkOS's authorize answered ${answer.status}, not a redirect to the ` +
+                    "sign-in page");
+  }
+  let to: URL;
+  try {
+    to = new URL(location, link);
+  } catch {
+    throw new Error("WorkOS's authorize redirected to no URL");
+  }
+  const host = new URL(upstream.issuer).host;
+  if (unlisted && `${to.origin}${to.pathname}` === REDIRECT_UNLISTED) {
+    return `WorkOS's authorize does not take ${CALLBACK} yet: dark registers it, then ` +
+           "checks the client and it again";
+  }
+  if (to.protocol !== "https:" || to.host !== host || to.searchParams.has("error")
+      || /error/i.test(to.pathname)) {
+    throw new Error(`WorkOS's authorize refused the doors' client or ${CALLBACK}: it sent ` +
+                    `the browser to ${to.origin}${to.pathname}, not ${host}'s sign-in`);
+  }
+  return `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser ` +
+         `to ${host}'s sign-in`;
+}
+
+/** The WorkOS redirect URI `CALLBACK`, registered when missing: GET, then POST; never a delete. */
+export async function registerRedirect(key: string, apply: boolean, fetcher: Fetch):
+    Promise<"present" | "missing" | "registered"> {
+  const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+  const listed = await fetcher(`${WORKOS_API}/user_management/redirect_uris`, { headers });
+  if (listed.status !== 200) {
+    throw new Error(`WorkOS listed its redirect URIs with ${listed.status}`);
+  }
+  const { data } = await listed.json() as { data?: unknown };
+  if (!Array.isArray(data)) {
+    throw new Error("WorkOS's redirect URI listing holds no list");
+  }
+  if (data.some((row) => (row as Json | null)?.["uri"] === CALLBACK)) {
+    return "present";
+  }
+  if (!apply) {
+    return "missing";
+  }
+  const made = await fetcher(`${WORKOS_API}/user_management/redirect_uris`, {
+    method: "POST", headers, body: JSON.stringify({ uri: CALLBACK }) });
+  if (made.status !== 200 && made.status !== 201) {
+    throw new Error(`WorkOS refused the redirect URI with ${made.status}`);
+  }
+  return "registered";
+}
+
+// --- E2B: the pair and the lifecycle webhook --------------------------------------------
+
+/**
+ * The runner the sandbox Worker ships, built as its build makes it (`build.command`,
+ * `sandbox/template/bundle.mjs`, the same bytes every build): its SHA-256.
+ */
+export function shippedRunner(exec: Io["exec"] = IO.exec): string {
+  const out = mkdtempSync(join(tmpdir(), "ta-runner-"));
+  try {
+    exec(process.execPath, [join(PLATFORM, "sandbox", "template", "bundle.mjs"), out],
+         { stdio: "ignore" });
+    return createHash("sha256").update(readFileSync(join(out, "runner.mjs"))).digest("hex");
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The E2B tag a (template, runner) pair is marked with once it passed its standing checks
+ * (`build.py`'s `pair_tag`): the template's `name:tag`, its tag followed by the runner's.
+ */
+export function pairTag(template: string, runner: string): string {
+  if (!/^[0-9a-f]{64}$/.test(runner)) {
+    throw new Error("a runner is named by its SHA-256");
+  }
+  return `${template}-r${runner.slice(0, 16)}`;
+}
+
+/**
+ * Whether this run sets E2B's copy of the webhook secret: only when it sets the doors' copy
+ * (missing on the doors, named in `--rotate`, or the hook made this run), so the two never
+ * drift apart.
+ */
+export function hookSetsSecret(setting: readonly { worker: string; name: string }[]): boolean {
+  return setting.some((each) => each.worker === "doors" && each.name === "E2B_WEBHOOK_SECRET");
+}
+
+/**
+ * E2B's lifecycle webhook as its listing holds it, matched by its URL, or null when it holds
+ * none. A failed listing, or two hooks for the URL, throws.
+ */
+export async function heldHook(e2b: E2b): Promise<Json | null> {
+  const hooks = await e2b.webhooks();
+  const ours = hooks.filter((hook) => (hook as Json | null)?.["url"] === E2B_HOOK.url) as Json[];
+  if (ours.length > 1) {
+    throw new Error(`E2B holds ${ours.length} webhooks for ${E2B_HOOK.url}: keep one`);
+  }
+  return ours[0] ?? null;
+}
+
+/**
+ * E2B's lifecycle webhook (`heldHook`). Missing, it is registered with `secret`, disabled
+ * unless `enable`; the run that does so sets the doors' copy of the secret too
+ * (`secretPlan`). Held, it is changed only where the run asks: its signature secret only
+ * with `setSecret`, when this run also sets the doors' E2B_WEBHOOK_SECRET (E2B never shows a
+ * hook's secret, so the two change together or not at all); its events when they differ;
+ * and it is enabled with `enable` (mode `routes`). It is never disabled or deleted. Without
+ * `apply` it only lists and checks. A failed listing or write throws.
+ */
+export async function lifecycleHook(e2b: E2b, secret: string, apply: boolean, enable: boolean,
+                                    setSecret: boolean): Promise<string> {
+  const hook = await heldHook(e2b);
+  if (hook === null) {
+    const state = enable ? "enabled" : "disabled";
+    if (!apply) {
+      return `missing: registered, ${state}`;
+    }
+    await e2b.addWebhook({ name: E2B_HOOK.name, url: E2B_HOOK.url, events: [...E2B_HOOK.events],
+                           enabled: enable, signatureSecret: secret });
+    return `registered, ${state}`;
+  }
+  const events = Array.isArray(hook["events"]) ? [...hook["events"] as string[]].sort() : [];
+  const change: Json = {
+    ...(setSecret ? { signatureSecret: secret } : {}),
+    ...(JSON.stringify(events) !== JSON.stringify([...E2B_HOOK.events].sort())
+      ? { events: [...E2B_HOOK.events] } : {}),
+    ...(enable && hook["enabled"] !== true ? { enabled: true } : {}),
+  };
+  const state = hook["enabled"] === true || enable ? "enabled" : "disabled";
+  const what = Object.keys(change).length === 0 ? "unchanged"
+    : `${Object.keys(change).map((field) => field === "signatureSecret" ? "its secret"
+      : field === "events" ? "its events" : "enabled").join(", ")} set`;
+  if (!apply || Object.keys(change).length === 0) {
+    return `present, ${what}, ${state}`;
+  }
+  await e2b.changeWebhook(String(hook["id"]), change);
+  return `present, ${what}, ${state}`;
+}
+
+// --- Secrets ----------------------------------------------------------------------------
+
+/**
+ * A keyring as the gateway and the files Worker read it (`contract/src/envelope.ts`
+ * `parseRing`), the secret it is held as named in its refusal: a ring either Worker would
+ * refuse stops the deploy before any change.
+ */
+export function keyring(text: string | undefined, name: string): Ring {
+  const ring = parseRing(text);
+  if (ring === null) {
+    throw new Error(`${name} is {active, keys} as JSON, each key 32 bytes in base64, its ` +
+                    "active key among its keys");
+  }
+  return ring;
+}
+
+/**
+ * What to set: each Worker's missing secrets, and those `rotate` names (the shared routing
+ * key on both or neither; a keyring only as an addition). `held` is each Worker's listing,
+ * null for a Worker the API says does not exist. A webhook made this run (`hookCreated`)
+ * takes production's secret, so the doors take it too.
+ */
+export function secretPlan(held: Readonly<Record<string, readonly string[] | null>>,
+                           rotate: ReadonlySet<string>,
+                           values: ((name: string) => string | undefined) | null,
+                           hookCreated = false):
+    { worker: string; name: string }[] {
+  const has = (worker: string, name: string) => (held[worker] ?? []).includes(name);
+  for (const name of SHARED) {
+    const holders = Object.keys(SECRETS).filter((worker) => SECRETS[worker]!.includes(name));
+    if (new Set(holders.map((worker) => has(worker, name))).size > 1 && !rotate.has(name)) {
+      throw new Error(`only one of ${holders.map((worker) => `the ${worker}`).join(" and ")} ` +
+                      `holds ${name}: pass --rotate ${name} to set both again`);
+    }
+  }
+  // `values` null: the plan job, which holds no secret; the apply job checks the ring.
+  for (const name of KEYRINGS) {
+    if (rotate.has(name) && values !== null) {
+      const ring = keyring(values(name), name);
+      if (ring.keys.size < 2) {
+        throw new Error(`a keyring is rotated by adding a key: the new ${name} holds ` +
+                        "the old keys and a new active one (keyring-add)");
+      }
+    }
+  }
+  const plan: { worker: string; name: string }[] = [];
+  for (const [worker, names] of Object.entries(SECRETS)) {
+    for (const name of names) {
+      const withHook = hookCreated && worker === "doors" && name === "E2B_WEBHOOK_SECRET";
+      if (!has(worker, name) || rotate.has(name) || withHook) {
+        plan.push({ worker, name });
+      }
+    }
+  }
+  return plan;
+}
+
+// --- Wrangler ---------------------------------------------------------------------------
+
+/** One wrangler command, its stdin given: its stdout, or a throw. */
+export type Wrangler = (args: string[], stdin?: string) => string;
+
+/** Wrangler in the platform's folder, for the zone's `account`, with the run's environment. */
+export function wranglerFor(run: Run, account: string): Wrangler {
+  return (args, stdin) => {
+    const result = run.io.spawn(process.execPath, [WRANGLER, ...args], {
+      cwd: PLATFORM, input: stdin, encoding: "utf8",
+      env: { ...run.env, CLOUDFLARE_ACCOUNT_ID: account, WRANGLER_SEND_METRICS: "false" },
+    });
+    if (result.status !== 0) {
+      // Its stderr alone: wrangler never echoes a secret's value.
+      throw new Error(`wrangler ${args.slice(0, 3).join(" ")} failed (exit ${result.status}): ` +
+                      `${String(result.stderr).trim()}`);
+    }
+    return String(result.stdout);
+  };
+}
+
+/** Whether a wrangler listing names `name` as a whole word (never a longer name holding it). */
+export function listed(output: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[\\s│|:])${escaped}($|[\\s│|])`, "m").test(output);
+}
+
+/** The version id `wrangler versions upload` prints, or a throw. */
+export function versionOf(output: string): string {
+  const id = /Worker Version ID:\s*([0-9a-f-]{36})/.exec(output)?.[1];
+  if (id === undefined) {
+    throw new Error("wrangler versions upload printed no Worker Version ID");
+  }
+  return id;
 }
 
 /**
@@ -491,446 +668,12 @@ export function deployedConfig(worker: string, ids: Readonly<Record<string, stri
   return config;
 }
 
-/**
- * The doors' `UPSTREAM` record, which the doors' own parser accepts: User Management's
- * sign-in for the environment's client (ADR-032), its authorize and authenticate endpoints
- * fixed WorkOS URLs, and the JWKS the owner issuer's discovery names, that discovery held
- * to `issuer` exactly (an absent or non-https `jwks_uri` is unknown, and unknown stops the
- * kit). The access token's expected `iss` is derived here alone (`token_issuer`); a wrong
- * one is the sign-in probe's 502, which names the issuer the token carries.
- */
-export async function upstreamFrom(issuer: string | undefined, clientId: string | undefined,
-                                   fetcher: Fetch = fetch): Promise<UpstreamValues> {
-  if (typeof issuer !== "string" || !/^https:\/\/\S+$/.test(issuer)) {
-    throw new Error("OWNER_ISSUER is the owner issuer's https URL");
-  }
-  if (typeof clientId !== "string" || clientId === "") {
-    throw new Error("WORKOS_CLIENT_ID is not set");
-  }
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(clientId)) {
-    throw new Error("WORKOS_CLIENT_ID is a WorkOS client id (letters, digits, _ and -)");
-  }
-  const url = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
-  const response = await fetcher(url, { headers: { Accept: "application/json" } });
-  if (response.status !== 200) {
-    throw new Error(`${url} answered ${response.status}`);
-  }
-  const discovery = await response.json() as Json;
-  if (discovery["issuer"] !== issuer) {
-    // Any other spelling refuses every sign-in (tasks 2): stop before deploying it.
-    throw new Error(`the issuer's discovery names ${JSON.stringify(discovery["issuer"])}, ` +
-                    `not OWNER_ISSUER ${JSON.stringify(issuer)}`);
-  }
-  const jwks = discovery["jwks_uri"];
-  if (typeof jwks !== "string" || !/^https:\/\/\S+$/.test(jwks)) {
-    throw new Error("the issuer's discovery names no https jwks_uri: unknown");
-  }
-  // The doors' parser (`upstreamConfig`) accepts this record: the kit's guard holds it so.
-  const record = { client_id: clientId,
-                   authorization_endpoint: `${WORKOS_API}/user_management/authorize`,
-                   token_endpoint: `${WORKOS_API}/user_management/authenticate`,
-                   jwks_uri: jwks,
-                   // WorkOS's docs and SDK fixtures (research, 2026-11-06); the probe proves it.
-                   token_issuer: `${WORKOS_API}/user_management/${clientId}`,
-                   user_delete: `${WORKOS_API}/user_management/users/{sub}`,
-                   authorize_params: { provider: "authkit" } };
-  return { issuer, record };
-}
+// --- The probe --------------------------------------------------------------------------
 
 /**
- * The authorize URL the doors build from `upstream` (`doors/src/oidc.ts` `authorizeUrl`),
- * for `state` and `challenge` and `CALLBACK`.
- */
-export function authorizeLink(upstream: UpstreamValues, state: string, challenge: string):
-    string {
-  const record = upstream.record as { authorization_endpoint: string; client_id: string;
-                                      authorize_params?: Record<string, string> };
-  const url = new URL(record.authorization_endpoint);
-  for (const [name, value] of Object.entries({
-    ...record.authorize_params, response_type: "code", client_id: record.client_id,
-    redirect_uri: CALLBACK, state, code_challenge: challenge, code_challenge_method: "S256",
-    max_age: "0" })) {
-    url.searchParams.set(name, value);
-  }
-  return url.href;
-}
-
-/** Where WorkOS sends a browser whose `redirect_uri` the client does not list. */
-export const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
-
-/**
- * The early sign-in check, before any person signs in: a `GET` of the WorkOS authorize URL
- * the doors build (`authorizeLink`, User Management's; never `tinyassets.io/authorize`)
- * with a throwaway state and S256 challenge (its verifier dropped, so no code it could end
- * in is redeemable), which must answer a 302 to the owner issuer's host, AuthKit's sign-in
- * page. A refused client or redirect (`error.workos.com/sso/client-id-invalid`,
- * `…/redirect-uri-invalid`, an `error=` answer) stops the kit, naming where it was sent.
- *
- * `unlisted`: `CALLBACK` is not known to be on the client's list yet (the plan job cannot
- * list it, and a run without `--yes` leaves it missing), so a `redirect-uri-invalid` answer
- * is reported as `dark`'s to register, not a stop; every other refusal still stops. `dark`
- * and `routes` register the callback first and run the check with `unlisted` false.
- */
-export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean,
-                                     fetcher: Fetch = fetch): Promise<string> {
-  const { state, challenge } = throwaway();
-  const link = authorizeLink(upstream, state, challenge);
-  const answer = await fetcher(link, { redirect: "manual" });
-  const location = answer.headers.get("Location");
-  if (answer.status !== 302 || location === null) {
-    throw new Error(`WorkOS's authorize answered ${answer.status}, not a redirect to the ` +
-                    "sign-in page");
-  }
-  let to: URL;
-  try {
-    to = new URL(location, link);
-  } catch {
-    throw new Error("WorkOS's authorize redirected to no URL");
-  }
-  const host = new URL(upstream.issuer).host;
-  if (unlisted && `${to.origin}${to.pathname}` === REDIRECT_UNLISTED) {
-    return `WorkOS's authorize does not take ${CALLBACK} yet: dark registers it, then ` +
-           "checks the client and it again";
-  }
-  if (to.protocol !== "https:" || to.host !== host || to.searchParams.has("error")
-      || /error/i.test(to.pathname)) {
-    throw new Error(`WorkOS's authorize refused the doors' client or ${CALLBACK}: it sent ` +
-                    `the browser to ${to.origin}${to.pathname}, not ${host}'s sign-in`);
-  }
-  return `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser ` +
-         `to ${host}'s sign-in`;
-}
-
-/**
- * The runner the sandbox Worker ships, built as its build makes it (`build.command`,
- * `sandbox/template/bundle.mjs`, the same bytes every build): its SHA-256.
- */
-export function shippedRunner(): string {
-  const out = mkdtempSync(join(tmpdir(), "ta-runner-"));
-  try {
-    execFileSync(process.execPath, [join(PLATFORM, "sandbox", "template", "bundle.mjs"), out],
-                 { stdio: "ignore" });
-    return createHash("sha256").update(readFileSync(join(out, "runner.mjs"))).digest("hex");
-  } finally {
-    rmSync(out, { recursive: true, force: true });
-  }
-}
-
-/**
- * The E2B tag a (template, runner) pair is marked with once it passed its standing checks
- * (`build.py`'s `pair_tag`): the template's `name:tag`, its tag followed by the runner's.
- */
-export function pairTag(template: string, runner: string): string {
-  if (!/^[0-9a-f]{64}$/.test(runner)) {
-    throw new Error("a runner is named by its SHA-256");
-  }
-  return `${template}-r${runner.slice(0, 16)}`;
-}
-
-/**
- * The pair check (`--pair`, the workflow's `pair` job, before the apply job): the pinned
- * template and the runner this checkout ships, unless E2B already holds their pair's tag;
- * `build.py --check-pair` runs the standing checks and tags the pair, given only what it
- * needs (never the deploy's other secrets). A failure, or no tag after it, throws.
- */
-export async function pairCheck(spawn: typeof spawnSync = spawnSync, fetcher: Fetch = fetch):
-    Promise<void> {
-  const key = input("E2B_API_KEY");
-  if (key === undefined) {
-    throw new Error("E2B_API_KEY is not set (the production environment's secrets)");
-  }
-  const pair = pairTag(template(), shippedRunner());
-  if (await templateReady(pair, key, fetcher)) {
-    console.log(`the pair ${pair} passed its standing checks in this E2B team`);
-    return;
-  }
-  const checked = spawn("python3", [join(PLATFORM, "sandbox", "template", "build.py"),
-                                    "--check-pair"],
-                        { stdio: "inherit", env: { PATH: process.env["PATH"] ?? "",
-                                                   HOME: process.env["HOME"] ?? "",
-                                                   E2B_API_KEY: key } });
-  if (checked.status !== 0 || !await templateReady(pair, key, fetcher)) {
-    throw new Error(`the pair ${pair} failed its standing checks: nothing is deployed`);
-  }
-  console.log(`the pair ${pair} passed its standing checks, run now`);
-}
-
-/** Whether `name:tag` has a ready build at E2B (its OpenAPI spec's alias and tag checks). */
-export async function templateReady(template: string, key: string, fetcher: Fetch = fetch):
-    Promise<boolean> {
-  const at = template.lastIndexOf(":");
-  if (at < 1) {
-    throw new Error("E2B_TEMPLATE is name:tag");
-  }
-  const headers = { "X-API-Key": key, Accept: "application/json" };
-  const alias = await fetcher(`${E2B_API}/templates/aliases/${
-    encodeURIComponent(template.slice(0, at))}`, { headers });
-  if (alias.status === 404) {
-    return false;
-  }
-  if (alias.status !== 200) {
-    throw new Error(`E2B's alias lookup answered ${alias.status}`);
-  }
-  const { templateID } = await alias.json() as { templateID?: string };
-  const tag = await fetcher(`${E2B_API}/templates/${encodeURIComponent(String(templateID))}/` +
-                            `tags/exists?tag=${encodeURIComponent(template.slice(at + 1))}`,
-                            { headers });
-  if (tag.status !== 200) {
-    throw new Error(`E2B's tag lookup answered ${tag.status}`);
-  }
-  return (await tag.json() as { exists?: unknown }).exists === true;
-}
-
-/** The WorkOS redirect URI, registered when missing: GET, then POST; never a delete. */
-export async function registerRedirect(key: string, apply: boolean, fetcher: Fetch = fetch,
-                                       uri: string = CALLBACK):
-    Promise<"present" | "missing" | "registered"> {
-  const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
-  const listed = await fetcher(`${WORKOS_API}/user_management/redirect_uris`, { headers });
-  if (listed.status !== 200) {
-    throw new Error(`WorkOS listed its redirect URIs with ${listed.status}`);
-  }
-  const { data } = await listed.json() as { data?: unknown };
-  if (!Array.isArray(data)) {
-    throw new Error("WorkOS's redirect URI listing holds no list");
-  }
-  if (data.some((row) => (row as Json | null)?.["uri"] === uri)) {
-    return "present";
-  }
-  if (!apply) {
-    return "missing";
-  }
-  const made = await fetcher(`${WORKOS_API}/user_management/redirect_uris`, {
-    method: "POST", headers, body: JSON.stringify({ uri }) });
-  if (made.status !== 200 && made.status !== 201) {
-    throw new Error(`WorkOS refused the redirect URI with ${made.status}`);
-  }
-  return "registered";
-}
-
-/**
- * Where a run touches E2B's lifecycle webhook, and whether it enables it: the hook is listed
- * and checked with the live checks, before any change, in every mode that holds the E2B key
- * (`missing` is that listing's answer); `dark` then registers or changes it once the doors
- * hold their secrets, never enabling it; `routes` does so only after the last route is
- * handed to the doors, enabling it, since an enabled hook sends the whole team's events to
- * whatever serves its path. A run that `creates` the hook sets the doors' E2B_WEBHOOK_SECRET
- * too (`secretPlan`), so the pair starts equal. The public plan never reaches E2B.
- */
-export function hookPlan(mode: { open: boolean; routes: boolean; missing?: boolean }):
-    { check: boolean; at: "none" | "secrets" | "routes"; enable: boolean; creates: boolean } {
-  if (mode.open) {
-    return { check: false, at: "none", enable: false, creates: false };
-  }
-  const creates = mode.missing === true;
-  return mode.routes ? { check: true, at: "routes", enable: true, creates }
-    : { check: true, at: "secrets", enable: false, creates };
-}
-
-/**
- * Whether this run sets E2B's copy of the webhook secret: only when it sets the doors' copy
- * (missing on the doors, named in `--rotate`, or the hook made this run), so the two never
- * drift apart.
- */
-export function hookSetsSecret(setting: readonly { worker: string; name: string }[]): boolean {
-  return setting.some((step) => step.worker === "doors" && step.name === "E2B_WEBHOOK_SECRET");
-}
-
-/**
- * E2B's lifecycle webhook as its listing holds it, matched by its URL, or null when it holds
- * none. A failed listing, or two hooks for the URL, throws.
- */
-export async function heldHook(key: string, fetcher: Fetch = fetch): Promise<Json | null> {
-  const listed = await fetcher(`${E2B_API}/events/webhooks`, {
-    headers: { "X-API-Key": key, "Content-Type": "application/json" } });
-  if (listed.status !== 200) {
-    throw new Error(`E2B listed its webhooks with ${listed.status}`);
-  }
-  const hooks = await listed.json() as unknown;
-  if (!Array.isArray(hooks)) {
-    throw new Error("E2B's webhook listing holds no list");
-  }
-  const ours = hooks.filter((hook) => (hook as Json | null)?.["url"] === E2B_HOOK.url) as Json[];
-  if (ours.length > 1) {
-    throw new Error(`E2B holds ${ours.length} webhooks for ${E2B_HOOK.url}: keep one`);
-  }
-  return ours[0] ?? null;
-}
-
-/**
- * E2B's lifecycle webhook (`heldHook`). Missing, it is registered with `secret`, disabled
- * unless `enable`; the run that does so sets the doors' copy of the secret too (`hookPlan`,
- * `secretPlan`). Held, it is changed only where the run asks: its signature secret only with
- * `setSecret`, when this run also sets the doors' E2B_WEBHOOK_SECRET (E2B never shows a
- * hook's secret, so the two change together or not at all); its events when they differ;
- * and it is enabled with `enable` (`--routes`). It is never disabled or deleted. Without
- * `apply` it only lists and checks. A failed listing or write throws.
- */
-export async function lifecycleHook(key: string, secret: string, apply: boolean,
-                                    enable: boolean, setSecret: boolean,
-                                    fetcher: Fetch = fetch): Promise<string> {
-  const headers = { "X-API-Key": key, "Content-Type": "application/json" };
-  const hook = await heldHook(key, fetcher);
-  if (hook === null) {
-    const state = enable ? "enabled" : "disabled";
-    if (!apply) {
-      return `missing: registered, ${state}`;
-    }
-    const made = await fetcher(`${E2B_API}/events/webhooks`, {
-      method: "POST", headers, body: JSON.stringify({
-        name: E2B_HOOK.name, url: E2B_HOOK.url, events: [...E2B_HOOK.events], enabled: enable,
-        signatureSecret: secret }) });
-    if (made.status !== 200 && made.status !== 201) {
-      throw new Error(`E2B refused the webhook with ${made.status}`);
-    }
-    return `registered, ${state}`;
-  }
-  const events = Array.isArray(hook["events"]) ? [...hook["events"] as string[]].sort() : [];
-  const change: Json = {
-    ...(setSecret ? { signatureSecret: secret } : {}),
-    ...(JSON.stringify(events) !== JSON.stringify([...E2B_HOOK.events].sort())
-      ? { events: [...E2B_HOOK.events] } : {}),
-    ...(enable && hook["enabled"] !== true ? { enabled: true } : {}),
-  };
-  const state = hook["enabled"] === true || enable ? "enabled" : "disabled";
-  const what = Object.keys(change).length === 0 ? "unchanged"
-    : `${Object.keys(change).map((field) => field === "signatureSecret" ? "its secret"
-      : field === "events" ? "its events" : "enabled").join(", ")} set`;
-  if (!apply || Object.keys(change).length === 0) {
-    return `present, ${what}, ${state}`;
-  }
-  const changed = await fetcher(`${E2B_API}/events/webhooks/${
-    encodeURIComponent(String(hook["id"]))}`, {
-    method: "PATCH", headers, body: JSON.stringify(change) });
-  if (changed.status !== 200) {
-    throw new Error(`E2B refused the webhook's change with ${changed.status}`);
-  }
-  return `present, ${what}, ${state}`;
-}
-
-/**
- * A keyring as the gateway and the files Worker read it (`contract/src/envelope.ts`
- * `parseRing`): a ring either Worker would refuse stops the deploy before any change.
- */
-export function keyring(text: string | undefined, name = "GATEWAY_KEYRING"): Ring {
-  const ring = parseRing(text);
-  if (ring === null) {
-    throw new Error(`${name} is {active, keys} as JSON, each key 32 bytes in base64, its ` +
-                    "active key among its keys");
-  }
-  return ring;
-}
-
-/**
- * What to set: each Worker's missing secrets, and those `rotate` names (the shared routing
- * key on both or neither; a keyring only as an addition). `held` is each Worker's listing,
- * null for a Worker the API says does not exist.
- */
-export function secretPlan(held: Readonly<Record<string, readonly string[] | null>>,
-                           rotate: ReadonlySet<string>,
-                           values: ((name: string) => string | undefined) | null,
-                           hookCreated = false):
-    { worker: string; name: string }[] {
-  const has = (worker: string, name: string) => (held[worker] ?? []).includes(name);
-  for (const name of SHARED) {
-    const holders = Object.keys(SECRETS).filter((worker) => SECRETS[worker]!.includes(name));
-    if (new Set(holders.map((worker) => has(worker, name))).size > 1 && !rotate.has(name)) {
-      throw new Error(`only one of ${holders.map((worker) => `the ${worker}`).join(" and ")} ` +
-                      `holds ${name}: pass --rotate ${name} to set both again`);
-    }
-  }
-  // `values` null: the plan job, which holds no secret; the apply job checks the ring.
-  for (const name of KEYRINGS) {
-    if (rotate.has(name) && values !== null) {
-      const ring = keyring(values(name), name);
-      if (ring.keys.size < 2) {
-        throw new Error(`a keyring is rotated by adding a key: the new ${name} holds ` +
-                        "the old keys and a new active one (keyring-add)");
-      }
-    }
-  }
-  const plan: { worker: string; name: string }[] = [];
-  for (const [worker, names] of Object.entries(SECRETS)) {
-    for (const name of names) {
-      // A webhook made this run takes production's secret: the doors take it too.
-      const withHook = hookCreated && worker === "doors" && name === "E2B_WEBHOOK_SECRET";
-      if (!has(worker, name) || rotate.has(name) || withHook) {
-        plan.push({ worker, name });
-      }
-    }
-  }
-  return plan;
-}
-
-/** Whether a wrangler listing names `name` as a whole word (never a longer name holding it). */
-export function listed(output: string, name: string): boolean {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[\\s│|:])${escaped}($|[\\s│|])`, "m").test(output);
-}
-
-function ensure(kind: "bucket" | "queue", name: string, apply: boolean, plan: string[]): void {
-  // `wrangler` throws on a failed listing: a failure is never "absent".
-  const list = kind === "bucket" ? ["r2", "bucket", "list"] : ["queues", "list"];
-  if (listed(wrangler(list), name)) {
-    return;
-  }
-  plan.push(`create the ${kind === "bucket" ? "R2 bucket" : "queue"} ${name}`);
-  if (apply) {
-    wrangler(kind === "bucket" ? ["r2", "bucket", "create", name] : ["queues", "create", name]);
-  }
-}
-
-/** The version id `wrangler versions upload` prints, or a throw. */
-export function versionOf(output: string): string {
-  const id = /Worker Version ID:\s*([0-9a-f-]{36})/.exec(output)?.[1];
-  if (id === undefined) {
-    throw new Error("wrangler versions upload printed no Worker Version ID");
-  }
-  return id;
-}
-
-/**
- * Deploys one Worker. A first deploy (the API says the Worker does not exist) is
- * `wrangler deploy`, with no route; later ones are Cloudflare's staged path, `wrangler
- * versions upload` then `versions deploy` at 100%, which leaves the Worker's routes as they
- * are. Wrangler 4.154 refuses a versions upload with a pending Durable Object migration;
- * `--migrate <worker>` names the Workers to deploy whole for that (never the doors, which
- * hold no migration and do hold the routes). The config deployed names no route; the
- * routes are the handover's.
- */
-function deployWorker(worker: string, config: string, exists: boolean,
-                      migrate: ReadonlySet<string>): void {
-  if (!exists || migrate.has(worker)) {
-    wrangler(["deploy", "--config", config]);
-  } else {
-    const id = versionOf(wrangler(["versions", "upload", "--config", config]));
-    wrangler(["versions", "deploy", `${id}@100`, "--yes", "--config", config]);
-  }
-}
-
-/** `keyring-new <file>`: a first keyring, written for the founder to store; never printed. */
-export function keyringNew(file: string): void {
-  writeFileSync(file, ringText({ active: "k1", keys: new Map([["k1", randomBytes(KEY_BYTES)]]) }),
-                { mode: 0o600, flag: "wx" });
-  console.log(`wrote a new keyring to ${file}; store it as ${KEYRINGS.join(" or ")}, ` +
-              "one ring each");
-}
-
-/**
- * `keyring-add <file>`: the keyring in `file` with one more key under the kid after its
- * highest (never a retired kid's name), made active; the old kept.
- */
-export function keyringAdd(file: string): void {
-  const ring = ringWith(keyring(readFileSync(file, "utf8")), randomBytes(KEY_BYTES));
-  writeFileSync(file, ringText(ring), { mode: 0o600 });
-  console.log(`added ${ring.active} to ${file}, active; store it as the keyring it was, ` +
-              "then run with --rotate naming that keyring");
-}
-
-/**
- * The probe's handover (`--probe`): `PROBE_ROUTES` alone, each added for the doors, or left
- * when the doors hold it already. A path another Worker (or no Worker) serves, by the same,
- * a narrower or a wider pattern, stops it: the probe takes only paths nothing serves.
+ * The probe's handover (mode `probe`): `PROBE_ROUTES` alone, each added for the doors, or
+ * left when the doors hold it already. A path another Worker (or no Worker) serves, by the
+ * same, a narrower or a wider pattern, stops it: the probe takes only paths nothing serves.
  */
 export function probeSteps(routes: readonly Route[]): RouteStep[] {
   const served = routes.filter((route) => route.script !== DOORS && PROBE_ROUTES.some(
@@ -999,135 +742,36 @@ export const PROBE_SIGNS = [
   "than 600 s old or ahead of the clock, so max_age=0 did not force a fresh sign-in.",
 ].join("\n");
 
-/**
- * Fact 11: after a deploy or a route change, the handles canary (it reads
- * TINYASSETS_WIKI_CANARY_TOKEN).
- */
-function handlesCanary(): void {
-  const canary = spawnSync("python3", [join(REPO, "scripts", "mcp_public_canary.py"),
-                                       "--assert-handles"], { stdio: "inherit", cwd: REPO });
-  if (canary.status !== 0) {
-    throw new Error(`the handles canary failed (exit ${canary.status})`);
-  }
+// --- The steps --------------------------------------------------------------------------
+
+/** The run's production secrets reached: its E2B client and keys. */
+function secretsReached(run: Run): boolean {
+  return run.reach === "secrets";
 }
 
-/**
- * The sign-in probe (`--probe`): after a dark run (the doors deployed, the control record
- * admitting nobody, WorkOS listing `CALLBACK`; each a live read, so the kit keeps no state of
- * its own), the sign-in's two paths handed to the doors (`probeSteps`); nothing deployed, no
- * gate changed. Then the handles canary, and the link to sign in by with its signs. Without
- * `apply` it checks and plans only; the plan job (`open`) leaves the WorkOS listing, which
- * needs the production key, to the apply job.
- */
-async function probe(apply: boolean, open: boolean): Promise<void> {
-  for (const name of ["CLOUDFLARE_API_TOKEN", ...(open ? [] : ["WORKOS_API_KEY"])]) {
-    if (input(name) === undefined) {
-      throw new Error(`${name} is not set`);
-    }
-  }
-  const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
-  const { id: zone, account } = await zoneOf(api);
-  maskInLog(account);
-  const plan: string[] = [];
-  if (await secretsOf(api, account, DOORS) === null) {
-    throw new Error(`${DOORS} is not deployed: the probe runs after a dark run`);
-  }
-  plan.push(`${DOORS} is deployed`);
-  const control = (await namespacesOf(api, account)).get(NAMESPACES["CONTROL"]!);
-  if (control === undefined
-      || !admitsNobody(await kvValue(api, account, control, CONTROL_KEY))) {
-    throw new Error("the control record is missing or admits someone: the probe runs only " +
-                    "with every gate closed, as a dark run writes it");
-  }
-  plan.push("the control record admits no owner and no outside client; no gate is changed");
-  if (open) {
-    plan.push(`WorkOS lists ${CALLBACK}, as a dark run registers it: checked by the apply ` +
-              "job before any change");
-  } else if (await registerRedirect(input("WORKOS_API_KEY")!, false) !== "present") {
-    throw new Error(`WorkOS lists no ${CALLBACK}: run dark first, which registers it`);
-  } else {
-    plan.push(`WorkOS lists ${CALLBACK}, as a dark run registers it`);
-  }
-  const steps = probeSteps(await routesOf(api, zone));
-  if (apply) {
-    // The early sign-in check, before a route moves: WorkOS takes the client and CALLBACK,
-    // which it lists (checked above), so a redirect-uri-invalid answer stops the probe.
-    plan.push(await authorizeCheck(await upstreamFrom(input("OWNER_ISSUER"),
-                                                      input("WORKOS_CLIENT_ID")), false));
-  }
-  plan.push(...(steps.length === 0 ? [`${DOORS} holds ${PROBE_ROUTES.join(" and ")} already`]
-    : steps.map((step) => describeStep(step, DOORS))));
-  if (apply) {
-    await runHandover(api, zone, DOORS, steps);
-  }
-  report(plan, apply);
-  if (!apply) {
-    console.log("\nNothing was changed. The apply job prints the sign-in link.");
-    return;
-  }
-  handlesCanary();
-  console.log(`\nSign in once, in a browser, at:\n${probeLink()}\n\n${PROBE_SIGNS}`);
-}
-
-async function main(): Promise<void> {
-  if (process.argv[2] === "keyring-new" || process.argv[2] === "keyring-add") {
-    const file = process.argv[3];
-    if (file === undefined) {
-      throw new Error(`${process.argv[2]} <file>`);
-    }
-    (process.argv[2] === "keyring-new" ? keyringNew : keyringAdd)(file);
-    return;
-  }
-  if (flag("--pair")) {
-    await pairCheck();
-    return;
-  }
-  if (flag("--h2")) {
-    // H2's probes alone: they change nothing, and need a routed door and a probe owner.
-    if (flag("--public")) {
-      report(["run H2's probes against the routed doors; nothing is changed"], false);
-      return;
-    }
-    execFileSync(process.execPath, ["--experimental-strip-types",
-                                    join(PLATFORM, "deploy", "h2-probes.ts")],
-                 { stdio: "inherit", env: process.env });
-    return;
-  }
-  const apply = flag("--yes");
-  const open = flag("--public");
-  if (apply && open) {
-    throw new Error("--public is the plan job's: it never changes anything");
-  }
-  const routes = flag("--routes");
-  const rotate = new Set((option("--rotate") ?? "").split(",").filter(Boolean));
-  const migrate = new Set((option("--migrate") ?? "").split(",").filter(Boolean));
-  if (migrate.has("doors")) {
-    throw new Error("the doors hold no Durable Object migration: --migrate never names them");
-  }
-  if (flag("--probe")) {
-    if (routes || rotate.size > 0 || migrate.size > 0) {
-      throw new Error("--probe deploys nothing: it takes no --routes, --rotate or --migrate");
-    }
-    await probe(apply, open);
-    return;
-  }
-  const plan: string[] = [];
-  for (const name of [...PUBLIC_INPUTS, ...(open ? [] : SECRET_INPUTS)]) {
-    if (input(name) === undefined) {
+/** Every input the mode reads is set: the vars, and on a secret run the production secrets. */
+const inputs = step("inputs", (run) => {
+  for (const name of [...PUBLIC_INPUTS, ...(secretsReached(run) ? SECRET_INPUTS : [])]) {
+    if (input(run, name) === undefined) {
       throw new Error(`${name} is not set (${SECRET_INPUTS.includes(name)
         ? "the production environment's secrets" : "the workflow's inputs"})`);
     }
   }
-  const later = "checked by the apply job before any change";
-  if (!open) {
+});
+
+/** Each keyring is one the gateway and the files Worker would take. */
+const keyrings = step("keyrings", (run) => {
+  if (secretsReached(run)) {
     for (const name of KEYRINGS) {
-      keyring(input(name), name);
+      keyring(input(run, name), name);
     }
   }
-  // The migration locks, before anything is changed: no Worker deploys a migration its
-  // lock does not pin.
+});
+
+/** No Worker deploys a migration its lock does not pin, checked before anything is changed. */
+const locks = step("locks", (run, work) => {
   for (const worker of MIGRATED) {
-    for (const [path, digests] of Object.entries(codeDigests(worker))) {
+    for (const [path, digests] of Object.entries(codeDigests(worker, guardRun(run)))) {
       const refused = lockRefusal(JSON.parse(readFileSync(join(PLATFORM, path), "utf8")),
                                   digests, path);
       if (refused !== null) {
@@ -1135,182 +779,561 @@ async function main(): Promise<void> {
       }
     }
   }
-  plan.push(`the migration locks pin every migration the ${MIGRATED.join(" and ")} Workers ` +
-            "ship");
-  const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
-  // The account is the zone's (`zoneOf`), and wrangler is handed that one.
-  const { id: zone, account } = await zoneOf(api);
-  maskInLog(account);
-  process.env["CLOUDFLARE_ACCOUNT_ID"] = account;
-  // The live checks, before anything is changed.
-  const upstream = await upstreamFrom(input("OWNER_ISSUER"), input("WORKOS_CLIENT_ID"));
-  plan.push(`set the doors' OWNER_ISSUER to ${upstream.issuer}, held to its discovery`);
+  work.plan.push(`the migration locks pin every migration the ${MIGRATED.join(" and ")} ` +
+                 "Workers ship");
+});
+
+/** The zone and its account, which Cloudflare's client and wrangler are given. */
+const zone = step("zone", async (run, work) => {
+  const cloudflare = new Cloudflare(cfApi(input(run, "CLOUDFLARE_API_TOKEN")!, run.io.fetch));
+  const { id, account } = await cloudflare.zone(ZONE);
+  maskInLog(account, run.env, run.io.log);
+  Object.assign(work, { cloudflare, zone: id, account, wrangler: wranglerFor(run, account) });
+});
+
+/** The doors' upstream, from the owner issuer's live discovery. */
+const upstream = step("upstream", async (run, work) => {
+  work.upstream = await upstreamFrom(input(run, "OWNER_ISSUER"), input(run, "WORKOS_CLIENT_ID"),
+                                     run.io.fetch);
+  work.plan.push(`set the doors' OWNER_ISSUER to ${work.upstream.issuer}, held to its discovery`);
+});
+
+/** E2B has a ready build of the pinned template: the first of the run's calls to E2B. */
+const templateBuilt = step("template", async (run, work) => {
   const pinned = template();
-  if (open) {
-    plan.push(`E2B's ready build of ${pinned}: ${later}`);
-  } else if (!await templateReady(pinned, input("E2B_API_KEY")!)) {
+  if (secretsReached(run)) {
+    work.e2b = new E2b(input(run, "E2B_API_KEY")!, run.io.fetch);
+  }
+  if (work.e2b === undefined) {
+    work.plan.push(`E2B's ready build of ${pinned}: ${LATER}`);
+  } else if (!await work.e2b.ready(pinned)) {
     throw new Error(`E2B has no ready build of ${pinned}: build it (sandbox/template/build.py)`);
   }
-  // The pair this deploy makes: the template, and the runner the sandbox Worker ships.
-  const runner = shippedRunner();
-  const pair = pairTag(pinned, runner);
-  if (open) {
-    plan.push(`the pair ${pair} passed its standing checks: ${later}`);
-  } else if (await templateReady(pair, input("E2B_API_KEY")!)) {
-    plan.push(`the pair ${pair} passed its standing checks in this E2B team`);
-  } else if (!apply) {
-    plan.push(`the pair ${pair} has not passed in this E2B team: the pair job runs its check ` +
-              "(--pair) before the apply job");
+});
+
+/** The pair this deploy makes, the template and the runner the sandbox Worker ships, passed. */
+const pairPassed = step("pair", async (run, work) => {
+  const pair = pairTag(template(), shippedRunner(run.io.exec));
+  if (work.e2b === undefined) {
+    work.plan.push(`the pair ${pair} passed its standing checks: ${LATER}`);
+  } else if (await work.e2b.ready(pair)) {
+    work.plan.push(`the pair ${pair} passed its standing checks in this E2B team`);
+  } else if (!run.apply) {
+    work.plan.push(`the pair ${pair} has not passed in this E2B team: the pair job runs its ` +
+                   "check (--mode pair) before the apply job");
   } else {
     throw new Error(`the pair ${pair} has not passed its standing checks in this E2B team: ` +
-                    "run the pair job (--pair) first; nothing is deployed");
+                    "run the pair job (--mode pair) first; nothing is deployed");
   }
-  // E2B's lifecycle webhook, listed and checked now: two hooks for its URL, or a failed
-  // listing, stop the kit before a route moves.
-  const listed = open ? undefined : await heldHook(input("E2B_API_KEY")!);
-  const hookAt = hookPlan({ open, routes, missing: listed === null });
-  const hook = (change: boolean, setSecret: boolean) => lifecycleHook(
-    input("E2B_API_KEY")!, input("E2B_WEBHOOK_SECRET")!, change, hookAt.enable, setSecret);
-  // The WorkOS redirect URI, then the early sign-in check, which needs CALLBACK listed: so
-  // a fresh environment's dark registers it (GET, then POST; additive, never a delete)
-  // before checking it, ahead of any Cloudflare change. The plan job cannot list it, and a
-  // run without --yes leaves it missing: there a redirect-uri-invalid answer is dark's to fix.
-  const redirect = open ? undefined : await registerRedirect(input("WORKOS_API_KEY")!, apply);
-  plan.push(`WorkOS redirect URI ${CALLBACK}: ${redirect ?? later}`);
-  plan.push(await authorizeCheck(upstream, redirect === undefined || redirect === "missing"));
-  let steps: RouteStep[] = [];
-  if (routes) {
-    steps = handover(await routesOf(api, zone), DOORS, ROUTES);
+});
+
+/** E2B's lifecycle webhook, listed and checked before anything is changed. */
+const hookListed = step("hook listed", async (_run, work) => {
+  if (work.e2b !== undefined) {
+    work.hook = await heldHook(work.e2b);
   }
-  const titles = await namespacesOf(api, account);
-  const ids: Record<string, string> = {};
+});
+
+/**
+ * The WorkOS redirect URI, listed, and registered when missing (additive, never a delete)
+ * on an applied run, before any Cloudflare change: the early sign-in check needs it listed.
+ */
+const redirect = step("redirect", async (run, work) => {
+  if (secretsReached(run)) {
+    work.redirect = await registerRedirect(input(run, "WORKOS_API_KEY")!, run.apply,
+                                           run.io.fetch);
+  }
+  work.plan.push(`WorkOS redirect URI ${CALLBACK}: ${work.redirect ?? LATER}`);
+});
+
+/**
+ * The early sign-in check: a callback the run could not list, or found missing, is one a
+ * redirect-uri-invalid answer leaves to `dark` to register.
+ */
+const authorize = step("authorize", async (run, work) => {
+  work.plan.push(await authorizeCheck(made(work.upstream, "the upstream"),
+                                      work.redirect === undefined || work.redirect === "missing",
+                                      run.io.fetch));
+});
+
+/** The doors' routes' handover, from the zone's routes as they stand. */
+const routePlan = step("route plan", async (_run, work) => {
+  const routes = await made(work.cloudflare, "Cloudflare").routes(made(work.zone, "the zone"));
+  work.routes = handover(routes, DOORS, ROUTES);
+});
+
+/** Each KV namespace by its title, made when the account's listing lacks it. */
+const namespaces = step("namespaces", async (run, work) => {
+  const cloudflare = made(work.cloudflare, "Cloudflare");
+  const account = made(work.account, "the account");
+  const titles = await cloudflare.namespaces(account);
+  work.ids = {};
+  work.unmade = new Set();
   for (const [binding, title] of Object.entries(NAMESPACES)) {
     const id = titles.get(title);
     if (id !== undefined) {
-      ids[binding] = id;
+      work.ids[binding] = id;
       continue;
     }
-    plan.push(`create the KV namespace ${title} (${binding})`);
-    if (apply) {
-      wrangler(["kv", "namespace", "create", title]);
-      const made = (await namespacesOf(api, account)).get(title);
-      if (made === undefined) {
+    work.plan.push(`create the KV namespace ${title} (${binding})`);
+    if (run.apply) {
+      made(work.wrangler, "wrangler")(["kv", "namespace", "create", title]);
+      const made_ = (await cloudflare.namespaces(account)).get(title);
+      if (made_ === undefined) {
         throw new Error(`the KV namespace ${title} was not made`);
       }
-      ids[binding] = made;
+      work.ids[binding] = made_;
     } else {
-      ids[binding] = `planned-${title}`;
+      // A planned config names the namespace it would be made as.
+      work.ids[binding] = `planned-${title}`;
+      work.unmade.add(binding);
     }
   }
-  for (const bucket of BUCKETS) {
-    ensure("bucket", bucket, apply, plan);
-  }
-  for (const queue of QUEUES) {
-    ensure("queue", queue, apply, plan);
-  }
-  // Reached only when every listing answered: a token without the scope stops above.
-  plan.push("the Cloudflare token listed the account's KV namespaces, R2 buckets and queues");
-  const out = mkdtempSync(join(tmpdir(), "tinyassets-deploy-"));
-  try {
-    const paths: Record<string, string> = {};
-    for (const worker of WORKERS) {
-      mkdirSync(join(out, worker));
-      paths[worker] = join(out, worker, "wrangler.json");
-      writeFileSync(paths[worker]!, JSON.stringify(deployedConfig(worker, ids, upstream, false),
-                                                   null, 2));
-    }
-    // Secrets first: `secrets.required` refuses a deploy without them.
-    const held: Record<string, string[] | null> = {};
-    for (const worker of Object.keys(SECRETS)) {
-      held[worker] = await secretsOf(api, account, NAMES[worker]!);
-    }
-    const setting = secretPlan(held, rotate, open ? null : input, hookAt.creates);
-    const hookSecret = hookSetsSecret(setting);
-    for (const { worker, name } of setting) {
-      const value = input(name);
-      if (value === undefined && !open) {
-        if (OPTIONAL.includes(name)) {
-          continue;
-        }
-        throw new Error(`${name} has no value for ${NAMES[worker]}`);
+});
+
+/** Storage wrangler lists and makes: its listing command, its noun and its make command. */
+function storage(name: string, list: string[], noun: string, create: (made: string) => string[],
+                 names: readonly string[]): Step {
+  return step(name, (run, work) => {
+    const wrangler = made(work.wrangler, "wrangler");
+    for (const each of names) {
+      // `wrangler` throws on a failed listing: a failure is never "absent".
+      if (listed(wrangler(list), each)) {
+        continue;
       }
-      plan.push(`set the secret ${name} on ${NAMES[worker]}${open
-        ? ` (its value, or its absence if optional: ${later})` : ""}`);
-      if (apply) {
-        wrangler(["secret", "put", name, "--config", paths[worker]!], value);
+      work.plan.push(`create the ${noun} ${each}`);
+      if (run.apply) {
+        wrangler(create(each));
       }
     }
-    for (const worker of WORKERS) {
-      // Whether it exists: its secret listing's answer (null when the API says it does not).
-      const exists = (worker in held ? held[worker]
-        : await secretsOf(api, account, NAMES[worker]!)) !== null;
-      plan.push(`${exists && !migrate.has(worker) ? "upload and deploy a version of"
-        : "deploy"} ${NAMES[worker]}, touching no route`);
-      if (apply) {
-        deployWorker(worker, paths[worker]!, exists, migrate);
-      }
-    }
-    if (ids["CONTROL"]!.startsWith("planned-")
-        || await kvValue(api, account, ids["CONTROL"]!, CONTROL_KEY) === undefined) {
-      plan.push("write the control record closed (outside off, canary none, inbound off, the " +
-                "founder's tier numbers): the API answered there is none");
-      if (apply) {
-        const put = await api(`/accounts/${account}/storage/kv/namespaces/${ids["CONTROL"]}/` +
-                              `values/${encodeURIComponent(CONTROL_KEY)}`, {
-          method: "PUT", body: JSON.stringify(DARK_CONTROL),
-          headers: { "Content-Type": "application/json" } });
-        if (put.status !== 200) {
-          throw new Error(`writing the control record failed (${put.status})`);
-        }
-      }
-    }
-    // E2B's lifecycle webhook, once the doors hold E2B_WEBHOOK_SECRET (`hookPlan`).
-    if (hookAt.at === "none") {
-      plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${later}`);
-    }
-    if (hookAt.at === "secrets") {
-      plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${await hook(apply, hookSecret)}`);
-    }
-    if (routes) {
-      plan.push(...steps.map((step) => describeStep(step, DOORS)));
-      plan.push(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
-      if (apply) {
-        await runHandover(api, zone, DOORS, steps);
-        const routed = join(out, "doors", "routed.json");
-        writeFileSync(routed, JSON.stringify(deployedConfig("doors", ids, upstream, true),
-                                             null, 2));
-        wrangler(["triggers", "deploy", "--config", routed]);
-      }
-      if (hookAt.at === "routes") {
-        plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: ${
-          await hook(apply, hookSecret)}`);
-      }
-    }
-  } finally {
-    rmSync(out, { recursive: true, force: true });
-  }
-  report(plan, apply);
-  if (!apply) {
-    console.log("\nNothing was changed.");
-    return;
-  }
-  handlesCanary();
-  console.log("H2's probes wait for a routed door and a probe owner's key: run with --h2 " +
-              "(h2-probes.ts names what it needs).");
+  });
 }
 
-/** The plan, printed and written to the job summary. */
-function report(plan: readonly string[], applied: boolean): void {
-  const summary = `${applied ? "Changed" : "Would change"}:\n${plan.map((step) => `- ${step}`)
-    .join("\n")}`;
-  console.log(summary);
-  if (process.env["GITHUB_STEP_SUMMARY"] !== undefined) {
-    writeFileSync(process.env["GITHUB_STEP_SUMMARY"], `${summary}\n`, { flag: "a" });
+/** The R2 buckets the configs bind. */
+const buckets = storage("buckets", ["r2", "bucket", "list"], "R2 bucket",
+                        (bucket) => ["r2", "bucket", "create", bucket], BUCKETS);
+/** The queues the configs send to. */
+const queues = storage("queues", ["queues", "list"], "queue",
+                       (queue) => ["queues", "create", queue], QUEUES);
+
+/** Reached only when every listing answered: a token without the scope stopped above. */
+const listings = step("listings", (_run, work) => {
+  work.plan.push("the Cloudflare token listed the account's KV namespaces, R2 buckets and queues");
+});
+
+/** Each Worker's config as it deploys, written outside the checkout. */
+const staged = step("staged", (_run, work) => {
+  work.out = mkdtempSync(join(tmpdir(), "tinyassets-deploy-"));
+  work.paths = {};
+  for (const worker of WORKERS) {
+    mkdirSync(join(work.out, worker));
+    work.paths[worker] = join(work.out, worker, "wrangler.json");
+    writeFileSync(work.paths[worker]!, JSON.stringify(
+      deployedConfig(worker, made(work.ids, "the namespaces"), made(work.upstream, "the upstream"),
+                     false), null, 2));
   }
+});
+
+/** Each Worker's missing secrets (and the rotated), first: `secrets.required` refuses a deploy. */
+const secrets = step("secrets", async (run, work) => {
+  const cloudflare = made(work.cloudflare, "Cloudflare");
+  work.held = {};
+  for (const worker of Object.keys(SECRETS)) {
+    work.held[worker] = await cloudflare.secrets(made(work.account, "the account"),
+                                                 NAMES[worker]!);
+  }
+  work.setting = secretPlan(work.held, run.rotate,
+                            secretsReached(run) ? (name) => input(run, name) : null,
+                            work.hook === null);
+  for (const { worker, name } of work.setting) {
+    const value = input(run, name);
+    if (value === undefined && secretsReached(run)) {
+      if (OPTIONAL.includes(name)) {
+        continue;
+      }
+      throw new Error(`${name} has no value for ${NAMES[worker]}`);
+    }
+    work.plan.push(`set the secret ${name} on ${NAMES[worker]}${secretsReached(run) ? ""
+      : ` (its value, or its absence if optional: ${LATER})`}`);
+    if (run.apply) {
+      made(work.wrangler, "wrangler")(["secret", "put", name, "--config",
+                                       made(work.paths, "the configs")[worker]!], value);
+    }
+  }
+});
+
+/**
+ * Each Worker deployed, bound first, touching no route. A first deploy (the API says the
+ * Worker does not exist) is `wrangler deploy`; later ones are Cloudflare's staged path,
+ * `versions upload` then `versions deploy` at 100%, which leaves the Worker's routes as they
+ * are. Wrangler 4.154 refuses a versions upload with a pending Durable Object migration:
+ * `--migrate <worker>` deploys it whole.
+ */
+const workers = step("workers", async (run, work) => {
+  const wrangler = made(work.wrangler, "wrangler");
+  const held = made(work.held, "the secret listings");
+  for (const worker of WORKERS) {
+    // Whether it exists: its secret listing's answer (null when the API says it does not).
+    const exists = (worker in held ? held[worker]
+      : await made(work.cloudflare, "Cloudflare").secrets(made(work.account, "the account"),
+                                                          NAMES[worker]!)) !== null;
+    const whole = !exists || run.migrate.has(worker);
+    work.plan.push(`${whole ? "deploy" : "upload and deploy a version of"} ${NAMES[worker]}, ` +
+                   "touching no route");
+    if (run.apply) {
+      const config = made(work.paths, "the configs")[worker]!;
+      if (whole) {
+        wrangler(["deploy", "--config", config]);
+      } else {
+        const id = versionOf(wrangler(["versions", "upload", "--config", config]));
+        wrangler(["versions", "deploy", `${id}@100`, "--yes", "--config", config]);
+      }
+    }
+  }
+});
+
+/** The control record, written closed only when the API answered there is none. */
+const control = step("control", async (run, work) => {
+  const ids = made(work.ids, "the namespaces");
+  const account = made(work.account, "the account");
+  const cloudflare = made(work.cloudflare, "Cloudflare");
+  if (made(work.unmade, "the namespaces").has("CONTROL")
+      || await cloudflare.value(account, ids["CONTROL"]!, CONTROL_KEY) === undefined) {
+    work.plan.push("write the control record closed (outside off, canary none, inbound off, " +
+                   "the founder's tier numbers): the API answered there is none");
+    if (run.apply) {
+      const status = await cloudflare.put(account, ids["CONTROL"]!, CONTROL_KEY, DARK_CONTROL);
+      if (status !== 200) {
+        throw new Error(`writing the control record failed (${status})`);
+      }
+    }
+  }
+});
+
+/** The plan job's word on E2B's lifecycle webhook, which it cannot reach. */
+const hookLater = step("hook later", (run, work) => {
+  if (!secretsReached(run)) {
+    work.plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${LATER}`);
+  }
+});
+
+/**
+ * E2B's lifecycle webhook, registered or changed once the doors hold E2B_WEBHOOK_SECRET:
+ * disabled in `dark`, enabled only after the routes, since an enabled hook sends the whole
+ * team's events to whatever serves its path.
+ */
+function hook(enable: boolean, where: string): Step {
+  return step(enable ? "hook enabled" : "hook", async (run, work) => {
+    if (work.e2b !== undefined) {
+      const result = await lifecycleHook(work.e2b, input(run, "E2B_WEBHOOK_SECRET")!, run.apply,
+                                         enable, hookSetsSecret(made(work.setting, "the secrets")));
+      work.plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}${where}: ${result}`);
+    }
+  });
+}
+
+/** The doors' routes handed over one at a time, no path ever served by nothing. */
+const handOver = step("hand over", async (run, work) => {
+  const steps = made(work.routes, "the route plan");
+  work.plan.push(...steps.map((each) => describeStep(each, DOORS)));
+  if (run.apply) {
+    await made(work.cloudflare, "Cloudflare").handOver(made(work.zone, "the zone"), DOORS, steps);
+  }
+});
+
+/** The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`). */
+const customDomain = step("custom domain", (run, work) => {
+  work.plan.push(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
+  if (run.apply) {
+    const routed = join(made(work.out, "the configs"), "doors", "routed.json");
+    writeFileSync(routed, JSON.stringify(deployedConfig("doors", made(work.ids, "the namespaces"),
+                                                        made(work.upstream, "the upstream"),
+                                                        true), null, 2));
+    made(work.wrangler, "wrangler")(["triggers", "deploy", "--config", routed]);
+  }
+});
+
+/** The plan reported; a run that changes nothing stops here, saying so. */
+function reported(unchanged: string): Step {
+  return step("report", (run, work) => {
+    report(work.plan, run.apply, run);
+    if (!run.apply) {
+      run.io.log(unchanged);
+      work.done = true;
+    }
+  });
+}
+
+/** Fact 11: after a deploy or a route change, the handles canary (it reads its own token). */
+const canary = step("canary", (run) => {
+  const ran = run.io.spawn("python3", [join(REPO, "scripts", "mcp_public_canary.py"),
+                                       "--assert-handles"], { stdio: "inherit", cwd: REPO });
+  if (ran.status !== 0) {
+    throw new Error(`the handles canary failed (exit ${ran.status})`);
+  }
+});
+
+const h2Next = step("h2 next", (run) => {
+  run.io.log("H2's probes wait for a routed door and a probe owner's key: run with --mode h2 " +
+             "(h2-probes.ts names what it needs).");
+});
+
+/** The probe's own inputs: the Cloudflare token, and on a secret run WorkOS's key. */
+const probeInputs = step("probe inputs", (run) => {
+  for (const name of ["CLOUDFLARE_API_TOKEN", ...(secretsReached(run) ? ["WORKOS_API_KEY"] : [])]) {
+    if (input(run, name) === undefined) {
+      throw new Error(`${name} is not set`);
+    }
+  }
+});
+
+/** The doors are deployed: a dark run came first. */
+const doorsDeployed = step("doors deployed", async (_run, work) => {
+  if (await made(work.cloudflare, "Cloudflare").secrets(made(work.account, "the account"), DOORS)
+      === null) {
+    throw new Error(`${DOORS} is not deployed: the probe runs after a dark run`);
+  }
+  work.plan.push(`${DOORS} is deployed`);
+});
+
+/** The control record admits nobody, as a dark run writes it. */
+const gatesClosed = step("gates closed", async (_run, work) => {
+  const cloudflare = made(work.cloudflare, "Cloudflare");
+  const account = made(work.account, "the account");
+  const namespace = (await cloudflare.namespaces(account)).get(NAMESPACES["CONTROL"]!);
+  if (namespace === undefined
+      || !admitsNobody(await cloudflare.value(account, namespace, CONTROL_KEY))) {
+    throw new Error("the control record is missing or admits someone: the probe runs only " +
+                    "with every gate closed, as a dark run writes it");
+  }
+  work.plan.push("the control record admits no owner and no outside client; no gate is changed");
+});
+
+/** WorkOS lists the callback, as a dark run registers it. */
+const callbackListed = step("callback listed", async (run, work) => {
+  if (!secretsReached(run)) {
+    work.plan.push(`WorkOS lists ${CALLBACK}, as a dark run registers it: checked by the ` +
+                   "apply job before any change");
+  } else if (await registerRedirect(input(run, "WORKOS_API_KEY")!, false, run.io.fetch)
+             !== "present") {
+    throw new Error(`WorkOS lists no ${CALLBACK}: run dark first, which registers it`);
+  } else {
+    work.plan.push(`WorkOS lists ${CALLBACK}, as a dark run registers it`);
+  }
+});
+
+/** The probe's handover, from the zone's routes as they stand. */
+const probePlan = step("probe plan", async (_run, work) => {
+  work.routes = probeSteps(await made(work.cloudflare, "Cloudflare")
+    .routes(made(work.zone, "the zone")));
+});
+
+/**
+ * The early sign-in check, before a route moves, on the run that moves them: WorkOS takes the
+ * client and CALLBACK, which it lists, so a redirect-uri-invalid answer stops the probe.
+ */
+const probeAuthorize = step("probe authorize", async (run, work) => {
+  if (run.apply) {
+    work.plan.push(await authorizeCheck(await upstreamFrom(input(run, "OWNER_ISSUER"),
+                                                           input(run, "WORKOS_CLIENT_ID"),
+                                                           run.io.fetch), false, run.io.fetch));
+  }
+});
+
+/** The sign-in's two paths handed to the doors, or found theirs already. */
+const probeHandOver = step("probe hand over", async (run, work) => {
+  const steps = made(work.routes, "the probe's plan");
+  work.plan.push(...(steps.length === 0 ? [`${DOORS} holds ${PROBE_ROUTES.join(" and ")} already`]
+    : steps.map((each) => describeStep(each, DOORS))));
+  if (run.apply) {
+    await made(work.cloudflare, "Cloudflare").handOver(made(work.zone, "the zone"), DOORS, steps);
+  }
+});
+
+const signInLink = step("sign-in link", (run) => {
+  run.io.log(`\nSign in once, in a browser, at:\n${probeLink()}\n\n${PROBE_SIGNS}`);
+});
+
+/** H2's probes alone: they change nothing, and need a routed door and a probe owner. */
+const h2 = step("h2", (run) => {
+  if (!secretsReached(run)) {
+    report(["run H2's probes against the routed doors; nothing is changed"], false, run);
+    return;
+  }
+  run.io.exec(process.execPath, ["--experimental-strip-types",
+                                 join(PLATFORM, "deploy", "h2-probes.ts")],
+              { stdio: "inherit", env: { ...run.env } });
+});
+
+/**
+ * The pair check (the workflow's `pair` job, before the apply job): the pinned template and
+ * the runner this checkout ships, unless E2B already holds their pair's tag; `build.py
+ * --check-pair` runs the standing checks and tags the pair, given only what it needs (never
+ * the deploy's other secrets). A failure, or no tag after it, throws.
+ */
+const pair = step("pair check", async (run) => {
+  const key = input(run, "E2B_API_KEY");
+  if (key === undefined) {
+    throw new Error("E2B_API_KEY is not set (the production environment's secrets)");
+  }
+  const e2b = new E2b(key, run.io.fetch);
+  const tag = pairTag(template(), shippedRunner(run.io.exec));
+  if (await e2b.ready(tag)) {
+    run.io.log(`the pair ${tag} passed its standing checks in this E2B team`);
+    return;
+  }
+  const checked = run.io.spawn("python3", [join(PLATFORM, "sandbox", "template", "build.py"),
+                                           "--check-pair"],
+                               { stdio: "inherit", env: { PATH: run.env["PATH"] ?? "",
+                                                          HOME: run.env["HOME"] ?? "",
+                                                          E2B_API_KEY: key } });
+  if (checked.status !== 0 || !await e2b.ready(tag)) {
+    throw new Error(`the pair ${tag} failed its standing checks: nothing is deployed`);
+  }
+  run.io.log(`the pair ${tag} passed its standing checks, run now`);
+});
+
+// --- The modes --------------------------------------------------------------------------
+
+/** One mode: its steps, in order, and what it takes. */
+export interface Row {
+  readonly steps: readonly Step[];
+  /** A row that plans changes holds its run to them: `--public` and `--yes` apart. */
+  readonly plans: boolean;
+  /** Whether `--yes` may apply what it plans. */
+  readonly applies: boolean;
+  /** Whether it takes `--rotate` and `--migrate`. */
+  readonly options: boolean;
+}
+
+/** The checks every deploy makes before any change, in this order. */
+const CHECKS: readonly Step[] = [inputs, keyrings, locks, zone, upstream, templateBuilt,
+                                 pairPassed, hookListed, redirect, authorize];
+/** Storage, then the Workers, then the control record. */
+const STORAGE: readonly Step[] = [namespaces, buckets, queues, listings];
+const DEPLOY: readonly Step[] = [staged, secrets, workers, control, hookLater];
+const DARK: readonly Step[] = [...CHECKS, ...STORAGE, ...DEPLOY, hook(false, ""),
+                               reported("\nNothing was changed."), canary, h2Next];
+
+export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
+  plan: { steps: DARK, plans: true, applies: false, options: true },
+  dark: { steps: DARK, plans: true, applies: true, options: true },
+  probe: {
+    steps: [probeInputs, zone, doorsDeployed, gatesClosed, callbackListed, probePlan,
+            probeAuthorize, probeHandOver,
+            reported("\nNothing was changed. The apply job prints the sign-in link."), canary,
+            signInLink],
+    plans: true, applies: true, options: false,
+  },
+  routes: {
+    steps: [...CHECKS, routePlan, ...STORAGE, ...DEPLOY, handOver, customDomain,
+            hook(true, ", after the routes"), reported("\nNothing was changed."), canary,
+            h2Next],
+    plans: true, applies: true, options: true,
+  },
+  h2: { steps: [h2], plans: false, applies: true, options: true },
+  pair: { steps: [pair], plans: false, applies: true, options: true },
+});
+
+// --- The keyring tools ------------------------------------------------------------------
+
+/** `keyring-new <file>`: a first keyring, written for the founder to store; never printed. */
+export function keyringNew(file: string, log: Io["log"] = IO.log): void {
+  writeFileSync(file, ringText({ active: "k1", keys: new Map([["k1", randomBytes(KEY_BYTES)]]) }),
+                { mode: 0o600, flag: "wx" });
+  log(`wrote a new keyring to ${file}; store it as ${KEYRINGS.join(" or ")}, one ring each`);
+}
+
+/**
+ * `keyring-add <file>`: the keyring in `file` with one more key under the kid after its
+ * highest (never a retired kid's name), made active; the old kept.
+ */
+export function keyringAdd(file: string, log: Io["log"] = IO.log): void {
+  const ring = ringWith(keyring(readFileSync(file, "utf8"), "the keyring"),
+                        randomBytes(KEY_BYTES));
+  writeFileSync(file, ringText(ring), { mode: 0o600 });
+  log(`added ${ring.active} to ${file}, active; store it as the keyring it was, then run with ` +
+      "--rotate naming that keyring");
+}
+
+const TOOLS: Readonly<Record<string, (file: string, log: Io["log"]) => void>> = Object.freeze({
+  "keyring-new": keyringNew, "keyring-add": keyringAdd });
+
+// --- The command line -------------------------------------------------------------------
+
+function option(argv: readonly string[], name: string): ReadonlySet<string> {
+  const at = argv.indexOf(name);
+  return new Set((at < 0 ? "" : argv[at + 1] ?? "").split(",").filter(Boolean));
+}
+
+/**
+ * The run `argv` asks for, over `env`: its mode and options, held to what the mode's row
+ * takes. Every refusal is before any step.
+ */
+export function parse(argv: readonly string[], env: Readonly<Record<string, string | undefined>>,
+                      io: Io = IO): Run {
+  const at = argv.indexOf("--mode");
+  const mode = at < 0 ? undefined : argv[at + 1];
+  if (mode === undefined || !Object.hasOwn(MODES, mode)) {
+    throw new Error(`--mode is one of ${Object.keys(MODES).join(", ")}`);
+  }
+  if (argv.indexOf("--mode", at + 1) >= 0) {
+    throw new Error("--mode is given once: a run is one mode");
+  }
+  const row = MODES[mode as Mode];
+  const run: Run = Object.freeze({
+    mode: mode as Mode, reach: argv.includes("--public") ? "public" : "secrets",
+    apply: argv.includes("--yes"), rotate: option(argv, "--rotate"),
+    migrate: option(argv, "--migrate"), env, io });
+  if (row.plans) {
+    if (run.apply && run.reach === "public") {
+      throw new Error("--public is the plan job's: it never changes anything");
+    }
+    if (run.apply && !row.applies) {
+      throw new Error(`mode ${mode} changes nothing: it takes no --yes`);
+    }
+    if (run.migrate.has("doors")) {
+      throw new Error("the doors hold no Durable Object migration: --migrate never names them");
+    }
+    if (!row.options && (run.rotate.size > 0 || run.migrate.size > 0)) {
+      throw new Error(`mode ${mode} deploys nothing: it takes no --rotate or --migrate`);
+    }
+  }
+  return run;
+}
+
+/** Runs the row's steps in order, then removes what the run wrote outside the checkout. */
+export async function perform(run: Run): Promise<Work> {
+  const work: Work = { plan: [] };
+  try {
+    for (const each of MODES[run.mode].steps) {
+      if (work.done === true) {
+        break;
+      }
+      await each.run(run, work);
+    }
+  } finally {
+    if (work.out !== undefined) {
+      rmSync(work.out, { recursive: true, force: true });
+    }
+  }
+  return work;
+}
+
+async function main(argv: readonly string[]): Promise<void> {
+  const tool = TOOLS[argv[0] ?? ""];
+  if (tool !== undefined) {
+    if (argv[1] === undefined) {
+      throw new Error(`${argv[0]} <file>`);
+    }
+    tool(argv[1], IO.log);
+    return;
+  }
+  await perform(parse(argv, { ...process.env }));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((error: Error) => {
+  main(process.argv.slice(2)).catch((error: Error) => {
     console.error(`deploy stopped: ${error.message}`);
     process.exit(1);
   });
