@@ -300,7 +300,8 @@ export class Collections {
       throw new Refusal("refused", "this writer's share of the owner's collections is full");
     }
     if (filer !== OWNER_FILER && over("outside", Math.floor(most * (100 - reserve) / 100))) {
-      throw new Refusal("refused", "outside writers' share of the owner's collections is full; the " +
+      throw new Refusal("refused",
+                        "outside writers' share of the owner's collections is full; the " +
                         "rest is kept for the owner");
     }
   }

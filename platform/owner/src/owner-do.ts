@@ -1659,7 +1659,8 @@ function signinRequest(request: unknown):
     if (!Array.isArray(models) || models.some((model) => typeof model !== "string"
                                                || !/^[!-~]+$/.test(model))
         || JSON.stringify(models).length > SIGNIN_MODELS_CHARS) {
-      throw new Refusal("invalid", `models are model ids, at most ${SIGNIN_MODELS_CHARS} characters ` +
+      throw new Refusal("invalid",
+                        `models are model ids, at most ${SIGNIN_MODELS_CHARS} characters ` +
                         "as JSON");
     }
     return { engine, signed_in: f["signed_in"], models: models as string[] };
@@ -3341,7 +3342,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         || typeof eventAt !== "number" || !Number.isSafeInteger(eventAt) || eventAt < 0
         || eventAt > 999_999_999_999 || !(body instanceof Uint8Array)
         || typeof headers !== "object" || headers === null || Array.isArray(headers)) {
-      throw new Refusal("invalid", "an inbound event is its id, its time, its bytes and its headers");
+      throw new Refusal("invalid",
+                        "an inbound event is its id, its time, its bytes and its headers");
     }
     if (row.kind === "shared" && row.tripped === 1) {
       return { done: { state: "no_op", error: "breaker_tripped" } };
@@ -3528,7 +3530,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         throw new Refusal("refused", "only an outside client files its own agent's registration");
       }
       if (registrant(binding.source, account.origin).kind !== "mcp") {
-        throw new Refusal("refused", "an API key's agent registers from the owner's browser with the key");
+        throw new Refusal("refused",
+                          "an API key's agent registers from the owner's browser with the key");
       }
       const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
                                        "recipe_id"]);
@@ -4706,7 +4709,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             this.#ledger.archiveCommit(seqs, digest, replaced, named, clock());
             const { stored, figure } = this.#files.storedNow();
             if (figure !== null && stored > Math.max(figure, begun.before)) {
-              throw new Refusal("archive_full", "archive_full: the move would leave the storage figure higher " +
+              throw new Refusal("archive_full",
+                                "archive_full: the move would leave the storage figure higher " +
                                 "than it found it");
             }
             this.#ledger.moveEnded(stream);
@@ -5215,7 +5219,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const got = this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
       if (r["etag"] !== undefined && got.row?.etag !== r["etag"]) {
-        throw new Refusal("row_changed", "row_changed: the row is no longer the one at that etag: read it " +
+        throw new Refusal("row_changed",
+                          "row_changed: the row is no longer the one at that etag: read it " +
                           "again from its start");
       }
       return { value: { got, offset }, contents: contentsOf(got.row === null ? [] : [got.row]),
@@ -5722,7 +5727,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const given = r["content"];
       const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
-        throw new Refusal("invalid", "a written file is bytes or text, at most 4 MiB; larger ones are " +
+        throw new Refusal("invalid",
+                          "a written file is bytes or text, at most 4 MiB; larger ones are " +
                           "uploaded");
       }
       return { account, r, content };
@@ -5765,7 +5771,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = fileFields(request, ["path", "content"]);
       this.#ownersTree(binding, account, "FILES.append", request, r["path"]);
       if (STRUCTURED.test(storedPath(r["path"]))) {
-        throw new Refusal("invalid", "a structured file (JSON, TOML or YAML) is never appended to: read " +
+        throw new Refusal("invalid",
+                          "a structured file (JSON, TOML or YAML) is never appended to: read " +
                           "it and change it with file_edit");
       }
       const content = r["content"];
@@ -5785,7 +5792,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     try {
       for (let tries = 0; ; tries += 1) {
         if (tries === APPEND_TRIES) {
-          throw new Refusal("file_busy", `file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
+          throw new Refusal("file_busy",
+                            `file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
                             "append again");
         }
         const read = await this.#door((): { done: Entry } | { now: Content | null } => {
@@ -5869,10 +5877,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#ownersTree(binding, account, "FILES.edit", request, r["path"]);
       const [old, replacement, etag] = [r["old_text"], r["new_text"], r["expected_etag"]];
       if (typeof old !== "string" || old === "" || typeof replacement !== "string") {
-        throw new Refusal("invalid", "old_text is text of at least one character, and new_text is text");
+        throw new Refusal("invalid",
+                          "old_text is text of at least one character, and new_text is text");
       }
       if (typeof etag !== "string" || etag === "") {
-        throw new Refusal("invalid", "expected_etag is the file's etag, as file_stat or fetch answers it");
+        throw new Refusal("invalid",
+                          "expected_etag is the file's etag, as file_stat or fetch answers it");
       }
       const path = storedPath(r["path"]);
       const entry = this.#files.stat(path);
@@ -5883,7 +5893,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return { conflict: entry };
       }
       if (entry.size > EDIT_BYTES_MAX) {
-        throw new Refusal("invalid", `file_edit edits a file of at most ${EDIT_BYTES_MAX} bytes, the ` +
+        throw new Refusal("invalid",
+                          `file_edit edits a file of at most ${EDIT_BYTES_MAX} bytes, the ` +
                           "reads and time one call holds; write a larger one by upload");
       }
       return { account, path, old, replacement, content: this.#files.open(path) };
@@ -6264,7 +6275,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const run = this.#runs.receipt(r["run_id"], client).run_id;
       if (this.env.SANDBOX === undefined && this.#runs.grant(run) !== null) {
-        throw new Refusal("sandbox_absent", SANDBOX_ABSENT);  // no CLI could be stopped: refused, loudly
+        throw new Refusal("sandbox_absent",
+                          SANDBOX_ABSENT);  // no CLI could be stopped: refused, loudly
       }
       return { run, client, live: this.#runs.cancel(run, clock()) };
     });
@@ -6461,7 +6473,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const cli = rec?.cli;
       if (rec === undefined || cli === undefined || rec.unwired !== undefined
           || cli.login === undefined || !cli.credential.includes("vendor_login_in_sandbox")) {
-        throw new Refusal("invalid", "a sign-in names an engine that signs in with the vendor's own login");
+        throw new Refusal("invalid",
+                          "a sign-in names an engine that signs in with the vendor's own login");
       }
       const mode = (r["mode"] ?? "in") as SigninMode;
       if (mode !== "in" && mode !== "out") {
@@ -6482,7 +6495,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const authority = signinAuthority(r["authority"]);
       if (authority !== OWNER_AUTHORITY && !this.#grants.live(authority)) {
-        throw new Refusal("refused", "no such client: a client's own sandbox is signed in for a client " +
+        throw new Refusal("refused",
+                          "no such client: a client's own sandbox is signed in for a client " +
                           "the owner has connected");
       }
       const now = clock();
@@ -6659,7 +6673,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         const joined = [...now].sort().join(",");
         if (joined.length > SIGNIN_LIST_CHARS) {
-          throw new Refusal("invalid", `a sandbox's signed-in engines are at most ${SIGNIN_LIST_CHARS} ` +
+          throw new Refusal("invalid",
+                            `a sandbox's signed-in engines are at most ${SIGNIN_LIST_CHARS} ` +
                             "characters joined");
         }
         const before = this.#files.leaseSignins(lease.lease_id, [...now]);
@@ -7064,7 +7079,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#ledger.mailFor(messageId, nativeId(agent), bodies),
     (found) => found?.content_id != null, (located) => this.#bodies.fetch(located));
     if (mail === null) {
-      throw new Refusal("mail_missing", "mail_missing: the mail this run answers is no longer held");
+      throw new Refusal("mail_missing",
+                        "mail_missing: the mail this run answers is no longer held");
     }
     if (mail.body === null) {
       throw new Refusal(mail.integrity === "tampered" ? "mail_tampered" : "mail_missing",
@@ -7281,7 +7297,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (typeof run !== "object" || run === null || typeof run.engine !== "string"
         || typeof run.run !== "string" || !CREDENTIAL_KINDS.includes(run.credential)
         || (run.credential === "api_key") !== (typeof run.connection === "string")) {
-      throw new Refusal("invalid", "a sandbox run names itself, its engine, its credential and, on an " +
+      throw new Refusal("invalid",
+                        "a sandbox run names itself, its engine, its credential and, on an " +
                         "API key, its connection");
     }
     let engine;
@@ -7353,7 +7370,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#admitted("work");
         const generation = this.#policy.egressGeneration();
         if (request.generation !== generation) {
-          throw new Refusal("egress_policy_stale", "egress_policy_stale: the network was made under another egress " +
+          throw new Refusal("egress_policy_stale",
+                            "egress_policy_stale: the network was made under another egress " +
                             "generation");
         }
         const lease = this.#files.networkApplied(request.lease_id, request.epoch, generation);

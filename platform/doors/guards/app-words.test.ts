@@ -78,7 +78,8 @@ describe("the runner's events, in the app's words", () => {
                          { type: "ta.sync_refused", path: "/a", reason: "storage_full" },
                          { type: "ta.sync_unnamed", count: "1", paths: [] },
                          { type: "ta.scratch_cleared", evicted: "builder" },
-                         { type: "ta.sync_skipped", skipped: [{ path: "/a", code: "toString" }] }]) {
+                         { type: "ta.sync_skipped",
+                           skipped: [{ path: "/a", code: "toString" }] }]) {
       expect(eventShown(event)).toBe(event);
     }
   });

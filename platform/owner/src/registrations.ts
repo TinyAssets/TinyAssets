@@ -126,7 +126,8 @@ export class Registrations {
     }
     const body = JSON.stringify(request);
     if (codePoints(body) > this.#limits.maxRequest) {
-      throw new Refusal("invalid", `a registration is at most ${this.#limits.maxRequest} characters`);
+      throw new Refusal("invalid",
+                        `a registration is at most ${this.#limits.maxRequest} characters`);
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {

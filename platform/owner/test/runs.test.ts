@@ -640,8 +640,8 @@ describe("the admission unit", () => {
         throw new Error("admission went past the owner's admission");
       };
       const runs = new Runs(gate.storage, {
-        unadmitted: () => new Refusal("owner_suspended",
-                                      "owner_suspended: the owner's account is suspended (billing)"),
+        unadmitted: () => new Refusal("owner_suspended", "owner_suspended: the owner's " +
+                                      "account is suspended (billing)"),
         sandboxBound: () => true, sources: never, signinOn: never, usable: never, egressible: never,
         standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,

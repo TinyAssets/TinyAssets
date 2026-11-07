@@ -108,7 +108,8 @@ export function starterPackage(value: unknown): StarterPackage {
       || (pkg.version as number) < 1 || !Array.isArray(pkg.files) || pkg.files.length < 1
       || !Array.isArray(retired)
       || pkg.files.length + retired.length > STARTER_FILES_MAX) {
-    throw new Refusal("invalid", `a starter package is a version and 1 to ${STARTER_FILES_MAX} files ` +
+    throw new Refusal("invalid",
+                      `a starter package is a version and 1 to ${STARTER_FILES_MAX} files ` +
                       "and retired paths");
   }
   const paths = new Set<string>();
@@ -121,13 +122,15 @@ export function starterPackage(value: unknown): StarterPackage {
     if (!within(path, WORKSPACE) || path === WORKSPACE || path.endsWith(NEWER)
         || paths.has(path) || (file.class !== "managed" && file.class !== "personal")
         || (file.class === "managed" && !ownersOnly(path)) || typeof file.text !== "string") {
-      throw new Refusal("invalid", `starter file ${String(file.path)} is a distinct path in the workspace ` +
+      throw new Refusal("invalid",
+                        `starter file ${String(file.path)} is a distinct path in the workspace ` +
                         "(a managed one in the owner's trees), managed or personal, with its " +
                         "text");
     }
     if (file.moved_from !== undefined && (file.class !== "personal"
         || !(Array.isArray(retired) && retired.includes(file.moved_from)))) {
-      throw new Refusal("invalid", `starter file ${path} moved from a retired path, and is personal`);
+      throw new Refusal("invalid",
+                        `starter file ${path} moved from a retired path, and is personal`);
     }
     const widens = file.widens;
     if (widens !== undefined && (!Number.isSafeInteger(widens.version) || widens.version < 2

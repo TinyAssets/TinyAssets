@@ -138,7 +138,8 @@ export function setAdmission(storage: OwnerStorage, request: unknown): Admission
   const { reason, suspended } = request as Record<string, unknown>;
   if (typeof reason !== "string" || !SUSPENSIONS.includes(reason)
       || typeof suspended !== "boolean") {
-    throw new Refusal("invalid", "an admission change is a reason (abuse or billing) and whether it " +
+    throw new Refusal("invalid",
+                      "an admission change is a reason (abuse or billing) and whether it " +
                       "suspends");
   }
   if (now.state === "pending") {

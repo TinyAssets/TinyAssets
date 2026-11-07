@@ -347,7 +347,8 @@ export function callbackUrl(push: Push, value: unknown): string {
   }
   if (url.protocol !== "https:" || url.port !== "" || url.username !== "" || url.password !== ""
       || url.hash !== "" || value.includes("#")) {
-    throw new Refusal("invalid", "a callback is https on port 443, with no credentials or fragment");
+    throw new Refusal("invalid",
+                      "a callback is https on port 443, with no credentials or fragment");
   }
   const host = url.hostname;  // the parser's: any spelling of an IPv4 address comes back dotted
   if (host.includes(":") || host.startsWith("[") || host.length > 253 || IPV4.test(host)

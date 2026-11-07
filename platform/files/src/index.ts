@@ -259,7 +259,8 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     });
     if (new Set(puts.map((put) => put.sha256)).size !== puts.length
         || puts.reduce((sum, put) => sum + put.bytes.byteLength, 0) > BATCH_BYTES) {
-      throw new Refusal("invalid", `a put names distinct chunks of at most ${BATCH_BYTES} bytes in all`);
+      throw new Refusal("invalid",
+                        `a put names distinct chunks of at most ${BATCH_BYTES} bytes in all`);
     }
     const dataKey = await this.#key(ns, key);
     const created = await Promise.all(puts.map((put) => this.#put(ns, dataKey, put.sha256,
@@ -271,7 +272,8 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
       Promise<boolean> {
     let put: R2Object | null;
     if (this.#cipher() === "aes-gcm" && await sha256Hex(bytes) !== sha256) {
-      throw new Refusal("invalid", "the chunk's bytes do not match its sha256");  // R2 sees sealed bytes
+      throw new Refusal("invalid",
+                        "the chunk's bytes do not match its sha256");  // R2 sees sealed bytes
     }
     const name = await chunkName(dataKey, sha256);
     const stored = await this.#stored(dataKey, chunkKey(ns, name), bytes, sha256);

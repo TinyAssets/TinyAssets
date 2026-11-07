@@ -80,7 +80,8 @@ export function parseTiers(value: unknown): Tiers {
       // The storage a tier may give at most (`TIER_STORAGE_MAX`, about 0.5 TB): the archive's
       // fence rows the owner-bound guard holds, each a sealed segment's least bytes. A larger
       // tier needs larger segments first (`limits-audit.md`).
-      throw new Refusal("invalid", `a tier's runs are 1 to ${RUNS_CEILING}, its storage whole bytes up ` +
+      throw new Refusal("invalid",
+                        `a tier's runs are 1 to ${RUNS_CEILING}, its storage whole bytes up ` +
                         `to ${TIER_STORAGE_MAX}`);
     }
     return Object.freeze({ runs, storage_bytes: bytes });

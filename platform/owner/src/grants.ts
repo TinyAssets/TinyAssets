@@ -230,7 +230,8 @@ export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scop
     throw new Refusal("invalid", `a scope's capability is one of ${CAPABILITIES.join(", ")}`);
   }
   if (utf8Bytes(JSON.stringify(value)) > limits.maxScopesBytes) {
-    throw new Refusal("invalid", `a grant's scopes are at most ${limits.maxScopesBytes} bytes of JSON`);
+    throw new Refusal("invalid",
+                      `a grant's scopes are at most ${limits.maxScopesBytes} bytes of JSON`);
   }
   return value as Scope[];
 }
@@ -467,7 +468,8 @@ export class Grants {
       }
       const live = row?.owner_set === 1 && row.mode !== "revoked";
       if (mode !== "revoked" && !live && this.#liveSet() >= this.#limits.maxOwnerClients) {
-        throw new Refusal("refused", "the owner's managed outside clients are at their limit; revoke " +
+        throw new Refusal("refused",
+                          "the owner's managed outside clients are at their limit; revoke " +
                           "one to make room");
       }
       const profile = (change.profile ?? row?.profile ?? DEFAULT_PROFILE) as string;
@@ -534,7 +536,8 @@ export class Grants {
         return { client, forgotten: false };
       }
       if (row.source !== "api_key") {
-        throw new Refusal("refused", "only the owner, in its session, forgets an MCP client's revoke");
+        throw new Refusal("refused",
+                          "only the owner, in its session, forgets an MCP client's revoke");
       }
       this.#forget(row, null, now);
       return { client, forgotten: true };

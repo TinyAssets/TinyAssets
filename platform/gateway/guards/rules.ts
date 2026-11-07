@@ -55,8 +55,9 @@ export const IMPORTS: ImportRules = Object.freeze({
   outside: Object.freeze([
     "contract/src/api-rules", "contract/src/checks", "contract/src/egress",
     "contract/src/egress-scope", "contract/src/envelope", "contract/src/ids",
-    "contract/src/limits", "contract/src/model-record", "contract/src/refusal", "contract/src/slots",
-    "contract/src/text", "contract/src/wake-records", "contract/wake-kinds.json",
+    "contract/src/limits", "contract/src/model-record", "contract/src/refusal",
+    "contract/src/slots", "contract/src/text", "contract/src/wake-records",
+    "contract/wake-kinds.json",
   ]),
   packages: Object.freeze(["@earendil-works/pi-ai"]),
   bare: Object.freeze({ "cloudflare:workers": null, "node:async_hooks": "gateway/src/egress.ts" }),

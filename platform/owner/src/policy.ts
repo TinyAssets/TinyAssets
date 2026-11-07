@@ -489,7 +489,8 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
     throw new Refusal("invalid", "invalid hooks policy: codemode, a boolean");
   }
   if (document["tools"] !== undefined && !validTools(document["tools"])) {
-    throw new Refusal("invalid", "invalid tools policy: custom, distinct names of the MCP door's tools");
+    throw new Refusal("invalid",
+                      "invalid tools policy: custom, distinct names of the MCP door's tools");
   }
   const files = document["files"];
   if (files !== undefined && (!plain(files) || Object.entries(files).some(([key, value]) =>
@@ -501,7 +502,8 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
   const settings = { ...FILE_DEFAULTS, ...(files as Partial<FileSettings> | undefined) };
   if (settings.max_entries * Math.max(settings.keep_versions, settings.keep_recent)
       > settings.max_history) {
-    throw new Refusal("invalid", "files policy: max_history holds max_entries times the larger of " +
+    throw new Refusal("invalid",
+                      "files policy: max_history holds max_entries times the larger of " +
                       "keep_versions and keep_recent");
   }
   const egress = document["egress"];
@@ -770,7 +772,8 @@ export class Policy {
             "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
           ).toArray()[0]?.pending ?? 0;
           if (proposer !== "owner" && share >= this.#limits.pendingPerClient) {
-            throw new Refusal("refused", "this client's pending policy proposals are at their limit");
+            throw new Refusal("refused",
+                              "this client's pending policy proposals are at their limit");
           }
           sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
                      "VALUES (?, ?, ?, ?, ?)", requestId, digest, canonical(change), now,

@@ -94,7 +94,8 @@ export function stamped(value: unknown): Stamped | null {
   if (value === null) {
     return null;
   }
-  const refused = () => new Refusal("invalid", "a stamp is a client, its grant generation, its sign-in " +
+  const refused = () => new Refusal("invalid",
+                                    "a stamp is a client, its grant generation, its sign-in " +
                                     "time, a universe and an agent");
   if (typeof value !== "object" || Array.isArray(value)
       || Object.keys(value).sort().join() !== STAMP_KEYS) {

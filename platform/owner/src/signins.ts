@@ -326,7 +326,8 @@ export function switchedOn(storage: OwnerStorage, handed: unknown, now: number):
   }
   const engines = [...new Set(handed as string[])].sort().join(",");
   if (engines.length > SIGNIN_LIST_CHARS) {
-    throw new Refusal("invalid", `the switched-on sign-ins are at most ${SIGNIN_LIST_CHARS} characters`);
+    throw new Refusal("invalid",
+                      `the switched-on sign-ins are at most ${SIGNIN_LIST_CHARS} characters`);
   }
   if (kept?.engines !== engines) {
     sql.exec("INSERT INTO platform_signins (only, engines, read_at) VALUES (1, ?, ?) " +

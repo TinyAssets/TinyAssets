@@ -128,10 +128,12 @@ export function created(request: unknown): Created {
   const r = request as Record<string, unknown>;
   const keys = Object.keys(r);
   if (keys.some((key) => !["kind", "agent", "route", "profile", "secret"].includes(key))) {
-    throw new Refusal("invalid", "an inbound binding is its kind, agent, route, and a proof and secret");
+    throw new Refusal("invalid",
+                      "an inbound binding is its kind, agent, route, and a proof and secret");
   }
   if (r["kind"] !== "capability" && r["kind"] !== "shared") {
-    throw new Refusal("invalid", "an inbound binding is a capability URL or a shared app's install");
+    throw new Refusal("invalid",
+                      "an inbound binding is a capability URL or a shared app's install");
   }
   if (r["kind"] === "shared") {
     // Only a shared app's install flow, which proves the owner holds the workspace, may
@@ -149,7 +151,8 @@ export function created(request: unknown): Created {
   const secret = r["secret"] === undefined || r["secret"] === null ? null : r["secret"];
   if (secret !== null && (typeof secret !== "string" || secret.length < 16
                           || secret.length > INBOUND_SECRET_MAX)) {
-    throw new Refusal("invalid", `an inbound proof secret is 16 to ${INBOUND_SECRET_MAX} characters`);
+    throw new Refusal("invalid",
+                      `an inbound proof secret is 16 to ${INBOUND_SECRET_MAX} characters`);
   }
   if ((proof?.method === "hmac-sha256") !== (secret !== null)) {
     throw new Refusal("invalid", "an HMAC proof holds a secret, and only an HMAC proof does");
@@ -210,7 +213,8 @@ export class Inbound {
     const r = (request ?? {}) as Record<string, unknown>;
     if (Object.keys(r).some((key) => !["binding_id", "expected_revision", "enabled",
                                        "agent"].includes(key))) {
-      throw new Refusal("invalid", "an inbound change names its binding, its revision, and what moves");
+      throw new Refusal("invalid",
+                        "an inbound change names its binding, its revision, and what moves");
     }
     const row = this.#row(bindingId(r["binding_id"]));
     if (row === undefined) {

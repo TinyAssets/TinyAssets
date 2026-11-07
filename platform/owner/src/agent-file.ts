@@ -65,7 +65,8 @@ export function agentFile(text: string): AgentFile {
     throw new Refusal("invalid", "agent.json's engine is a source record's id, or auto");
   }
   if (credential !== undefined && !CREDENTIAL_KINDS.includes(credential as CredentialKind)) {
-    throw new Refusal("invalid", `agent.json's credential is one of ${CREDENTIAL_KINDS.join(", ")}`);
+    throw new Refusal("invalid",
+                      `agent.json's credential is one of ${CREDENTIAL_KINDS.join(", ")}`);
   }
   if (connection !== undefined && (typeof connection !== "string"
                                    || !CONNECTION_ID.test(connection))) {

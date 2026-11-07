@@ -975,7 +975,8 @@ function readsOn(first: string, offset: number, named: unknown): void {
     throw new Refusal("invalid", "body_offset reads on a message's body: name it by message_id");
   }
   if (named !== first) {
-    throw new Refusal("message_changed", "message_changed: the page's first message is no longer the one named: " +
+    throw new Refusal("message_changed",
+                      "message_changed: the page's first message is no longer the one named: " +
                       "read again from its start");
   }
 }
@@ -1100,7 +1101,8 @@ export class Ledger {
       }
       const usage = this.#usage();
       if (usage.enabled_agents >= limits.maxAgents) {
-        throw new Refusal("ledger_agents_full", `ledger_agents_full: the owner's agents are at the ledger's ${
+        throw new Refusal("ledger_agents_full",
+                          `ledger_agents_full: the owner's agents are at the ledger's ${
           limits.maxAgents} enabled agents, each a reserved mailbox`);
       }
       if (row !== undefined) {
@@ -1117,7 +1119,8 @@ export class Ledger {
             "RETURNING agent_id",
         ).toArray()[0];
         if (forgotten === undefined) {
-          throw new Refusal("ledger_agents_full", "ledger_agents_full: the owner's agent registry is full");
+          throw new Refusal("ledger_agents_full",
+                            "ledger_agents_full: the owner's agent registry is full");
         }
         sql.exec("DELETE FROM ledger_readers WHERE reader = ?", forgotten.agent_id);
       }
@@ -1171,18 +1174,21 @@ export class Ledger {
     const recipe = request.recipe_id === null ? null : text(request.recipe_id, 128, "recipe_id");
     const name = displayName(request.display_name);
     if (!name) {
-      throw new Refusal("invalid", "display_name is required: letters, digits, spaces, dots, dashes");
+      throw new Refusal("invalid",
+                        "display_name is required: letters, digits, spaces, dots, dashes");
     }
     const method = request.delivery_method;
     if (typeof method !== "string" || !DELIVERY_METHODS.includes(method)) {
       throw new Refusal("invalid", "unknown delivery method");
     }
     if (!admittedMethods().includes(method)) {
-      throw new Refusal("refused", `only ${admittedMethods().join(", ")} delivery are available yet`);
+      throw new Refusal("refused",
+                        `only ${admittedMethods().join(", ")} delivery are available yet`);
     }
     // A client subscribes its own callback over the MCP door; an API key has no such door.
     if (verified.kind === "api_key" && kindFor(method)?.push?.callback === "subscribe") {
-      throw new Refusal("refused", `an API-key agent cannot subscribe; ${method} is for MCP clients`);
+      throw new Refusal("refused",
+                        `an API-key agent cannot subscribe; ${method} is for MCP clients`);
     }
     const sql = this.#sql;
     const limits = this.#limits;
@@ -1208,7 +1214,8 @@ export class Ledger {
       let agentId: string;
       if (row === undefined) {
         if (usage.agents >= limits.maxAgentRows) {
-          throw new Refusal("refused", "the owner's agent registry is full; delete a disabled agent " +
+          throw new Refusal("refused",
+                            "the owner's agent registry is full; delete a disabled agent " +
                             "to make room");
         }
         agentId = "agent_" + token(8);
@@ -1311,7 +1318,8 @@ export class Ledger {
         // rewriting, and a deletion waits for it, refused in plain words, never lost.
         if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM archive_purges").one().n
             >= this.#limits.maxAgentRows) {
-          throw new Refusal("storage_busy", `${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
+          throw new Refusal("storage_busy",
+                            `${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
                             `removed from the archive; try again in ${STORAGE_BUSY_RETRY_S} ` +
                             `seconds. ${JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S })}`);
         }
@@ -1329,7 +1337,8 @@ export class Ledger {
     }
     const { low: hourLow, high: hourHigh } = WAKE_SETTINGS.maxWakesPerHour;
     if (maxWakesPerHour !== null && !count(maxWakesPerHour, hourLow, hourHigh)) {
-      throw new Refusal("invalid", `max_wakes_per_hour is a whole number from ${hourLow}, or null for none`);
+      throw new Refusal("invalid",
+                        `max_wakes_per_hour is a whole number from ${hourLow}, or null for none`);
     }
     const { low: batchLow, high: batchHigh } = WAKE_SETTINGS.batchWindowS;
     if (!count(batchWindowS, batchLow, batchHigh)) {
@@ -1737,7 +1746,8 @@ export class Ledger {
     const maxRead = this.#limits.maxRead;
     if (typeof messageId !== "string" || !count(after, 0, Number.MAX_SAFE_INTEGER)
         || !count(limit, 1, maxRead)) {
-      throw new Refusal("invalid", `a chain read names a message id, after a seq, and 1 to ${maxRead}`);
+      throw new Refusal("invalid",
+                        `a chain read names a message id, after a seq, and 1 to ${maxRead}`);
     }
     const sql = this.#sql;
     let root = archived?.root;
@@ -2029,7 +2039,8 @@ export class Ledger {
     const parts = new Map<number, MailParts>();
     if (!this.#images(seqs, (message, body, recipients) =>
       parts.set(message.seq, mailParts(message, body, recipients)))) {
-      throw new Refusal("archive_changed", "archive_changed: a message moved went from the hot set mid-move");
+      throw new Refusal("archive_changed",
+                        "archive_changed: a message moved went from the hot set mid-move");
     }
     return parts;
   }
@@ -2057,13 +2068,15 @@ export class Ledger {
         : this.#sql.exec("DELETE FROM archive_segments WHERE segment = ? AND content_id = ? " +
                            "RETURNING segment", old.segment, old.content_id).toArray();
       if (gone.length === 0) {
-        throw new Refusal("archive_changed", "archive_changed: a replaced segment went between the units");
+        throw new Refusal("archive_changed",
+                          "archive_changed: a replaced segment went between the units");
       }
     }
     const kept = new Set(replaced.map((old) => old.content_id).filter((id) => made.has(id)));
     if (seqs.length > 0) {
       if (this.#imageDigest(seqs) !== expected) {
-        throw new Refusal("archive_changed", "archive_changed: the batch changed between the move's units");
+        throw new Refusal("archive_changed",
+                          "archive_changed: the batch changed between the move's units");
       }
       const list = JSON.stringify(seqs);
       const inList = "IN (SELECT message_id FROM ledger_messages WHERE seq IN " +
@@ -2422,7 +2435,8 @@ export class Ledger {
                         "reading and acking mail makes room");
     }
     if (usage.messages + 1 > limits.maxMessages) {
-      throw new Refusal("storage_busy", `${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
+      throw new Refusal("storage_busy",
+                        `${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
                         `out; try again in ${STORAGE_BUSY_RETRY_S} seconds. ` +
                         JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S }));
     }
@@ -2691,7 +2705,8 @@ export class Ledger {
       if (held === undefined && sql.exec<{ n: number }>(
         "SELECT COUNT(*) AS n FROM wake_callbacks INDEXED BY wake_callbacks_by_agent " +
           "WHERE agent_id = ?", agent.agent_id).one().n >= SUBSCRIPTIONS_PER_AGENT) {
-        throw new Refusal("subscription_limit", `subscription_limit: ${SUBSCRIPTIONS_PER_AGENT} doorbell ` +
+        throw new Refusal("subscription_limit",
+                          `subscription_limit: ${SUBSCRIPTIONS_PER_AGENT} doorbell ` +
                           "subscriptions an agent; end one first");
       }
       const grace = push.events?.rotation_grace_s ?? 0;

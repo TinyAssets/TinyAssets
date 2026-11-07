@@ -66,7 +66,8 @@ export function follows(args: unknown, allowed: readonly string[] = []): Follows
       || !rooms.every((room) => typeof room === "string" && room.startsWith(ROOM_PREFIX)
                       && codePoints(room) <= 256 && isPrintable(room))
       || new Set(rooms).size !== rooms.length) {
-    throw new Refusal("invalid", "board is true or false, and rooms are room collections, each once");
+    throw new Refusal("invalid",
+                      "board is true or false, and rooms are room collections, each once");
   }
   return Object.freeze({ board, rooms: Object.freeze([...rooms as string[]].sort()) });
 }

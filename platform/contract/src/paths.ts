@@ -83,7 +83,8 @@ export function storedPath(value: unknown): string {
   const parts = value.split("/").slice(1);
   if (parts.some((part) => part === "" || part === "." || part === ".."
                            || utf8Bytes(part) > MAX_NAME_BYTES)) {
-    throw new Refusal("invalid", "a path has no empty, . or .. component, and names of at most 255 bytes");
+    throw new Refusal("invalid",
+                      "a path has no empty, . or .. component, and names of at most 255 bytes");
   }
   if (!ROOTS.some((root) => within(value, root))) {
     throw new Refusal("invalid", "a path is under /workspace or /.ta/tmp");

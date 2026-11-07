@@ -754,7 +754,8 @@ export class Files {
         }
         const bound = limits[setting];
         if (bound === null) {
-          throw new Refusal("tier_unread", TIER_UNREAD);  // the tier's storage is not known: no guess
+          throw new Refusal("tier_unread",
+                            TIER_UNREAD);  // the tier's storage is not known: no guess
         }
         if (setting === "max_bytes" && this.#pastFigure) {
           continue;  // an archive move's placement: its second unit frees what it places
@@ -1310,7 +1311,8 @@ export class Files {
       throw new Refusal("invalid", "content is bytes");
     }
     if (bytes.byteLength > WHOLE_BYTES) {
-      throw new Refusal("invalid", `a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`);
+      throw new Refusal("invalid",
+                        `a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`);
     }
     const expected = expectedEtag(options.expected);
     const mode = modeOf(options.mode);
@@ -1554,7 +1556,8 @@ export class Files {
       const sql = this.#sql;
       const space = this.#space();
       if (space.intents >= MAX_OPEN_INTENTS || space.intent_chunks + plan.length > MAX_HELD_CHUNKS) {
-        throw new Refusal("file_quota", `${FILE_QUOTA}: too many uploads are open; commit or abort one first`);
+        throw new Refusal("file_quota",
+                          `${FILE_QUOTA}: too many uploads are open; commit or abort one first`);
       }
       this.#uploadShare(writer, plan.length);
       const own = scopesOf(writer).at(-1)!;
@@ -1613,14 +1616,16 @@ export class Files {
     const mine = open("writer = ?", writer);
     if (mine.n + 1 > shareOf(MAX_OPEN_INTENTS, limits.client_share)
         || mine.held + chunks > shareOf(MAX_HELD_CHUNKS, limits.client_share)) {
-      throw new Refusal("file_share", `${FILE_SHARE}: this client's open uploads are at its share; ` +
+      throw new Refusal("file_share",
+                        `${FILE_SHARE}: this client's open uploads are at its share; ` +
                         "commit or abort one first");
     }
     const theirs = open("writer GLOB ?", CLIENT_WRITER);
     const percent = 100 - limits.owner_reserve;
     if (theirs.n + 1 > shareOf(MAX_OPEN_INTENTS, percent)
         || theirs.held + chunks > shareOf(MAX_HELD_CHUNKS, percent)) {
-      throw new Refusal("file_share", `${FILE_SHARE}: outside clients' open uploads are at their share; ` +
+      throw new Refusal("file_share",
+                        `${FILE_SHARE}: outside clients' open uploads are at their share; ` +
                         "the rest is kept for the owner");
     }
   }
@@ -1709,7 +1714,8 @@ export class Files {
       const row = sql.exec<{ stored: number }>(
         "SELECT stored FROM file_chunks WHERE sha256 = ?", sha256).toArray()[0];
       if (row?.stored !== 1) {
-        throw new Refusal("refused", "a chunk of this commit was never stored; send its bytes first");
+        throw new Refusal("refused",
+                          "a chunk of this commit was never stored; send its bytes first");
       }
       sql.exec("UPDATE file_chunks SET state = 'live' WHERE sha256 = ? AND state = 'uploading'",
                sha256);
@@ -1718,7 +1724,8 @@ export class Files {
     const own = scopesOf(intent.writer).at(-1)!;
     const uploading = this.#uploading(own);
     if (intent.pending.some((sha256) => !this.#possessed(own, sha256, uploading))) {
-      throw new Refusal("refused", "a chunk of this commit was not sent by its upload; send its bytes " +
+      throw new Refusal("refused",
+                        "a chunk of this commit was not sent by its upload; send its bytes " +
                         "first");
     }
     const contentId = chunkedId(intent.size, intent.chunks);
@@ -1942,7 +1949,8 @@ export class Files {
         throw new Refusal("invalid", "that version holds no content");
       }
       if (this.#entry(at)?.version === row.version) {
-        throw new Refusal("refused", "the current version is never redacted; write a new one first");
+        throw new Refusal("refused",
+                          "the current version is never redacted; write a new one first");
       }
       this.#sql.exec("UPDATE file_history SET content_id = NULL WHERE version = ?", row.version);
       return { redacted: row.version };
@@ -1973,7 +1981,8 @@ export class Files {
     // A prefix and the 16 hex after it make one path component (`MAX_NAME_BYTES`).
     if (typeof prefix !== "string" || prefix.includes("/")
         || utf8Bytes(prefix) > MAX_NAME_BYTES - 16 || !isPrintable(prefix)) {
-      throw new Refusal("invalid", `a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
+      throw new Refusal("invalid",
+                        `a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
                         "printable characters, no slash");
     }
     const name = `${prefix}${randomHex(8)}`;

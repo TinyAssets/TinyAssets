@@ -84,7 +84,8 @@ export function profile(value: unknown): Profile {
   }
   const timed = fields["timestamp_header"] !== undefined;
   if (timed !== (fields["max_skew_seconds"] !== undefined)) {
-    throw new Refusal("invalid", "an HMAC profile's timestamp has a finite skew, and only with one");
+    throw new Refusal("invalid",
+                      "an HMAC profile's timestamp has a finite skew, and only with one");
   }
   const skew = fields["max_skew_seconds"];
   if (timed && (typeof skew !== "number" || !Number.isSafeInteger(skew) || skew < 1

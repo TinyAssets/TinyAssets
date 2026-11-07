@@ -34,11 +34,12 @@ export async function guarded<T>(run: () => Promise<T>): Promise<T> {
  */
 export function failureResponse(code: GatewayCode, extra?: Readonly<Record<string, string>>):
     Response {
-  const retry = (REFUSALS[code] as { readonly retryAfterS?: number }).retryAfterS;
+  const retry = new Refusal(code).retryAfter;
   return Response.json({ error: { code, message: code } },
                        { status: REFUSALS[code].status,
                          headers: { ...extra, "cache-control": "no-store",
-                                    ...(retry === undefined ? {} : { "retry-after": String(retry) }) } });
+                                    ...(retry === undefined ? {}
+                                      : { "retry-after": String(retry) }) } });
 }
 
 /**

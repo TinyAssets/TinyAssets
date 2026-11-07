@@ -643,7 +643,8 @@ export class Runs {
     const conversation = ask.conversation === null ? null : this.#conversation(ask, waiting);
     if (conversation?.busy === true) {
       if (waiting !== null) {
-        throw new Refusal("conversation_busy", CONVERSATION_BUSY);  // not its turn yet: it keeps waiting
+        throw new Refusal("conversation_busy",
+                          CONVERSATION_BUSY);  // not its turn yet: it keeps waiting
       }
       return this.#wait(ask, conversation.id, now);
     }
@@ -1394,7 +1395,8 @@ export class Runs {
     if (typeof most !== "number" || !Number.isSafeInteger(most) || most < 1 || most > MAX_LIST
         || (before !== undefined && (typeof before !== "number" || !Number.isSafeInteger(before)
                                      || before < 1))) {
-      throw new Refusal("invalid", `a run list's limit is 1 to ${MAX_LIST}, its before a run's seq`);
+      throw new Refusal("invalid",
+                        `a run list's limit is 1 to ${MAX_LIST}, its before a run's seq`);
     }
     const rows = this.#sql.exec<RunRow & { seq: number }>(
       "SELECT * FROM runs WHERE (? IS NULL OR client = ?) AND (? IS NULL OR seq < ?) " +

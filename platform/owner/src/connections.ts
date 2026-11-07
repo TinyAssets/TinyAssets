@@ -380,7 +380,8 @@ export class Connections {
       throw new Refusal("invalid", "revocable is a boolean, and false for a pasted key");
     }
     if ((kind === "oauth2") !== (r["redirect_uri"] !== undefined)) {
-      throw new Refusal("invalid", "an OAuth connection begins its flow at a redirect URI; a key has none");
+      throw new Refusal("invalid",
+                        "an OAuth connection begins its flow at a redirect URI; a key has none");
     }
     const redirect = kind === "oauth2" ? redirectUri(r["redirect_uri"]) : null;
     const name = text(r["display_name"], 128, "display_name");
@@ -438,7 +439,8 @@ export class Connections {
     const expires = r["expires_at"] ?? null;
     if (row.kind === "api_key" ? expires !== null
       : expires !== null && !count(expires, Number.MAX_SAFE_INTEGER)) {
-      throw new Refusal("invalid", "an OAuth connection's expiry is epoch ms or null; a key has none");
+      throw new Refusal("invalid",
+                        "an OAuth connection's expiry is epoch ms or null; a key has none");
     }
     const failed = r["failed"];
     if (failed !== undefined) {
@@ -446,7 +448,8 @@ export class Connections {
       if (typeof failed !== "string" || !(GATEWAY_CODES as readonly string[]).includes(failed)
           || checked.length > 0
           || row.kind !== "oauth2") {
-        throw new Refusal("invalid", "a failed setup commits an issued credential, its code and no models");
+        throw new Refusal("invalid",
+                          "a failed setup commits an issued credential, its code and no models");
       }
       if (r["egress"] !== undefined) {
         throw new Refusal("invalid", "a failed setup commits no egress scope");
