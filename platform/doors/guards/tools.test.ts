@@ -390,6 +390,27 @@ describe("tool table guard", () => {
     expect(RUN_INSTRUCTIONS).not.toBe(CLIENT_INSTRUCTIONS);
   });
 
+  it("tells an outside client's agent, plugin or none, what to say to a user who moved from " +
+     "the old TinyAssets, pointing at the onboarding skill's rules (import slice 8)", () => {
+    const skill = "/workspace/.agents/skills/onboarding/SKILL.md";
+    const starter = JSON.parse(readFileSync(join(PLATFORM, "starter", "starter.json"), "utf8")) as
+      { files: { path: string; text: string }[] };
+    // The path it names is the starter's seeded skill, which holds the section it points at.
+    expect(starter.files.find((file) => file.path === skill)?.text)
+      .toContain("## If your owner moved from the old TinyAssets");
+    const imported = CLIENT_INSTRUCTIONS.slice(CLIENT_INSTRUCTIONS.indexOf("If /workspace/imported/"));
+    const sentence = imported.slice(0, imported.indexOf(". ") + 1);
+    expect(sentence).toContain(skill);
+    for (const said of ["old data came across", "connectors, model sources and API keys again",
+                        "in TinyAssets, never by pasting a secret",
+                        "offer to merge the imported files without doing it alone"]) {
+      expect(sentence).toContain(said);
+    }
+    // One sentence, after the brain's rules, never inside their 512 characters.
+    expect(CLIENT_KEY).not.toContain("/workspace/imported/");
+    expect(sentence.match(/\. /g)).toBeNull();
+  });
+
   it("lists exactly each profile's tools: the directory's all but code, a run's all but " +
      "converse and the mailbox tools, custom's by default all", () => {
     const all = toolNames();
