@@ -256,7 +256,9 @@ export const SHARED: Level = level([
    named(".boxhost .locks .layout.json .layout.lock .owner-cutover.json " +
          ".ordinary-admission.json .router-credentials.json .disaster-restore.json " +
          ".platform-recovery.json platform-expected-instance.json release-state.json " +
-         ".billing_webhook_verified.json .custody.lock .deploy-pending.json", drop(RUNTIME)));
+         ".billing_webhook_verified.json .custody.lock .deploy-pending.json", drop(RUNTIME)),
+   named(".deleting .account-deletions", drop("a deletion staged, and its receipts " +
+                                              "(`account_deletion.py`)")));
 
 // ---------------------------------------------------------------------------------------
 // The owner's volume image
@@ -312,6 +314,26 @@ export const SESSIONS: Level = level([
   ["agent-activities.db", store("drop", "the agent's activity feed")],
   ["steering.db", store("drop", "mid-turn messages, emptied at every turn's end")],
   ["activity.db", store("drop", "the live view's recent tool calls")],
+  ["owner-control.lock", drop("the lock every owner-control write takes, never removed " +
+                              "(`owner_control.py`): empty")],
+  ["request-continuation.lock", drop("the bound answers' wake sweep's lock " +
+                                     "(`control_plane/continuations.py`): empty")],
+]);
+
+/**
+ * The names a level's own code mints, each family by its exact pattern (the minted part's
+ * own grammar), never a looser one.
+ */
+const MINTED_IN: ReadonlyMap<Level, readonly (readonly [RegExp, EntryRule])[]> = new Map([
+  [SESSIONS, [
+    // `bound_requests.py` `execution_attempt`: `request-<sha256 of the request id>.lock`.
+    [/^request-[0-9a-f]{64}\.lock$/, drop("one bound request's execution lock: empty")],
+    // `agent_sessions.py` `_record_path`: `<sha256 of the thread key, 32 hex>.json`, which
+    // native session a thread resumed. An engine's session cannot be carried (Fact 8), and
+    // only readers of these remain: records earlier code left.
+    [/^[0-9a-f]{32}\.json$/, drop("which engine session a thread resumed: an engine's " +
+                                  "session is never carried (Fact 8)")],
+  ]],
 ]);
 
 /** The image root: its own entries and stores; each center is matched by name (`CENTER`). */
@@ -324,11 +346,15 @@ export const ROOT: Level = level(ROOT_STORES, [
                                       "(`box_layout_migration.py` `RETIRED_STORES`)")],
   [".remote-ta-receipts.sqlite3", store("drop", "a remote box's call receipts for retries")],
 ], named("wiki .wiki daemon_wikis", user("pages the owner and their agent wrote")),
+   named("knowledge", user("the owner's knowledge as files (`knowledge_authority.py`: " +
+                           "`<owner root>/knowledge/`)")),
    named("apps", user("the owner's apps' documents (`app_room.py`: " +
                       "`<root>/apps/<slug>/app.json`)")),
    named("starter", user("the starter's owner files (`starter/muse/checkins.py`: settings, " +
                          "goals, monitors)")),
    named("founder_offers", drop("market offers (`scoped_reset.py`): no market now")),
+   named(".deleting .account-deletions", drop("a deletion the owner asked for, staged, and " +
+                                              "its receipts (`account_deletion.py`)")),
    named(".owner-boxd .runtime .workspace-staging .agent-turn-runners .consumer_liveness " +
          ".owner_tree .universe-tool-slots .outbound-proxy .run-execution-locks " +
          ".run-file-operation-locks .delivery-locks .workspace-family-locks " +
@@ -391,10 +417,14 @@ export const CENTER: Level = level(
     [".langgraph_runs.db", store("drop", "run checkpoints (LangGraph's own tables)")],
     [".remote-ta-receipts.sqlite3", store("drop", "a remote box's call receipts for retries")],
     [".lock", drop("the center's own lock (`UNIVERSE_ENTRIES`)")],
-    ["Activities.error.txt", user("a note the old stack left the owner " +
-                                  "(`activity_shape_migration.py`)")],
+    ...named("Activities.error.txt Activities.md Activities.tools.json",
+             user("what the activities' conversion wrote the owner " +
+                  "(`activity_shape_migration.py` `_write_owner_file`)")),
   ],
   named("apps", user("the owner's apps' documents (`app_room.py`)")),
+  named("agents", user("the center's agents as files (`agent_definition.py`: " +
+                       "`agents/<slug>/AGENTS.md`, `settings.yaml`)")),
+  named("previews", user("the custom UI's rendered previews (`ui_preview.py`)")),
   named("starter", user("the starter's owner files (`starter/muse/checkins.py`)")),
   named(".wiki_write_back_destination_markers.db .external_write_receipts.db .idempotency.db",
         store("drop", RUNTIME)),
@@ -425,7 +455,10 @@ export function ruleOf(at: Level, name: string): EntryRule | null {
   if (base !== undefined && base.kind === "store") {
     return base;
   }
-  return MINTED.test(name) ? HEARTBEAT : null;
+  if (MINTED.test(name)) {
+    return HEARTBEAT;
+  }
+  return (MINTED_IN.get(at) ?? []).find(([pattern]) => pattern.test(name))?.[1] ?? null;
 }
 
 /** A table's use under `rule`, or `null` when the rule names no such table. */

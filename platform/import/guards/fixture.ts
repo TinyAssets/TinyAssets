@@ -242,6 +242,12 @@ export function fixture(): Fixture {
             { changes: [[1, "wrote chapter one"]] });
   makeStore(join(a, ".agent-sessions", "novel", "steering.db"),
             "CREATE TABLE steer (id INTEGER PRIMARY KEY);");
+  // What the old code leaves beside them: its locks, and an older session record.
+  file(join(a, ".agent-sessions", "novel", "owner-control.lock"), "");
+  file(join(a, ".agent-sessions", "novel", "request-continuation.lock"), "");
+  file(join(a, ".agent-sessions", "novel", `request-${sha("request 1")}.lock`), "");
+  file(join(a, ".agent-sessions", "novel", `${sha("thread 1").slice(0, 32)}.json`),
+       '{"session_id": "engine-session-1"}');
   file(join(a, ".agent-home", ".claude", "credentials.json"), '{"token": "secret"}');
   file(join(a, ".owner-boxd", "boxhost.db"), "not read");
   file(join(a, "wiki", "home.md"), "# Alice's wiki\n");

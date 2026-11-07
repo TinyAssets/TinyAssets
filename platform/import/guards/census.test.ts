@@ -168,6 +168,21 @@ describe("rule 0", () => {
     expect(table).not.toContain("mystery");
   });
 
+  it("drops the locks and older session records the old code leaves in a sessions folder, " +
+     "and refuses one outside their grammar", () => {
+    const f = fresh();
+    const sessions = join(f.tree(ALICE), ".agent-sessions", "novel");
+    // The fixture holds owner-control.lock, request-continuation.lock, a request lock and a
+    // 32-hex session record there, as every used center does: ready.
+    expect(readdirSync(sessions)).toEqual(expect.arrayContaining([
+      "owner-control.lock", `${sha("thread 1").slice(0, 32)}.json`]));
+    expect(census(f.copy, TIERS).ready).toBe(true);
+    writeFileSync(join(sessions, `${sha("thread 2").slice(0, 31)}.json`), "{}");
+    const { report, table } = census(f.copy, TIERS);
+    expect(report["problems"]).toEqual({ unknown_entry: 1 });
+    expect(table).toContain("problem unknown_entry\tsessions/#");
+  });
+
   it("refuses a store stopped uncleanly (its log not merged), and one that fails its check", () => {
     const f = fresh();
     unmergedStore(join(f.tree(ALICE), "novel", ".authoring.db"));

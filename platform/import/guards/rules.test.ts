@@ -60,6 +60,17 @@ describe("rule 0", () => {
     expect(ruleOf(CENTER, "chapter-1.md")).toBeNull();
     expect(ruleOf(CENTER, "AGENTS.md.bak-1")).toBeNull();
     expect(ruleOf(ROOT, "novel")).toBeNull();
+    // A center's sessions folder: its locks and older session records, by their minted
+    // grammar alone, and only there.
+    for (const name of ["owner-control.lock", "request-continuation.lock",
+                        `request-${"a".repeat(64)}.lock`, `${"b".repeat(32)}.json`]) {
+      expect(ruleOf(SESSIONS, name)?.kind, name).toBe("drop");
+    }
+    for (const name of [`request-${"a".repeat(63)}.lock`, "request-x.lock",
+                        `${"b".repeat(31)}.json`, `${"B".repeat(32)}.json`, "notes.json"]) {
+      expect(ruleOf(SESSIONS, name), name).toBeNull();
+    }
+    expect(ruleOf(CENTER, `${"b".repeat(32)}.json`)).toBeNull();
     const policy = ACCOUNT["policy.db"]!;
     expect(policy.kind === "store" && [tableUse(policy, "policy"), tableUse(policy, "receipts"),
       tableUse(policy, "once_approvals"), tableUse(policy, "coupons")])
