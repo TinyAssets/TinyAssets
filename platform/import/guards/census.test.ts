@@ -23,7 +23,7 @@ import { TAR_MEMBER_MAX } from "../tar";
 import { IMPORTED, newTree, walkUser } from "../survey";
 import {
   ALICE, BAD_NAME, BOB, deletionJob, DORA, ERASED, ERASING, type Fixture, fixture, FOUNDER, keyOf,
-  makeStore, sha, sparse, TIERS, unmergedStore,
+  makeStore, NEWBIE, NEWBIE_UID, sha, sparse, TIERS, unmergedStore,
 } from "./fixture";
 
 const made: Fixture[] = [];
@@ -64,10 +64,10 @@ describe("the census", () => {
     expect(report["problems"]).toEqual({});
     expect(report["backup"]).toEqual({ pins: 4, verified: true });
     expect(report["owners"]).toEqual({
-      identities: 15, imported: 3, erased: 1, erasure_pending: 11,
-      admission: { admitted: 13, suspended: 1, erased: 1 },
-      tier: { free: 1, paid: 2 }, with_customer: 2, with_subscription: 2, not_authkit: 0,
-      with_volume: 4, no_volume: 0, centers: 4, retired_centers: 1, orphan_accounts: 0,
+      identities: 16, imported: 4, erased: 1, erasure_pending: 11,
+      admission: { admitted: 14, suspended: 1, erased: 1 },
+      tier: { free: 2, paid: 2 }, with_customer: 2, with_subscription: 2, not_authkit: 0,
+      with_volume: 6, no_volume: 0, never_ran: 1, centers: 4, retired_centers: 1, orphan_accounts: 0,
       orphan_rows: { admission: 0, plans: 0, volumes: 0 },
     });
     // user_gone by principal; user_gone2 (erased admission) and user_gone3 by digest alone.
@@ -88,7 +88,7 @@ describe("the census", () => {
       "center/.conversation_memory.db/conversation_backfill drop": 1,
       "root/.runs.db/runs drop": 2, "root/.runs.db/branch_schedules archive": 1,
       "root/.tinyassets.db/branch_definitions archive": 1, "sessions/history.db/* archive": 1,
-      "shared/.broker/state/owner-identities.db/owner_identities carry": 15,
+      "shared/.broker/state/owner-identities.db/owner_identities carry": 16,
       "shared/.broker/state/owner-identities.db/deletion_jobs drop": 1,
       "shared/.api-keys.sqlite3/api_keys drop": 2, "shared/.hook-owners.sqlite3/hook_owners drop": 1,
       "shared/.router-deleted-owners.sqlite3/deleted_owners carry": 2,
@@ -127,7 +127,7 @@ describe("the census", () => {
     const priv = mkdtempSync(join(tmpdir(), "ta-priv-"));
     try {
       expect(buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]),
-                                    tiers: TIERS }).bundled).toBe(2);
+                                    tiers: TIERS }).bundled).toBe(3);
       expect(state(f.work)).toEqual(before);
     } finally {
       rmSync(out, { recursive: true, force: true });
@@ -285,9 +285,8 @@ describe("the fleet's rows", () => {
       db.close();
       const { report, ready } = census(f.copy, TIERS);
       expect(ready, what).toBe(false);
-      // A volume row the manifest does not pin is an image not in the copy: the run stops.
-      expect(report["problems"], what).toEqual(what === "volumes"
-        ? { orphan_row: 1, erasure_unread: 1 } : { orphan_row: 1 });
+      // This volume row records no snapshot and no work: no image anywhere, nothing unread.
+      expect(report["problems"], what).toEqual({ orphan_row: 1 });
       expect((report["owners"] as { orphan_rows: Record<string, number> }).orphan_rows[what])
         .toBe(1);
     }
@@ -308,7 +307,7 @@ describe("the fleet's rows", () => {
     const { report, table } = census(f.copy, TIERS);
     expect(report["problems"]).toEqual({ never_admitted: 1 });
     expect((report["owners"] as { admission: Record<string, number> }).admission)
-      .toEqual({ absent: 1, admitted: 13, erased: 1 });
+      .toEqual({ absent: 1, admitted: 14, erased: 1 });
     expect(table).toContain(`${keyOf(BOB)}\tadmission\tabsent`);
   });
 });
@@ -325,7 +324,7 @@ describe("an erasure the owner asked for", () => {
     const f = fresh();
     const { report, ready, table } = census(f.copy, TIERS);
     expect(ready).toBe(true);
-    expect(report["owners"]).toMatchObject({ identities: 15, imported: 3, erasure_pending: 11 });
+    expect(report["owners"]).toMatchObject({ identities: 16, imported: 4, erasure_pending: 11 });
     expect(table).toContain(`${keyOf(DORA)}\terasure_pending\ttrue`);
     // Nothing of hers is read: her files are in no count.
     expect(table).toContain(`${keyOf(DORA)}\tfiles\t0`);
@@ -372,7 +371,7 @@ describe("an erasure the owner asked for", () => {
                                            "billing", "credentials", "identity", "receipt"]);
     jobs(f, "INSERT INTO deletion_jobs VALUES (?, ?)", id, record);
     expect(census(f.copy, TIERS).report["owners"])
-      .toMatchObject({ imported: 3, erasure_pending: 11 });
+      .toMatchObject({ imported: 4, erasure_pending: 11 });
   });
 
   it("stops the run on a job whose owner is no identity", () => {
@@ -508,6 +507,13 @@ describe("an image whose tombstones cannot be read whole", () => {
                  "NULL)").run(ERASING.deleted_owners);
       db.close();
     }],
+    ["a volume row with no snapshot whose work is not through", `${NEWBIE_UID}/unpublished`,
+     (f) => {
+       const db = identities(f);
+       db.prepare("UPDATE owner_volumes SET work = ? WHERE principal = ?")
+         .run(JSON.stringify({ kind: "running" }), NEWBIE);
+       db.close();
+     }],
     ["Bob's tombstone only in an unmerged log, in an erasing owner's image", "300004/unclean",
      (f) => unmergedStore(join(f.tree(DORA), ".tinyassets.db"), TOMBSTONES,
                           `INSERT INTO deleted_principals VALUES ('${sha(BOB)}')`)],
@@ -522,6 +528,12 @@ describe("an image whose tombstones cannot be read whole", () => {
     ["a link in a store's place", "300004/unreadable", (f) => {
       makeStore(join(f.work, "elsewhere.db"), TOMBSTONES, { deleted_principals: [[sha(BOB)]] });
       symlinkSync(join(f.work, "elsewhere.db"), join(f.tree(DORA), ".tinyassets.db"));
+    }],
+    ["a link at the root no rule names", "300004/unreadable", (f) => {
+      symlinkSync(f.tree(ALICE), join(f.tree(DORA), "elsewhere"));
+    }],
+    ["a folder at the root whose name no center has", "300004/unreadable", (f) => {
+      mkdirSync(join(f.tree(DORA), "not a center"));
     }],
     ["a center that is a link", "300004/unreadable", (f) => {
       rmSync(join(f.tree(DORA), "diary"), { recursive: true });
@@ -547,6 +559,24 @@ describe("an image whose tombstones cannot be read whole", () => {
     });
   }
 
+  it("reads every folder the old daemon takes for a center, listed or not", () => {
+    // Dora is withheld, her image never walked: a center her centers list does not name.
+    const f = fresh();
+    makeStore(join(f.tree(DORA), "unlisted", ".tinyassets.db"), TOMBSTONES,
+              { deleted_principals: [[sha(BOB)]] });
+    const { report, ready, table } = census(f.copy, TIERS);
+    expect(ready).toBe(true);
+    expect(report["problems"]).toEqual({});
+    expect(table).toContain(`${keyOf(BOB)}\terasure_pending\ttrue`);
+    // Alice is live: hers is refused (`unknown_entry`), and its tombstone still withholds Bob.
+    const g = fresh();
+    makeStore(join(g.tree(ALICE), "unlisted", ".tinyassets.db"), TOMBSTONES,
+              { deleted_principals: [[sha(BOB)]] });
+    const live = census(g.copy, TIERS);
+    expect(live.report["problems"]).toEqual({ unknown_entry: 1 });
+    expect(live.table).toContain(`${keyOf(BOB)}\terasure_pending\ttrue`);
+  });
+
   it("reads a store whose log is merged (an empty -wal), and every pinned image", () => {
     const f = fresh();
     writeFileSync(join(f.tree(DORA), ".centers.db-wal"), "");
@@ -556,5 +586,30 @@ describe("an image whose tombstones cannot be read whole", () => {
     expect(ready).toBe(true);
     expect(report["problems"]).toEqual({});
     expect(table).toContain(`${keyOf(BOB)}\terasure_pending\ttrue`);
+  });
+});
+
+describe("a volume row the manifest does not pin", () => {
+  it("imports an owner whose box never ran with no files, and withholds an erased owner whose " +
+     "snapshot was released: the run ready", () => {
+    // `provision`'s row (`{"kind": "create"}`) and the erase step's (`snapshot_id` released):
+    // the old backup pins neither, and neither has an image anywhere.
+    const f = fresh();
+    const { report, ready, table } = census(f.copy, TIERS);
+    expect(ready).toBe(true);
+    expect(report["problems"]).toEqual({});
+    expect(report["owners"]).toMatchObject({ never_ran: 1, erased: 1 });
+    expect(table).toContain(`${keyOf(NEWBIE)}\tfiles\t0`);
+    expect(table).toContain(`${keyOf(NEWBIE)}\terasure_pending\tfalse`);
+    expect(table).toContain(`${keyOf(ERASED)}\terased\ttrue`);
+    expect(table).not.toContain(`${keyOf(NEWBIE)}\tproblem`);
+    const out = join(f.work, "out");
+    const priv = join(f.work, "private");
+    mkdirSync(out);
+    mkdirSync(priv);
+    expect(buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]), tiers: TIERS }))
+      .toMatchObject({ bundled: 3, erased: 1, refused: {} });
+    expect(readdirSync(out)).toContain(keyOf(NEWBIE));
+    expect(readdirSync(out)).not.toContain(keyOf(ERASED));
   });
 });

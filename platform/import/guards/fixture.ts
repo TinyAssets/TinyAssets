@@ -12,6 +12,7 @@
  * - bob (`user_bob`, uid 300002): suspended for billing, free, one center, no broker stores.
  * - the founder (`user_founder`, uid 300003): admitted, paid; the exclusion list's.
  * - dora (`user_dora`, uid 300004): admitted, her deletion job not through.
+ * - `user_new`: admitted, its box never run (a volume row, no snapshot, no image).
  * - `ERASING`: an admitted owner with no volume for each other erasure source
  *   (`erasure.ts`), named by that source alone; and `user_erased`, its admission erased.
  *   Were a source not read, its owner would be bundled (an empty bundle).
@@ -52,8 +53,14 @@ export const ERASING = Object.freeze({
   workos_revocations: "user_erase_signin", deleted_marker: "user_erase_marker",
   image_deleted_principals: "user_erase_image", center_deleted_principals: "user_erase_center",
 });
-/** An identity whose admission reads erased. */
+/** An identity whose admission reads erased, its snapshot released (D6). */
 export const ERASED = "user_erased";
+/**
+ * An admitted owner whose box never ran (`provision`: a volume row, `{"kind": "create"}`, no
+ * snapshot, so no pin and no image): imported with no files.
+ */
+export const NEWBIE = "user_new";
+export const NEWBIE_UID = 300_005;
 const ERASING_UIDS: readonly [string, number][] = [...Object.values(ERASING), ERASED]
   .map((principal, i) => [principal, 300_011 + i]);
 /** The old broker's deletion job for `owner`, its steps done so far (`deletion_jobs.py`). */
@@ -152,16 +159,24 @@ export function fixture(): Fixture {
             "CREATE TABLE deletion_jobs (id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL);" +
             "CREATE TABLE owner_box_revocations (principal TEXT PRIMARY KEY NOT NULL, " +
             "deleted INTEGER NOT NULL);", {
-              owner_identities: [...Object.entries(UIDS), ...ERASING_UIDS],
+              owner_identities: [...Object.entries(UIDS), ...ERASING_UIDS, [NEWBIE, NEWBIE_UID]],
               owner_admission: [[sha(ALICE), "admitted", "[]"], [sha(BOB), "suspended", '["billing"]'],
                                 [sha(FOUNDER), "admitted", "[]"], [sha(DORA), "admitted", "[]"],
                                 [sha("user_gone2"), "erased", "[]"],
                                 ...Object.values(ERASING).map((p) => [sha(p), "admitted", "[]"]),
-                                [sha(ERASED), "erased", "[]"]],
+                                [sha(ERASED), "erased", "[]"], [sha(NEWBIE), "admitted", "[]"]],
               // A revocation not marked deleted is no erasure: alice's is bundled.
               owner_box_revocations: [[ERASING.owner_box_revocations, 1], [ALICE, 0]],
-              owner_volumes: Object.entries(UIDS).map(([p, uid]) =>
-                [p, uid, 3, snapshot(p), sha(images[p]!), null, 0, 1.5, null]),
+              owner_volumes: [
+                ...Object.entries(UIDS).map(([p, uid]) =>
+                  [p, uid, 3, snapshot(p), sha(images[p]!), null, 0, 1.5, null]),
+                // The two shapes the old backup pins no image for (`_bindings`: a snapshot only).
+                [NEWBIE, NEWBIE_UID, 1, null, null, JSON.stringify({ kind: "create" }), 1, null,
+                 null],
+                [ERASED, ERASING_UIDS.at(-1)![1], 3, null, null,
+                 JSON.stringify({ kind: "erase", released: [sha("released").slice(0, 32)] }), 0,
+                 null, null],
+              ],
               owner_box_secrets: Object.keys(UIDS).map((p) => [p, `secret-${p}`]),
               routing_sequence: [[7]],
               // Dora's withdrawal failed (`WithdrawalPending`): her job waits, and her
@@ -176,7 +191,8 @@ export function fixture(): Fixture {
             "attempt_id TEXT UNIQUE NOT NULL, owner TEXT NOT NULL, attempt TEXT NOT NULL);", {
               plans: [[ALICE, "paid", 1, null, "cus_alice", "sub_alice", null],
                       [BOB, "free", 1, null, null, null, null],
-                      [FOUNDER, "paid", 1, null, "cus_founder", "sub_founder", null]],
+                      [FOUNDER, "paid", 1, null, "cus_founder", "sub_founder", null],
+                      [NEWBIE, "free", 1, null, null, null, null]],
             });
   makeStore(join(shared, ".broker/credential-custody.db"),
             "CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY);",

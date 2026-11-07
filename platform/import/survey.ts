@@ -130,6 +130,32 @@ export interface Volume {
   readonly work: string | null;
 }
 
+/**
+ * The work kinds a volume row with no snapshot holds when there is no image anywhere
+ * (`broker/owner_volumes.py`): none; `create`, a box never run, whose volume "is formatted on
+ * first wake" (`_owed`), the same path `image_absent` takes with no snapshot; and `erase`, an
+ * erased owner's snapshot released (`UPDATE owner_volumes SET snapshot_id=NULL`). The old
+ * backup pins only rows with a snapshot (`platform_backup._bindings`).
+ */
+const NO_IMAGE: ReadonlySet<string | null> = new Set([null, "create", "erase"]);
+
+/** A volume row's work kind, as the old stack writes it (`{"kind": ...}` or none). */
+function workKind(volume: Volume): string | null {
+  if (volume.work === null) {
+    return null;
+  }
+  const work = JSON.parse(volume.work) as { kind?: unknown } | null;
+  if (typeof work?.kind !== "string") {
+    throw new Error("an owner_volumes row's work is no work the old stack wrote");
+  }
+  return work.kind;
+}
+
+/** Whether the row says no image exists: no snapshot, and work that makes none. */
+export function noImage(volume: Volume): boolean {
+  return volume.snapshot_id === null && NO_IMAGE.has(workKind(volume));
+}
+
 export interface Owner {
   readonly principal: string;
   /** The SHA-256 of the principal, as the old stack keyed it (admission, broker accounts). */
@@ -164,6 +190,11 @@ export interface Fleet {
   readonly orphans: { readonly admission: number; readonly plans: number; readonly volumes: number };
   /** Identities with no volume row and no pin: owners who never had a box. */
   readonly noVolume: number;
+  /**
+   * Owners whose box never ran: a volume row with no snapshot and no image (`noImage`), so
+   * no files. The old stack formats their volume on first wake, so they import empty.
+   */
+  readonly neverRan: number;
   /** Owners withheld for a deletion job not finished. */
   readonly erasurePending: number;
 }
@@ -605,9 +636,16 @@ export function survey(copy: Copy): Fleet {
       inImages.push(...found.digests);
     }
   }
-  for (const uid of bound) {
-    if (!pins.has(uid)) {
-      unread(uid, "not_pinned");
+  // A row the manifest does not pin: an image missing from the copy, unless the row says
+  // there is none (a box never run, an erased owner's snapshot released).
+  for (const volume of volumes.values()) {
+    if (pins.has(volume.uid)) {
+      continue;
+    }
+    if (volume.snapshot_id !== null) {
+      unread(volume.uid, "not_pinned");
+    } else if (!noImage(volume)) {
+      unread(volume.uid, "unpublished");
     }
   }
   const facts = withImageFacts(erasure, inImages);
@@ -644,6 +682,8 @@ export function survey(copy: Copy): Fleet {
   const noVolume = owners.filter((owner) => owner.erasure === null && owner.volume === null
                                  && !pins.has(owner.uid!))
     .length;
+  const neverRan = owners.filter((owner) => owner.erasure === null && owner.volume !== null
+                                 && !pins.has(owner.volume.uid) && noImage(owner.volume)).length;
   // A job whose owner is no identity: whose data it would withhold cannot be told.
   for (const [principal, job] of jobs) {
     if (!principals.has(principal)) {
@@ -651,7 +691,7 @@ export function survey(copy: Copy): Fleet {
     }
   }
   const erasurePending = owners.filter((owner) => owner.erasure === "pending").length;
-  return { problems, stores, owners, orphanAccounts, orphans, noVolume, erasurePending,
+  return { problems, stores, owners, orphanAccounts, orphans, noVolume, neverRan, erasurePending,
            erasure: facts,
            tombstones: {
              principals: tombstones.filter(([, fact]) => fact.principal !== null)
@@ -709,6 +749,10 @@ function surveyVolume(owner: Owner, copy: Copy, pin: { snapshot_id: string; sha2
   }
   if (volume.uid !== owner.uid) {
     tree.problems.push({ code: "pin_mismatch", at: `volume/${volume.uid}` });
+    return owner;
+  }
+  if (pin === null && noImage(volume)) {
+    // A box never run: no image, so no files (the old stack formats it on first wake).
     return owner;
   }
   if (volume.work !== null) {

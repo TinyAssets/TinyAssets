@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { mountArgs, mountProblem } from "../backup";
 import { main, tiersOf } from "../cli";
-import { ALICE, BOB, fixture, FOUNDER, keyOf, TIERS, UIDS } from "./fixture";
+import { ALICE, BOB, fixture, FOUNDER, keyOf, NEWBIE, TIERS, UIDS } from "./fixture";
 
 const temps: string[] = [];
 afterEach(() => {
@@ -119,7 +119,7 @@ describe("the job's entry", () => {
     const priv = join(scratch, "private");
     expect(main(["bundle", f.work, "--tiers", control, "--exclude", list, "--out", out,
                  "--private", priv], () => mounted, backing)).toBe(0);
-    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(BOB)].sort());
+    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(BOB), keyOf(NEWBIE)].sort());
     expect(readdirSync(priv)).toContain(keyOf(FOUNDER));
     expect(main(["bundle", f.work, "--tiers", control, "--exclude", list, "--dry-run"],
                 () => mounted, backing)).toBe(0);

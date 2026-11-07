@@ -37,8 +37,8 @@ import { join } from "node:path";
 
 import { sha256Hex } from "../contract/src/digest";
 
-import { intact, isStore, openStore, readSmall, tablesOf } from "./backup";
-import { CENTER_NAME } from "./rules";
+import { intact, isStore, nameText, openStore, readSmall, tablesOf } from "./backup";
+import { CENTER_NAME, ROOT, ruleOf } from "./rules";
 
 /** One digest's facts: which sources name it, and its principal where any does. */
 export interface Fact {
@@ -150,8 +150,11 @@ export function erasureFacts(read: Rows, shared: string): ErasureFacts {
 export type ImageRead = { readonly digests: readonly string[] } | { readonly problem: string };
 
 /**
- * The tombstones one mounted image's main stores hold, at its root and in each center its
- * `.centers.db` lists. Each store is read whole or not at all: a link in a store's place,
+ * The tombstones one mounted image's main stores hold, at its root and in each center: those
+ * its `.centers.db` lists, and every folder the old daemon would take for one, listed or not
+ * (`daemon_server.owned_universe_id` knows a universe by its folder's name, a dotted name
+ * never one). An entry it cannot tell is a folder or not, or whose name no center has, is
+ * a problem. Each store is read whole or not at all: a link in a store's place,
  * a log beside it not merged (`-wal` or `-journal`, whose rows an immutable read never
  * sees), a store that fails `integrity_check` or cannot be opened is a problem, never a
  * store with no tombstones.
@@ -190,15 +193,37 @@ export function imageTombstones(root: string): ImageRead {
     return centers;
   }
   const folders = [root];
+  const listed = new Set<string>();
   for (const row of centers.rows) {
     const name = String(row["center"]);
     const folder = join(root, name);
     if (!CENTER_NAME.test(name) || (exists(folder) && !lstatSync(folder).isDirectory())) {
       return { problem: "unreadable" };
     }
+    listed.add(name);
     if (exists(folder)) {
       folders.push(folder);
     }
+  }
+  // Every other folder the old daemon would read as a universe: not dotted, and no entry a
+  // root rule names (`wiki`, the stores). A file is no universe; anything else is not told.
+  for (const entry of readdirSync(root, { encoding: "buffer" })) {
+    const name = nameText(entry);
+    if (entry[0] === 0x2e || (name !== null && (listed.has(name) || ruleOf(ROOT, name) !== null))) {
+      continue;
+    }
+    if (name === null) {
+      return { problem: "unreadable" };
+    }
+    const stray = join(root, name);
+    const stat = lstatSync(stray);
+    if (stat.isFile()) {
+      continue;
+    }
+    if (!stat.isDirectory() || !CENTER_NAME.test(name)) {
+      return { problem: "unreadable" };
+    }
+    folders.push(stray);
   }
   const found: string[] = [];
   for (const folder of folders) {

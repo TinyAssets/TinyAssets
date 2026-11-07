@@ -28,7 +28,7 @@ import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
 import {
   ALICE, BAD_DIR, BAD_NAME, bigBytes, BOB, DORA, ERASED, ERASING, type Fixture, fixture, FOUNDER,
-  keyOf, sha, sparse, TIERS,
+  keyOf, NEWBIE, sha, sparse, TIERS,
 } from "./fixture";
 
 const temps: string[] = [];
@@ -72,7 +72,7 @@ describe("the bundle builder", () => {
   it("writes each owner's tree with the platform's own content ids for the backup's bytes", () => {
     const { f, out, options } = setup();
     const summary = buildBundles(f.copy, options);
-    expect(summary).toMatchObject({ dry_run: false, owners: 15, bundled: 2, excluded: 1, erased: 1,
+    expect(summary).toMatchObject({ dry_run: false, owners: 16, bundled: 3, excluded: 1, erased: 1,
                                     erasure_pending: 11,
                                     refused: {} });
     const bundle = join(out, keyOf(ALICE));
@@ -215,7 +215,7 @@ describe("the bundle builder", () => {
   it("writes the excluded owner's bundle to the private folder alone, with the private record", () => {
     const { f, out, priv, options } = setup();
     const summary = buildBundles(f.copy, options);
-    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(BOB)].sort());
+    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(BOB), keyOf(NEWBIE)].sort());
     expect(readdirSync(priv).sort()).toEqual([keyOf(FOUNDER), DIGESTS, PRIVATE_RECORD].sort());
     expect(json(join(priv, keyOf(FOUNDER), "owner.json"))["owner"]).toBe(FOUNDER);
     expect(manifest(join(priv, keyOf(FOUNDER))).map((entry) => entry.path))
@@ -223,11 +223,12 @@ describe("the bundle builder", () => {
     expect(lstatSync(join(priv, "cutover.private.json")).mode & 0o777).toBe(0o600);
     const record = json(join(priv, "cutover.private.json"))["owners"] as Record<string, unknown>[];
     expect(record.map((owner) => [owner["owner"], owner["excluded"], owner["subscription_id"]]))
-      .toEqual([[ALICE, false, "sub_alice"], [BOB, false, null], [FOUNDER, true, "sub_founder"]]);
+      .toEqual([[ALICE, false, "sub_alice"], [BOB, false, null], [FOUNDER, true, "sub_founder"],
+                [NEWBIE, false, null]]);
     // The digests are keyed by owner: a 0600 file of the private folder's, never stdout.
     expect(lstatSync(join(priv, DIGESTS)).mode & 0o777).toBe(0o600);
     expect(Object.keys(json(join(priv, DIGESTS))["digests"] as object).sort())
-      .toEqual([keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER)].sort());
+      .toEqual([keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER), keyOf(NEWBIE)].sort());
     const text = JSON.stringify(summary);
     for (const name of [ALICE, BOB, FOUNDER, keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER)]) {
       expect(text).not.toContain(name);
@@ -299,8 +300,8 @@ describe("the bundle builder", () => {
     db.prepare("DELETE FROM owner_admission WHERE digest IN (?, ?)").run(sha(BOB), sha(FOUNDER));
     db.close();
     const summary = buildBundles(f.copy, options);
-    expect(summary).toMatchObject({ bundled: 1, excluded: 1, refused: { never_admitted: 1 } });
-    expect(readdirSync(out)).toEqual([keyOf(ALICE)]);
+    expect(summary).toMatchObject({ bundled: 2, excluded: 1, refused: { never_admitted: 1 } });
+    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(NEWBIE)].sort());
     expect(json(join(priv, keyOf(FOUNDER), "owner.json"))["admission"])
       .toEqual({ state: "absent", reasons: [] });
   });
@@ -309,15 +310,16 @@ describe("the bundle builder", () => {
     const { f, out, priv, options } = setup();
     const erasing = [...Object.values(ERASING), DORA, ERASED];
     const summary = buildBundles(f.copy, { ...options, exclude: new Set([FOUNDER, ...erasing]) });
-    expect(summary).toMatchObject({ bundled: 2, excluded: 1, erased: 1, erasure_pending: 11,
+    expect(summary).toMatchObject({ bundled: 3, excluded: 1, erased: 1, erasure_pending: 11,
                                     refused: {} });
-    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(BOB)].sort());
+    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(BOB), keyOf(NEWBIE)].sort());
     expect(readdirSync(priv).sort())
       .toEqual([keyOf(FOUNDER), DIGESTS, PRIVATE_RECORD].sort());
     const record = json(join(priv, PRIVATE_RECORD))["owners"] as Record<string, unknown>[];
-    expect(record.map((owner) => owner["owner"]).sort()).toEqual([ALICE, BOB, FOUNDER].sort());
+    expect(record.map((owner) => owner["owner"]).sort())
+      .toEqual([ALICE, BOB, FOUNDER, NEWBIE].sort());
     expect(Object.keys(json(join(priv, DIGESTS))["digests"] as object).sort())
-      .toEqual([keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER)].sort());
+      .toEqual([keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER), keyOf(NEWBIE)].sort());
     for (const dir of [out, priv]) {
       for (const principal of erasing) {
         expect(() => execFileSync("grep", ["-rlF", principal, dir]), principal).toThrow();
@@ -338,7 +340,7 @@ describe("the bundle builder", () => {
   it("bundles an owner whose erasure is pending into neither folder, excluded or not", () => {
     const { f, out, priv, options } = setup();
     const summary = buildBundles(f.copy, { ...options, exclude: new Set([FOUNDER, DORA]) });
-    expect(summary).toMatchObject({ bundled: 2, excluded: 1, erasure_pending: 11, refused: {} });
+    expect(summary).toMatchObject({ bundled: 3, excluded: 1, erasure_pending: 11, refused: {} });
     expect(readdirSync(out)).not.toContain(keyOf(DORA));
     expect(readdirSync(priv)).not.toContain(keyOf(DORA));
     const record = json(join(priv, PRIVATE_RECORD))["owners"] as Record<string, unknown>[];
@@ -355,7 +357,7 @@ describe("the bundle builder", () => {
     mkdirSync(join(f.tree(BOB), ".account-deletions"));
     writeFileSync(join(f.tree(BOB), ".account-deletions", "receipt.json"), "{}");
     expect(buildBundles(f.copy, options).refused).toEqual({ unfinished_erasure: 1 });
-    expect(readdirSync(out)).toEqual([keyOf(ALICE)]);
+    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(NEWBIE)].sort());
     const again = setup();
     mkdirSync(join(again.f.work, "data", "_data", ".deleting", "home"), { recursive: true });
     expect(() => buildBundles(again.f.copy, again.options)).toThrow(/unfinished_erasure/);
@@ -396,8 +398,8 @@ describe("the bundle builder", () => {
     db.exec("CREATE TABLE mystery (x)");
     db.close();
     const summary = buildBundles(f.copy, options);
-    expect(summary).toMatchObject({ bundled: 1, excluded: 1, refused: { unknown_table: 1 } });
-    expect(readdirSync(out)).toEqual([keyOf(ALICE)]);
+    expect(summary).toMatchObject({ bundled: 2, excluded: 1, refused: { unknown_table: 1 } });
+    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(NEWBIE)].sort());
   });
 
   it("leaves out an owner past the platform's limits, counted, while the others go on", () => {
@@ -405,7 +407,7 @@ describe("the bundle builder", () => {
     sparse(join(f.tree(BOB), "main", "workspace", "huge.bin"), FILE_DEFAULTS.max_file_bytes + 1);
     const summary = buildBundles(f.copy, options);
     expect(summary.refused).toEqual({ over_file_bytes: 1, over_storage: 1 });
-    expect(readdirSync(out)).toEqual([keyOf(ALICE)]);
+    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(NEWBIE)].sort());
   });
 
   it("refuses the whole run when the backup copy fails its own check, writing nothing", () => {
@@ -423,7 +425,7 @@ describe("the bundle builder", () => {
     const before = find();
     const dry = buildBundles(f.copy, { out: null, private: null, exclude: new Set([FOUNDER]),
                                        tiers: TIERS });
-    expect(dry).toMatchObject({ dry_run: true, bundled: 2, excluded: 1, refused: {} });
+    expect(dry).toMatchObject({ dry_run: true, bundled: 3, excluded: 1, refused: {} });
     expect(find()).toBe(before);
     const real = buildBundles(f.copy, options);
     expect({ ...dry, dry_run: false }).toEqual(real);
