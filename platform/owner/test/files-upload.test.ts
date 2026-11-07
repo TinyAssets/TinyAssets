@@ -231,7 +231,7 @@ describe("an upload", () => {
     const r = await rig();
     expect((await failure(() => r.stub.fileUploadBegin(r.bind(null),
                                                         { size, chunks: chunks as string[] })))
-      .name).toBe("Invalid");
+      .code).toBe("invalid");
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 0 }]);
   });
 

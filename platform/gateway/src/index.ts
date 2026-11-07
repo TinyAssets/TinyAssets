@@ -34,7 +34,7 @@ import { secret, source } from "../../contract/src/egress-scope";
 import {
   type RingAnswer, ringDoorbell, sealDoorbell, verifyDoorbell, type Verified as Rung,
 } from "./doorbell";
-import { codeOf, failureResponse, guarded } from "../../contract/src/failure";
+import { codeOf, failureResponse, guarded } from "./failure";
 import { forward, forwardMetered, forwardRead, type MeterOutcome, type Reserve,
          type Verified, verify } from "./forward";
 import { binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";

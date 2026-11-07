@@ -29,7 +29,7 @@
  * database is costed for (the owner-bound guard counts each live run's rows at it), so a
  * record past it is malformed.
  */
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { TIER_STORAGE_MAX } from "./segments";
 
@@ -64,14 +64,14 @@ function plain(value: unknown, keys: string): value is Record<string, unknown> {
     && Object.keys(value).sort().join() === keys;
 }
 
-/** The tier numbers exactly, or `Invalid`. */
+/** The tier numbers exactly, or `invalid`. */
 export function parseTiers(value: unknown): Tiers {
   if (!plain(value, "free,paid")) {
-    throw new Invalid("the tier record names free and paid");
+    throw new Refusal("invalid", "the tier record names free and paid");
   }
   const numbers = (tier: unknown): TierNumbers => {
     if (!plain(tier, "runs,storage_bytes")) {
-      throw new Invalid("a tier is its runs and its storage_bytes");
+      throw new Refusal("invalid", "a tier is its runs and its storage_bytes");
     }
     const { runs, storage_bytes: bytes } = tier;
     if (typeof runs !== "number" || !Number.isSafeInteger(runs) || runs < 1
@@ -80,7 +80,7 @@ export function parseTiers(value: unknown): Tiers {
       // The storage a tier may give at most (`TIER_STORAGE_MAX`, about 0.5 TB): the archive's
       // fence rows the owner-bound guard holds, each a sealed segment's least bytes. A larger
       // tier needs larger segments first (`limits-audit.md`).
-      throw new Invalid(`a tier's runs are 1 to ${RUNS_CEILING}, its storage whole bytes up ` +
+      throw new Refusal("invalid", `a tier's runs are 1 to ${RUNS_CEILING}, its storage whole bytes up ` +
                         `to ${TIER_STORAGE_MAX}`);
     }
     return Object.freeze({ runs, storage_bytes: bytes });
@@ -88,10 +88,10 @@ export function parseTiers(value: unknown): Tiers {
   return Object.freeze({ free: numbers(value["free"]), paid: numbers(value["paid"]) });
 }
 
-/** A tier change's tier, or `Invalid`. */
+/** A tier change's tier, or `invalid`. */
 export function tierName(request: unknown): TierName {
   if (!plain(request, "tier") || !(TIER_NAMES as readonly unknown[]).includes(request["tier"])) {
-    throw new Invalid("a tier change names free or paid");
+    throw new Refusal("invalid", "a tier change names free or paid");
   }
   return request["tier"] as TierName;
 }
@@ -106,7 +106,7 @@ export function tierNumbers(storage: OwnerStorage, handed: unknown, now: number)
   const sql = storage.sql;
   if (handed === null) {
     sql.exec("DELETE FROM platform_tiers");
-    throw new Refused(TIER_UNREAD);
+    throw new Refusal("tier_unread", TIER_UNREAD);
   }
   if (handed !== undefined) {
     const tiers = parseTiers(handed);
@@ -118,7 +118,7 @@ export function tierNumbers(storage: OwnerStorage, handed: unknown, now: number)
   }
   const kept = sql.exec<{ tiers: string }>("SELECT tiers FROM platform_tiers").toArray()[0];
   if (kept === undefined) {
-    throw new Refused(TIER_UNREAD);
+    throw new Refusal("tier_unread", TIER_UNREAD);
   }
   return parseTiers(JSON.parse(kept.tiers));
 }

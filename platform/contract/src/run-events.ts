@@ -14,7 +14,7 @@
  * conversation's session id (`init`), the run's result text (`final_text`, the last match,
  * or every match joined where the matcher says `accumulate`) and its first error.
  */
-import { Refused } from "./errors";
+import { Refusal } from "./refusal";
 
 /**
  * One event matcher, as a source record's `engine.events` holds it: an event whose fields at
@@ -82,7 +82,7 @@ export class PostGate {
   /** Hold one more post, or refuse it `EVENTS_BUSY`. */
   enter(): void {
     if (this.#held >= EVENTS_IN_FLIGHT) {
-      throw new Refused(EVENTS_BUSY);
+      throw new Refusal("events_busy", EVENTS_BUSY);
     }
     this.#held += 1;
   }

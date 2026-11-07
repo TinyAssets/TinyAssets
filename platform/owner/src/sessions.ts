@@ -39,7 +39,7 @@
 import { sha256Hex } from "../../contract/src/digest";
 import { randomBytes } from "node:crypto";
 
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
 
@@ -90,7 +90,7 @@ export class Sessions {
     if (typeof authenticatedAt !== "number" || !Number.isSafeInteger(authenticatedAt)
         || authenticatedAt < now - limits.signInMaxAgeS
         || authenticatedAt > now + limits.clockMarginS) {
-      throw new Refused("a session opens only from a fresh interactive sign-in");
+      throw new Refusal("refused", "a session opens only from a fresh interactive sign-in");
     }
     const session = randomBytes(32).toString("base64url");
     const expiresAt = now + limits.ttlS;
@@ -118,7 +118,7 @@ export class Sessions {
       sha256Hex(cookie), now,
     ).toArray()[0];
     if (row === undefined) {
-      throw new Refused(SESSION_REQUIRED);
+      throw new Refusal("refused", SESSION_REQUIRED);
     }
     return row.session_hash;
   }
@@ -143,7 +143,7 @@ export class Sessions {
   /** Sign one session out; signing out a session that is gone changes nothing. */
   close(proof: unknown): { closed: number } {
     if (typeof proof !== "string") {
-      throw new Invalid("a session is the cookie its sign-in returned");
+      throw new Refusal("invalid", "a session is the cookie its sign-in returned");
     }
     return { closed: this.#sql.exec("DELETE FROM owner_sessions WHERE session_hash = ? " +
                                       "RETURNING session_hash", sha256Hex(proof)).toArray().length };

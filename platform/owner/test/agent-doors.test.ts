@@ -203,7 +203,7 @@ describe("the owner's agent definitions (review H1)", () => {
                                                         content: bytes("mine") });
     expect("entry" in made && made.entry.writer).toBe(`client:${MUSE.client}`);
     expect((await failure(() => r.stub.fileWrite(r.bind(MUSE), {
-      path: "/workspaceX/a.md", expected_etag: "", content: bytes("x") }))).name)
-      .toBe("Invalid");
+      path: "/workspaceX/a.md", expected_etag: "", content: bytes("x") }))).code)
+      .toBe("invalid");
   });
 });

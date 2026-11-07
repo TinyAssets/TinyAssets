@@ -167,8 +167,8 @@ describe("sandbox time", () => {
         seconds: 0.501, ...UNBILLED }]);
     // The client's own call never reaches the meter's read.
     expect((await failure(() => r.stub.sandboxDays(
-      r.bind({ origin: { client: "c".repeat(64), family: "mcp" } } as never), {}))).name)
-      .toMatch(/Refused|Invalid/);
+      r.bind({ origin: { client: "c".repeat(64), family: "mcp" } } as never), {}))).code)
+      .toMatch(/^(refused|invalid)$/);
   });
 });
 

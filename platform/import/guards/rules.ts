@@ -10,7 +10,7 @@
 import type { ImportRules } from "../../ci/kit/imports";
 
 /** The contract's modules the importer reaches, its own and through each other. */
-const CONTRACT = Object.freeze(["content", "digest", "errors", "file-defaults", "limits",
+const CONTRACT = Object.freeze(["content", "digest", "file-defaults", "limits", "refusal",
                                 "paths", "sync-ignore", "text"].map((name) => `contract/src/${name}`));
 
 export const IMPORTS: ImportRules = Object.freeze({

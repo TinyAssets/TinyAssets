@@ -288,10 +288,10 @@ describe("the runner's events post (review M-4)", () => {
     const many = Array.from({ length: EVENT_FRAMES_MAX + 1 },
                             (_, i) => ({ seq: i + 1, at: 1, event: {} }));
     expect((await failure(() => r.stub.runEvents(runnerBinding(r, start), { frames: many })))
-      .name).toBe("Invalid");
+      .code).toBe("invalid");
     const long = [{ seq: 1, at: 1, event: { text: "x".repeat(FRAME_UNITS_MAX) } }];
     expect((await failure(() => r.stub.runEvents(runnerBinding(r, start), { frames: long })))
-      .name).toBe("Invalid");
+      .code).toBe("invalid");
     expect(await r.stub.runEvents(runnerBinding(r, start), {
       frames: many.slice(0, EVENT_FRAMES_MAX) })).toMatchObject({ accepted: EVENT_FRAMES_MAX });
   });

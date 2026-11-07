@@ -285,7 +285,7 @@ describe("a file path", () => {
   ])("refuses %s", async (_what, path) => {
     const r = await rig();
     const error = await failure(() => r.stub.fileStat(r.bind(null), { path: path as string }));
-    expect(error.name).toBe("Invalid");
+    expect(error.code).toBe("invalid");
     expect(error.message).toMatch(/^a path /);
   });
 

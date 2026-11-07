@@ -80,7 +80,7 @@ import {
 import { OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
 import { nextOccurrence, parseCron } from "./cron";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { periods } from "./money";
 import type { NetworkPlan } from "./network";
@@ -168,7 +168,7 @@ export interface OpenedTokens {
 
 export interface RunDeps {
   /** The owner's `require_work` refusal, or null while it is admitted. */
-  readonly unadmitted: () => string | null;
+  readonly unadmitted: () => Refusal | null;
   readonly sandboxBound: () => boolean;
   readonly sources: () => Sources;
   /**
@@ -618,13 +618,13 @@ export class Runs {
         waiting: string | null = null): Admitted | Retried {
     const unadmitted = this.#deps.unadmitted();
     if (unadmitted !== null) {
-      throw new Refused(unadmitted);
+      throw unadmitted;
     }
     if (!this.#deps.sandboxBound()) {
-      throw new Refused(SANDBOX_ABSENT);
+      throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
     }
     if (!ask.file.enabled) {
-      throw new Refused(AGENT_DISABLED);
+      throw new Refusal("agent_disabled", AGENT_DISABLED);
     }
     const held = this.#held(ask);
     if (waiting === null && ask.request !== null) {
@@ -632,7 +632,7 @@ export class Runs {
         .toArray()[0];
       if (same !== undefined) {
         if (same.client !== (ask.origin?.client ?? null) || same.agent !== ask.agent) {
-          throw new Refused("conflict: this request id named another run");
+          throw new Refusal("conflict", "conflict: this request id named another run");
         }
         return { existing: true, run: same.id, conversation: same.conversation };
       }
@@ -643,7 +643,7 @@ export class Runs {
     const conversation = ask.conversation === null ? null : this.#conversation(ask, waiting);
     if (conversation?.busy === true) {
       if (waiting !== null) {
-        throw new Refused(CONVERSATION_BUSY);  // not its turn yet: it keeps waiting
+        throw new Refusal("conversation_busy", CONVERSATION_BUSY);  // not its turn yet: it keeps waiting
       }
       return this.#wait(ask, conversation.id, now);
     }
@@ -657,7 +657,7 @@ export class Runs {
         return this.#wait(ask, conversation?.id
           ?? this.#newConversation(ask, chosen!.engine, now), now);
       }
-      throw new Refused(`${TIER_RUNS} (${tier}: ${ask.tiers[tier].runs})`);
+      throw new Refusal("tier_runs", `${TIER_RUNS} (${tier}: ${ask.tiers[tier].runs})`);
     }
     const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
     if (chosen.credential === "api_key") {
@@ -736,7 +736,7 @@ export class Runs {
       "SELECT COUNT(*) AS n, coalesce(SUM(bytes), 0) AS bytes FROM run_inputs").one();
     if (queued.n >= QUEUE_ROWS
         || queued.bytes + (ask.mail === null ? utf8Bytes(ask.prompt) : 0) > QUEUE_BYTES) {
-      throw new Refused(QUEUE_FULL);
+      throw new Refusal("run_inputs_full", QUEUE_FULL);
     }
     const runId = id("run_");
     this.#sql.exec(
@@ -868,15 +868,14 @@ export class Runs {
    * disabled, no source serves it): settled `failed` with the refusal's code, the refusal as
    * its error. False when it no longer waits.
    */
-  refuseWaiting(runId: string, reason: string, now: number): boolean {
+  refuseWaiting(runId: string, refusal: Refusal, now: number): boolean {
     if (this.#sql.exec("SELECT 1 FROM runs WHERE id = ? AND state = 'waiting'", runId)
           .toArray().length === 0) {
       return false;
     }
-    this.#sql.exec("UPDATE runs SET error = ? WHERE id = ?", cut(reason, ERROR_BYTES).text,
-                   runId);
-    return this.settle(runId, "failed", /^[a-z_]{1,64}/.exec(reason)?.[0] ?? "refused", null,
-                       now);
+    this.#sql.exec("UPDATE runs SET error = ? WHERE id = ?",
+                   cut(refusal.message, ERROR_BYTES).text, runId);
+    return this.settle(runId, "failed", refusal.code, null, now);
   }
 
   /** A run's requests, tokens and cost so far, as egress caps it. A read. */
@@ -900,8 +899,8 @@ export class Runs {
     try {
       grant = this.#deps.standing(stamp);
     } catch (error) {
-      if (error instanceof Refused) {
-        throw new Refused(AUTHORITY_CHANGED);
+      if (error instanceof Refusal && !error.invalid) {
+        throw new Refusal("refused", AUTHORITY_CHANGED);
       }
       throw error;
     }
@@ -926,7 +925,7 @@ export class Runs {
         ask.conversation).toArray()[0] : undefined;
     if (found === undefined || found.agent !== ask.agent
         || found.client !== (ask.origin?.client ?? null)) {
-      throw new Refused(NO_CONVERSATION);
+      throw new Refusal("no_conversation", NO_CONVERSATION);
     }
     const busy = this.#sql.exec(
       `SELECT 1 FROM runs WHERE conversation = ? AND (${LIVE} OR (state = 'waiting' AND ` +
@@ -978,7 +977,7 @@ export class Runs {
       ? (this.#deps.lease.live(now, authority)?.signins ?? []).map((engine) =>
         [engine, { engine, signed_in: true, models: [], checked_at: now, changed_at: 0 }])
       : this.signins().map((signin) => [signin.engine, signin]));
-    const lapsed = (engine: string) => new Refused(`${SIGNIN_LAPSED} (${engine})`);
+    const lapsed = (engine: string) => new Refusal("signin_lapsed", `${SIGNIN_LAPSED} (${engine})`);
     let unattendedOnly = false;
     const allows = (engine: string, credential: CredentialKind): boolean => {
       const cli = sources.get(engine)?.cli;
@@ -999,7 +998,7 @@ export class Runs {
     if (file.engine !== AUTO) {
       const record = sources.get(file.engine);
       if (record?.cli === undefined || record.unwired !== undefined) {
-        throw new Refused(`${NO_SOURCE} (${file.engine} is no served engine)`);
+        throw new Refusal("no_source", `${NO_SOURCE} (${file.engine} is no served engine)`);
       }
       const credentials: readonly CredentialKind[] = file.credential !== null
         ? [file.credential] : file.connection !== null ? ["api_key"] : record.cli.credential;
@@ -1012,7 +1011,7 @@ export class Runs {
           // even where it is signed in (review H1). A sign-in not known signed out is
           // admitted: the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
           if (!this.#deps.signinOn(file.engine)) {
-            throw new Refused(`${SIGNIN_OFF} (${file.engine})`);
+            throw new Refusal("signin_off", `${SIGNIN_OFF} (${file.engine})`);
           }
           if (!client && signins.get(file.engine)?.signed_in === false) {
             throw lapsed(file.engine);
@@ -1073,7 +1072,8 @@ export class Runs {
         }
       }
     }
-    throw new Refused(unattendedOnly ? UNATTENDED_REFUSED : NO_SOURCE);
+    throw unattendedOnly ? new Refusal("unattended_refused", UNATTENDED_REFUSED)
+      : new Refusal("no_source", NO_SOURCE);
   }
 
   /** The owner's own spending caps, for an API-key run on `source`: off unless set. */
@@ -1089,7 +1089,7 @@ export class Runs {
     ];
     for (const [rule, cap, period, by] of checks) {
       if (cap !== null && cap !== undefined && this.#deps.spent(period, by) >= cap) {
-        throw new Refused(`${OWNER_LIMIT}: ${rule} is spent`);
+        throw new Refusal("owner_limit", `${OWNER_LIMIT}: ${rule} is spent`);
       }
     }
   }
@@ -1278,7 +1278,7 @@ export class Runs {
       { conversation: string; frames: Frame[]; settled: RunState | null } {
     const row = this.liveUnder(runId, lease) ? this.#run(runId) : undefined;
     if (row === undefined) {
-      throw new Refused(RUN_ENDED);
+      throw new Refusal("run_ended", RUN_ENDED);
     }
     this.#deps.lease.renew(lease.lease_id, lease.epoch);
     const events = this.#deps.sources().get(row.source)?.cli?.engine.events;
@@ -1377,7 +1377,7 @@ export class Runs {
   receipt(runId: unknown, client: string | null): RunReceipt {
     const row = typeof runId === "string" && RUN_ID.test(runId) ? this.#run(runId) : undefined;
     if (row === undefined || (client !== null && row.client !== client)) {
-      throw new Refused(NO_RUN);
+      throw new Refusal("no_run", NO_RUN);
     }
     return receipt(row);
   }
@@ -1394,7 +1394,7 @@ export class Runs {
     if (typeof most !== "number" || !Number.isSafeInteger(most) || most < 1 || most > MAX_LIST
         || (before !== undefined && (typeof before !== "number" || !Number.isSafeInteger(before)
                                      || before < 1))) {
-      throw new Invalid(`a run list's limit is 1 to ${MAX_LIST}, its before a run's seq`);
+      throw new Refusal("invalid", `a run list's limit is 1 to ${MAX_LIST}, its before a run's seq`);
     }
     const rows = this.#sql.exec<RunRow & { seq: number }>(
       "SELECT * FROM runs WHERE (? IS NULL OR client = ?) AND (? IS NULL OR seq < ?) " +
@@ -1468,10 +1468,10 @@ export class Runs {
                       origin: { client: string; family: string } | null }, now: number):
       RunSchedule {
     if (utf8Bytes(request.input) > INPUT_BYTES) {
-      throw new Invalid(`a scheduled input is at most ${INPUT_BYTES} bytes`);
+      throw new Refusal("invalid", `a scheduled input is at most ${INPUT_BYTES} bytes`);
     }
     if ((request.at === null) === (request.cron === null)) {
-      throw new Invalid("a schedule is one of at or cron");
+      throw new Refusal("invalid", "a schedule is one of at or cron");
     }
     let next: number | null;
     let trigger: RunSchedule["trigger"];
@@ -1480,7 +1480,7 @@ export class Runs {
       trigger = "cron";
     } else {
       if (!Number.isFinite(request.at) || request.at! <= now) {
-        throw new Invalid("at is a time still ahead, in seconds since the epoch");
+        throw new Refusal("invalid", "at is a time still ahead, in seconds since the epoch");
       }
       next = request.at!;
       trigger = "at";
@@ -1502,7 +1502,7 @@ export class Runs {
       ? this.#sql.exec<ScheduleRow>("SELECT * FROM run_schedules WHERE id = ?", scheduleId)
         .toArray()[0] : undefined;
     if (row === undefined || (client !== null && row.client !== client)) {
-      throw new Refused(NO_SCHEDULE);
+      throw new Refusal("no_schedule", NO_SCHEDULE);
     }
     return scheduleOf(row);
   }

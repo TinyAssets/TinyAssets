@@ -41,7 +41,7 @@
 import starterJson from "../../starter/starter.json" with { type: "json" };
 
 import { agentFile } from "./agent-file";
-import { Invalid } from "../../contract/src/errors";
+import { FileFault, Refusal } from "../../contract/src/refusal";
 import { contentIdOf } from "../../contract/src/content";
 import { type Content, FileConflict, type Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
@@ -108,7 +108,7 @@ export function starterPackage(value: unknown): StarterPackage {
       || (pkg.version as number) < 1 || !Array.isArray(pkg.files) || pkg.files.length < 1
       || !Array.isArray(retired)
       || pkg.files.length + retired.length > STARTER_FILES_MAX) {
-    throw new Invalid(`a starter package is a version and 1 to ${STARTER_FILES_MAX} files ` +
+    throw new Refusal("invalid", `a starter package is a version and 1 to ${STARTER_FILES_MAX} files ` +
                       "and retired paths");
   }
   const paths = new Set<string>();
@@ -121,19 +121,19 @@ export function starterPackage(value: unknown): StarterPackage {
     if (!within(path, WORKSPACE) || path === WORKSPACE || path.endsWith(NEWER)
         || paths.has(path) || (file.class !== "managed" && file.class !== "personal")
         || (file.class === "managed" && !ownersOnly(path)) || typeof file.text !== "string") {
-      throw new Invalid(`starter file ${String(file.path)} is a distinct path in the workspace ` +
+      throw new Refusal("invalid", `starter file ${String(file.path)} is a distinct path in the workspace ` +
                         "(a managed one in the owner's trees), managed or personal, with its " +
                         "text");
     }
     if (file.moved_from !== undefined && (file.class !== "personal"
         || !(Array.isArray(retired) && retired.includes(file.moved_from)))) {
-      throw new Invalid(`starter file ${path} moved from a retired path, and is personal`);
+      throw new Refusal("invalid", `starter file ${path} moved from a retired path, and is personal`);
     }
     const widens = file.widens;
     if (widens !== undefined && (!Number.isSafeInteger(widens.version) || widens.version < 2
                                  || widens.version > (pkg.version as number)
                                  || typeof widens.why !== "string" || widens.why === "")) {
-      throw new Invalid(`starter file ${path}'s widens names a later version and why`);
+      throw new Refusal("invalid", `starter file ${path}'s widens names a later version and why`);
     }
     paths.add(path);
     return Object.freeze({ path, class: file.class, text: file.text,
@@ -143,7 +143,7 @@ export function starterPackage(value: unknown): StarterPackage {
   });
   const agents = files.filter((file) => file.path.endsWith("/agent.json"));
   if (agents.length > 0 && files.at(-1) !== agents.at(-1)) {
-    throw new Invalid("a starter package writes agent.json last");
+    throw new Refusal("invalid", "a starter package writes agent.json last");
   }
   for (const agent of agents) {
     agentFile(agent.text);
@@ -151,7 +151,7 @@ export function starterPackage(value: unknown): StarterPackage {
   const gone = retired.map((path: unknown) => {
     const at = storedPath(path);
     if (paths.has(at)) {
-      throw new Invalid(`starter path ${at} is retired and shipped at once`);
+      throw new Refusal("invalid", `starter path ${at} is retired and shipped at once`);
     }
     paths.add(at);
     return at;
@@ -305,8 +305,8 @@ export class Starter {
                             `could not all be written, and are tried again: ${why}`);
         }
       });
-      if (!(error instanceof Error) || !["Refused", "Invalid", "FileFault", "FileConflict"]
-            .includes(error.name)) {
+      if (!(error instanceof Refusal || error instanceof FileFault
+            || error instanceof FileConflict)) {
         console.error("the starter pass failed; it runs again later");  // no paths or ids
       }
     }

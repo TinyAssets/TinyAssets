@@ -3,9 +3,9 @@
  * in session as grant-then-entry, use bound to the key's origin and mint time, a wrong
  * key never reaching an object, and the revoke and delete orders.
  */
-import { BUSY, SlotBusy } from "../../contract/src/slots";
-import { refusal } from "../src/tools";
-import { BUSY_ONCE } from "./entry";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
+import { BUSY, slotBusy } from "../../contract/src/slots";
+import { REFUSE_ONCE } from "./entry";
 import { createHash } from "node:crypto";
 
 import { env } from "cloudflare:workers";
@@ -87,16 +87,66 @@ beforeEach(async () => {
   restore = serveFirstPartyDocument();
 });
 
+/**
+ * A refusal thrown in the owner's object crosses its RPC (workerd's error serialization:
+ * the name, the message and the own fields, never the class) and is answered by its code.
+ */
+describe("a refusal across the object's RPC", () => {
+  const FACTS = Object.freeze({ used_bytes: 10, needed_bytes: 2, held_bytes: 0,
+                                limit_bytes: 10, free: ["delete old mail"] });
+
+  it("reaches the caller with its code, its Retry-After and its facts", async () => {
+    const o = await signedIn();
+    REFUSE_ONCE.set(o.owner, new Refusal("storage_busy", "storage_busy: catching up",
+                                         { retryAfterS: 7, facts: FACTS }));
+    const error = await env.OWNER.getByName(o.owner).outsideAgents({ owner: o.owner } as never)
+      .then(() => null, (caught: unknown) => caught);
+    expect(error).not.toBeInstanceOf(Refusal);  // the class never crosses
+    const refusal = refusalOf(error)!;
+    expect([refusal.code, refusal.message, refusal.retryAfterS, refusal.facts])
+      .toEqual(["storage_busy", "storage_busy: catching up", 7, FACTS]);
+    expect([refusal.status, refusal.retryAfter]).toEqual([503, 7]);
+  });
+
+  it.each([
+    ["storage_full", "storage_full: your storage is full", {}, 507, null],
+    ["uploads_open", "uploads_open: held by uploads still open", {}, 409, null],
+    ["storage_busy", "storage_busy: catching up", {}, 503, "30"],
+    ["storage_busy", "storage_busy: the archive moved this mail", { retryAfterS: 1 }, 503, "1"],
+    ["owner_suspended", "owner_suspended: the owner's account is suspended", {}, 403, null],
+    ["invalid", "invalid ledger request", {}, 400, null],
+  ] as const)("answers %s on the API as its code says", async (code, message, more, status,
+                                                              retry) => {
+    const o = await signedIn();
+    const { key } = await mint(o);
+    REFUSE_ONCE.set(o.owner, new Refusal(code, message, more));
+    const refused = await api(key, "agents_list", {});
+    expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
+      .toEqual([status, retry, { error: message }]);
+  });
+
+  it("is a bug, loudly, when its code is no code of the list", async () => {
+    const o = await signedIn();
+    const forged = new Refusal("refused", "from another version");
+    (forged as unknown as { code: string }).code = "not_a_code";
+    REFUSE_ONCE.set(o.owner, forged);
+    const error = await env.OWNER.getByName(o.owner).outsideAgents({ owner: o.owner } as never)
+      .then(() => null, (caught: unknown) => caught);
+    expect(refusalOf(error)).toBeNull();
+  });
+});
+
 describe("the key format", () => {
   it("answers a call the owner's slots refuse busy 503 with Retry-After, and the next lands",
      async () => {
     const o = await signedIn();
     const { key } = await mint(o);
-    BUSY_ONCE.add(o.owner);
+    REFUSE_ONCE.set(o.owner, slotBusy());
     const busy = await api(key, "agents_list", {});
     expect([busy.status, busy.headers.get("Retry-After")]).toEqual([503, "1"]);
     expect(await busy.json()).toEqual({ error: BUSY });
-    expect(refusal(new SlotBusy())).toEqual({ status: 503, message: BUSY, retry_after_s: 1 });
+    expect([slotBusy().code, slotBusy().status, slotBusy().retryAfter, slotBusy().message])
+      .toEqual(["busy", 503, 1, BUSY]);
     expect((await api(key, "agents_list", {})).status).toBe(200);
   });
 

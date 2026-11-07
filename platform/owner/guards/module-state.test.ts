@@ -334,8 +334,8 @@ const EXEMPTIONS = Object.freeze([
   }),
   Object.freeze({
     path: "gateway/src/held.ts",
-    sha256: "b8b736883158d37e50c50e1042c61a9848c41572f97ed679057c5cc9af80b82d",
-    problems: Object.freeze(["gateway/src/held.ts:54: ISOLATE holds a mutable value"]),
+    sha256: "2d0f3f38dd56fc649a517221db23977ba82e35c89fb9c5c7aa5b078d8165d1d5",
+    problems: Object.freeze(["gateway/src/held.ts:55: ISOLATE holds a mutable value"]),
   }),
 ]);
 const EXEMPT = EXEMPTIONS[0]!;

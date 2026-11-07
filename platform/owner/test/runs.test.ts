@@ -9,6 +9,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { Refusal } from "../../contract/src/refusal";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
@@ -207,7 +208,7 @@ describe("admission", () => {
     // A record past the ceiling, or malformed, is refused, never guessed.
     expect((await failure(() => r.stub.agentSubmit(
       r.bind({ tiers: { ...TIERS, free: { runs: 1001, storage_bytes: 1 } } }),
-      { message: "x", client_send_id: "e-2" }))).name).toBe("Invalid");
+      { message: "x", client_send_id: "e-2" }))).code).toBe("invalid");
   });
 
   it("refuses a run when the control record held no tier numbers", async () => {
@@ -620,7 +621,7 @@ describe("auto and the owner's sign-ins", () => {
                        [{ engine: "claude-code", signed_in: true, models: ["a b"] }],
                        [{ engine: "claude-code", signed_in: true,
                           models: ["m".repeat(256), ...Array(8).fill("m".repeat(256))] }]]) {
-      expect((await report(runnerSandbox(r, start), bad)).name).toBe("Invalid");
+      expect((await report(runnerSandbox(r, start), bad)).code).toBe("invalid");
     }
     expect(await r.sql("SELECT engine FROM engine_signins")).toEqual([]);
     // Its lease over, the sandbox reports nothing.
@@ -639,7 +640,8 @@ describe("the admission unit", () => {
         throw new Error("admission went past the owner's admission");
       };
       const runs = new Runs(gate.storage, {
-        unadmitted: () => "owner_suspended: the owner's account is suspended (billing)",
+        unadmitted: () => new Refusal("owner_suspended",
+                                      "owner_suspended: the owner's account is suspended (billing)"),
         sandboxBound: () => true, sources: never, signinOn: never, usable: never, egressible: never,
         standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,

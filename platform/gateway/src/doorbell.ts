@@ -34,7 +34,7 @@ import { SUBSCRIPTION_ID } from "../../contract/src/ids";
 import {
   AUTH_HEADER, callbackSecret, callbackUrl, kindNamed, type Push,
 } from "../../contract/src/wake-records";
-import { Failure } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
 import { binding, type KeyringEnv, openValue, type Resealed, sealValue, type Sealed } from "./keyring";
 
 /** What a doorbell blob holds: where it goes, how it is sent, and its secret. */
@@ -85,7 +85,7 @@ const DOORBELL_KEYS = "auth,kind,record,sealed_at,secret,url";
 function pushOf(record: unknown): Push {
   const kind = typeof record === "string" ? kindNamed(record) : null;
   if (kind === null || kind.push === null) {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
   return kind.push;
 }
@@ -94,18 +94,18 @@ function pushOf(record: unknown): Push {
 export function doorbellSecret(value: unknown): DoorbellSecret {
   if (typeof value !== "object" || value === null || Array.isArray(value)
       || Object.keys(value).sort().join() !== DOORBELL_KEYS) {
-    throw new Failure("credential_refused");
+    throw new Refusal("credential_refused");
   }
   const v = value as Record<string, unknown>;
   const push = pushOf(v["record"]);
   if (v["kind"] !== "doorbell" || v["auth"] !== push.auth || typeof v["sealed_at"] !== "number") {
-    throw new Failure("credential_refused");
+    throw new Refusal("credential_refused");
   }
   try {
     callbackUrl(push, v["url"]);
     callbackSecret(push, v["secret"]);
   } catch {
-    throw new Failure("credential_refused");
+    throw new Refusal("credential_refused");
   }
   return Object.freeze(v as unknown as DoorbellSecret);
 }
@@ -113,7 +113,7 @@ export function doorbellSecret(value: unknown): DoorbellSecret {
 /** A subscription's binding: its own key space, never a model connection's. */
 function bound(owner: string, subscription: string, version: number) {
   if (typeof subscription !== "string" || !SUBSCRIPTION_ID.test(subscription)) {
-    throw new Failure("invalid_binding");
+    throw new Refusal("invalid_binding");
   }
   return binding(owner, `wake.${subscription}`, version);
 }
@@ -122,7 +122,7 @@ function bound(owner: string, subscription: string, version: number) {
 function plaintext(input: unknown): DoorbellSecret {
   if (typeof input !== "object" || input === null
       || Object.keys(input).sort().join() !== "record,secret,url") {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
   const { record, url, secret } = input as Record<string, unknown>;
   const push = pushOf(record);
@@ -130,7 +130,7 @@ function plaintext(input: unknown): DoorbellSecret {
     return { kind: "doorbell", record: record as string, url: callbackUrl(push, url),
              auth: push.auth, secret: callbackSecret(push, secret), sealed_at: Date.now() };
   } catch {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
 }
 
@@ -207,7 +207,7 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
   const plain = plaintext(input);
   const events = pushOf(plain.record).events;
   if (events === null || plain.auth !== "standard_webhooks") {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
   const target = bound(owner, subscription, version);
   const challenge = base64url(random(32));
@@ -270,7 +270,7 @@ function ringRequest(value: unknown): RingRequest {
       || typeof headers !== "object" || headers === null || Array.isArray(headers)
       || !Object.entries(headers).every(([name, v]) => typeof v === "string"
                                         && !AUTH_HEADER.test(name))) {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
   return r as unknown as RingRequest;
 }
@@ -298,7 +298,7 @@ export async function ringDoorbell(env: KeyringEnv, owner: string, subscription:
       }
     }
   } catch (error) {
-    if (error instanceof Failure && error.code === "keyring_unavailable") {
+    if (error instanceof Refusal && error.code === "keyring_unavailable") {
       throw error;
     }
     return { state: "refused" };

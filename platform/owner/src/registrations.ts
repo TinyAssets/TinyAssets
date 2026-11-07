@@ -24,7 +24,7 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX64 } from "../../contract/src/ids";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { CARD_REQUEST_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
@@ -119,14 +119,14 @@ export class Registrations {
        request: Readonly<Record<string, unknown>>, now: number):
       { card_id: string; digest: string; expires_at: number } {
     if (!HEX64.test(origin.client) || !HEX64.test(origin.family) || by.client !== origin.client) {
-      throw new Invalid("invalid outside origin");
+      throw new Refusal("invalid", "invalid outside origin");
     }
     if (Object.values(request).some((value) => value !== null && typeof value === "object")) {
-      throw new Invalid("a registration's fields are flat values");
+      throw new Refusal("invalid", "a registration's fields are flat values");
     }
     const body = JSON.stringify(request);
     if (codePoints(body) > this.#limits.maxRequest) {
-      throw new Invalid(`a registration is at most ${this.#limits.maxRequest} characters`);
+      throw new Refusal("invalid", `a registration is at most ${this.#limits.maxRequest} characters`);
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -137,11 +137,11 @@ export class Registrations {
       const mine = sql.exec<{ n: number }>(
         "SELECT COUNT(*) AS n FROM agent_cards WHERE client = ?", origin.client).one().n;
       if (mine >= this.#limits.perClient) {
-        throw new Refused("this client's pending registrations are at their limit");
+        throw new Refusal("refused", "this client's pending registrations are at their limit");
       }
       if (sql.exec<{ pending_cards: number }>("SELECT pending_cards FROM policy_usage").one()
             .pending_cards >= this.#limits.maxPending) {
-        throw new Refused("too many pending agent registrations");
+        throw new Refusal("refused", "too many pending agent registrations");
       }
       const cardId = "card_" + token(16);
       const shown = sha256Hex(JSON.stringify([cardId, origin.client, origin.family, sourceRef,
@@ -176,7 +176,7 @@ export class Registrations {
                             cardId, now - CARD_TTL_S).toArray()[0]
       : undefined;
     if (row === undefined || typeof shown !== "string" || row.digest !== shown) {
-      throw new Refused("registration is not the pending card shown");
+      throw new Refusal("refused", "registration is not the pending card shown");
     }
     this.#grants.standing(row.client, row.generation, row.authenticated_at);
     this.#sql.exec("DELETE FROM agent_cards WHERE card_id = ?", row.card_id);

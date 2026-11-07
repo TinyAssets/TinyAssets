@@ -27,7 +27,7 @@ describe("the sender is the verified identity", () => {
       room_id: `dm:${muse}`, client_message_id: "x", body: "x", parent_id: null,
       sender: "owner",
     } as never));
-    expect([forged.name, forged.message]).toEqual(["Invalid", "invalid ledger request"]);
+    expect([forged.code, forged.message]).toEqual(["invalid", "invalid ledger request"]);
     const [mail] = (await r.read(MUSE)).messages;
     expect([mail!.sender_kind, mail!.sender_id, mail!.chain_depth]).toEqual(["owner", "owner", 0]);
     expect([mail!.body, mail!.integrity]).toEqual(['{"sender": "owner"}', "ok"]);
@@ -68,7 +68,7 @@ describe("the sender is the verified identity", () => {
     for (const [room, body, parent] of [[`dm:${muse}`, "two", null], [`dm:${dot}`, "one", null],
                                         [`dm:${muse}`, "one", sent.message_id]] as const) {
       const refused = await failure(() => r.post(null, room, { body, parent }));
-      expect([refused.name, refused.message]).toEqual(["Refused", "conflict"]);
+      expect([refused.code, refused.message]).toEqual(["post_conflict", "conflict"]);
     }
     expect(await r.table("ledger_messages")).toHaveLength(1);
     expect((await r.read(MUSE)).messages.map((m) => m.body)).toEqual(["one"]);
@@ -96,7 +96,7 @@ describe("the sender is the verified identity", () => {
         "an outside agent posts only in its own dm room"],
     ] as const) {
       const refused = await failure(() => r.post(origin, room, { cmid: "z", parent }));
-      expect([refused.name, refused.message]).toEqual(["Refused", reason]);
+      expect([refused.code, refused.message]).toEqual(["refused", reason]);
     }
   });
 
@@ -110,7 +110,7 @@ describe("the sender is the verified identity", () => {
     for (const attempt of [() => r.post(null, `dm:${muse}`, { cmid: "c2" }),
                            () => r.post(MUSE, `dm:${muse}`, { cmid: "m1" }),
                            () => r.read(MUSE)]) {
-      expect((await failure(attempt)).name).toBe("Refused");
+      expect((await failure(attempt)).code).toBe("refused");
     }
     expect(await r.register(MUSE)).toBe(muse);
     expect((await r.read(MUSE)).messages).toHaveLength(1);
@@ -119,15 +119,16 @@ describe("the sender is the verified identity", () => {
   it("validates fields and keeps a body verbatim", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    for (const [fields, reason] of [
-      [{ body: "" }, `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
-      [{ body: "x".repeat(MAX_BODY_BYTES + 1) }, `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
-      [{ body: "a\uD800b" }, "a message body is well-formed text"],
-      [{ cmid: "" }, "client_message_id is 1 to 128 printable characters"],
-      [{ cmid: "a\nb" }, "client_message_id is 1 to 128 printable characters"],
+    for (const [fields, code, reason] of [
+      [{ body: "" }, "message_body", `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
+      [{ body: "x".repeat(MAX_BODY_BYTES + 1) }, "message_body",
+       `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
+      [{ body: "a\uD800b" }, "message_body", "a message body is well-formed text"],
+      [{ cmid: "" }, "invalid", "client_message_id is 1 to 128 printable characters"],
+      [{ cmid: "a\nb" }, "invalid", "client_message_id is 1 to 128 printable characters"],
     ] as const) {
       const refused = await failure(() => r.post(null, `dm:${muse}`, fields));
-      expect([refused.name, refused.message]).toEqual(["Invalid", reason]);
+      expect([refused.code, refused.message]).toEqual([code, reason]);
     }
     const body = '  { "b": 1,  "a": "café 🎲" }\n';
     await r.post(null, `dm:${muse}`, { body });
@@ -228,7 +229,7 @@ describe("a reader sees only its own mail", () => {
     expect(seq).toBe(1);
     for (const through of [2, 4, 10_000]) {
       const refused = await failure(() => r.ack(MUSE, through));
-      expect([refused.name, refused.message]).toEqual(["Refused", "ack is past this reader's mail"]);
+      expect([refused.code, refused.message]).toEqual(["refused", "ack is past this reader's mail"]);
     }
     expect((await r.ack(MUSE, 1)).through).toBe(1);
     expect((await r.read(DOT)).messages[0]!.seq).toBe(2);  // Dot's mail intact
@@ -275,8 +276,8 @@ describe("outside agents register from a verified identity", () => {
     const muse = await r.register(MUSE);
     const twice = await failure(() => r.register(MUSE, "Muse", "pull",
                                                  { command_center_id: "beta" }));
-    expect([twice.name, twice.message])
-      .toEqual(["Refused", "this outside identity is already an enabled agent"]);
+    expect([twice.code, twice.message])
+      .toEqual(["refused", "this outside identity is already an enabled agent"]);
     expect((await r.stub.outsideAgents(r.bind(null))).agents.map((a) => a.agent_id))
       .toEqual([muse]);
     await r.post(null, `dm:${muse}`);
@@ -293,27 +294,27 @@ describe("outside agents register from a verified identity", () => {
     const request = { command_center_id: "alpha", display_name: "Muse",
                       delivery_method: "pull", recipe_id: null };
     for (const [binding, name, reason] of [
-      [r.bind(MUSE, { source: MCP }), "Refused", "interactive owner session required"],
-      [r.bind(MUSE, { source: MCP, session: "x".repeat(43) }), "Refused",
+      [r.bind(MUSE, { source: MCP }), "refused", "interactive owner session required"],
+      [r.bind(MUSE, { source: MCP, session: "x".repeat(43) }), "refused",
         "an MCP client's agent registers through the card it files"],
-      [r.bind(MUSE, { source: MCP, session: r.cookie }), "Refused",
+      [r.bind(MUSE, { source: MCP, session: r.cookie }), "refused",
         "an MCP client's agent registers through the card it files"],
       // The owner itself registers only by applying a held card.
-      [r.bind(null, { source: MCP, session: r.cookie }), "Invalid", "invalid ledger request"],
-      [{ ...r.bind(MUSE, { session: r.cookie }), source: undefined } as never, "Invalid",
+      [r.bind(null, { source: MCP, session: r.cookie }), "invalid", "invalid ledger request"],
+      [{ ...r.bind(MUSE, { session: r.cookie }), source: undefined } as never, "invalid",
         "source is api_key or mcp"],
       [r.bind(MUSE, { session: r.cookie, source: { kind: "oauth", ref: "x" } as never }),
-        "Invalid", "source is api_key or mcp"],
+        "invalid", "source is api_key or mcp"],
     ] as const) {
       const refused = await failure(() => r.stub.registerAgent(binding, request));
-      expect([refused.name, refused.message]).toEqual([name, reason]);
+      expect([refused.code, refused.message]).toEqual([name, reason]);
     }
     const disable = await failure(() => r.stub.disableAgent(r.bind(null),
                                                             { agent_id: "x", reason: "y" }));
     expect(disable.message).toBe("interactive owner session required");
     const missing = await failure(() => r.stub.disableAgent(r.session(null),
                                                             { agent_id: "agent_x", reason: "y" }));
-    expect([missing.name, missing.message]).toEqual(["Refused", "agent not found"]);
+    expect([missing.code, missing.message]).toEqual(["refused", "agent not found"]);
     expect(await r.table("outside_agents")).toEqual([]);
   });
 
@@ -333,11 +334,11 @@ describe("outside agents register from a verified identity", () => {
         "an API-key agent cannot subscribe; mcp_event is for MCP clients"],
     ] as const) {
       const refused = await failure(() => r.stub.registerAgent(binding, { ...request, ...fields }));
-      expect([refused.name, refused.message]).toEqual(["Refused", reason]);
+      expect([refused.code, refused.message]).toEqual(["refused", reason]);
     }
     const badKey = await failure(() => r.stub.registerAgent(
       r.session(origin, { kind: "api_key", ref: "not-a-key" }), request));
-    expect([badKey.name, badKey.message]).toEqual(["Invalid", "an api_key source_ref is the key id"]);
+    expect([badKey.code, badKey.message]).toEqual(["invalid", "an api_key source_ref is the key id"]);
     const agent = await r.stub.registerAgent(r.session(origin, source), request);
     expect([agent.source, agent.source_ref, agent.delivery_method, agent.outside_client])
       .toEqual(["api_key", key, "pull", origin.client]);
@@ -351,8 +352,8 @@ describe("outside agents register from a verified identity", () => {
      async () => {
     const r = await rig();
     const refused = await failure(() => r.register(MUSE, "Muse", "a2a"));
-    expect([refused.name, refused.message]).toEqual(
-      ["Refused", "only pull, mcp_event, routine_fire, webhook delivery are available yet"]);
+    expect([refused.code, refused.message]).toEqual(
+      ["refused", "only pull, mcp_event, routine_fire, webhook delivery are available yet"]);
     expect((await failure(() => r.register(MUSE, "Muse", "carrier pigeon"))).message)
       .toBe("unknown delivery method");
     const agent = await r.registered(MUSE, "Muse", "mcp_event");
@@ -393,7 +394,7 @@ describe("outside agents register from a verified identity", () => {
     ] as const) {
       const refused = await failure(() => r.stub.disableAgent(binding,
                                                               { agent_id: muse, reason: "x" }));
-      expect([refused.name, refused.message]).toEqual(["Refused", reason]);
+      expect([refused.code, refused.message]).toEqual(["refused", reason]);
     }
     expect((await r.stub.disableAgent(r.session(null), { agent_id: dot, reason: "owner" }))
       .disabled_reason).toBe("owner");
@@ -437,8 +438,8 @@ describe("outside agents register from a verified identity", () => {
       () => r.stub.collectionPull(outside, { collection: "board", after: 0, limit: 1 }),
     ]) {
       const refused = await failure(call);
-      expect([refused.name, refused.message])
-        .toEqual(["Refused", "an outside client's call never carries the owner's session"]);
+      expect([refused.code, refused.message])
+        .toEqual(["refused", "an outside client's call never carries the owner's session"]);
     }
     // Refused before any grant is recorded, and before any receipt.
     expect((await r.stub.grantList(r.bind(null))).clients.map((c) => c.client))
@@ -490,12 +491,12 @@ describe("the ledger's binding", () => {
     const r = await rig();
     const visitor = await failure(() => r.stub.outsideAgents({ owner: r.owner, caller: "bob",
                                                                origin: null }));
-    expect([visitor.name, visitor.message])
-      .toEqual(["Refused", "the account answers its owner's own callers only"]);
+    expect([visitor.code, visitor.message])
+      .toEqual(["refused", "the account answers its owner's own callers only"]);
     for (const origin of [{ client: "a", family: "b" }, { client: "a".repeat(64) },
                           { ...MUSE, extra: "x" }, "owner"]) {
       const refused = await failure(() => r.stub.outsideAgents(r.bind(origin as never)));
-      expect([refused.name, refused.message]).toEqual(["Invalid", "invalid outside origin"]);
+      expect([refused.code, refused.message]).toEqual(["invalid", "invalid outside origin"]);
     }
     const bare = await failure(() => r.stub.outsideAgents({ owner: r.owner, caller: r.owner } as never));
     expect(bare.message).toBe("invalid outside origin");

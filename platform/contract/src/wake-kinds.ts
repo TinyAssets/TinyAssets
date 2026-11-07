@@ -4,7 +4,7 @@
  * the callback checks are `wake-records.ts`.
  */
 import { sha256Hex } from "./digest";
-import { Invalid } from "./errors";
+import { Refusal } from "./refusal";
 import { codePoints, isPrintable } from "./text";
 import { ARGUMENTS_CHARS } from "./limits";
 import type { WakeKind } from "./wake-records";
@@ -59,14 +59,14 @@ export function follows(args: unknown, allowed: readonly string[] = []): Follows
   if (typeof args !== "object" || args === null || Array.isArray(args)
       || !Object.keys(args).every((key) => ["board", "rooms", ...allowed].includes(key))
       || canonicalJson(args).length > ARGUMENTS_CHARS) {
-    throw new Invalid("invalid subscription arguments");
+    throw new Refusal("invalid", "invalid subscription arguments");
   }
   const { board = false, rooms = [] } = args as { board?: unknown; rooms?: unknown };
   if (typeof board !== "boolean" || !Array.isArray(rooms)
       || !rooms.every((room) => typeof room === "string" && room.startsWith(ROOM_PREFIX)
                       && codePoints(room) <= 256 && isPrintable(room))
       || new Set(rooms).size !== rooms.length) {
-    throw new Invalid("board is true or false, and rooms are room collections, each once");
+    throw new Refusal("invalid", "board is true or false, and rooms are room collections, each once");
   }
   return Object.freeze({ board, rooms: Object.freeze([...rooms as string[]].sort()) });
 }
@@ -113,14 +113,14 @@ export interface DoorbellRequest {
 }
 
 /**
- * Build one wake's request from its record. Refused (`Invalid`) before any byte when the
+ * Build one wake's request from its record. Refused (`invalid`) before any byte when the
  * kind pushes nothing or the body is past its record's cited size.
  */
 export function doorbellRequest(kind: WakeKind, subscriptionIdValue: string, wake: WakeContent,
                                 eventId: string, at: number): DoorbellRequest {
   const p = kind.push;
   if (p === null) {
-    throw new Invalid("this kind has no push");
+    throw new Refusal("invalid", "this kind has no push");
   }
   const values: Record<string, unknown> = {
     "{wake}": wake, "{text}": wakeText(wake), "{event_id}": eventId,
@@ -129,7 +129,7 @@ export function doorbellRequest(kind: WakeKind, subscriptionIdValue: string, wak
   };
   const body = JSON.stringify(filled(p.body, values));
   if (p.max_body_bytes !== null && new TextEncoder().encode(body).byteLength > p.max_body_bytes) {
-    throw new Invalid("the wake is past its kind's body size");
+    throw new Refusal("invalid", "the wake is past its kind's body size");
   }
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(p.headers)) {

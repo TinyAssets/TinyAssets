@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import { BODY_BYTES_MAX } from "../src/bodies";
 import { OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots } from "../src/holds";
+import { refusalOf } from "../../contract/src/refusal";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
 import { LEDGER_LIMITS, type Ledger, mailRecord, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
@@ -29,7 +30,6 @@ import {
   TIER_STORAGE_MAX,
 } from "../src/segments";
 import { exported } from "../src/export";
-import { storageFullOf } from "../src/storage-full";
 import type { ChunkStore } from "../src/files";
 import { digest, generate, replay } from "./generation-support";
 import { DOT, ledgerOn, MUSE, rig } from "./ledger-support";
@@ -1502,7 +1502,7 @@ describe("a full owner's archive (review M1)", () => {
     const refused = await failure(() => r.post(null, `dm:${muse}`, { cmid: "c8",
                                                                      body: "body 8" }));
     expect(refused.message).toMatch(/^storage_full: your storage is full/);
-    expect(storageFullOf(refused.message)).toMatchObject({ limit_bytes: expect.any(Number) });
+    expect(refusalOf(refused)?.facts).toMatchObject({ limit_bytes: expect.any(Number) });
   });
 });
 

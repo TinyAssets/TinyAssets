@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ADMIN_CALLER } from "../../admin/src/caller";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
-import { ERASING } from "../../contract/src/errors";
+import { ERASING } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
 import { NO_ERASURE } from "../../owner/src/owner-do";
 import { nativeId } from "../../owner/src/ledger";

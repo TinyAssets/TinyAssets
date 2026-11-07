@@ -10,12 +10,13 @@ import { exports } from "cloudflare:workers";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { Refusal } from "../../contract/src/refusal";
 import { aliased, apiRules } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { type Reserve } from "../src/forward";
 import {
-  GATEWAY_POOL_SLOTS, gatewaySlots, Hold, HeldRefusal, heldDeadlineMs, readHeld, Tokens,
+  GATEWAY_POOL_SLOTS, gatewaySlots, Hold, heldDeadlineMs, readHeld, Tokens,
 } from "../src/held";
 import Gateway, { EgressGateway } from "../src/index";
 import { learnMeter, meteredRecord } from "../src/meter";
@@ -321,7 +322,7 @@ describe("wait-die under load (rveg2 V-M1)", () => {
       await sleep(holdMs);
       return "done";
     } catch (error) {
-      if (error instanceof HeldRefusal && error.code === "busy") {
+      if (error instanceof Refusal && error.code === "busy") {
         return "busy";
       }
       throw error;

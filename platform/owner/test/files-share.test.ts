@@ -24,7 +24,7 @@ import type { OwnerDO } from "../src/owner-do";
 import { FILE_SETTINGS } from "../src/policy";
 import { MIGRATIONS } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, filesOn, inFiles, sqlIn, text } from "./support";
+import { failure, fileCounters, filesOn, inFiles, namedCode, sqlIn, text } from "./support";
 
 const W = "/workspace";
 const CLIENT = `client:${MUSE.client}`;
@@ -56,7 +56,7 @@ const snapshot = (r: Rig) => Promise.all(["file_space", "file_shares", "file_ent
 async function refused(r: Rig, act: () => Promise<unknown>, reason: string) {
   const before = await snapshot(r);
   const error = await failure(act);
-  expect([error.name, error.message]).toEqual(["Refused", reason]);
+  expect([error.code, error.message]).toEqual([namedCode(reason), reason]);
   expect(await snapshot(r)).toEqual(before);
 }
 
@@ -139,11 +139,11 @@ describe("path lengths", () => {
     await write(r, MUSE, path);
     // The entry, the history row and its path index each spill a page.
     expect(await manifest(r) - before).toBeGreaterThan(3 * PAGE_BYTES);
-    expect((await failure(() => write(r, MUSE, `${path}q`))).name).toBe("Invalid");
+    expect((await failure(() => write(r, MUSE, `${path}q`))).code).toBe("invalid");
     // A component of 255 bytes is a name; one of 256 is not. Bytes count, not characters.
     await write(r, MUSE, `${W}/${"é".repeat(127)}a`);
-    expect((await failure(() => write(r, MUSE, `${W}/${"é".repeat(128)}`))).name)
-      .toBe("Invalid");
+    expect((await failure(() => write(r, MUSE, `${W}/${"é".repeat(128)}`))).code)
+      .toBe("invalid");
     const short = await manifest(r);
     await write(r, MUSE, `${W}/${"é".repeat(100)}`);
     const wide = await manifest(r) - short;

@@ -11,7 +11,7 @@ import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
 import { type OwnerEnv, OwnerDO as RealOwnerDO, type SandboxLeases } from "../../owner/src/owner-do";
-import { SlotBusy } from "../../contract/src/slots";
+import type { Refusal } from "../../contract/src/refusal";
 import { RecordingErasures } from "../../owner/test/erasure-fake";
 import { RecordingSandbox } from "../../owner/test/sandbox-fake";
 
@@ -21,16 +21,20 @@ import { RecordingSandbox } from "../../owner/test/sandbox-fake";
  * sandbox Worker).
  */
 /**
- * Owners whose next `agents_list` is refused `busy`, as a full slot pool refuses it
- * (`contract/src/slots.ts`): the tests of the doors' 503 and `Retry-After`.
+ * Owners whose next `agents_list` is refused with the refusal kept here, thrown in the
+ * object and carried across its RPC to the doors (as a full slot pool refuses it `busy`,
+ * `contract/src/slots.ts`): the tests of the doors' statuses, `Retry-After` and the
+ * refusal's transport.
  */
-export const BUSY_ONCE = new Set<string>();
+export const REFUSE_ONCE = new Map<string, Refusal>();
 
 export class OwnerDO extends RealOwnerDO {
   override outsideAgents(...args: Parameters<RealOwnerDO["outsideAgents"]>):
       ReturnType<RealOwnerDO["outsideAgents"]> {
-    if (BUSY_ONCE.delete(args[0].owner)) {
-      return Promise.reject(new SlotBusy());
+    const refusal = REFUSE_ONCE.get(args[0].owner);
+    if (refusal !== undefined) {
+      REFUSE_ONCE.delete(args[0].owner);
+      return Promise.reject(refusal);
     }
     return super.outsideAgents(...args);
   }

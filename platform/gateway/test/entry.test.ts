@@ -10,7 +10,8 @@ import { describe, expect, it } from "vitest";
 
 import { builtinCatalog } from "../src/catalog";
 import { learnMeter, meteredRecord } from "../src/meter";
-import { Failure, guarded } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
+import { guarded } from "../src/failure";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
 import { type Metering, type Reserve } from "../src/forward";
@@ -71,10 +72,10 @@ describe("guarded", () => {
     const error = await guarded(async () => {
       throw new TypeError("provider prose quoting sk-raw-0123");
     }).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(Failure);
+    expect(error).toBeInstanceOf(Refusal);
     expect((error as Error).message).toBe("internal");
     const refused = await guarded(async () => {
-      throw new Failure("endpoint_refused");
+      throw new Refusal("endpoint_refused");
     }).catch((caught: unknown) => caught);
     expect((refused as Error).message).toBe("endpoint_refused");
   });

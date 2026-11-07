@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   doorbellSecret, ECHO_MAX_BYTES, ringDoorbell, sealDoorbell, type Send, verifyDoorbell,
 } from "../src/doorbell";
-import { Failure } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
 import { open } from "../src/keyring";
 import { ring, rotate } from "./support";
 
@@ -47,7 +47,7 @@ function signed(id: string, stamp: string, body: string, key: Uint8Array = KEY):
 
 async function code(run: () => Promise<unknown>): Promise<string> {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
-  return error instanceof Failure ? error.code : String(error);
+  return error instanceof Refusal ? error.code : String(error);
 }
 
 describe("the doorbell's seal", () => {

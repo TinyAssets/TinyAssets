@@ -22,7 +22,7 @@
  */
 import { HEX16 } from "../../contract/src/ids";
 import { KEY_NAME_MAX, MAX_KEYS } from "../../contract/src/limits";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
 
@@ -46,7 +46,7 @@ export interface ApiKey {
 
 export function keyId(value: unknown): string {
   if (typeof value !== "string" || !KEY_ID.test(value)) {
-    throw new Invalid("key_id is 16 hex");
+    throw new Refusal("invalid", "key_id is 16 hex");
   }
   return value;
 }
@@ -54,7 +54,7 @@ export function keyId(value: unknown): string {
 export function keyName(value: unknown): string {
   const name = typeof value === "string" ? value.trim() : "";
   if (!name || codePoints(name) > KEY_NAME_MAX) {
-    throw new Invalid(`key name required (at most ${KEY_NAME_MAX} characters)`);
+    throw new Refusal("invalid", `key name required (at most ${KEY_NAME_MAX} characters)`);
   }
   return name;
 }
@@ -88,10 +88,10 @@ export class Keys {
     const live = sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM owner_keys WHERE revoked_at IS NULL").one().n;
     if (live >= MAX_KEYS) {
-      throw new Refused(TOO_MANY_KEYS);
+      throw new Refusal("refused", TOO_MANY_KEYS);
     }
     if (sql.exec("SELECT 1 FROM owner_keys WHERE key_id = ?", id).toArray().length > 0) {
-      throw new Refused("this key id is minted already");
+      throw new Refusal("refused", "this key id is minted already");
     }
     sql.exec("INSERT INTO owner_keys (key_id, client, name, created_at) VALUES (?, ?, ?, ?)",
              id, client, name, now);

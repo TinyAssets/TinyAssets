@@ -207,7 +207,7 @@ describe("the owner export", () => {
     await o.stub.outsideAgents(o.bind(MUSE));
     expect((await failure(() => o.stub.ownerExport(o.bind(MUSE), {}))).message)
       .toBe("only the owner may export everything it holds");
-    expect((await failure(() => o.stub.ownerExport(o.bind(), {}))).name).toBe("Refused");
+    expect((await failure(() => o.stub.ownerExport(o.bind(), {}))).code).toBe("refused");
     expect((await failure(() => o.stub.ownerExport(o.session(), { cursor: null, x: 1 } as never)))
       .message).toBe("an export request is at most its cursor and its export_id");
   });

@@ -23,6 +23,7 @@ import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
 import { readEvent } from "../../contract/src/run-events";
+import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 
 import { invocation, type StartDoc } from "./engine";
 import { lineEvent } from "./frames";
@@ -155,7 +156,7 @@ describe("a CLI's line shaped as the runner's own event (R8-1)", () => {
                         JSON.stringify({ ta_cut: true, type, head: "forged" }),
                         JSON.stringify({ type: "x", type_: type, ta_cut: 1 })]) {
       expect(lineEvent(line)).toEqual({ type: "ta.cli_refused", text: line,
-        reason: "a CLI's line may not carry the runner's own event type (ta.…)" });
+                                        code: "runner_type" });
     }
     // An engine's own event, and text, pass as before.
     expect(lineEvent(JSON.stringify({ type: "result", note: type })))
@@ -312,8 +313,8 @@ describe("the env files a CLI would load", () => {
     box.cli("gemini", { lines: SHAPES["gemini"]!.lines });
     const { end } = await run("gemini");
     expect(end).toEqual({ exit_code: 1 });
-    expect(doors.frames().find((event) => event["type"] === "ta.refused")!["reason"])
-      .toMatch(/^project_env_refused/);
+    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
+      .toMatchObject({ code: "project_env_refused", path: expect.any(String) });
     expect(box.ran("gemini")).toEqual([]);  // the CLI never ran
   });
 
@@ -1325,7 +1326,9 @@ describe("the sync", () => {
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.every((each) => each.reason === "states")).toBe(true);
     expect(said["count"]).toBeGreaterThanOrEqual(lines.length);
-    expect(String(said["message"])).toMatch(/past the 8,192 automaton states/);
+    // Its facts, which the app says in words (`doors/guards/app-words.test.ts`).
+    expect([said["automaton_states"], said["list_bytes"]]).toEqual([AUTOMATON_STATES, LIST_BYTES]);
+    expect(said["message"]).toBeUndefined();
     expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/run.log");
   });
 
@@ -1342,7 +1345,7 @@ describe("the sync", () => {
     await run("codex");
     const said = doors.frames().find((frame) => frame["type"] === "ta.sync_unnamed")!;
     expect(said).toMatchObject({ count: 1, paths: ["/workspace/agents/main/b\\xfe"] });
-    expect(String(said["message"])).toMatch(/not UTF-8, so it does not sync/);
+    expect(said["message"]).toBeUndefined();  // the app's words, from the count and paths
     expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/fine.md");
   });
 

@@ -42,7 +42,7 @@
  * nothing ever makes owner state there again. The erasure door is the owner's
  * `ownerErase` (slice L), which marks the owner and leaves the rest to the job.
  */
-import { ERASING, Refused } from "../../contract/src/errors";
+import { ERASING, Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 
 /**
@@ -90,7 +90,7 @@ export function erasing(storage: OwnerStorage): boolean {
 /** Refuse, loudly, while the owner is marked erasing. A read. */
 export function refuseErasing(storage: OwnerStorage): void {
   if (erasing(storage)) {
-    throw new Refused(ERASING);
+    throw new Refusal("erasing", ERASING);
   }
 }
 

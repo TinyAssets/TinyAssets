@@ -86,7 +86,7 @@ import {
 } from "../../contract/src/limits";
 
 import { letGo } from "./edit";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
 import { CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
@@ -106,8 +106,8 @@ import { codePoints, isPrintable, utf8Bytes } from "../../contract/src/text";
  * user meets); another owner-wide bound (`file_quota`); and an outside client's share of
  * one, or all clients' together (`file_share`).
  */
-export const FILE_QUOTA = "file_quota";
-export const FILE_SHARE = "file_share";
+export const FILE_QUOTA = "file_quota" satisfies RefusalCode;
+export const FILE_SHARE = "file_share" satisfies RefusalCode;
 const FILE_TOO_LARGE = `${FILE_QUOTA}: the file is larger than the owner's file size quota`;
 /**
  * The most bytes one whole-file write moves through the object (four chunks, two `FILES`
@@ -251,7 +251,7 @@ export type Changed = (path: string, present: boolean, now: number,
                        change: { writer: string; content_id: string | null; size: number })
   => void;
 
-export type Full = (stored: number, needed: number, held: number, limit: number) => string;
+export type Full = (stored: number, needed: number, held: number, limit: number) => Refusal;
 
 export type FileKind = "file" | "dir";
 
@@ -381,23 +381,17 @@ export type SyncOutcome =
   | { readonly path: string; readonly outcome: "committed"; readonly entry: Entry | null }
   | { readonly path: string; readonly outcome: "conflict"; readonly current: Entry | null;
       readonly copy: Entry | null }
-  | { readonly path: string; readonly outcome: "refused"; readonly reason: string };
+  | {
+    readonly path: string; readonly outcome: "refused"; readonly reason: string;
+    /** Its code, which the sync agent reads; `reason` is for people. */
+    readonly code: string;
+  };
 
 /** The expected etag is not the entry's; `current` is the entry as stored, or null. */
 export class FileConflict extends Error {
   override readonly name = "FileConflict";
   constructor(readonly current: Entry | null) {
     super("conflict");
-  }
-}
-
-export type FaultCode = "not_found" | "is_directory" | "not_directory" | "exists" | "not_empty";
-
-/** What a POSIX call would fail with: the path is missing, or of the wrong kind. */
-export class FileFault extends Error {
-  override readonly name = "FileFault";
-  constructor(readonly code: FaultCode, message: string) {
-    super(`${code}: ${message}`);
   }
 }
 
@@ -495,7 +489,7 @@ function buffer(bytes: Uint8Array): ArrayBuffer {
 
 function expectedEtag(value: unknown): string | null {
   if (value !== null && typeof value !== "string") {
-    throw new Invalid("expected_etag is null, empty or an etag");
+    throw new Refusal("invalid", "expected_etag is null, empty or an etag");
   }
   return value;
 }
@@ -506,14 +500,14 @@ function modeOf(value: unknown): number | null {
     return null;
   }
   if (value !== 0 && value !== 1) {
-    throw new Invalid("mode is 0 or 1");
+    throw new Refusal("invalid", "mode is 0 or 1");
   }
   return value;
 }
 
 function count(value: unknown, what: string, low: number, high: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < low || value > high) {
-    throw new Invalid(`${what} is a whole number from ${low} to ${high}`);
+    throw new Refusal("invalid", `${what} is a whole number from ${low} to ${high}`);
   }
   return value;
 }
@@ -692,7 +686,7 @@ export class Files {
    * The one wall's refusal for a change that needs `needed` bytes, with what is stored and
    * held as they stand (`storage_full`): what an archive that cannot move answers. A read.
    */
-  fullMessage(needed: number): string {
+  fullRefusal(needed: number): Refusal {
     const space = this.#space();
     const held = this.#sql.exec<{ bytes: number }>(
       "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = 'uploading'")
@@ -720,24 +714,26 @@ export class Files {
    * an outside client's own share, all clients' together, then the owner's whole quota.
    */
   #scopes(before: Before, writer: string | null): {
-    percent: number; before: Counters; now: () => Counters; refusal: (what: string) => string;
+    percent: number; before: Counters; now: () => Counters; refusal: (what: string) => Refusal;
     rows: string; args: SqlStorageValue[]; filer: string;
   }[] {
     const limits = this.#limits();
     const owner = { percent: 100, before: before.space, now: () => this.#space(),
-                    refusal: (what: string) => `${FILE_QUOTA}: the owner's ${what} are at ` +
-                      "their quota", rows: "1 = 1", args: [], filer: "*" };
+                    refusal: (what: string) => new Refusal(FILE_QUOTA,
+                      `${FILE_QUOTA}: the owner's ${what} are at their quota`),
+                    rows: "1 = 1", args: [], filer: "*" };
     if (!isClient(writer)) {
       return [owner];
     }
     return [
       { percent: limits.client_share, before: before.share, now: () => this.#share(writer),
-        refusal: (what) => `${FILE_SHARE}: this client's ${what} are at its share of the ` +
-          "owner's quota", rows: "writer = ?", args: [writer], filer: writer },
+        refusal: (what) => new Refusal(FILE_SHARE, `${FILE_SHARE}: this client's ${what} are ` +
+          "at its share of the owner's quota"), rows: "writer = ?", args: [writer], filer: writer },
       { percent: 100 - limits.owner_reserve, before: before.clients,
         now: () => this.#share(CLIENTS),
-        refusal: (what) => `${FILE_SHARE}: outside clients' ${what} are at their share; ` +
-          "the rest is kept for the owner", rows: "writer GLOB ?", args: [CLIENT_WRITER],
+        refusal: (what) => new Refusal(FILE_SHARE, `${FILE_SHARE}: outside clients' ${what} are ` +
+          "at their share; the rest is kept for the owner"), rows: "writer GLOB ?",
+        args: [CLIENT_WRITER],
         filer: CLIENT_WRITER },
       owner,
     ];
@@ -758,7 +754,7 @@ export class Files {
         }
         const bound = limits[setting];
         if (bound === null) {
-          throw new Refused(TIER_UNREAD);  // the tier's storage is not known: no guess
+          throw new Refusal("tier_unread", TIER_UNREAD);  // the tier's storage is not known: no guess
         }
         if (setting === "max_bytes" && this.#pastFigure) {
           continue;  // an archive move's placement: its second unit frees what it places
@@ -775,10 +771,9 @@ export class Files {
             const held = Math.max(0, this.#sql.exec<{ bytes: number }>(
               "SELECT coalesce(SUM(size), 0) AS bytes FROM file_chunks WHERE state = " +
                 "'uploading'").one().bytes - this.#moved);
-            throw new Refused(this.#full(Math.max(0, scope.before[counter] - held), needed,
-                                         held, bound));
+            throw this.#full(Math.max(0, scope.before[counter] - held), needed, held, bound);
           }
-          throw new Refused(scope.refusal(what));
+          throw scope.refusal(what);
         }
       }
     }
@@ -869,7 +864,7 @@ export class Files {
     const at = storedPath(dir);
     this.#dir(at);
     if (after !== null && typeof after !== "string") {
-      throw new Invalid("after is a name or null");
+      throw new Refusal("invalid", "after is a name or null");
     }
     const most = count(limit, "limit", 1, MAX_LIST);
     const rows = this.#sql.exec<StoredEntry>(
@@ -973,7 +968,7 @@ export class Files {
   openVersion(path: unknown, version: unknown): Content & { change: Change } {
     const row = this.#version(storedPath(path), version);
     if (row.kind !== "file" || row.content_id === null) {
-      throw new Invalid("that version holds no file content");
+      throw new Refusal("invalid", "that version holds no file content");
     }
     const entry: Entry = { path: row.path, kind: "file", version: row.version,
                            etag: etag({ ...row, kind: "file" }), size: row.size, mode: row.mode,
@@ -1002,7 +997,7 @@ export class Files {
   storedChunks(sha256s: readonly unknown[]): string[] {
     return sha256s.map((sha256) => {
       if (typeof sha256 !== "string" || !HEX64.test(sha256)) {
-        throw new Invalid("a chunk is named by its sha256");
+        throw new Refusal("invalid", "a chunk is named by its sha256");
       }
       const found = this.#sql.exec("SELECT 1 FROM file_chunks WHERE sha256 = ? AND stored = 1 " +
                                      "AND state != 'deleting'", sha256).toArray().length > 0;
@@ -1196,7 +1191,7 @@ export class Files {
   #temporary(path: string): void {
     if (within(path, TEMP) && this.#sql.exec("SELECT 1 FROM file_temps WHERE name = ?",
                                              path.split("/")[3]).toArray().length === 0) {
-      throw new Invalid("the temporary area holds only temporary directories");
+      throw new Refusal("invalid", "the temporary area holds only temporary directories");
     }
   }
 
@@ -1230,7 +1225,7 @@ export class Files {
     }
     this.#temporary(path);
     if (size > this.#limits().max_file_bytes) {
-      throw new Refused(FILE_TOO_LARGE);
+      throw new Refusal("file_quota", FILE_TOO_LARGE);
     }
     this.#parents(path, parents, writer, now);
     const mode = wanted ?? current?.mode ?? 0;
@@ -1286,7 +1281,7 @@ export class Files {
   writeSmall(path: unknown, bytes: Uint8Array,
              options: { expected: unknown; mode?: unknown; writer: string }): Entry {
     if (bytes.byteLength > INLINE_BYTES) {
-      throw new Invalid(`a small write is at most ${INLINE_BYTES} bytes`);
+      throw new Refusal("invalid", `a small write is at most ${INLINE_BYTES} bytes`);
     }
     return this.#writeInline(storedPath(path), bytes, expectedEtag(options.expected),
                              modeOf(options.mode), options.writer, true, "write");
@@ -1312,17 +1307,17 @@ export class Files {
       Promise<Entry> {
     const at = storedPath(path);
     if (!(bytes instanceof Uint8Array)) {
-      throw new Invalid("content is bytes");
+      throw new Refusal("invalid", "content is bytes");
     }
     if (bytes.byteLength > WHOLE_BYTES) {
-      throw new Invalid(`a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`);
+      throw new Refusal("invalid", `a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`);
     }
     const expected = expectedEtag(options.expected);
     const mode = modeOf(options.mode);
     const parents = options.parents ?? true;
     const prefix = options.prefix ?? [];
     if (prefix.some((chunk) => chunk.size !== CHUNK_BYTES)) {
-      throw new Invalid("a kept prefix is whole chunks");
+      throw new Refusal("invalid", "a kept prefix is whole chunks");
     }
     const size = prefix.length * CHUNK_BYTES + bytes.byteLength;
     const authorize = options.authorize ?? (() => undefined);
@@ -1343,7 +1338,7 @@ export class Files {
       const wanted = new Set(missing);
       const puts = tail.filter((chunk) => wanted.delete(chunk.sha256));
       if (wanted.size > 0) {
-        throw new Refused("a kept chunk of this file is gone; write it whole");
+        throw new Refusal("refused", "a kept chunk of this file is gone; write it whole");
       }
       for (const group of batches(puts)) {
         await this.#put(group, intent_id);
@@ -1464,7 +1459,7 @@ export class Files {
     const held = new Set(intent.chunks);
     if (!Array.isArray(chunks) || chunks.length === 0 || chunks.length > MAX_INTENT_CHUNKS
         || chunks.some((sha256) => typeof sha256 !== "string" || !held.has(sha256))) {
-      throw new Invalid("a stored report names only its intent's chunks");
+      throw new Refusal("invalid", "a stored report names only its intent's chunks");
     }
     const sent = new Set(chunks as string[]);
     this.#recordStored(sent, intentId as string);
@@ -1534,20 +1529,20 @@ export class Files {
     // A placed body (ADR-035) is no file: any size past its threshold, its own short life.
     const bytes = count(size, "size", placing ? 1 : INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
     if (!placing && bytes > this.#limits().max_file_bytes) {
-      throw new Refused(FILE_TOO_LARGE);
+      throw new Refusal("file_quota", FILE_TOO_LARGE);
     }
     const plan = chunkPlan(bytes);
     if (plan.length > MAX_INTENT_CHUNKS) {
-      throw new Invalid(`an upload holds at most ${MAX_INTENT_CHUNKS} chunks`);
+      throw new Refusal("invalid", `an upload holds at most ${MAX_INTENT_CHUNKS} chunks`);
     }
     if (!Array.isArray(chunks) || chunks.length !== plan.length
         || chunks.some((sha) => typeof sha !== "string" || !HEX64.test(sha))) {
-      throw new Invalid("an upload names a 64-hex hash for each 4 MiB of the file");
+      throw new Refusal("invalid", "an upload names a 64-hex hash for each 4 MiB of the file");
     }
     const wanted = new Map<string, number>();
     (chunks as string[]).forEach((sha256, index) => {
       if ((wanted.get(sha256) ?? plan[index]) !== plan[index]) {
-        throw new Invalid("a chunk hash names one size");
+        throw new Refusal("invalid", "a chunk hash names one size");
       }
       wanted.set(sha256, plan[index]!);
     });
@@ -1559,7 +1554,7 @@ export class Files {
       const sql = this.#sql;
       const space = this.#space();
       if (space.intents >= MAX_OPEN_INTENTS || space.intent_chunks + plan.length > MAX_HELD_CHUNKS) {
-        throw new Refused(`${FILE_QUOTA}: too many uploads are open; commit or abort one first`);
+        throw new Refusal("file_quota", `${FILE_QUOTA}: too many uploads are open; commit or abort one first`);
       }
       this.#uploadShare(writer, plan.length);
       const own = scopesOf(writer).at(-1)!;
@@ -1570,7 +1565,7 @@ export class Files {
         const row = sql.exec<{ state: string; stored: number; size: number }>(
           "SELECT state, stored, size FROM file_chunks WHERE sha256 = ?", sha256).toArray()[0];
         if (row !== undefined && row.size !== chunkSize) {
-          throw new Invalid("a chunk hash names one size");
+          throw new Refusal("invalid", "a chunk hash names one size");
         }
         const held = this.#possessed(own, sha256, uploading);
         if (row === undefined) {
@@ -1578,7 +1573,7 @@ export class Files {
                      "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, own);
           this.#moved += chunkSize;
         } else if (row.state === "deleting") {
-          throw new Refused(CHUNK_DELETING);
+          throw new Refusal("chunk_deleting", CHUNK_DELETING);
         } else if (row.state === "garbage") {
           sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
                      "WHERE sha256 = ?", sha256);
@@ -1618,14 +1613,14 @@ export class Files {
     const mine = open("writer = ?", writer);
     if (mine.n + 1 > shareOf(MAX_OPEN_INTENTS, limits.client_share)
         || mine.held + chunks > shareOf(MAX_HELD_CHUNKS, limits.client_share)) {
-      throw new Refused(`${FILE_SHARE}: this client's open uploads are at its share; ` +
+      throw new Refusal("file_share", `${FILE_SHARE}: this client's open uploads are at its share; ` +
                         "commit or abort one first");
     }
     const theirs = open("writer GLOB ?", CLIENT_WRITER);
     const percent = 100 - limits.owner_reserve;
     if (theirs.n + 1 > shareOf(MAX_OPEN_INTENTS, percent)
         || theirs.held + chunks > shareOf(MAX_HELD_CHUNKS, percent)) {
-      throw new Refused(`${FILE_SHARE}: outside clients' open uploads are at their share; ` +
+      throw new Refusal("file_share", `${FILE_SHARE}: outside clients' open uploads are at their share; ` +
                         "the rest is kept for the owner");
     }
   }
@@ -1633,14 +1628,14 @@ export class Files {
   /** A live intent, or refused. */
   #intent(intentId: unknown, now: number): Intent {
     if (typeof intentId !== "string" || !HEX32.test(intentId)) {
-      throw new Invalid("an intent id is 32 lowercase hex characters");
+      throw new Refusal("invalid", "an intent id is 32 lowercase hex characters");
     }
     const row = this.#sql.exec<{ size: number; chunks: string; expires_at: number;
                                  pending: string; writer: string }>(
       "SELECT size, chunks, expires_at, pending, writer FROM file_intents WHERE intent_id = ?",
       intentId).toArray()[0];
     if (row === undefined || row.expires_at <= now) {
-      throw new Refused("no such upload: it was committed, abandoned or has expired");
+      throw new Refusal("refused", "no such upload: it was committed, abandoned or has expired");
     }
     return { size: row.size, chunks: hashes(row.chunks), pending: hashes(row.pending),
              writer: row.writer };
@@ -1664,7 +1659,7 @@ export class Files {
   /** Abandon an upload now rather than at its expiry; a gone one is no error. */
   abort(intentId: unknown): { aborted: boolean } {
     if (typeof intentId !== "string" || !HEX32.test(intentId)) {
-      throw new Invalid("an intent id is 32 lowercase hex characters");
+      throw new Refusal("invalid", "an intent id is 32 lowercase hex characters");
     }
     return this.#change(null, () => {
       const held = this.#sql.exec("SELECT 1 FROM file_intents WHERE intent_id = ?", intentId)
@@ -1681,22 +1676,22 @@ export class Files {
   async upload(intentId: unknown, chunks: unknown): Promise<{ created: number }> {
     const held = new Set(this.#intent(intentId, Date.now() / 1000).chunks);
     if (!Array.isArray(chunks) || chunks.length === 0) {
-      throw new Invalid("an upload sends a list of chunks");
+      throw new Refusal("invalid", "an upload sends a list of chunks");
     }
     const puts = (chunks as unknown[]).map((chunk) => {
       const { sha256, bytes } = (chunk ?? {}) as Record<string, unknown>;
       if (typeof sha256 !== "string" || !held.has(sha256)) {
-        throw new Invalid("an upload sends only its intent's chunks");
+        throw new Refusal("invalid", "an upload sends only its intent's chunks");
       }
       const size = this.#sql.exec<{ size: number }>(
         "SELECT size FROM file_chunks WHERE sha256 = ?", sha256).one().size;
       if (!(bytes instanceof Uint8Array) || bytes.byteLength !== size) {
-        throw new Invalid("a chunk's bytes are the size its upload declared");
+        throw new Refusal("invalid", "a chunk's bytes are the size its upload declared");
       }
       return { sha256, bytes, size };
     });
     if (puts.reduce((sum, put) => sum + put.size, 0) > BATCH_BYTES) {
-      throw new Invalid(`an upload sends at most ${BATCH_BYTES} bytes at once`);
+      throw new Refusal("invalid", `an upload sends at most ${BATCH_BYTES} bytes at once`);
     }
     await this.#put(puts, intentId as string);
     return { created: puts.length };
@@ -1714,7 +1709,7 @@ export class Files {
       const row = sql.exec<{ stored: number }>(
         "SELECT stored FROM file_chunks WHERE sha256 = ?", sha256).toArray()[0];
       if (row?.stored !== 1) {
-        throw new Refused("a chunk of this commit was never stored; send its bytes first");
+        throw new Refusal("refused", "a chunk of this commit was never stored; send its bytes first");
       }
       sql.exec("UPDATE file_chunks SET state = 'live' WHERE sha256 = ? AND state = 'uploading'",
                sha256);
@@ -1723,7 +1718,7 @@ export class Files {
     const own = scopesOf(intent.writer).at(-1)!;
     const uploading = this.#uploading(own);
     if (intent.pending.some((sha256) => !this.#possessed(own, sha256, uploading))) {
-      throw new Refused("a chunk of this commit was not sent by its upload; send its bytes " +
+      throw new Refusal("refused", "a chunk of this commit was not sent by its upload; send its bytes " +
                         "first");
     }
     const contentId = chunkedId(intent.size, intent.chunks);
@@ -1781,7 +1776,7 @@ export class Files {
          now: number): Entry {
     if (isRoot(path)) {
       if (expected !== null) {
-        throw new Invalid("a root is never written");
+        throw new Refusal("invalid", "a root is never written");
       }
       return rootEntry(path);
     }
@@ -1815,7 +1810,7 @@ export class Files {
   #remove(path: string, expected: string | null, recursive: boolean, writer: string,
           now: number): { removed: number } {
     if (isRoot(path)) {
-      throw new Invalid("a root is never removed");
+      throw new Refusal("invalid", "a root is never removed");
     }
     const current = this.#entry(path);
     if (current === undefined && expected === null) {
@@ -1854,10 +1849,10 @@ export class Files {
     const target = storedPath(to);
     const expected = expectedEtag(options.expected);
     if (isRoot(source) || isRoot(target)) {
-      throw new Invalid("a root is never renamed");
+      throw new Refusal("invalid", "a root is never renamed");
     }
     if (source !== target && within(target, source)) {
-      throw new Invalid("a directory is never moved into itself");
+      throw new Refusal("invalid", "a directory is never moved into itself");
     }
     return this.#change(options.writer, (now) => {
       const moving = this.#entry(source);
@@ -1926,7 +1921,7 @@ export class Files {
     return this.#change(options.writer, (now) => {
       const row = this.#version(at, version);
       if (row.kind !== "file" || row.content_id === null) {
-        throw new Invalid("that version holds no file content");
+        throw new Refusal("invalid", "that version holds no file content");
       }
       return this.#commit(at, expected, row.content_id, row.size, row.mode, options.writer,
                           "restore", true, now);
@@ -1944,10 +1939,10 @@ export class Files {
     return this.#change(null, () => {
       const row = this.#version(at, version);
       if (row.content_id === null) {
-        throw new Invalid("that version holds no content");
+        throw new Refusal("invalid", "that version holds no content");
       }
       if (this.#entry(at)?.version === row.version) {
-        throw new Refused("the current version is never redacted; write a new one first");
+        throw new Refusal("refused", "the current version is never redacted; write a new one first");
       }
       this.#sql.exec("UPDATE file_history SET content_id = NULL WHERE version = ?", row.version);
       return { redacted: row.version };
@@ -1978,7 +1973,7 @@ export class Files {
     // A prefix and the 16 hex after it make one path component (`MAX_NAME_BYTES`).
     if (typeof prefix !== "string" || prefix.includes("/")
         || utf8Bytes(prefix) > MAX_NAME_BYTES - 16 || !isPrintable(prefix)) {
-      throw new Invalid(`a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
+      throw new Refusal("invalid", `a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
                         "printable characters, no slash");
     }
     const name = `${prefix}${randomHex(8)}`;
@@ -2020,20 +2015,20 @@ export class Files {
   leaseAcquire(authority: unknown, holder: unknown, tokens: LeaseTokens): Lease {
     if (typeof authority !== "string"
         || (authority !== OWNER_AUTHORITY && !/^[!-~]{64}$/.test(authority))) {
-      throw new Invalid("a lease's authority is the owner's or one outside client's");
+      throw new Refusal("invalid", "a lease's authority is the owner's or one outside client's");
     }
     if (typeof holder !== "string" || !holder || codePoints(holder) > 128
         || !isPrintable(holder)) {
-      throw new Invalid("a lease holder is 1 to 128 printable characters");
+      throw new Refusal("invalid", "a lease holder is 1 to 128 printable characters");
     }
     const hashes = [tokens.egress, tokens.sync, tokens.runner];
     if (hashes.some((hash) => typeof hash !== "string" || !HEX64.test(hash))
         || new Set(hashes).size !== 3) {
-      throw new Invalid("a lease's three token hashes are 64 hex, and differ");
+      throw new Refusal("invalid", "a lease's three token hashes are 64 hex, and differ");
     }
     return this.#change(null, (now) => {
       if (this.sandboxLease(now, authority) !== null) {
-        throw new Refused("the sync lease is held");
+        throw new Refusal("refused", "the sync lease is held");
       }
       // A lapsed lease, or this authority's own last one, goes here on every path that
       // opens a lease (a run's or a sign-in's), and its sync's open uploads with it.
@@ -2100,7 +2095,7 @@ export class Files {
       `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now)
       .toArray()[0];
     if (row === undefined || row.epoch !== epoch) {
-      throw new Refused("sync_fenced: the sync lease was lost; this sync is fenced");
+      throw new Refusal("sync_fenced", "sync_fenced: the sync lease was lost; this sync is fenced");
     }
     return row;
   }
@@ -2221,7 +2216,7 @@ export class Files {
       { outcomes: SyncOutcome[] } {
     const ops = request.ops;
     if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_SYNC_OPS) {
-      throw new Invalid(`a sync commit holds 1 to ${MAX_SYNC_OPS} ops`);
+      throw new Refusal("invalid", `a sync commit holds 1 to ${MAX_SYNC_OPS} ops`);
     }
     return this.#change(null, (now) => {
       const { epoch, authority } = this.#fenced(request.lease_id, request.epoch, now);
@@ -2239,11 +2234,11 @@ export class Files {
             const before = this.#before(writer);
             const path = storedPath(op["path"]);
             if (!within(path, WORKSPACE) || isRoot(path) || seen.has(path)) {
-              throw new Invalid("a sync op names one workspace path, once");
+              throw new Refusal("invalid", "a sync op names one workspace path, once");
             }
             seen.add(path);
             if (!trees && ownersOnly(path)) {
-              throw new Refused(AGENTS_OWNER_ONLY);
+              throw new Refusal("refused", AGENTS_OWNER_ONLY);
             }
             const outcome = this.#syncOp(op, path, epoch, writer, now);
             this.#fit(before, writer);
@@ -2253,9 +2248,10 @@ export class Files {
             return outcome;
           });
         } catch (error) {
-          if (error instanceof Invalid || error instanceof Refused || error instanceof FileFault
+          if (error instanceof Refusal || error instanceof FileFault
               || error instanceof FileConflict) {
-            return { path: named, outcome: "refused" as const, reason: error.message };
+            return { path: named, outcome: "refused" as const, reason: error.message,
+                     code: error instanceof FileConflict ? "conflict" : error.code };
           }
           throw error;
         }
@@ -2293,13 +2289,13 @@ export class Files {
       const copy = storedPath(`${parentOf(at)}/${conflictName(nameOf(at), epoch, n)}`);
       if (!taken.has(nameOf(copy))) {
         if (utf8Bytes(copy + rest) > MAX_PATH_BYTES) {
-          throw new Refused("the conflict copy's path would pass 4096 bytes; " +
+          throw new Refusal("refused", "the conflict copy's path would pass 4096 bytes; " +
                             "the sandbox keeps this file and reports it each sync");
         }
         return copy + rest;
       }
     }
-    throw new Refused("too many conflict copies of this path in this epoch");
+    throw new Refusal("refused", "too many conflict copies of this path in this epoch");
   }
 
   #syncOp(op: Record<string, unknown>, path: string, epoch: number, writer: string,
@@ -2319,7 +2315,7 @@ export class Files {
           const bytes = op["inline"];
           if (!(bytes instanceof Uint8Array) || bytes.byteLength > INLINE_BYTES
               || op["intent_id"] !== undefined) {
-            throw new Invalid("an inline sync write is at most 4096 bytes");
+            throw new Refusal("invalid", "an inline sync write is at most 4096 bytes");
           }
           contentId = this.#inline(bytes);
           size = bytes.byteLength;
@@ -2350,7 +2346,7 @@ export class Files {
         }
         return { path, outcome: "committed", entry: null };
       default:
-        throw new Invalid("a sync op is a write, mkdir or remove");
+        throw new Refusal("invalid", "a sync op is a write, mkdir or remove");
     }
   }
 

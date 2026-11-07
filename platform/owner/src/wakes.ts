@@ -25,7 +25,7 @@
  * doors' own rule: the lane asks `open()` once a pass, before it claims, and claims nothing
  * on closed, a failure or no answer.
  */
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { Write } from "./gate";
 import {
   type Ledger, type LiveCallback, type Outcome, outcome, WAKE_LEASE_S, type WakeTarget,
@@ -280,14 +280,14 @@ export class Doorbell implements WakeSender {
       requests = found.map((callback) => {
         const kind = kindNamed(callback.kind);
         if (kind === null) {
-          throw new Invalid("this subscription's kind is gone");
+          throw new Refusal("invalid", "this subscription's kind is gone");
         }
         return { callback, request: doorbellRequest(
           kind, callback.subscription_id, wakeContent(target, this.#follows(callback, target)),
           target.wake_id, target.at) };
       });
     } catch (error) {
-      if (error instanceof Invalid) {
+      if (error instanceof Refusal && error.invalid) {
         return { state: "failed", reason: "not_sent" };
       }
       throw error;

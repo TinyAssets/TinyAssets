@@ -179,8 +179,8 @@ describe("the board digest", () => {
       .map((row) => [row.row_id, row.head])).toEqual([["t1", "claimed"]]);
     for (const bad of [{ limit: 0, after: 0 }, { limit: 1, after: -1 },
                        { limit: 1, after: 0, head_chars: -1 }, { limit: 1 }]) {
-      expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), bad as never))).name)
-        .toBe("Invalid");
+      expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), bad as never))).code)
+        .toBe("invalid");
     }
   });
 });

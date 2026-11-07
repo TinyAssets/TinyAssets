@@ -28,9 +28,8 @@ import {
   type EgressScope, egressTarget, type Meter, meteredCall, meteredModel,
 } from "../../contract/src/egress-scope";
 import type { ModelRecord } from "../../contract/src/model-record";
-import {
-  type Code, codeOf, Failure, failureResponse, upstreamCode,
-} from "../../contract/src/failure";
+import { type GatewayCode, Refusal } from "../../contract/src/refusal";
+import { codeOf, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
 import {
   aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, READS, servedPriced,
@@ -38,8 +37,7 @@ import {
 } from "../../contract/src/api-rules";
 import { clamped, learnMeter, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
-import { heldDeadlineMs, Hold, HeldRefusal, raced, weighedBody, weightSlots }
-  from "./held";
+import { heldCode, heldDeadlineMs, Hold, raced, weighedBody, weightSlots } from "./held";
 import { RESEALED_HEADER } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract/src/limits";
 
@@ -213,7 +211,7 @@ function secretsOf(credential: Credential): string[] {
 }
 
 /** A refusal's answer (`failure.ts`), carrying a resealed credential when there is one. */
-function refusal(code: Code, resealed?: Resealed): Response {
+function refusal(code: GatewayCode, resealed?: Resealed): Response {
   const extra: Record<string, string> = {};
   if (resealed !== undefined) {
     extra[RESEALED_HEADER] = JSON.stringify(resealed);
@@ -272,7 +270,7 @@ function meteringOf(value: unknown): Metering {
       || Object.keys(value).sort().join() !== "input_bytes,max_output_tokens,model,tier"
       || !whole(fields!.input_bytes) || !whole(fields!.max_output_tokens)
       || !named(fields!.model) || (fields!.tier !== null && !named(fields!.tier))) {
-    throw new Failure("internal");
+    throw new Refusal("internal");
   }
   return { input_bytes: fields!.input_bytes!, max_output_tokens: fields!.max_output_tokens!,
            model: fields!.model!, tier: fields!.tier ?? null };
@@ -301,7 +299,7 @@ export async function forwardMetered(env: KeyringEnv, bound: Binding, blob: unkn
 }
 
 /** A metered call ready to send, or the code it is refused with. */
-type Prepared = { readonly refused: Code }
+type Prepared = { readonly refused: GatewayCode }
   | { readonly upload: Upload; readonly model: Model<Api>; readonly listed: boolean };
 
 /**
@@ -372,7 +370,7 @@ async function prepared(request: Request, length: number, credential: Credential
   // caller stops may still commit at the owner's object, which then keeps the charge (the
   // door settles a stopped call `unknown`), as before A′.
   const reserving = new AbortController();
-  const late = setTimeout(() => reserving.abort(new HeldRefusal("busy")), SLOT_WAIT_MS);
+  const late = setTimeout(() => reserving.abort(new Refusal("busy")), SLOT_WAIT_MS);
   let reserved: Reservation;
   try {
     reserved = await raced(reserve({ model: id, tier }),
@@ -385,7 +383,7 @@ async function prepared(request: Request, length: number, credential: Credential
   }
   const metering = meteringOf(reserved.metering);
   if (metering.model !== id || metering.tier !== tier) {
-    throw new Failure("internal");  // the object reserved another call than it was asked
+    throw new Refusal("internal");  // the object reserved another call than it was asked
   }
   if (read.bytes > metering.input_bytes) {
     return { refused: "invalid_request" };
@@ -422,7 +420,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                     metered: { reserve: Reserve; catalog: Catalog } | null,
                     stop: ReadableStream<Uint8Array> | null, free = false):
     Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
-  const refused = (code: Code, resealed?: Resealed) =>
+  const refused = (code: GatewayCode, resealed?: Resealed) =>
     ({ response: refusal(code, resealed), outcome: Promise.resolve(FAILED) });
   const cancelled = new AbortController();
   stop?.getReader().read().then(() => cancelled.abort(), () => cancelled.abort());
@@ -490,7 +488,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       hold.release();
       // Nothing was sent: the call is `failed`, whatever stopped it (M3).
       return refused(cancelled.signal.aborted ? "aborted"
-        : error instanceof HeldRefusal ? error.code : "internal", resealed);
+        : heldCode(error) ?? "internal", resealed);
     }
     if ("refused" in ready) {
       hold.release();
@@ -664,7 +662,7 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
   const { credential, resealed } = await open(env, bound, blob);
   const url = credential.upstream.verify_url;
   if (url === undefined) {
-    throw new Failure("unsupported_source");
+    throw new Refusal("unsupported_source");
   }
   // A sealed `verify_url` is one of the endpoints (`credential.ts`, on every open).
   const target = new URL(url);
@@ -678,11 +676,11 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
       signal: AbortSignal.timeout(VERIFY_DEADLINE_MS),
     });
   } catch {
-    throw new Failure("upstream_unreachable");
+    throw new Refusal("upstream_unreachable");
   }
   await answer.body?.cancel();
   if (answer.status < 200 || answer.status >= 300) {
-    throw new Failure(upstreamCode(answer.status));
+    throw new Refusal(upstreamCode(answer.status));
   }
   return Object.freeze({ models: Object.freeze(modelInfos(catalog, credential.upstream)),
                          egress: scopeOf(credential, await learnMeter(catalog, credential.upstream,

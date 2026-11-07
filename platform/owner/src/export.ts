@@ -70,7 +70,7 @@
  * omissions, so a table or column a later change adds is decided, never exported by default.
  */
 import { HEX16 } from "../../contract/src/ids";
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { CURSOR_CHARS } from "../../contract/src/limits";
 
 export const EXPORT_FORMAT = "tinyassets-export";
@@ -275,7 +275,7 @@ export function decodeExportCursor(text: unknown): { gen: string; index: number 
   if (!Array.isArray(parsed) || parsed.length !== 3 || parsed[0] !== EXPORT_VERSION
       || typeof parsed[1] !== "string" || !GEN.test(parsed[1])
       || !Number.isSafeInteger(parsed[2]) || (parsed[2] as number) < 0) {
-    throw new Invalid("an export cursor is one a page handed out");
+    throw new Refusal("invalid", "an export cursor is one a page handed out");
   }
   return { gen: parsed[1], index: parsed[2] as number };
 }
@@ -293,17 +293,17 @@ export function decodeCursor(text: unknown): Cursor {
   }
   if (typeof text !== "string" || text.length > CURSOR_CHARS
       || !/^[A-Za-z0-9_-]+$/.test(text)) {
-    throw new Invalid("an export cursor is one a page handed out");
+    throw new Refusal("invalid", "an export cursor is one a page handed out");
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
   } catch {
-    throw new Invalid("an export cursor is one a page handed out");
+    throw new Refusal("invalid", "an export cursor is one a page handed out");
   }
   if (!Array.isArray(parsed) || parsed.length !== 3 || parsed[0] !== EXPORT_VERSION
       || !Number.isSafeInteger(parsed[1]) || parsed[1] < 0 || parsed[1] > tables().length) {
-    throw new Invalid("an export cursor is one a page handed out");
+    throw new Refusal("invalid", "an export cursor is one a page handed out");
   }
   const section = parsed[1] as number;
   const after = parsed[2] as unknown;
@@ -311,7 +311,7 @@ export function decodeCursor(text: unknown): Cursor {
   const width = section === names.length ? 1 : exported()[names[section]!]!.key.length;
   if (after !== null && (!Array.isArray(after) || after.length !== width
                          || after.some((v) => typeof v !== "string" && typeof v !== "number"))) {
-    throw new Invalid("an export cursor is one a page handed out");
+    throw new Refusal("invalid", "an export cursor is one a page handed out");
   }
   return { section, after: after as (string | number)[] | null };
 }

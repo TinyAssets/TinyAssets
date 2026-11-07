@@ -15,7 +15,7 @@ import {
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { SCHEDULE } from "../src/schedule";
-import { storageFull, storageFullMessage } from "../src/storage-full";
+import { storageFull, storageFullRefusal } from "../src/storage-full";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -97,7 +97,7 @@ export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore =
 
 /** The refusal at the storage figure with no tier named, as these files' tests make it. */
 export const TIERLESS_FULL: Full = (stored, needed, held, limit) =>
-  storageFullMessage(storageFull(stored, needed, held, limit, null, null));
+  storageFullRefusal(storageFull(stored, needed, held, limit, null, null));
 
 /**
  * The owner's files on `stub`'s own storage, with some settings changed, over the real
@@ -324,15 +324,27 @@ export function ownerObject(): Owner {
   };
 }
 
+/** An error as a call fails with it: a refusal's own fields (its `code`) cross RPC with it. */
+export type Failed = Error & { readonly code?: string };
+
+/**
+ * The code a refusal whose message is `message` carries: the one its message names, as its
+ * prefix (`file_quota: ...`), else its family's. A test's expectation, never the code's: it
+ * holds the message's prefix and the code together.
+ */
+export function namedCode(message: string, family: "refused" | "invalid" = "refused"): string {
+  return /^([a-z][a-z_]{0,63}):/.exec(message)?.[1] ?? family;
+}
+
 /**
  * The error an RPC call fails with. Awaited inside a try, because handing the call's
  * promise to `expect(...).rejects` leaves its rejection reported as unhandled.
  */
-export async function failure(call: () => Promise<unknown>): Promise<Error> {
+export async function failure(call: () => Promise<unknown>): Promise<Failed> {
   try {
     await call();
   } catch (error) {
-    return error as Error;
+    return error as Failed;
   }
   throw new Error("expected the call to fail");
 }

@@ -39,7 +39,7 @@
  * and a subscription's id, is `wake-kinds.ts`.
  */
 import { ZONE } from "./egress";
-import { Invalid } from "./errors";
+import { Refusal } from "./refusal";
 import raw from "../wake-kinds.json" with { type: "json" };
 
 export interface Citation {
@@ -333,54 +333,54 @@ function refusedHost(host: string): boolean {
     || REFUSED_SUFFIXES.some((suffix) => name === suffix || name.endsWith(`.${suffix}`));
 }
 
-/** A callback URL this record's push accepts, as given; refused (`Invalid`) otherwise. */
+/** A callback URL this record's push accepts, as given; refused (`invalid`) otherwise. */
 export function callbackUrl(push: Push, value: unknown): string {
   if (typeof value !== "string" || value.length > CALLBACK_URL_CHARS
       || !/^[!-~]+$/.test(value) || value.includes("\\")) {
-    throw new Invalid("invalid callback url");
+    throw new Refusal("invalid", "invalid callback url");
   }
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new Invalid("invalid callback url");
+    throw new Refusal("invalid", "invalid callback url");
   }
   if (url.protocol !== "https:" || url.port !== "" || url.username !== "" || url.password !== ""
       || url.hash !== "" || value.includes("#")) {
-    throw new Invalid("a callback is https on port 443, with no credentials or fragment");
+    throw new Refusal("invalid", "a callback is https on port 443, with no credentials or fragment");
   }
   const host = url.hostname;  // the parser's: any spelling of an IPv4 address comes back dotted
   if (host.includes(":") || host.startsWith("[") || host.length > 253 || IPV4.test(host)
       || !host.split(".").every((label) => LABEL.test(label))) {
-    throw new Invalid("a callback is a DNS name, never an IP literal");
+    throw new Refusal("invalid", "a callback is a DNS name, never an IP literal");
   }
   if (refusedHost(url.hostname)) {
-    throw new Invalid("a callback is a public host, never a local, internal or our own");
+    throw new Refusal("invalid", "a callback is a public host, never a local, internal or our own");
   }
   if (push.url.hosts !== null && !push.url.hosts.includes(url.hostname)) {
-    throw new Invalid("this kind's callback is on its vendor's own host");
+    throw new Refusal("invalid", "this kind's callback is on its vendor's own host");
   }
   if (push.url.path !== null && !new RegExp(push.url.path).test(url.pathname)) {
-    throw new Invalid("this kind's callback is its vendor's own path");
+    throw new Refusal("invalid", "this kind's callback is its vendor's own path");
   }
   return value;
 }
 
-/** A callback secret this record's push accepts; refused (`Invalid`) otherwise. */
+/** A callback secret this record's push accepts; refused (`invalid`) otherwise. */
 export function callbackSecret(push: Push, value: unknown): string {
   if (typeof value !== "string" || value.length > CALLBACK_SECRET_CHARS
       || !new RegExp(push.secret).test(value)) {
-    throw new Invalid("invalid callback secret");
+    throw new Refusal("invalid", "invalid callback secret");
   }
   if (push.auth === "standard_webhooks") {
     let bytes: number;
     try {
       bytes = atob(value.slice("whsec_".length)).length;
     } catch {
-      throw new Invalid("invalid callback secret");
+      throw new Refusal("invalid", "invalid callback secret");
     }
     if (bytes < WHSEC.low || bytes > WHSEC.high) {
-      throw new Invalid("invalid callback secret");
+      throw new Refusal("invalid", "invalid callback secret");
     }
   }
   return value;

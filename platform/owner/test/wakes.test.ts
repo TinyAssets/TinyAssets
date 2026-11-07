@@ -138,11 +138,11 @@ describe("one open wake per ringing recipient", () => {
     for (const from of [DOT, null, clientOnly, familyOnly]) {
       const refused = await failure(() => r.stub.wakeSubscribe(r.bind(from), subscription(
         "alpha", { client: from?.client ?? MUSE.client })));
-      expect(refused.name).toBe("Refused");
+      expect(refused.code).toBe("refused");
     }
     const wrongCenter = await failure(() => r.stub.wakeSubscribe(r.bind(MUSE),
                                                                  subscription("beta")));
-    expect(wrongCenter.name).toBe("Refused");
+    expect(wrongCenter.code).toBe("refused");
     const door = subscription();
     expect(await r.stub.wakeSubscribe(r.bind(MUSE), door))
       .toEqual({ subscription_id: door.subscription_id, agent_id: muse, expires_at: null });
@@ -757,8 +757,8 @@ describe("the registry's quieter rules", () => {
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
     const refused = await failure(() => r.subscribe(MUSE));
-    expect([refused.name, refused.message])
-      .toEqual(["Refused", "not this caller's subscribing agent"]);
+    expect([refused.code, refused.message])
+      .toEqual(["refused", "not this caller's subscribing agent"]);
     expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
   });
 

@@ -58,7 +58,7 @@ describe("gateway isolation guards", () => {
     const sources = closure("gateway");
     expect([...sources.keys()]).toContain(KEYRING_HOME);
     expect([...sources.keys()]).toEqual(expect.arrayContaining(
-      ["contract/src/wake-records.ts", "contract/src/text.ts", "contract/src/errors.ts"]));
+      ["contract/src/wake-records.ts", "contract/src/text.ts", "contract/src/refusal.ts"]));
     expect(sources.get(KEYRING_HOME)).toContain("GATEWAY_KEYRING");
   });
 

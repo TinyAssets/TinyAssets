@@ -13,14 +13,15 @@
  * nothing stored needs freeing and no upgrade would help, since they are released when their
  * uploads finish or are cancelled, each within a day (`INTENT_TTL_S`).
  *
- * A refusal crosses Workers RPC as its name and message only, so the facts ride in the
- * message: the plain sentence first, then one JSON object (`StorageFull`) the app parses
- * (`storageFullOf`). The doors answer `storage_full` 507 and `uploads_open` 409.
+ * The refusal carries its facts (`StorageFull`) as its own `facts`. Its message, the plain
+ * sentence, ends with the same facts as JSON, as clients have always been shown it; no code
+ * reads them back from there. The doors answer `storage_full` 507 and `uploads_open` 409.
  */
+import { type Facts, Refusal } from "../../contract/src/refusal";
 import type { TierName, Tiers } from "./tier";
 
-export const STORAGE_FULL = "storage_full";
-export const UPLOADS_OPEN = "uploads_open";
+export const STORAGE_FULL = "storage_full" as const;
+export const UPLOADS_OPEN = "uploads_open" as const;
 
 /** What a `storage_full` or `uploads_open` refusal carries, after its sentence. */
 export interface StorageFull {
@@ -87,8 +88,14 @@ export function heldOnly(full: StorageFull): boolean {
   return full.held_bytes > 0 && full.used_bytes + full.needed_bytes <= full.limit_bytes;
 }
 
+/** The refusal at the storage figure: `uploads_open` when open uploads alone leave no room. */
+export function storageFullRefusal(full: StorageFull): Refusal {
+  return new Refusal(heldOnly(full) ? UPLOADS_OPEN : STORAGE_FULL, storageFullMessage(full),
+                     { facts: full as unknown as Facts });
+}
+
 /** The refusal's message: its code, the plain sentence, then the facts as JSON. */
-export function storageFullMessage(full: StorageFull): string {
+function storageFullMessage(full: StorageFull): string {
   if (heldOnly(full)) {
     return `${UPLOADS_OPEN}: ${shownBytes(full.held_bytes)} of your storage is held by uploads ` +
       "still open; it is released when they finish or are cancelled (each within a day). " +
@@ -109,13 +116,4 @@ export function storageFullMessage(full: StorageFull): string {
     shownBytes(full.limit_bytes)} used, and this needs ${shownBytes(full.needed_bytes)} more (${
     shownBytes(full.free_bytes)} free).${held} Free some space (${full.free.join(", ")})${
     way}. ${JSON.stringify(full)}`;
-}
-
-/** The facts a `storage_full` or `uploads_open` message carries, or null for any other. */
-export function storageFullOf(message: string): StorageFull | null {
-  if (!message.startsWith(`${STORAGE_FULL}:`) && !message.startsWith(`${UPLOADS_OPEN}:`)) {
-    return null;
-  }
-  const at = message.indexOf("{");
-  return at < 0 ? null : JSON.parse(message.slice(at)) as StorageFull;
 }

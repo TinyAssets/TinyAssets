@@ -1,0 +1,127 @@
+/**
+ * The one refusal (`src/refusal.ts`): a closed list of codes, each code's status, and the
+ * one test of a refusal against a bug, here and as one crosses RPC.
+ *
+ * Across Workers RPC a thrown error is serialized by workerd: under
+ * `enhanced_error_serialization` (`src/workerd/io/compatibility-date.capnp`, on from
+ * 2026-04-21) `jsg::Serializer::WriteHostObject` writes its name (one no built-in error has),
+ * its message and its own properties, and the caller gets a plain `Error` with them; without
+ * it, only the message and a built-in error type cross. So a refusal keeps its fields as own
+ * data properties, and every Worker that throws or reads one runs at a date with that flag
+ * on and never turns it off. The real crossing is held in workerd by the doors' tests
+ * (`doors/test/api-keys.test.ts`, the owner's object's RPC).
+ */
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
+import { describe, expect, it } from "vitest";
+
+import { PLATFORM } from "../../ci/paths";
+import { readWrangler } from "../../ci/workers";
+import {
+  EGRESS_CODES, ERASING, FAULT_CODES, faultOf, FileFault, GATEWAY_CODES, Refusal, REFUSALS,
+  refusalOf,
+} from "../src/refusal";
+
+/** The first compatibility date at which workerd carries an error's own properties. */
+const ENHANCED_SINCE = "2026-04-21";
+
+/** An error as it reaches the caller across RPC: a plain `Error` with the refusal's fields. */
+function crossed(name: string, message: string, fields: Record<string, unknown>): Error {
+  const error = new Error(message);
+  Object.defineProperty(error, "name", { value: name });
+  return Object.assign(error, fields, { remote: true });
+}
+
+describe("the Workers' runtime", () => {
+  const workers = readdirSync(PLATFORM, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory()
+      && readdirSync(join(PLATFORM, entry.name)).includes("wrangler.jsonc"))
+    .map((entry) => entry.name).sort();
+
+  it("carries a refusal's own fields across RPC in every Worker", () => {
+    expect(workers).toEqual(["doors", "files", "gateway", "hooks", "owner", "sandbox"]);
+    for (const worker of workers) {
+      const config = readWrangler(join(PLATFORM, worker));
+      expect(String(config["compatibility_date"]) >= ENHANCED_SINCE, worker).toBe(true);
+      expect(config["compatibility_flags"] ?? [], worker)
+        .not.toContain("legacy_error_serialization");
+    }
+  });
+});
+
+describe("a refusal", () => {
+  it("is a value: its code, its code's status, its Retry-After and its facts", () => {
+    const refusal = new Refusal("storage_busy", "storage_busy: catching up",
+                                { retryAfterS: 1, facts: { held_bytes: 3 } });
+    expect([refusal.name, refusal.code, refusal.message, refusal.status, refusal.retryAfter,
+            refusal.facts]).toEqual(["Refusal", "storage_busy", "storage_busy: catching up",
+                                     503, 1, { held_bytes: 3 }]);
+    expect(new Refusal("storage_busy").retryAfter).toBe(30);  // its code's
+    expect(new Refusal("refused").retryAfter).toBeUndefined();
+    expect(new Refusal("unknown_model").message).toBe("unknown_model");  // the gateway's
+  });
+
+  it("keeps every field it carries as its own, so that each crosses RPC", () => {
+    const refusal = new Refusal("storage_full", "storage_full: full",
+                                { retryAfterS: 5, facts: { used_bytes: 1 } });
+    for (const field of ["name", "code", "retryAfterS", "facts"]) {
+      expect(Object.hasOwn(refusal, field), field).toBe(true);
+    }
+  });
+
+  it("tells its family and whether its message names its code", () => {
+    expect([new Refusal("invalid").invalid, new Refusal("message_body").invalid,
+            new Refusal("refused").invalid, new Refusal("file_quota").invalid])
+      .toEqual([true, true, false, false]);
+    expect([new Refusal("file_quota").named, new Refusal("refused").named,
+            new Refusal("erasing", ERASING).named]).toEqual([true, false, false]);
+  });
+});
+
+describe("the code list", () => {
+  it("gives each code one status, and every gateway and egress code one", () => {
+    for (const [code, entry] of Object.entries(REFUSALS)) {
+      expect(Number.isInteger(entry.status) && entry.status >= 400 && entry.status < 600, code)
+        .toBe(true);
+    }
+    for (const code of [...GATEWAY_CODES, ...EGRESS_CODES]) {
+      expect(Object.hasOwn(REFUSALS, code), code).toBe(true);
+    }
+  });
+});
+
+describe("the test of a refusal against a bug", () => {
+  it("knows a refusal here, and one as it crossed RPC, by its fields", () => {
+    const here = new Refusal("ticket_refused", "ticket_refused: no");
+    expect(refusalOf(here)).toBe(here);
+    const there = refusalOf(crossed("Refusal", "storage_full: full",
+                                    { code: "storage_full", retryAfterS: 2, facts: { a: 1 } }))!;
+    expect(there).toBeInstanceOf(Refusal);
+    expect([there.code, there.message, there.status, there.retryAfterS, there.facts])
+      .toEqual(["storage_full", "storage_full: full", 507, 2, { a: 1 }]);
+  });
+
+  it("calls anything else a bug, a refusal of an unknown code or a malformed field too", () => {
+    for (const error of [new Error("storage_full: full"), "storage_full", null,
+                         crossed("Refused", "storage_full: full", { code: "storage_full" }),
+                         crossed("Refusal", "x", { code: "not_a_code" }),
+                         crossed("Refusal", "x", { code: "toString" }),
+                         crossed("Refusal", "x", { code: "busy", retryAfterS: -1 }),
+                         crossed("Refusal", "x", { code: "busy", retryAfterS: "1" }),
+                         crossed("Refusal", "x", { code: "busy", facts: [1] })]) {
+      expect(refusalOf(error)).toBeNull();
+    }
+  });
+});
+
+describe("a file fault", () => {
+  it("is known by its own code, here and as it crossed RPC, and is no refusal", () => {
+    const fault = new FileFault("not_directory", "a parent is not a directory");
+    expect([fault.message, faultOf(fault), refusalOf(fault)])
+      .toEqual(["not_directory: a parent is not a directory", "not_directory", null]);
+    expect(faultOf(crossed("FileFault", "exists: in the way", { code: "exists" }))).toBe("exists");
+    expect(faultOf(crossed("FileFault", "x", { code: "busy" }))).toBeNull();
+    expect(FAULT_CODES).toContain("not_found");
+  });
+});

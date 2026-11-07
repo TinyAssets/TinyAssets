@@ -12,7 +12,7 @@
  */
 import type { Window } from "./bodies";
 import { FIT_SLACK, fitted, jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
-import { Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 
 /** The bytes a page fits its items to: the answer, less what its last fields may add. */
 export const PAGE_BYTES = RESULT_CHARS - FIT_SLACK;
@@ -61,7 +61,7 @@ export function bodied<T extends { readonly body: string | null }>(
                              : null, truncated: false });
   const part = fitted(window.text, room - meta + 2);
   if (room - meta + 2 < 2 || (part.bytes === 0 && window.offset < window.size)) {
-    throw new Refused(RESULT_TOO_LARGE);
+    throw new Refusal("result_too_large", RESULT_TOO_LARGE);
   }
   const next = window.offset + part.bytes;
   const cut = { ...item, body: part.text, body_bytes: window.size,
@@ -92,7 +92,7 @@ export function fitPage<I, O>(fixed: number, items: readonly I[],
     const fit = room > 0 ? entry(item, room, page.length === 0) : null;
     if (fit === null || fit.bytes > room) {
       if (page.length === 0) {
-        throw new Refused(RESULT_TOO_LARGE);
+        throw new Refusal("result_too_large", RESULT_TOO_LARGE);
       }
       break;
     }

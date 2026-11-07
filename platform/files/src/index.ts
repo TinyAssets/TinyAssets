@@ -69,7 +69,7 @@ import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedManifest, type ManifestAt,
   manifestKey, manifestObjectKey, manifestPart, manifestPrefix, namespace, segmentKey, segmentSpan,
 } from "./keys";
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
 
@@ -168,7 +168,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 
 function list<T>(value: unknown, what: string): T[] {
   if (!Array.isArray(value) || value.length === 0) {
-    throw new Invalid(`${what} is a list of at least one chunk`);
+    throw new Refusal("invalid", `${what} is a list of at least one chunk`);
   }
   return value as T[];
 }
@@ -176,7 +176,7 @@ function list<T>(value: unknown, what: string): T[] {
 function chunkBytes(bytes: unknown): Uint8Array {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0
       || bytes.byteLength > CHUNK_BYTES) {
-    throw new Invalid(`a chunk is 1 to ${CHUNK_BYTES} bytes`);
+    throw new Refusal("invalid", `a chunk is 1 to ${CHUNK_BYTES} bytes`);
   }
   return bytes;
 }
@@ -190,7 +190,7 @@ function range(read: ChunkGet): { range?: { offset: number; length: number }; bu
   if (typeof offset !== "number" || typeof length !== "number" || !Number.isSafeInteger(offset)
       || !Number.isSafeInteger(length) || offset < 0 || length < 1
       || offset + length > CHUNK_BYTES) {
-    throw new Invalid("a chunk range is an offset and a length inside one chunk");
+    throw new Refusal("invalid", "a chunk range is an offset and a length inside one chunk");
   }
   return { range: { offset, length }, budget: length };
 }
@@ -253,13 +253,13 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     namespace(ns);
     const puts = list<ChunkPut>(chunks, "a put").map((chunk) => {
       if (typeof chunk !== "object" || chunk === null) {
-        throw new Invalid("a put is a hash and its bytes");
+        throw new Refusal("invalid", "a put is a hash and its bytes");
       }
       return { sha256: chunkHash(chunk.sha256), bytes: chunkBytes(chunk.bytes) };
     });
     if (new Set(puts.map((put) => put.sha256)).size !== puts.length
         || puts.reduce((sum, put) => sum + put.bytes.byteLength, 0) > BATCH_BYTES) {
-      throw new Invalid(`a put names distinct chunks of at most ${BATCH_BYTES} bytes in all`);
+      throw new Refusal("invalid", `a put names distinct chunks of at most ${BATCH_BYTES} bytes in all`);
     }
     const dataKey = await this.#key(ns, key);
     const created = await Promise.all(puts.map((put) => this.#put(ns, dataKey, put.sha256,
@@ -271,7 +271,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
       Promise<boolean> {
     let put: R2Object | null;
     if (this.#cipher() === "aes-gcm" && await sha256Hex(bytes) !== sha256) {
-      throw new Invalid("the chunk's bytes do not match its sha256");  // R2 sees sealed bytes
+      throw new Refusal("invalid", "the chunk's bytes do not match its sha256");  // R2 sees sealed bytes
     }
     const name = await chunkName(dataKey, sha256);
     const stored = await this.#stored(dataKey, chunkKey(ns, name), bytes, sha256);
@@ -280,7 +280,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
                                      { ...stored.options, onlyIf: { etagDoesNotMatch: "*" } });
     } catch (error) {
       if (BAD_DIGEST.test(String((error as Error)?.message))) {
-        throw new Invalid("the chunk's bytes do not match its sha256");
+        throw new Refusal("invalid", "the chunk's bytes do not match its sha256");
       }
       throw error;
     }
@@ -292,7 +292,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     // read back under the owner's key (what a keyless `head` of an SSE-C object answers is
     // unprobed), so bytes put under another key, or none, fail here too.
     if (await sha256Hex(bytes) !== sha256) {
-      throw new Invalid("the chunk's bytes do not match its sha256");
+      throw new Refusal("invalid", "the chunk's bytes do not match its sha256");
     }
     let held: Uint8Array;
     try {
@@ -319,18 +319,18 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     const whole = this.#cipher() !== "ssec";
     const gets = list<ChunkGet>(reads, "a get").map((read) => {
       if (typeof read !== "object" || read === null) {
-        throw new Invalid("a get is a hash and an optional range");
+        throw new Refusal("invalid", "a get is a hash and an optional range");
       }
       const at = range(read);
       if (read.verify !== undefined && typeof read.verify !== "boolean") {
-        throw new Invalid("a get's verify is true or false");
+        throw new Refusal("invalid", "a get's verify is true or false");
       }
       // A verified range moves only its length to the caller (the whole chunk is held here).
       return { sha256: chunkHash(read.sha256), ...at, verify: read.verify === true,
                budget: whole && read.verify !== true ? CHUNK_BYTES : at.budget };
     });
     if (gets.reduce((sum, get) => sum + get.budget, 0) > BATCH_BYTES) {
-      throw new Invalid(`a get moves at most ${BATCH_BYTES} bytes`);
+      throw new Refusal("invalid", `a get moves at most ${BATCH_BYTES} bytes`);
     }
     const dataKey = await this.#key(ns, key);
     return Promise.all(gets.map(async (get) => {
@@ -386,7 +386,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     namespace(ns);
     if (!Array.isArray(sha256s) || sha256s.length === 0 || sha256s.length > DELETE_BATCH
         || new Set(sha256s).size !== sha256s.length) {
-      throw new Invalid(`a delete names 1 to ${DELETE_BATCH} distinct chunks`);
+      throw new Refusal("invalid", `a delete names 1 to ${DELETE_BATCH} distinct chunks`);
     }
     const hashes = sha256s.map((sha256) => chunkHash(sha256));
     const dataKey = await this.#key(ns, key);
@@ -462,7 +462,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
         || !segments.every((segment) => object(segment, "a,b,sha256,size"))
         || typeof span !== "object" || span === null || !Number.isSafeInteger(span.s)
         || !Number.isSafeInteger(span.e) || span.s < 1 || span.e < span.s - 1) {
-      throw new Invalid(`a manifest has 1 to ${MANIFEST_PARTS} objects and a log span`);
+      throw new Refusal("invalid", `a manifest has 1 to ${MANIFEST_PARTS} objects and a log span`);
     }
     const listed = JSON.stringify({
       parts: parts.map((part) => ({ sha256: chunkHash(part.sha256), size: part.size })),

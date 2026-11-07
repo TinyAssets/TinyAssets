@@ -10,9 +10,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { storageFullOf } from "../src/storage-full";
 
 import { Bodies } from "../src/bodies";
+import { refusalOf } from "../../contract/src/refusal";
 import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { LIMITS } from "../src/collections";
 import { PLACE_TTL_S } from "../src/files";
@@ -182,15 +182,15 @@ describe("the placement rule", () => {
     const tight = { free: { runs: 5, storage_bytes: 3 * PLACE_BYTES },
                     paid: TIERS.paid };
     await put("a", LARGE, { ...as(name), tiers: tight });
-    expect(storageFullOf((await failure(() => put("b", LARGE.replace("é", "e"), {
-      ...as(name), tiers: tight }))).message)).toMatchObject({ limit_bytes: 3 * PLACE_BYTES,
+    expect(refusalOf((await failure(() => put("b", LARGE.replace("é", "e"), {
+      ...as(name), tiers: tight }))))?.facts).toMatchObject({ limit_bytes: 3 * PLACE_BYTES,
                                                                tier: "free" });
     // The same body again is the same chunk: it adds no byte.
     await put("c", LARGE, { ...as(name), tiers: tight });
     // A small body kept in its row counts too (the one storage number, slice P): its row
     // and its history entry would take the owner past the figure.
-    expect(storageFullOf((await failure(() => put("d", SMALL, { ...as(name),
-      tiers: tight }))).message)).toMatchObject({ limit_bytes: 3 * PLACE_BYTES, tier: "free" });
+    expect(refusalOf((await failure(() => put("d", SMALL, { ...as(name),
+      tiers: tight }))))?.facts).toMatchObject({ limit_bytes: 3 * PLACE_BYTES, tier: "free" });
     expect((await failure(() => put("e", `${LARGE}x`, { ...as(name), tiers: null }))).message)
       .toBe(TIER_UNREAD);
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
@@ -365,7 +365,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       const page = await r.read(MUSE);
       await r.ack(MUSE, page.messages.at(-1)!.seq);
     }
-    expect(storageFullOf(refused!.message)).toMatchObject({ limit_bytes: 4 * 2 * PLACE_BYTES });
+    expect(refusalOf(refused!)?.facts).toMatchObject({ limit_bytes: 4 * 2 * PLACE_BYTES });
     const [held] = await r.sql("SELECT COUNT(*) AS n FROM ledger_messages");
     expect(held!["n"]).toBe(sent);
   });

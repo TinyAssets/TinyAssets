@@ -108,7 +108,7 @@ describe("an owner write", () => {
     ] as const) {
       const refused = await failure(() => r.stub.policyWrite(binding, {
         expected_generation: 1, policy: changed as never }));
-      expect([refused.name, refused.message]).toEqual(["Refused", reason]);
+      expect([refused.code, refused.message]).toEqual(["refused", reason]);
     }
     expect((await current(r)).generation).toBe(1);
     const after = await write(r, changed);
@@ -117,7 +117,7 @@ describe("an owner write", () => {
     expect(await current(r)).toEqual(after);
     const stale = await failure(() => r.stub.policyWrite(r.session(null), {
       expected_generation: 1, policy: changed as never }));
-    expect([stale.name, stale.message]).toEqual(["Refused", "policy generation changed"]);
+    expect([stale.code, stale.message]).toEqual(["refused", "policy generation changed"]);
     const receipts = await kinds(r, "write");
     expect(receipts.map((row) => [row["session_id"], row["old_digest"], row["new_digest"],
                                   row["generation"], row["outcome"], row["bucket"]]))
@@ -163,13 +163,13 @@ describe("an owner write", () => {
   });
 
   it.each<readonly [unknown, string, string]>([
-    [{ entries: [], spend: defaults().spend }, "Invalid", "invalid policy document"],
-    [{ ...defaults(), extra: 1 }, "Invalid", "invalid policy document"],
-    [[], "Invalid", "invalid policy document"],
-    [{ ...defaults(), egress: { mode: "closed", destinations: [] } }, "Invalid",
+    [{ entries: [], spend: defaults().spend }, "invalid", "invalid policy document"],
+    [{ ...defaults(), extra: 1 }, "invalid", "invalid policy document"],
+    [[], "invalid", "invalid policy document"],
+    [{ ...defaults(), egress: { mode: "closed", destinations: [] } }, "invalid",
       "invalid egress policy"],
-    [{ ...defaults(), egress: { mode: "open" } }, "Invalid", "invalid egress policy"],
-    [{ ...defaults(), egress: { mode: "open", destinations: {} } }, "Invalid",
+    [{ ...defaults(), egress: { mode: "open" } }, "invalid", "invalid egress policy"],
+    [{ ...defaults(), egress: { mode: "open", destinations: {} } }, "invalid",
       "invalid egress policy"],
     ...[{ host: "Example.com", port: 443 }, { host: "example.com.", port: 443 },
         { host: "ex ample.com", port: 443 }, { host: "-x.com", port: 443 },
@@ -179,43 +179,43 @@ describe("an owner write", () => {
         { host: `${"a".repeat(63)}.`.repeat(4) + "com", port: 443 },
         { host: "example.123", port: 443 }]
       .map((entry) => [{ ...defaults(), egress: { mode: "allowlist", destinations: [entry] } },
-                       "Invalid", "invalid egress destination"] as const),
+                       "invalid", "invalid egress destination"] as const),
     // Every spelling the URL parser reads as an address: hex, octal, short forms.
     ...["203.0.113.7", "8.8.8.8", "2001:db8::1", "::1", "[::1]", "12345", "0x7f000001",
         "0x7f.1", "127.1", "1.2.3.04", "0177.0.0.1"]
       .map((host) => [{ ...defaults(), egress: { mode: "allowlist", destinations: [
-        { host, port: 443 }] } }, "Refused",
+        { host, port: 443 }] } }, "egress_ip_literal",
         EGRESS_IP_LITERAL] as const),
-    [{ ...defaults(), entries: {} }, "Invalid", "invalid policy entries"],
+    [{ ...defaults(), entries: {} }, "invalid", "invalid policy entries"],
     ...[{ scope: "agent", table: "rules", values: {} },
         { scope: "account", table: "secrets", values: {} },
         { scope: "account", table: "rules", values: [] },
         { scope: "account", table: "rules" },
         { scope: "account", table: "review_on", values: { nested: { deep: 1 } } },
         { scope: "account", table: "review_on", values: { list: [1] } }]
-      .map((entry) => [{ ...defaults(), entries: [entry] }, "Invalid",
+      .map((entry) => [{ ...defaults(), entries: [entry] }, "invalid",
                        "invalid scoped policy entry"] as const),
-    [{ ...defaults(), entries: [rule("app.write", "sometimes")] }, "Invalid",
+    [{ ...defaults(), entries: [rule("app.write", "sometimes")] }, "invalid",
       "invalid approval rule"],
-    [{ ...defaults(), entries: [rule("telepathy", "do")] }, "Invalid", "invalid approval rule"],
-    [{ ...defaults(), entries: [rule("toString", "do")] }, "Invalid", "invalid approval rule"],
+    [{ ...defaults(), entries: [rule("telepathy", "do")] }, "invalid", "invalid approval rule"],
+    [{ ...defaults(), entries: [rule("toString", "do")] }, "invalid", "invalid approval rule"],
     [{ ...defaults(), entries: [{ scope: "account", table: "operation_kinds",
-                                  values: { kind: "teleport" } }] }, "Invalid",
+                                  values: { kind: "teleport" } }] }, "invalid",
       "invalid declared operation"],
-    [{ ...defaults(), spend: { ...defaults().spend, weekly: 1 } }, "Invalid",
+    [{ ...defaults(), spend: { ...defaults().spend, weekly: 1 } }, "invalid",
       "invalid spend policy"],
     ...[-1, 1.5, "5", true].map((cap) => [{ ...defaults(), spend: { ...defaults().spend,
-                                                                     daily: cap } }, "Invalid",
+                                                                     daily: cap } }, "invalid",
                                           "invalid spend cap"] as const),
     ...[[], { a: -1 }, { a: "1" }, { a: 2.5 }].map((ceilings) => [{
-      ...defaults(), spend: { ...defaults().spend, source_ceilings: ceilings } }, "Invalid",
+      ...defaults(), spend: { ...defaults().spend, source_ceilings: ceilings } }, "invalid",
       "invalid source ceiling"] as const),
     [{ ...defaults(), entries: Array.from({ length: 700 }, () => rule("app.read", "do")) },
-      "Refused", "the policy document is too large"],
+      "refused", "the policy document is too large"],
   ])("refuses an invalid document whole: %j", async (document, name, reason) => {
     const r = await rig();
     const refused = await failure(() => write(r, document));
-    expect([refused.name, refused.message]).toEqual([name, reason]);
+    expect([refused.code, refused.message]).toEqual([name, reason]);
     expect((await current(r)).generation).toBe(1);
   });
 
@@ -259,8 +259,8 @@ describe("an agent's proposal", () => {
                                                       request_id: "card-1" })).toEqual(filed);
     const refiled = await failure(() => r.stub.policyPropose(r.bind(MUSE), {
       change: change(1), request_id: "card-1" }));
-    expect([refiled.name, refiled.message])
-      .toEqual(["Refused", "a proposal is already held for this card"]);
+    expect([refiled.code, refiled.message])
+      .toEqual(["refused", "a proposal is already held for this card"]);
     const held = await r.stub.policyProposal(r.bind(null), { request_id: "card-1" });
     expect(held).toEqual({ change: change(1, document), digest: filed.request_digest });
     // The apply must be the card the owner was shown, exactly.
@@ -270,13 +270,13 @@ describe("an agent's proposal", () => {
       [{ proposal: { request_id: "card-1", digest: held.digest } }, defaults()],
     ] as const) {
       const refused = await failure(() => write(r, policy, extra));
-      expect([refused.name, refused.message])
-        .toEqual(["Refused", "proposal is not the pending card shown"]);
+      expect([refused.code, refused.message])
+        .toEqual(["refused", "proposal is not the pending card shown"]);
     }
     for (const proposal of [{ request_id: "card-1" }, { request_id: "", digest: "x" },
                             { request_id: "card-1", digest: held.digest, more: 1 }, "card-1"]) {
       const refused = await failure(() => write(r, document, { proposal }));
-      expect([refused.name, refused.message]).toEqual(["Invalid", "invalid proposal apply"]);
+      expect([refused.code, refused.message]).toEqual(["invalid", "invalid proposal apply"]);
     }
     const applied = await write(r, document, { proposal: { request_id: "card-1",
                                                            digest: held.digest } });
@@ -316,7 +316,7 @@ describe("an agent's proposal", () => {
                            { change: {}, request_id: "" },
                            { change: {}, request_id: "x".repeat(129) }]) {
       const refused = await failure(() => r.stub.policyPropose(r.bind(null), request as never));
-      expect([refused.name, refused.message]).toEqual(["Invalid", "invalid policy proposal"]);
+      expect([refused.code, refused.message]).toEqual(["invalid", "invalid policy proposal"]);
     }
     expect((await failure(() => r.stub.policyPropose(r.bind(null), { request_id: "x" } as never)))
       .message).toBe("invalid policy request");
@@ -436,7 +436,7 @@ describe("wake limits as owner policy", () => {
       .toEqual([3, 0, 2]);
     expect((await current(r)).generation).toBe(2);
     const stale = await failure(() => set(1, { max_wakes_per_hour: 9 }));
-    expect([stale.name, stale.message]).toEqual(["Refused", "policy generation changed"]);
+    expect([stale.code, stale.message]).toEqual(["refused", "policy generation changed"]);
     const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
     expect(agent!.max_wakes_per_hour).toBe(3);  // the refused change rolled back whole
     for (const extra of [{ expected_generation: 0 }, { expected_generation: "2" }]) {

@@ -32,7 +32,7 @@ isolationTests(IMPORTS, {
   allows: [
     ["its own sources and node:crypto", "contract/src/probe.ts", [
       "import { createHash } from 'node:crypto';",
-      "import { Invalid } from './errors';",
+      "import { Refusal } from './refusal';",
       "import type { EgressScope } from './egress-scope';",
     ].join("\n")],
     ["its wake kinds' file", "contract/src/probe.ts",

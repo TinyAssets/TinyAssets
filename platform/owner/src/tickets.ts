@@ -5,7 +5,7 @@
  * (migration 12's trigger; the minting unit forgets the expired ones first).
  */
 import { HEX64 } from "../../contract/src/ids";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { SOCKET_TICKET_S, TICKET_REFUSED } from "../../contract/src/socket-shape";
 
@@ -27,17 +27,17 @@ export class Tickets {
       number {
     if (!HEX64.test(hash) || typeof grant !== "string" || grant === "" || grant.length > 128
         || !Number.isFinite(tokenExpires)) {
-      throw new Invalid("a socket ticket is bound to its token's grant and expiry");
+      throw new Refusal("invalid", "a socket ticket is bound to its token's grant and expiry");
     }
     if (tokenExpires <= now) {
-      throw new Refused(TICKET_REFUSED);
+      throw new Refusal("ticket_refused", TICKET_REFUSED);
     }
     const sql = this.#storage.sql;
     sql.exec("DELETE FROM socket_tickets WHERE expires_at <= ? OR token_expires_at <= ?",
              now, now);
     const expires = Tickets.expiry(now, tokenExpires);
     if (expires <= now) {
-      throw new Refused(TICKET_REFUSED);
+      throw new Refusal("ticket_refused", TICKET_REFUSED);
     }
     sql.exec("INSERT INTO socket_tickets (hash, conversation, grant_id, expires_at, " +
                "token_expires_at) VALUES (?, ?, ?, ?, ?)", hash, conversation, grant, expires,
@@ -58,7 +58,7 @@ export class Tickets {
           "expires_at, token_expires_at", hash).toArray()[0] : undefined;
     if (ticket === undefined || ticket.conversation !== conversation
         || ticket.expires_at <= now || ticket.token_expires_at <= now) {
-      throw new Refused(TICKET_REFUSED);
+      throw new Refusal("ticket_refused", TICKET_REFUSED);
     }
     return { grant: ticket.grant_id, token_expires_at: ticket.token_expires_at };
   }

@@ -422,7 +422,9 @@ export class Doors {
           const ops = body["ops"] as { path: string; op: string }[];
           return json(200, { outcomes: ops.map((op) => {
             const reason = this.refuse(op.path);
-            return reason !== null ? { path: op.path, outcome: "refused", reason }
+            // The object's refusal, by its words and the code they name (as its own does).
+            return reason !== null ? { path: op.path, outcome: "refused", reason,
+                                       code: /^[a-z_]+(?=:)/.exec(reason)?.[0] ?? "refused" }
               : { path: op.path, outcome: "committed",
                   entry: op.op === "remove" ? null : { version: this.#version += 1 } };
           }) });

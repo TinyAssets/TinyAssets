@@ -36,7 +36,7 @@ export interface Source {
 }
 
 /** An edit's refusal: why, as today's whole-file editor refuses it. */
-export type Refusal = "ill_formed" | "not_utf8" | "absent" | { readonly times: number };
+export type EditRefusal = "ill_formed" | "not_utf8" | "absent" | { readonly times: number };
 
 /** A step of an edit's reading: `work` run while the caller holds its units. */
 export type Step = <T>(work: () => Promise<T>) => Promise<T>;
@@ -85,7 +85,7 @@ export function letGo(bytes: Uint8Array): void {
  */
 export async function planEdit(source: Source, old: string, replacement: string,
                                chunk: number, step: Step = direct):
-    Promise<Edited | { refused: Refusal }> {
+    Promise<Edited | { refused: EditRefusal }> {
   if (!old.isWellFormed() || !replacement.isWellFormed()) {
     return { refused: "ill_formed" };
   }
@@ -101,7 +101,7 @@ export async function planEdit(source: Source, old: string, replacement: string,
   let offset = 0;
   for (let index = 0; index < source.chunks.length; index++) {
     // One step: the chunk read, scanned and dropped; only the carry goes on.
-    const refused = await step(async (): Promise<Refusal | null> => {
+    const refused = await step(async (): Promise<EditRefusal | null> => {
       const bytes = await source.read(index);
       try {
         for (let at = 0; at < bytes.byteLength; at += SCAN_SLICE) {

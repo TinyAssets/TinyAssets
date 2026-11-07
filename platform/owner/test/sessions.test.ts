@@ -41,8 +41,8 @@ describe("a session proof", () => {
         .toEqual({ closed: 1 });
     }
     const refused = await failure(() => write(r, r.cookie));
-    expect([refused.name, refused.message])
-      .toEqual(["Refused", "interactive owner session required"]);
+    expect([refused.code, refused.message])
+      .toEqual(["refused", "interactive owner session required"]);
     expect((await r.stub.policyRead(r.bind(null))).generation).toBe(2);
   });
 
@@ -60,8 +60,8 @@ describe("a session proof", () => {
       "f".repeat(64), "short", 7, null,
     ]) {
       const refused = await failure(() => write(r, proof));
-      expect([refused.name, refused.message])
-        .toEqual(["Refused", "interactive owner session required"]);
+      expect([refused.code, refused.message])
+        .toEqual(["refused", "interactive owner session required"]);
     }
     expect((await write(r, r.cookie)).generation).toBe(2);
     expect((await write(other, other.cookie)).generation).toBe(2);
@@ -88,12 +88,12 @@ describe("a session's life", () => {
         "a session opens only from a fresh interactive sign-in"],
     ] as const) {
       const refused = await failure(() => r.stub.sessionOpen(binding));
-      expect([refused.name, refused.message]).toEqual(["Refused", message]);
+      expect([refused.code, refused.message]).toEqual(["refused", message]);
     }
     const bad = await failure(() => r.stub.sessionOpen(r.bind(null, {
       authenticated_at: 1.5 })));
-    expect([bad.name, bad.message])
-      .toEqual(["Invalid", "authenticated_at is a time in whole seconds"]);
+    expect([bad.code, bad.message])
+      .toEqual(["invalid", "authenticated_at is a time in whole seconds"]);
     expect(await r.table("owner_sessions")).toHaveLength(1);
     const opened = await r.stub.sessionOpen(r.bind(null, {
       authenticated_at: signedIn() - SESSION_LIMITS.signInMaxAgeS + 2 }));
@@ -128,7 +128,7 @@ describe("a session's life", () => {
       r.stub.sessionClose(r.bind(null, { session: session as string }));
     expect(await close(r.cookie)).toEqual({ closed: 1 });
     expect(await close(r.cookie)).toEqual({ closed: 0 });  // signing out twice is harmless
-    expect((await failure(() => close(7))).name).toBe("Invalid");
+    expect((await failure(() => close(7))).code).toBe("invalid");
     expect((await write(r, second.session)).generation).toBe(2);
     await r.stub.sessionOpen(r.bind(null, { authenticated_at: signedIn() }));
     expect(await r.stub.sessionCloseAll(r.bind(null))).toEqual({ closed: 2 });

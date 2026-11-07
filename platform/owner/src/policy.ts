@@ -70,7 +70,7 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
@@ -480,75 +480,75 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
   if (!plain(document) || !keys(document, ["entries", "spend", "egress",
     ...(["files", "models", "hooks", "tools"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
-    throw new Invalid("invalid policy document");
+    throw new Refusal("invalid", "invalid policy document");
   }
   if (document["models"] !== undefined && !validModels(document["models"])) {
-    throw new Invalid("invalid models policy");
+    throw new Refusal("invalid", "invalid models policy");
   }
   if (document["hooks"] !== undefined && !validHooks(document["hooks"])) {
-    throw new Invalid("invalid hooks policy: codemode, a boolean");
+    throw new Refusal("invalid", "invalid hooks policy: codemode, a boolean");
   }
   if (document["tools"] !== undefined && !validTools(document["tools"])) {
-    throw new Invalid("invalid tools policy: custom, distinct names of the MCP door's tools");
+    throw new Refusal("invalid", "invalid tools policy: custom, distinct names of the MCP door's tools");
   }
   const files = document["files"];
   if (files !== undefined && (!plain(files) || Object.entries(files).some(([key, value]) =>
     !Object.hasOwn(FILE_SETTINGS, key) || !whole(value)
     || value < FILE_SETTINGS[key as keyof FileSettings][0]
     || value > FILE_SETTINGS[key as keyof FileSettings][1]))) {
-    throw new Invalid("invalid files policy");
+    throw new Refusal("invalid", "invalid files policy");
   }
   const settings = { ...FILE_DEFAULTS, ...(files as Partial<FileSettings> | undefined) };
   if (settings.max_entries * Math.max(settings.keep_versions, settings.keep_recent)
       > settings.max_history) {
-    throw new Invalid("files policy: max_history holds max_entries times the larger of " +
+    throw new Refusal("invalid", "files policy: max_history holds max_entries times the larger of " +
                       "keep_versions and keep_recent");
   }
   const egress = document["egress"];
   if (!plain(egress) || !keys(egress, ["mode", "destinations"])
       || !EGRESS_MODES.includes(egress["mode"] as string)
       || !Array.isArray(egress["destinations"])) {
-    throw new Invalid("invalid egress policy");
+    throw new Refusal("invalid", "invalid egress policy");
   }
   for (const entry of egress["destinations"]) {
     checkDestination(entry);
   }
   const entries = document["entries"];
   if (!Array.isArray(entries)) {
-    throw new Invalid("invalid policy entries");
+    throw new Refusal("invalid", "invalid policy entries");
   }
   for (const entry of entries) {
     if (!plain(entry) || !keys(entry, ["scope", "table", "values"])
         || entry["scope"] !== "account" || !TABLES.includes(entry["table"] as string)
         || !plain(entry["values"]) || Object.values(entry["values"]).some((value) =>
           value !== null && !["string", "number", "boolean"].includes(typeof value))) {
-      throw new Invalid("invalid scoped policy entry");
+      throw new Refusal("invalid", "invalid scoped policy entry");
     }
     const values = entry["values"];
     const action = values["action_class"];
     if (entry["table"] === "rules" && (!BEHAVIOURS.includes(values["behaviour"] as string)
         || typeof action !== "string" || !Object.hasOwn(DEFAULT_RULES, action))) {
-      throw new Invalid("invalid approval rule");
+      throw new Refusal("invalid", "invalid approval rule");
     }
     const kind = values["kind"];
     if (entry["table"] === "operation_kinds"
         && (typeof kind !== "string" || !Object.hasOwn(OPERATION_KINDS, kind))) {
-      throw new Invalid("invalid declared operation");
+      throw new Refusal("invalid", "invalid declared operation");
     }
   }
   const spend = document["spend"];
   if (!plain(spend) || !keys(spend, [...CAPS, "source_ceilings"])) {
-    throw new Invalid("invalid spend policy");
+    throw new Refusal("invalid", "invalid spend policy");
   }
   if (CAPS.some((cap) => spend[cap] !== null && !whole(spend[cap]))) {
-    throw new Invalid("invalid spend cap");
+    throw new Refusal("invalid", "invalid spend cap");
   }
   const ceilings = spend["source_ceilings"];
   if (!plain(ceilings) || Object.values(ceilings).some((value) => !whole(value))) {
-    throw new Invalid("invalid source ceiling");
+    throw new Refusal("invalid", "invalid source ceiling");
   }
   if (codePoints(canonical(document)) > limits.maxDocument) {
-    throw new Refused("the policy document is too large");
+    throw new Refusal("refused", "the policy document is too large");
   }
   return document as unknown as PolicyDocument;
 }
@@ -561,7 +561,7 @@ function cardId(value: unknown): value is string {
 /** `expected_generation`: the policy generation the owner's change was made against. */
 function expected(value: unknown): number {
   if (!whole(value) || value < 1) {
-    throw new Invalid("expected policy generation required");
+    throw new Refusal("invalid", "expected policy generation required");
   }
   return value;
 }
@@ -671,13 +671,13 @@ export class Policy {
     if (proposal !== null && (!plain(proposal) || !keys(proposal, ["request_id", "digest"])
                               || !cardId(proposal["request_id"])
                               || !cardId(proposal["digest"]))) {
-      throw new Invalid("invalid proposal apply");
+      throw new Refusal("invalid", "invalid proposal apply");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = this.#stored();
       if (row.generation !== generation) {
-        throw new Refused("policy generation changed");
+        throw new Refusal("refused", "policy generation changed");
       }
       if (proposal !== null) {
         const held = sql.exec<{ digest: string; document: string }>(
@@ -690,7 +690,7 @@ export class Policy {
             || change["type"] !== "policy_proposal"
             || canonical(change["policy"]) !== canonical(document)
             || change["expected_generation"] !== generation) {
-          throw new Refused("proposal is not the pending card shown");
+          throw new Refusal("refused", "proposal is not the pending card shown");
         }
         sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?", now,
                  proposal["request_id"] as string);
@@ -720,7 +720,7 @@ export class Policy {
     return this.#storage.transactionSync(() => {
       const row = this.#stored();
       if (row.generation !== generation) {
-        throw new Refused("policy generation changed");
+        throw new Refusal("refused", "policy generation changed");
       }
       this.#sql.exec("UPDATE owner_policy SET generation = ?", generation + 1);
       this.receipt(kind, { session_id: sessionId, old_digest: row.digest,
@@ -739,10 +739,10 @@ export class Policy {
   propose(change: unknown, requestId: unknown, proposer: string, now: number):
       { request_digest: string; generation: number } {
     if (!plain(change) || codePoints(canonical(change)) > this.#limits.maxChange) {
-      throw new Invalid("invalid policy proposal");
+      throw new Refusal("invalid", "invalid policy proposal");
     }
     if (requestId !== null && !cardId(requestId)) {
-      throw new Invalid("invalid policy proposal");
+      throw new Refusal("invalid", "invalid policy proposal");
     }
     const generation = this.#generation();
     const digest = policyDigest(change);
@@ -760,17 +760,17 @@ export class Policy {
           "SELECT digest FROM policy_proposals WHERE request_id = ?", requestId,
         ).toArray()[0];
         if (held !== undefined && held.digest !== digest) {
-          throw new Refused("a proposal is already held for this card");
+          throw new Refusal("refused", "a proposal is already held for this card");
         }
         if (held === undefined) {
           if (this.#usage().pending_proposals >= this.#limits.pendingProposals) {
-            throw new Refused("too many pending policy proposals");
+            throw new Refusal("refused", "too many pending policy proposals");
           }
           const share = sql.exec<{ pending: number }>(
             "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
           ).toArray()[0]?.pending ?? 0;
           if (proposer !== "owner" && share >= this.#limits.pendingPerClient) {
-            throw new Refused("this client's pending policy proposals are at their limit");
+            throw new Refusal("refused", "this client's pending policy proposals are at their limit");
           }
           sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
                      "VALUES (?, ?, ?, ?, ?)", requestId, digest, canonical(change), now,
@@ -792,7 +792,7 @@ export class Policy {
   applyKeyRequest(proposal: unknown, scopes: unknown, now: number): void {
     if (!plain(proposal) || !keys(proposal, ["request_id", "digest"])
         || !cardId(proposal["request_id"]) || !cardId(proposal["digest"])) {
-      throw new Invalid("invalid proposal apply");
+      throw new Refusal("invalid", "invalid proposal apply");
     }
     const held = this.#sql.exec<{ digest: string; document: string }>(
       "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
@@ -803,7 +803,7 @@ export class Policy {
     if (held === undefined || held.digest !== proposal["digest"] || !plain(change)
         || change["type"] !== "api_key_request"
         || canonical(change["scopes"]) !== canonical(scopes)) {
-      throw new Refused("proposal is not the pending card shown");
+      throw new Refusal("refused", "proposal is not the pending card shown");
     }
     this.#sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?", now,
                    proposal["request_id"] as string);

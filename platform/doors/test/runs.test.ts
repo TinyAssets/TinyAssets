@@ -11,6 +11,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { Refusal } from "../../contract/src/refusal";
 import {
   EGRESS_ORIGIN, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
@@ -18,7 +19,6 @@ import type { Binding } from "../../owner/src/owner-do";
 import type { SandboxStart } from "../../owner/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
-import { refusedStatus } from "../src/egress";
 import { RUN_INSTRUCTIONS } from "../src/mcp";
 import { profileNames } from "../src/tools";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
@@ -284,8 +284,9 @@ describe("a run's own doors on the egress host", () => {
   });
 
   it("answer a post the object holds no room for 503, for the runner to post again", () => {
-    expect(refusedStatus("events_busy", 403)).toBe(503);
-    expect(refusedStatus("run_ended", 403)).toBe(403);
+    expect([new Refusal("events_busy").status, new Refusal("events_busy").retryAfter])
+      .toEqual([503, 1]);
+    expect(new Refusal("run_ended").status).toBe(403);
   });
 
   it("take a run's events only by the runner's secret, within the post's bounds",

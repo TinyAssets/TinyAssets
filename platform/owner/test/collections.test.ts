@@ -10,9 +10,10 @@ import type { WrittenRow } from "../src/owner-do";
 import { describe, expect, it } from "vitest";
 
 import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
-import { Invalid, Refused } from "../../contract/src/errors";
+
 import { MIGRATIONS } from "../src/schema";
 import { etags, failure, history, inObject, type Owner, ownerObject, rows } from "./support";
+import { Refusal } from "../../contract/src/refusal";
 
 const ROOM = "room:chess:main";
 
@@ -36,6 +37,16 @@ function shownAs(row: WrittenRow, body: string): Row {
   const { body_bytes: bytes, ...rest } = row;
   expect(bytes).toBe(new TextEncoder().encode(body).byteLength);
   return { ...rest, body } as Row;
+}
+
+/** What `act` throws. */
+function thrown(act: () => unknown): unknown {
+  try {
+    act();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected a throw");
 }
 
 describe("the revision primitive", () => {
@@ -87,10 +98,10 @@ describe("the revision primitive", () => {
       .rows).toEqual([shownAs(mine, "secret")]);
     const taken = await failure(() => write(o, "cara", {
       collection: ROOM, row_id: "p", body: "x", expected_etag: mine.etag, private: true }));
-    expect([taken.name, taken.message]).toEqual(["Refused", "a private row is its writer's own"]);
+    expect([taken.code, taken.message]).toEqual(["refused", "a private row is its writer's own"]);
     const exposed = await failure(() => write(o, "bob", {
       collection: ROOM, row_id: "p", body: "x", expected_etag: mine.etag, private: false }));
-    expect(exposed.name).toBe("Invalid");
+    expect(exposed.code).toBe("invalid");
     expect((await rows(stub))[0]?.[6]).toBe("secret");
   });
 
@@ -111,7 +122,7 @@ describe("the revision primitive", () => {
     const named = await failure(() => stub.collectionGet(as("cara"), {
       collection: ROOM, row_id: "p", writer: "bob" } as never));
     expect(named.message).toBe("invalid collection request");
-    expect((await failure(() => get("cara", ROOM, ""))).name).toBe("Invalid");
+    expect((await failure(() => get("cara", ROOM, ""))).code).toBe("invalid");
     expect((await rows(stub)).map((r) => r[1])).toEqual(["p", "s"]); // a get writes nothing
   });
 
@@ -479,7 +490,7 @@ describe("the bounds' counters", () => {
             store.clear(owner, collection, random() < 0.5 ? null : pick(callers));
           }
         } catch (error) {
-          outcome = (error as Error).name;
+          outcome = error instanceof Refusal ? error.code : (error as Error).name;
         }
         counted[outcome] = (counted[outcome] ?? 0) + 1;
         expect(counters(state.storage.sql), `seed ${seed}, step ${step}`)
@@ -490,7 +501,7 @@ describe("the bounds' counters", () => {
       return counted;
     });
     // The sequence reaches the bounds, the swaps and the erases, not only plain writes.
-    expect(Object.keys(outcomes).sort()).toEqual(["Conflict", "Refused", "done"]);
+    expect(Object.keys(outcomes).sort()).toEqual(["Conflict", "done", "refused"]);
   });
 
   it("are kept by the store alone: a history entry is never changed", async () => {
@@ -510,7 +521,7 @@ describe("the RPC door's fields", () => {
     const refused = await failure(() => stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t", body: "1", expected_etag: "", private: false,
       history_op: undefined } as never));
-    expect([refused.name, refused.message]).toEqual(["Invalid", "invalid collection request"]);
+    expect([refused.code, refused.message]).toEqual(["invalid", "invalid collection request"]);
     expect(await rows(stub)).toEqual([]);
   });
 
@@ -521,7 +532,7 @@ describe("the RPC door's fields", () => {
                                   [0, 101], [0, 0], [0, null]]) {
       const refused = await failure(() => stub.collectionPull(as("bob"), {
         collection: "board", after, limit } as never));
-      expect(refused.name, `after ${String(after)}, limit ${String(limit)}`).toBe("Invalid");
+      expect(refused.code, `after ${String(after)}, limit ${String(limit)}`).toBe("invalid");
     }
   });
 });
@@ -533,8 +544,8 @@ describe("the RPC door's owner-only erases", () => {
     const row = await write(o, "bob", { row_id: "t", body: "1" });
     const refused = await failure(() => stub.collectionDelete(as("bob"), {
       collection: "board", row_id: "t", expected_etag: row.etag }));
-    expect([refused.name, refused.message])
-      .toEqual(["Refused", "only the owner may delete collection rows"]);
+    expect([refused.code, refused.message])
+      .toEqual(["refused", "only the owner may delete collection rows"]);
     expect(await stub.collectionDelete(as(alice), {
       collection: "board", row_id: "t", expected_etag: "stale" }))
       .toEqual({ conflict: shownAs(row, "1") });
@@ -551,14 +562,14 @@ describe("the primitive's errors", () => {
     const { stub, name: alice } = ownerObject();
     await inObject(stub, {}, (store) => store.write(alice, alice, "board", "a", "1", "", false));
     await inObject(stub, { maxRowsCharge: 1 }, (store) => {
-      expect(() => store.write(alice, alice, "board", "b", "1", "", false))
-        .toThrow(Refused);
+      expect(thrown(() => store.write(alice, alice, "board", "b", "1", "", false)))
+        .toMatchObject({ name: "Refusal", code: "refused" });
       expect(() => store.write(alice, alice, "board", "a", "1", "", false))
         .toThrow(Conflict);
-      expect(() => store.write(alice, alice, "board", "a\u0000", "1", "", false))
-        .toThrow(Invalid);
-      expect(() => store.write(alice, alice, "board", "a", "\ud800", "", false))
-        .toThrow(Invalid);
+      expect(thrown(() => store.write(alice, alice, "board", "a\u0000", "1", "", false)))
+        .toMatchObject({ name: "Refusal", code: "invalid" });
+      expect(thrown(() => store.write(alice, alice, "board", "a", "\ud800", "", false)))
+        .toMatchObject({ name: "Refusal", code: "invalid" });
     });
   });
 });

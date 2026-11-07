@@ -12,7 +12,7 @@
  * whole read. A range read fetches the whole object (at most 4 MiB) and slices it: GCM
  * authenticates the whole.
  */
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 
 export type Cipher = "ssec" | "aes-gcm";
 
@@ -55,7 +55,7 @@ export async function seal(dataKey: ArrayBuffer, objectKey: string, plain: Uint8
 export async function open(dataKey: ArrayBuffer, objectKey: string, stored: Uint8Array):
     Promise<Uint8Array> {
   if (stored.byteLength < NONCE_BYTES + TAG_BITS / 8) {
-    throw new Invalid("a stored object is shorter than its nonce and tag");
+    throw new Refusal("invalid", "a stored object is shorter than its nonce and tag");
   }
   try {
     return new Uint8Array(await crypto.subtle.decrypt(

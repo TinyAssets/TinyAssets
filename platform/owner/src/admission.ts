@@ -35,7 +35,7 @@
  * and an erased owner is never set again.
  */
 import { wiped } from "./erasure";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { ADMISSION_TABLE } from "./schema";
 import { type TierName, tierName } from "./tier";
@@ -71,11 +71,11 @@ export function admission(storage: OwnerStorage): Admission {
 }
 
 /** The refusal `require_work` answers for `admission`, or null when the owner is admitted. */
-export function workRefusal(state: Admission): string | null {
+export function workRefusal(state: Admission): Refusal | null {
   return state.state === "admitted" ? null
-    : state.state === "erased" ? OWNER_ERASED
-      : state.state === "pending" ? OWNER_UNADMITTED
-        : `${OWNER_SUSPENDED} (${state.reasons.join(", ")})`;
+    : state.state === "erased" ? new Refusal("owner_erased", OWNER_ERASED)
+      : state.state === "pending" ? new Refusal("owner_unadmitted", OWNER_UNADMITTED)
+        : new Refusal("owner_suspended", `${OWNER_SUSPENDED} (${state.reasons.join(", ")})`);
 }
 
 /**
@@ -92,7 +92,7 @@ export type DoorClass = "work" | "read" | "reduce";
  * its risk and storage; an `abuse` suspension refuses every door (export and erasure go
  * through the platform alone); an erased owner refuses everything.
  */
-export function doorRefusal(state: Admission, door: DoorClass): string | null {
+export function doorRefusal(state: Admission, door: DoorClass): Refusal | null {
   if (state.state === "suspended" && door !== "work" && !state.reasons.includes("abuse")) {
     return null;
   }
@@ -103,7 +103,7 @@ export function doorRefusal(state: Admission, door: DoorClass): string | null {
 export function requireWork(storage: OwnerStorage): void {
   const refusal = workRefusal(admission(storage));
   if (refusal !== null) {
-    throw new Refused(refusal);
+    throw refusal;
   }
 }
 
@@ -118,13 +118,13 @@ export function requireWork(storage: OwnerStorage): void {
  */
 export function setAdmission(storage: OwnerStorage, request: unknown): Admission {
   if (typeof request !== "object" || request === null || Array.isArray(request)) {
-    throw new Invalid(CHANGE);
+    throw new Refusal("invalid", CHANGE);
   }
   const keys = Object.keys(request).sort().join();
   const now = admission(storage);
   if (keys === "admit") {
     if ((request as Record<string, unknown>)["admit"] !== true) {
-      throw new Invalid("an admit is {admit: true}");
+      throw new Refusal("invalid", "an admit is {admit: true}");
     }
     if (now.state !== "pending") {
       return now;
@@ -133,16 +133,16 @@ export function setAdmission(storage: OwnerStorage, request: unknown): Admission
     return { state: "admitted", reasons: [] };
   }
   if (keys !== "reason,suspended") {
-    throw new Invalid(CHANGE);
+    throw new Refusal("invalid", CHANGE);
   }
   const { reason, suspended } = request as Record<string, unknown>;
   if (typeof reason !== "string" || !SUSPENSIONS.includes(reason)
       || typeof suspended !== "boolean") {
-    throw new Invalid("an admission change is a reason (abuse or billing) and whether it " +
+    throw new Refusal("invalid", "an admission change is a reason (abuse or billing) and whether it " +
                       "suspends");
   }
   if (now.state === "pending") {
-    throw new Refused(NEVER_ADMITTED);
+    throw new Refusal("refused", NEVER_ADMITTED);
   }
   const reasons = new Set(now.reasons);
   if (suspended) {

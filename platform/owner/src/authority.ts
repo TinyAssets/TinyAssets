@@ -20,7 +20,7 @@
  * makes (ADR-034 decision 6).
  */
 import { HEX64 } from "../../contract/src/ids";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { codePoints, isPrintable } from "../../contract/src/text";
 
 /** The capabilities of a scoped grant that work needs (`grants.ts`'s `CAPABILITIES`). */
@@ -41,11 +41,6 @@ export const NOT_OWNER = "only the owner may use this capability";
 
 /** The receipt's rule for refused work. */
 export const AUTHORITY_RULE = "outside_authority";
-
-/** A refusal's fixed code: the part before its colon (`owner_suspended: ...`), else itself. */
-export function refusalCode(message: string): string {
-  return /^[a-z_]+:/.exec(message)?.[0].slice(0, -1) ?? message;
-}
 
 /** The authority work runs under: the client's, as it was admitted, and where. */
 export type Stamped = {
@@ -88,7 +83,7 @@ export const AGENT_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** An agent's id: its directory's name (`AGENT_DIR`). */
 export function agentId(value: unknown): string {
   if (typeof value !== "string" || !AGENT_DIR.test(value)) {
-    throw new Invalid("an agent id is 1 to 128 letters, digits, dots, dashes and " +
+    throw new Refusal("invalid", "an agent id is 1 to 128 letters, digits, dots, dashes and " +
                       "underscores");
   }
   return value;
@@ -99,7 +94,7 @@ export function stamped(value: unknown): Stamped | null {
   if (value === null) {
     return null;
   }
-  const refused = () => new Invalid("a stamp is a client, its grant generation, its sign-in " +
+  const refused = () => new Refusal("invalid", "a stamp is a client, its grant generation, its sign-in " +
                                     "time, a universe and an agent");
   if (typeof value !== "object" || Array.isArray(value)
       || Object.keys(value).sort().join() !== STAMP_KEYS) {
@@ -135,7 +130,7 @@ export interface AuthorityParts {
    * synchronous read of the object's own row (`admission.ts`). Every check is refused
    * while the owner is not admitted, the owner's own too.
    */
-  readonly admission?: () => string | null;
+  readonly admission?: () => Refusal | null;
 }
 
 export class Authority {
@@ -150,8 +145,8 @@ export class Authority {
     try {
       return this.#parts.grants.standing(stamp.client, stamp.generation, stamp.authenticated_at);
     } catch (error) {
-      if (error instanceof Refused) {
-        throw new Refused(AUTHORITY_CHANGED);
+      if (error instanceof Refusal && !error.invalid) {
+        throw new Refusal("refused", AUTHORITY_CHANGED);
       }
       throw error;
     }
@@ -166,18 +161,18 @@ export class Authority {
   require(state: Readonly<AuthorityState> | undefined, need: Need | undefined): void {
     const unadmitted = this.#parts.admission?.() ?? null;
     if (unadmitted !== null) {
-      throw new Refused(unadmitted);
+      throw unadmitted;
     }
     if (state?.by === "owner") {
       return;
     }
     if (state?.by !== "client") {
-      throw new Refused(NO_AUTHORITY);
+      throw new Refusal("refused", NO_AUTHORITY);
     }
     const stamp = state.stamp;
     const grant = this.#standing(stamp);
     if (need === OWNER_ONLY) {
-      throw new Refused(NOT_OWNER);
+      throw new Refusal("refused", NOT_OWNER);
     }
     if (grant.mode === "full") {
       return;
@@ -185,19 +180,19 @@ export class Authority {
     if (need === undefined || stamp.universe === null
         || !need.every((capability) => grant.holds({ universe: stamp.universe!,
                                                      agent: stamp.agent, capability }))) {
-      throw new Refused(NOT_GRANTED);
+      throw new Refusal("refused", NOT_GRANTED);
     }
   }
 
   /** Why an operation needing `need` is refused under `state`, or undefined. Synchronous. */
   refusal(state: Readonly<AuthorityState> | undefined, need: Need | undefined):
-      string | undefined {
+      Refusal | undefined {
     try {
       this.require(state, need);
       return undefined;
     } catch (error) {
-      if (error instanceof Refused) {
-        return error.message;
+      if (error instanceof Refusal && !error.invalid) {
+        return error;
       }
       throw error;
     }
@@ -205,7 +200,7 @@ export class Authority {
 
   /** That `state` holds one of `needs`; else the first one's refusal. */
   requireOne(state: Readonly<AuthorityState> | undefined, needs: readonly Need[]): void {
-    let first: string | undefined;
+    let first: Refusal | undefined;
     for (const need of needs) {
       const reason = this.refusal(state, need);
       if (reason === undefined) {
@@ -213,6 +208,6 @@ export class Authority {
       }
       first ??= reason;
     }
-    throw new Refused(first ?? NOT_GRANTED);
+    throw first ?? new Refusal("refused", NOT_GRANTED);
   }
 }

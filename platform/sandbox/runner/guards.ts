@@ -83,14 +83,19 @@ export function projectEnvFile(relative: string): "dotenv" | "settings" | null {
   return parts.length === 2 && name.endsWith(".json") ? "settings" : null;
 }
 
+/** Why a run is refused for its project files: the file, and the helper or name it sets. */
+export type ProjectEnvRefusal = { readonly code: "project_env_refused"; readonly path: string }
+  & ({ readonly helper: string } | { readonly sets: string });
+
 /**
  * Why the run is refused, from its agent's project files (`files`: path from the agent's
- * directory to text, only those `projectEnvFile` names), or null.
+ * directory to text, only those `projectEnvFile` names), or null: its code and facts, which
+ * the app says in words.
  */
 export function projectEnvRefusal(files: ReadonlyMap<string, string>,
                                   forbid: readonly string[],
                                   kindOf: (path: string) => "dotenv" | "settings" | null
-                                    = projectEnvFile): string | null {
+                                    = projectEnvFile): ProjectEnvRefusal | null {
   for (const [path, text] of files) {
     const kind = kindOf(path);
     if (kind === null) {
@@ -105,15 +110,14 @@ export function projectEnvRefusal(files: ReadonlyMap<string, string>,
         continue;  // not JSON: no CLI loads variables from it as settings
       }
       if (settings.helpers.length > 0) {
-        return `project_env_refused: ${path} names a credential helper (${settings.helpers[0]})`;
+        return { code: "project_env_refused", path, helper: settings.helpers[0]! };
       }
       names = settings.env;
     }
     const bad = names.find((name) => forbids(forbid, name)
       || CREDENTIAL_NAME.test(name.toUpperCase()));
     if (bad !== undefined) {
-      return `project_env_refused: ${path} sets ${bad}, which a run's environment never ` +
-        "takes from the agent's files";
+      return { code: "project_env_refused", path, sets: bad };
     }
   }
   return null;

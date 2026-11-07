@@ -41,7 +41,7 @@
 import { sha256Hex } from "../../contract/src/digest";
 
 import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { PAGE_BYTES } from "./pages";
 import { codePoints, name, utf8Bytes } from "../../contract/src/text";
@@ -135,10 +135,10 @@ export interface Page {
  */
 export function checkBody(body: unknown, limits: Limits = LIMITS): string {
   if (typeof body !== "string" || utf8Bytes(body) > limits.maxRowBytes) {
-    throw new Invalid(`a row body is text of at most ${limits.maxRowBytes} bytes`);
+    throw new Refusal("invalid", `a row body is text of at most ${limits.maxRowBytes} bytes`);
   }
   if (LONE_SURROGATE.test(body)) {
-    throw new Invalid("a row body is well-formed text");
+    throw new Refusal("invalid", "a row body is well-formed text");
   }
   return body;
 }
@@ -294,13 +294,13 @@ export class Collections {
     const over = (key: "owner" | "mine" | "outside", bound: number) =>
       after[key] > before[key] && after[key] > bound;
     if (over("owner", most)) {
-      throw new Refused("the owner's collections are full");
+      throw new Refusal("refused", "the owner's collections are full");
     }
     if (filer !== OWNER_FILER && over("mine", Math.floor(most * share / 100))) {
-      throw new Refused("this writer's share of the owner's collections is full");
+      throw new Refusal("refused", "this writer's share of the owner's collections is full");
     }
     if (filer !== OWNER_FILER && over("outside", Math.floor(most * (100 - reserve) / 100))) {
-      throw new Refused("outside writers' share of the owner's collections is full; the " +
+      throw new Refusal("refused", "outside writers' share of the owner's collections is full; the " +
                         "rest is kept for the owner");
     }
   }
@@ -321,11 +321,11 @@ export class Collections {
     name(rowId, "row_id");
     checkBody(body, this.#limits);
     if (typeof expectedEtag !== "string" || typeof isPrivate !== "boolean") {
-      throw new Invalid("invalid collection write");
+      throw new Refusal("invalid", "invalid collection write");
     }
     if (typeof historyOp !== "string" || codePoints(historyOp) > 32
         || !IDENTIFIER.test(historyOp) || ERASES.includes(historyOp)) {
-      throw new Invalid("history_op is a name of at most 32 characters, not an erase");
+      throw new Refusal("invalid", "history_op is a name of at most 32 characters, not an erase");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -333,10 +333,10 @@ export class Collections {
         "SELECT * FROM collection_rows WHERE collection = ? AND row_id = ?", collection, rowId,
       ).toArray()[0];
       if (row !== undefined && row.private && row.writer !== caller) {
-        throw new Refused("a private row is its writer's own");
+        throw new Refusal("refused", "a private row is its writer's own");
       }
       if (row !== undefined && Boolean(row.private) !== isPrivate) {
-        throw new Invalid("a row keeps the privacy it was created with");
+        throw new Refusal("invalid", "a row keeps the privacy it was created with");
       }
       if ((row === undefined ? "" : row.etag) !== expectedEtag) {
         throw new Conflict(row === undefined ? null : shown(row));
@@ -476,11 +476,11 @@ export class Collections {
   pull(caller: string, collection: string, after: unknown, limit: unknown): Page {
     name(collection, "collection");
     if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
-      throw new Invalid("after is a collection seq");
+      throw new Refusal("invalid", "after is a collection seq");
     }
     if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0
         || limit > this.#limits.maxPull) {
-      throw new Invalid(`limit is 1 to ${this.#limits.maxPull}`);
+      throw new Refusal("invalid", `limit is 1 to ${this.#limits.maxPull}`);
     }
     const top = this.top(collection);
     const found = this.#sql.exec<StoredRow>(
@@ -508,11 +508,11 @@ export class Collections {
   changed(caller: string, where: { collection: string } | { prefix: string }, after: unknown,
           limit: unknown): Changes {
     if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
-      throw new Invalid("after is a change cursor");
+      throw new Refusal("invalid", "after is a change cursor");
     }
     if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0
         || limit > this.#limits.maxPull) {
-      throw new Invalid(`limit is 1 to ${this.#limits.maxPull}`);
+      throw new Refusal("invalid", `limit is 1 to ${this.#limits.maxPull}`);
     }
     const space = this.#sql.exec<{ erasure_floor: number }>(
       "SELECT erasure_floor FROM collection_space").one();
@@ -592,7 +592,7 @@ export class Collections {
       History {
     if (before !== null && (typeof before !== "number" || !Number.isSafeInteger(before)
                             || before < 1)) {
-      throw new Invalid("before_revision is a revision");
+      throw new Refusal("invalid", "before_revision is a revision");
     }
     if (this.#visible(caller, collection, rowId) === undefined) {
       return { entries: [], more: false, before_revision: null };
@@ -665,7 +665,7 @@ export class Collections {
   delete(caller: string, collection: string, rowId: string, expectedEtag: unknown):
       { deleted: number } {
     if (typeof expectedEtag !== "string") {
-      throw new Invalid("invalid collection delete");
+      throw new Refusal("invalid", "invalid collection delete");
     }
     name(rowId, "row_id");
     name(collection, "collection");

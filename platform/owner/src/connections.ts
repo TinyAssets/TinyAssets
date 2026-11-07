@@ -68,7 +68,7 @@ import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
-import { Invalid, Refused } from "../../contract/src/errors";
+import { GATEWAY_CODES, Refusal, refusalOf } from "../../contract/src/refusal";
 import {
   CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODELS_JSON_MAX, REDIRECT_URI_MAX,
 } from "../../contract/src/limits";
@@ -209,8 +209,6 @@ export const CREDENTIAL_EXPIRED = "credential_expired";
 
 const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
-/** A setup check's failure: the gateway's fixed code. */
-const FAILURE = /^[a-z][a-z_]{0,63}$/;
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -220,27 +218,27 @@ function object(value: unknown): value is Record<string, unknown> {
 function fields(request: unknown, required: readonly string[],
                 optional: readonly string[] = []): Record<string, unknown> {
   if (!object(request)) {
-    throw new Invalid("invalid connection request");
+    throw new Refusal("invalid", "invalid connection request");
   }
   const keys = Object.keys(request);
   if (!required.every((key) => keys.includes(key))
       || !keys.every((key) => required.includes(key) || optional.includes(key))
       || Object.values(request).some((value) => value === undefined)) {
-    throw new Invalid("invalid connection request");
+    throw new Refusal("invalid", "invalid connection request");
   }
   return request;
 }
 
 function text(value: unknown, max: number, what: string): string {
   if (typeof value !== "string" || !value || codePoints(value) > max || !isPrintable(value)) {
-    throw new Invalid(`${what} is 1 to ${max} printable characters`);
+    throw new Refusal("invalid", `${what} is 1 to ${max} printable characters`);
   }
   return value;
 }
 
 function grammar(value: unknown, pattern: RegExp, what: string): string {
   if (typeof value !== "string" || !pattern.test(value)) {
-    throw new Invalid(`invalid ${what}`);
+    throw new Refusal("invalid", `invalid ${what}`);
   }
   return value;
 }
@@ -257,7 +255,7 @@ function modelInfo(value: unknown): ModelRecord {
   try {
     checkedRecord(value);
   } catch {
-    throw new Invalid("invalid connection model");
+    throw new Refusal("invalid", "invalid connection model");
   }
   return value as ModelRecord;
 }
@@ -265,7 +263,7 @@ function modelInfo(value: unknown): ModelRecord {
 /** A sealed blob as the gateway writes it, under `kid` (`contract/src/envelope.ts`). */
 function blobOf(value: unknown, kid: string): string {
   if (parseBlob(value, CONNECTION_BLOB_MAX)?.kid !== kid) {
-    throw new Invalid("invalid sealed credential");
+    throw new Refusal("invalid", "invalid sealed credential");
   }
   return value as string;
 }
@@ -279,11 +277,11 @@ function scopeJson(value: unknown): string {
   try {
     scope = egressScope(value);
   } catch {
-    throw new Invalid("invalid connection egress scope");
+    throw new Refusal("invalid", "invalid connection egress scope");
   }
   const json = JSON.stringify(scope);
   if (utf8Bytes(json) > EGRESS_JSON_MAX) {
-    throw new Invalid("invalid connection egress scope");
+    throw new Refusal("invalid", "invalid connection egress scope");
   }
   return json;
 }
@@ -291,16 +289,16 @@ function scopeJson(value: unknown): string {
 /** An https URL with no fragment, as an OAuth redirect URI must be (RFC 6749 §3.1.2). */
 function redirectUri(value: unknown): string {
   if (typeof value !== "string" || value.length > REDIRECT_URI_MAX) {
-    throw new Invalid("invalid redirect URI");
+    throw new Refusal("invalid", "invalid redirect URI");
   }
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new Invalid("invalid redirect URI");
+    throw new Refusal("invalid", "invalid redirect URI");
   }
   if (url.protocol !== "https:" || url.hash !== "" || value.includes("#")) {
-    throw new Invalid("invalid redirect URI");
+    throw new Refusal("invalid", "invalid redirect URI");
   }
   return value;
 }
@@ -375,28 +373,28 @@ export class Connections {
     const provider = grammar(r["provider"], PROVIDER, "provider");
     const kind = r["kind"];
     if (kind !== "api_key" && kind !== "oauth2") {
-      throw new Invalid("a connection is an api_key or an oauth2");
+      throw new Refusal("invalid", "a connection is an api_key or an oauth2");
     }
     const revocable = r["revocable"];
     if (typeof revocable !== "boolean" || (kind === "api_key" && revocable)) {
-      throw new Invalid("revocable is a boolean, and false for a pasted key");
+      throw new Refusal("invalid", "revocable is a boolean, and false for a pasted key");
     }
     if ((kind === "oauth2") !== (r["redirect_uri"] !== undefined)) {
-      throw new Invalid("an OAuth connection begins its flow at a redirect URI; a key has none");
+      throw new Refusal("invalid", "an OAuth connection begins its flow at a redirect URI; a key has none");
     }
     const redirect = kind === "oauth2" ? redirectUri(r["redirect_uri"]) : null;
     const name = text(r["display_name"], 128, "display_name");
     const live = this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM connections WHERE status != 'revoked'").one().n;
     if (live >= this.#limits.maxConnections) {
-      throw new Refused("the owner's connections are at their limit");
+      throw new Refusal("refused", "the owner's connections are at their limit");
     }
     if (redirect !== null) {
       const flows = this.#sql.exec<{ open: number; rows: number }>(
         "SELECT COALESCE(SUM(status = 'open' AND expires_at > ?), 0) AS open, " +
           "COUNT(*) AS rows FROM connection_flows", now).one();
       if (flows.open >= this.#limits.maxOpenFlows || flows.rows >= this.#limits.maxFlowRows) {
-        throw new Refused("too many connection flows; finish or wait for one");
+        throw new Refusal("refused", "too many connection flows; finish or wait for one");
       }
     }
     const id = `c${randomHex(12)}`;
@@ -425,31 +423,33 @@ export class Connections {
     const blob = blobOf(r["blob"], kid);
     const models = r["models"];
     if (!Array.isArray(models) || models.length > this.#limits.maxModels) {
-      throw new Invalid("invalid connection models");
+      throw new Refusal("invalid", "invalid connection models");
     }
     const checked = models.map(modelInfo);
     if (new Set(checked.map((model) => model.id)).size !== checked.length
         || utf8Bytes(JSON.stringify(checked)) > MODELS_JSON_MAX) {
-      throw new Invalid("invalid connection models");
+      throw new Refusal("invalid", "invalid connection models");
     }
     const row = this.#row(id);
     if (row === undefined || row.status !== "pending" || row.version !== r["version"]
         || row.pending_until === null || row.pending_until <= now) {
-      throw new Refused("no pending connection at this version");
+      throw new Refusal("refused", "no pending connection at this version");
     }
     const expires = r["expires_at"] ?? null;
     if (row.kind === "api_key" ? expires !== null
       : expires !== null && !count(expires, Number.MAX_SAFE_INTEGER)) {
-      throw new Invalid("an OAuth connection's expiry is epoch ms or null; a key has none");
+      throw new Refusal("invalid", "an OAuth connection's expiry is epoch ms or null; a key has none");
     }
     const failed = r["failed"];
     if (failed !== undefined) {
-      if (typeof failed !== "string" || !FAILURE.test(failed) || checked.length > 0
+      // A setup check's failure: one of the gateway's fixed codes.
+      if (typeof failed !== "string" || !(GATEWAY_CODES as readonly string[]).includes(failed)
+          || checked.length > 0
           || row.kind !== "oauth2") {
-        throw new Invalid("a failed setup commits an issued credential, its code and no models");
+        throw new Refusal("invalid", "a failed setup commits an issued credential, its code and no models");
       }
       if (r["egress"] !== undefined) {
-        throw new Invalid("a failed setup commits no egress scope");
+        throw new Refusal("invalid", "a failed setup commits no egress scope");
       }
       return this.#storage.transactionSync(() => this.#failed(row, kid, blob, expires, failed,
                                                               now));
@@ -507,7 +507,7 @@ export class Connections {
     const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const row = this.#row(id);
     if (row === undefined) {
-      throw new Refused("no such connection");
+      throw new Refusal("refused", "no such connection");
     }
     if (row.status === "revoked") {
       return { connection: id, revoked: false, provider_revoke: row.revoke_due !== null };
@@ -583,11 +583,11 @@ export class Connections {
         "WHERE flow = ? AND status = 'open' AND expires_at > ?", sha256Hex(state), now)
       .toArray()[0];
     if (flow === undefined || flow.session_id !== sessionId) {
-      throw new Refused("no open connection flow for this state in this session");
+      throw new Refusal("refused", "no open connection flow for this state in this session");
     }
     const row = this.#row(flow.connection_id);
     if (row === undefined || row.status !== "pending") {
-      throw new Refused("no open connection flow for this state in this session");
+      throw new Refusal("refused", "no open connection flow for this state in this session");
     }
     this.#sql.exec("UPDATE connection_flows SET status = 'used', verifier = NULL WHERE flow = ?",
                    sha256Hex(state));
@@ -628,16 +628,16 @@ export class Connections {
   credential(id: string, nowMs: number): Credential {
     const row = this.#row(id);
     if (row === undefined || row.status !== "active") {
-      throw new Refused(CONNECTION_UNAVAILABLE);
+      throw new Refusal("connection_unavailable", CONNECTION_UNAVAILABLE);
     }
     if (row.expires_at !== null && row.expires_at <= nowMs) {
-      throw new Refused(CREDENTIAL_EXPIRED);
+      throw new Refusal("credential_expired", CREDENTIAL_EXPIRED);
     }
     const secret = this.#sql.exec<{ blob: string }>(
       "SELECT blob FROM connection_secrets WHERE connection_id = ? AND version = ?",
       id, row.version).toArray()[0];
     if (secret === undefined) {
-      throw new Refused(CONNECTION_UNAVAILABLE);
+      throw new Refusal("connection_unavailable", CONNECTION_UNAVAILABLE);
     }
     return { connection: id, version: row.version, blob: secret.blob };
   }
@@ -716,7 +716,7 @@ export class Connections {
       }
       return;
     }
-    throw new Refused(CREDENTIAL_EXPIRED);
+    throw new Refusal("credential_expired", CREDENTIAL_EXPIRED);
   }
 
   /** Whether an OAuth credential expires within the margin; the lease's unit reads again. */
@@ -764,15 +764,17 @@ export class Connections {
     try {
       refreshed = await this.#service().refresh(this.#owner(), id, from.version, from.blob);
     } catch (error) {
-      const code = error instanceof Error ? error.message : "";
+      // The gateway's fixed code, as its refusal carries it; anything else is `internal`.
+      const refused = refusalOf(error)?.code;
+      const code = refused !== undefined && (GATEWAY_CODES as readonly string[]).includes(refused)
+        ? refused : "internal";
       await this.#write(() => this.#unlease(id, holder, code));
-      throw new Refused(`credential_refresh_failed: ${/^[a-z_]{1,40}$/.test(code)
-        ? code : "internal"}`);
+      throw new Refusal("credential_refresh_failed", `credential_refresh_failed: ${code}`);
     }
     const kept = await this.#write(() => this.#refreshed(id, holder, from.version, refreshed,
                                                          this.#clock()));
     if (kept === "malformed") {
-      throw new Refused("credential_refresh_failed: malformed");
+      throw new Refusal("credential_refresh_failed", "credential_refresh_failed: malformed");
     }
   }
 

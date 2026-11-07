@@ -6,7 +6,7 @@
  */
 import { HEX32, randomHex } from "../../contract/src/ids";
 
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { EXPORT_LIFE_S, EXPORTS_OPEN } from "./export";
 import type { OwnerStorage } from "./gate";
 
@@ -21,7 +21,7 @@ export interface OpenExport {
 
 function exportId(id: unknown): string {
   if (typeof id !== "string" || !EXPORT_ID.test(id)) {
-    throw new Invalid("an export is named by the id its first page gave");
+    throw new Refusal("invalid", "an export is named by the id its first page gave");
   }
   return id;
 }
@@ -55,7 +55,7 @@ export class OpenExports {
       "SELECT ends_at, gen FROM owner_exports WHERE export_id = ? AND ends_at > ?",
       exportId(id), now).toArray()[0];
     if (row === undefined) {
-      throw new Invalid("this export is not open: begin it again");
+      throw new Refusal("invalid", "this export is not open: begin it again");
     }
     return { export_id: id as string, ends_at: row.ends_at, gen: row.gen };
   }

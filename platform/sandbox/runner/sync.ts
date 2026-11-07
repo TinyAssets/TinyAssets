@@ -448,12 +448,17 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
 export interface SyncReport {
   readonly committed: number;
   readonly conflicts: readonly string[];
-  readonly refused: readonly { readonly path: string; readonly reason: string }[];
   /**
-   * Files skipped for this sync: gone, or changed, while it ran (sent by the next one); and
-   * files the owner keeps whose changes a custom sync-ignore line holds back.
+   * Files refused: by the owner's object or its doors (their words, and their code), or here
+   * (`secret_bytes`: the file holds a secret's bytes, its code alone).
    */
-  readonly skipped: readonly { readonly path: string; readonly reason: string }[];
+  readonly refused: readonly Refused[];
+  /**
+   * Files skipped for this sync, each by its code: gone (`gone`), or changed (`changed`),
+   * while it ran (sent by the next one); and files the owner keeps whose changes a custom
+   * sync-ignore line holds back (`held_back`).
+   */
+  readonly skipped: readonly { readonly path: string; readonly code: SkipCode }[];
   /** Skipped files past the listed ones (held back files are listed at most `LISTED`). */
   readonly skipped_unlisted: number;
   /** How long matching the sync-ignore list took this sync, in ms. */
@@ -475,10 +480,14 @@ export interface SyncReport {
   readonly unnamed_count: number;
 }
 
+/** A file a sync refused: the object's words and code, or the sync agent's code alone. */
+export type Refused = { readonly path: string; readonly reason: string; readonly code: string }
+  | { readonly path: string; readonly code: "secret_bytes" };
+/** Why a file was skipped this sync (the app says each in words). */
+export type SkipCode = "changed" | "gone" | "held_back";
+
 /** Held-back files a report lists by path, at most: past them it counts them. */
 const LISTED = 100;
-/** Why a kept file's changes stay in the sandbox. */
-const HELD_BACK = "held back by a sync-ignore line: your files keep the version they have";
 
 /**
  * A change time the mirror may trust: one older than the filesystem's coarsest tick before
@@ -647,9 +656,9 @@ function fileStat(local: string): Stats | null {
 export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
                               lease: { lease_id: string; epoch: number },
                               atoms: readonly string[]): Promise<SyncReport> {
-  const refused: { path: string; reason: string }[] = [];
+  const refused: Refused[] = [];
   const conflicts: string[] = [];
-  const skipped: { path: string; reason: string }[] = [];
+  const skipped: { path: string; code: SkipCode }[] = [];
   /** Kept files a custom line holds back, and of those the ones with changes here. */
   let kept = 0;
   let held = 0;
@@ -676,12 +685,11 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
           sent.push({ ...fields, intent_id: await upload(client, op, lease) });
         } catch (error) {
           if (error instanceof ChangedWhileSyncing) {
-            skipped.push({ path: op.path,
-                           reason: "changed while syncing; the next sync sends it" });
+            skipped.push({ path: op.path, code: "changed" });
             continue;
           }
           if (error instanceof SyncRefused) {
-            refused.push({ path: op.path, reason: error.message });
+            refused.push({ path: op.path, reason: error.message, code: error.code });
             continue;
           }
           throw error;
@@ -696,7 +704,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
                                                   ops: sent });
     const outcomes = answer["outcomes"] as { path: string; outcome: string;
                                              entry?: { version: number } | null;
-                                             reason?: string }[];
+                                             reason?: string; code?: string }[];
     mirror.batch(() => {
       for (const outcome of outcomes) {
         const op = ops.find((each) => each.path === outcome.path);
@@ -711,7 +719,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
         } else if (outcome.outcome === "conflict") {
           conflicts.push(outcome.path);
         } else {
-          refused.push({ path: outcome.path, reason: outcome.reason ?? "refused" });
+          refused.push({ path: outcome.path, reason: outcome.reason ?? "refused",
+                         code: outcome.code ?? "refused" });
         }
       }
     });
@@ -737,7 +746,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     const at = Date.now();
     const stat = fileStat(local);
     if (stat === null) {
-      skipped.push({ path, reason: "gone before it was sent" });
+      skipped.push({ path, code: "gone" });
       return;
     }
     const size = Number(stat.size);
@@ -751,7 +760,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     if (size <= INLINE_BYTES) {
       const small = safeRead(base, local);
       if (small === null) {
-        skipped.push({ path, reason: "gone before it was sent" });
+        skipped.push({ path, code: "gone" });
         return;
       }
       if (small.byteLength > INLINE_BYTES) {
@@ -764,7 +773,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       }
       if (heldSecret(small.toString("latin1"), atoms) !== null
           || heldSecret(small.toString("utf8"), atoms) !== null) {
-        refused.push({ path, reason: "holds a secret's bytes" });
+        refused.push({ path, code: "secret_bytes" });
         return;
       }
       await add({ op: "write", path, base: known?.version ?? null, mode,
@@ -774,7 +783,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
     const read = await scanned(base, local, atoms);
     if (read === null) {
-      skipped.push({ path, reason: "gone before it was sent" });
+      skipped.push({ path, code: "gone" });
       return;
     }
     if (known !== undefined && known.sha256 === read.sha256) {
@@ -782,7 +791,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       return;
     }
     if (read.secret) {
-      refused.push({ path, reason: "holds a secret's bytes" });
+      refused.push({ path, code: "secret_bytes" });
       return;
     }
     await add({ op: "write", path, base: known?.version ?? null, mode,
@@ -854,7 +863,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
         if (await heldBack(place, path, mirror.get(path)!)) {
           held += 1;
           if (held <= LISTED) {
-            skipped.push({ path, reason: HELD_BACK });
+            skipped.push({ path, code: "held_back" });
           }
         }
         continue;

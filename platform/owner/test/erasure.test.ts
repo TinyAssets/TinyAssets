@@ -18,7 +18,7 @@ import {
   tombstoned, writeTombstone,
 } from "../src/admission";
 import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S } from "../src/erasure";
-import { ERASING } from "../../contract/src/errors";
+import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, Ledger } from "../src/ledger";
@@ -151,8 +151,8 @@ describe("the owner's admission", () => {
     }
     for (const bad of [{ reason: "fraud", suspended: true }, { reason: "billing" },
                        { reason: "billing", suspended: "yes" }, {}]) {
-      expect((await failure(() => r.stub().admissionSet(r.platform, bad as never))).name)
-        .toBe("Invalid");
+      expect((await failure(() => r.stub().admissionSet(r.platform, bad as never))).code)
+        .toBe("invalid");
     }
     const named = env.AGENT.getByName(PLATFORM_CALLER);
     const platformOwner = { owner: PLATFORM_CALLER, caller: PLATFORM_CALLER, origin: null };

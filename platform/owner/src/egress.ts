@@ -78,11 +78,11 @@ import {
   type EgressScope, egressTarget, meteredCall, meteredModel,
 } from "../../contract/src/egress-scope";
 
-import { Invalid } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, largestFitting, periods } from "./money";
-import { EGRESS_BEAT_S, type EgressCode, type Outcome, OUTCOMES } from "../../contract/src/egress";
+import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
+import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
 
 
@@ -352,10 +352,10 @@ function plain(value: unknown, keys: string): value is Record<string, unknown> {
     && Object.keys(value).sort().join() === keys;
 }
 
-/** The request's fields, exactly, or `Invalid`. */
+/** The request's fields, exactly, or `invalid`. */
 export function egressRequest(value: unknown): EgressRequest {
   if (!plain(value, "bytes_hint,connection,method,path,run")) {
-    throw new Invalid("invalid egress request");
+    throw new Refusal("invalid", "invalid egress request");
   }
   const { run, connection, method, path, bytes_hint: hint } = value;
   if (typeof run !== "string" || !RUN_ID.test(run)
@@ -363,26 +363,26 @@ export function egressRequest(value: unknown): EgressRequest {
       || typeof method !== "string" || !METHODS.includes(method)
       || typeof path !== "string" || !PATH.test(path) || path.length > EGRESS_PATH_MAX
       || (hint !== null && (typeof hint !== "number" || !Number.isSafeInteger(hint) || hint < 0))) {
-    throw new Invalid("invalid egress request");
+    throw new Refusal("invalid", "invalid egress request");
   }
   return { run, connection, method, path, bytes_hint: hint };
 }
 
-/** A reserve's fields, exactly, or `Invalid`. */
+/** A reserve's fields, exactly, or `invalid`. */
 export function reserveRequest(value: unknown): ReserveRequest {
   if (!plain(value, "model,reservation,tier")) {
-    throw new Invalid("invalid egress reserve");
+    throw new Refusal("invalid", "invalid egress reserve");
   }
   const { reservation, model, tier } = value;
   if (typeof reservation !== "string" || !HEX32.test(reservation)
       || typeof model !== "string" || !HINT.test(model)
       || (tier !== null && (typeof tier !== "string" || !HINT.test(tier)))) {
-    throw new Invalid("invalid egress reserve");
+    throw new Refusal("invalid", "invalid egress reserve");
   }
   return { reservation, model, tier: tier as string | null };
 }
 
-/** The binding's sandbox fields, exactly, or `Invalid`. */
+/** The binding's sandbox fields, exactly, or `invalid`. */
 export function sandboxBinding(value: unknown): SandboxBinding {
   // At most one of a run's own secret and the runner's, each a SHA-256 hex.
   const egress = plain(value, "generation,kind,token") ? "none"
@@ -410,7 +410,7 @@ export function sandboxBinding(value: unknown): SandboxBinding {
       && typeof value["egress"] === "string" && HEX64.test(value["egress"])) {
     return { kind: "sync", token: value["token"], egress: value["egress"] };
   }
-  throw new Invalid("invalid sandbox binding");
+  throw new Refusal("invalid", "invalid sandbox binding");
 }
 
 function spendOutcome(value: unknown): SpendOutcome {
@@ -429,13 +429,13 @@ function spendOutcome(value: unknown): SpendOutcome {
     return { state: "succeeded", tokens: value["tokens"], cost: value["cost"],
              ...(served === undefined ? {} : { served: served as string }) };
   }
-  throw new Invalid("invalid egress settle");
+  throw new Refusal("invalid", "invalid egress settle");
 }
 
-/** The settle's fields, exactly, or `Invalid`. */
+/** The settle's fields, exactly, or `invalid`. */
 export function settleRequest(value: unknown): SettleRequest {
   if (!plain(value, "bytes,outcome,reservation,spend,status")) {
-    throw new Invalid("invalid egress settle");
+    throw new Refusal("invalid", "invalid egress settle");
   }
   const { reservation, outcome, status, bytes, spend } = value;
   if (typeof reservation !== "string" || !HEX32.test(reservation)
@@ -443,7 +443,7 @@ export function settleRequest(value: unknown): SettleRequest {
       || (status !== null && (typeof status !== "number" || !Number.isSafeInteger(status)
                               || status < 100 || status > 599))
       || typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0) {
-    throw new Invalid("invalid egress settle");
+    throw new Refusal("invalid", "invalid egress settle");
   }
   return { reservation, outcome: outcome as Outcome, status: status as number | null, bytes,
            spend: spendOutcome(spend) };
@@ -556,7 +556,7 @@ export class Egress {
    * its stream ended. The model must be one the connection lists, and, where its API's
    * path names it, the path's; the tier one its rules price. Only an admitted model call
    * still streaming, never reserved, by the egress token that opened it, is reserved, once;
-   * anything else is `Invalid`.
+   * anything else is `invalid`.
    */
   reserve(sandbox: SandboxBinding, request: ReserveRequest, now: number):
       EgressReserved | EgressRefusal {
@@ -567,7 +567,7 @@ export class Egress {
     if (row === undefined || row.state !== "open" || row.charge !== null
         || sandbox.kind !== "egress" || row.token !== sandbox.token
         || live === undefined || !live.reserving) {
-      throw new Invalid("invalid egress reserve: no admitted call awaits its charge");
+      throw new Refusal("invalid", "invalid egress reserve: no admitted call awaits its charge");
     }
     live.reserving = false;
     const refuse = (code: EgressCode, rule?: string): EgressRefusal => {

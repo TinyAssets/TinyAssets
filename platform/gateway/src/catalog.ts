@@ -20,7 +20,7 @@ import { createProvider, isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
 import { SUPPORTED_APIS, type Upstream } from "../../contract/src/egress-scope";
-import { Failure } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
 import type { ModelRecord } from "../../contract/src/model-record";
 
 /** The providers the gateway can stream through, by pi-ai provider id. */
@@ -57,7 +57,7 @@ const CUSTOM_APIS: Readonly<Record<string, () => ProviderStreams>> = Object.free
 function customProvider(upstream: Upstream): Provider {
   const api = Object.hasOwn(CUSTOM_APIS, upstream.api) ? CUSTOM_APIS[upstream.api] : undefined;
   if (api === undefined || upstream.models === undefined) {
-    throw new Failure("unsupported_source");
+    throw new Refusal("unsupported_source");
   }
   const models: Model<Api>[] = upstream.models.map((model) => ({
     ...structuredClone(model) as Omit<Model<Api>, "api" | "provider" | "baseUrl">,
@@ -83,14 +83,14 @@ function customProvider(upstream: Upstream): Provider {
  */
 export function providerFor(catalog: Catalog, upstream: Upstream): Provider {
   if (!SUPPORTED_APIS.includes(upstream.api)) {
-    throw new Failure("unsupported_source");
+    throw new Refusal("unsupported_source");
   }
   if (upstream.provider === "custom") {
     return customProvider(upstream);
   }
   const provider = catalog.provider(upstream.provider);
   if (provider === undefined) {
-    throw new Failure("unsupported_source");
+    throw new Refusal("unsupported_source");
   }
   return provider;
 }

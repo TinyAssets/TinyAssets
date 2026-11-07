@@ -48,7 +48,7 @@ import {
 } from "agents/lifecycle";
 import { type WebSocketHandlers, WebSockets } from "agents/websockets";
 
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import type { Sharer } from "../../contract/src/slots";
 
 import { ownerTails } from "./holds";
@@ -128,22 +128,21 @@ export function socketShape(request: Request):
   if (request.method !== "GET" || request.url !== SOCKET_URL
       || upgrade === null || upgrade.toLowerCase() !== "websocket"
       || [...request.headers.keys()].sort().join() !== SHAPE_HEADERS.join()) {
-    throw new Invalid(NOT_BINDER_SHAPE);
+    throw new Refusal("invalid", NOT_BINDER_SHAPE);
   }
   let binding: unknown;
   try {
     binding = JSON.parse(request.headers.get(BINDING_HEADER)!);
   } catch {
-    throw new Invalid(NOT_BINDER_SHAPE);
+    throw new Refusal("invalid", NOT_BINDER_SHAPE);
   }
   return { binding, conversation: request.headers.get(CONVERSATION_HEADER)!,
            ticket: request.headers.get(TICKET_HEADER)! };
 }
 
 function refusedUpgrade(error: unknown): Response {
-  if (error instanceof Refused || error instanceof Invalid) {
-    return Response.json({ error: error.message },
-                         { status: error instanceof Refused ? 403 : 400 });
+  if (error instanceof Refusal) {
+    return Response.json({ error: error.message }, { status: error.status });
   }
   console.error("an app socket's upgrade failed");  // no ids, no error text
   return Response.json({ error: SOCKET_FAILED }, { status: 500 });
@@ -217,7 +216,7 @@ export class Relay extends LifecycleCapability {
       const shape = socketShape(request);
       state = await this.#parts.admit(shape.binding, shape.conversation, shape.ticket);
       if ([...this.capability.getConnections()].length + this.#pending >= OWNER_SOCKETS) {
-        throw new Refused(SOCKETS_FULL);
+        throw new Refusal("sockets_full", SOCKETS_FULL);
       }
     } catch (error) {
       return refusedUpgrade(error);

@@ -12,7 +12,7 @@
  * is `invalid_source`, the gateway's fixed code.
  */
 import { count, list, shape, text } from "./checks";
-import { Failure } from "./failure";
+import { Refusal } from "./refusal";
 import { checkedRecord, type ModelRecord } from "./model-record";
 
 /** One place a credential may be sent: an HTTPS origin, its paths and its methods. */
@@ -129,20 +129,20 @@ function ipLiteral(host: string): boolean {
  */
 function httpsUrl(value: unknown, query = false): URL {
   if (typeof value !== "string" || value.length > URL_MAX) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   const canonical = url.href === value || (url.pathname === "/" && url.href === `${value}/`);
   if (!canonical || url.protocol !== "https:" || url.username !== "" || url.password !== ""
       || value.includes("#") || (value.includes("?") && (!query || url.search === ""))
       || ipLiteral(url.hostname)
       || url.hostname.endsWith(".") || ENCODED.test(url.pathname)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return url;
 }
@@ -151,7 +151,7 @@ function httpsUrl(value: unknown, query = false): URL {
 function origin(value: unknown): string {
   const url = httpsUrl(value);
   if (url.origin !== value) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return url.origin;
 }
@@ -160,19 +160,19 @@ export function endpoint(value: unknown): Endpoint {
   const fields = shape(value, ["origin", "paths", "methods"]);
   const methods = list(fields["methods"], 1, METHODS.length, (method) => {
     if (typeof method !== "string" || !METHODS.includes(method)) {
-      throw new Failure("invalid_source");
+      throw new Refusal("invalid_source");
     }
     return method;
   });
   if (new Set(methods).size !== methods.length) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return Object.freeze({
     origin: origin(fields["origin"]),
     paths: Object.freeze(list(fields["paths"], 1, PATHS_MAX, (path) => {
       const checked = text(path, PATH, 512);
       if (checked.includes("*") && !checked.endsWith("/*")) {
-        throw new Failure("invalid_source");
+        throw new Refusal("invalid_source");
       }
       return checked;
     })),
@@ -183,7 +183,7 @@ export function endpoint(value: unknown): Endpoint {
 /** An API id the gateway runs; any other is refused when it is sealed. */
 function supported(api: string): string {
   if (!SUPPORTED_APIS.includes(api)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return api;
 }
@@ -194,15 +194,15 @@ export function upstream(value: unknown, endpoints: readonly Endpoint[]): Upstre
   const provider = text(fields["provider"], ID);
   const base = httpsUrl(fields["base_url"]);
   if (!endpoints.some((entry) => entry.origin === base.origin)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   const verify = fields["verify_url"];
   if (verify !== undefined && !allows(endpoints, "GET", httpsUrl(verify, true))) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   const custom = provider === "custom";
   if (custom !== (fields["models"] !== undefined)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return Object.freeze({
     provider,
@@ -223,7 +223,7 @@ function clientAuth(value: unknown): ClientAuth {
   if (method === "client_secret_basic" || method === "client_secret_post") {
     return Object.freeze({ method, secret: text(fields["secret"], TOKEN, SECRET_MAX) });
   }
-  throw new Failure("invalid_source");
+  throw new Refusal("invalid_source");
 }
 
 /**
@@ -243,11 +243,11 @@ export const CLIENT_OPTIONAL = Object.freeze(["revocation_endpoint", "resource"]
 export function oauthClient(fields: Record<string, unknown>, sealed: Upstream): OAuthClient {
   const refreshWith = fields["refresh_with"];
   if (refreshWith !== "provider" && refreshWith !== "rfc6749") {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   if (refreshWith === "provider" && (!Object.hasOwn(PROVIDER_REFRESH, sealed.provider)
       || fields["token_endpoint"] !== PROVIDER_REFRESH[sealed.provider])) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   const revocation = fields["revocation_endpoint"];
   const resource = fields["resource"];
@@ -354,13 +354,13 @@ function meterOf(value: unknown): Meter | null {
   const fields = shape(value, ["method", "path", "model_field", "output_field"]);
   const method = fields["method"];
   if (typeof method !== "string" || !METHODS.includes(method)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   const path = text(fields["path"], /^\/[\x21-\x7e]{0,511}$/, 512);
   const holes = path.split("{model}").length - 1;
   const named = fields["model_field"] === null ? null : field(fields["model_field"]);
   if (holes > 1 || (holes === 1) === (named !== null)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return Object.freeze({ method, path, model_field: named,
                          output_field: field(fields["output_field"]) });
@@ -372,7 +372,7 @@ export function egressScope(value: unknown): EgressScope {
   const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
   const base = httpsUrl(fields["base_url"]);
   if (!endpoints.some((entry) => entry.origin === base.origin)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return Object.freeze({ api: supported(text(fields["api"], ID, 64)),
                          base_url: fields["base_url"] as string, endpoints,

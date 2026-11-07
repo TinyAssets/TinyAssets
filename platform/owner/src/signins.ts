@@ -35,7 +35,7 @@ import {
   SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape,
 } from "../../sources/src/signin";
 
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import {
   ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
 } from "../../contract/src/limits";
@@ -144,7 +144,7 @@ export class Signins {
   get(id: unknown): SigninRow {
     const row = this.#row(id);
     if (row === undefined) {
-      throw new Refused(NO_SIGNIN);
+      throw new Refusal("refused", NO_SIGNIN);
     }
     return row;
   }
@@ -180,7 +180,7 @@ export class Signins {
         lease: { lease_id: string; epoch: number }, now: number): SigninRow {
     if (this.#sql.exec("SELECT 1 FROM sandbox_signins WHERE authority = ?", authority)
       .toArray().length > 0) {
-      throw new Refused(SIGNIN_LIVE);
+      throw new Refusal("signin_live", SIGNIN_LIVE);
     }
     const id = Signins.id();
     this.#sql.exec("INSERT INTO sandbox_signins (id, authority, engine, mode, region, lease_id, " +
@@ -214,7 +214,7 @@ export class Signins {
       { row: SigninRow; ended: boolean; stopped: boolean; events: unknown[] } {
     const row = this.#row(id);
     if (row === undefined || row.lease_id !== lease.lease_id || row.epoch !== lease.epoch) {
-      throw new Refused(NO_SIGNIN);
+      throw new Refusal("refused", NO_SIGNIN);
     }
     let state = row.state;
     let url = row.url;
@@ -289,7 +289,7 @@ export class Signins {
     const row = this.get(id);
     if (row.accepts_code !== 1 || !["open", "code_sent"].includes(row.state)
         || deadline(row) <= now) {
-      throw new Refused(NO_CODE_WANTED);
+      throw new Refusal("refused", NO_CODE_WANTED);
     }
     return row;
   }
@@ -299,7 +299,7 @@ export class Signins {
 export function pastedCode(value: unknown): string {
   if (typeof value !== "string" || value.trim() === "" || /[\r\n]/.test(value)
       || !isPrintable(value) || value.trim().length > SIGNIN_PASTE_MAX) {
-    throw new Invalid(`a pasted code is one line of printable text, at most ${
+    throw new Refusal("invalid", `a pasted code is one line of printable text, at most ${
       SIGNIN_PASTE_MAX} characters`);
   }
   return value.trim();
@@ -322,11 +322,11 @@ export function switchedOn(storage: OwnerStorage, handed: unknown, now: number):
   if (!Array.isArray(handed) || handed.length > ENGINE_SIGNINS
       || !handed.every((id) => typeof id === "string"
         && sources.get(id)?.cli?.login !== undefined)) {
-    throw new Invalid("the switched-on sign-ins are served records that sign in");
+    throw new Refusal("invalid", "the switched-on sign-ins are served records that sign in");
   }
   const engines = [...new Set(handed as string[])].sort().join(",");
   if (engines.length > SIGNIN_LIST_CHARS) {
-    throw new Invalid(`the switched-on sign-ins are at most ${SIGNIN_LIST_CHARS} characters`);
+    throw new Refusal("invalid", `the switched-on sign-ins are at most ${SIGNIN_LIST_CHARS} characters`);
   }
   if (kept?.engines !== engines) {
     sql.exec("INSERT INTO platform_signins (only, engines, read_at) VALUES (1, ?, ?) " +
@@ -342,7 +342,7 @@ export function signinAuthority(value: unknown): string {
     return OWNER_AUTHORITY;
   }
   if (typeof value !== "string" || !HEX64.test(value)) {
-    throw new Invalid("a sign-in's sandbox is the owner's own, or one client's id");
+    throw new Refusal("invalid", "a sign-in's sandbox is the owner's own, or one client's id");
   }
   return value;
 }

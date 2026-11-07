@@ -25,7 +25,7 @@ import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 
 import { RESULT_CHARS } from "../../contract/src/encoded";
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { windowEnd } from "./file-search";
 import type { Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
@@ -98,10 +98,10 @@ export function inlineWindow(body: string, offset: number): Window {
     return { text: body, offset: 0, end: bytes.byteLength, size: bytes.byteLength };
   }
   if (offset > bytes.byteLength) {
-    throw new Invalid("body_offset is past the body's end");
+    throw new Refusal("invalid", "body_offset is past the body's end");
   }
   if (offset < bytes.byteLength && (bytes[offset]! & 0xc0) === 0x80) {
-    throw new Invalid(BODY_OFFSET_INSIDE);
+    throw new Refusal("invalid", BODY_OFFSET_INSIDE);
   }
   return { text: utf8Decoder("keep")
              .decode(bytes.subarray(offset)),
@@ -114,7 +114,7 @@ export function bodyOffset(value: unknown): number {
     return 0;
   }
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Invalid("body_offset is a whole number of bytes");
+    throw new Refusal("invalid", "body_offset is a whole number of bytes");
   }
   return value;
 }
@@ -216,7 +216,7 @@ export class Bodies {
       return null;
     }
     if (bytes.byteLength > BODY_BYTES_MAX) {
-      throw new Invalid(`a body is at most ${BODY_BYTES_MAX} bytes`);
+      throw new Refusal("invalid", `a body is at most ${BODY_BYTES_MAX} bytes`);
     }
     const chunks = chunked(bytes).map((chunk) => chunk.sha256);
     const { intent_id: intentId, missing } = this.#files.begin(bytes.byteLength, chunks, writer,
@@ -332,7 +332,7 @@ export class Bodies {
   async windowAt(chunks: readonly string[], base: number, size: number, offset: number,
                  max: number): Promise<Window> {
     if (offset > size) {
-      throw new Invalid("body_offset is past the body's end");
+      throw new Refusal("invalid", "body_offset is past the body's end");
     }
     const end = Math.min(size, offset + max + 3);  // a character's tail past the window
     if (end === offset) {
@@ -350,7 +350,7 @@ export class Bodies {
     }
     const cut = windowEnd(bytes, 0, end === size ? end - offset : max);
     if (cut === null) {
-      throw new Invalid(BODY_OFFSET_INSIDE);
+      throw new Refusal("invalid", BODY_OFFSET_INSIDE);
     }
     return { text: utf8Decoder("keep")
                .decode(bytes.subarray(0, cut)),

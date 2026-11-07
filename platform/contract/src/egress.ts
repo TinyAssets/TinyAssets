@@ -29,7 +29,7 @@
  * API path.
  */
 import type { EgressScope } from "./egress-scope";
-import { Invalid } from "./errors";
+import { Refusal } from "./refusal";
 import { CONNECTION_ID, HEX64, RUN_ID } from "./ids";
 import { forbids } from "./text";
 
@@ -59,22 +59,6 @@ export const RUNNER_HEADER = "x-ta-runner";
 export const SYNC_HEADER = "x-ta-sync";
 /** The gateway's own header on its answer, a blob resealed at the next version, for the object. */
 export const RESEALED_HEADER = "x-ta-resealed";
-
-/**
- * Every refusal the egress door and the owner's object answer a sandbox request with, each
- * a fixed code (`owner/src/egress.ts`, `doors/src/egress.ts`), and the HTTP status it is
- * answered with.
- */
-export const EGRESS_STATUS = Object.freeze({
-  egress_token_missing: 401, egress_token_unknown: 401, egress_token_expired: 401,
-  egress_lease_closed: 401, egress_run_closed: 401, egress_run_connection: 403,
-  egress_policy_stale: 409,
-  egress_network_stale: 409,
-  egress_connection_refused: 403, egress_endpoint_refused: 403, egress_unmetered: 403,
-  egress_length_required: 411, egress_rate: 429, egress_spend_refused: 402,
-  egress_unknown_model: 404, egress_unpriced_option: 403, egress_too_large: 413,
-} as const);
-export type EgressCode = keyof typeof EGRESS_STATUS;
 
 /** How the egress door saw a stream end. */
 export const OUTCOMES: readonly string[] = Object.freeze(["complete", "aborted", "failed",
@@ -116,10 +100,10 @@ const RUN_SEGMENT = "r";
  */
 export function runPath(run: string, secret?: string): string {
   if (!RUN_ID.test(run)) {
-    throw new Invalid("invalid run");
+    throw new Refusal("invalid", "invalid run");
   }
   if (secret !== undefined && !HEX64.test(secret)) {
-    throw new Invalid("invalid run secret");
+    throw new Refusal("invalid", "invalid run secret");
   }
   return `/${RUN_SEGMENT}/${run}${secret === undefined ? "" : `/${secret}`}`;
 }
@@ -188,7 +172,7 @@ export interface EngineRun {
 export function egressBaseUrl(connection: string, egress: EgressScope | null, run: string,
                               secret: string | undefined): string {
   if (!CONNECTION_ID.test(connection)) {
-    throw new Invalid("invalid connection");
+    throw new Refusal("invalid", "invalid connection");
   }
   const path = egress === null ? "/" : new URL(egress.base_url).pathname;
   return `${EGRESS_ORIGIN}${runPath(run, secret)}/${CONNECTION_SEGMENT}/${connection}${
@@ -207,17 +191,17 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
                            run: EngineRun): Readonly<Record<string, string>> {
   if (run.credential === "vendor_login_in_sandbox") {
     if (run.connection !== null) {
-      throw new Invalid("a run on the vendor's own sign-in is on no connection");
+      throw new Refusal("invalid", "a run on the vendor's own sign-in is on no connection");
     }
     return Object.freeze({});
   }
   const own = connections.find((entry) => entry.connection === run.connection);
   if (own === undefined) {
-    throw new Invalid("an API-key run is on one of the owner's active connections");
+    throw new Refusal("invalid", "an API-key run is on one of the owner's active connections");
   }
   const { connection, provider, egress } = own;
   if (!Object.hasOwn(run.api_key_env, provider)) {
-    throw new Invalid("the engine runs on no key of this connection's provider");
+    throw new Refusal("invalid", "the engine runs on no key of this connection's provider");
   }
   const env: Record<string, string> = {};
   const set = (name: string, value: string) => {
@@ -248,7 +232,7 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
   }
   if (run.secret_header !== undefined) {
     if (!HEX64.test(run.secret)) {
-      throw new Invalid("invalid run secret");
+      throw new Refusal("invalid", "invalid run secret");
     }
     set(run.secret_header.env, run.secret_header.value.replace("{run_secret}", run.secret));
   }

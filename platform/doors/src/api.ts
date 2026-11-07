@@ -12,13 +12,16 @@
 import { answerJson } from "./answers";
 import { bearer } from "./app";
 import { verifyKey } from "./api-keys";
+import { refusalOf } from "../../contract/src/refusal";
+
 import { jsonObject } from "./body";
 import { API_BODY_MAX, type DoorsEnv } from "./config";
 import { outsideRead } from "./control";
 import { withTiers } from "./binder";
 import { mediaType } from "./session";
 import { profiled } from "./mcp";
-import { callDoor, refusal, refusalHeaders } from "./tools";
+import { refusalResponse } from "./refused";
+import { callDoor } from "./tools";
 
 const TOOL_PATH = /^\/api\/tools\/([a-z_]{1,64})$/;
 
@@ -60,10 +63,10 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
   try {
     return answerJson(tool.name, await callDoor(held.stub, held.binding, tool, args));
   } catch (error) {
-    const refused = refusal(error);
+    const refused = refusalOf(error);
     if (refused === null) {
       throw error;
     }
-    return failure(refused.status, refused.message, refusalHeaders(refused));
+    return refusalResponse(refused);
   }
 }

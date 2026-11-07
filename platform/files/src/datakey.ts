@@ -45,7 +45,7 @@
 import {
   type Domain, hex, KEY_BYTES, openBlob, type Opened, parseRing, type Ring, sealBlob,
 } from "../../contract/src/envelope";
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { namespace } from "./keys";
 
 /** The one secret this module reads. */
@@ -130,7 +130,7 @@ export async function unwrap(secret: KeyringSecret, ns: string, wrapped: unknown
 async function opened(keys: Ring, ns: string, wrapped: unknown): Promise<Opened> {
   const open = await openBlob(keys, domain(ns), wrapped, WRAPPED_MAX);
   if (open === null || open.plain.byteLength !== KEY_BYTES) {
-    throw new Invalid(KEY_REFUSED);
+    throw new Refusal("data_key_refused", KEY_REFUSED);
   }
   return open;
 }

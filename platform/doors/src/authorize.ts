@@ -51,7 +51,7 @@ import {
 } from "./config";
 import { outsideOpen, ownerOpen } from "./control";
 import { putOwner, readControl, readOwner } from "./directory";
-import { ERASING } from "../../contract/src/errors";
+import { refusalOf } from "../../contract/src/refusal";
 import { authorizationServer } from "./oauth";
 import { replaceInstallation } from "./revoke";
 import { mediaType, sessionCookie } from "./session";
@@ -261,8 +261,8 @@ async function admit(env: DoorsEnv, signedIn: SignIn, owner: string): Promise<bo
 
 /** The object's refusal of an owner being erased, or erased. */
 function erasedRefusal(error: unknown): boolean {
-  return error instanceof Error && error.name === "Refused"
-    && (error.message === ERASING || error.message.startsWith("owner_erased:"));
+  const code = refusalOf(error)?.code;
+  return code === "erasing" || code === "owner_erased";
 }
 
 /**

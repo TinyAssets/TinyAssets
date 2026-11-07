@@ -19,7 +19,7 @@
  * definitions, the abilities' trees that reach every engine's instructions, the owner's
  * goals and the owner's profile.
  */
-import { Invalid } from "./errors";
+import { Refusal } from "./refusal";
 import { MAX_PATH_BYTES } from "./limits";
 import { utf8Bytes } from "./text";
 
@@ -78,15 +78,15 @@ export function within(path: string, root: string): boolean {
 export function storedPath(value: unknown): string {
   if (typeof value !== "string" || !value.startsWith("/") || value.includes("\0")
       || LONE_SURROGATE.test(value) || utf8Bytes(value) > MAX_PATH_BYTES) {
-    throw new Invalid("a path is an absolute, well-formed path of at most 4096 bytes");
+    throw new Refusal("invalid", "a path is an absolute, well-formed path of at most 4096 bytes");
   }
   const parts = value.split("/").slice(1);
   if (parts.some((part) => part === "" || part === "." || part === ".."
                            || utf8Bytes(part) > MAX_NAME_BYTES)) {
-    throw new Invalid("a path has no empty, . or .. component, and names of at most 255 bytes");
+    throw new Refusal("invalid", "a path has no empty, . or .. component, and names of at most 255 bytes");
   }
   if (!ROOTS.some((root) => within(value, root))) {
-    throw new Invalid("a path is under /workspace or /.ta/tmp");
+    throw new Refusal("invalid", "a path is under /workspace or /.ta/tmp");
   }
   return value;
 }

@@ -11,7 +11,7 @@
  * NFC-normalizes keys, and uploads are verbatim (Fact 9): two names a sandbox can create
  * would meet in one object. The r2-keys guard keeps every other source from building one.
  */
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
 import { MANIFEST_PARTS } from "../../contract/src/limits";
 
@@ -23,7 +23,7 @@ const GEN = HEX16;
 /** An owner namespace: 32 lowercase hex characters. */
 export function namespace(ns: unknown): string {
   if (typeof ns !== "string" || !NS.test(ns)) {
-    throw new Invalid("a namespace is 32 lowercase hex characters");
+    throw new Refusal("invalid", "a namespace is 32 lowercase hex characters");
   }
   return ns;
 }
@@ -31,7 +31,7 @@ export function namespace(ns: unknown): string {
 /** A chunk's SHA-256: 64 lowercase hex characters. */
 export function chunkHash(sha256: unknown): string {
   if (typeof sha256 !== "string" || !SHA256.test(sha256)) {
-    throw new Invalid("a chunk hash is 64 lowercase hex characters");
+    throw new Refusal("invalid", "a chunk hash is 64 lowercase hex characters");
   }
   return sha256;
 }
@@ -44,7 +44,7 @@ export function chunkKey(ns: unknown, name: unknown): string {
 /** A generation's id: 16 lowercase hex characters. */
 export function generation(gen: unknown): string {
   if (typeof gen !== "string" || !GEN.test(gen)) {
-    throw new Invalid("a manifest's generation is 16 lowercase hex characters");
+    throw new Refusal("invalid", "a manifest's generation is 16 lowercase hex characters");
   }
   return gen;
 }
@@ -53,7 +53,7 @@ export function generation(gen: unknown): string {
 export function segmentSpan(a: unknown, b: unknown): [number, number] {
   if (typeof a !== "number" || typeof b !== "number" || !Number.isSafeInteger(a)
       || !Number.isSafeInteger(b) || a < 0 || b <= a) {
-    throw new Invalid("a manifest segment spans whole seqs, its first before its last");
+    throw new Refusal("invalid", "a manifest segment spans whole seqs, its first before its last");
   }
   return [a, b];
 }
@@ -62,7 +62,7 @@ export function segmentSpan(a: unknown, b: unknown): [number, number] {
 export function manifestPart(part: unknown): number {
   if (typeof part !== "number" || !Number.isSafeInteger(part) || part < 0
       || part >= MANIFEST_PARTS) {
-    throw new Invalid(`a manifest part is 0 to ${MANIFEST_PARTS - 1}`);
+    throw new Refusal("invalid", `a manifest part is 0 to ${MANIFEST_PARTS - 1}`);
   }
   return part;
 }
