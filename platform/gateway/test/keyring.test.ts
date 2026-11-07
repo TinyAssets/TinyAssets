@@ -4,9 +4,11 @@
  */
 import { describe, expect, it } from "vitest";
 
+import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { credential } from "../src/credential";
 import { Failure } from "../../contract/src/failure";
-import { binding, open, reseal, seal } from "../src/keyring";
+import { doorbellSecret } from "../src/doorbell";
+import { binding, open, openValue, reseal, seal } from "../src/keyring";
 import { ALICE, ANTHROPIC, apiKey, ring, rotate, sealed } from "./support";
 
 async function refused(run: () => Promise<unknown>, code = "credential_refused") {
@@ -152,6 +154,37 @@ describe("seal and open", () => {
     const next = await reseal(env, ALICE, plaintext);
     expect(next).toMatchObject({ kid: "k2", version: 2 });
     expect((await open(env, { ...ALICE, version: 2 }, next.blob)).credential.kind).toBe("api_key");
+  });
+});
+
+describe("the blobs main sealed (ci/keyring-vectors.json)", () => {
+  // Opened here in workerd, the runtime that holds them; every ring's cases are
+  // guards/keyring-main.test.ts's, against main's own code.
+  const { k1, k2 } = VECTORS.keys;
+  const rotated = { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k1, k2 } }) };
+  const retired = { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k2 } }) };
+  const bound = VECTORS.gateway.binding;
+
+  it("open as the credential they hold, an older kid's resealed to the active one", async () => {
+    expect(await open(rotated, bound, VECTORS.gateway.k2))
+      .toEqual({ credential: VECTORS.gateway.credential, kid: "k2" });
+    const old = await open(rotated, bound, VECTORS.gateway.k1);
+    expect([old.credential, old.resealed?.kid]).toEqual([VECTORS.gateway.credential, "k2"]);
+    expect((await open(retired, bound, VECTORS.gateway.k2)).kid).toBe("k2");
+    await refused(() => open(retired, bound, VECTORS.gateway.k1));
+  });
+
+  it("open as doorbells, and never as a credential", async () => {
+    const { owner, subscription, version } = VECTORS.gateway.doorbell;
+    const bell = { owner, connection: `wake.${subscription}`, version };
+    const opened = await openValue(rotated, bell, VECTORS.gateway.doorbell.k2, doorbellSecret);
+    expect(opened.value).toMatchObject(VECTORS.gateway.doorbell.value);
+    await refused(() => open(rotated, bell, VECTORS.gateway.doorbell.k2));
+  });
+
+  it("never open a data key the files Worker wrapped under the same keys", async () => {
+    await refused(() => openValue(rotated, binding(VECTORS.files.namespace, "c1", 1),
+                                  VECTORS.files.k2.wrapped, (value) => value));
   });
 });
 

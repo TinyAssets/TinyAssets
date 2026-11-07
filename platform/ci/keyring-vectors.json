@@ -1,0 +1,83 @@
+{
+  "about": "Golden blobs sealed by main's own keyring code (gateway/src/keyring.ts, files/src/datakey.ts) at commit, under the throwaway keys k1 and k2 (never a production key); the doorbell value's secret is the test's own, left out here. Each must open, byte for byte, under every later envelope (contract/src/envelope.ts).",
+  "commit": "e115a123ea0c7c566ff474bbe70a246e6a3ec70e",
+  "keys": {
+    "k1": "XkqkHvgB5RAAmIbDDsJ5H5iok5KKpuArH48K+c+Jixo=",
+    "k2": "5YiemKg81+dIpFunho5Cvx2N+pZADASxenkH1/pTfG0="
+  },
+  "gateway": {
+    "binding": {
+      "owner": "alice",
+      "connection": "c1",
+      "version": 3
+    },
+    "credential": {
+      "kind": "api_key",
+      "secret": "test-vector-not-a-real-key-0001",
+      "upstream": {
+        "provider": "anthropic",
+        "api": "anthropic-messages",
+        "base_url": "https://api.anthropic.com",
+        "auth": {
+          "header": "x-api-key",
+          "scheme": ""
+        },
+        "verify_url": "https://api.anthropic.com/v1/models"
+      },
+      "endpoints": [
+        {
+          "origin": "https://api.anthropic.com",
+          "paths": [
+            "/v1/messages",
+            "/v1/models"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ]
+        }
+      ],
+      "sealed_at": 1800000000000
+    },
+    "k1": "v1.k1.tYGq7yaRZc870_qP.zJBW9gXg8WhFUUNdk9DYglyJeZHcvQqTbrA7i7jOl_YN8hfLkUGyd6ZZX3gjmj3dEjzPHpvhIplN33Kh9p9o9UEBmJlsRzulJ377bZ76PFp2WCJn_VIGRw0WAKkQtiG27BxLre0mVRgw4BdyQPMz5SWjZuSSxKmz0Lb7FHlNdTlzi7g2qsXRgskFaJuyw5oBxFvE6ruePzmswbOKVqlwQeo4RErRFRnxrvl4_puhunGsI6jncY9q9jNUjcYwsVE2eheRfbhPOvjCbDLaHCWdOHs20oVk8_q78QoubCDsnE7ywlciiNWtIrlvIIF1O_oVrw3cNHishRqjrloDc2TaYvfmURT69qzHkJBGJIQDN9HsLm-gQnOhBfmu8WwWI5Db2aw9XifpxKM9cyge20Y4W3fUNXB5oRkh-vLsAKfXdv1CY64N0Ic4q40XwRTKyJq4NDWO2UVAISy8dwuLuNueOl6WWmXT8WLgHVfSZa5zTM4LkgfMWoF2RXHsv0VKVksg2ggeybRCR2QDnM8qhCaHVla2ChjfoVHGNJdt7Y3J",
+    "k2": "v1.k2.3iDRtKA4o0xNFHf6.VB2AkA4-S-qCqlDZwVaifoBtZMLRXcAc17CeQ2dxcKqSblfHBRvkamRsn_c8BSt1pgvZxA0G8F6CCQ9_SUlziEBPcn4IdT7UrernU3-FViVrIfR_1_aAj3IgzOeVSh7hvkIlrL7awdFUawdsNxg4CJ933tWub4bBdInjXPYL1Eod87eYfb6VgI3kNV_9PckZBLbUqoY1JvfTchTkkEOVq_N1llKQarf4Fjyy3Y1b4bF20KgVGd7MYVktemVpd6R7wtl1f-cY3Mfzj-nhEHY87ARG4HaFVHUYDTm4u2pSjZUpcNDILgzgjTKIFIwyzfXg_rvMcCDQlfZHLy-7U7YdB4_lHfh30kbL4K1MJcIJzuTNH38FBX7REFMVAf6WhnzAKdR7Sjq_mcSH3cdBQ29QLKvihHfl281VioBbRw4IbFs6RJ1AvRGeuR_OdxVoUV1INu2SihTq8XLZEzVDNmtASszhoaAC9sNVLeD0B2KdwLMaCH1vyH0RMACRKOxPrhkOc1MWgp8d_Ee8aY2VGtCbh8eocLBwMfvmJxWuPy74",
+    "doorbell": {
+      "owner": "alice",
+      "subscription": "sub_0123456789abcdef0123456789abcdef",
+      "version": 1,
+      "value": {
+        "kind": "doorbell",
+        "record": "claude_routine_fire",
+        "url": "https://api.anthropic.com/v1/claude_code/routines/trig_01VECTOR/fire",
+        "auth": "bearer"
+      },
+      "k1": "v1.k1.9-xwlBLcKR-ClGrB.CSWht5ZWf9_VKm21kICXZkCbMEA56YHfBWWqL82MpH30Zu1n-ep90rvCuD7ObxnAPoGr0V611aWedcAXeMwSothYqD9GRCWw8h5bKtoEl5fx8LeZHz9a9cuayyfGVKYxWy2zV9aV0ZzNv9K3u3cDnAaxHfJBo5nKS7P_fgQ5hPzUWjMUBmL6V0rC7GhRyN04wdyniRdSzoQa9tw4SjR8ciMgsJ8C2pcfnR4PzauIEwASs1Muu8G_-Hn1zHTdZehS1X2k4FfZq0_07dIbhIuGrYsOrkLFrqMNIhioEDVJdpwnaXVZ-SR7zKseE4EyeeKhm4d3P8Yg-idBsg",
+      "k2": "v1.k2.H5h72nKYE1ig_5AG.dFeaS39kOjKi5eoAuQTLNYqbVceeSPwawO51G9V6GHDkb7ZEkVOdm8tgRfliToKLyDTurA5KBUr6qzj7WJQdliCGtnJ39ocVRnw1Xv7icoWYuQsfhZQD40vQLcMTMd6FX2OexY3Z-9GdIqQG3QG6rezumvXF-lfcNOKx5XQxX_PQLlbdCxbYMudQm1fdPC3Ux9nBh4AiVPYZSmsQdWy6E-oZHmZ_RletiI01IGPckh_mUJZvUMsx_50SP4rJAKSSjgAbmpMvgTWjQ9fPKtXMlKdC-Gjm23IjYyhQt9MgleCu-Nu-BnxQUZ5XX8dIyDeKIIZcvrEDaMKZdA",
+      "sealed_at": {
+        "k1": 1794046694708,
+        "k2": 1794046694709
+      }
+    },
+    "value": {
+      "binding": {
+        "owner": "0123456789abcdef0123456789abcdef",
+        "connection": "c1",
+        "version": 1
+      },
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "k2": "v1.k2.R6Mr0HV9k6uw4h2O.Q0YNiLXQEBn0qp85LnZC9xpcYoyr76X7l4uNQoCZ776amvZ59aFkgw8E-8wxXUB4"
+    }
+  },
+  "files": {
+    "namespace": "0123456789abcdef0123456789abcdef",
+    "k1": {
+      "wrapped": "v1.k1.FG8tKcX-Ne5LSJ9k.vTO-YrAnh4PZBXmjqL8IWWZCrQ1GsyAdirAc4_W_Nbai4-w-H-WUpsnhdvQBVZfQ",
+      "key": "41bccf3211964f0dae2106a6e98f6b0842204fc940a8b3a1329ddd29b0e69514"
+    },
+    "k2": {
+      "wrapped": "v1.k2.vpPKvRyV70GpjzLN.AMhPAzd-bt3J3n7-jy6YqSPLPxWVWgpSqjZ6tBR3VnzvmvsmH4-yfUVVG7GK-XxJ",
+      "key": "9cc1dbbcfdadfc09db15d2c84e06bdf1deeb836eadabb4c1b185b83029595b95"
+    },
+    "rewrapped": "v1.k2.j86SY6lTxv-gZPfo.q7fUivPc7aPJnMR5Qdu_kg45HUG7U5yxYKnP0oxBskTZz3lt5cYxm2fvPztz_RKj"
+  }
+}
