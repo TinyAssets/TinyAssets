@@ -2,7 +2,8 @@
  * The guard kit's and the Worker kit's own invariants (`ci/kit/`, `ci/workers.ts`), held once
  * for every workspace that uses them: every config file is found and no dependency's is,
  * every Worker's every source is what the source guards scan, a config that does not parse
- * fails loudly, and a fake is built at its Worker's own date.
+ * fails loudly, a fake is built at its Worker's own date, and a job's own sources are the
+ * scripts in its folder.
  */
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,8 @@ import { extname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../paths";
-import { configFiles, workerSources } from "../kit/sources";
+import { importProblem, type ImportRules, owns } from "../kit/imports";
+import { configFiles, scriptsIn, workerSources } from "../kit/sources";
 import { fake, once, parseWrangler, readWrangler, workerConfig } from "../workers";
 
 /**

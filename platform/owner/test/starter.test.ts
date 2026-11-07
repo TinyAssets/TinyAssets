@@ -16,8 +16,9 @@ import { nativeId } from "../src/ledger";
 import { Notices } from "../src/notices";
 import { fileUrl, type OwnerDO, RUN_STARTS_NONE } from "../src/owner-do";
 import { SEARCH_SCAN } from "../src/file-search";
+import { contentIdOf } from "../../contract/src/content";
 import {
-  carried, contentIdOf, NEWER, Starter, type StarterFile, starterPackage, type StarterPackage,
+  carried, NEWER, Starter, type StarterFile, starterPackage, type StarterPackage,
 } from "../src/starter";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";

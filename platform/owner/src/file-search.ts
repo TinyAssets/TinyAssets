@@ -26,7 +26,7 @@
 import { utf8Decoder } from "../../contract/src/text";
 import { escapedBytes, fitted, jsonBytes } from "../../contract/src/encoded";
 import { PAGE_BYTES } from "./pages";
-import { nameOf } from "./paths";
+import { nameOf } from "../../contract/src/paths";
 
 /**
  * The most manifest entries one search reads, a technical ceiling: the object runs one call

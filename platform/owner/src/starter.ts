@@ -42,10 +42,11 @@ import starterJson from "../../starter/starter.json" with { type: "json" };
 
 import { agentFile } from "./agent-file";
 import { Invalid } from "../../contract/src/errors";
-import { chunkedId, type Content, cut, FileConflict, type Files, inlineId } from "./files";
-import { INLINE_BYTES } from "../../contract/src/limits";
+import { contentIdOf } from "../../contract/src/content";
+import { type Content, FileConflict, type Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
-import { ownersOnly, storedPath, within, WORKSPACE } from "./paths";
+import { ownersOnly } from "./paths";
+import { storedPath, within, WORKSPACE } from "../../contract/src/paths";
 
 /**
  * The most paths a package may name, its files and the paths it once shipped and dropped
@@ -162,12 +163,6 @@ export function starterPackage(value: unknown): StarterPackage {
 /** The package this code carries, checked. */
 export function carried(): StarterPackage {
   return starterPackage(starterJson);
-}
-
-/** The content id the files plane gives these bytes. */
-export function contentIdOf(bytes: Uint8Array): string {
-  return bytes.byteLength <= INLINE_BYTES ? inlineId(bytes)
-    : chunkedId(bytes.byteLength, cut(bytes).map((chunk) => chunk.sha256));
 }
 
 /** Why replacing `before` with `after` at `file`'s path widens what the agent may do, or null. */

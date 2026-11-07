@@ -97,6 +97,18 @@ export function workerSources(root: string = PLATFORM): Map<string, string> {
   return found;
 }
 
+/**
+ * Every script directly in `folder` (a job's own), keyed by path from `platform/`: its
+ * tooling's config (`vitest.config.ts`) is none of the job's.
+ */
+export function scriptsIn(folder: string, root: string = PLATFORM): Map<string, string> {
+  return new Map(readdirSync(join(root, folder), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && extname(entry.name) in KINDS
+                       && !/\.config\.[cm]?[jt]s$/.test(entry.name))
+    .map((entry) => [`${folder}/${entry.name}`,
+                     readFileSync(join(root, folder, entry.name), "utf8")] as const));
+}
+
 /** The sources of one Worker (`<worker>/src/`), from `all`. */
 export function sourcesOf(worker: string,
                           all: ReadonlyMap<string, string> = workerSources()): Map<string, string> {

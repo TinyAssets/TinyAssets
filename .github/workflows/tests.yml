@@ -210,6 +210,8 @@ jobs:
             command: npm run test -w ci
           - leg: contract
             command: npm run test -w contract
+          - leg: import
+            command: npm run test -w import
     defaults:
       run:
         working-directory: platform

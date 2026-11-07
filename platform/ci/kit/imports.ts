@@ -9,7 +9,8 @@
  * `require` and type imports by path are refused. A name the rules ban (an identifier, a
  * private name or any string, template parts included) is refused outside where they allow
  * it. Every rule holds over the import closure: each module a source reaches through
- * relative imports, however deep, is checked as the Worker's own source is.
+ * relative imports, however deep, is checked as the Worker's own source is. A job (`job`, a
+ * workspace run in Node rather than deployed) is held the same way from its own folder.
  *
  * Tripwires for our own code (a split spelling such as `env["GATEWAY_" + "KEYRING"]` is not
  * seen), not proof against deliberate evasion.
@@ -19,7 +20,7 @@ import { posix } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, reporter, workerSources } from "./sources.ts";
+import { parse, reporter, scriptsIn, workerSources } from "./sources.ts";
 
 export interface BannedName {
   /** What a name must not match (its match is the `%s` of `says`). */
@@ -32,6 +33,12 @@ export interface BannedName {
 export interface ImportRules {
   /** The Worker's workspace folder: its own sources are `<worker>/src/`. */
   readonly worker: string;
+  /**
+   * A workspace that is no Worker but a job run in Node (the cutover's importer): its own
+   * sources are the scripts directly in this folder, from `platform/`, not its tests or
+   * guards, and no Worker's source guard walks them.
+   */
+  readonly job?: string;
   /** The Worker, as a problem names it ("the gateway"). */
   readonly called: string;
   /** The modules outside its `src/` it may reach, as resolved paths without extension. */
@@ -50,6 +57,12 @@ export function resolved(path: string, specifier: string): string {
     .replace(/\.(?:[cm]?[jt]s|tsx|jsx)$/, "");
 }
 
+/** Whether the source at `path` (from `platform/`) is one of the workspace's own. */
+export function owns(rules: ImportRules, path: string): boolean {
+  return rules.job === undefined ? path.startsWith(`${rules.worker}/src/`)
+    : posix.dirname(path) === rules.job && !/\.config(?:\.[cm]?[jt]s)?$/.test(path);
+}
+
 /** Why `specifier`, imported by the source at `path`, is refused; `null` when allowed. */
 export function importProblem(rules: ImportRules, path: string, specifier: string): string | null {
   if (specifier.startsWith("/") || /^[a-z][a-z0-9+.-]*:\/\//i.test(specifier)
@@ -58,7 +71,7 @@ export function importProblem(rules: ImportRules, path: string, specifier: strin
   }
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
     const at = resolved(path, specifier);
-    return at.startsWith(`${rules.worker}/src/`) || (rules.outside ?? []).includes(at)
+    return owns(rules, at) || (rules.outside ?? []).includes(at)
       ? null : `imports ${specifier} (${at}), outside ${rules.called}`;
   }
   if ((rules.packages ?? []).some((name) => specifier === name || specifier.startsWith(`${name}/`))) {
@@ -129,8 +142,23 @@ function relativeImports(path: string, source: string): string[] {
  */
 export function closure(worker: string,
                         all: ReadonlyMap<string, string> = workerSources()): Map<string, string> {
+  return walk(all, [...all.keys()].filter((path) => path.startsWith(`${worker}/src/`)));
+}
+
+/**
+ * Every source the workspace's own sources reach, with its own: a Worker's `closure`, or a
+ * job's from the scripts in its folder, through the Workers' sources (the contract's).
+ */
+export function reach(rules: ImportRules): Map<string, string> {
+  if (rules.job === undefined) {
+    return closure(rules.worker);
+  }
+  const all = new Map([...workerSources(), ...scriptsIn(rules.job)]);
+  return walk(all, [...all.keys()].filter((path) => owns(rules, path)));
+}
+
+function walk(all: ReadonlyMap<string, string>, queue: string[]): Map<string, string> {
   const reached = new Map<string, string>();
-  const queue = [...all.keys()].filter((path) => path.startsWith(`${worker}/src/`));
   while (queue.length) {
     const path = queue.pop()!;
     const source = all.get(path);
@@ -161,14 +189,15 @@ export interface IsolationTests {
 export function isolationTests(rules: ImportRules, tests: IsolationTests): void {
   describe(`${rules.worker} isolation, by its rules`, () => {
     it("finds nothing over the whole import closure", () => {
-      const sources = closure(rules.worker);
+      const sources = reach(rules);
       expect(sources.size).toBeGreaterThan(0);
       expect([...sources].flatMap(([path, source]) => isolationProblems(rules, path, source)))
         .toEqual([]);
     });
 
     it.each(tests.sees)("sees %s", (_what, source) => {
-      expect(isolationProblems(rules, `${rules.worker}/src/probe.ts`, source)).not.toEqual([]);
+      const probe = `${rules.job ?? `${rules.worker}/src`}/probe.ts`;
+      expect(isolationProblems(rules, probe, source)).not.toEqual([]);
     });
 
     it.each(tests.allows)("allows %s", (_what, path, source) => {
