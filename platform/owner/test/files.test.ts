@@ -11,7 +11,7 @@ import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import { type Entry } from "../src/files";
 import { sha256Hex } from "../../contract/src/digest";
 import type { Binding, OwnerDO } from "../src/owner-do";
-import { FILE_DEFAULTS } from "../src/policy";
+import { FILE_DEFAULTS } from "../../contract/src/limits";
 import { apiKeyOrigin } from "../src/ledger";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, laneAt, ownerObject, sqlIn, text } from "./support";

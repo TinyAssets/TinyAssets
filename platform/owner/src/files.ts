@@ -77,12 +77,12 @@
  * the files Worker.
  */
 import { HEX32, HEX64, randomHex } from "../../contract/src/ids";
-import { createHash } from "node:crypto";
 
+import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
 import {
   BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, INLINE_BYTES, INTENT_ID_BYTES, LEASE_TTL_S, MAX_LIST,
-  MAX_SYNC_OPS,
+  MAX_INTENT_CHUNKS, MAX_SYNC_OPS,
 } from "../../contract/src/limits";
 
 import { letGo } from "./edit";
@@ -92,10 +92,11 @@ import { CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import { refuseErasing } from "./erasure";
 import { TIER_UNREAD } from "./tier";
+import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
 import {
-  AGENTS_OWNER_ONLY, ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, ownersOnly,
-  parentOf, storedPath, TEMP, within, WORKSPACE,
-} from "./paths";
+  ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, parentOf, storedPath, TEMP, within,
+  WORKSPACE,
+} from "../../contract/src/paths";
 import { codePoints, isPrintable, utf8Bytes } from "../../contract/src/text";
 
 
@@ -149,8 +150,6 @@ export const HOUSEKEEPING_SLACK_S = 3600;
 export const DELETE_FLOOR_MS = 1000;
 /** Rows one alarm run prunes or expires per kind, and paths it re-marks for retention. */
 export const HOUSEKEEPING_BATCH = 500;
-/** Chunks one intent may hold: a 40 GiB file, policy's highest `max_file_bytes`. */
-export const MAX_INTENT_CHUNKS = 10_000;
 /** Open upload intents, and the chunks they hold in all. */
 export const MAX_OPEN_INTENTS = 64;
 export const MAX_HELD_CHUNKS = 20_000;
@@ -481,21 +480,6 @@ const FIT_BATCH = 64;
 
 type Intent = { size: number; chunks: string[]; pending: string[]; writer: string };
 
-/** The content id of small content kept inline: its kind, size and bytes. */
-export function inlineId(bytes: Uint8Array): string {
-  return createHash("sha256").update(`ta-inline\n${bytes.byteLength}\n`).update(bytes)
-    .digest("hex");
-}
-
-/**
- * The content id of chunked content: its kind, size and ordered chunks. A one-chunk file
- * is a list of one, so no kind of its own; the kind keeps it apart from a chunk's own
- * hash and from inline content.
- */
-export function chunkedId(size: number, shas: readonly string[]): string {
-  return sha256Hex(`ta-chunks\n${size}\n${shas.join("\n")}`);
-}
-
 function etag(e: { version: number; kind: string; content_id: string | null; mode: number }):
     string {
   return sha256Hex(`${e.version}:${e.kind}:${e.content_id ?? ""}:${e.mode}`);
@@ -547,23 +531,6 @@ function count(value: unknown, what: string, low: number, high: number): number 
 
 function hashes(packed: string): string[] {
   return packed.match(/.{64}/g) ?? [];
-}
-
-/** The chunk sizes a file of `size` bytes is cut into. */
-export function chunkPlan(size: number): number[] {
-  const sizes: number[] = [];
-  for (let at = 0; at < size; at += CHUNK_BYTES) {
-    sizes.push(Math.min(CHUNK_BYTES, size - at));
-  }
-  return sizes;
-}
-
-/** Bytes cut into 4 MiB chunks, each with its hash. */
-export function cut(bytes: Uint8Array): { sha256: string; size: number; bytes: Uint8Array }[] {
-  return chunkPlan(bytes.byteLength).map((size, index) => {
-    const piece = bytes.subarray(index * CHUNK_BYTES, index * CHUNK_BYTES + size);
-    return { sha256: sha256Hex(piece), size, bytes: piece };
-  });
 }
 
 /** Groups of items whose `size` sums to at most `BATCH_BYTES` each. */

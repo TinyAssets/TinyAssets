@@ -18,8 +18,9 @@ import {
   PAGE_USABLE, RECORD_FIXED, record, recordBytes, SHARE_BYTES, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import type { OwnerDO } from "../src/owner-do";
-import { MAX_PATH_BYTES } from "../src/paths";
-import { FILE_DEFAULTS, FILE_SETTINGS } from "../src/policy";
+import { MAX_PATH_BYTES } from "../../contract/src/paths";
+import { FILE_SETTINGS } from "../src/policy";
+import { FILE_DEFAULTS } from "../../contract/src/limits";
 import {
   CALLS_OPEN, MIGRATIONS, SPEND_KEPT,
 } from "../src/schema";

@@ -72,8 +72,8 @@ import { sha256Hex } from "../../contract/src/digest";
 
 import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
-import { CHUNK_BYTES } from "../../contract/src/limits";
-import { KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
+import { CHUNK_BYTES, FILE_DEFAULTS, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
+import { KEEP_CEILING } from "./files";
 import { checkDestination } from "./network";
 import { profileNames, toolNames } from "../../doors/src/tools";
 import { codePoints, SOURCE_ID } from "../../contract/src/text";
@@ -182,21 +182,9 @@ export interface PolicyEntry {
  * owner may purge any path's history (never refused) at any time. A file is at most
  * `MAX_INTENT_CHUNKS` chunks (40 GiB), the most one upload intent holds. The sync agent's
  * exclude list is not here: it is the owner's file `/workspace/.ta/sync-ignore`, whose
- * defaults come with the sync agent (tasks 6).
+ * defaults come with the sync agent (tasks 6). The defaults are the contract's
+ * `FILE_DEFAULTS`, since the cutover's importer holds each owner to them too.
  */
-export const FILE_DEFAULTS = Object.freeze({
-  max_inline_bytes: 256 * 1024 ** 2,
-  max_manifest_bytes: 512 * 1024 ** 2,
-  max_entries: 30_000,
-  // Off by default: the most one upload holds (40 GiB); the owner may set it lower.
-  max_file_bytes: MAX_INTENT_CHUNKS * CHUNK_BYTES,
-  max_history: 600_000,
-  retention_days: 30,
-  keep_versions: 10,
-  keep_recent: 20,
-  client_share: 25,
-  owner_reserve: 25,
-});
 export type FileSettings = { readonly [K in keyof typeof FILE_DEFAULTS | "max_bytes"]: number };
 /** The range each setting may take. `max_bytes` past the tier's storage holds at the tier's. */
 export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [number, number] } =

@@ -45,10 +45,10 @@ import { Ledger, LEDGER_LIMITS, type LedgerLimits, type Origin } from "../src/le
 import { type ChunkStore, Files } from "../src/files";
 import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
-import { CHUNK_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits";
+import { CHUNK_BYTES, FILE_DEFAULTS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { type Binding, EDIT_BYTES_MAX, OwnerDO, type OwnerEnv } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
-import { FILE_DEFAULTS, Policy } from "../src/policy";
+import { Policy } from "../src/policy";
 import { MIGRATIONS } from "../src/schema";
 import {
   MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, SEGMENT_LEAST_BYTES,

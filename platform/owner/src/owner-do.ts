@@ -205,10 +205,8 @@ import {
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
 import { type Lane, Schedule } from "./schedule";
-import {
-  ABILITY_TREES, AGENTS_DIR, AGENTS_OWNER_ONLY, MAX_NAME_BYTES, nameOf, ownersOnly, parentOf,
-  storedPath, within,
-} from "./paths";
+import { ABILITY_TREES, AGENTS_DIR, AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
+import { MAX_NAME_BYTES, nameOf, parentOf, storedPath, within } from "../../contract/src/paths";
 import { migrate } from "./migrate";
 import { MIGRATIONS } from "./schema";
 import { decodeExportCursor, encodeExportCursor } from "./export";
