@@ -85,7 +85,6 @@ import { costMicros, largestFitting, periods } from "./money";
 import { EGRESS_BEAT_S, type EgressCode, type Outcome, OUTCOMES } from "../../contract/src/egress";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 
-export { EGRESS_DEADLINE_S, type EgressCode, type Outcome };
 
 /**
  * How much egress one owner holds: for each of its tier's simultaneous runs, 16 calls open
@@ -107,7 +106,6 @@ export const EGRESS_LIMITS: EgressLimits = Object.freeze({
   receiptsListed: 50,
 });
 
-export { EGRESS_BEAT_S };
 /**
  * An open reservation with no beat for this long was its door's lost invocation's: three
  * beats missed, so a slow beat is never taken for a lost door. The one-day total stays the

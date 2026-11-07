@@ -6,11 +6,15 @@ import { describe, expect, it } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
-import { apiRules, fallbackList, freeCall, manyChoices, paidTool, ruledApis, servedPriced, tierMultiplier, unpricedOption } from "../../contract/src/api-rules";
+import {
+  apiRules, fallbackList, freeCall, manyChoices, paidTool, ruledApis, servedPriced, tierMultiplier,
+  unpricedOption,
+} from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
-import { egressTarget, meteredCall } from "../../contract/src/egress-scope";
-import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage, sentHeaders,
-         snapshotOf } from "../src/meter";
+import { egressTarget, meteredCall, meteredModel } from "../../contract/src/egress-scope";
+import {
+  clamped, describes, learnMeter, meteredRecord, meteredUsage, sentHeaders, snapshotOf,
+} from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
 import { bundledRecords, sourceRecord } from "../../doors/src/sources";

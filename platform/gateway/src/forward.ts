@@ -25,7 +25,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
-  type EgressScope, egressTarget, type Meter, meteredCall,
+  type EgressScope, egressTarget, type Meter, meteredCall, meteredModel,
 } from "../../contract/src/egress-scope";
 import type { ModelRecord } from "../../contract/src/model-record";
 import {
@@ -36,7 +36,7 @@ import {
   aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, READS, servedPriced,
   tierMultiplier, unpricedOption, valueAt,
 } from "../../contract/src/api-rules";
-import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
+import { clamped, learnMeter, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 import { heldDeadlineMs, Hold, HeldRefusal, raced, weighedBody, weightSlots }
   from "./held";
