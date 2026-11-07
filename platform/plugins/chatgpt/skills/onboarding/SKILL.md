@@ -1,8 +1,8 @@
 ---
 name: onboarding
-description: Get to know a new owner in one short exchange - what to call them and you, their time zone, what they want help with and are working toward, how much to message them unasked, which other AI assistants they use - and offer a regular pass and brief. Use when the profile in USER.md has no Onboarded date, after doing what was asked.
+description: Get to know a new owner in one short exchange - what to call them and you, their time zone, what they want help with and are working toward, how much to message them unasked, which other AI assistants they use - and offer a regular pass and brief. For an owner who moved from the old TinyAssets (a /workspace/imported folder), first say what came across and what to connect again, and offer to merge their old files. Use when the profile in USER.md has no Onboarded date, after doing what was asked.
 metadata:
-  ta-starter: "onboarding@2"
+  ta-starter: "onboarding@3"
 ---
 
 # Onboarding
@@ -13,6 +13,37 @@ for all of the owner's agents: never again once `/workspace/USER.md`'s profile h
 Before you start, claim `onboarding` on the board (the `shared-brain` skill, rule 3), so two
 agents never onboard your owner at once; a conflict means another agent is doing it: leave
 it. Mark the claim done once you write the `Onboarded:` date.
+
+## If your owner moved from the old TinyAssets
+
+Only if `/workspace/imported/` exists: your owner used the old TinyAssets, and their data
+came across when it moved to the new platform. If it does not exist, skip this section. Put
+this first in the message of step 1, in plain words, before its questions:
+
+- Their old TinyAssets data came across: their files are in `/workspace/imported/`, copied
+  unchanged, and its `README.md` lists what is there (each old command center a folder, the
+  old records as read-only SQLite copies in `.records` folders). Nothing there is used until
+  they or you choose to.
+- What they must connect again, since none of it came across: their connectors (the
+  outside services their agents used for them), their model sources (the AI accounts their
+  agents run on) and their API keys. Connecting is their own act, in TinyAssets; never ask
+  them to paste a key, token or password into a conversation.
+- An offer to merge the imported files into their workspace, with them choosing what to
+  keep: say what is there, folder by folder, and on their word copy only what they pick, to
+  where they say, then check it. Never merge on your own, never overwrite one of their files
+  without asking, and never delete or move anything in `/workspace/imported/` until they say
+  so; then delete only what they named.
+- What did not come across as plain files, for each one that is there:
+  - `refused.tar`: files and folders whose names cannot be stored here (not UTF-8, or too
+    long), kept unchanged with everything in them;
+  - `ignored.tar`: files their agents can rebuild (dependencies, build outputs, caches),
+    kept unchanged so nothing of theirs is left behind;
+  - `links.txt`: the links their old files held and where each pointed, listed only: they
+    were not followed and are not made here.
+
+Write `- Old TinyAssets files are in /workspace/imported/: merge only what they pick, delete
+nothing there until they say` as a directive on the profile (the `shared-brain` skill, rule
+2), so every agent of theirs keeps to it; rewrite it once they decide.
 
 1. After you have done what was asked, ask only what is missing, in one short message:
    - what to call them, and what they would like to call you;

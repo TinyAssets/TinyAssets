@@ -8,6 +8,7 @@
  * Unicode, never a version number.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -189,6 +190,66 @@ describe("the starter package", () => {
     expect(versionOf(vendoredSpec(vendored))).toBe("0.2");
     expect(frontOf(fileAt("/knowledge/SKILL.md").text).get("metadata")).toBe("");
     expect(fileAt("/knowledge/SKILL.md").text).toContain('okf-version: "0.2"');
+  });
+});
+
+describe("the onboarding of an owner who moved from the old TinyAssets (import slice 8)", () => {
+  const skill = fileAt("/onboarding/SKILL.md").text;
+  const HEADING = "## If your owner moved from the old TinyAssets\n";
+  const section = skill.slice(skill.indexOf(HEADING), skill.indexOf("\n1. After you have done"));
+  /** The skill an owner with no `/workspace/imported/` follows: the section left out. */
+  const without = skill.replace(`${section}\n`, "");
+  const body = (text: string) => text.slice(text.indexOf("\n---\n", 4) + 5);
+  const flat = section.replace(/\s+/g, " ");
+
+  it("is one section, only for an owner whose /workspace/imported/ exists", () => {
+    expect(skill.split(HEADING)).toHaveLength(2);
+    expect(section).toContain("Only if `/workspace/imported/` exists");
+    expect(section).toContain("If it does not exist, skip this section.");
+    // In the first message, before step 1's questions: never in place of the owner's request.
+    expect(flat).toContain("Put this first in the message of step 1");
+    expect(frontOf(skill).get("description")).toContain("/workspace/imported");
+    expect(frontOf(skill).get("metadata")).toBe("");
+    expect(skill).toContain('ta-starter: "onboarding@3"');
+  });
+
+  it("without /workspace/imported/, is the onboarding of before, byte for byte", () => {
+    // onboarding@2's body (starter version 5), by its digest: the steps an owner who never
+    // used the old stack follows are unchanged.
+    expect(createHash("sha256").update(body(without)).digest("hex"))
+      .toBe("cbb2df6e82fda50fec4459cde1b86fad6bb69a0bd38a8e9281e716246b51b153");
+  });
+
+  it("says the data came across, what to connect again, and never asks for a secret", () => {
+    expect(flat).toContain("their data came across");
+    expect(flat).toContain("their files are in `/workspace/imported/`");
+    expect(flat).toContain("`README.md` lists what is there");
+    for (const again of ["connectors", "model sources", "API keys"]) {
+      expect(flat).toContain(again);
+    }
+    expect(flat).toContain("What they must connect again");
+    expect(flat).toContain("never ask them to paste a key, token or password");
+  });
+
+  it("offers to merge, the owner choosing, and never merges or deletes on its own", () => {
+    expect(flat).toContain("An offer to merge the imported files into their workspace, with " +
+                           "them choosing what to keep");
+    expect(flat).toContain("copy only what they pick");
+    expect(flat).toContain("Never merge on your own");
+    expect(flat).toContain("never delete or move anything in `/workspace/imported/` until " +
+                           "they say so");
+    expect(flat).toContain("delete only what they named");
+    // And every agent of theirs keeps to it, from the profile.
+    expect(flat).toContain("as a directive on the profile");
+  });
+
+  it("names the refused and ignored archives and the links list, and what each is", () => {
+    // The importer's own names (`platform/import/build.ts`: REFUSED, IGNORED, LINKS).
+    expect(flat).toContain("`refused.tar`: files and folders whose names cannot be stored here");
+    expect(flat).toContain("`ignored.tar`: files their agents can rebuild");
+    expect(flat).toContain("`links.txt`: the links their old files held and where each " +
+                           "pointed");
+    expect(flat).toContain("were not followed and are not made here");
   });
 });
 
