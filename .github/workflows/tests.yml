@@ -212,6 +212,8 @@ jobs:
             command: npm run test -w contract
           - leg: import
             command: npm run test -w import
+          - leg: deploy
+            command: npm run test -w deploy
     defaults:
       run:
         working-directory: platform
@@ -251,8 +253,8 @@ jobs:
             command: npm run test:sizes -w owner -- --shard=2/2
           - leg: runner
             command: npm run test:sizes -w sandbox
-          - leg: doors
-            command: npm run test:sizes -w doors
+          - leg: deploy
+            command: npm run test:sizes -w deploy
     defaults:
       run:
         working-directory: platform

@@ -1,0 +1,1623 @@
+/**
+ * The deploy kit (`platform/deploy/deploy.ts`), never run against a live account here: each
+ * mode's row runs whole against a fake Cloudflare, WorkOS, E2B and wrangler (`world`), and
+ * its plan and every call it makes are read back; its steps' parts are held one by one.
+ *
+ * What it holds: the kit names every Worker, binding, namespace and secret the platform's
+ * configs declare; the config it deploys is the checked-in one with only the namespace ids,
+ * the doors' upstream and (in `routes`) the routes filled; it writes User Management's
+ * sign-in, the JWKS from the owner issuer's live discovery held to it exactly, and checks
+ * WorkOS's authorize takes the doors' client and callback before anyone signs in; it
+ * registers the WorkOS redirect URI only when missing and never deletes one; and it sets the
+ * routing key on the doors and the owner together or not at all.
+ *
+ * Slice L's review (H2, research 3b and 3c): a failed lookup is never "absent"; a held
+ * keyring is never replaced, and is rotated only by adding a key; the control record is
+ * written only when the API answers that it is absent; an absent discovery field is unknown,
+ * and unknown stops the kit; the kit runs from an approved manual workflow whose secrets come
+ * from the environment's store. The sign-in probe takes only the sign-in's two unserved
+ * paths, behind a control record that admits nobody, and `routes` then finds both held.
+ */
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+
+import { describe, expect, it } from "vitest";
+
+import { keyring as ringSecret } from "../../ci/fixtures";
+import { PLATFORM } from "../../ci/paths";
+import { workflow } from "../../ci/workflows";
+import { WRANGLER, workerFolders } from "../../ci/workers";
+import { type Domain, openBlob, sealBlob } from "../../contract/src/envelope";
+import { APP_RESOURCE, AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
+         WEB_REDIRECT } from "../../doors/src/config";
+import { outsideOpen, ownerOpen } from "../../doors/src/control";
+import { parseControl } from "../../doors/src/directory";
+import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
+import { E2b } from "../../sandbox/src/e2b";
+import { type CfAnswer, cfApi, Cloudflare, handover, type Route } from "../cloudflare";
+import {
+  admitsNobody, authorizeCheck, authorizeLink, codeDigests, DARK_CONTROL, deployedConfig,
+  E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew,
+  lifecycleHook, listed, lockRefusal, maskInLog, MIGRATED, type Mode, MODES, pairTag, parse,
+  perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, secretPlan,
+  shippedRunner, upstreamFrom, versionOf, wranglerFor,
+} from "../deploy";
+import {
+  boundBy, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES, NAMESPACES, OPTIONAL,
+  PROBE_ROUTES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
+} from "../facts";
+import { INPUTS as H2_INPUTS } from "../h2-probes";
+import platform from "../platform.json" with { type: "json" };
+
+type Json = Record<string, unknown>;
+
+const REPO = join(PLATFORM, "..");
+const configOf = (worker: string) => CONFIGS.get(worker)!;
+const UPSTREAM = { issuer: "https://auth.test",
+                   record: { client_id: "c",
+                             authorization_endpoint:
+                               "https://api.workos.com/user_management/authorize",
+                             token_endpoint: "https://api.workos.com/user_management/authenticate",
+                             jwks_uri: "https://auth.test/j",
+                             token_issuer: "https://api.workos.com/user_management/c",
+                             user_delete: "https://api.workos.com/user_management/users/{sub}",
+                             authorize_params: { provider: "authkit" } } };
+const IDS = Object.fromEntries(Object.keys(NAMESPACES).map((binding) => [binding, `id-${binding}`]));
+const NONE = () => undefined;
+const RING = ringSecret("k1");
+const ROTATED = ringSecret("k2", ["k1", "k2"]);
+const E2B_KEY = "e2b_test_key";
+const ACCOUNT = "a".repeat(32);
+const TEMPLATE = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
+/** The runner the fake bundle writes, and the pair it makes with the pinned template. */
+const RUNNER = "the runner";
+const PAIR = pairTag(TEMPLATE, createHash("sha256").update(RUNNER).digest("hex"));
+
+/** A Cloudflare API that answers each path with the answer `answers` names, or a 500. */
+function api(answers: Record<string, CfAnswer | Error>) {
+  const calls: string[] = [];
+  const call = async (path: string, init?: RequestInit): Promise<CfAnswer> => {
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    const answer = answers[path];
+    if (answer instanceof Error) {
+      throw answer;
+    }
+    return answer ?? { status: 500, body: { success: false, errors: [{ code: 10000 }] } };
+  };
+  return Object.assign(call, { calls });
+}
+
+const ok = (result: unknown): CfAnswer => ({ status: 200, body: { success: true, result } });
+
+/** The production inputs a full run holds: fake values, never a real one. */
+const ENV: Record<string, string> = {
+  CLOUDFLARE_API_TOKEN: "cf-token", WORKOS_CLIENT_ID: "client_test",
+  OWNER_ISSUER: "https://auth.test", WORKOS_API_KEY: "workos-key", E2B_API_KEY: E2B_KEY,
+  ROUTING_MAC_KEY: "mac-key", GATEWAY_KEYRING: RING, FILES_KEYRING: RING,
+  E2B_WEBHOOK_SECRET: "hook-secret", INBOUND_SLACK_SIGNING_SECRET: "slack-secret",
+  PATH: "/bin", HOME: "/home/test",
+};
+/** What the plan job holds. */
+const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]));
+
+/** The old proxy's live routes, and the site's. */
+const LIVE: readonly Route[] = [
+  { id: "r1", pattern: "tinyassets.io/mcp*", script: "tinyassets-mcp-proxy" },
+  { id: "r2", pattern: "tinyassets.io/app*", script: "tinyassets-mcp-proxy" },
+  { id: "r3", pattern: "tinyassets.io/api*", script: "tinyassets-mcp-proxy" },
+  { id: "r4", pattern: "tinyassets.io/.well-known/oauth-protected-resource*",
+    script: "tinyassets-mcp-proxy" },
+  { id: "r5", pattern: "tinyassets.io/.well-known/oauth-authorization-server*",
+    script: "tinyassets-mcp-proxy" },
+  { id: "r6", pattern: "tinyassets.io/site*", script: "site" },
+];
+
+interface WorldOptions {
+  /** Everything a dark run makes is there already. */
+  readonly held?: boolean;
+  /** The probe's two routes are the doors' already. */
+  readonly probed?: boolean;
+  /** E2B holds the pair's tag. */
+  readonly paired?: boolean;
+  /** The migrations guard reports this lock for every Worker. */
+  readonly lock?: Record<string, string[]>;
+  /** A wrangler command that fails. */
+  readonly failing?: string;
+}
+
+/**
+ * A fake of everything the kit reaches, as one ordered event log: Cloudflare's API and
+ * wrangler (the account's state changing as the kit changes it), WorkOS, the owner issuer,
+ * E2B, python and the migrations guard.
+ */
+function world(options: WorldOptions = {}) {
+  const held = options.held === true;
+  const events: string[] = [];
+  const logs: string[] = [];
+  const secretsPut: Record<string, string> = {};
+  /** The account each wrangler command was given, in order. */
+  const accounts: (string | undefined)[] = [];
+  let pairPassed = options.paired !== false;
+  const namespaces = new Map(held ? Object.values(NAMESPACES).map((title) => [title, `ns-${title}`])
+    : []);
+  const secrets = new Map<string, string[]>(held ? Object.entries(SECRETS).map(([worker, names]) =>
+    [NAMES[worker]!, [...names]]) : []);
+  if (held) {
+    secrets.set(NAMES["hooks"]!, []);
+  }
+  const routes = new Map((options.probed === true || held
+    ? [...LIVE, { id: "p1", pattern: "tinyassets.io/authorize*", script: DOORS },
+       { id: "p2", pattern: "tinyassets.io/oauth/*", script: DOORS }] : LIVE)
+    .map((route) => [route.id, { ...route }]));
+  const hooks: Json[] = held ? [{ id: "w1", url: E2B_HOOK.url, enabled: false,
+                                  events: [...E2B_HOOK.events] }] : [];
+  const control = held ? DARK_CONTROL : undefined;
+  const json = (body: unknown, status = 200) => Response.json(body, { status });
+  const cf = (path: string, method: string, body: string | undefined): Response => {
+    if (path === `/zones?name=${ZONE}`) {
+      return json({ success: true, result: [{ id: "z", account: { id: ACCOUNT } }] });
+    }
+    if (path === "/zones/z/workers/routes" && method === "GET") {
+      return json({ success: true, result: [...routes.values()] });
+    }
+    if (path.startsWith("/zones/z/workers/routes")) {
+      const id = path.split("/").at(-1)!;
+      const route = JSON.parse(body ?? "{}") as Route;
+      if (method === "POST") {
+        routes.set(`n${routes.size}`, { ...route, id: `n${routes.size}` });
+      } else if (method === "PUT") {
+        routes.set(id, { ...route, id });
+      } else {
+        routes.delete(id);
+      }
+      return json({ success: true, result: {} });
+    }
+    const listing = /^\/accounts\/a+\/workers\/scripts\/([a-z-]+)\/secrets$/.exec(path);
+    if (listing !== null) {
+      const names = secrets.get(listing[1]!);
+      return names === undefined
+        ? json({ success: false, errors: [{ code: 10007 }] }, 404)
+        : json({ success: true, result: names.map((name) => ({ name, type: "secret_text" })) });
+    }
+    if (path.startsWith(`/accounts/${ACCOUNT}/storage/kv/namespaces?`)) {
+      return json({ success: true, result: [...namespaces].map(([title, id]) => ({ id, title })) });
+    }
+    if (path.includes("/values/")) {
+      return method === "PUT" ? json({ success: true })
+        : control === undefined ? json({ success: false, errors: [{ code: 10009 }] }, 404)
+        : json(control);
+    }
+    return json({ success: false, errors: [{ code: 1 }] }, 500);
+  };
+  const fetcher = async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? "GET";
+    const body = init?.body === undefined ? undefined : String(init.body);
+    const at = new URL(url);
+    if (at.host === "api.cloudflare.com") {
+      const path = url.slice("https://api.cloudflare.com/client/v4".length);
+      events.push(`cf ${method} ${path}`);
+      return cf(path, method, body);
+    }
+    if (at.host === "auth.test") {
+      events.push("issuer discovery");
+      return json({ issuer: "https://auth.test", jwks_uri: "https://auth.test/jwks" });
+    }
+    if (at.pathname === "/user_management/authorize") {
+      events.push("workos authorize");
+      return new Response(null, { status: 302, headers: { Location: "https://auth.test/sign-in" } });
+    }
+    if (at.pathname === "/user_management/redirect_uris") {
+      events.push(`workos ${method} redirect_uris`);
+      return method === "POST" ? json({}, 201)
+        : json({ data: held || options.probed === true ? [{ uri: CALLBACK }] : [] });
+    }
+    if (at.host === "api.e2b.app") {
+      expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe(E2B_KEY);
+      events.push(`e2b ${method} ${at.pathname}${body === undefined ? "" : ` ${body}`}`);
+      if (at.pathname.startsWith("/templates/aliases/")) {
+        return json({ templateID: "t1" });
+      }
+      if (at.pathname.endsWith("/tags/exists")) {
+        const tag = at.searchParams.get("tag") ?? "";
+        return json({ exists: tag.includes("-r") ? pairPassed : true });
+      }
+      if (at.pathname === "/events/webhooks") {
+        return method === "POST" ? json({ id: "w1" }, 201) : json(hooks);
+      }
+      return json({});
+    }
+    events.push(`unexpected ${method} ${url}`);
+    return new Response("", { status: 599 });
+  };
+  const spawn = ((command: string, argv: readonly string[] = [],
+                  options_: { env?: Record<string, string>; input?: string } = {}) => {
+    if (argv[0] === WRANGLER) {
+      accounts.push(options_.env?.["CLOUDFLARE_ACCOUNT_ID"]);
+      const args = argv.slice(1).map((arg) => arg.endsWith(".json")
+        ? `${basename(join(arg, ".."))}/${basename(arg)}` : arg);
+      events.push(`wrangler ${args.join(" ")}`);
+      if (options.failing !== undefined && args.join(" ").startsWith(options.failing)) {
+        return { status: 1, stdout: "", stderr: "the API refused it" };
+      }
+      if (args[0] === "secret") {
+        secretsPut[`${basename(join(argv[argv.length - 1]!, ".."))}:${args[2]}`] =
+          options_.input ?? "";
+      }
+      if (args[0] === "kv") {
+        namespaces.set(args[3]!, `made-${args[3]}`);
+      }
+      const stdout = args[1] === "bucket" && args[2] === "list"
+        ? (held ? "name:  tinyassets-files\n" : "")
+        : args[0] === "queues" && args[1] === "list"
+          ? (held ? QUEUES_LISTED : "") : args[1] === "upload"
+            ? "Worker Version ID: 0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n" : "";
+      return { status: 0, stdout, stderr: "" };
+    }
+    if (command === "python3") {
+      events.push(`python3 ${basename(argv[0]!)}${argv.slice(1).map((arg) => ` ${arg}`).join("")}${
+        options_.env === undefined ? "" : ` env=${Object.keys(options_.env).sort().join(",")}`}`);
+      if (argv[0]!.endsWith("build.py")) {
+        pairPassed = true;
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (String(argv[0]).endsWith("vitest.mjs")) {
+      const worker = basename(String((options_ as { cwd?: string }).cwd));
+      events.push(`guard ${worker}`);
+      writeFileSync(options_.env!["MIGRATION_DIGESTS"]!, JSON.stringify(options.lock ?? locks(worker)));
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    events.push(`unexpected spawn ${command} ${argv.join(" ")}`);
+    return { status: 1, stdout: "", stderr: "" };
+  }) as unknown as Io["spawn"];
+  const exec = ((_command: string, argv: readonly string[] = [],
+                 options_: { env?: Record<string, string> } = {}) => {
+    if (String(argv[0]).endsWith("bundle.mjs")) {
+      events.push("bundle the runner");
+      writeFileSync(join(argv[1]!, "runner.mjs"), RUNNER);
+    } else {
+      events.push(`exec ${basename(String(argv.at(-1)))} env has ${[...H2_INPUTS_LIST, "E2B_API_KEY"]
+        .filter((name) => options_.env?.[name] !== undefined).join(",")}`);
+    }
+    return "";
+  }) as unknown as Io["exec"];
+  // What the kit prints joins the one timeline, by its first line.
+  const log = (line: string) => {
+    logs.push(line);
+    events.push(`log ${line.trim().split("\n")[0]}`);
+  };
+  const io: Io = { fetch: fetcher, spawn, exec, log };
+  return { io, events, logs, secretsPut, routes, hooks, accounts };
+}
+
+const H2_INPUTS_LIST = Object.values(H2_INPUTS);
+const QUEUES_LISTED = "│ q1 │ tinyassets-sandbox-ring │\n│ q2 │ tinyassets-erasure │\n";
+
+/** Each Worker's checked-in migration locks, as its guard reports them. */
+function locks(worker: string): Record<string, string[]> {
+  const files = worker === "owner" ? ["owner/migrations.json"]
+    : readdirSync(join(PLATFORM, worker, "migrations")).map((file) => `${worker}/migrations/${file}`);
+  return Object.fromEntries(files.map((file) => [file, (JSON.parse(readFileSync(
+    join(PLATFORM, file), "utf8")) as { deployed: string[] }).deployed]));
+}
+
+/** `mode` run whole in `w`, with `flags` and `env`: its work, or its refusal. */
+async function runMode(w: ReturnType<typeof world>, mode: Mode, flags: string[] = [],
+                       env: Record<string, string> = ENV) {
+  return perform(parse(["--mode", mode, ...flags], env, w.io));
+}
+
+/** The plan as the kit reports it: "Changed" or "Would change", a line a step. */
+function summary(heading: string, plan: readonly string[]): string {
+  return `${heading}:\n${plan.map((line) => `- ${line}`).join("\n")}`;
+}
+
+/** The indexes of `needles` in `events`, each the first after the one before it. */
+function order(events: readonly string[], needles: readonly string[]): number[] {
+  let from = 0;
+  return needles.map((needle) => {
+    const at = events.findIndex((event, index) => index >= from && event.startsWith(needle));
+    expect([needle, at], events.join("\n")).not.toEqual([needle, -1]);
+    from = at + 1;
+    return at;
+  });
+}
+
+describe("the deploy kit's facts", () => {
+  it("deploys every Worker the platform holds, each after every Worker it binds", () => {
+    // The Workers the production deploy takes, pinned on purpose: a folder with a config of
+    // its own joins the deploy only once this list is changed in a reviewed change.
+    expect(workerFolders()).toEqual(["doors", "files", "gateway", "hooks", "owner", "sandbox"]);
+    expect([...WORKERS].sort()).toEqual(workerFolders());
+    for (const worker of WORKERS) {
+      for (const bound of boundBy(worker)) {
+        expect([worker, bound, WORKERS.indexOf(bound) < WORKERS.indexOf(worker)])
+          .toEqual([worker, bound, true]);
+      }
+    }
+    // The doors bind the owner by its objects' script alone: the order holds it too.
+    expect(boundBy("doors")).toContain("owner");
+  });
+
+  it("holds only what no config says, and that for exactly what the configs declare", () => {
+    // A title for each KV binding the configs make, and none for a binding none makes.
+    const bindings = new Set(WORKERS.flatMap((worker) =>
+      ((configOf(worker)["kv_namespaces"] ?? []) as { binding: string }[]).map((kv) => kv.binding)));
+    expect(Object.keys(NAMESPACES).sort()).toEqual([...bindings].sort());
+    // A place in the secret order for each Worker that holds a secret, and only for those.
+    expect([...platform.secret_order.workers].sort()).toEqual(WORKERS.filter((worker) =>
+      ((configOf(worker)["secrets"] as { required?: string[] } | undefined)?.required ?? [])
+        .length > 0).sort());
+    // The founder's setup makes only secrets a config requires; the keyrings are its own.
+    expect(Object.keys(MADE).filter((name) => !SECRET_INPUTS.includes(name))).toEqual([]);
+    expect(KEYRINGS.length).toBeGreaterThan(0);
+    // The shared apps' signing secrets, which no config requires, ride on the doors.
+    expect(OPTIONAL.filter((name) => SECRET_INPUTS.includes(name))).toEqual([]);
+    expect(OPTIONAL.every((name) => SECRETS["doors"]!.includes(name))).toBe(true);
+  });
+
+  it("deploys the checked-in config with only its ids, the upstream and the routes filled", () => {
+    for (const worker of WORKERS) {
+      const checked = configOf(worker);
+      const deployed = deployedConfig(worker, IDS, UPSTREAM, false);
+      const { kv_namespaces: kv, main, vars, assets, build, $schema: _schema, ...rest } =
+        checked as Json;
+      const { kv_namespaces: deployedKv, main: deployedMain, vars: deployedVars,
+              assets: deployedAssets, build: deployedBuild, ...others } = deployed;
+      expect([worker, others]).toEqual([worker, rest]);
+      expect(String(deployedMain)).toBe(join(PLATFORM, worker, String(main)));
+      // Written outside the Worker's folder: the app files' directory is absolute too.
+      expect(deployedAssets).toEqual(assets === undefined ? undefined : {
+        ...(assets as Json), directory: join(PLATFORM, worker, String((assets as Json)["directory"])) });
+      // And a custom build runs in the Worker's own folder, not wrangler's.
+      expect(deployedBuild).toEqual(build === undefined ? undefined : {
+        ...(build as Json), cwd: join(PLATFORM, worker, String((build as Json)["cwd"] ?? ".")) });
+      expect(deployedKv).toEqual(((kv ?? undefined) as { binding: string }[] | undefined)
+        ?.map((namespace) => ({ ...namespace, id: IDS[namespace.binding] })));
+      expect(deployed["routes"]).toBeUndefined();
+      if (worker === "doors") {
+        expect(deployedVars).toEqual({ ...(vars as Json), OWNER_ISSUER: UPSTREAM.issuer,
+                                       UPSTREAM: JSON.stringify(UPSTREAM.record) });
+      } else {
+        expect(deployedVars).toEqual(vars);
+      }
+    }
+    const routed = deployedConfig("doors", IDS, UPSTREAM, true)["routes"];
+    expect(routed).toEqual([...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
+                            { pattern: EGRESS_DOMAIN, custom_domain: true }]);
+  });
+
+  it("bundles every Worker from the config it stages, as wrangler deploys it", { tags: ["large"] },
+     () => {
+    // The kit writes each config outside its Worker's folder (`deployedConfig`), so a path
+    // that stays relative resolves elsewhere; the first dark run stopped on the sandbox's
+    // custom build for exactly that. Only a real bundle of the staged config shows it.
+    const out = mkdtempSync(join(tmpdir(), "ta-staged-"));
+    try {
+      for (const worker of WORKERS) {
+        const config = join(out, `${worker}.json`);
+        writeFileSync(config, JSON.stringify(deployedConfig(worker, IDS, UPSTREAM, true)));
+        execFileSync(process.execPath, [WRANGLER, "deploy", "--dry-run", "--outdir",
+                                        join(out, worker), "--config", config],
+                     { cwd: PLATFORM, stdio: "pipe",
+                       env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+      }
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("writes a control record its gates read, every outside door closed", () => {
+    const control = parseControl(DARK_CONTROL);
+    expect(control).toMatchObject({ outside: "off", ordinary: "canary", canary: [],
+                                    inbound: false });
+    expect(control?.tiers).not.toBeNull();
+  });
+});
+
+describe("the command line", () => {
+  const w = world();
+
+  it("takes one mode, by --mode, and refuses a run with none or another", () => {
+    expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair"]);
+    for (const mode of Object.keys(MODES)) {
+      expect(parse(["--mode", mode], ENV, w.io).mode).toBe(mode);
+    }
+    for (const argv of [[], ["--mode"], ["--mode", "apply"], ["--mode", "constructor"],
+                        ["--yes", "--routes"], ["--mode", "--yes"]]) {
+      expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
+        "--mode is one of plan, dark, probe, routes, h2, pair");
+    }
+    for (const argv of [["--mode", "dark", "--mode", "routes"], ["--mode", "dark", "--mode", "dark"]]) {
+      expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
+        "--mode is given once: a run is one mode");
+    }
+  });
+
+  it("holds only the planning modes to their options: h2 and pair read none", () => {
+    for (const mode of ["h2", "pair"]) {
+      const run = parse(["--mode", mode, "--public", "--yes", "--rotate", "FILES_KEYRING",
+                         "--migrate", "doors"], ENV, w.io);
+      expect([run.mode, run.reach, run.apply]).toEqual([mode, "public", true]);
+    }
+  });
+
+  it("refuses a run that would change what its job cannot", () => {
+    expect(() => parse(["--mode", "dark", "--public", "--yes"], ENV, w.io))
+      .toThrow("--public is the plan job's: it never changes anything");
+    expect(() => parse(["--mode", "plan", "--yes"], ENV, w.io))
+      .toThrow("mode plan changes nothing: it takes no --yes");
+    expect(() => parse(["--mode", "dark", "--migrate", "owner,doors"], ENV, w.io))
+      .toThrow("the doors hold no Durable Object migration: --migrate never names them");
+    for (const option of ["--rotate", "--migrate"]) {
+      expect(() => parse(["--mode", "probe", option, "owner"], ENV, w.io))
+        .toThrow("mode probe deploys nothing: it takes no --rotate or --migrate");
+    }
+    const run = parse(["--mode", "routes", "--yes", "--rotate", "ROUTING_MAC_KEY,FILES_KEYRING",
+                       "--migrate", "owner"], ENV, w.io);
+    expect([run.reach, run.apply, [...run.rotate], [...run.migrate]])
+      .toEqual(["secrets", true, ["ROUTING_MAC_KEY", "FILES_KEYRING"], ["owner"]]);
+    expect(parse(["--mode", "plan", "--public"], ENV, w.io).reach).toBe("public");
+  });
+});
+
+describe("a dark run", () => {
+  it("checks everything before any change, then storage, secrets, Workers, the control " +
+     "record and the hook, then the canary", async () => {
+    const w = world();
+    const work = await runMode(w, "dark", ["--yes"]);
+    // In this order: every check (the locks, the zone, the discovery, the template and the
+    // pair, the hook's listing, the redirect URI's registration and the early sign-in check),
+    // then the namespaces, the bucket and the queues, the secrets, the Workers, the control
+    // record, the hook, and the canary.
+    const at = order(w.events, [
+      "guard owner", "guard sandbox", "cf GET /zones?name=tinyassets.io", "issuer discovery",
+      "e2b GET /templates/t1/tags/exists", "bundle the runner", "e2b GET /templates/t1/tags/exists",
+      "e2b GET /events/webhooks", "workos GET redirect_uris", "workos POST redirect_uris",
+      "workos authorize", "cf GET /accounts", "wrangler kv namespace create",
+      "wrangler r2 bucket create tinyassets-files", "wrangler queues create tinyassets-sandbox-ring",
+      "wrangler queues create tinyassets-erasure", "wrangler secret put ROUTING_MAC_KEY",
+      "wrangler deploy --config files/", "wrangler deploy --config doors/", "cf PUT /accounts",
+      "e2b POST /events/webhooks", "log Changed:", "python3 mcp_public_canary.py",
+      "log H2's probes wait"]);
+    const first = w.events.findIndex((event) =>
+      /^(wrangler [a-z ]*create|wrangler secret|cf PUT)/.test(event));
+    expect(at[10]).toBeLessThan(first);
+    // The webhook is registered disabled, with the doors' secret, after the doors hold it.
+    expect(w.events[at[20]!]).toContain('"enabled":false');
+    expect(w.events[at[20]!]).toContain('"signatureSecret":"hook-secret"');
+    // The plan is reported whole, every step's line in it, before the canary.
+    expect(work.plan).toEqual(DARK_FRESH);
+    expect(w.logs).toContain(summary("Changed", DARK_FRESH));
+    expect(w.logs.slice(-1)).toEqual([
+      "H2's probes wait for a routed door and a probe owner's key: run with --mode h2 " +
+      "(h2-probes.ts names what it needs)."]);
+    // Every wrangler command is handed the zone's account, never wrangler's own pick.
+    expect(w.accounts.length).toBeGreaterThan(0);
+    expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
+    // Outside Actions, nothing is masked.
+    expect(w.logs.some((line) => line.startsWith("::add-mask::"))).toBe(false);
+  });
+
+  it("in an Actions job masks the zone's account before anything can print it", async () => {
+    const w = world();
+    await runMode(w, "dark", ["--yes"], { ...ENV, GITHUB_ACTIONS: "true" });
+    const zone = w.events.indexOf("cf GET /zones?name=tinyassets.io");
+    const mask = w.events.indexOf(`log ::add-mask::${ACCOUNT}`);
+    // Masked right after the zone names it: the first line that holds the account at all,
+    // and before any wrangler command, whose errors quote /accounts/<id>/.
+    expect([zone, mask]).toEqual([zone, zone + 1]);
+    expect(w.events.findIndex((event) => event.includes(ACCOUNT))).toBe(mask);
+    expect(mask).toBeLessThan(w.events.findIndex((event) => event.startsWith("wrangler")));
+    expect(w.logs.filter((line) => line.startsWith("::add-mask::"))).toEqual(
+      [`::add-mask::${ACCOUNT}`]);
+  });
+
+  it("stops before anything without an input it reads, naming where it comes from",
+     async () => {
+    const { WORKOS_API_KEY: _key, ...secretless } = ENV;
+    const w = world();
+    await expect(runMode(w, "dark", ["--yes"], secretless)).rejects.toThrow(
+      "WORKOS_API_KEY is not set (the production environment's secrets)");
+    const { OWNER_ISSUER: _issuer, ...varless } = PUBLIC;
+    await expect(runMode(w, "dark", ["--public"], varless)).rejects.toThrow(
+      "OWNER_ISSUER is not set (the workflow's inputs)");
+    expect(w.events).toEqual([]);
+  });
+
+  it("stops before anything when a keyring is one the Workers would refuse", async () => {
+    const w = world();
+    await expect(runMode(w, "dark", ["--yes"], { ...ENV, FILES_KEYRING: "{}" }))
+      .rejects.toThrow("FILES_KEYRING is {active, keys} as JSON");
+    // A missing input is named before a keyring is read.
+    const { WORKOS_API_KEY: _key, ...secretless } = ENV;
+    await expect(runMode(w, "dark", ["--yes"], { ...secretless, FILES_KEYRING: "{}" }))
+      .rejects.toThrow("WORKOS_API_KEY is not set (the production environment's secrets)");
+    expect(w.events).toEqual([]);
+  });
+
+  it("never makes a secret's value: each it sets is the production environment's own",
+     async () => {
+    const w = world();
+    await runMode(w, "dark", ["--yes"]);
+    const expected = Object.fromEntries(Object.entries(SECRETS).flatMap(([worker, names]) =>
+      names.map((name) => [`${worker}:${name}`, ENV[name]!])));
+    expect(w.secretsPut).toEqual(expected);
+  });
+
+  it("plans the same steps without --yes, and changes nothing", async () => {
+    const w = world();
+    const work = await runMode(w, "plan");
+    expect(w.events.filter((event) => /^(wrangler [a-z ]*(create|put|deploy|upload)|cf (PUT|POST|DELETE)|e2b (POST|PATCH)|workos POST|python3)/
+      .test(event))).toEqual([]);
+    expect(work.plan.filter((line) => line.startsWith("create the") || line.startsWith("set the")
+      || line.startsWith("deploy "))).toEqual(DARK_FRESH.filter((line) =>
+      line.startsWith("create the") || line.startsWith("set the") || line.startsWith("deploy ")));
+    expect(w.logs.slice(-1)).toEqual(["\nNothing was changed."]);
+  });
+
+  it("in the plan job reaches no E2B and no WorkOS key, and says what the apply job checks",
+     async () => {
+    const w = world({ held: true });
+    const work = await runMode(w, "dark", ["--public"], PUBLIC);
+    expect(w.events.filter((event) => event.startsWith("e2b") || event.startsWith("workos GET")
+      || event.startsWith("workos POST"))).toEqual([]);
+    expect(work.plan.filter((line) => line.endsWith("checked by the apply job before any change")))
+      .toEqual([`E2B's ready build of ${TEMPLATE}: checked by the apply job before any change`,
+                `the pair ${PAIR} passed its standing checks: checked by the apply job before ` +
+                "any change",
+                `WorkOS redirect URI ${CALLBACK}: checked by the apply job before any change`,
+                `E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job before any change`]);
+    // With none held, the control record is planned, and the hook's word comes after it, last.
+    const fresh = await runMode(world(), "dark", ["--public"], PUBLIC);
+    const [last2, last] = fresh.plan.slice(-2);
+    expect([last2?.startsWith("write the control record closed"), last]).toEqual([
+      true, `E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job before any change`]);
+  });
+
+  it("deploys a held Worker as a version, and a named migration whole", async () => {
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes", "--migrate", "owner"]);
+    expect(w.events.filter((event) => event.startsWith("wrangler deploy")
+      || event.startsWith("wrangler versions upload"))).toEqual([
+      ...["files", "gateway", "hooks", "sandbox"].map((worker) =>
+        `wrangler versions upload --config ${worker}/wrangler.json`),
+      "wrangler deploy --config owner/wrangler.json",
+      "wrangler versions upload --config doors/wrangler.json"]);
+    // Nothing held is made again, and the control record is left alone.
+    expect(w.events.filter((event) => /create|cf PUT|secret put/.test(event))).toEqual([]);
+  });
+
+  it("stops before any change when a migration lock does not pin what the code ships",
+     async () => {
+    const w = world({ lock: { "owner/migrations.json": ["a".repeat(64)] } });
+    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(/PIN_MIGRATIONS/);
+    expect(w.events.filter((event) => !event.startsWith("guard"))).toEqual([]);
+  });
+
+  it("stops on a failed wrangler listing, never reading it as absent", async () => {
+    const w = world({ failing: "r2 bucket list" });
+    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+      "wrangler r2 bucket list failed (exit 1): the API refused it");
+    expect(w.events.some((event) => event.includes("create tinyassets-files"))).toBe(false);
+  });
+
+  it("stops when the pair has not passed, and plans only the pair job's check without --yes",
+     async () => {
+    await expect(runMode(world({ paired: false }), "dark", ["--yes"])).rejects.toThrow(
+      `the pair ${PAIR} has not passed its standing checks in this E2B team: run the pair job ` +
+      "(--mode pair) first; nothing is deployed");
+    const work = await runMode(world({ paired: false }), "plan");
+    expect(work.plan).toContain(`the pair ${PAIR} has not passed in this E2B team: the pair ` +
+                                "job runs its check (--mode pair) before the apply job");
+  });
+});
+
+describe("a routes run", () => {
+  it("hands the routes over after every Worker, then the custom domain, then enables the hook",
+     async () => {
+    const w = world({ held: true });
+    const work = await runMode(w, "routes", ["--yes"]);
+    order(w.events, ["e2b GET /events/webhooks", "cf GET /zones/z/workers/routes",
+                     "cf GET /accounts", "wrangler versions deploy",
+                     "cf PUT /zones/z/workers/routes/r1", "cf POST /zones/z/workers/routes",
+                     "cf DELETE /zones/z/workers/routes/r4", "wrangler triggers deploy",
+                     "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Changed:",
+                     "python3 mcp_public_canary.py", "log H2's probes wait"]);
+    // The routes are read once, before any change; the doors' last version is deployed before
+    // a route moves; the hook is enabled only after the last route and the custom domain.
+    expect(w.events.filter((event) => event === "cf GET /zones/z/workers/routes")).toHaveLength(1);
+    expect(w.events.findLastIndex((event) => event.startsWith("wrangler versions deploy")))
+      .toBeLessThan(w.events.indexOf("cf PUT /zones/z/workers/routes/r1"));
+    expect(work.plan).toEqual(ROUTES_HELD);
+    expect(w.logs).toContain(summary("Changed", ROUTES_HELD));
+    // Every wrangler command, the routes' triggers deploy too, is handed the zone's account.
+    expect(w.accounts.length).toBeGreaterThan(0);
+    expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
+    for (const path of ["tinyassets.io/mcp", "tinyassets.io/api/x", "tinyassets.io/oauth/token",
+                        "tinyassets.io/.well-known/oauth-protected-resource/mcp",
+                        `tinyassets.io${E2B_HOOK_PATH}`]) {
+      expect([path, servedBy(w.routes.values(), path)]).toEqual([path, DOORS]);
+    }
+  });
+
+  it("reads the zone's routes with the checks, before storage or any change", async () => {
+    const w = world();
+    await runMode(w, "routes", ["--yes"]);
+    const read = w.events.indexOf("cf GET /zones/z/workers/routes");
+    expect(read).toBeGreaterThan(w.events.indexOf("workos authorize"));
+    expect(read).toBeLessThan(w.events.findIndex((event) =>
+      event.startsWith("cf GET /accounts")));
+  });
+
+  it("in the plan job says the hook waits, where dark's would be", async () => {
+    const work = await runMode(world({ held: true }), "routes", ["--public"], PUBLIC);
+    const hook = work.plan.findIndex((line) => line.startsWith("E2B lifecycle webhook"));
+    expect(work.plan[hook - 1]).toMatch(/^upload and deploy a version of tinyassets-doors/);
+    expect(work.plan[hook + 1]).toMatch(/^move the route /);
+  });
+});
+
+describe("a probe run", () => {
+  it("hands the doors the sign-in's two paths alone, after the early sign-in check, then " +
+     "prints the one link", async () => {
+    const w = world({ held: true, probed: false });
+    // The dark run's state, with the probe's routes not yet the doors'.
+    for (const id of ["p1", "p2"]) {
+      w.routes.delete(id);
+    }
+    const work = await runMode(w, "probe", ["--yes"]);
+    const [, , authorized, first, second] = order(w.events, [
+      "cf GET /accounts", "workos GET redirect_uris", "workos authorize",
+      "cf POST /zones/z/workers/routes", "cf POST /zones/z/workers/routes"]);
+    expect(authorized).toBeLessThan(first!);
+    expect(second).toBeGreaterThan(first!);
+    expect(w.events.filter((event) => /^(wrangler|e2b)/.test(event))).toEqual([]);
+    expect(work.plan.slice(-2)).toEqual(PROBE_ROUTES.map((pattern) =>
+      `add the route ${pattern} for ${DOORS}`));
+    expect(w.logs.at(-1)!.startsWith(
+      `\nSign in once, in a browser, at:\n${PUBLIC_ORIGIN}${AUTHORIZE_PATH}?`)).toBe(true);
+    expect(w.logs.at(-1)).toContain(PROBE_SIGNS);
+  });
+
+  it("stops unless a dark run came first, every gate closed and the callback listed",
+     async () => {
+    await expect(runMode(world(), "probe", ["--yes"])).rejects.toThrow(
+      `${DOORS} is not deployed: the probe runs after a dark run`);
+  });
+});
+
+describe("the pair and h2 modes", () => {
+  it("runs the pair check with the E2B key alone, and skips it when E2B holds the tag",
+     async () => {
+    const w = world({ paired: false });
+    await runMode(w, "pair");
+    expect(w.events.filter((event) => event.startsWith("python3"))).toEqual([
+      "python3 build.py --check-pair env=E2B_API_KEY,HOME,PATH"]);
+    expect(w.logs).toEqual([`the pair ${PAIR} passed its standing checks, run now`]);
+    const held = world();
+    await runMode(held, "pair");
+    expect(held.events.some((event) => event.startsWith("python3"))).toBe(false);
+    expect(held.logs).toEqual([`the pair ${PAIR} passed its standing checks in this E2B team`]);
+    await expect(runMode(world(), "pair", [], { PATH: "/bin" }))
+      .rejects.toThrow("E2B_API_KEY is not set (the production environment's secrets)");
+  });
+
+  it("runs H2's probes with the environment, and in the plan job only says so", async () => {
+    const w = world();
+    await runMode(w, "h2", ["--yes"], { ...ENV, TA_PROBE_KEY: "probe-key" });
+    expect(w.events).toEqual(["exec h2-probes.ts env has TA_PROBE_KEY,E2B_API_KEY"]);
+    const plan = world();
+    await runMode(plan, "h2", ["--public"], PUBLIC);
+    expect(plan.events).toEqual(["log Would change:"]);
+    expect(plan.logs).toEqual(["Would change:\n- run H2's probes against the routed doors; " +
+                               "nothing is changed"]);
+  });
+});
+
+describe("the parts of a run", () => {
+  const discovery = (body: Json) => async () => Response.json(body);
+  const good = { issuer: "https://auth.test", jwks_uri: "https://auth.test/j" };
+
+  it("writes User Management's sign-in for the client, the JWKS from the issuer's discovery " +
+     "held to it exactly, in a record the doors accept", async () => {
+    const made = await upstreamFrom("https://auth.test", "c", discovery(good));
+    expect(made).toEqual(UPSTREAM);
+    expect(made.record).toEqual({
+      client_id: "c", authorization_endpoint: "https://api.workos.com/user_management/authorize",
+      token_endpoint: "https://api.workos.com/user_management/authenticate",
+      jwks_uri: "https://auth.test/j",
+      token_issuer: "https://api.workos.com/user_management/c",
+      user_delete: "https://api.workos.com/user_management/users/{sub}",
+      authorize_params: { provider: "authkit" } });
+    expect(() => upstreamConfig(JSON.stringify(made.record))).not.toThrow();
+    await expect(upstreamFrom("https://auth.test", "c",
+                              discovery({ ...good, issuer: "https://auth.test/" })))
+      .rejects.toThrow(/not OWNER_ISSUER/);
+    await expect(upstreamFrom("https://auth.test", "", discovery(good)))
+      .rejects.toThrow(/WORKOS_CLIENT_ID/);
+    await expect(upstreamFrom("https://auth.test", "c/../x", discovery(good)))
+      .rejects.toThrow(/WORKOS_CLIENT_ID/);
+    await expect(upstreamFrom("http://auth.test", "c", discovery(good))).rejects.toThrow();
+    await expect(upstreamFrom("https://auth.test", "c", async () =>
+      new Response("down", { status: 503 }))).rejects.toThrow(/503/);
+  });
+
+  it("stops on an absent or plain-http JWKS in the discovery: unknown never passes", async () => {
+    await expect(upstreamFrom("https://auth.test", "c", discovery({ issuer: good.issuer })))
+      .rejects.toThrow(/jwks_uri: unknown/);
+    await expect(upstreamFrom("https://auth.test", "c",
+                              discovery({ ...good, jwks_uri: "http://auth.test/j" })))
+      .rejects.toThrow(/jwks_uri: unknown/);
+  });
+
+  it("builds the authorize URL the doors build, for the early sign-in check", () => {
+    const doors = oidcUpstream(UPSTREAM.issuer, upstreamConfig(JSON.stringify(UPSTREAM.record)),
+                               "k");
+    expect(authorizeLink(UPSTREAM, "s1", "c1")).toBe(doors.authorizeUrl({
+      state: "s1", code_challenge: "c1", redirect_uri: UPSTREAM_CALLBACK }));
+  });
+
+  it("checks, before any sign-in, that WorkOS's authorize sends the browser to AuthKit's " +
+     "sign-in, and stops on a refused client or redirect", async () => {
+    const sent: { url: string; init: RequestInit | undefined }[] = [];
+    const answering = (status: number, location: string | null) =>
+      async (url: string, init?: RequestInit) => {
+        sent.push({ url, init });
+        return new Response(null, { status,
+                                    headers: location === null ? {} : { Location: location } });
+      };
+    expect(await authorizeCheck(UPSTREAM, false, answering(302,
+      "https://auth.test/bootstrap?client_id=c&authorization_session_id=x&max_age=0")))
+      .toMatch(/auth\.test's sign-in/);
+    // The URL sent is the WorkOS one the doors build, with a throwaway state and challenge.
+    const asked = new URL(sent[0]!.url);
+    expect(sent[0]!.init?.redirect).toBe("manual");
+    expect(`${asked.origin}${asked.pathname}`)
+      .toBe("https://api.workos.com/user_management/authorize");
+    expect(asked.href).toBe(authorizeLink(UPSTREAM, asked.searchParams.get("state")!,
+                                          asked.searchParams.get("code_challenge")!));
+    expect(asked.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await authorizeCheck(UPSTREAM, false, answering(302, "https://auth.test/bootstrap"));
+    expect(new URL(sent[1]!.url).searchParams.get("state"))
+      .not.toBe(asked.searchParams.get("state"));
+    for (const [status, location, named] of [
+      [302, "https://error.workos.com/sso/client-id-invalid", /client-id-invalid/],
+      [302, "https://error.workos.com/redirect-uri-invalid?redirect_uri=x", /redirect-uri-invalid/],
+      [302, "https://auth.test/oauth2/error?error=application_not_found", /oauth2\/error/],
+      [302, "https://auth.test/oauth2/error", /oauth2\/error/],
+      [302, "https://auth.test/?error=access_denied", /refused/],
+      [302, "https://evil.test/bootstrap", /evil\.test/],
+      [302, "http://auth.test/bootstrap", /refused/],
+      [200, null, /answered 200/],
+      [302, null, /answered 302/],
+      [400, "https://auth.test/bootstrap", /answered 400/],
+    ] as const) {
+      await expect(authorizeCheck(UPSTREAM, false, answering(status, location)))
+        .rejects.toThrow(named);
+    }
+  });
+
+  it("reports an unlisted callback as dark's to register while it cannot be listed, and " +
+     "stops on every other refusal", async () => {
+    const answering = (location: string) => async () =>
+      new Response(null, { status: 302, headers: { Location: location } });
+    expect(await authorizeCheck(UPSTREAM, true, answering(
+      "https://error.workos.com/redirect-uri-invalid?redirect_uri=x")))
+      .toMatch(/dark registers it/);
+    expect(await authorizeCheck(UPSTREAM, true, answering("https://auth.test/bootstrap")))
+      .toMatch(/auth\.test's sign-in/);
+    for (const location of ["https://error.workos.com/sso/client-id-invalid",
+                            "https://error.workos.com/redirect-uri-invalid-not",
+                            "https://evil.test/redirect-uri-invalid",
+                            "https://auth.test/oauth2/error?error=application_not_found"]) {
+      await expect(authorizeCheck(UPSTREAM, true, answering(location))).rejects.toThrow(/refused/);
+    }
+  });
+
+  it("registers the WorkOS redirect URI only when missing, and never deletes one", async () => {
+    const calls: string[] = [];
+    const workos = (uris: string[]) => async (url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      return init?.method === "POST" ? Response.json({ uri: CALLBACK }, { status: 201 })
+        : Response.json({ data: uris.map((uri) => ({ uri })) });
+    };
+    expect(await registerRedirect("k", true, workos([CALLBACK, "https://other.test/cb"])))
+      .toBe("present");
+    expect(await registerRedirect("k", false, workos(["https://other.test/cb"]))).toBe("missing");
+    expect(await registerRedirect("k", true, workos(["https://other.test/cb"])))
+      .toBe("registered");
+    expect(calls.filter((call) => call.startsWith("POST"))).toEqual([
+      "POST https://api.workos.com/user_management/redirect_uris"]);
+    expect(calls.some((call) => call.startsWith("DELETE"))).toBe(false);
+  });
+
+  it("sets the routing key on the doors and the owner together, or not at all", () => {
+    const none = secretPlan({ doors: [], owner: [], gateway: [], sandbox: [] }, new Set(), NONE);
+    expect(none.filter(({ name }) => name === "ROUTING_MAC_KEY").map(({ worker }) => worker)
+      .sort()).toEqual(["doors", "owner"]);
+    const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
+                              owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                              sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] },
+                            new Set(), NONE);
+    expect(both).toEqual([{ worker: "doors", name: "INBOUND_SLACK_SIGNING_SECRET" }]);
+    expect(() => secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(), NONE))
+      .toThrow("only one of the doors and the owner holds ROUTING_MAC_KEY: pass --rotate " +
+               "ROUTING_MAC_KEY to set both again");
+    expect(secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(["ROUTING_MAC_KEY"]),
+                      NONE).filter(({ name }) => name === "ROUTING_MAC_KEY")).toHaveLength(2);
+  });
+
+  it("never replaces a held keyring, and rotates one only by adding a key", () => {
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                           "INBOUND_SLACK_SIGNING_SECRET"],
+                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
+    const values = (ring: string) => (name: string) =>
+      name === "GATEWAY_KEYRING" || name === "FILES_KEYRING" ? ring : undefined;
+    expect(secretPlan(held, new Set(), values(RING))).toEqual([]);
+    expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(RING)))
+      .toThrow(/adding a key/);
+    expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]),
+                            values(JSON.stringify({ active: "k3", keys: { k1: "a", k2: "b" } }))))
+      .toThrow(/active key among its keys/);
+    // A ring either Worker would refuse (keys that are not 32 bytes) stops it too.
+    expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]),
+                            values(JSON.stringify({ active: "k2", keys: { k1: "a", k2: "b" } }))))
+      .toThrow(/GATEWAY_KEYRING is .*32 bytes/);
+    expect(secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(ROTATED)))
+      .toEqual([{ worker: "gateway", name: "GATEWAY_KEYRING" }]);
+    // The files Worker's data keys' ring, by the same rule (slice P).
+    expect(() => secretPlan(held, new Set(["FILES_KEYRING"]), values(RING)))
+      .toThrow(/FILES_KEYRING holds/);
+    expect(secretPlan(held, new Set(["FILES_KEYRING"]), values(ROTATED)))
+      .toEqual([{ worker: "files", name: "FILES_KEYRING" }]);
+  });
+
+  it("refuses to deploy unless each migration lock pins every migration it ships, in order " +
+     "(review M5-2)", () => {
+    const code = ["a".repeat(64), "b".repeat(64)];
+    const first = { at: "2026-11-04T00:00:00.000Z", commit: "abc123" };
+    const owner = "owner/migrations.json";
+    expect(lockRefusal({ first_deploy: first, deployed: code }, code, owner)).toBeNull();
+    // Unmarked: the first deploy pins first.
+    expect(lockRefusal({ first_deploy: null, deployed: [] }, code, owner))
+      .toMatch(/no first deploy/);
+    // A migration the lock does not pin, one it pins that is gone, one changed, or reordered.
+    for (const deployed of [[code[0]], [...code, "c".repeat(64)], [code[0], "c".repeat(64)],
+                            [code[1], code[0]]]) {
+      expect(lockRefusal({ first_deploy: first, deployed }, code, owner))
+        .toMatch(/PIN_MIGRATIONS/);
+    }
+    expect(lockRefusal({ deployed: code }, code, owner)).toMatch(/out of shape/);
+    expect(lockRefusal(null, code, owner)).toMatch(/out of shape/);
+    // The sandbox Worker's objects are locked too (S25), each named, pinned in its folder.
+    expect(MIGRATED).toContain("sandbox");
+    expect(lockRefusal({ first_deploy: first, deployed: [code[0]] }, code,
+                       "sandbox/migrations/SandboxSlots.json"))
+      .toMatch(/^the migration lock sandbox\/migrations\/SandboxSlots\.json pins 1 .* in platform\/sandbox,/);
+    // The kit's digests, from a guard that reports no lock (or the old bare list): refused,
+    // never read as nothing to check.
+    const reporting = (reported: unknown) => (_worker: string, out: string) => {
+      writeFileSync(out, JSON.stringify(reported));
+      return { status: 0, stdout: "" };
+    };
+    for (const worker of MIGRATED) {
+      for (const reported of [{}, [], null, code]) {
+        expect(() => codeDigests(worker, reporting(reported)))
+          .toThrow(`${worker}'s migrations guard reported no migration lock`);
+      }
+    }
+    const lock = { "sandbox/migrations/SandboxSlots.json": code };
+    expect(codeDigests("sandbox", reporting(lock))).toEqual(lock);
+  });
+
+  it("never reads a failed secret listing as no secrets", async () => {
+    const path = "/accounts/a/workers/scripts/tinyassets-doors/secrets";
+    const cf = (answers: Record<string, CfAnswer | Error>) => new Cloudflare(api(answers));
+    expect(await cf({ [path]: ok([{ name: "WORKOS_API_KEY", type: "secret_text" }]) })
+      .secrets("a", "tinyassets-doors")).toEqual(["WORKOS_API_KEY"]);
+    expect(await cf({ [path]: { status: 404, body: { success: false, errors: [{ code: 10007 }] } } })
+      .secrets("a", "tinyassets-doors")).toBeNull();
+    for (const answer of [
+      { status: 500, body: {} }, { status: 403, body: { success: false, errors: [{ code: 10000 }] } },
+      { status: 404, body: { success: false, errors: [{ code: 7003 }] } },
+      { status: 200, body: { success: false } }, { status: 200, body: { success: true } },
+    ] as CfAnswer[]) {
+      await expect(cf({ [path]: answer }).secrets("a", "tinyassets-doors"))
+        .rejects.toThrow(/failed/);
+    }
+    await expect(cf({ [path]: new Error("network down") }).secrets("a", "tinyassets-doors"))
+      .rejects.toThrow(/network down/);
+  });
+
+  it("calls the control record absent only when the API answers it is", async () => {
+    const path = "/accounts/a/storage/kv/namespaces/n/values/c%3Acontrol";
+    const cf = (answer: CfAnswer) => new Cloudflare(api({ [path]: answer }));
+    expect(await cf({ status: 200, body: { ordinary: "none" } } as CfAnswer)
+      .value("a", "n", "c:control")).toEqual({ ordinary: "none" });
+    expect(await cf({ status: 404, body: { success: false, errors: [{ code: 10009 }] } })
+      .value("a", "n", "c:control")).toBeUndefined();
+    for (const answer of [{ status: 500, body: {} }, { status: 404, body: {} },
+                          { status: 401, body: { errors: [{ code: 10000 }] } }] as CfAnswer[]) {
+      await expect(cf(answer).value("a", "n", "c:control")).rejects.toThrow(/failed/);
+    }
+  });
+
+  it("never reads a failed namespace or wrangler listing as absent", async () => {
+    const page = (n: number) => `/accounts/a/storage/kv/namespaces?per_page=100&page=${n}`;
+    const full = Array.from({ length: 100 }, (_, i) => ({ id: `i${i}`, title: `t${i}` }));
+    const found = await new Cloudflare(api({ [page(1)]: ok(full),
+                                             [page(2)]: ok([{ id: "x", title: "tinyassets-control" }]) }))
+      .namespaces("a");
+    expect(found.get("tinyassets-control")).toBe("x");
+    await expect(new Cloudflare(api({ [page(1)]: ok(full) })).namespaces("a"))
+      .rejects.toThrow(/failed/);
+    expect(listed("tinyassets-files-old\nother", "tinyassets-files")).toBe(false);
+    expect(listed("name:           tinyassets-files\n", "tinyassets-files")).toBe(true);
+    expect(listed("│ q1 │ tinyassets-sandbox-ring │ 0 │", "tinyassets-sandbox-ring")).toBe(true);
+    // Wrangler's runner throws on any non-zero exit, with its stderr alone.
+    const w = world({ failing: "queues list" });
+    const run = wranglerFor(parse(["--mode", "dark"], ENV, w.io), ACCOUNT);
+    expect(() => run(["queues", "list"])).toThrow("wrangler queues list failed (exit 1): the API refused it");
+  });
+
+  it("hands each route from the old proxy to the doors one at a time, no path unserved " +
+     "(review D3)", async () => {
+    const fake = zoneApi(LIVE);
+    const cloudflare = new Cloudflare(fake);
+    const { id: zone, account } = await cloudflare.zone(ZONE);
+    expect(account).toBe("a".repeat(32));
+    const steps = handover(await cloudflare.routes(zone), DOORS, ROUTES);
+    // Identical patterns move in place; a narrower old one is deleted after the doors' wider
+    // one exists; a wider old one (app*, api*) keeps only the paths the doors do not cover.
+    expect(steps.filter((each) => each.method === "PUT").map((each) => each.pattern))
+      .toEqual(["tinyassets.io/mcp*"]);
+    expect(steps.filter((each) => each.method === "DELETE").map((each) => each.pattern))
+      .toEqual(["tinyassets.io/.well-known/oauth-protected-resource*",
+                "tinyassets.io/.well-known/oauth-authorization-server*"]);
+    const added = steps.findIndex((each) => each.pattern === "tinyassets.io/.well-known/oauth-*");
+    expect(steps.findIndex((each) => each.method === "DELETE")).toBeGreaterThan(added);
+    await cloudflare.handOver(zone, DOORS, steps);
+    for (const path of PROBES.slice(0, 10)) {
+      expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
+    }
+    expect(servedBy(fake.table.values(), "tinyassets.io/app")).toBe("tinyassets-mcp-proxy");
+    expect(servedBy(fake.table.values(), "tinyassets.io/site/x")).toBe("site");
+    // Run again, it changes nothing.
+    expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
+  });
+
+  it("probes the sign-in on its two unheld paths alone; routes then finds both the doors'",
+     async () => {
+    expect(PROBE_ROUTES.every((pattern) => ROUTES.includes(pattern))).toBe(true);
+    const fake = zoneApi(LIVE);
+    const cloudflare = new Cloudflare(fake);
+    const steps = probeSteps(await cloudflare.routes("z"));
+    expect(steps).toEqual(PROBE_ROUTES.map((pattern) => ({ method: "POST", pattern })));
+    await cloudflare.handOver("z", DOORS, steps);
+    // Only the sign-in's paths move: every other path is served as before.
+    for (const path of PROBES) {
+      const doors = path === "tinyassets.io/authorize" || path === "tinyassets.io/oauth/token";
+      expect([path, servedBy(fake.table.values(), path)])
+        .toEqual([path, doors ? DOORS : fake.before.get(path)]);
+    }
+    // Run again, it changes nothing; routes hands over the rest, unchanged, and both are held.
+    expect(probeSteps([...fake.table.values()])).toEqual([]);
+    const after = handover([...fake.table.values()], DOORS, ROUTES);
+    expect(after).toEqual(handover(LIVE, DOORS, ROUTES)
+      .filter((each) => !PROBE_ROUTES.includes(each.pattern)));
+    await cloudflare.handOver("z", DOORS, after);
+    for (const path of PROBES.slice(0, 10)) {
+      expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
+    }
+    expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
+  });
+
+  it("refuses to probe a path any other Worker, or no Worker, serves", () => {
+    for (const held of [
+      { id: "x", pattern: "tinyassets.io/oauth/*", script: "tinyassets-mcp-proxy" },
+      { id: "x", pattern: "tinyassets.io/oauth/token", script: "tinyassets-mcp-proxy" },
+      { id: "x", pattern: "tinyassets.io/*", script: "site" },
+      { id: "x", pattern: "tinyassets.io/authorize*" },
+    ] as Route[]) {
+      expect(() => probeSteps([...LIVE, held])).toThrow(/nothing is changed/);
+    }
+  });
+
+  it("probes only behind a control record that admits nobody, as the doors read it", () => {
+    const owners = ["user_a", "user_b"];
+    const records: [unknown, boolean][] = [
+      [DARK_CONTROL, true], [{ ...DARK_CONTROL, ordinary: "none" }, true],
+      [{ ...DARK_CONTROL, canary: ["user_a"] }, false], [{ ...DARK_CONTROL, ordinary: "all" }, false],
+      [undefined, false], [{}, false], [null, false],
+    ];
+    for (const [record, closed] of records) {
+      expect([record, admitsNobody(record)]).toEqual([record, closed]);
+      const control = parseControl(record);
+      if (closed && control !== null) {
+        for (const owner of owners) {
+          expect(ownerOpen({ kind: "read", control }, owner)).toBe(false);
+          expect(outsideOpen({ kind: "read", control }, owner)).toBe(false);
+        }
+      }
+    }
+    // A missing record opens the owner's sign-in: never a probe.
+    expect(ownerOpen({ kind: "missing" }, "user_a")).toBe(true);
+  });
+
+  it("prints the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
+    const link = new URL(probeLink());
+    expect(`${link.origin}${link.pathname}`).toBe(`${PUBLIC_ORIGIN}${AUTHORIZE_PATH}`);
+    const { code_challenge: challenge, state, ...rest } = Object.fromEntries(link.searchParams);
+    expect(rest).toEqual({ response_type: "code", client_id: WEB_CLIENT,
+                           redirect_uri: WEB_REDIRECT, code_challenge_method: "S256",
+                           resource: APP_RESOURCE });
+    expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(state).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(new URL(probeLink()).searchParams.get("code_challenge")).not.toBe(challenge);
+    expect(PROBE_SIGNS).toContain(`${WEB_REDIRECT}?error=temporarily_unavailable`);
+    expect(PROBE_SIGNS).toContain(CALLBACK);
+  });
+
+  it("stops the handover at a refused change, saying what is done", async () => {
+    const fake = zoneApi(LIVE, "PUT /zones/z/workers/routes/r1");
+    const cloudflare = new Cloudflare(fake);
+    const steps = handover(await cloudflare.routes("z"), DOORS, ROUTES);
+    await expect(cloudflare.handOver("z", DOORS, steps)).rejects.toThrow(/the steps before it/);
+    expect(fake.calls.filter((call) => call.startsWith("DELETE"))).toEqual([]);
+    await expect(new Cloudflare(api({})).zone(ZONE)).rejects.toThrow(/could not be read/);
+    // The account is the zone's own: one zone, with its account, or the kit stops.
+    const zones = (result: unknown) => new Cloudflare(api({ "/zones?name=tinyassets.io": ok(result) }));
+    await expect(zones([{ id: "z" }]).zone(ZONE)).rejects.toThrow(/could not be read/);
+    await expect(zones([{ id: "z", account: { id: "a".repeat(32) } },
+                        { id: "y", account: { id: "b".repeat(32) } }]).zone(ZONE))
+      .rejects.toThrow(/2 found/);
+    await expect(zones([{ id: "z", account: { id: "../x" } }]).zone(ZONE))
+      .rejects.toThrow(/could not be read/);
+    await expect(new Cloudflare(api({})).routes("z")).rejects.toThrow(/could not be read/);
+  });
+
+  it("sends the account's token on every Cloudflare call, and reads a body that is not JSON " +
+     "as none", async () => {
+    const sent: { url: string; headers: unknown }[] = [];
+    const call = cfApi("cf-token", async (url, init) => {
+      sent.push({ url, headers: init?.headers });
+      return new Response("not json", { status: 502 });
+    });
+    expect(await call("/zones?name=x", { headers: { "Content-Type": "application/json" } }))
+      .toEqual({ status: 502, body: {} });
+    expect(sent).toEqual([{ url: "https://api.cloudflare.com/client/v4/zones?name=x",
+                            headers: { Authorization: "Bearer cf-token",
+                                       "Content-Type": "application/json" } }]);
+  });
+
+  it("takes the keyring the founder's setup makes in memory, in keyring-new's own shape",
+     async () => {
+    // scripts/platform_setup.py's maker, through a two-line driver: Python's ring is the one
+    // stored, and the apply job's keyring() (the envelope's own reading) is the check it
+    // must pass. A blob sealed under it opens under it.
+    const made = execFileSync("python3", ["-I", "-c",
+      "import sys; sys.path.insert(0, sys.argv[1]); " +
+      "from scripts.platform_setup import make_keyring; sys.stdout.write(make_keyring())",
+      REPO], { encoding: "utf8" });
+    const ring = keyring(made, "FILES_KEYRING");
+    expect([ring.active, [...ring.keys.keys()]]).toEqual(["k1", ["k1"]]);
+    expect(ring.keys.get("k1")!.byteLength).toBe(32);
+    const domain: Domain = { salt: "s", info: "i", context: "c" };
+    const blob = await sealBlob(ring, domain, new TextEncoder().encode("plain"));
+    expect(new TextDecoder().decode((await openBlob(ring, domain, blob, 1024))!.plain))
+      .toBe("plain");
+    // The kit's own maker writes the same shape, run as the release runs it (Node's type
+    // stripping, so the envelope and the E2B client it imports run there too).
+    const out = mkdtempSync(join(tmpdir(), "keyring-"));
+    try {
+      execFileSync(process.execPath, ["--experimental-strip-types",
+                                      join(PLATFORM, "deploy", "deploy.ts"), "keyring-new",
+                                      join(out, "ring.json")], { stdio: "pipe" });
+      const theirs = keyring(readFileSync(join(out, "ring.json"), "utf8"), "the keyring");
+      expect([theirs.active, [...theirs.keys.keys()]])
+        .toEqual([ring.active, [...ring.keys.keys()]]);
+      expect(theirs.keys.get("k1")!.byteLength).toBe(32);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("makes a first keyring and adds a key under the kid after its highest, keeping the old",
+     () => {
+    const out = mkdtempSync(join(tmpdir(), "keyring-"));
+    const logged: string[] = [];
+    try {
+      const file = join(out, "ring.json");
+      keyringNew(file, (line) => logged.push(line));
+      expect(() => keyringNew(file, NONE)).toThrow(/EEXIST/);
+      const first = keyring(readFileSync(file, "utf8"), "the keyring");
+      keyringAdd(file, (line) => logged.push(line));
+      const added = keyring(readFileSync(file, "utf8"), "the keyring");
+      expect([added.active, [...added.keys.keys()]]).toEqual(["k2", ["k1", "k2"]]);
+      expect(added.keys.get("k1")).toEqual(first.keys.get("k1"));
+      expect(added.keys.get("k2")).not.toEqual(first.keys.get("k1"));
+      // Nothing of a ring is printed: only where it went.
+      expect(logged.every((line) => !line.includes("{"))).toBe(true);
+      // A ring that has retired k1 holds two kids, k2 and k3: the next is k4, never k3 again.
+      const retired = ringSecret("k3", ["k2", "k3"]);
+      writeFileSync(file, retired);
+      keyringAdd(file, NONE);
+      const next = keyring(readFileSync(file, "utf8"), "the keyring");
+      const before = keyring(retired, "the keyring");
+      expect([next.active, [...next.keys.keys()]]).toEqual(["k4", ["k2", "k3", "k4"]]);
+      expect(next.keys.get("k3")).toEqual(before.keys.get("k3"));
+      // One that has retired k1 and k2 holds k3 alone: the next is k4, never k2 again.
+      writeFileSync(file, ringSecret("k3"));
+      keyringAdd(file, NONE);
+      expect([...keyring(readFileSync(file, "utf8"), "the keyring").keys.keys()])
+        .toEqual(["k3", "k4"]);
+      expect(() => { writeFileSync(file, "{}"); keyringAdd(file, NONE); })
+        .toThrow("the keyring is {active, keys} as JSON");
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+});
+
+/** A fake of E2B's webhooks API: its hooks, and every call as `METHOD path body`. */
+function e2bHooks(start: Json[], fail?: string) {
+  const hooks = start.map((hook) => ({ ...hook }));
+  const calls: string[] = [];
+  const fetcher = async (url: string, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    const path = url.replace("https://api.e2b.app", "");
+    calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
+    // The key, and JSON named for every call, a listing as well as a write.
+    expect(init?.headers).toEqual({ "X-API-Key": E2B_KEY, "Content-Type": "application/json" });
+    if (fail === method) {
+      return new Response("", { status: 500 });
+    }
+    if (method === "GET") {
+      return Response.json(hooks);
+    }
+    const body = JSON.parse(String(init!.body)) as Json;
+    if (method === "POST") {
+      hooks.push({ id: "w1", ...body });
+      return Response.json({ id: "w1" }, { status: 201 });
+    }
+    const hook = hooks.find((each) => `/events/webhooks/${each["id"]}` === path)!;
+    Object.assign(hook, body);
+    return Response.json(hook);
+  };
+  return { hooks, calls, e2b: new E2b(E2B_KEY, fetcher) };
+}
+
+describe("E2B's lifecycle webhook", () => {
+  const EVENTS = ["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"];
+
+  it("is registered disabled in dark, and enabled only with the routes", async () => {
+    // dark, none held: registered disabled, with the stored secret, for the two events.
+    const dark = e2bHooks([{ id: "x", url: "https://elsewhere.test/hook", enabled: true }]);
+    expect(await lifecycleHook(dark.e2b, "s1", true, false, false)).toBe("registered, disabled");
+    expect(dark.hooks[1]).toEqual({ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
+                                    events: EVENTS, enabled: false, signatureSecret: "s1" });
+    // dark again, the doors' secret not set this run: nothing sent; the other hook untouched.
+    const calls = dark.calls.length;
+    expect(await lifecycleHook(dark.e2b, "s2", true, false, false))
+      .toBe("present, unchanged, disabled");
+    expect(dark.calls.slice(calls)).toEqual(["GET /events/webhooks"]);
+    expect(dark.hooks[0]).toEqual({ id: "x", url: "https://elsewhere.test/hook", enabled: true });
+    // routes: enabled; a routes run later changes nothing; dark after it never turns it off.
+    expect(await lifecycleHook(dark.e2b, "s2", true, true, false))
+      .toBe("present, enabled set, enabled");
+    expect(dark.calls.at(-1)).toBe('PATCH /events/webhooks/w1 {"enabled":true}');
+    expect(await lifecycleHook(dark.e2b, "s2", true, true, false))
+      .toBe("present, unchanged, enabled");
+    await lifecycleHook(dark.e2b, "s2", true, false, false);
+    expect(dark.hooks[1]!["enabled"]).toBe(true);
+    // A held hook whose events drifted is given its two events back.
+    const drifted = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: false,
+                                events: ["sandbox.lifecycle.paused"] }]);
+    await lifecycleHook(drifted.e2b, "s", true, false, false);
+    expect(drifted.hooks[0]!["events"]).toEqual(EVENTS);
+    // routes with none held: registered enabled.
+    expect(await lifecycleHook(e2bHooks([]).e2b, "s", true, true, false))
+      .toBe("registered, enabled");
+    // Without apply, only the listing is read: the kit's check before any change.
+    const planned = e2bHooks([]);
+    expect(await lifecycleHook(planned.e2b, "s", false, true, true))
+      .toBe("missing: registered, enabled");
+    expect(planned.calls).toEqual(["GET /events/webhooks"]);
+    // A failed listing or write stops the kit; two hooks for the URL are refused.
+    await expect(lifecycleHook(e2bHooks([], "GET").e2b, "s", false, false, false))
+      .rejects.toThrow(/listed its webhooks with 500/);
+    await expect(lifecycleHook(e2bHooks([], "POST").e2b, "s", true, false, false))
+      .rejects.toThrow(/refused the webhook with 500/);
+    await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url }], "PATCH").e2b, "s", true,
+                               false, true))
+      .rejects.toThrow(/refused the webhook's change/);
+    await expect(heldHook(e2bHooks([{ id: "a", url: E2B_HOOK.url },
+                                    { id: "b", url: E2B_HOOK.url }]).e2b))
+      .rejects.toThrow(/holds 2 webhooks/);
+    // A route hands the hook's path to the doors.
+    expect(ROUTES.some((pattern) => pattern.endsWith("*")
+      && `${ZONE}${E2B_HOOK_PATH}`.startsWith(pattern.slice(0, -1)))).toBe(true);
+  });
+
+  it("changes its secret only with the doors' copy: both or neither", async () => {
+    // The doors hold E2B_WEBHOOK_SECRET and production's value was replaced: without
+    // --rotate the doors keep theirs, so E2B keeps its own too.
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
+                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
+    const kept = secretPlan(held, new Set(), null);
+    expect(kept.some((each) => each.name === "E2B_WEBHOOK_SECRET")).toBe(false);
+    const neither = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+                                signatureSecret: "old" }]);
+    await lifecycleHook(neither.e2b, "new", true, true, hookSetsSecret(kept));
+    expect(neither.hooks[0]!["signatureSecret"]).toBe("old");
+    // With --rotate E2B_WEBHOOK_SECRET the doors take the new value, and E2B does too.
+    const rotated = secretPlan(held, new Set(["E2B_WEBHOOK_SECRET"]), null);
+    expect(rotated).toContainEqual({ worker: "doors", name: "E2B_WEBHOOK_SECRET" });
+    const both = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+                             signatureSecret: "old" }]);
+    await lifecycleHook(both.e2b, "new", true, true, hookSetsSecret(rotated));
+    expect(both.hooks[0]!["signatureSecret"]).toBe("new");
+    // The doors missing it (a first deploy) sets both as well.
+    const first = secretPlan({ ...held, doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"] },
+                             new Set(), null);
+    expect(hookSetsSecret(first)).toBe(true);
+  });
+
+  it("starts the pair equal: a dark run that makes the hook sets the doors' secret too",
+     async () => {
+    // The doors hold an old E2B_WEBHOOK_SECRET, E2B holds no hook: the dark run sets the
+    // doors' copy from production, and registers the hook with the same value.
+    const w = world({ held: true });
+    w.hooks.length = 0;
+    await runMode(w, "dark", ["--yes"]);
+    expect(w.secretsPut).toEqual({ "doors:E2B_WEBHOOK_SECRET": ENV["E2B_WEBHOOK_SECRET"] });
+    const registered = w.events.find((event) => event.startsWith("e2b POST /events/webhooks"))!;
+    expect(JSON.parse(registered.slice(registered.indexOf("{")))).toMatchObject({
+      enabled: false, signatureSecret: ENV["E2B_WEBHOOK_SECRET"] });
+    // A run that finds the hook held makes nothing and sets neither.
+    const again = world({ held: true });
+    await runMode(again, "dark", ["--yes"]);
+    expect(again.secretsPut).toEqual({});
+    expect(again.events.some((event) => /^e2b (POST|PATCH)/.test(event))).toBe(false);
+  });
+
+  it("masks the account id in an Actions log, and prints nothing outside one", () => {
+    const lines: string[] = [];
+    maskInLog("a".repeat(32), { GITHUB_ACTIONS: "true" }, (line) => lines.push(line));
+    expect(lines).toEqual([`::add-mask::${"a".repeat(32)}`]);
+    maskInLog("b".repeat(32), {}, (line) => lines.push(line));
+    expect(lines).toHaveLength(1);
+  });
+});
+
+describe("the template and the pair", () => {
+  it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",
+     async () => {
+    const headers: unknown[] = [];
+    const e2b = (alias: number, exists: unknown, tag = 200) => new E2b(E2B_KEY,
+      async (url, init) => {
+        headers.push(init?.headers);
+        return url.includes("/aliases/") ? Response.json({ templateID: "t1" }, { status: alias })
+          : Response.json({ exists }, { status: tag });
+      });
+    expect(await e2b(200, true).ready("tinyassets-sandbox:v1")).toBe(true);
+    expect(await e2b(200, false).ready("tinyassets-sandbox:v1")).toBe(false);
+    expect(await e2b(404, true).ready("tinyassets-sandbox:v1")).toBe(false);
+    await expect(e2b(500, true).ready("tinyassets-sandbox:v1")).rejects.toThrow(/alias lookup/);
+    await expect(e2b(200, true, 503).ready("tinyassets-sandbox:v1")).rejects.toThrow(/tag lookup/);
+    await expect(e2b(200, true).ready("tinyassets-sandbox")).rejects.toThrow(/name:tag/);
+    // Both lookups send the key and ask for JSON.
+    expect(headers.length).toBeGreaterThan(0);
+    for (const each of headers) {
+      expect(each).toEqual({ "X-API-Key": E2B_KEY, Accept: "application/json" });
+    }
+  });
+
+  it("names the pair it deploys by the template and the runner the sandbox Worker ships, as " +
+     "build.py tags a passed pair", () => {
+    const runner = shippedRunner();
+    expect(runner).toMatch(/^[0-9a-f]{64}$/);
+    expect(shippedRunner()).toBe(runner);  // the same bytes every build
+    expect(pairTag("tinyassets-sandbox:s0123456789abcdef", runner))
+      .toBe(`tinyassets-sandbox:s0123456789abcdef-r${runner.slice(0, 16)}`);
+    expect(() => pairTag("tinyassets-sandbox:s1", "runner")).toThrow(/SHA-256/);
+    // build.py's own pair_tag, imported as the workflow imports build.py.
+    const theirs = execFileSync("python3", ["-I", "-c",
+      "import sys; sys.path.insert(0, sys.argv[1]); import build; " +
+      "sys.stdout.write(build.pair_tag(sys.argv[2], sys.argv[3]))",
+      join(PLATFORM, "sandbox", "template"), "s0123456789abcdef", runner], { encoding: "utf8" });
+    expect(`tinyassets-sandbox:${theirs}`)
+      .toBe(pairTag("tinyassets-sandbox:s0123456789abcdef", runner));
+  });
+
+  it("versions a later deploy by the id wrangler prints", () => {
+    expect(versionOf("Uploaded tinyassets-owner\nWorker Version ID: " +
+                     "0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n"))
+      .toBe("0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b");
+    expect(() => versionOf("Uploaded tinyassets-owner")).toThrow(/Version ID/);
+  });
+});
+
+describe("platform-deploy.yml", () => {
+  type Job = { if?: string; needs?: string | string[]; environment?: string;
+               "timeout-minutes"?: number; env?: Record<string, string>;
+               steps: { name?: string; run?: string; env?: Record<string, string> }[] };
+  const file = workflow("platform-deploy.yml") as {
+    on: Json; jobs: Record<string, Job> };
+  const { plan, pair, apply } = file.jobs as Record<string, Job>;
+  const runs = (job: Job) => job.steps.map((each) => each.run ?? "").join("\n");
+
+  it("is run by hand alone, and reaches no host", () => {
+    expect(Object.keys(file.on)).toEqual(["workflow_dispatch"]);
+    const modes = ((file.on["workflow_dispatch"] as Json)["inputs"] as Json)["mode"] as
+      { options: string[] };
+    // Every mode the workflow offers is a row of the kit's (the pair is its own job).
+    expect(modes.options.filter((mode) => !Object.hasOwn(MODES, mode))).toEqual([]);
+    for (const job of [plan!, pair!, apply!]) {
+      expect(runs(job)).not.toMatch(/ssh|scp|droplet|\/etc\/tinyassets/i);
+    }
+  });
+
+  /**
+   * Every command `job`'s steps run, its scripts run as the job runs them with `inputs` as the
+   * dispatch's, `node`, `npm` and `python3` recording their arguments in place of running.
+   */
+  function invoked(job: Job, inputs: Record<string, string>): { argv: string; env: string[] }[] {
+    const bin = mkdtempSync(join(tmpdir(), "workflow-"));
+    try {
+      const log = join(bin, "log");
+      for (const tool of ["node", "npm", "python3"]) {
+        writeFileSync(join(bin, tool), `#!/bin/sh\nprintf '%s\\t%s\\n' "${tool} $*" "$(env | ` +
+                      `cut -d= -f1 | grep -E '_KEY$|_TOKEN$|_SECRET$' | sort | tr '\\n' ' ')" ` +
+                      `>> "${log}"\n`, { mode: 0o755 });
+      }
+      for (const each of job.steps.filter((one) => one.run !== undefined)) {
+        const ran = spawnSync("bash", ["-c", each.run!], {
+          cwd: REPO, encoding: "utf8",
+          env: { PATH: `${bin}:/usr/bin:/bin`, ...inputs,
+                 ...Object.fromEntries(Object.keys(each.env ?? {}).map((name) => [name, "x"])) } });
+        expect([each.name, ran.status, ran.stderr]).toEqual([each.name, 0, ""]);
+      }
+      return readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => {
+        const [argv, env] = line.split("\t");
+        return { argv: argv!, env: (env ?? "").trim().split(" ").filter(Boolean) };
+      });
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  }
+  const KIT = "node --experimental-strip-types platform/deploy/deploy.ts";
+  const OPTIONS = { MODE: "dark", ROTATE: "ROUTING_MAC_KEY", MIGRATE: "owner" };
+
+  it("plans in a job of its own, with no production secret, the chosen mode's plan", () => {
+    expect(plan!.environment).toBeUndefined();
+    expect(Object.values(plan!.env ?? {}).some((value) => /secrets\.(?!CLOUDFLARE_API_TOKEN)/
+      .test(value))).toBe(false);
+    const modes = ((file.on["workflow_dispatch"] as Json)["inputs"] as Json)["mode"] as
+      { options: string[] };
+    for (const mode of modes.options) {
+      const ran = invoked(plan!, { MODE: mode, ROTATE: "", MIGRATE: "" });
+      expect(ran.map((each) => each.argv)).toEqual(["npm ci", `${KIT} --mode ${mode} --public`]);
+      // Each is a run the kit takes, and one that changes nothing.
+      const run = parse(ran[1]!.argv.split(" ").slice(3), PUBLIC);
+      expect([run.mode, run.reach, run.apply]).toEqual([mode, "public", false]);
+    }
+    expect(invoked(plan!, OPTIONS).map((each) => each.argv)[1])
+      .toBe(`${KIT} --mode dark --public --rotate ROUTING_MAC_KEY --migrate owner`);
+  });
+
+  it("checks the pair after the plan, in production, with the E2B key alone, for the modes " +
+     "that deploy Workers", () => {
+    expect(pair!.needs).toBe("plan");
+    expect(pair!.environment).toBe("production");
+    expect(pair!.env).toBeUndefined();
+    expect(invoked(pair!, {})).toEqual([
+      { argv: "npm ci", env: [] },
+      { argv: "python3 -m pip install --require-hashes -r " +
+              "platform/sandbox/template/requirements.txt", env: [] },
+      { argv: `${KIT} --mode pair`, env: ["E2B_API_KEY"] }]);
+    // The modes whose rows deploy Workers are the ones the pair job runs for.
+    const deploying = (Object.keys(MODES) as Mode[]).filter((mode) =>
+      MODES[mode].applies && MODES[mode].steps.some((each) => each.name === "workers"));
+    expect(deploying).toEqual(["dark", "routes"]);
+    expect(pair!.if).toContain(`(${deploying.map((mode) => `inputs.mode == '${mode}'`)
+      .join(" || ")})`);
+  });
+
+  it("gives the pair check longer than build.py's three throwaway sandboxes live", () => {
+    // build.py's checks, run against a fake E2B SDK that records each sandbox's lifetime.
+    const lifetimes = execFileSync("python3", ["-I", "-c", PAIR_LIFETIMES,
+                                               join(PLATFORM, "sandbox", "template")],
+                                   { encoding: "utf8" }).trim().split(" ").map(Number);
+    expect(lifetimes).toHaveLength(3);
+    expect(Number(pair!["timeout-minutes"]) * 60)
+      .toBeGreaterThan(lifetimes.reduce((sum, each) => sum + each, 0));
+  });
+
+  it("applies after the plan and the pair, in production, the mode's own run", () => {
+    expect(apply!.needs).toEqual(["plan", "pair"]);
+    expect(apply!.environment).toBe("production");
+    expect(apply!.if).toContain("needs.pair.result == 'success'");
+    // The modes that deploy nothing run without a pair.
+    expect(apply!.if).toContain("(inputs.mode == 'h2' || inputs.mode == 'probe')");
+    for (const mode of ["dark", "probe", "routes", "h2"]) {
+      const ran = invoked(apply!, { MODE: mode, ROTATE: "", MIGRATE: "" });
+      expect(ran.map((each) => each.argv)).toEqual(["npm ci", `${KIT} --mode ${mode} --yes`]);
+      const run = parse(ran[1]!.argv.split(" ").slice(3), ENV);
+      expect([run.mode, run.reach, run.apply]).toEqual([mode, "secrets", true]);
+    }
+    expect(invoked(apply!, OPTIONS).map((each) => each.argv)[1])
+      .toBe(`${KIT} --mode dark --yes --rotate ROUTING_MAC_KEY --migrate owner`);
+    // The account is read from the zone, never held as an input.
+    expect(PUBLIC_INPUTS).not.toContain("CLOUDFLARE_ACCOUNT_ID");
+    expect(JSON.stringify(file)).not.toContain("CLOUDFLARE_ACCOUNT_ID");
+  });
+
+  it("hands the plan and apply jobs exactly what the kit reads, every secret a config " +
+     "requires among them", () => {
+    // The dispatch's own inputs, which both jobs pass to the kit.
+    const dispatch = ["MODE", "ROTATE", "MIGRATE"];
+    // The handles canary's own bearer (scripts/_canary_common.py), so Fact 11's canary runs.
+    const canary = execFileSync("python3", ["-I", "-c",
+      "import sys; sys.path.insert(0, sys.argv[1]); " +
+      "from scripts._canary_common import CANARY_TOKEN_ENV; sys.stdout.write(CANARY_TOKEN_ENV)",
+      REPO], { encoding: "utf8" });
+    const secrets = [...SECRET_INPUTS, ...OPTIONAL, canary, ...H2_INPUTS_LIST];
+    expect(Object.keys(plan!.env!).sort()).toEqual([...PUBLIC_INPUTS, ...dispatch].sort());
+    expect(Object.keys(apply!.env!).sort())
+      .toEqual([...PUBLIC_INPUTS, ...secrets, ...dispatch].sort());
+    for (const name of secrets) {
+      expect([name, apply!.env![name]]).toEqual([name, `\${{ secrets.${name} }}`]);
+    }
+    for (const env of [plan!.env!, apply!.env!]) {
+      for (const name of PUBLIC_INPUTS) {
+        expect([name, env[name]]).toEqual([name, expect.stringMatching(
+          new RegExp(`^\\$\\{\\{ (secrets|vars)\\.${name} \\}\\}$`))]);
+      }
+      for (const name of dispatch) {
+        expect([name, env[name]]).toEqual([name, `\${{ inputs.${name.toLowerCase()} }}`]);
+      }
+    }
+  });
+});
+
+/**
+ * build.py's three standing checks, against a fake `e2b` module: each sandbox's requested
+ * lifetime, its first action refused so nothing else runs. Prints the three, space apart.
+ */
+const PAIR_LIFETIMES = `
+import os, sys, tempfile, types
+template = sys.argv[1]
+sys.path.insert(0, template)
+lifetimes = []
+class Stop(Exception):
+    pass
+class Sandbox:
+    @staticmethod
+    def create(template=None, timeout=None, **_):
+        lifetimes.append(timeout)
+        raise Stop()
+sys.modules["e2b"] = types.SimpleNamespace(Sandbox=Sandbox, ALL_TRAFFIC="0.0.0.0/0")
+import build
+for check in (build.check_logins, build.route_probe, build.check_matcher):
+    try:
+        check("tinyassets-sandbox:test", b"runner")
+    except Stop:
+        pass
+print(" ".join(str(each) for each in lifetimes))
+`;
+
+/** Paths the doors' routes cover, and two they do not. */
+const PROBES = ["tinyassets.io/mcp", "tinyassets.io/mcp?x=1", "tinyassets.io/api/tools/a",
+                "tinyassets.io/.well-known/oauth-protected-resource/mcp",
+                "tinyassets.io/.well-known/oauth-authorization-server",
+                "tinyassets.io/app/api/keys", "tinyassets.io/oauth/token",
+                "tinyassets.io/authorize", "tinyassets.io/hooks/inbound/x",
+                "tinyassets.io/hooks/e2b/lifecycle",
+                "tinyassets.io/app", "tinyassets.io/site/x"];
+
+/** The Worker Cloudflare sends `path` to: the most specific matching pattern's. */
+function servedBy(routes: Iterable<Route>, path: string): string | undefined {
+  let best: Route | undefined;
+  for (const route of routes) {
+    const wild = route.pattern.endsWith("*");
+    const stem = wild ? route.pattern.slice(0, -1) : route.pattern;
+    if ((wild ? path.startsWith(stem) : path === stem)
+        && (best === undefined || stem.length > best.pattern.replace(/\*$/, "").length)) {
+      best = route;
+    }
+  }
+  return best?.script;
+}
+
+/** A fake of Cloudflare's routes API over `start`, checking every path after each change. */
+function zoneApi(start: readonly Route[], fail?: string) {
+  const table = new Map(start.map((route) => [route.id, { ...route }]));
+  const before = new Map(PROBES.map((path) => [path, servedBy(table.values(), path)]));
+  const calls: string[] = [];
+  let next = 100;
+  const call = async (path: string, init?: RequestInit): Promise<CfAnswer> => {
+    const method = init?.method ?? "GET";
+    calls.push(`${method} ${path}`);
+    if (path === "/zones?name=tinyassets.io") {
+      return ok([{ id: "z", account: { id: "a".repeat(32) } }]);
+    }
+    if (method === "GET" && path === "/zones/z/workers/routes") {
+      return ok([...table.values()]);
+    }
+    if (fail !== undefined && `${method} ${path}` === fail) {
+      return { status: 500, body: { success: false, errors: [{ code: 10000 }] } };
+    }
+    const body = JSON.parse(String(init?.body ?? "{}")) as { pattern?: string; script?: string };
+    const id = path.split("/").at(-1)!;
+    if (method === "POST" && path === "/zones/z/workers/routes") {
+      table.set(`n${next}`, { id: `n${next++}`, pattern: body.pattern!, script: body.script! });
+    } else if (method === "PUT" && table.has(id)) {
+      table.set(id, { id, pattern: body.pattern!, script: body.script! });
+    } else if (method === "DELETE" && table.has(id)) {
+      table.delete(id);
+    } else {
+      return { status: 404, body: { success: false, errors: [{ code: 10020 }] } };
+    }
+    for (const [probe, server] of before) {
+      // A path served before the handover is served after every one of its changes.
+      if (server !== undefined) {
+        expect([probe, servedBy(table.values(), probe)]).not.toEqual([probe, undefined]);
+      }
+    }
+    return ok({});
+  };
+  return Object.assign(call, { calls, table, before });
+}
+
+/** A fresh dark run's plan, in order: what the founder's first `dark` changes. */
+const DARK_FRESH = [
+  "the migration locks pin every migration the owner and sandbox Workers ship",
+  "set the doors' OWNER_ISSUER to https://auth.test, held to its discovery",
+  `the pair ${PAIR} passed its standing checks in this E2B team`,
+  `WorkOS redirect URI ${CALLBACK}: registered`,
+  `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +
+  "auth.test's sign-in",
+  ...Object.entries(NAMESPACES).map(([binding, title]) =>
+    `create the KV namespace ${title} (${binding})`),
+  "create the R2 bucket tinyassets-files",
+  "create the queue tinyassets-sandbox-ring",
+  "create the queue tinyassets-erasure",
+  "the Cloudflare token listed the account's KV namespaces, R2 buckets and queues",
+  ...Object.entries(SECRETS).flatMap(([worker, names]) =>
+    names.map((name) => `set the secret ${name} on ${NAMES[worker]}`)),
+  ...WORKERS.map((worker) => `deploy ${NAMES[worker]}, touching no route`),
+  "write the control record closed (outside off, canary none, inbound off, the founder's " +
+  "tier numbers): the API answered there is none",
+  `E2B lifecycle webhook ${E2B_HOOK.url}: registered, disabled`,
+];
+
+/** A routes run's plan over a held account: the cutover's. */
+const ROUTES_HELD = [
+  "the migration locks pin every migration the owner and sandbox Workers ship",
+  "set the doors' OWNER_ISSUER to https://auth.test, held to its discovery",
+  `the pair ${PAIR} passed its standing checks in this E2B team`,
+  `WorkOS redirect URI ${CALLBACK}: present`,
+  `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +
+  "auth.test's sign-in",
+  "the Cloudflare token listed the account's KV namespaces, R2 buckets and queues",
+  ...WORKERS.map((worker) => `upload and deploy a version of ${NAMES[worker]}, touching no route`),
+  `move the route tinyassets.io/mcp* from tinyassets-mcp-proxy to ${DOORS}`,
+  `add the route tinyassets.io/api/* for ${DOORS}`,
+  `add the route tinyassets.io/hooks/inbound/* for ${DOORS}`,
+  `add the route tinyassets.io/hooks/e2b/* for ${DOORS}`,
+  `add the route tinyassets.io/app/api/* for ${DOORS}`,
+  `add the route tinyassets.io/.well-known/oauth-* for ${DOORS}`,
+  `delete tinyassets-mcp-proxy's narrower route ` +
+  `tinyassets.io/.well-known/oauth-protected-resource*, its paths now ${DOORS}'s`,
+  `delete tinyassets-mcp-proxy's narrower route ` +
+  `tinyassets.io/.well-known/oauth-authorization-server*, its paths now ${DOORS}'s`,
+  `add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`,
+  `E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: present, enabled set, enabled`,
+];

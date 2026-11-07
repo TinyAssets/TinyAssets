@@ -7,9 +7,9 @@ three jobs:
 1. **`plan`** prints what the run would change to the job summary. It holds only the
    Cloudflare token and the repo's variables, and changes nothing.
 2. **`pair`** (modes `dark` and `routes`) checks the pinned E2B template with the runner this
-   commit ships, unless E2B already holds their pair's tag (`deploy.ts --pair`: three
+   commit ships, unless E2B already holds their pair's tag (`deploy.ts --mode pair`: three
    throwaway sandboxes, up to about 50 minutes, the E2B key alone).
-3. **`apply`** runs the kit with `--yes`, in the main-only `production` environment.
+3. **`apply`** runs the mode with `--yes`, in the main-only `production` environment.
 
 Starting a run with a mode other than `plan` is the approval. Do not add a required reviewer
 to `production`: the uptime canary, the DR drill, deploy-prod and the host installs run there
@@ -72,7 +72,7 @@ What the kit reads, all from the store, never a host:
   `TINYASSETS_WIKI_CANARY_TOKEN` (the handles canary's, there since 2026-10-14) and H2's
   probe keys (`deploy/h2-probes.ts`). The workflow's guard holds its apply job to that list.
 - The repository secret `CLOUDFLARE_API_TOKEN`. The account is the doors' zone's, read from
-  the zone (`zoneOf`), so no account id is stored.
+  the zone (`Cloudflare.zone`), so no account id is stored.
 - The repository variables `OWNER_ISSUER` and `WORKOS_CLIENT_ID`.
 
 More on two of them:

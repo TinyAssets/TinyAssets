@@ -69,7 +69,8 @@ jobs:
         run: python3 -m pip install --require-hashes -r platform/sandbox/template/requirements.txt
 
       # The one step that holds the E2B key. Whether E2B already has a ready build of the
-      # tag is the deploy kit's own check (deploy.ts templateReady); an answer it cannot
+      # tag is the E2B client's own check (sandbox/src/e2b.ts `ready`, the deploy kit's
+      # too); an answer it cannot
       # read stops the step before anything is spent. A ready build gets build.py's own
       # checks and record (CHECKS), on this tree's tag, never a second Template.build.
       - name: Build and check
@@ -101,8 +102,8 @@ jobs:
           else
             name="$(python3 platform/sandbox/template/build.py --tag-only)"
             ready="$(node --experimental-strip-types --input-type=module -e '
-              const { templateReady } = await import("./platform/deploy/deploy.ts");
-              console.log(await templateReady(process.argv[1], process.env.E2B_API_KEY ?? ""));
+              const { E2b } = await import("./platform/sandbox/src/e2b.ts");
+              console.log(await new E2b(process.env.E2B_API_KEY ?? "").ready(process.argv[1]));
             ' "$name")"
             case "$ready" in
               true)
