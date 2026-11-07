@@ -93,7 +93,7 @@ test, cutover.
   the WorkOS authorize URL the doors build (not `tinyassets.io/authorize`) with a
   throwaway challenge and stops unless WorkOS redirects to AuthKit's sign-in
   (`authorizeCheck`). Only a real sign-in shows the access token's exact `iss` and
-  `auth_time`, so the kit's `--probe` mode, after `dark` and before `routes`, hands the
+  `auth_time`, so the kit's mode `probe` (`--mode probe`), after `dark` and before `routes`, hands the
   doors only `/authorize*` and `/oauth/*` behind the closed gates and prints one
   first-party sign-in link; that sign-in proves them, the doors' secret at `authenticate`
   and the callback, or names the check that failed at the callback; the secret
@@ -142,12 +142,12 @@ test, cutover.
   creates the three KV namespaces, the bucket and the ring queue when missing; sets each
   Worker's secrets when missing (the routing key on the doors and the owner together or
   not at all); deploys files, gateway, hooks, sandbox, owner and doors with no route from
-  their checked-in configs with only the ids and the upstream filled (`guards/deploy.test.ts`);
+  their checked-in configs with only the ids and the upstream filled (`deploy/guards/deploy.test.ts`);
   writes a closed control record when there is none; registers the WorkOS redirect URI;
-  then runs the handles canary. `--routes` adds the routes above and the
+  then runs the handles canary. Mode `routes` adds the routes above and the
   `egress.tinyassets.io` custom domain (the cutover's: they take the paths from
   `tinyassets-mcp-proxy`). Owed: the founder's run; the handles canary's tool set for the
-  new door before `--routes`.
+  new door before mode `routes`.
 - [x] `/hooks/inbound`: the capability-URL and shared-app (Slack HMAC) shapes in the
   binder, the directory's `h:` and `i:` entries, the 1 MiB cap and the `control.inbound`
   gate, and a new owner door `inboundAccept` (config, revision, dedupe, owner-held
@@ -746,7 +746,7 @@ account and no deploy.
   `lock.deployed.length === MIGRATIONS.length`. Done: `platform/deploy/deploy.ts`
   `lockRefusal`, checked in every mode before any change, its digests from the guards
   project (`MIGRATION_DIGESTS`), refusing an unmarked lock, a migration unpinned, gone,
-  changed or reordered (`doors/guards/deploy.test.ts`). Today's lock is unmarked, so the
+  changed or reordered (`deploy/guards/deploy.test.ts`). Today's lock is unmarked, so the
   kit refuses until the founder pins at the first deploy's commit (the checklist).
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
   browser (RFC 8252), whose cookies are not the WebView's, so a binding cookie set in the
@@ -1637,7 +1637,7 @@ R, S, M and W.
   - Owed by the owner surface (tasks 2), done in the app slice: `grants/set` names a
     client's profile, and `policy/write` the owner's `tools.custom` and code mode's switch.
 - [ ] H2 live, narrowed to code mode (its probes built by slice L as
-  `platform/deploy/h2-probes.ts`, run by `deploy.ts --yes --h2` once the doors are routed
+  `platform/deploy/h2-probes.ts`, run by `deploy.ts --mode h2 --yes` once the doors are routed
   and two probe owners hold keys; owed to slice L's dark deploy, which needs the
   founder's OK to deploy the hooks Worker): probe what workerd cannot show: a script past
   its interrupt budget against the Worker's `cpu_ms`; the blocking isolation (10 s of a
@@ -1695,10 +1695,10 @@ R, S, M and W.
   uploads a version and deploys it, never touching a route. A `plan` job prints the plan
   with the Cloudflare token alone; the `apply` job needs it and waits on the `production`
   environment, so a required reviewer approves after reading it (review D1), and holds
-  the handles canary's token (D2). `--routes` hands the doors' routes over one at a time
+  the handles canary's token (D2). Mode `routes` hands the doors' routes over one at a time
   through Cloudflare's routes API, a held pattern moved in place and another Worker's
   narrower one deleted only after the doors' wider one exists, so no path is ever served
-  by nothing (D3, tested against a fake of the API). `--h2` runs the probes alone. The
+  by nothing (D3, tested against a fake of the API). Mode `h2` runs the probes alone. The
   founder's run is owed (`platform/deploy/checklist.md`).
 - [x] Code mode's switch (slice M): the MCP door's `code` tool refuses (`code_mode_off`)
   unless the owner's policy turns `hooks.codemode` on (`owner/test/code-door.test.ts`).
@@ -2376,7 +2376,7 @@ R, S, M and W.
     plan passes as an artifact and `apply` stops on any difference.
   - **`/app` itself, found at L's merge with the app slice.** `deploy.ts`'s `ROUTES` give
     the doors `tinyassets.io/app/api/*` only, and the handover keeps `app*` on the proxy
-    (`guards/deploy.test.ts` asserts `/app` stays the proxy's). The app slice serves `/app`
+    (`deploy/guards/deploy.test.ts` asserts `/app` stays the proxy's). The app slice serves `/app`
     and its pages from the doors, among them the return pages the doors name
     (`WEB_REDIRECT` `/app/signed-in`, `CONNECTED_PAGE` `/app/connected`), and expects the
     routes to give the doors `tinyassets.io/app*`. As built, after `routes` those pages
@@ -2634,7 +2634,7 @@ R, S, M and W.
   no runner input, `build.py`'s tag and the guard's equal, the bundle the same bytes every
   build). The deploy workflow's `pair` job (production environment, the E2B key alone, its
   SDK from the hashed lock `template/requirements.txt`, 60 minutes against the checks' 50)
-  runs the pair check (`deploy.ts --pair`, `build.py --check-pair`) before the apply job,
+  runs the pair check (`deploy.ts --mode pair`, `build.py --check-pair`) before the apply job,
   which stops without the pair's tag at E2B (`pairTag`); a manual workflow
   (`sandbox-template.yml`, production environment, the key in its build step alone) builds
   templates with no host. The `runner` column is in the sandbox object's baseline, which is

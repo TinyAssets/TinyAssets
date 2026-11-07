@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "test": "vitest run --tags-filter=!large",
-    "test:sizes": "vitest run --tags-filter=large",
     "test:app": "node --test --test-concurrency=1 test/app.e2e.mjs test/follow.test.mjs"
   },
   "dependencies": {
