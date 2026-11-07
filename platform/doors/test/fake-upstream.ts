@@ -39,7 +39,7 @@ export const FAKE_UPSTREAM: Upstream = Object.freeze({
     const url = new URL(UPSTREAM_AUTHORIZE);
     url.search = new URLSearchParams({
       response_type: "code", client_id: "fake-authkit", redirect_uri, state,
-      code_challenge, code_challenge_method: "S256", prompt: "login",
+      code_challenge, code_challenge_method: "S256", max_age: "0",
     }).toString();
     return url.href;
   },
