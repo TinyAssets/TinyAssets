@@ -51,7 +51,10 @@ function helpersOf(text: string): { name: string; start: number; end: number; bo
   return found;
 }
 
-/** Whether `pid` is gone: no such process, or one that only waits to be reaped. */
+/**
+ * Whether `pid` is gone: no such process, or a dead one, waiting to be reaped (`Z`) or being
+ * reaped (`X`: its reaper has taken it and not yet released it, so it still answers `kill`).
+ */
 function gone(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -59,7 +62,7 @@ function gone(pid: number): boolean {
     return true;
   }
   try {
-    return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.startsWith("Z") ?? false;
+    return /^[ZX]/.test(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1] ?? "");
   } catch {
     return true;
   }
