@@ -3375,7 +3375,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   #inboundRefused(row: InboundRow, error: unknown, now: number): InboundAnswer {
     const refused = error instanceof Refusal ? error.code : null;
-    if (refused === "storage_busy") {
+    // The hot ceiling, clearing by itself or held by a full storage until the owner frees
+    // space (the ledger's wall, marked `ceiling`): the event is sent again, never lost.
+    if (refused === "storage_busy"
+        || (error instanceof Refusal && error.facts?.["ceiling"] === true)) {
       return { state: "refused", error: "mailbox_full", retry: true };
     }
     if (error instanceof Refusal && error.transient) {

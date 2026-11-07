@@ -2433,8 +2433,8 @@ export class Ledger {
    * Room for one more message, else its refusal: too much mail unread (`ledger_full`), or the
    * hot ceiling. The ceiling is `storage_busy`, transient, while the archive lane can move
    * acked mail out; while its moves are blocked at the storage figure it clears only when the
-   * owner frees space or upgrades, so it is the one wall (`storage_full`, terminal), the same
-   * answer for every poster: a door, a run's reply, its placement.
+   * owner frees space or upgrades, so it is the one wall (`storage_full`, terminal, its facts
+   * marked `ceiling`), the same answer for every poster: a door, a run's reply, its placement.
    */
   #roomForOne(needed: number): void {
     const usage = this.#usage();
@@ -2447,7 +2447,10 @@ export class Ledger {
     }
     if (usage.messages + 1 > limits.maxMessages) {
       if (this.#wall !== undefined && this.archiveBlocked()) {
-        throw this.#wall(needed);
+        // The one wall, marked as the ceiling's: an inbound app's event is told to send it
+        // again (`OwnerDO#inboundRefused`), as at a ceiling that clears by itself.
+        const wall = this.#wall(needed);
+        throw new Refusal(wall.code, wall.message, { facts: { ...wall.facts, ceiling: true } });
       }
       throw new Refusal("storage_busy",
                         `${STORAGE_BUSY}: your storage is catching up, moving older mail ` +

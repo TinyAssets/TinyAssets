@@ -85,7 +85,8 @@ type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string
 /**
  * A refusal in the gateway's own error shape, so a provider SDK shows its code. A 429 or 503
  * says `Retry-After`: a second, or the refusal's own wait when it asks a longer one
- * (`storage_busy`'s), so a transient refusal is never posted again sooner than it asks.
+ * (`storage_busy`'s 30). The runner waits that long, up to its heartbeat (`HEARTBEAT_MS`,
+ * 20 s, which its posts keep the lease by): so a 30 s wait is posted again after 20 s.
  */
 function refused(code: string, status: number, receipt?: string | null,
                  message: string = code, retryAfterS?: number): Response {
