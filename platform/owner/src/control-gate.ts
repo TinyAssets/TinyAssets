@@ -14,7 +14,8 @@
  */
 import { MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen } from "../../doors/src/control";
 import { type ControlRead, readControl } from "../../doors/src/directory";
-import { bundledSources, signinsOn } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { signinsOn } from "../../sources/src/signin";
 
 /** How long one read of the control record serves a script's calls, in ms. */
 export const CONTROL_FRESH_MS = 1_000;

@@ -115,9 +115,9 @@ import { LEASE_LIVED, mintToken, sealRoute } from "../../contract/src/routing-ma
 import {
   type ProfileName, profileNames, refusal, takesRequest, type Tool, toolsNamed,
 } from "../../doors/src/tools";
-import {
-  bundledSources, CREDENTIAL_KINDS, type CredentialKind, runEnv, SourceRecordError,
-} from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { runEnv } from "../../sources/src/run-env";
+import { CREDENTIAL_KINDS, type CredentialKind, SourceRecordError } from "../../sources/src/schema";
 
 import {
   admission, type Admission, doorRefusal, type DoorClass, OWNER_ERASED, OWNER_SUSPENDED,

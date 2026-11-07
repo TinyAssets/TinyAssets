@@ -8,9 +8,9 @@ import {
   KEY_MIN_BYTES, LEASE_LIVED, mintToken, tokenHash, verifyToken,
 } from "../../contract/src/routing-mac";
 import { Invalid, Refused } from "../../contract/src/errors";
-import {
-  bundledRecords, bundledSources, runEnv, sourceRecord,
-} from "../../doors/src/sources";
+import { bundledRecords, bundledSources } from "../../sources/src/catalog";
+import { sourceRecord } from "../../sources/src/check";
+import { runEnv } from "../../sources/src/run-env";
 import { ALL_TRAFFIC, BOUNDARY_NOTE, EGRESS_IP_LITERAL, networkDocument } from "../src/network";
 import {
   DNS_SERVERS, EGRESS_HOST, egressBaseUrl, GENERATION_HEADER, SANDBOX_HEADER, sandboxEnv,

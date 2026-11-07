@@ -10,7 +10,8 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { verifyToken } from "../../contract/src/routing-mac";
-import { bundledSources, runEnv } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { runEnv } from "../../sources/src/run-env";
 import { PLATFORM_CALLER } from "../src/admission";
 import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
 import { WriteGate } from "../src/gate";

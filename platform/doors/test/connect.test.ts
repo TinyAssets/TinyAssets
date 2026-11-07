@@ -17,7 +17,7 @@ import type { OwnerDO } from "../../owner/src/owner-do";
 import { APP_BODY_MAX, CONNECT_CALLBACK, CONNECTED_PAGE, type DoorsEnv, now } from "../src/config";
 import { serve } from "../src/doors";
 import { connectCookie } from "../src/session";
-import { bundledRecords, catalogOf } from "../src/sources";
+import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import { TEST_OAUTH } from "./entry";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 import { mintKeyFor } from "./keys";

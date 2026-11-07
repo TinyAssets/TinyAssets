@@ -11,7 +11,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { bundledSources, runEnv, SourceRecordError, sourceRecord } from "../src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { sourceRecord } from "../../sources/src/check";
+import { runEnv } from "../../sources/src/run-env";
+import { SourceRecordError } from "../../sources/src/schema";
 
 type Json = Record<string, unknown>;
 const load = (id: string): Json =>

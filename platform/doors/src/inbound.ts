@@ -39,7 +39,8 @@ import {
   type DoorsEnv, INBOUND_BODY_MAX, INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN,
 } from "./config";
 import { type Control, deleteRoute, putRoute, readControl, readRoute } from "./directory";
-import { bundledSources, signinsOn } from "./sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { signinsOn } from "../../sources/src/signin";
 import { refusal } from "./tools";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;

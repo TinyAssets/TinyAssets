@@ -18,6 +18,7 @@
     "skipLibCheck": true
   },
   "include": ["contract/src/**/*.ts", "contract/guards/**/*.ts", "contract/*.ts",
+              "sources/src/**/*.ts", "sources/*.ts",
               "owner/src/**/*.ts", "owner/test/**/*.ts", "owner/guards/**/*.ts", "owner/*.ts",
               "owner/memory/**/*.ts",
               "files/src/**/*.ts", "files/test/**/*.ts", "files/guards/**/*.ts", "files/*.ts",

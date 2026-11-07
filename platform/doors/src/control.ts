@@ -17,7 +17,8 @@
  * The owner object's `wakes` lane reads it too, once a pass, before it claims a wake (slice W).
  */
 import type { DoorsEnv } from "./config";
-import { bundledSources, signinsOn } from "./sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { signinsOn } from "../../sources/src/signin";
 import { type Control, type ControlRead, readControl } from "./directory";
 
 export const OUTSIDE_OFF = "outside access is switched off";

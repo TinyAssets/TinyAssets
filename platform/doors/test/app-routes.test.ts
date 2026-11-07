@@ -15,7 +15,7 @@ import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { CAPABILITIES } from "../../owner/src/grants";
 import { wakeKinds } from "../../contract/src/wake-records";
 import { mcpOrigin } from "../src/binder";
-import { bundledSources } from "../src/sources";
+import { bundledSources } from "../../sources/src/catalog";
 import { profileNames, toolNames } from "../src/tools";
 import {
   appPost, call, connect, OPEN, registerClient, serveFirstPartyDocument, setControl,

@@ -65,7 +65,7 @@ import { HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
 import { readControl, type SandboxCeilings } from "../../doors/src/directory";
-import { bundledSources } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { DNS_SERVERS, EGRESS_HOST } from "../../contract/src/egress";
 import type { SandboxSignin, SandboxStart, Started } from "../../owner/src/sandbox";

@@ -11,7 +11,8 @@
  * to type there, never a token: a value holding a secret file's atom, or credential-shaped
  * (`credentialLike`, checked again on the trusted side), is refused, and the sign-in ends.
  */
-import { credentialLike } from "../../doors/src/sources";
+import type { LoginSpec } from "../../sources/src/schema";
+import { credentialLike } from "../../sources/src/signin";
 
 import { heldSecret } from "./guards";
 
@@ -30,17 +31,11 @@ export function plain(text: string): string {
 }
 
 /** The record's patterns' first groups in `text`, as far as each has matched. */
-export function prompted(login: Readonly<Record<string, unknown>>, text: string,
-                         before: Prompt): Prompt {
-  const first = (key: string): string | null => {
-    const pattern = login[key];
-    if (typeof pattern !== "string") {
-      return null;
-    }
-    const found = new RegExp(pattern).exec(text);
-    return found?.[1] ?? null;
-  };
-  return { url: before.url ?? first("url_pattern"), code: before.code ?? first("code_pattern") };
+export function prompted(login: LoginSpec, text: string, before: Prompt): Prompt {
+  const first = (pattern: string | undefined): string | null =>
+    pattern === undefined ? null : new RegExp(pattern).exec(text)?.[1] ?? null;
+  return { url: before.url ?? first(login.url_pattern),
+           code: before.code ?? first(login.code_pattern) };
 }
 
 /**
@@ -52,9 +47,8 @@ export function credentialShaped(value: string, atoms: readonly string[]): boole
 }
 
 /** The login's argv: `{bin}` the engine's binary, `{region}` the owner's choice. */
-export function loginArgv(login: Readonly<Record<string, unknown>>, bin: string,
-                          region: string | null): string[] {
-  const argv = login["argv"] as string[];
+export function loginArgv(login: LoginSpec, bin: string, region: string | null): string[] {
+  const { argv } = login;
   if (argv.some((arg) => arg.includes("{region}")) && region === null) {
     throw new Error("this sign-in takes the owner's choice of region");
   }
@@ -91,9 +85,8 @@ function at(document: unknown, dotted: string): unknown {
  * filled; null when absent): each file present as JSON with every named field a non-empty
  * value. No checks, false.
  */
-export function statesHold(login: Readonly<Record<string, unknown>>,
-                           read: (path: string) => string | null): boolean {
-  const checks = login["state_checks"] as { path: string; present: string[] }[] | undefined;
+export function statesHold(login: LoginSpec, read: (path: string) => string | null): boolean {
+  const checks = login.state_checks;
   if (checks === undefined || checks.length === 0) {
     return false;
   }

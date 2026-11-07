@@ -52,7 +52,7 @@ import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
 import { appPath, servePage } from "./pages";
 import { OWNER_SURFACE, withoutCookie } from "./session";
-import type { Sources } from "./sources";
+import type { Sources } from "../../sources/src/schema";
 import type { Upstream } from "./upstream";
 
 function notFound(): Response {

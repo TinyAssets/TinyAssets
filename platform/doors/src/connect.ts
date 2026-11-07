@@ -59,9 +59,8 @@ import {
   CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, type DoorsEnv, now, PUBLIC_ORIGIN,
 } from "./config";
 import { clearedConnectCookie, connectBound, connectCookie } from "./session";
-import {
-  type ConnectMethod, type OAuthSpec, sealedSource, type SourceRecord, type Sources,
-} from "./sources";
+import { sealedSource } from "../../sources/src/check";
+import type { ConnectMethod, OAuthSpec, SourceRecord, Sources } from "../../sources/src/schema";
 
 /** A connect request refused at the doors, with its status. */
 export class ConnectRefused extends Error {

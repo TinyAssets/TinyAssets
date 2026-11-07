@@ -17,7 +17,8 @@ import {
 } from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
-import { bundledRecords, sourceRecord } from "../../doors/src/sources";
+import { bundledRecords } from "../../sources/src/catalog";
+import { sourceRecord } from "../../sources/src/check";
 
 const GROQ = Object.freeze({
   provider: "groq", api: "openai-completions", base_url: "https://api.groq.com/openai/v1",
