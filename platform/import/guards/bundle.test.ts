@@ -179,6 +179,14 @@ describe("the bundle builder", () => {
     const readme = bytesOf(bundle, entries.find((e) => e.path === `${I}/README.md`)!).toString();
     expect(readme).toContain("| `.records/broker/policy.db` | receipts | 1 |");
     expect(readme).toContain("- `old/` (retired)");
+    // Its words agree with the starter's onboarding skill (import slice 8): the records kept
+    // as they came, never "read-only" (the files plane has no such bit), and what refused.tar
+    // holds beside names, the links links.txt does not list.
+    expect(readme.split("\n")[0]).toBe("# Your files from the old TinyAssets");
+    expect(readme).toContain("(copies, kept as they came: don't write to them)");
+    expect(readme).not.toContain("read-only");
+    expect(readme).toContain("and links whose target is not UTF-8, which `links.txt` does not " +
+                             "list.");
     // Nothing secret travels: no credential vault, no engine HOME, no box secret.
     const all = readdirSync(join(bundle, "inline")).map((name) =>
       readFileSync(join(bundle, "inline", name)).toString("latin1")).join("\n");

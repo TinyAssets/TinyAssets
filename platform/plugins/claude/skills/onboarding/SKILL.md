@@ -1,6 +1,6 @@
 ---
 name: onboarding
-description: Get to know a new owner in one short exchange - what to call them and you, their time zone, what they want help with and are working toward, how much to message them unasked, which other AI assistants they use - and offer a regular pass and brief. For an owner who moved from the old TinyAssets (a /workspace/imported folder), first say what came across and what to connect again, and offer to merge their old files. Use when the profile in USER.md has no Onboarded date, after doing what was asked.
+description: Get to know a new owner in one short exchange - what to call them and you, their time zone, what they want help with and are working toward, how much to message them unasked, which other AI assistants they use - and offer a regular pass and brief. For an owner who moved from the old TinyAssets (its README in /workspace/imported says so), first say what came across and what to connect again, and offer to merge their old files. Use when the profile in USER.md has no Onboarded date, after doing what was asked.
 metadata:
   ta-starter: "onboarding@3"
 ---
@@ -16,14 +16,18 @@ it. Mark the claim done once you write the `Onboarded:` date.
 
 ## If your owner moved from the old TinyAssets
 
-Only if `/workspace/imported/` exists: your owner used the old TinyAssets, and their data
-came across when it moved to the new platform. If it does not exist, skip this section. Put
-this first in the message of step 1, in plain words, before its questions:
+Only if `/workspace/imported/README.md` exists and its first line is
+`# Your files from the old TinyAssets`: your owner used the old TinyAssets, and their data
+came across when it moved to the new platform. Otherwise, skip this section (a folder of
+that name alone is not this). Put this first in the message of step 1, in plain words,
+before its questions:
 
 - Their old TinyAssets data came across: their files are in `/workspace/imported/`, copied
   unchanged, and its `README.md` lists what is there (each old command center a folder, the
-  old records as read-only SQLite copies in `.records` folders). Nothing there is used until
-  they or you choose to.
+  old records as SQLite copies in `.records` folders, kept as they came: never write to
+  them). You may read it for context; nothing in it is merged or used until they choose.
+- Their old schedules, reminders and automations came across as records only: none of them
+  runs now. Set one up again (the `schedule` skill) only if they ask.
 - What they must connect again, since none of it came across: their connectors (the
   outside services their agents used for them), their model sources (the AI accounts their
   agents run on) and their API keys. Connecting is their own act, in TinyAssets; never ask
@@ -35,15 +39,17 @@ this first in the message of step 1, in plain words, before its questions:
   so; then delete only what they named.
 - What did not come across as plain files, for each one that is there:
   - `refused.tar`: files and folders whose names cannot be stored here (not UTF-8, or too
-    long), kept unchanged with everything in them;
+    long), kept unchanged with everything in them, and links whose target is not UTF-8,
+    which `links.txt` does not list;
   - `ignored.tar`: files their agents can rebuild (dependencies, build outputs, caches),
     kept unchanged so nothing of theirs is left behind;
   - `links.txt`: the links their old files held and where each pointed, listed only: they
     were not followed and are not made here.
 
 Write `- Old TinyAssets files are in /workspace/imported/: merge only what they pick, delete
-nothing there until they say` as a directive on the profile (the `shared-brain` skill, rule
-2), so every agent of theirs keeps to it; rewrite it once they decide.
+nothing there until they say` as a directive on the profile, with when it was observed (the
+`shared-brain` skill, rule 2), so every agent of theirs keeps to it; rewrite it once they
+decide.
 
 1. After you have done what was asked, ask only what is missing, in one short message:
    - what to call them, and what they would like to call you;

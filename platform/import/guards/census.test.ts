@@ -470,6 +470,18 @@ describe("the walk of an owner's files", () => {
       .toEqual([["dir", ""], ["file", "/ok.txt"]]);
     expect(tree.refused.map((refusal) => refusal.member.toString())).toEqual([`m/${"x".repeat(15)}`]);
   });
+
+  it("keeps for refused.tar a link whose target is not UTF-8, and lists it nowhere else", () => {
+    const f = fresh();
+    const source = join(f.work, "linked");
+    mkdirSync(source);
+    symlinkSync(BAD_NAME, join(source, "odd-link"));
+    symlinkSync("ok.txt", join(source, "fine-link"));
+    const tree = newTree();
+    walkUser(Buffer.from(source), IMPORTED, Buffer.from("m"), tree, ignoredBy(DEFAULT_IGNORES));
+    expect(tree.refused.map((refusal) => refusal.member.toString())).toEqual(["m/odd-link"]);
+    expect(tree.links.map((link) => link.target)).toEqual(["ok.txt"]);
+  });
 });
 
 describe("an image whose tombstones cannot be read whole", () => {
