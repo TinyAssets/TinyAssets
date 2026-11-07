@@ -138,6 +138,8 @@ function world(options: WorldOptions = {}) {
   const events: string[] = [];
   const logs: string[] = [];
   const secretsPut: Record<string, string> = {};
+  /** The account each wrangler command was given, in order. */
+  const accounts: (string | undefined)[] = [];
   let pairPassed = options.paired !== false;
   const namespaces = new Map(held ? Object.values(NAMESPACES).map((title) => [title, `ns-${title}`])
     : []);
@@ -233,6 +235,7 @@ function world(options: WorldOptions = {}) {
   const spawn = ((command: string, argv: readonly string[] = [],
                   options_: { env?: Record<string, string>; input?: string } = {}) => {
     if (argv[0] === WRANGLER) {
+      accounts.push(options_.env?.["CLOUDFLARE_ACCOUNT_ID"]);
       const args = argv.slice(1).map((arg) => arg.endsWith(".json")
         ? `${basename(join(arg, ".."))}/${basename(arg)}` : arg);
       events.push(`wrangler ${args.join(" ")}`);
@@ -287,7 +290,7 @@ function world(options: WorldOptions = {}) {
     events.push(`log ${line.trim().split("\n")[0]}`);
   };
   const io: Io = { fetch: fetcher, spawn, exec, log };
-  return { io, events, logs, secretsPut, routes, hooks };
+  return { io, events, logs, secretsPut, routes, hooks, accounts };
 }
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
@@ -428,6 +431,18 @@ describe("the command line", () => {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
         "--mode is one of plan, dark, probe, routes, h2, pair");
     }
+    for (const argv of [["--mode", "dark", "--mode", "routes"], ["--mode", "dark", "--mode", "dark"]]) {
+      expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
+        "--mode is given once: a run is one mode");
+    }
+  });
+
+  it("holds only the planning modes to their options: h2 and pair read none", () => {
+    for (const mode of ["h2", "pair"]) {
+      const run = parse(["--mode", mode, "--public", "--yes", "--rotate", "FILES_KEYRING",
+                         "--migrate", "doors"], ENV, w.io);
+      expect([run.mode, run.reach, run.apply]).toEqual([mode, "public", true]);
+    }
   });
 
   it("refuses a run that would change what its job cannot", () => {
@@ -480,6 +495,25 @@ describe("a dark run", () => {
     expect(w.logs.slice(-1)).toEqual([
       "H2's probes wait for a routed door and a probe owner's key: run with --mode h2 " +
       "(h2-probes.ts names what it needs)."]);
+    // Every wrangler command is handed the zone's account, never wrangler's own pick.
+    expect(w.accounts.length).toBeGreaterThan(0);
+    expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
+    // Outside Actions, nothing is masked.
+    expect(w.logs.some((line) => line.startsWith("::add-mask::"))).toBe(false);
+  });
+
+  it("in an Actions job masks the zone's account before anything can print it", async () => {
+    const w = world();
+    await runMode(w, "dark", ["--yes"], { ...ENV, GITHUB_ACTIONS: "true" });
+    const zone = w.events.indexOf("cf GET /zones?name=tinyassets.io");
+    const mask = w.events.indexOf(`log ::add-mask::${ACCOUNT}`);
+    // Masked right after the zone names it: the first line that holds the account at all,
+    // and before any wrangler command, whose errors quote /accounts/<id>/.
+    expect([zone, mask]).toEqual([zone, zone + 1]);
+    expect(w.events.findIndex((event) => event.includes(ACCOUNT))).toBe(mask);
+    expect(mask).toBeLessThan(w.events.findIndex((event) => event.startsWith("wrangler")));
+    expect(w.logs.filter((line) => line.startsWith("::add-mask::"))).toEqual(
+      [`::add-mask::${ACCOUNT}`]);
   });
 
   it("stops before anything without an input it reads, naming where it comes from",
@@ -498,6 +532,10 @@ describe("a dark run", () => {
     const w = world();
     await expect(runMode(w, "dark", ["--yes"], { ...ENV, FILES_KEYRING: "{}" }))
       .rejects.toThrow("FILES_KEYRING is {active, keys} as JSON");
+    // A missing input is named before a keyring is read.
+    const { WORKOS_API_KEY: _key, ...secretless } = ENV;
+    await expect(runMode(w, "dark", ["--yes"], { ...secretless, FILES_KEYRING: "{}" }))
+      .rejects.toThrow("WORKOS_API_KEY is not set (the production environment's secrets)");
     expect(w.events).toEqual([]);
   });
 
@@ -533,6 +571,11 @@ describe("a dark run", () => {
                 "any change",
                 `WorkOS redirect URI ${CALLBACK}: checked by the apply job before any change`,
                 `E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job before any change`]);
+    // With none held, the control record is planned, and the hook's word comes after it, last.
+    const fresh = await runMode(world(), "dark", ["--public"], PUBLIC);
+    const [last2, last] = fresh.plan.slice(-2);
+    expect([last2?.startsWith("write the control record closed"), last]).toEqual([
+      true, `E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job before any change`]);
   });
 
   it("deploys a held Worker as a version, and a named migration whole", async () => {
@@ -591,6 +634,9 @@ describe("a routes run", () => {
       .toBeLessThan(w.events.indexOf("cf PUT /zones/z/workers/routes/r1"));
     expect(work.plan).toEqual(ROUTES_HELD);
     expect(w.logs).toContain(summary("Changed", ROUTES_HELD));
+    // Every wrangler command, the routes' triggers deploy too, is handed the zone's account.
+    expect(w.accounts.length).toBeGreaterThan(0);
+    expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
     for (const path of ["tinyassets.io/mcp", "tinyassets.io/api/x", "tinyassets.io/oauth/token",
                         "tinyassets.io/.well-known/oauth-protected-resource/mcp",
                         `tinyassets.io${E2B_HOOK_PATH}`]) {
@@ -1126,7 +1172,8 @@ function e2bHooks(start: Json[], fail?: string) {
     const method = init?.method ?? "GET";
     const path = url.replace("https://api.e2b.app", "");
     calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
-    expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe(E2B_KEY);
+    // The key, and JSON named for every call, a listing as well as a write.
+    expect(init?.headers).toEqual({ "X-API-Key": E2B_KEY, "Content-Type": "application/json" });
     if (fail === method) {
       return new Response("", { status: 500 });
     }
@@ -1252,15 +1299,24 @@ describe("E2B's lifecycle webhook", () => {
 describe("the template and the pair", () => {
   it("checks the sandbox's E2B template has a ready build, and stops on a failed lookup",
      async () => {
-    const e2b = (alias: number, exists: unknown, tag = 200) => new E2b(E2B_KEY, async (url) =>
-      url.includes("/aliases/") ? Response.json({ templateID: "t1" }, { status: alias })
-        : Response.json({ exists }, { status: tag }));
+    const headers: unknown[] = [];
+    const e2b = (alias: number, exists: unknown, tag = 200) => new E2b(E2B_KEY,
+      async (url, init) => {
+        headers.push(init?.headers);
+        return url.includes("/aliases/") ? Response.json({ templateID: "t1" }, { status: alias })
+          : Response.json({ exists }, { status: tag });
+      });
     expect(await e2b(200, true).ready("tinyassets-sandbox:v1")).toBe(true);
     expect(await e2b(200, false).ready("tinyassets-sandbox:v1")).toBe(false);
     expect(await e2b(404, true).ready("tinyassets-sandbox:v1")).toBe(false);
     await expect(e2b(500, true).ready("tinyassets-sandbox:v1")).rejects.toThrow(/alias lookup/);
     await expect(e2b(200, true, 503).ready("tinyassets-sandbox:v1")).rejects.toThrow(/tag lookup/);
     await expect(e2b(200, true).ready("tinyassets-sandbox")).rejects.toThrow(/name:tag/);
+    // Both lookups send the key and ask for JSON.
+    expect(headers.length).toBeGreaterThan(0);
+    for (const each of headers) {
+      expect(each).toEqual({ "X-API-Key": E2B_KEY, Accept: "application/json" });
+    }
   });
 
   it("names the pair it deploys by the template and the runner the sandbox Worker ships, as " +
