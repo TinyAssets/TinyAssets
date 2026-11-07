@@ -20,9 +20,8 @@
  * horizon, never by a minute-by-minute scan.
  */
 import { Invalid } from "../../contract/src/errors";
+import { CRON_MAX_CHARS } from "../../contract/src/limits";
 
-/** The longest expression accepted, in characters. */
-export const CRON_MAX_CHARS = 256;
 /** The most list items one field takes. */
 export const CRON_MAX_ITEMS = 60;
 /** The least time between two occurrences, in minutes. */

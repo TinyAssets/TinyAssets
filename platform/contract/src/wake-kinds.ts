@@ -6,7 +6,8 @@
 import { sha256Hex } from "./digest";
 import { Invalid } from "./errors";
 import { codePoints, isPrintable } from "./text";
-import { ARGUMENTS_CHARS, type WakeKind } from "./wake-records";
+import { ARGUMENTS_CHARS } from "./limits";
+import type { WakeKind } from "./wake-records";
 
 /** What a wake says changed: mail to the agent, a room's rows, or the board's. */
 export type Change = "mail" | "rooms" | "board";

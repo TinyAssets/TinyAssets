@@ -7,8 +7,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CRON_HORIZON_DAYS, CRON_MAX_CHARS, CRON_MAX_ITEMS, CRON_MIN_GAP_MIN, nextOccurrence, parseCron,
+  CRON_HORIZON_DAYS, CRON_MAX_ITEMS, CRON_MIN_GAP_MIN, nextOccurrence, parseCron,
 } from "../src/cron";
+import { CRON_MAX_CHARS } from "../../contract/src/limits";
 
 const DAY_S = 86_400;
 

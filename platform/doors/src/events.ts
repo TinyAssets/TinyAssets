@@ -25,8 +25,9 @@
 import { type McpServer, ProtocolError, type StandardSchemaV1 } from "@modelcontextprotocol/server";
 
 import {
-  callbackSecret, callbackUrl, eventKind, SUBSCRIPTIONS_PER_AGENT, type WakeKind,
+  callbackSecret, callbackUrl, eventKind, type WakeKind,
 } from "../../contract/src/wake-records";
+import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { follows, subscriptionId } from "../../contract/src/wake-kinds";
 
 import type { Bound } from "./binder";

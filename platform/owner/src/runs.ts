@@ -73,22 +73,29 @@ import {
 import { AGENT_DISABLED, type AgentFile, AUTO } from "./agent-file";
 import type { RunCapability } from "../../contract/src/capabilities";
 import { AUTHORITY_CHANGED, type StandingGrant, type Stamped } from "./authority";
-import { LEASE_TTL_S, MAX_LIST } from "../../contract/src/limits";
+import {
+  CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, LEASE_TTL_S, MAX_LIST, QUEUE_BYTES, QUEUE_ROWS,
+  RESULT_BYTES,
+} from "../../contract/src/limits";
 import { OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
 import { nextOccurrence, parseCron } from "./cron";
 import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import { periods } from "./money";
-import {
-  CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUNS_KEPT,
-} from "../../contract/src/run-rows";
 import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
 import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF } from "./signins";
 import { TIER_RUNS, type TierName, type Tiers } from "./tier";
 import { utf8Bytes } from "../../contract/src/text";
+
+/**
+ * Settled runs kept as receipts, the newest first: an older run's status is gone, never
+ * its effects (its transcript is the engine's own file in the owner's files). A technical
+ * ceiling of the owner's database (`limits-audit.md`).
+ */
+export const RUNS_KEPT = 2000;
 
 export const NO_CONVERSATION = "no_conversation: no such conversation of the caller's";
 export const CONVERSATION_BUSY = "conversation_busy: a run in this conversation is still live";

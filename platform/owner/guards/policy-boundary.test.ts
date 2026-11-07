@@ -35,7 +35,7 @@ const READ_ONLY = "owner/src/export.ts";
 const WRITES = /\b(?:INSERT|UPDATE|DELETE|REPLACE|UPSERT|CREATE|DROP|ALTER|PRAGMA|ATTACH|VACUUM)\b/;
 const SCHEMA = "owner/src/schema.ts";
 const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  policy: Object.freeze([OWNER_DO, "owner/src/grants.ts", SCHEMA]),
+  policy: Object.freeze([OWNER_DO, "owner/src/grants.ts"]),
   grants: Object.freeze([OWNER_DO]),
   sessions: Object.freeze([OWNER_DO]),
   registrations: Object.freeze([OWNER_DO]),

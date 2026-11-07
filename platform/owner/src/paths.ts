@@ -28,13 +28,13 @@
  * removed or renamed, so no change outside the trees reaches into them.
  */
 import { Invalid } from "../../contract/src/errors";
+import { MAX_PATH_BYTES } from "../../contract/src/limits";
 import { OWNER_TREES } from "../../contract/src/paths";
 import { utf8Bytes } from "../../contract/src/text";
 
 export const WORKSPACE = "/workspace";
 export const TEMP = "/.ta/tmp";
 export const ROOTS: readonly string[] = Object.freeze([WORKSPACE, TEMP]);
-export const MAX_PATH_BYTES = 4096;
 /** The refusal of a change to an `OWNER_TREES` path under a grant the owner narrowed. */
 export const AGENTS_OWNER_ONLY = "a grant the owner narrowed changes nothing under " +
   "/workspace/agents, /workspace/.agents, /workspace/skills, /workspace/prompts or " +

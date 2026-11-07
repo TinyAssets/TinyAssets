@@ -66,13 +66,8 @@ export default defineConfig({
         ],
         test: { setupFiles: ["./test/admitted.ts"] },
       }),
-      // Static guards over the source and config, in Node. The migrations guard imports
-      // the schema, whose imports reach the Agents SDK's Lifecycle: Node takes a stub of it
-      // (`guards/lifecycle-stub.ts`), since the real one loads `cloudflare:` modules.
-      project("owner", "guards", {
-        resolve: { alias: { "agents/lifecycle": join(PLATFORM, "owner", "guards",
-                                                     "lifecycle-stub.ts") } },
-      }),
+      // Static guards over the source and config, in Node.
+      project("owner", "guards"),
     ],
   },
 });
