@@ -25,7 +25,9 @@
  * - `handback`: the record `--record` names, handed back (the cutover's rollback): the webhook
  *   disabled and the egress custom domain detached unless the record has them so before, then
  *   the zone's routes put back as the record has them, only what the handover changed, one at
- *   a time; each read back and held to the record, then the canary.
+ *   a time; each read back and held to the record. Each is held to the record before any
+ *   change too: anything changed since `routes` stops it, named. The handles canary follows
+ *   the old stack's restart, so the run ends saying where it runs.
  * - `h2`: H2's probes alone, once a probe owner exists.
  * - `pair`: the pinned template with the runner this checkout ships, checked together on
  *   throwaway sandboxes unless E2B already holds their pair's tag (`build.py --check-pair`).
@@ -84,8 +86,8 @@ import { WRANGLER } from "../ci/workers.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import { E2b } from "../sandbox/src/e2b.ts";
 import {
-  type BackStep, cfApi, Cloudflare, describeBack, describeStep, handback, handover, type Kept,
-  type Moved, narrower, type Route, type RouteStep, unlike,
+  type BackStep, cfApi, Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback,
+  handover, type Kept, type Moved, narrower, type Route, type RouteStep, unlike,
 } from "./cloudflare.ts";
 import {
   AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, CONTROL_KEY, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
@@ -178,6 +180,8 @@ export interface Work {
   /** The route record `handback` reads, and its handback on the zone as it stands. */
   record?: RouteRecord;
   back?: BackStep[];
+  /** Where the run's route record is kept, its key in the control namespace. */
+  recordAt?: { namespace: string; key: string };
   /** The handback's other changes: the egress domains to detach, the hook to disable. */
   detach?: { id: string; service: string }[];
   disable?: string | null;
@@ -771,11 +775,12 @@ export const PROBE_SIGNS = [
  * - the zone's routes (`handOver`, and `customDomain`'s `wrangler triggers deploy`, which sets
  *   the doors' routes to the config's, the same patterns): every route as the route plan read
  *   it, each pattern and its Worker, and the changes the handover makes;
- * - the egress custom domain (`customDomain`): the Worker it served, or none. `routes` stops
- *   before any change while it is another Worker's or a DNS record holds the host, since
- *   wrangler's deploy overrides both outside a terminal (`publishCustomDomains`,
- *   `override_existing_origin` and `override_existing_dns_record`) and no handback could give
- *   either back;
+ * - the egress custom domain (`customDomain`): the Worker it served, or none, and, written once
+ *   the attach is done, the address records it made (`created`), so a handback removes exactly
+ *   those if the detach leaves them. `routes` stops before any change while it is another
+ *   Worker's or an address record (A, AAAA, CNAME) holds the host, since wrangler's deploy
+ *   overrides both outside a terminal (`publishCustomDomains`, `override_existing_origin` and
+ *   `override_existing_dns_record`) and no handback could give either back;
  * - E2B's lifecycle webhook (`hook(true)`): whether it was held and enabled. Its secret and
  *   events are not kept (no secret is): a handback disables it, and a disabled hook sends
  *   nothing.
@@ -799,8 +804,13 @@ export interface RouteRecord {
   readonly at: string;
   readonly routes: readonly Kept[];
   readonly moved: readonly Moved[];
-  /** The egress host and the Worker its custom domain served, or null for none. */
-  readonly domain: { readonly hostname: string; readonly service: string | null };
+  /**
+   * The egress host and the Worker its custom domain served, or null for none; and, once a
+   * run that attached it has read them, the host's address records the attach made (null
+   * until then).
+   */
+  readonly domain: { readonly hostname: string; readonly service: string | null;
+                     readonly created: readonly DnsRecord[] | null };
   /** E2B's lifecycle webhook: whether it was held, and enabled. */
   readonly hook: { readonly url: string; readonly present: boolean; readonly enabled: boolean };
 }
@@ -828,7 +838,7 @@ export function routeRecord(run: Run, zoneId: string, table: readonly Route[],
     attempt: input(run, "GITHUB_RUN_ATTEMPT") ?? null, at: run.io.now().toISOString(),
     routes: table.map((route) => ({ pattern: route.pattern, script: route.script ?? null })),
     moved: steps.map((each) => ({ method: each.method, pattern: each.pattern })),
-    domain: { hostname: EGRESS_DOMAIN, service: domain },
+    domain: { hostname: EGRESS_DOMAIN, service: domain, created: null },
     hook: { url: E2B_HOOK.url, present: hook !== null, enabled: hook?.["enabled"] === true },
   };
 }
@@ -871,7 +881,11 @@ export function recordOf(value: unknown, key: string, zoneId: string): RouteReco
   }
   const domain = held.domain as Partial<RouteRecord["domain"]> | null | undefined;
   if (typeof domain !== "object" || domain === null || domain.hostname !== EGRESS_DOMAIN
-      || !(domain.service === null || typeof domain.service === "string")) {
+      || !(domain.service === null || typeof domain.service === "string")
+      || !(domain.created === null || (Array.isArray(domain.created)
+        && (domain.created as Partial<DnsRecord>[]).every((each) => typeof each?.id === "string"
+          && typeof each.type === "string" && typeof each.content === "string")))
+      || (domain.created !== null && domain.service !== null)) {
     throw bad("holds no egress domain in shape");
   }
   const hook = held.hook as Partial<RouteRecord["hook"]> | null | undefined;
@@ -885,8 +899,8 @@ export function recordOf(value: unknown, key: string, zoneId: string): RouteReco
 
 /**
  * The egress host's custom domain before `routes` attaches it: the doors', or none. Another
- * Worker's, or a DNS record on the host, stops `routes` before any change: wrangler's deploy
- * overrides both, and no handback could give either back.
+ * Worker's, or an address record on the host, stops `routes` before any change: wrangler's
+ * deploy overrides both, and no handback could give either back.
  */
 async function egressBefore(work: Work): Promise<string | null> {
   const cloudflare = made(work.cloudflare, "Cloudflare");
@@ -1064,6 +1078,7 @@ const recorded = step("route record", async (run, work) => {
   const held = await cloudflare.value(account, namespace, key);
   if (held !== undefined) {
     const kept = recordOf(held, key, made(work.zone, "the zone"));
+    Object.assign(work, { record: kept, recordAt: { namespace, key } });
     work.plan.push(`keep the route record ${key} as attempt ${kept.attempt ?? "-"} wrote it at ` +
                    `${kept.at}, before its first change: hand back with --mode handback ` +
                    `--record ${id}`);
@@ -1087,6 +1102,7 @@ const recorded = step("route record", async (run, work) => {
     if (status !== 200) {
       throw new Error(`writing the route record ${key} failed (${status}): nothing is changed`);
     }
+    Object.assign(work, { record, recordAt: { namespace, key } });
     // A copy beside the plan, in the job summary, for the founder to read.
     const file = run.env["GITHUB_STEP_SUMMARY"];
     if (file !== undefined) {
@@ -1276,7 +1292,7 @@ const handOver = step("hand over", async (run, work) => {
 });
 
 /** The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`). */
-const customDomain = step("custom domain", (run, work) => {
+const customDomain = step("custom domain", async (run, work) => {
   work.plan.push(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
   if (run.apply) {
     const routed = join(made(work.out, "the configs"), "doors", "routed.json");
@@ -1284,6 +1300,23 @@ const customDomain = step("custom domain", (run, work) => {
                                                         made(work.upstream, "the upstream"),
                                                         true), null, 2));
     made(work.wrangler, "wrangler")(["triggers", "deploy", "--config", routed]);
+    // The host held no address record before (`egressBefore`), so each it holds now is the
+    // attach's: kept in the record, for a handback to remove exactly if the detach leaves it.
+    const record = made(work.record, "the route record");
+    if (record.domain.service === null && record.domain.created === null) {
+      const created = await made(work.cloudflare, "Cloudflare").dnsRecords(
+        made(work.zone, "the zone"), EGRESS_DOMAIN);
+      const at = made(work.recordAt, "the route record");
+      const status = await made(work.cloudflare, "Cloudflare").put(
+        made(work.account, "the account"), at.namespace, at.key,
+        { ...record, domain: { ...record.domain, created } });
+      if (status !== 200) {
+        throw new Error(`writing the custom domain's DNS records into ${at.key} failed (${
+          status}): run routes again, which reads and writes them once more`);
+      }
+      work.plan.push(`record in ${at.key} the DNS records the custom domain made: ${
+        created.length === 0 ? "none" : created.map((each) => each.type).join(", ")}`);
+    }
   }
 });
 
@@ -1474,6 +1507,17 @@ const backPlan = step("handback plan", async (run, work) => {
   work.detach = record.domain.service === null
     ? domains.filter((domain) => domain.service === DOORS) : [];
   const routes = await cloudflare.routes(made(work.zone, "the zone"));
+  // Held to the record before any change: what changed after routes is named, never undone.
+  const differences = drift(record.routes, record.moved, routes, DOORS);
+  if (record.domain.service === null) {
+    differences.push(...domains.filter((domain) => domain.service !== DOORS).map((domain) =>
+      `${record.domain.hostname} is ${domain.service}'s custom domain, and routes attached it ` +
+      `to ${DOORS}`));
+  }
+  if (differences.length > 0) {
+    throw new Error(`changed since routes, so nothing is handed back: ${differences.join("; ")}. ` +
+                    "Put each back as the record has it, then run the handback again");
+  }
   work.back = handback(record.routes, record.moved, routes, DOORS);
   const scope = new Set([...record.routes, ...record.moved].map((each) => each.pattern));
   work.plan.push(...routes.filter((route) => !scope.has(route.pattern)).map((route) =>
@@ -1499,6 +1543,17 @@ const handBack = step("hand back", async (run, work) => {
     ? `the custom domain ${record.domain.hostname}: ${record.domain.service}'s before routes, left`
     : detach.length === 0 ? `the custom domain ${record.domain.hostname}: detached already`
     : `detach the custom domain ${record.domain.hostname} from ${DOORS}, as it was before routes`);
+  if (record.domain.service === null) {
+    work.plan.push(record.domain.created === null
+      ? `the DNS records the custom domain made on ${record.domain.hostname} were not recorded ` +
+        "(routes stopped between its attach and its record): any left stays, for a hand to " +
+        "remove before routes runs again"
+      : record.domain.created.length === 0
+        ? `the custom domain made no DNS record on ${record.domain.hostname}`
+        : `delete the DNS record(s) the custom domain made, ${record.domain.created.map((each) =>
+          `${each.type} ${record.domain.hostname} (${each.content})`).join(", ")}, where the ` +
+          "detach leaves them");
+  }
   work.plan.push(...(steps.length === 0
     ? ["the zone's routes are the record's already: nothing to hand back"]
     : steps.map(describeBack)));
@@ -1510,9 +1565,37 @@ const handBack = step("hand back", async (run, work) => {
       await made(work.cloudflare, "Cloudflare").detach(made(work.account, "the account"),
                                                        domain.id, record.domain.hostname);
     }
+    // The address records the attach made, only those and only as recorded, if the detach
+    // left them.
+    for (const left of await createdLeft(work)) {
+      await made(work.cloudflare, "Cloudflare").deleteDns(made(work.zone, "the zone"), left,
+                                                          record.domain.hostname);
+    }
     await made(work.cloudflare, "Cloudflare").handBack(made(work.zone, "the zone"), steps);
   }
 });
+
+/**
+ * The address records the custom domain made, as the record holds them, still on the host:
+ * matched by id, type and content, so no other record is ever taken.
+ */
+async function createdLeft(work: Work): Promise<DnsRecord[]> {
+  const record = made(work.record, "the record");
+  if (record.domain.service !== null || record.domain.created === null
+      || record.domain.created.length === 0) {
+    return [];
+  }
+  // Never a record a custom domain still holds: a detach that did not take leaves it, and
+  // the read-back names the domain.
+  const cloudflare = made(work.cloudflare, "Cloudflare");
+  if ((await cloudflare.domains(made(work.account, "the account"), record.domain.hostname))
+    .length > 0) {
+    return [];
+  }
+  const now = await cloudflare.dnsRecords(made(work.zone, "the zone"), record.domain.hostname);
+  return record.domain.created.filter((made_) => now.some((each) => each.id === made_.id
+    && each.type === made_.type && each.content === made_.content));
+}
 
 /**
  * After a handback, each thing read back and held to the record: the routes, the egress
@@ -1532,6 +1615,8 @@ const handedBack = step("handback verified", async (run, work) => {
                                              record.domain.hostname);
     differences.push(...domains.map((domain) => `${record.domain.hostname} is ${
       domain.service}'s custom domain (the record has none)`));
+    differences.push(...(await createdLeft(work)).map((left) => `the DNS record ${left.type} ${
+      record.domain.hostname} (${left.content}) the custom domain made is still there`));
   }
   if (!record.hook.enabled) {
     const hook = await heldHook(made(work.e2b, "E2B"));
@@ -1545,6 +1630,16 @@ const handedBack = step("handback verified", async (run, work) => {
   }
   work.plan.push("the zone's routes, the egress domain and the webhook read back as the record " +
                  "has them");
+});
+
+/**
+ * Fact 11's canary waits for the old stack: until it restarts, the routes the handback gave
+ * back serve nothing, so the handback's own run would fail a correct handback.
+ */
+const canaryAfter = step("canary after", (run) => {
+  run.io.log("The handles canary (Fact 11) waits for the old stack: restart it on its " +
+             "untouched volumes, then run python3 scripts/mcp_public_canary.py " +
+             "--assert-handles.");
 });
 
 // --- The modes --------------------------------------------------------------------------
@@ -1591,10 +1686,10 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   },
   h2: { steps: [h2], plans: false, applies: true, options: true },
   pair: { steps: [pair], plans: false, applies: true, options: true },
-  // A routes run's record handed back, the zone read back, then the canary.
+  // A routes run's record handed back and read back; the canary follows the old stack's restart.
   handback: {
     steps: [handbackInputs, zone, recordRead, backPlan, handBack, handedBack,
-            reported("\nNothing was changed."), canary],
+            reported("\nNothing was changed."), canaryAfter],
     plans: true, applies: true, options: false, record: true,
   },
 });

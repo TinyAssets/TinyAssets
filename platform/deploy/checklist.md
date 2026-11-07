@@ -27,6 +27,14 @@ Routes edit (the `plan` job lists R2, KV and queues, so a missing scope stops it
 `E2B_API_KEY` in `production` and nowhere else; `production` limited to `main`, with no
 required reviewer.
 
+**Owed before mode `routes`: the Cloudflare token's DNS scope on the `tinyassets.io` zone.**
+- `routes` needs **DNS Read**: it lists the egress host's DNS records before any change. A
+  token without it stops the `routes` plan job, with nothing changed.
+- `handback` needs **DNS Edit**: it deletes the DNS record the egress custom domain made, if
+  the detach leaves it. Give the token DNS Edit, which covers both.
+- The token also needs **Workers Scripts edit** on the account. The kit's deploys need it,
+  and so do attaching the custom domain and detaching it.
+
 The rest runs on your own computer, by your Claude session with your own `gh` login. It
 runs `scripts/platform_setup.py` (Windows: `python`); every value is set only where it is
 absent, goes to GitHub on stdin, and is never shown. Your part is in bold.
@@ -231,9 +239,9 @@ It never counts as "absent".
   nothing changed. A re-run attempt of the same run keeps its first attempt's record.
 
   `routes` also stops before any change while `egress.tinyassets.io` is another Worker's
-  custom domain or holds a DNS record. Run from the workflow, wrangler's custom-domain
-  deploy replaces either, and no handback could give it back. The plan job shows this stop
-  too.
+  custom domain or holds an address record (A, AAAA or CNAME). Run from the workflow,
+  wrangler's custom-domain deploy replaces either, and no handback could give it back. The
+  plan job shows this stop too.
 - **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id
   `routes`' summary names. Its plan job reads the record and the zone and changes nothing,
   so run it once right after `routes`, to see what a handback would do. The apply job puts
@@ -241,16 +249,33 @@ It never counts as "absent".
   1. E2B's lifecycle webhook is disabled, unless the record has it enabled before. A hook
      `routes` registered is disabled, never deleted: a disabled hook sends nothing.
   2. The doors' egress custom domain is detached, unless the record has it attached before.
+     If the detach leaves the DNS record the attach made, that record is deleted: only it,
+     matched exactly as the record holds it. A second `routes` after the rollback is then
+     not stopped by it.
   3. The zone's routes go back as the record has them (the doors' patterns back to
      `tinyassets-mcp-proxy`), one change at a time, so no path the record served is ever
      served by nothing: the old proxy's deleted narrower routes are added back, `mcp*` is
      moved back in place, then the doors' added routes are deleted, each only while it is
      still the doors'.
 
-  It changes no other route. It then reads each of the three back and stops, naming each
-  difference, unless they are the record's. Then it runs the handles canary, which passes
-  only once the old stack is up again. A rerun changes only what is not back yet, and a
-  killed run is simply run again.
+  It changes no other route. Before any change, it holds the zone to the record. If a
+  route the record or the handover holds was changed by someone after `routes`, or the egress
+  host is another Worker's custom domain, it stops, naming each difference, with nothing
+  changed. Put each back by hand as the record has it, then run it again. Its plan job
+  shows this stop too.
+
+  After its changes it reads each of the three back, and stops, naming each difference,
+  unless they are the record's. A rerun changes only what is not back yet, and a killed run
+  is simply run again.
+
+  It doesn't run the handles canary. Until the old stack is up, the routes it gave back
+  serve nothing, so the canary would fail a correct handback. The order is:
+  1. the handback;
+  2. restart the old stack on its untouched volumes;
+  3. run the handles canary (Fact 11): `python3 scripts/mcp_public_canary.py
+     --assert-handles`.
+
+  The run's last line says so.
 
   It leaves what `dark` made: storage, secrets, the Workers, the control record and the
   WorkOS redirect URI. They serve no one without the routes, the domain and the hook.

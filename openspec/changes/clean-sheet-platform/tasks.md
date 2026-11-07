@@ -2340,9 +2340,12 @@ R, S, M and W.
     held and enabled or not. It also holds the zone, the run id and the time, and no secret.
     Its job summary names the id (the run's). A record it cannot keep stops it before any
     change, and a re-run attempt keeps its first attempt's. So does an egress host that is
-    another Worker's or holds a DNS record, which wrangler's deploy would replace. Mode
-    `handback --record <id>` undoes `routes` in reverse: the hook disabled, the custom domain
-    detached (each unless the record has it so before), then the zone's routes as the record
+    another Worker's or holds an address record, which wrangler's deploy would replace (the
+    token needs DNS Read for that listing, and DNS Edit for the handback's cleanup). Mode
+    `handback --record <id>` first holds the zone to the record and stops, naming it, on any
+    route changed since `routes`. Then it undoes `routes` in reverse: the hook disabled, the
+    custom domain detached (each unless the record has it so before) and the DNS record its
+    attach made deleted if the detach left it, then the zone's routes as the record
     has them, only what the handover changed, one change at a time, no path the record
     served ever unserved. It then reads each back and holds it to the record, and changes
     nothing once converged. `dark`'s own changes stay: they serve no one without the
@@ -2384,12 +2387,19 @@ R, S, M and W.
   3. **Verify.** First the handback's plan job (`handback --record <id>`, read-only) shows
      what a handback would change. Then the handles canary and every imported owner's
      check.
-  4. **The handback, if verify fails,** at any point before the hold ends:
-     `handback --record <id>`. It disables the lifecycle webhook and detaches the egress
-     domain (each as the record has it before), puts the zone's routes back as recorded (so
-     the doors' patterns go back to `tinyassets-mcp-proxy`), then reads each back. The old
-     stack then restarts on its untouched volumes. Writes made on the new platform since `routes` are
-     lost unless they are exported (decide at verify).
+  4. **The handback, if verify fails,** at any point before the hold ends, in this order:
+     - `handback --record <id>`. Before any change, it holds the zone to the record and
+       stops, naming any route changed since `routes`. Then it disables the lifecycle webhook
+       and detaches the egress domain, each as the record has it before, and deletes the DNS
+       record the attach made if the detach leaves it. It puts the zone's routes back as
+       recorded, so the doors' patterns go back to `tinyassets-mcp-proxy`, then reads each
+       back.
+     - The old stack restarts on its untouched volumes.
+     - The handles canary (Fact 11), now that the old stack serves the routes again. The
+       handback doesn't run it itself, since it would fail before the restart.
+
+     Writes made on the new platform since `routes` are lost unless they are exported
+     (decide at verify).
   Owed before slice L's deploy kit runs mode `routes`, each with this change since each moves
   production routing (slice L's final check, recorded, not yet fixed):
   - **R1, the old proxy's own deploy.** `deploy-worker.yml` deploys `tinyassets-mcp-proxy`

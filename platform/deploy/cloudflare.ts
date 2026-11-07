@@ -103,6 +103,16 @@ export function describeStep(step: RouteStep, script: string): string {
     : `delete ${step.from}'s narrower route ${step.pattern}, its paths now ${script}'s`;
 }
 
+/** A DNS record as the kit reads it: its id, type and content. */
+export interface DnsRecord {
+  readonly id: string;
+  readonly type: string;
+  readonly content: string;
+}
+
+/** The DNS record types a Workers custom domain's own record takes the host's place of. */
+export const ADDRESS: readonly string[] = Object.freeze(["A", "AAAA", "CNAME"]);
+
 /** A route as a record keeps it: its pattern, and the Worker it points to (null: none). */
 export interface Kept {
   readonly pattern: string;
@@ -187,6 +197,42 @@ export function unlike(before: readonly Kept[], moved: readonly Moved[],
     if (held !== undefined) {
       differences.push(`${each.pattern} is still there, ${held.script ?? "no Worker"}'s (the ` +
                        "record does not hold it)");
+    }
+  }
+  return differences;
+}
+
+/**
+ * How the zone's `routes` have changed since `routes` ran, beyond the states a handover and
+ * its handback pass through: every route of `before` the handover did not change must be as
+ * the record has it; a pattern it moved, the doors' or back as recorded; one it deleted,
+ * absent or back; one it added, the doors' or gone. Anything else names a route changed by
+ * someone else, which a handback must not paper over. Empty when the zone is on the path.
+ */
+export function drift(before: readonly Kept[], moved: readonly Moved[],
+                      routes: readonly Route[], script: string): string[] {
+  const differences: string[] = [];
+  const now = (pattern: string) => {
+    const held = routes.find((route) => route.pattern === pattern);
+    return held === undefined ? undefined : held.script ?? null;
+  };
+  const name = (worker: string | null | undefined) =>
+    worker === undefined ? "absent" : `${worker ?? "no Worker"}'s`;
+  const changed = new Set(moved.map((each) => each.pattern));
+  for (const kept of before.filter((route) => !changed.has(route.pattern))) {
+    if (now(kept.pattern) !== kept.script) {
+      differences.push(`${kept.pattern} is ${name(now(kept.pattern))}, the record has it ${
+        name(kept.script)} and the handover never changed it`);
+    }
+  }
+  for (const each of moved) {
+    const recorded = before.find((route) => route.pattern === each.pattern)?.script;
+    const allowed = each.method === "PUT" ? [script, recorded]
+      : each.method === "DELETE" ? [undefined, recorded] : [script, undefined];
+    if (!allowed.includes(now(each.pattern))) {
+      differences.push(`${each.pattern} is ${name(now(each.pattern))}, neither as the handover ` +
+                       `left it (${name(allowed[0])}) nor as the record has it (${
+                         name(allowed[1])})`);
     }
   }
   return differences;
@@ -349,14 +395,34 @@ export class Cloudflare {
       .map((row) => ({ id: String(row.id), service: String(row.service) }));
   }
 
-  /** The zone's DNS records named `name`, each its type. A failed read throws. */
-  async dnsRecords(zone: string, name: string): Promise<{ type: string }[]> {
-    const answer = await this.#api(`/zones/${zone}/dns_records?name=${name}`);
+  /**
+   * The zone's address records (`ADDRESS`: what a custom domain's own record would replace)
+   * named exactly `name`: each its id, type and content. The listing is asked for by
+   * `name.exact` (the DNS records reference), and its rows are filtered here by exact name
+   * and type as well, so a filter the API ignores neither blocks nor passes wrongly. A failed
+   * read throws.
+   */
+  async dnsRecords(zone: string, name: string): Promise<DnsRecord[]> {
+    const answer = await this.#api(`/zones/${zone}/dns_records?name.exact=${name}&per_page=100`);
     if (answer.status !== 200 || answer.body.success !== true
         || !Array.isArray(answer.body.result)) {
       throw new Error(`the zone's DNS records for ${name} could not be read (${answer.status})`);
     }
-    return (answer.body.result as { type?: unknown }[]).map((row) => ({ type: String(row.type) }));
+    return (answer.body.result as { id?: unknown; type?: unknown; name?: unknown;
+                                    content?: unknown }[])
+      .filter((row) => row.name === name && ADDRESS.includes(String(row.type)))
+      .map((row) => ({ id: String(row.id), type: String(row.type),
+                       content: String(row.content) }));
+  }
+
+  /** Deletes the DNS record `record`; a refusal throws. */
+  async deleteDns(zone: string, record: DnsRecord, name: string): Promise<void> {
+    const answer = await this.#api(`/zones/${zone}/dns_records/${record.id}`,
+                                   { method: "DELETE" });
+    if (answer.status !== 200 || answer.body.success === false) {
+      throw new Error(`deleting the DNS record ${record.type} ${name} (${record.content}) failed (${
+        answer.status}, ${JSON.stringify(codes(answer))}): run the handback again`);
+    }
   }
 
   /** Detaches the custom domain `id` from its Worker; a refusal throws. */
