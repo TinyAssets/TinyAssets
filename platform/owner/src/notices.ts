@@ -8,12 +8,11 @@
  * report that repeats can never grow the owner's storage. Each is added in one unit of the
  * object's write gate.
  */
+import { NOTICE_DETAIL } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 
 /** The newest notices kept; an older one goes as a new one comes. */
 export const NOTICES_KEPT = 1000;
-/** The characters a notice's detail keeps. */
-export const NOTICE_DETAIL = 1024;
 
 /** A notice's type and detail as kept: each cut to what its column holds. */
 function kept(type: string, detail: string): [string, string] {

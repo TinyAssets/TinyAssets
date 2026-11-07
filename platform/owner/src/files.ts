@@ -82,7 +82,7 @@ import { createHash } from "node:crypto";
 import { sha256Hex } from "../../contract/src/digest";
 import {
   BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, GC_GRACE_S, INLINE_BYTES, INTENT_ID_BYTES, LEASE_TTL_S,
-  MAX_LIST, MAX_SYNC_OPS,
+  MAX_LIST, MAX_PATH_BYTES, MAX_SYNC_OPS,
 } from "../../contract/src/limits";
 
 import { letGo } from "./edit";
@@ -93,7 +93,7 @@ import { inTime } from "./schedule";
 import { refuseErasing } from "./erasure";
 import { TIER_UNREAD } from "./tier";
 import {
-  AGENTS_OWNER_ONLY, ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, ownersOnly,
+  AGENTS_OWNER_ONLY, ancestors, isRoot, MAX_NAME_BYTES, nameOf, ownersOnly,
   parentOf, storedPath, TEMP, within, WORKSPACE,
 } from "./paths";
 import { codePoints, isPrintable, utf8Bytes } from "../../contract/src/text";

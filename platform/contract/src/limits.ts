@@ -34,6 +34,7 @@ export const MANIFEST_PARTS = 16_384;
  * Files this size or smaller are kept inline in the owner's object, so reading `AGENTS.md`
  * or a skill touches no bucket (a placed body's own threshold is `PLACE_BYTES`, ADR-035);
  * the sync writes a larger one through the files plane's upload.
+ * Frozen: the owner's schema spells it.
  */
 export const INLINE_BYTES = 4096;
 /** Ops in one sync commit. */
@@ -104,9 +105,43 @@ export const SIGNIN_PASTE_MAX = 4095;
 // it, never an edit of this line alone. The owner's frozen-bounds guard holds each one equal
 // to every place the SQL spells it (`owner/guards/frozen-bounds.test.ts`), so one changed
 // without the other fails. Each is a technical ceiling of the owner's database, its 10 GB of
-// which the owner-bound guard holds the worst case under half (`limits-audit.md`). One
-// frozen bound lives elsewhere: `RUNS_CEILING`, in `owner/src/tier.ts`, which the sandbox
-// template's tag reads from that file.
+// which the owner-bound guard holds the worst case under half (`limits-audit.md`). Three
+// frozen numbers live elsewhere: `RUNS_CEILING`, in `owner/src/tier.ts`, which the sandbox
+// template's tag reads from that file; `SEGMENT_LEAST_BYTES`, in `owner/src/segments.ts`,
+// which the segments' own seal derives; and `SHARE_BYTES`, the manifest's share charge.
+
+/** An outside client's sealed credential blob (`connections.ts`), in characters. */
+export const CONNECTION_BLOB_MAX = 64 * 1024;
+/**
+ * The models a connection keeps, as JSON, in bytes. The largest record of pi-ai 1.4.0's
+ * built-in catalogs, whole, is 607 bytes, so `maxModels` of the largest are about 607 KiB
+ * (the largest catalog is about 142 KB for its 386 models).
+ */
+export const MODELS_JSON_MAX = 640 * 1024;
+/**
+ * Where a connection's credential may be forwarded, as JSON, in bytes. A source record's
+ * endpoints are a few short paths (the largest bundled one is under 1 KiB), so a scope past
+ * it is refused at commit, loudly, rather than kept half.
+ */
+export const EGRESS_JSON_MAX = 16 * 1024;
+/** A connection flow's OAuth redirect URI, in characters (`connections.ts`). */
+export const REDIRECT_URI_MAX = 2048;
+/** The longest path an egress request names, as its row keeps it: visible ASCII. */
+export const EGRESS_PATH_MAX = 2048;
+/** An API key's name, in code points (`owner/src/keys.ts`; the doors say the same). */
+export const KEY_NAME_MAX = 80;
+/** An inbound binding's owner-held proof secret, in characters (`owner/src/inbound.ts`). */
+export const INBOUND_SECRET_MAX = 4096;
+/** An inbound binding's directory route (`h:<64 hex>` or `i:<app>:<kind>:<64 hex>`). */
+export const INBOUND_ROUTE_MAX = 160;
+/** The characters a notice's detail keeps (`owner/src/notices.ts`). */
+export const NOTICE_DETAIL = 1024;
+/** A stored file path's UTF-8 bytes at most (`owner/src/paths.ts`), a starter receipt's too. */
+export const MAX_PATH_BYTES = 4096;
+/** A grant's scopes' JSON, in UTF-8 bytes, as its row keeps it (`GRANT_LIMITS`). */
+export const SCOPES_JSON_MAX = 64 * 1024;
+/** A held registration's request, in characters (`CARD_LIMITS`). */
+export const CARD_REQUEST_MAX = 4096;
 
 /**
  * The placement rule's threshold (ADR-035): a collection row's, a history entry's or a

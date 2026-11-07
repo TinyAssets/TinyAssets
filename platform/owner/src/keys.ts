@@ -21,13 +21,11 @@
  * row does (the owner-bound guard counts `maxOwnerClients` of them).
  */
 import { HEX16 } from "../../contract/src/ids";
-import { MAX_KEYS } from "../../contract/src/limits";
+import { KEY_NAME_MAX, MAX_KEYS } from "../../contract/src/limits";
 import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
 
-/** A key's name, in code points (`doors/src/api-keys.ts` held it to the same). */
-export const KEY_NAME_MAX = 80;
 /** How stale a key's `last_used_at` may be before a call marks it again. */
 export const USE_INTERVAL_S = 60;
 /** The policy card an agent files to ask the owner for a key (`policyPropose`). */

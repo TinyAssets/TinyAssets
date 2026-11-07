@@ -25,6 +25,7 @@
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX64 } from "../../contract/src/ids";
 import { Invalid, Refused } from "../../contract/src/errors";
+import { CARD_REQUEST_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
 
@@ -50,7 +51,7 @@ export interface CardLimits {
 }
 
 export const CARD_LIMITS: CardLimits = Object.freeze({
-  maxPending: 200, perClient: 10, maxRequest: 4096,
+  maxPending: 200, perClient: 10, maxRequest: CARD_REQUEST_MAX,
 });
 
 /** A registration request's flat fields, as the door took them. */

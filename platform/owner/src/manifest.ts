@@ -130,7 +130,8 @@ export const SCOPE_REF_BYTES = (row: string): string =>
 export const CLIENT_WRITER = "client:*";
 /**
  * A share row's own charge: `recordBytes` of its `client:<id>` key (71 bytes), six
- * counters (9 bytes each at most) and `RECORD_FIXED` (a test ties the two).
+ * counters (9 bytes each at most) and `RECORD_FIXED` (a test ties the two). Frozen: the
+ * owner's schema spells it (the frozen-bounds guard holds the two equal).
  */
 export const SHARE_BYTES = 240;
 /** The share row every outside client's together is counted in. */

@@ -6,7 +6,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { WriteGate } from "../src/gate";
-import { NOTICE_DETAIL, Notices, NOTICES_KEPT } from "../src/notices";
+import { Notices, NOTICES_KEPT } from "../src/notices";
+import { NOTICE_DETAIL } from "../../contract/src/limits";
 import type { OwnerDO } from "../src/owner-do";
 import { MUSE, rig } from "./ledger-support";
 import { failure } from "./support";

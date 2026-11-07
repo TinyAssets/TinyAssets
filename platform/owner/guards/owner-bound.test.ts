@@ -49,20 +49,21 @@ import { exported } from "../src/export";
 import { LEDGER_LIMITS } from "../src/ledger";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
 import {
-  ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, CONVERSATION_ID_CHARS,
-  CONVERSATIONS_KEPT, CURSOR_CHARS, DOORBELL_BLOB_CHARS, ENGINE_SIGNINS, ERROR_BYTES,
-  IMAGE_MAX, INPUT_BYTES, LOG_BYTES, LOG_ROW_BYTES, MANIFEST_PARTS, MESSAGE_ID_CHARS,
-  NATIVE_ID_CHARS, PART_ENTRY, PLACE_BYTES, QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_ID_CHARS,
-  SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SEGMENT_ENTRY, SIGNIN_CODE_MAX,
-  SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS, SIGNIN_URL_MAX, SOCKET_TICKETS, SPEND_KEPT,
-  SUBSCRIPTIONS_PER_AGENT,
+  ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, CONNECTION_BLOB_MAX,
+  CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, CURSOR_CHARS, DOORBELL_BLOB_CHARS, EGRESS_JSON_MAX,
+  EGRESS_PATH_MAX, ENGINE_SIGNINS, ERROR_BYTES, IMAGE_MAX, INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX,
+  INPUT_BYTES, KEY_NAME_MAX, LOG_BYTES, LOG_ROW_BYTES, MANIFEST_PARTS, MAX_PATH_BYTES,
+  MESSAGE_ID_CHARS, MODELS_JSON_MAX, NATIVE_ID_CHARS, NOTICE_DETAIL, PART_ENTRY, PLACE_BYTES,
+  QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT,
+  SCOPES_JSON_MAX, SEGMENT_ENTRY, SIGNIN_CODE_MAX, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
+  SIGNIN_URL_MAX, SOCKET_TICKETS, SPEND_KEPT, SUBSCRIPTIONS_PER_AGENT,
 } from "../../contract/src/limits";
 import {
   INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, RECORD_FIXED,
   recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import { AUTOINDEXES } from "./autoindexes";
-import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
+import { NOTICES_KEPT } from "../src/notices";
 import { MIGRATIONS } from "../src/schema";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
@@ -169,7 +170,6 @@ const CONNECTION_LIMITS = declared("connections", "CONNECTION_LIMITS", "maxConne
                                    "maxRevokedKept", "maxModels", "maxFlowRows");
 const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "openPerRun", "receiptsKept",
                                "refusalsKept");
-const EGRESS_PATH_MAX = constant("egress", "EGRESS_PATH_MAX");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
                               "maxScopesBytes");
 const POLICY_LIMITS = declared("policy", "POLICY_LIMITS", "maxDocument", "maxChange",
@@ -178,7 +178,6 @@ const FILE_SETTINGS = declared("policy", "FILE_SETTINGS", "max_manifest_bytes");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
-const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
 /** The runs' bounds (slice R): live runs, settled receipts kept, and their rows' widths. */
 const RUNS_CEILING = constant("tier", "RUNS_CEILING");
 const RUNS_KEPT = constant("runs", "RUNS_KEPT");
@@ -190,25 +189,24 @@ const LIVE_KEPT = constant("sandbox-time", "LIVE_KEPT");
 const INLINE_FILE = constant("files", "INLINE_BYTES");
 /** The doors' records in the object (slice L): the key store and the inbound bindings. */
 const MAX_KEYS = constant("keys", "MAX_KEYS");
-const KEY_NAME_MAX = constant("keys", "KEY_NAME_MAX");
 const MAX_BINDINGS = constant("inbound", "MAX_BINDINGS");
-const SECRET_MAX = constant("inbound", "SECRET_MAX");
-const ROUTE_MAX = constant("inbound", "ROUTE_MAX");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
 /** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
 const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
 /** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
 const ORIGIN_CHARS = inline("schema", /origin TEXT CHECK \(origin IS NULL OR \(length\(origin\) <= ([0-9]+) /);
-/** A connection's models, as the schema's check holds them, in bytes (review L5-1). */
-const MODELS_BYTES = inline("schema", /length\(CAST\(models AS BLOB\)\) <= ([0-9]+)/);
-/** A connection's sealed blob, as the schema's check holds it, in characters. */
-const BLOB_CHARS = inline("schema", /length\(blob\) <= ([0-9]+)/);
-/** A connection's egress scope (migration 11), as the schema's check holds it, in bytes. */
-const EGRESS_BYTES = inline("schema", /length\(CAST\(egress AS BLOB\)\) <= ([0-9]+)/);
+/**
+ * A connection's models, in bytes (review L5-1), its sealed blob, in characters, and its
+ * egress scope (migration 11), in bytes: frozen bounds, which the schema's checks spell
+ * (the frozen-bounds guard holds the two equal).
+ */
+const MODELS_BYTES = MODELS_JSON_MAX;
+const BLOB_CHARS = CONNECTION_BLOB_MAX;
+const EGRESS_BYTES = EGRESS_JSON_MAX;
 /** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
 const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
-/** A grant's scopes, as the schema's check holds their JSON, in bytes. */
-const SCOPES_BYTES = inline("schema", /length\(CAST\(scopes AS BLOB\)\) <= ([0-9]+)/);
+/** A grant's scopes' JSON, in bytes: a frozen bound, which the schema's check spells. */
+const SCOPES_BYTES = SCOPES_JSON_MAX;
 /** A room id, in code points (`ledger.ts`), each up to four bytes. */
 const ROOM_CHARS = inline("ledger", /text\(roomId, ([0-9]+), "room_id"\)/);
 /** A client message id and a parent id, in code points (`ledger.ts`). */
@@ -649,12 +647,13 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                            sqlite_autoindex_owner_keys_2: key(64) } },
     // The inbound bindings (slice L): each its route, agent, owner-held proof and secret.
     inbound_bindings: { rows: MAX_BINDINGS,
-                        bytes: ROW + 32 + 10 + 64 + 9 + ROUTE_MAX + 1024 + 4 * SECRET_MAX + 64
+                        bytes: ROW + 32 + 10 + 64 + 9 + INBOUND_ROUTE_MAX + 1024
+                          + 4 * INBOUND_SECRET_MAX + 64
                           + 3 * 9,
                         by: "MAX_BINDINGS, each its id, kind, agent, revision, route, proof " +
                           "(ASCII), secret, breaker and times",
                         indexes: { sqlite_autoindex_inbound_bindings_1: key(32),
-                                   sqlite_autoindex_inbound_bindings_2: key(ROUTE_MAX) } },
+                                   sqlite_autoindex_inbound_bindings_2: key(INBOUND_ROUTE_MAX) } },
     // The starter package's receipts: one a path of the carried package, its path at its
     // widest and two content ids; and the one row of the version reconciled.
     starter_receipts: { rows: named("STARTER_FILES_MAX", "starter"),
@@ -959,7 +958,8 @@ describe("the owner's database bound", () => {
     expect([CALLS_OPEN, SPEND_KEPT, MODELS_BYTES, BLOB_CHARS])
       .toEqual([1000, 4300, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME]).toEqual([512, 80]);
-    // A grant's scopes are counted in bytes: the module's bound is the schema's ceiling.
+    // A grant's scopes are counted in bytes: the module's bound is the frozen bound the
+    // schema's check spells.
     expect([GRANT_LIMITS.maxScopesBytes, SCOPES_BYTES]).toEqual([65_536, 65_536]);
     expect([PLACE_BYTES, ROOM_CHARS, UNIVERSE_CHARS, CMID_CHARS, PROPOSAL_ID_CHARS])
       .toEqual([2048, 128, 512, 128, 128]);

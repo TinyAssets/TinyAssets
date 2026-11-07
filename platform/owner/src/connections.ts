@@ -68,6 +68,9 @@ import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
 import { Invalid, Refused } from "../../contract/src/errors";
+import {
+  CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODELS_JSON_MAX, REDIRECT_URI_MAX,
+} from "../../contract/src/limits";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
 import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
@@ -209,19 +212,6 @@ const B64URL = /^[A-Za-z0-9_-]+$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
 /** A setup check's failure: the gateway's fixed code. */
 const FAILURE = /^[a-z][a-z_]{0,63}$/;
-const BLOB_MAX = 64 * 1024;
-/**
- * The models a connection keeps, as JSON, in bytes: the schema's own ceiling. The largest record of
- * pi-ai 1.4.0's built-in catalogs, whole, is 607 bytes, so `maxModels` of the largest are
- * about 607 KiB (the largest catalog is about 142 KB for its 386 models).
- */
-export const MODELS_JSON_MAX = 640 * 1024;
-/**
- * Where a connection's credential may be forwarded, as JSON, in bytes: the schema's own ceiling. A
- * source record's endpoints are a few short paths (the largest bundled one is under 1 KiB),
- * so a scope past it is refused at commit, loudly, rather than kept half.
- */
-export const EGRESS_JSON_MAX = 16 * 1024;
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -275,7 +265,7 @@ function modelInfo(value: unknown): ModelRecord {
 
 /** A sealed blob as the gateway writes it: `v1.<kid>.<nonce>.<ciphertext>`. */
 function blobOf(value: unknown, kid: string): string {
-  if (typeof value !== "string" || value.length > BLOB_MAX) {
+  if (typeof value !== "string" || value.length > CONNECTION_BLOB_MAX) {
     throw new Invalid("invalid sealed credential");
   }
   const parts = value.split(".");
@@ -310,7 +300,7 @@ function base64url(bytes: Uint8Array): string {
 
 /** An https URL with no fragment, as an OAuth redirect URI must be (RFC 6749 §3.1.2). */
 function redirectUri(value: unknown): string {
-  if (typeof value !== "string" || value.length > 2048) {
+  if (typeof value !== "string" || value.length > REDIRECT_URI_MAX) {
     throw new Invalid("invalid redirect URI");
   }
   let url: URL;
