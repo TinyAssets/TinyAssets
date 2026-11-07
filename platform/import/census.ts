@@ -12,7 +12,8 @@
  */
 import { lstatSync, readdirSync } from "node:fs";
 
-import { FILE_DEFAULTS, INLINE_BYTES } from "../contract/src/limits";
+import { INLINE_BYTES } from "../contract/src/limits";
+import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 
 import { fileSha256, layout } from "./backup";
 import { type Built, buildTree, type Fit, fitOf, starterPaths, type Tiers } from "./build";

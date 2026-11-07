@@ -72,9 +72,8 @@ import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
 import type { SourceRecord } from "../../sources/src/schema";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { EGRESS_ORIGIN, egressBaseUrl, RUNNER_HEADER, sandboxEnv } from "../../contract/src/egress";
-import { LEASE_TTL_S } from "../../contract/src/limits";
+import { LEASE_TTL_S, SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
-import { SIGNIN_PASTE_MAX } from "../../contract/src/run-rows";
 
 import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
          WORKSPACE } from "./engine";

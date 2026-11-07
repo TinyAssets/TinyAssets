@@ -15,7 +15,7 @@
  * may stay a third full, so the guard counts the manifest at its high bound times
  * `WORST_FILL`, and a workerd test fills, thins and refills a database against it
  * (`files-share.test.ts`). The collection history is bounded the same way, in the bytes
- * its entries take (`HISTORY_CHARGE`, `maxHistoryCharge`). Every other table's rows are
+ * its entries take (their triggers' charge, `maxHistoryCharge`). Every other table's rows are
  * laid out as SQLite lays them, their share of a b-tree page at that worst fill too (at most
  * the whole page: a record is on its page however thinned), their overflow pages whole
  * (`termBytes`). A body past `PLACE_BYTES` is never in a row (ADR-035): it is in R2, and
@@ -48,18 +48,25 @@ import { LIMITS as COLLECTIONS } from "../src/collections";
 import { exported } from "../src/export";
 import { LEDGER_LIMITS } from "../src/ledger";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
-import { CHUNK_BYTES, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
-  INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES, RECORD_FIXED,
+  ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, CONNECTION_BLOB_MAX,
+  CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, CURSOR_CHARS, DOORBELL_BLOB_CHARS, EGRESS_JSON_MAX,
+  EGRESS_PATH_MAX, ENGINE_SIGNINS, ERROR_BYTES, IMAGE_MAX, INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX,
+  INPUT_BYTES, KEY_NAME_MAX, LOG_BYTES, LOG_ROW_BYTES, MANIFEST_PARTS, MAX_PATH_BYTES,
+  MESSAGE_ID_CHARS, MODELS_JSON_MAX, NATIVE_ID_CHARS, NOTICE_DETAIL, PART_ENTRY, PLACE_BYTES,
+  QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT,
+  SCOPES_JSON_MAX, SEGMENT_ENTRY, SIGNIN_CODE_MAX, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
+  SIGNIN_URL_MAX, SOCKET_TICKETS, SPEND_KEPT, SUBSCRIPTIONS_PER_AGENT,
+} from "../../contract/src/limits";
+import {
+  INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, RECORD_FIXED,
   recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import { AUTOINDEXES } from "./autoindexes";
-import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
+import { NOTICES_KEPT } from "../src/notices";
+import { MIGRATIONS } from "../src/schema";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
-import {
-  ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT,
-} from "../../contract/src/wake-records";
 import { PLATFORM } from "../../ci/paths";
 
 const SRC = join(PLATFORM, "owner", "src");
@@ -68,11 +75,14 @@ function source(module: string): string {
   return readFileSync(join(SRC, `${module}.ts`), "utf8");
 }
 
+/** The owner's schema: its migrations' SQL, every statement in order, as the object runs it. */
+const SCHEMA = MIGRATIONS.flat().join("\n");
+
 /** A numeric constant's expression: `const NAME = <expr>;`, exported or the module's own. */
 const NUMERIC = (name: string) =>
   new RegExp(`(?:^|\\n)(?:export )?const ${name}(?:: number)? = ([0-9A-Z_ *+()-]+);`);
 
-/** Where the bounds the schema reads are spelled: the owner's sources and the contract's. */
+/** Where the bounds the guard reads are spelled: the owner's sources and the contract's. */
 const BOUND_SOURCES: readonly string[] = Object.freeze([SRC, join(PLATFORM, "contract", "src")]);
 
 /**
@@ -144,9 +154,12 @@ function constant(module: string, name: string): number {
   return named(name, module);
 }
 
-/** A bound a source spells inline, by the pattern that finds its number. */
+/**
+ * A bound a source spells inline (the schema's SQL for `schema`), by the pattern that finds
+ * its number.
+ */
 function inline(module: string, pattern: RegExp): number {
-  const found = pattern.exec(source(module));
+  const found = pattern.exec(module === "schema" ? SCHEMA : source(module));
   if (found === null) {
     throw new Error(`${module}.ts holds no ${pattern}`);
   }
@@ -157,7 +170,6 @@ const CONNECTION_LIMITS = declared("connections", "CONNECTION_LIMITS", "maxConne
                                    "maxRevokedKept", "maxModels", "maxFlowRows");
 const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "openPerRun", "receiptsKept",
                                "refusalsKept");
-const EGRESS_PATH_MAX = constant("egress", "EGRESS_PATH_MAX");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
                               "maxScopesBytes");
 const POLICY_LIMITS = declared("policy", "POLICY_LIMITS", "maxDocument", "maxChange",
@@ -166,62 +178,35 @@ const FILE_SETTINGS = declared("policy", "FILE_SETTINGS", "max_manifest_bytes");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
-const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
-const CALLS_OPEN = constant("schema", "CALLS_OPEN");
 /** The runs' bounds (slice R): live runs, settled receipts kept, and their rows' widths. */
 const RUNS_CEILING = constant("tier", "RUNS_CEILING");
-const RUNS_KEPT = constant("run-rows", "RUNS_KEPT");
-const RUN_ID_CHARS = constant("run-rows", "RUN_ID_CHARS");
-const RESULT_BYTES = constant("run-rows", "RESULT_BYTES");
-const ERROR_BYTES = constant("run-rows", "ERROR_BYTES");
-const CONVERSATIONS_KEPT = constant("run-rows", "CONVERSATIONS_KEPT");
-const SCHEDULES_KEPT = constant("run-rows", "SCHEDULES_KEPT");
-const INPUT_BYTES = constant("run-rows", "INPUT_BYTES");
-const QUEUE_ROWS = constant("run-rows", "QUEUE_ROWS");
-const QUEUE_BYTES = constant("run-rows", "QUEUE_BYTES");
-const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
-const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
-const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
-const SIGNIN_URL_MAX = constant("run-rows", "SIGNIN_URL_MAX");
-const SIGNIN_CODE_MAX = constant("run-rows", "SIGNIN_CODE_MAX");
-const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
-const CURSOR_CHARS = constant("export", "CURSOR_CHARS");
-const PART_ENTRY = constant("backup", "PART_ENTRY");
+const RUNS_KEPT = constant("runs", "RUNS_KEPT");
 const EXPORTS_OPEN = constant("export", "EXPORTS_OPEN");
 const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");
 const DAYS_KEPT = constant("sandbox-time", "DAYS_KEPT");
 const BILLED_KEPT = constant("sandbox-time", "BILLED_KEPT");
 const LIVE_KEPT = constant("sandbox-time", "LIVE_KEPT");
-export const LOG_BYTES = constant("changelog", "LOG_BYTES");
-export const LOG_ROW_BYTES = constant("changelog", "LOG_ROW_BYTES");
 const INLINE_FILE = constant("files", "INLINE_BYTES");
-const SEGMENT_ENTRY = constant("backup", "SEGMENT_ENTRY");
-export const IMAGE_MAX = constant("changelog", "IMAGE_MAX");
 /** The doors' records in the object (slice L): the key store and the inbound bindings. */
 const MAX_KEYS = constant("keys", "MAX_KEYS");
-const KEY_NAME_MAX = constant("keys", "KEY_NAME_MAX");
 const MAX_BINDINGS = constant("inbound", "MAX_BINDINGS");
-const SECRET_MAX = constant("inbound", "SECRET_MAX");
-const ROUTE_MAX = constant("inbound", "ROUTE_MAX");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
-const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
-const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
-const AUTHORITY_CHARS = constant("run-rows", "AUTHORITY_CHARS");
 /** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
 const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
 /** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
 const ORIGIN_CHARS = inline("schema", /origin TEXT CHECK \(origin IS NULL OR \(length\(origin\) <= ([0-9]+) /);
-const SPEND_KEPT = constant("schema", "SPEND_KEPT");
-/** A connection's models, as the schema's check holds them, in bytes (review L5-1). */
-const MODELS_BYTES = inline("schema", /length\(CAST\(models AS BLOB\)\) <= ([0-9]+)/);
-/** A connection's sealed blob, as the schema's check holds it, in characters. */
-const BLOB_CHARS = inline("schema", /length\(blob\) <= ([0-9]+)/);
-/** A connection's egress scope (migration 11), as the schema's check holds it, in bytes. */
-const EGRESS_BYTES = inline("schema", /length\(CAST\(egress AS BLOB\)\) <= ([0-9]+)/);
+/**
+ * A connection's models, in bytes (review L5-1), its sealed blob, in characters, and its
+ * egress scope (migration 11), in bytes: frozen bounds, which the schema's checks spell
+ * (the frozen-bounds guard holds the two equal).
+ */
+const MODELS_BYTES = MODELS_JSON_MAX;
+const BLOB_CHARS = CONNECTION_BLOB_MAX;
+const EGRESS_BYTES = EGRESS_JSON_MAX;
 /** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
 const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
-/** A grant's scopes, as the schema's check holds their JSON, in bytes. */
-const SCOPES_BYTES = inline("schema", /length\(CAST\(scopes AS BLOB\)\) <= ([0-9]+)/);
+/** A grant's scopes' JSON, in bytes: a frozen bound, which the schema's check spells. */
+const SCOPES_BYTES = SCOPES_JSON_MAX;
 /** A room id, in code points (`ledger.ts`), each up to four bytes. */
 const ROOM_CHARS = inline("ledger", /text\(roomId, ([0-9]+), "room_id"\)/);
 /** A client message id and a parent id, in code points (`ledger.ts`). */
@@ -237,8 +222,6 @@ const AGENT_ID = 22;
 const MESSAGE_ID = 36;
 /** A proposal's or card's id, in code points (`policy.ts`). */
 const PROPOSAL_ID_CHARS = inline("policy", /codePoints\(value\) <= ([0-9]+)/);
-const CONVERSATION_ID_CHARS = constant("run-rows", "CONVERSATION_ID_CHARS");
-const SCHEDULE_ID_CHARS = constant("run-rows", "SCHEDULE_ID_CHARS");
 /** An integer's or a real's most bytes in a record. */
 const NUMBER = 9;
 /** A content id: 64 hex (ADR-035's placed body, the files plane's content). */
@@ -284,7 +267,7 @@ export interface Term {
  * The tables the schema makes `WITHOUT ROWID`, by their final names: their records are
  * kept as an index's are.
  */
-export function withoutRowid(schema: string = source("schema")): Set<string> {
+export function withoutRowid(schema: string = SCHEMA): Set<string> {
   const tables = new Set<string>();
   const statements = /CREATE TABLE ([a-zA-Z_0-9]+) |ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)|DROP TABLE ([a-zA-Z_0-9]+)/g;
   for (const match of schema.matchAll(statements)) {
@@ -502,8 +485,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                         "replaced, kid, last wake and numbers",
                       indexes: { wake_callbacks_by_agent: key(AGENT_ID, 36) } },
     // The rows in bytes, as SQLite lays them out with their five index entries, whatever
-    // their names (`ROW_CHARGE`), each collection's seq row and each writer's counter with
-    // them: refused past `maxRowsCharge`. A body past PLACE_BYTES is in R2 (ADR-035).
+    // their names (their triggers' charge), each collection's seq row and each writer's
+    // counter with them: refused past `maxRowsCharge`. A body past PLACE_BYTES is in R2 (ADR-035).
     collection_rows: { rows: 1, bytes: C.maxRowsCharge, charged: true,
                        by: "maxRowsCharge at WORST_FILL, charged by their triggers",
                        tables: ["collection_rows", "collection_seqs", "collection_usage"],
@@ -512,7 +495,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                   collection_writers: 0, collection_creators: 0,
                                   collection_changes: 0,
                                   sqlite_autoindex_collection_seqs_1: 0 } },
-    // The history in bytes, as SQLite lays its entries out (`HISTORY_CHARGE`), erased keys'
+    // The history in bytes, as SQLite lays its entries out (its triggers' charge), erased keys'
     // tombstones among them, pruned at it.
     collection_history: { rows: 1, bytes: C.maxHistoryCharge, charged: true,
                           by: "maxHistoryCharge at WORST_FILL, charged by its triggers",
@@ -664,12 +647,13 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                            sqlite_autoindex_owner_keys_2: key(64) } },
     // The inbound bindings (slice L): each its route, agent, owner-held proof and secret.
     inbound_bindings: { rows: MAX_BINDINGS,
-                        bytes: ROW + 32 + 10 + 64 + 9 + ROUTE_MAX + 1024 + 4 * SECRET_MAX + 64
+                        bytes: ROW + 32 + 10 + 64 + 9 + INBOUND_ROUTE_MAX + 1024
+                          + 4 * INBOUND_SECRET_MAX + 64
                           + 3 * 9,
                         by: "MAX_BINDINGS, each its id, kind, agent, revision, route, proof " +
                           "(ASCII), secret, breaker and times",
                         indexes: { sqlite_autoindex_inbound_bindings_1: key(32),
-                                   sqlite_autoindex_inbound_bindings_2: key(ROUTE_MAX) } },
+                                   sqlite_autoindex_inbound_bindings_2: key(INBOUND_ROUTE_MAX) } },
     // The starter package's receipts: one a path of the carried package, its path at its
     // widest and two content ids; and the one row of the version reconciled.
     starter_receipts: { rows: named("STARTER_FILES_MAX", "starter"),
@@ -699,7 +683,7 @@ export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<stri
  * rename moving a table and a drop taking one away. The migration mechanism's own two
  * (`migrate.ts`) are the owner's too.
  */
-export function ownerTables(schema = `${source("migrate")}\n${source("schema")}`): string[] {
+export function ownerTables(schema = `${source("migrate")}\n${SCHEMA}`): string[] {
   const tables = new Set<string>();
   const statements = /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?([a-zA-Z_0-9]+)|ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)|DROP TABLE (?:IF EXISTS )?([a-zA-Z_0-9]+)/g;
   for (const [, made, from, to, dropped] of schema.matchAll(statements)) {
@@ -718,13 +702,13 @@ export function ownerTables(schema = `${source("migrate")}\n${source("schema")}`
 
 /** The indexes the schema makes on `table`, by name. */
 function indexesOn(table: string): string[] {
-  return [...source("schema").matchAll(
+  return [...SCHEMA.matchAll(
     /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
     .filter((match) => match[2] === table).map((match) => match[1]!).sort();
 }
 
 /** The indexes the schema makes on the manifest's tables. */
-export function manifestIndexes(schema: string = source("schema")): string[] {
+export function manifestIndexes(schema: string = SCHEMA): string[] {
   return [...schema.matchAll(/CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
     .filter((match) => Object.hasOwn(MANIFEST_TABLES, match[2]!)).map((match) => match[1]!)
     .sort();
@@ -741,7 +725,7 @@ export function covered(terms: Readonly<Record<string, Term>> = TERMS): string[]
  * Every index the owner's schema makes outside the manifest's (which its charge covers):
  * each `CREATE INDEX` it spells, and each SQLite makes on its own (`AUTOINDEXES`).
  */
-export function ownerIndexes(schema: string = source("schema")): string[] {
+export function ownerIndexes(schema: string = SCHEMA): string[] {
   const spelled = [...schema.matchAll(
     /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
     .filter((match) => !Object.hasOwn(MANIFEST_TABLES, match[2]!)).map((match) => match[1]!);
@@ -758,13 +742,15 @@ export function chargedIndexes(terms: Readonly<Record<string, Term>> = TERMS): s
  * an insert into (and a delete from) the table it is charged through, moving
  * `manifest_bytes`. A content's chunk list is charged through its content.
  */
-export function uncharged(schema: string = source("schema")): string[] {
+export function uncharged(schema: string = SCHEMA): string[] {
   const missing: string[] = [];
   for (const [table, [added, removed]] of Object.entries(MANIFEST_TABLES)) {
     const on = table === "file_content_chunks" ? "file_contents" : table;
     for (const [trigger, event] of [[added, "INSERT"], [removed, "DELETE"]] as const) {
       const at = schema.lastIndexOf(`CREATE TRIGGER ${trigger} AFTER ${event} ON ${on} `);
-      const body = at < 0 ? "" : schema.slice(at, schema.indexOf(" END", at));
+      // The trigger's whole statement: the schema holds one a line.
+      const end = schema.indexOf("\n", at);
+      const body = at < 0 ? "" : schema.slice(at, end < 0 ? schema.length : end);
       if (!body.includes("manifest_bytes")) {
         missing.push(`${table}: ${trigger}`);
       }
@@ -851,7 +837,7 @@ const IMAGE_STEP = 256 * 1024;
 /** A Durable Object's SQLite row, at most: one change log row holds one image. */
 const ROW_MAX = 2_000_000;
 
-/** The widest row image one change writes (`schema.ts` `LOGGED`), every exported table's. */
+/** The widest row image one change writes (the capture triggers), every exported table's. */
 export function widestImage(terms: Readonly<Record<string, Term>> = TERMS): number {
   const tables = exported();
   const frame = (table: string) => `{"t":"row","table":"${table}","row":{}}`.length
@@ -906,7 +892,7 @@ describe("the owner's database bound", () => {
     expect(indexes.length).toBeGreaterThan(50);
     expect(chargedIndexes()).toEqual(indexes);
     // An index added without a term's entry, or a term's entry for none, is seen.
-    expect(ownerIndexes(`${source("schema")} "CREATE INDEX runs_by_agent ON runs (agent)"`))
+    expect(ownerIndexes(`${SCHEMA}\nCREATE INDEX runs_by_agent ON runs (agent)`))
       .toContain("runs_by_agent");
     const { runs: _runs, ...fewer } = TERMS;
     expect(indexes.filter((index) => !chargedIndexes(fewer).includes(index)))
@@ -915,23 +901,21 @@ describe("the owner's database bound", () => {
 
   it("keeps the partial index on the segments under the least at SEGMENT_LEAST_BYTES", () => {
     // Its one entry (`archive_segments_small`) holds while its bound is the least's.
-    expect(source("schema")).toContain(
-      `ON archive_segments (bytes) WHERE bytes < ${SEGMENT_LEAST_BYTES}`);
+    expect(SCHEMA).toContain(`ON archive_segments (bytes) WHERE bytes < ${SEGMENT_LEAST_BYTES}`);
   });
 
   it("finds every manifest table charged by the schema's triggers, and every index charged",
      () => {
     expect(uncharged()).toEqual([]);
     // A trigger that charges nothing, or none, is seen.
-    const schema = source("schema");
-    expect(uncharged(schema.replaceAll("CREATE TRIGGER file_history_added", "CREATE TRIGGER x")))
+    expect(uncharged(SCHEMA.replaceAll("CREATE TRIGGER file_history_added", "CREATE TRIGGER x")))
       .toEqual(["file_history: file_history_added"]);
-    const charge = /(CREATE TRIGGER file_temps_removed AFTER DELETE ON file_temps BEGIN )[^`]*`/;
-    expect(uncharged(schema.replace(charge, "$1 END`")))
+    const charge = /(CREATE TRIGGER file_temps_removed AFTER DELETE ON file_temps BEGIN ).*? END$/m;
+    expect(uncharged(SCHEMA.replace(charge, "$1 END")))
       .toEqual(["file_temps: file_temps_removed"]);
     expect(manifestIndexes()).toEqual([...MANIFEST_INDEXES].sort());
-    expect(manifestIndexes(`${schema} "CREATE INDEX file_entries_by_writer ON file_entries ` +
-                           '(writer)"')).toContain("file_entries_by_writer");
+    expect(manifestIndexes(`${SCHEMA}\nCREATE INDEX file_entries_by_writer ON file_entries ` +
+                           "(writer)")).toContain("file_entries_by_writer");
   });
 
   it("keeps its worst case, at the policy's high bounds, under half the 10 GB", () => {
@@ -974,7 +958,8 @@ describe("the owner's database bound", () => {
     expect([CALLS_OPEN, SPEND_KEPT, MODELS_BYTES, BLOB_CHARS])
       .toEqual([1000, 4300, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME]).toEqual([512, 80]);
-    // A grant's scopes are counted in bytes: the module's bound is the schema's ceiling.
+    // A grant's scopes are counted in bytes: the module's bound is the frozen bound the
+    // schema's check spells.
     expect([GRANT_LIMITS.maxScopesBytes, SCOPES_BYTES]).toEqual([65_536, 65_536]);
     expect([PLACE_BYTES, ROOM_CHARS, UNIVERSE_CHARS, CMID_CHARS, PROPOSAL_ID_CHARS])
       .toEqual([2048, 128, 512, 128, 128]);
@@ -988,16 +973,16 @@ describe("the owner's database bound", () => {
     expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 16 * 1_000);
     expect(EGRESS_PATH_MAX).toBe(2048);
     // The path is visible ASCII, so a character is a byte (the schema's CHECK).
-    expect(source("schema")).toContain("\"path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND " +
-                                       "2048 AND \" +\n      \"path NOT GLOB '*[^ -~]*'), \" +");
+    expect(SCHEMA).toContain("path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND 2048 AND " +
+                             "path NOT GLOB '*[^ -~]*'), ");
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
       .toBe(3000 * (256 + 8 + 32 + 8) + 1000 * (65_536 + 80 * 4) + 1000 * 80 * 4);
     // The structural bounds (ADR-035): one recipient a message; history in bytes.
     expect(TERMS["ledger_recipients"]!.rows).toBe(LEDGER_LIMITS.maxMessages);
     expect(TERMS["collection_history"]).toMatchObject({ rows: 1, charged: true,
                                                          bytes: COLLECTIONS.maxHistoryCharge });
-    expect(source("schema")).toContain("\"message_id TEXT NOT NULL PRIMARY KEY, agent_id TEXT " +
-                                       "NOT NULL, seq INTEGER NOT NULL, \" +");
+    expect(SCHEMA).toContain("message_id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, " +
+                             "seq INTEGER NOT NULL, ");
   });
 
   it("charges every index of slice ID's tables: the identities and the mail threads add none",
@@ -1010,22 +995,25 @@ describe("the owner's database bound", () => {
     expect(indexesOn("ledger_recipients"))
       .toEqual(["recipients_by_seq", "recipients_by_state", "recipients_unacked"]);
     expect(indexesOn("ledger_messages")).toEqual(["messages_done"]);
-    expect(source("schema")).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
+    expect(SCHEMA).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
   });
 
   it("charges slice M's indexes: the change orders of the rows and the erase entries", () => {
-    // Each charged by its table's trigger-kept charge: `collection_changes` a row's in
-    // `ROW_CHARGE`, `collection_erasures` a delete's or clear's history entry's in
-    // `HISTORY_CHARGE`, partial on them alone.
+    // Each charged by its table's trigger-kept charge: `collection_changes` a row's, in the
+    // rows' triggers, `collection_erasures` a delete's or clear's history entry's, in the
+    // history's, partial on them alone.
     expect(indexesOn("collection_rows"))
       .toEqual(["collection_changes", "collection_creators", "collection_writers"]);
     expect(indexesOn("collection_history"))
       .toEqual(["collection_erasures", "collection_history_by_age"]);
-    expect(source("schema")).toContain(
+    expect(SCHEMA).toContain(
       "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL");
     expect(TERMS["collection_rows"]!.indexes).toHaveProperty("collection_changes", 0);
     expect(TERMS["collection_history"]!.indexes).toHaveProperty("collection_erasures", 0);
-    expect(source("schema")).toMatch(/collection_erasures`/);
+    // A delete's or clear's entry (its change set) charges its `collection_erasures` entry.
+    expect(MIGRATIONS.flat().find((sql) => sql.startsWith(
+      "CREATE TRIGGER collection_history_added "))).toContain(
+      "CASE WHEN NEW.change IS NULL THEN 0 ELSE ");
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {
@@ -1035,9 +1023,8 @@ describe("the owner's database bound", () => {
   it("counts every registration row, a disabled agent's among them, which the " +
      "registry refuses past", () => {
     // Every row is counted as it is made and refused past maxAgentRows; a disabled one too.
-    expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
-                                       "outside_agents BEGIN \" +\n      \"UPDATE ledger_usage " +
-                                       "SET agents = agents + 1, \" +");
+    expect(SCHEMA).toContain("CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
+                             "outside_agents BEGIN UPDATE ledger_usage SET agents = agents + 1, ");
     expect(source("ledger")).toContain("if (usage.agents >= limits.maxAgentRows) {");
   });
 

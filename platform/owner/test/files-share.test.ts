@@ -9,7 +9,10 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
+import {
+  CALLS_OPEN, CHUNK_BYTES, INLINE_BYTES, MAX_PATH_BYTES, SPEND_KEPT,
+} from "../../contract/src/limits";
+import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { FILE_QUOTA, FILE_SHARE, type Files, MAX_OPEN_INTENTS } from "../src/files";
 import { sha256Hex } from "../../contract/src/digest";
 import { WriteGate } from "../src/gate";
@@ -18,12 +21,8 @@ import {
   PAGE_USABLE, RECORD_FIXED, record, recordBytes, SHARE_BYTES, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import type { OwnerDO } from "../src/owner-do";
-import { MAX_PATH_BYTES } from "../../contract/src/paths";
 import { FILE_SETTINGS } from "../src/policy";
-import { FILE_DEFAULTS } from "../../contract/src/limits";
-import {
-  CALLS_OPEN, MIGRATIONS, SPEND_KEPT,
-} from "../src/schema";
+import { MIGRATIONS } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, filesOn, inFiles, sqlIn, text } from "./support";
 

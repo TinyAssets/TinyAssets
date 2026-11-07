@@ -28,19 +28,6 @@
  */
 import { CHUNK_BYTES } from "../../contract/src/limits";
 
-/**
- * The placement rule's threshold (ADR-035): a collection row's, a history entry's or a
- * message's body of more UTF-8 bytes than this is never kept in the object's SQLite but in
- * R2, through the files plane. A rowid table keeps a record of at most 4,061 bytes in place
- * (`TABLE_KEPT`); past it the record spills onto overflow pages read with every read of the
- * row. Half of that room is the body's, the other half the row's own names, ids and numbers
- * (a collection row's collection, row id, writer, creator, etag, content id and files scope
- * take up to about 1,700 bytes at the names a caller usually picks), so a row at the
- * threshold keeps in its page. Past it a body costs an R2 put ($4.50 a million) and get
- * ($0.36 a million), which its SQLite storage ($0.20 a GB-month against R2's $0.015) pays
- * for within a year at 2 KiB.
- */
-export const PLACE_BYTES = 2048;
 /** SQLite's page in the object's database. */
 export const PAGE_BYTES = 4096;
 /**
@@ -143,7 +130,8 @@ export const SCOPE_REF_BYTES = (row: string): string =>
 export const CLIENT_WRITER = "client:*";
 /**
  * A share row's own charge: `recordBytes` of its `client:<id>` key (71 bytes), six
- * counters (9 bytes each at most) and `RECORD_FIXED` (a test ties the two).
+ * counters (9 bytes each at most) and `RECORD_FIXED` (a test ties the two). Frozen: the
+ * owner's schema spells it (the frozen-bounds guard holds the two equal).
  */
 export const SHARE_BYTES = 240;
 /** The share row every outside client's together is counted in. */

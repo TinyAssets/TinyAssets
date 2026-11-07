@@ -4,7 +4,7 @@
  * must have, and whether it is switched on. Checked in the sandbox's VM before a prompt
  * leaves it, and again on the trusted side.
  */
-import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/run-rows";
+import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/limits";
 
 import type { SourceRecord, Sources } from "./schema";
 

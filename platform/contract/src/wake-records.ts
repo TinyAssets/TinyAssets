@@ -98,22 +98,13 @@ const PUSH_KEYS = "auth,body,callback,events,headers,max_body_bytes,mechanism,se
 const EVENTS_KEYS = "default_ttl_ms,description,name,rotation_grace_s,verify_error_code," +
   "verify_timeout_ms";
 /**
- * A callback URL's and secret's characters at most, and a subscription's canonical
- * arguments': technical ceilings, the subscriptions' share of the owner's database
- * (the doorbell's subscriptions, the owner-bound guard; `limits-audit.md`).
+ * A callback URL's and secret's characters at most (a subscription's canonical arguments'
+ * are `ARGUMENTS_CHARS`, a frozen bound of the owner's schema, in `limits.ts`): technical
+ * ceilings, the subscriptions' share of the owner's database (the doorbell's subscriptions,
+ * the owner-bound guard; `limits-audit.md`).
  */
 export const CALLBACK_URL_CHARS = 2048;
 export const CALLBACK_SECRET_CHARS = 512;
-export const ARGUMENTS_CHARS = 1024;
-/**
- * Doorbell subscriptions one agent holds (its client's dots and Work chats, or the owner's
- * pasted tokens), and a sealed blob's characters at most (a callback's URL and secret,
- * sealed and encoded): technical ceilings, each enabled agent's share of the owner's
- * database (`maxAgents` times this, the owner-bound guard; `limits-audit.md`). Per agent,
- * so no client fills another agent's room, nor the owner's own.
- */
-export const SUBSCRIPTIONS_PER_AGENT = 16;
-export const DOORBELL_BLOB_CHARS = 8192;
 /** A Standard Webhooks key's decoded bytes (OpenAI's page: 24 to 64). */
 const WHSEC = Object.freeze({ low: 24, high: 64 });
 /**

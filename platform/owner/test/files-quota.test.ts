@@ -8,9 +8,8 @@ import { describe, expect, it } from "vitest";
 
 import { storageFull, storageFullMessage, storageFullOf } from "../src/storage-full";
 
-import {
-  CHUNK_BYTES, FILE_DEFAULTS, INLINE_BYTES, MAX_INTENT_CHUNKS,
-} from "../../contract/src/limits";
+import { CHUNK_BYTES, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
+import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { type FileLimits, KEEP_CEILING } from "../src/files";
 import { canonical, DEFAULT_POLICY_JSON, FILE_SETTINGS } from "../src/policy";
 import type { OwnerDO } from "../src/owner-do";

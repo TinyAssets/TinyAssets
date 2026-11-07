@@ -36,10 +36,11 @@ import {
 } from "../../sources/src/signin";
 
 import { Invalid, Refused } from "../../contract/src/errors";
-import { LEASE_TTL_S } from "../../contract/src/limits";
+import {
+  ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
+} from "../../contract/src/limits";
 import { OWNER_AUTHORITY } from "./files";
 import type { OwnerStorage } from "./gate";
-import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX } from "../../contract/src/run-rows";
 import { isPrintable } from "../../contract/src/text";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */

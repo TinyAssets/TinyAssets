@@ -17,7 +17,8 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { contentIdOf } from "../../contract/src/content";
-import { CHUNK_BYTES, FILE_DEFAULTS, INLINE_BYTES } from "../../contract/src/limits";
+import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
+import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { type Entry, type Row } from "../build";
 import {
   buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, pages, PAGE_ROWS,

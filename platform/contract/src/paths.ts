@@ -20,12 +20,12 @@
  * goals and the owner's profile.
  */
 import { Invalid } from "./errors";
+import { MAX_PATH_BYTES } from "./limits";
 import { utf8Bytes } from "./text";
 
 export const WORKSPACE = "/workspace";
 export const TEMP = "/.ta/tmp";
 export const ROOTS: readonly string[] = Object.freeze([WORKSPACE, TEMP]);
-export const MAX_PATH_BYTES = 4096;
 export const MAX_NAME_BYTES = 255;
 const LONE_SURROGATE = /\p{Cs}/u;
 

@@ -10,7 +10,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { OwnerDO } from "../../owner/src/owner-do";
-import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/wake-records";
+import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { mcpOrigin } from "../src/binder";
 import {

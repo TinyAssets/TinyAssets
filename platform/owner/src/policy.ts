@@ -72,7 +72,8 @@ import { sha256Hex } from "../../contract/src/digest";
 
 import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
-import { CHUNK_BYTES, FILE_DEFAULTS, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
+import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
+import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { KEEP_CEILING } from "./files";
 import { checkDestination } from "./network";
 import { profileNames, toolNames } from "../../doors/src/tools";

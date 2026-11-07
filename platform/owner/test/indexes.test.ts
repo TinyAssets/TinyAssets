@@ -11,9 +11,9 @@ import { describe, expect, it } from "vitest";
 import { AUTOINDEXES } from "../guards/autoindexes";
 import { Collections, LIMITS } from "../src/collections";
 import {
-  INDEX_KEPT, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES, RECORD_FIXED, recordLayout, TABLE_KEPT,
-  WORST_FILL,
+  INDEX_KEPT, MANIFEST_TABLES, PAGE_BYTES, RECORD_FIXED, recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
+import { PLACE_BYTES } from "../../contract/src/limits";
 import type { OwnerDO } from "../src/owner-do";
 import { ownerObject } from "./support";
 

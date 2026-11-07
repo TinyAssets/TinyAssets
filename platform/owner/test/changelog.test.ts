@@ -8,12 +8,12 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { MANIFEST_LOG_OVERFLOW } from "../src/backup";
-import { ChangeLog, IMAGE_MAX, LOG_BYTES, LOG_WIDE } from "../src/changelog";
+import { ChangeLog, LOG_WIDE } from "../src/changelog";
 import { exported } from "../src/export";
-import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
+import { CHUNK_BYTES, IMAGE_MAX, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
-import { LOGGED } from "../src/schema";
+import { MIGRATIONS } from "../src/schema";
 import { digest, generate, type Line, owner, replay, standing } from "./generation-support";
 import { filesOn, sqlIn } from "./support";
 
@@ -328,9 +328,13 @@ describe("the change log", () => {
       const sql = gate.storage.sql;
       const log = new ChangeLog(gate.storage);
       await gate.write(() => {
-        // A table no exported one is (the guard holds every exported row's image under it).
+        // A table no exported one is (the guard holds every exported row's image under it),
+        // captured by the schema's own trigger for a two-column table, renamed to it.
         sql.exec("CREATE TABLE wide_probe (k TEXT PRIMARY KEY, v TEXT)");
-        sql.exec(LOGGED("wide_probe", "k v", "k", "INSERT"));
+        const logged = MIGRATIONS.flat()
+          .find((each) => each.startsWith("CREATE TRIGGER ledger_ids_logged_insert "))!;
+        sql.exec(logged.replaceAll("ledger_ids", "wide_probe").replace(/\bonly\b/g, "k")
+          .replace(/\bid_key\b/g, "v"));
         log.begin("0123456789abcdef");
       });
       await gate.write(() => sql.exec("INSERT INTO wide_probe (k, v) VALUES ('w', ?)",

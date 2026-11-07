@@ -23,7 +23,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { chunkedId, inlineId } from "../contract/src/content";
 import { sha256Hex } from "../contract/src/digest";
-import { CHUNK_BYTES, FILE_DEFAULTS, INLINE_BYTES } from "../contract/src/limits";
+import { CHUNK_BYTES, INLINE_BYTES } from "../contract/src/limits";
+import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { ancestors, WORKSPACE } from "../contract/src/paths";
 import starterJson from "../starter/starter.json" with { type: "json" };
 

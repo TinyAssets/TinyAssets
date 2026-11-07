@@ -103,7 +103,10 @@ import {
 import {
   type Lease as PoolLease, SlotBusy, type SlotPool, slotted,
 } from "../../contract/src/slots";
-import { BATCH_BYTES, CHUNK_BYTES, INLINE_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits";
+import {
+  BATCH_BYTES, CHUNK_BYTES, ENGINE_SIGNINS, GC_GRACE_S, INLINE_BYTES, PLACE_BYTES,
+  SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS, SLOT_WAIT_MS,
+} from "../../contract/src/limits";
 import { createHash } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -132,9 +135,6 @@ import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type MailAn
          type PostedFrame, QUEUE_FULL, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
          scheduleAuthority, } from "./runs";
 import {
-  ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
-} from "../../contract/src/run-rows";
-import {
   EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, FRAME_VERSION, PostGate,
 } from "../../contract/src/run-events";
 import {
@@ -152,7 +152,7 @@ import {
   keepTiers, keptTiers, PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers,
 } from "./tier";
 import {
-  Bodies, bodyOffset, inlineWindow, type Located, PLACE_BYTES, type Placed, placedAs,
+  Bodies, bodyOffset, inlineWindow, type Located, type Placed, placedAs,
   type Placing, type Window, WINDOWS_BYTES,
 } from "./bodies";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
@@ -171,7 +171,7 @@ import type { ModelRecord } from "../../contract/src/model-record";
 import { ERASING, Invalid, Refused } from "../../contract/src/errors";
 import {
   type Change as FileChange, CHUNK_DELETING, type ChunkRef, type ChunkStore, type Content,
-  type Entry, FileConflict, FileFault, Files, GC_GRACE_S, type Lease, MAX_OPEN_INTENTS,
+  type Entry, FileConflict, FileFault, Files, type Lease, MAX_OPEN_INTENTS,
   OWNER_AUTHORITY, type SandboxLease, type SyncOp, type SyncOutcome, type Usage, WHOLE_BYTES,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";

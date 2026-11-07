@@ -36,7 +36,12 @@ import { TIER_STORAGE_MAX } from "./segments";
 export const TIER_NAMES = Object.freeze(["free", "paid"] as const);
 export type TierName = (typeof TIER_NAMES)[number];
 
-/** The most live runs any tier record may give: what the owner-bound guard costs. */
+/**
+ * The most live runs any tier record may give: what the owner-bound guard costs. A frozen
+ * bound, which the owner's schema spells (the frozen-bounds guard holds them equal), kept
+ * here rather than with the contract's because the sandbox template's tag reads it from this
+ * file (`sandbox/template/build.py`), until the template's build is split (decisions A6).
+ */
 export const RUNS_CEILING = 1000;
 
 export interface TierNumbers {

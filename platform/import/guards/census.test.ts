@@ -14,7 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { FILE_DEFAULTS } from "../../contract/src/limits";
+import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { DEFAULT_IGNORES, ignoredBy } from "../../contract/src/sync-ignore";
 import { buildBundles } from "../bundle";
 import { census } from "../census";

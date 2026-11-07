@@ -19,7 +19,7 @@ import { AUTHORITY_CHANGED } from "../src/authority";
 import type { Binding } from "../src/owner-do";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
-import { QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/run-rows";
+import { QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, Runs, SIGNIN_LAPSED,
          UNATTENDED_REFUSED } from "../src/runs";
 import { SANDBOX_ABSENT, type SandboxStart } from "../src/sandbox";

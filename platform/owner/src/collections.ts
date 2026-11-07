@@ -50,14 +50,15 @@ export interface Limits {
   /** A row body, in UTF-8 bytes: one call through the object whole (`BODY_BYTES_MAX`). */
   readonly maxRowBytes: number;
   /**
-   * The rows as SQLite lays them out (`ROW_CHARGE`): each row with its four index entries,
+   * The rows as SQLite lays them out (the schema's triggers charge them): each row with its
+   * five index entries,
    * each collection's seq row and each outside writer's counter, in bytes, whatever their
    * names. The owner-bound guard's share of the 10 GB for them.
    */
   readonly maxRowsCharge: number;
   /** Rows one pull, or history entries one history read, returns: a page. */
   readonly maxPull: number;
-  /** The history's entries, laid out as SQLite lays them (`HISTORY_CHARGE`), in bytes. */
+  /** The history's entries, laid out as SQLite lays them (the schema's triggers), in bytes. */
   readonly maxHistoryCharge: number;
 }
 

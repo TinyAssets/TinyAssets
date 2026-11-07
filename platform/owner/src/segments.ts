@@ -57,6 +57,8 @@ export const MIN_RECORD_BYTES = 336;
 /**
  * The least a sealed segment holds: `SEGMENT_MIN_BYTES`, as either seal reaches it
  * (`SEGMENT_MIN_RECORDS` times `MIN_RECORD_BYTES` is past it; the tests hold the two).
+ * Frozen: the owner's schema's partial index spells it (the frozen-bounds guard holds the
+ * two equal).
  */
 export const SEGMENT_LEAST_BYTES = 8 * 1024 * 1024;
 /**

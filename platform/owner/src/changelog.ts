@@ -2,7 +2,8 @@
  * The change log of a generation (slice P; `backup_shape_research.md` (d), the base-backup-
  * plus-WAL method at row level): while a generation's base is read, every change to an
  * exported row writes the row's image, as an export line, into `change_log`, in the writing
- * unit's own transaction (one trigger an exported table and event, `schema.ts` `LOGGED`), so
+ * unit's own transaction (one trigger an exported table and event, `schema.ts`'s
+ * `<table>_logged_<event>`), so
  * no change is lost and none is torn. The generation ships the log to R2 as it goes, a
  * segment at a time (`o/<ns>/m/<gen>/l/<a>-<b>`): the pending segment is recorded first, its
  * lines read, put, and only then acknowledged and deleted, so a crash between any two steps
@@ -19,28 +20,9 @@
 import { Buffer } from "node:buffer";
 
 import { exported } from "./export";
-import { CHUNK_BYTES } from "../../contract/src/limits";
+import { CHUNK_BYTES, IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 
-/**
- * The unshipped change log the object holds at most, in bytes: a quarter of the room under
- * the owner database's half once every other table is at its worst, an equal share with
- * each slice still to land (`limits-audit.test.ts` derives it: the largest whole MiB within
- * that share). The room is there so a generation's held changes survive an R2 outage; it
- * binds only while R2 refuses puts, or when one unit changes more than it.
- */
-export const LOG_BYTES = 68 * 1024 * 1024;
-/** A log row's own bytes past its line, as the log counts it: its seq and record. */
-export const LOG_ROW_BYTES = 64;
-/**
- * The widest row image the log takes, under a Durable Object row's 2 MB: derived from the
- * widest real row (review L5-1), every exported table's at its ceiling escaped at JSON's
- * worst, a connection's models list at its 640 KiB among them, rounded up to a quarter MiB
- * (the owner-bound guard holds it equal). So no change, a token refresh's included, ever
- * writes `LOG_WIDE`; that mark stays the backstop should a later column outgrow it before
- * the guard catches it, failing the generation, never the write.
- */
-export const IMAGE_MAX = 1536 * 1024;
 /** What the log holds in place of an image past `IMAGE_MAX`. */
 export const LOG_WIDE = '{"t":"wide"}';
 

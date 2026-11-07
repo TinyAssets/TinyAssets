@@ -4,8 +4,7 @@ import { DurableObject, env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { LIMITS } from "../src/collections";
-import { CHUNK_BYTES } from "../../contract/src/limits";
-import { PLACE_BYTES } from "../src/manifest";
+import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { OwnerDO } from "../src/owner-do";
 import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../src/migrate";
 import { MIGRATIONS } from "../src/schema";
@@ -101,6 +100,37 @@ describe("schema migration on wake", () => {
       migrate(state.storage, extra);
       expect(state.storage.sql.exec("SELECT n FROM probe_a").toArray()).toEqual([{ n: 2 }]);
     });
+  });
+
+  it("ends an object migrated from each earlier version with a fresh object's schema",
+     async () => {
+    // Every table, index, trigger and view, as `sqlite_master` holds it.
+    const schema = (state: DurableObjectState) => state.storage.sql.exec(
+      "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").toArray();
+    const fresh = await runInDurableObject(ownerObject().stub,
+                                           (_instance: OwnerDO, state) => schema(state));
+    expect(fresh.length).toBeGreaterThan(100);
+    for (let applied = 1; applied < MIGRATIONS.length; applied++) {
+      const { stub } = ownerObject();
+      await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+        // Back to an object a deploy of `applied` migrations made: the owner's tables gone
+        // (the runtime's and Lifecycle's kept), then those migrations alone.
+        const sql = state.storage.sql;
+        for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+            "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+            "AND name NOT GLOB 'cf_*'").toArray()) {
+          sql.exec(`DROP TABLE "${name}"`);
+        }
+        expect(migrate(state.storage, MIGRATIONS.slice(0, applied))).toBe(applied);
+      });
+      // Its next wake migrates the rest, as a later deploy's would.
+      await evictDurableObject(stub);
+      const migrated = await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+        expect(version(state)).toBe(MIGRATIONS.length);
+        return schema(state);
+      });
+      expect(migrated, `from version ${applied}`).toEqual(fresh);
+    }
   });
 
   it("rolls a failing migration back whole and leaves the version where it was", async () => {

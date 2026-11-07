@@ -83,7 +83,7 @@ import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, largestFitting, periods } from "./money";
 import { EGRESS_BEAT_S, type EgressCode, type Outcome, OUTCOMES } from "../../contract/src/egress";
-import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
+import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
 
 
 /**
@@ -112,8 +112,6 @@ export const EGRESS_LIMITS: EgressLimits = Object.freeze({
  * door's own deadline (`EGRESS_DEADLINE_S`), past which an open row is lost too.
  */
 export const LOST_AFTER_S = 3 * EGRESS_BEAT_S;
-/** The longest path an egress request names, as its row keeps it: visible ASCII. */
-export const EGRESS_PATH_MAX = 2048;
 /** A path the door sends: URL-serialized, so visible ASCII only. */
 const PATH = /^\/[\x21-\x7e]*$/;
 

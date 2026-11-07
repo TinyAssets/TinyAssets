@@ -7,8 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MANIFEST_PROTECT_S, manifestDay } from "../src/backup";
-import { GC_GRACE_S } from "../src/files";
-import { INLINE_BYTES } from "../../contract/src/limits";
+import { GC_GRACE_S, INLINE_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../src/owner-do";
 import { storageFullOf } from "../src/storage-full";
 import { MUSE, rig } from "./ledger-support";

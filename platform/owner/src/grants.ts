@@ -85,6 +85,7 @@
  */
 import { HEX64 } from "../../contract/src/ids";
 import { Invalid, Refused } from "../../contract/src/errors";
+import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { appList, connectUrl, type Vendor } from "../../doors/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../doors/src/tools";
@@ -121,9 +122,9 @@ export interface GrantLimits {
 export const GRANT_LIMITS: GrantLimits = Object.freeze({
   maxFreeClients: 1_000,
   maxOwnerClients: 1_000,
-  // The scopes' JSON as the row keeps it, the schema's own ceiling on the column (the
-  // owner-bound guard holds the two equal and counts a grant's scopes by it).
-  maxScopesBytes: 64 * 1024,
+  // The scopes' JSON as the row keeps it: the schema's own ceiling on the column, a frozen
+  // bound (the owner-bound guard counts a grant's scopes by it).
+  maxScopesBytes: SCOPES_JSON_MAX,
   seenIntervalS: 60,
   revokeClockMarginS: 5,
 });

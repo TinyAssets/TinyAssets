@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
 import { Invalid, Refused } from "../../contract/src/errors";
-import { HISTORY_CHARGE, ROW_CHARGE, SEQ_CHARGE, USAGE_CHARGE } from "../src/schema";
+import { MIGRATIONS } from "../src/schema";
 import { etags, failure, history, inObject, type Owner, ownerObject, rows } from "./support";
 
 const ROOM = "room:chess:main";
@@ -393,6 +393,25 @@ function seeded(seed: number): () => number {
 }
 
 type Usage = Record<string, number>;
+
+/**
+ * What the frozen schema's trigger `trigger` adds to `collection_space`'s `column` for the
+ * row it fires on, as an expression of the row `row`: the schema's own charge, read from its
+ * text.
+ */
+function charge(trigger: string, column: string, row: string): string {
+  const sql = MIGRATIONS.flat().find((each) => each.startsWith(`CREATE TRIGGER ${trigger} `));
+  const at = `UPDATE collection_space SET ${column} = ${column} + `;
+  const start = sql === undefined ? -1 : sql.indexOf(at);
+  if (start < 0) {
+    throw new Error(`the schema's ${trigger} charges no ${column}`);
+  }
+  return sql!.slice(start + at.length, sql!.indexOf(";", start)).replaceAll("NEW.", `${row}.`);
+}
+const ROW_CHARGE = (row: string) => charge("collection_rows_added", "rows_charge", row);
+const SEQ_CHARGE = (row: string) => charge("collection_seqs_added", "rows_charge", row);
+const USAGE_CHARGE = (row: string) => charge("collection_usage_added", "rows_charge", row);
+const HISTORY_CHARGE = (row: string) => charge("collection_history_added", "charge", row);
 
 /**
  * The bounds' counters recounted from the rows, the seq rows and the share rows, by the

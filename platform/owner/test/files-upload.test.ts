@@ -9,9 +9,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { CHUNK_BYTES, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
+import { CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import {
-  type ChunkStore, DELETE_FLOOR_MS, type Entry, GC_GRACE_S, HOUSEKEEPING_SLACK_S, INTENT_TTL_S,
+  type ChunkStore, DELETE_FLOOR_MS, type Entry, HOUSEKEEPING_SLACK_S, INTENT_TTL_S,
   MAX_HELD_CHUNKS, MAX_OPEN_INTENTS, WHOLE_BYTES,
 } from "../src/files";
 import { chunkedId, inlineId } from "../../contract/src/content";

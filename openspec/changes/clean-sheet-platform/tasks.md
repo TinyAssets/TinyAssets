@@ -2107,7 +2107,7 @@ R, S, M and W.
   - **Later phases of item 2, each a silent loss to remove:**
     - collection history's `maxHistoryCharge` pruning (phase 2, on the same segments);
     - the ledger's newest-`maxReceipts` (50,000) receipts, the older ones let go;
-    - `CONVERSATIONS_KEPT` (10,000) making the oldest idle conversation forget its resume id (`run-rows.ts`);
+    - `CONVERSATIONS_KEPT` (10,000) making the oldest idle conversation forget its resume id (`contract/src/limits.ts`);
     - file versions, with the index decision (`history_research.md` §4);
     - **known write amplification:** a single late ack of one small message rewrites its whole 8 to 16 MiB segment (fetch, re-encode, upload, commit), so a sparse late-ack pattern costs a segment rewrite an ack; acceptable for phase 1, a batched or tiered merge is a later refinement;
     - **unread mail archived too** (found by seq, the hot set bounded by bytes): it needs its own research first, since an unread message's recipient state and mail in a run's hands change after a segment is sealed.

@@ -36,8 +36,3 @@ export const TICKET_REFUSED = "ticket_refused: the socket ticket is not good for
 export const SOCKET_FAILED = "socket_failed: the socket could not be opened";
 /** How long a socket ticket is good for, in seconds; it is used once. */
 export const SOCKET_TICKET_S = 30;
-/**
- * Socket tickets outstanding at once, each single-use and at most `SOCKET_TICKET_S` long; past
- * it a mint is refused (`socket_tickets_full`). A technical ceiling of the owner's database.
- */
-export const SOCKET_TICKETS = 1024;

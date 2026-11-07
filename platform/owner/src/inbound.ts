@@ -37,15 +37,12 @@
 import { HEX32, randomHex } from "../../contract/src/ids";
 
 import { Invalid, Refused } from "../../contract/src/errors";
+import { INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { type Profile, profile as checkedProfile } from "../../contract/src/inbound-proof";
 
 /** The bindings an owner holds at most: a technical ceiling (the 10 GB, guard terms). */
 export const MAX_BINDINGS = 1_000;
-/** An owner-held proof secret, in characters. */
-export const SECRET_MAX = 4096;
-/** A directory route (`h:<64 hex>` or `i:<app>:<kind>:<64 hex>`), in characters. */
-export const ROUTE_MAX = 160;
 /** A shared app's failures that trip its breaker, and the window they are counted in. */
 export const BREAKER_FAILURES = 3;
 export const BREAKER_WINDOW_S = 60;
@@ -142,7 +139,8 @@ export function created(request: unknown): Created {
     // team id would route that workspace's events here).
     throw new Refused(INSTALL_PROOF);
   }
-  if (typeof r["route"] !== "string" || r["route"].length > ROUTE_MAX || !ROUTE.test(r["route"])
+  if (typeof r["route"] !== "string" || r["route"].length > INBOUND_ROUTE_MAX
+      || !ROUTE.test(r["route"])
       || (r["kind"] === "capability") !== r["route"].startsWith("h:")) {
     throw new Invalid("an inbound binding's route is its directory entry");
   }
@@ -150,8 +148,8 @@ export function created(request: unknown): Created {
     : checkedProfile(r["profile"]);
   const secret = r["secret"] === undefined || r["secret"] === null ? null : r["secret"];
   if (secret !== null && (typeof secret !== "string" || secret.length < 16
-                          || secret.length > SECRET_MAX)) {
-    throw new Invalid(`an inbound proof secret is 16 to ${SECRET_MAX} characters`);
+                          || secret.length > INBOUND_SECRET_MAX)) {
+    throw new Invalid(`an inbound proof secret is 16 to ${INBOUND_SECRET_MAX} characters`);
   }
   if ((proof?.method === "hmac-sha256") !== (secret !== null)) {
     throw new Invalid("an HMAC proof holds a secret, and only an HMAC proof does");
