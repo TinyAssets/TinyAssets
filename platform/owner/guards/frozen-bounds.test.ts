@@ -4,10 +4,11 @@
  * The owner's migrations are literal SQL text, frozen from the first deploy and pinned by
  * digest (`schema.ts`, `migrations.json`). The bounds that text enforces are the code's
  * bounds too, read by their TypeScript owners from the contract's frozen bounds
- * (`contract/src/limits.ts`), and the names and charges it spells are the owner modules' own
- * (`manifest.ts`, `changelog.ts`). Nothing ties the two by construction, so this guard does:
- * every place the SQL spells one is listed here, the constant's value written into it, and
- * each must be in its statements as the object runs them. A constant changed without the
+ * (`contract/src/limits.ts`; `RUNS_CEILING` from `tier.ts`), and the names and charges it
+ * spells are the owner modules' own (`manifest.ts`, `changelog.ts`). Nothing ties the two by
+ * construction, so this guard does: every place the SQL spells one is listed here, the
+ * constant's value written into it, and each must be in its statements as the object runs
+ * them. A constant changed without the
  * SQL (which takes a new migration) fails here; SQL changed without the constant fails the
  * digest lock (`migrations.test.ts`) first. Every frozen bound must be listed.
  *
@@ -19,7 +20,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import * as LIMITS from "../../contract/src/limits";
+import * as CONTRACT from "../../contract/src/limits";
 import { PLATFORM } from "../../ci/paths";
 import { LOG_WIDE } from "../src/changelog";
 import {
@@ -28,6 +29,15 @@ import {
 } from "../src/manifest";
 import type { Migration } from "../src/migrate";
 import { MIGRATIONS } from "../src/schema";
+import { RUNS_CEILING } from "../src/tier";
+
+/**
+ * The frozen bounds: the contract's, and the one kept in `tier.ts` because the sandbox
+ * template's tag reads it there (`sandbox/template/build.py`).
+ */
+const LIMITS = Object.freeze({ ...CONTRACT, RUNS_CEILING });
+/** The frozen bounds kept outside the contract's frozen section. */
+const ELSEWHERE: readonly string[] = Object.freeze(["RUNS_CEILING"]);
 
 /** Which statements a place is in: those starting with the head and a space, or matching it. */
 type Head = string | RegExp;
@@ -193,7 +203,8 @@ export function unnamed(named: readonly (readonly [Head, string])[] = NAMED,
 
 /**
  * The frozen bounds, as the contract's source marks them: each one after its frozen
- * section's opening, and each one before it whose comment says it is frozen.
+ * section's opening, and each one before it whose comment says it is frozen; and the ones
+ * kept elsewhere.
  */
 function frozen(): string[] {
   const text = readFileSync(join(PLATFORM, "contract", "src", "limits.ts"), "utf8");
@@ -204,7 +215,7 @@ function frozen(): string[] {
   const after = [...text.slice(at).matchAll(/^export const ([A-Z_]+) =/gm)];
   const marked = [...text.slice(0, at).matchAll(
     /Frozen: the owner's schema spells it\.\n \*\/\nexport const ([A-Z_]+) =/g)];
-  return [...marked, ...after].map((match) => match[1]!).sort();
+  return [...[...marked, ...after].map((match) => match[1]!), ...ELSEWHERE].sort();
 }
 
 describe("the owner's frozen bounds", () => {

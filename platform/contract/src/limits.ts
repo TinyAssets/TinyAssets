@@ -104,7 +104,9 @@ export const SIGNIN_PASTE_MAX = 4095;
 // it, never an edit of this line alone. The owner's frozen-bounds guard holds each one equal
 // to every place the SQL spells it (`owner/guards/frozen-bounds.test.ts`), so one changed
 // without the other fails. Each is a technical ceiling of the owner's database, its 10 GB of
-// which the owner-bound guard holds the worst case under half (`limits-audit.md`).
+// which the owner-bound guard holds the worst case under half (`limits-audit.md`). One
+// frozen bound lives elsewhere: `RUNS_CEILING`, in `owner/src/tier.ts`, which the sandbox
+// template's tag reads from that file.
 
 /**
  * The placement rule's threshold (ADR-035): a collection row's, a history entry's or a
@@ -161,11 +163,6 @@ export const LOG_ROW_BYTES = 64;
 export const IMAGE_MAX = 1536 * 1024;
 /** A schedule's cron expression's most characters (`owner/src/cron.ts`). */
 export const CRON_MAX_CHARS = 256;
-/**
- * The most live runs any tier record may give (`owner/src/tier.ts`): what the owner-bound
- * guard costs each live run's rows at, and the most sandbox leases and sign-ins live at once.
- */
-export const RUNS_CEILING = 1000;
 /**
  * Model calls open at once (`reserved` or `dispatched`), past which a reservation is
  * refused (`model_calls_full`).
