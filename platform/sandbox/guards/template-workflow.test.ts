@@ -1,8 +1,9 @@
 /**
  * sandbox-template.yml's build step asks E2B, before a paid build, whether this tree's tag
  * already has a ready build. It does that with a Node snippet in the step itself, which
- * imports the deploy kit's `templateReady`. Here that snippet is the one in the workflow,
- * run as the step runs it, on this Node (22, as the workflow's), with E2B's answers mocked:
+ * asks the E2B client's `ready` (`sandbox/src/e2b.ts`). Here that snippet is the one in
+ * the workflow, run as the step runs it, on this Node (22, as the workflow's), with E2B's
+ * answers mocked:
  * a ready tag answers true, a missing one false, an alias 404 false, and a 500 stops it.
  * The step's branching on that answer is held by tests/test_sandbox_template_workflow.py.
  */
@@ -32,7 +33,7 @@ function snippet(): { flags: string[]; code: string } {
   return { flags: found![1]!.trim().split(" "), code: found![2]! };
 }
 
-// E2B's two answers (`templateReady`: the alias, then the tag), as E2B_MOCK says.
+// E2B's two answers (`ready`: the alias, then the tag), as E2B_MOCK says.
 const MOCK = `
 import { appendFileSync } from "node:fs";
 const answer = process.env.E2B_MOCK;
@@ -46,8 +47,8 @@ globalThis.fetch = async (url, init) => {
   return Response.json({ exists: answer === "ready" });
 };
 `;
-const ALIAS = "k https://api.e2b.app/templates/aliases/tinyassets-sandbox";
-const TAG = "k https://api.e2b.app/templates/t1/tags/exists?tag=s0";
+const ALIAS = "e2b_test_key https://api.e2b.app/templates/aliases/tinyassets-sandbox";
+const TAG = "e2b_test_key https://api.e2b.app/templates/t1/tags/exists?tag=s0";
 
 const dir = mkdtempSync(join(tmpdir(), "template-workflow-"));
 const mock = join(dir, "fetch-mock.mjs");
@@ -61,7 +62,7 @@ function ask(answer: string): { status: number | null; out: string; asked: strin
                         ["--import", pathToFileURL(mock).href, ...flags, "-e", code,
                          "tinyassets-sandbox:s0"],
                         { cwd: ROOT, encoding: "utf8",
-                          env: { PATH: process.env["PATH"] ?? "", E2B_API_KEY: "k",
+                          env: { PATH: process.env["PATH"] ?? "", E2B_API_KEY: "e2b_test_key",
                                  E2B_MOCK: answer, E2B_MOCK_LOG: log } });
   let asked: string[] = [];
   try {

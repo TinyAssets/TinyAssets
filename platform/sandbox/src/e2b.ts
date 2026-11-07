@@ -20,6 +20,12 @@
  *   stream is dropped from keeps running (probed); the runner's own launch daemonizes
  *   anyway, so nothing relies on that.
  *
+ * The deploy kit (`platform/deploy/deploy.ts`) speaks to E2B through this same client: a
+ * template's ready build (`ready`: the alias, then the tag, as `sandbox-template.yml` asks
+ * too) and the team's event webhooks (`webhooks`, `addWebhook`, `changeWebhook`, e2b-dev/
+ * infra's `spec/openapi.yml`, read 2026-11-04). It imports nothing, so Node's type
+ * stripping runs it there by its own name.
+ *
  * Every answer outside the documented shape fails loudly (`E2bError`, its status and
  * E2B's own `error_code`), never a guess.
  */
@@ -31,9 +37,18 @@ export const ENVD_PORT = 49983;
 /** E2B answered other than the call expects. */
 export class E2bError extends Error {
   override readonly name = "E2bError";
-  constructor(readonly status: number, readonly code: string | null, message: string,
-              readonly retryAfter: number | null = null) {
+  readonly status: number;
+  readonly code: string | null;
+  readonly retryAfter: number | null;
+
+  // Fields, not parameter properties: Node's type stripping, which runs this file in the
+  // deploy kit, takes no parameter property.
+  constructor(status: number, code: string | null, message: string,
+              retryAfter: number | null = null) {
     super(message);
+    this.status = status;
+    this.code = code;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -160,9 +175,10 @@ function info(value: unknown): SandboxInfo {
 /** The platform API and envd, by the project's key; `fetcher` is the Worker's own fetch. */
 export class E2b {
   readonly #key: string;
-  readonly #fetch: typeof fetch;
+  readonly #fetch: (url: string, init?: RequestInit) => Promise<Response>;
 
-  constructor(key: string, fetcher: typeof fetch = (input, init) => fetch(input, init)) {
+  constructor(key: string, fetcher: (url: string, init?: RequestInit) => Promise<Response> =
+                (url, init) => fetch(url, init)) {
     if (typeof key !== "string" || key.length < 8) {
       throw new Error("E2B_API_KEY is not set: the sandbox Worker reaches E2B by it");
     }
@@ -314,6 +330,70 @@ export class E2b {
       next = response.headers.get("x-next-token");
     } while (next !== null && next !== "");
     return ids;
+  }
+
+  /**
+   * Whether `template` (`name:tag`) has a ready build in this team (E2B's OpenAPI alias and
+   * tag checks): the alias's template, then whether it holds the tag. No such alias is
+   * false; any other failed lookup throws.
+   */
+  async ready(template: string): Promise<boolean> {
+    const at = template.lastIndexOf(":");
+    if (at < 1) {
+      throw new Error("E2B_TEMPLATE is name:tag");
+    }
+    const headers = { "X-API-Key": this.#key, Accept: "application/json" };
+    const alias = await this.#fetch(`${E2B_API}/templates/aliases/${
+      encodeURIComponent(template.slice(0, at))}`, { headers });
+    if (alias.status === 404) {
+      return false;
+    }
+    if (alias.status !== 200) {
+      throw new Error(`E2B's alias lookup answered ${alias.status}`);
+    }
+    const { templateID } = await alias.json() as { templateID?: string };
+    const tag = await this.#fetch(`${E2B_API}/templates/${
+      encodeURIComponent(String(templateID))}/tags/exists?tag=${
+      encodeURIComponent(template.slice(at + 1))}`, { headers });
+    if (tag.status !== 200) {
+      throw new Error(`E2B's tag lookup answered ${tag.status}`);
+    }
+    return (await tag.json() as { exists?: unknown }).exists === true;
+  }
+
+  #hooks(): Record<string, string> {
+    return { "X-API-Key": this.#key, "Content-Type": "application/json" };
+  }
+
+  /** The team's event webhooks, as E2B lists them; a failed listing throws. */
+  async webhooks(): Promise<unknown[]> {
+    const listed = await this.#fetch(`${E2B_API}/events/webhooks`, { headers: this.#hooks() });
+    if (listed.status !== 200) {
+      throw new Error(`E2B listed its webhooks with ${listed.status}`);
+    }
+    const hooks = await listed.json() as unknown;
+    if (!Array.isArray(hooks)) {
+      throw new Error("E2B's webhook listing holds no list");
+    }
+    return hooks;
+  }
+
+  /** One more event webhook, as `hook` describes it; a refusal throws. */
+  async addWebhook(hook: Readonly<Record<string, unknown>>): Promise<void> {
+    const made = await this.#fetch(`${E2B_API}/events/webhooks`, {
+      method: "POST", headers: this.#hooks(), body: JSON.stringify(hook) });
+    if (made.status !== 200 && made.status !== 201) {
+      throw new Error(`E2B refused the webhook with ${made.status}`);
+    }
+  }
+
+  /** The webhook `id`'s fields `change` names set; a refusal throws. */
+  async changeWebhook(id: string, change: Readonly<Record<string, unknown>>): Promise<void> {
+    const changed = await this.#fetch(`${E2B_API}/events/webhooks/${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: this.#hooks(), body: JSON.stringify(change) });
+    if (changed.status !== 200) {
+      throw new Error(`E2B refused the webhook's change with ${changed.status}`);
+    }
   }
 
   #envd(handle: Handle, user: string): Record<string, string> {
