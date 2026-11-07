@@ -2211,7 +2211,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
     this.#ledger = new Ledger(storage, this.#grants, internals.ledgerLimits, admitted,
-                              () => this.#collections.clock(), this.#bodies.adopt);
+                              () => this.#collections.clock(), this.#bodies.adopt,
+                              (needed) => this.#files.fullRefusal(needed));
     this.#backups = new Backups({
       storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
       log: this.#log,
@@ -3664,7 +3665,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           return this.#ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
                                    r["parent_id"], clock(), authority, placed,
                                    filerOf(account), archived);
-        }, { synced: true }), utf8Bytes(String(request?.body ?? "")));
+        }, { synced: true }));
       } catch (error) {
         if (!(error instanceof ParentMoved) || tries + 1 >= READ_TRIES) {
           throw error instanceof ParentMoved ? archiveMoving() : error;
@@ -3674,20 +3675,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A post held at the hot ceiling (`storage_busy`) rings the schedule, so the lane moves;
-   * when the archive cannot move for the storage figure, it is the one wall instead
-   * (`storage_full`, what it needs its body's bytes), never a busy that cannot clear.
+   * A post held at the hot ceiling (`storage_busy`) rings the schedule, so the lane moves.
+   * (When the archive cannot move for the storage figure, the ledger answers the one wall
+   * itself, `storage_full`: `Ledger.#roomForOne`, the same for every poster.)
    */
-  async #busyRings<T>(act: () => Promise<T>, needed: number): Promise<T> {
+  async #busyRings<T>(act: () => Promise<T>): Promise<T> {
     try {
       return await act();
     } catch (error) {
       if (error instanceof Refusal && error.code === "storage_busy") {
-        const full = await this.#door(() => this.#ledger.archiveBlocked()
-          ? this.#files.fullRefusal(needed) : null);
-        if (full !== null) {
-          throw full;
-        }
         await this.#schedule.sync();
       }
       throw error;

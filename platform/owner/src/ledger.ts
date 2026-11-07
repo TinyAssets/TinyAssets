@@ -1010,16 +1010,20 @@ export class Ledger {
 
   /** How a posting unit adopts a placed body's content (`Bodies.adopt`); none, none placed. */
   readonly #adopt: Adopt | undefined;
+  /** The one wall's refusal for a post that needs `needed` bytes (`Files.fullRefusal`). */
+  readonly #wall: ((needed: number) => Refusal) | undefined;
 
   constructor(storage: OwnerStorage, grants: GrantReader,
               limits: LedgerLimits = LEDGER_LIMITS, admitted: () => boolean = () => true,
-              changes: () => number = () => 0, adopt?: Adopt) {
+              changes: () => number = () => 0, adopt?: Adopt,
+              wall?: (needed: number) => Refusal) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = checkLimits(limits);
     this.#admitted = admitted;
     this.#changes = changes;
     this.#adopt = adopt;
+    this.#wall = wall;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -1482,7 +1486,7 @@ export class Ledger {
     if ("resend" in addressed) {
       return addressed.resend;
     }
-    this.#roomForOne();
+    this.#roomForOne(utf8Bytes(body));
     return null;
   }
 
@@ -1565,7 +1569,7 @@ export class Ledger {
       const { room, cmid, parentKey, sha, members, to, kind, sender, recipient,
               parent, parentArchived } = addressed;
       const size = utf8Bytes(body);
-      this.#roomForOne();
+      this.#roomForOne(size);
       return adopted(body, placed, filer, this.#adopt, (contentId) => {
       // The seq is given here, and the id carries it (`orderedId`): an archived message is
       // found by its id with no row for it.
@@ -2425,7 +2429,14 @@ export class Ledger {
    * `ledger_full`, and the hot ceiling, with acked mail the `archive` lane has to move,
    * `storage_busy` until a move lands (the unread ceiling keeps a segment's records acked).
    */
-  #roomForOne(): void {
+  /**
+   * Room for one more message, else its refusal: too much mail unread (`ledger_full`), or the
+   * hot ceiling. The ceiling is `storage_busy`, transient, while the archive lane can move
+   * acked mail out; while its moves are blocked at the storage figure it clears only when the
+   * owner frees space or upgrades, so it is the one wall (`storage_full`, terminal), the same
+   * answer for every poster: a door, a run's reply, its placement.
+   */
+  #roomForOne(needed: number): void {
     const usage = this.#usage();
     const limits = this.#limits;
     if (usage.unacked + 1 > limits.maxUnacked) {
@@ -2435,6 +2446,9 @@ export class Ledger {
                         "reading and acking mail makes room");
     }
     if (usage.messages + 1 > limits.maxMessages) {
+      if (this.#wall !== undefined && this.archiveBlocked()) {
+        throw this.#wall(needed);
+      }
       throw new Refusal("storage_busy",
                         `${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
                         `out; try again in ${STORAGE_BUSY_RETRY_S} seconds. ` +

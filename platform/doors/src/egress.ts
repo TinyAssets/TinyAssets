@@ -82,14 +82,25 @@ type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string
   | { state: "failed" }
   | { state: "unknown" };
 
-/** A refusal in the gateway's own error shape, so a provider SDK shows its code. */
+/**
+ * A refusal in the gateway's own error shape, so a provider SDK shows its code. A 429 or 503
+ * says `Retry-After`: a second, or the refusal's own wait when it asks a longer one
+ * (`storage_busy`'s), so a transient refusal is never posted again sooner than it asks.
+ */
 function refused(code: string, status: number, receipt?: string | null,
-                 message: string = code): Response {
+                 message: string = code, retryAfterS?: number): Response {
+  const retry = status === 429 || status === 503 || retryAfterS !== undefined;
   return Response.json({ error: { code, message },
                          ...(receipt === undefined || receipt === null ? {} : { receipt }) },
                        { status, headers: { "Cache-Control": "no-store",
-                                            ...(status === 429 || status === 503
-                                              ? { "Retry-After": "1" } : {}) } });
+                                            ...(retry ? { "Retry-After":
+                                              String(Math.max(1, retryAfterS ?? 1)) } : {}) } });
+}
+
+/** The object's refusal as a door answers it: `refused`, from its code, status and wait. */
+function refusedBy(refusal: Refusal, message?: string): Response {
+  return refused(codeOf(refusal), refusal.status, null, message ?? codeOf(refusal),
+                 refusal.retryAfter);
 }
 
 /**
@@ -215,7 +226,7 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer), answer.status);
+    return refusedBy(answer);
   }
 }
 
@@ -261,7 +272,7 @@ async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer), answer.status);
+    return refusedBy(answer);
   }
 }
 
@@ -299,7 +310,7 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer), answer.status);
+    return refusedBy(answer);
   }
 }
 
@@ -427,7 +438,7 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
     }
     // The object's whole message, so the sync agent can say what was refused and why (the
     // used and the total of a full storage among it); its code first, as every door's.
-    return refused(codeOf(refusedAs), refusedAs.status, null, refusedAs.message);
+    return refusedBy(refusedAs, refusedAs.message);
   }
 }
 
@@ -493,7 +504,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer), answer.status);
+    return refusedBy(answer);
   }
   if (!opened.ok) {
     return refused(opened.code, REFUSALS[opened.code].status, opened.receipt);
@@ -581,7 +592,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
         if (answer === null) {
           throw error;
         }
-        kept.rejected = refused(codeOf(answer), answer.status);
+        kept.rejected = refusedBy(answer);
         return { refused: codeOf(answer) };
       });
     reserving = asked.catch(() => undefined);
