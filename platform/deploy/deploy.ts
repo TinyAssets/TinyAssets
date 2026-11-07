@@ -969,8 +969,8 @@ export function keyringNew(file: string): void {
 }
 
 /**
- * `keyring-add <file>`: the keyring in `file` with one more key under a kid it does not
- * hold, made active; the old kept.
+ * `keyring-add <file>`: the keyring in `file` with one more key under the kid after its
+ * highest (never a retired kid's name), made active; the old kept.
  */
 export function keyringAdd(file: string): void {
   const ring = ringWith(keyring(readFileSync(file, "utf8")), randomBytes(KEY_BYTES));

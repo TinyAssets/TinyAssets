@@ -35,6 +35,8 @@ export const KEY_BYTES = 32;
 
 const KEY = /^[A-Za-z0-9+/]{43}=$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
+/** A kid `ringWith` numbers: `k` and digits. */
+const NUMBERED = /^k([0-9]+)$/;
 const VERSION = "v1";
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
@@ -148,13 +150,20 @@ export function ringText(ring: Ring): string {
   return text;
 }
 
-/** `ring` with `key` added under a new kid (`k<n>`, the first unused from its size up), active. */
+/**
+ * `ring` with `key` added, active, under the kid after its highest `k<n>` (k1 for a ring
+ * with none): a kid name is never used twice, so a retired key kept offline can always go
+ * back under its own name.
+ */
 export function ringWith(ring: Ring, key: Uint8Array): Ring {
-  let n = ring.keys.size + 1;
-  while (ring.keys.has(`k${n}`)) {
-    n += 1;
+  let highest = 0n;
+  for (const kid of ring.keys.keys()) {
+    const n = NUMBERED.exec(kid)?.[1];
+    if (n !== undefined && BigInt(n) > highest) {
+      highest = BigInt(n);
+    }
   }
-  const active = `k${n}`;
+  const active = `k${highest + 1n}`;
   return Object.freeze({ active, keys: new Map([...ring.keys, [active, key]]) });
 }
 

@@ -83,7 +83,8 @@ describe("the ring", () => {
     expect(() => ringText({ active: "k.1", keys: new Map([["k.1", key(1)]]) })).toThrow();
   });
 
-  it("takes a new key under a kid it does not hold, made active, keeping every old key", () => {
+  it("takes a new key under the kid after its highest, made active, keeping every old key",
+     () => {
     const first = ringWith(ring("k1"), key(9));
     expect(first.active).toBe("k2");
     expect([...first.keys]).toEqual([["k1", key(1)], ["k2", key(9)]]);
@@ -91,6 +92,16 @@ describe("the ring", () => {
     const retired = ringWith(ring("k3", ["k2", "k3"]), key(9));
     expect(retired.active).toBe("k4");
     expect([...retired.keys]).toEqual([["k2", key(1)], ["k3", key(2)], ["k4", key(9)]]);
+    // k1 and k2 retired: the next is k4, never a retired kid's name (k2) again.
+    expect(ringWith(ring("k3"), key(9)).active).toBe("k4");
+    expect(ringWith(ring("k10"), key(9)).active).toBe("k11");
+    expect(ringWith(ring("k2", ["k10", "k2"]), key(9)).active).toBe("k11");
+    // Kids it does not number are kept, and a ring of only those starts at k1.
+    expect(ringWith(ring("a", ["a"]), key(9)).active).toBe("k1");
+    expect(ringWith(ring("k2", ["kx", "k2", "k-3"]), key(9)).active).toBe("k3");
+    // Past a safe integer, still one more than the highest, so never a held name.
+    const big = `k${"9".repeat(20)}`;
+    expect(ringWith(ring(big), key(9)).active).toBe(`k1${"0".repeat(20)}`);
   });
 });
 

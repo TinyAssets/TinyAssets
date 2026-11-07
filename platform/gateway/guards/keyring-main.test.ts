@@ -7,8 +7,8 @@
  *
  * - Main's golden credentials and doorbells, checked in, open under today's code.
  * - Blobs sealed today open on main's code, and main's fresh blobs on today's.
- * - Every malformed ring, every tampered or relabelled blob and every retired kid is
- *   answered with main's own refusal.
+ * - Every malformed ring, every tampered or relabelled blob, every retired kid and every
+ *   blob of its own domain past the 64 KiB bound is answered with main's own refusal.
  * - No data key the files Worker wrapped opens here, under the very same ring, and no
  *   doorbell opens as a credential, nor a credential as a doorbell.
  */
@@ -16,6 +16,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { type Tree, treeAt } from "../../ci/history";
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
+import { parseRing, sealBlob } from "../../contract/src/envelope";
+import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
 import { doorbellSecret, sealDoorbell } from "../src/doorbell";
 import * as keyring from "../src/keyring";
 
@@ -165,12 +167,49 @@ describe("every refusal is main's", () => {
             `v1.${kid}.${nonce}.AAAAA`, `v1.${kid}.${nonce}.AAAA`, "", "v1", 42, null];
   }
 
+  /**
+   * Blobs sealed correctly in the gateway's own domain (its documented salt, info and
+   * context) for `BOUND` and for the plain value's binding, one at the 64 KiB bound and one
+   * past it: no seal writes the second, and no open takes it.
+   */
+  let sized: { bound: typeof BOUND; at: string; over: string }[];
+  beforeAll(async () => {
+    const keys = parseRing(ROTATED.GATEWAY_KEYRING)!;
+    const seal = (bound: typeof BOUND, chars: number) => sealBlob(keys, {
+      salt: "tinyassets/gateway/v1", info: `cred\0${bound.owner}`,
+      context: `ta-cred/v1\0${bound.owner}\0${bound.connection}\0${bound.version}`,
+    }, new TextEncoder().encode(JSON.stringify("x".repeat(chars))));
+    sized = [];
+    for (const bound of [BOUND, VECTORS.gateway.value.binding]) {
+      // A JSON string of n characters is n + 2 bytes; with its tag, 49,134 bytes are 65,512
+      // base64url characters, so the blob is 65,535 long.
+      sized.push({ bound, at: await seal(bound, 49_116), over: await seal(bound, 49_300) });
+    }
+  });
+
+  it("refuses a blob of its own domain past the 64 KiB bound, and opens one at it", async () => {
+    for (const { bound, at, over } of sized) {
+      expect(at.length).toBeLessThanOrEqual(CONNECTION_BLOB_MAX);
+      expect(over.length).toBeGreaterThan(CONNECTION_BLOB_MAX);
+      expect((await keyring.openValue(ROTATED, bound, at, same)).kid).toBe("k2");
+      expect(await outcome(() => main.keyring.openValue(ROTATED, bound, at, same))).toBe("ok");
+      for (const run of [() => keyring.openValue(ROTATED, bound, over, same),
+                         () => keyring.open(ROTATED, bound, over),
+                         () => main.keyring.openValue(ROTATED, bound, over, same),
+                         () => main.keyring.open(ROTATED, bound, over)]) {
+        expect(await outcome(run)).toBe("credential_refused");
+      }
+    }
+  });
+
   it("for every ring and every blob, as credentials, doorbells and plain values", async () => {
     const value = VECTORS.gateway.value;
+    const over = sized.map(({ over: each }) => each);
     for (const raw of RINGS) {
       const ring = { GATEWAY_KEYRING: raw };
       const what = (blob: unknown) => `${String(raw).slice(0, 40)} ${String(blob).slice(0, 12)}`;
-      for (const blob of [...tampered(VECTORS.gateway.k1), ...tampered(VECTORS.gateway.k2)]) {
+      for (const blob of [...tampered(VECTORS.gateway.k1), ...tampered(VECTORS.gateway.k2),
+                          ...over]) {
         expect(await outcome(() => keyring.open(ring, BOUND, blob)), what(blob))
           .toBe(await outcome(() => main.keyring.open(ring, BOUND, blob)));
       }
@@ -180,7 +219,7 @@ describe("every refusal is main's", () => {
           .toBe(await outcome(() => main.keyring.openValue(ring, BELL_BOUND, blob,
                                                            main.doorbell.doorbellSecret)));
       }
-      for (const blob of tampered(value.k2)) {
+      for (const blob of [...tampered(value.k2), ...over]) {
         expect(await outcome(() => keyring.openValue(ring, value.binding, blob, same)), what(blob))
           .toBe(await outcome(() => main.keyring.openValue(ring, value.binding, blob, same)));
       }

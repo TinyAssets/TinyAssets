@@ -685,7 +685,7 @@ describe("the deploy kit", () => {
     }
   });
 
-  it("makes a first keyring and adds a key under a kid the ring does not hold, keeping the old",
+  it("makes a first keyring and adds a key under the kid after its highest, keeping the old",
      () => {
     const out = mkdtempSync(join(tmpdir(), "keyring-"));
     try {
@@ -706,6 +706,10 @@ describe("the deploy kit", () => {
       const before = keyring(retired);
       expect([next.active, [...next.keys.keys()]]).toEqual(["k4", ["k2", "k3", "k4"]]);
       expect(next.keys.get("k3")).toEqual(before.keys.get("k3"));
+      // One that has retired k1 and k2 holds k3 alone: the next is k4, never k2 again.
+      writeFileSync(file, ringSecret("k3"));
+      keyringAdd(file);
+      expect([...keyring(readFileSync(file, "utf8")).keys.keys()]).toEqual(["k3", "k4"]);
       expect(() => { writeFileSync(file, "{}"); keyringAdd(file); })
         .toThrow(/active key among its keys/);
     } finally {

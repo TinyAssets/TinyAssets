@@ -7,8 +7,9 @@
  *
  * - Main's golden wrapped keys, checked in, open under today's code, and rewrap.
  * - Keys wrapped today open on main's code, and main's fresh keys on today's.
- * - Every malformed ring, every tampered or relabelled key and every retired kid is
- *   answered with main's own refusal, by `unwrap`, `rewrap` and `mint` alike.
+ * - Every malformed ring, every tampered or relabelled key, every retired kid and every
+ *   blob of this domain over a plaintext that is not 32 bytes is answered with main's own
+ *   refusal, by `unwrap`, `rewrap` and `mint` alike.
  * - No blob the gateway sealed opens here as a data key, under the very same ring, even
  *   one of a data key's size sealed for this namespace as its owner.
  */
@@ -16,7 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { type Tree, treeAt } from "../../ci/history";
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
-import { hex } from "../../contract/src/envelope";
+import { hex, parseRing, sealBlob } from "../../contract/src/envelope";
 import * as datakey from "../src/datakey";
 
 type Datakey = typeof datakey;
@@ -123,9 +124,39 @@ describe("every refusal is main's", () => {
             "", "v1", 42, null];
   }
 
+  /**
+   * Blobs sealed correctly in this Worker's own domain (its documented salt, info and
+   * context) under k1 and k2, over plaintexts of 31, 32 and 33 bytes: only a data key's 32
+   * bytes is a data key.
+   */
+  let sized: { bytes: number; wrapped: string }[];
+  beforeAll(async () => {
+    const domain = { salt: "tinyassets/files/v1", info: `dek\0${NS}`,
+                     context: `ta-files-key/v1\0${NS}` };
+    sized = [];
+    for (const ring of [OLD, ROTATED]) {
+      for (const bytes of [31, 32, 33]) {
+        const plain = new Uint8Array(bytes).fill(bytes);
+        sized.push({ bytes, wrapped: await sealBlob(parseRing(ring)!, domain, plain) });
+      }
+    }
+  });
+
+  it("refuses a blob of this domain over any plaintext but a data key's 32 bytes", async () => {
+    for (const { bytes, wrapped } of sized) {
+      for (const run of ["unwrap", "rewrap"] as const) {
+        const ours = await outcome(() => datakey[run](ROTATED, NS, wrapped));
+        expect(ours, `${run} ${bytes}`).toBe(bytes === 32 ? "ok" : datakey.KEY_REFUSED);
+        expect(ours).toBe(await outcome(() => main[run](ROTATED, NS, wrapped)));
+      }
+    }
+    expect(await keyOf(datakey, ROTATED, sized[1]!.wrapped)).toBe("20".repeat(32));
+  });
+
   it("for every ring and every key, by unwrap, rewrap and mint", async () => {
     for (const ring of RINGS) {
-      for (const wrapped of [...tampered(OLDER.wrapped), ...tampered(NEWER.wrapped)]) {
+      for (const wrapped of [...tampered(OLDER.wrapped), ...tampered(NEWER.wrapped),
+                             ...sized.map(({ wrapped: each }) => each)]) {
         for (const run of ["unwrap", "rewrap"] as const) {
           const what = `${run} ${String(ring).slice(0, 40)} ${String(wrapped).slice(0, 12)}`;
           expect(await outcome(() => datakey[run](ring, NS, wrapped)), what)
