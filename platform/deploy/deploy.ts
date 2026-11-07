@@ -1528,7 +1528,9 @@ const backPlan = step("handback plan", async (run, work) => {
 /**
  * The handback's changes, the reverse of `routes`' order: the hook disabled (it sends the
  * team's events to whatever serves its path), the doors' custom domain detached, then the
- * routes one at a time, no path the record served ever served by nothing.
+ * routes one at a time, no path the record served ever served by nothing. Last, the DNS
+ * record the attach made, if the detach left it: it serves no one, so a refused delete (the
+ * token's DNS Edit) never holds the routes back.
  */
 const handBack = step("hand back", async (run, work) => {
   const record = made(work.record, "the record");
@@ -1543,20 +1545,20 @@ const handBack = step("hand back", async (run, work) => {
     ? `the custom domain ${record.domain.hostname}: ${record.domain.service}'s before routes, left`
     : detach.length === 0 ? `the custom domain ${record.domain.hostname}: detached already`
     : `detach the custom domain ${record.domain.hostname} from ${DOORS}, as it was before routes`);
+  work.plan.push(...(steps.length === 0
+    ? ["the zone's routes are the record's already: nothing to hand back"]
+    : steps.map(describeBack)));
   if (record.domain.service === null) {
     work.plan.push(record.domain.created === null
       ? `the DNS records the custom domain made on ${record.domain.hostname} were not recorded ` +
-        "(routes stopped between its attach and its record): any left stays, for a hand to " +
-        "remove before routes runs again"
+        "(routes stopped between its attach and its record), so none is deleted, and the " +
+        "read-back holds the host to no address record, as before routes"
       : record.domain.created.length === 0
         ? `the custom domain made no DNS record on ${record.domain.hostname}`
         : `delete the DNS record(s) the custom domain made, ${record.domain.created.map((each) =>
           `${each.type} ${record.domain.hostname} (${each.content})`).join(", ")}, where the ` +
           "detach leaves them");
   }
-  work.plan.push(...(steps.length === 0
-    ? ["the zone's routes are the record's already: nothing to hand back"]
-    : steps.map(describeBack)));
   if (run.apply) {
     if (work.disable !== undefined && work.disable !== null) {
       await made(work.e2b, "E2B").changeWebhook(work.disable, { enabled: false });
@@ -1565,13 +1567,13 @@ const handBack = step("hand back", async (run, work) => {
       await made(work.cloudflare, "Cloudflare").detach(made(work.account, "the account"),
                                                        domain.id, record.domain.hostname);
     }
+    await made(work.cloudflare, "Cloudflare").handBack(made(work.zone, "the zone"), steps);
     // The address records the attach made, only those and only as recorded, if the detach
     // left them.
     for (const left of await createdLeft(work)) {
       await made(work.cloudflare, "Cloudflare").deleteDns(made(work.zone, "the zone"), left,
                                                           record.domain.hostname);
     }
-    await made(work.cloudflare, "Cloudflare").handBack(made(work.zone, "the zone"), steps);
   }
 });
 
@@ -1617,6 +1619,15 @@ const handedBack = step("handback verified", async (run, work) => {
       domain.service}'s custom domain (the record has none)`));
     differences.push(...(await createdLeft(work)).map((left) => `the DNS record ${left.type} ${
       record.domain.hostname} (${left.content}) the custom domain made is still there`));
+    // The record proves the host held no address record before routes (`egressBefore`): with
+    // the attach's never recorded, any there now is named, never passed.
+    if (record.domain.created === null) {
+      differences.push(...(await made(work.cloudflare, "Cloudflare").dnsRecords(
+        made(work.zone, "the zone"), record.domain.hostname)).map((left) => `${
+        record.domain.hostname} holds the DNS record ${left.type} (${left.content}), and held no ` +
+        "address record before routes: the custom domain's own, not recorded, for a hand to " +
+        "remove"));
+    }
   }
   if (!record.hook.enabled) {
     const hook = await heldHook(made(work.e2b, "E2B"));
@@ -1638,8 +1649,8 @@ const handedBack = step("handback verified", async (run, work) => {
  */
 const canaryAfter = step("canary after", (run) => {
   run.io.log("The handles canary (Fact 11) waits for the old stack: restart it on its " +
-             "untouched volumes, then run python3 scripts/mcp_public_canary.py " +
-             "--assert-handles.");
+             "untouched volumes, then dispatch the Uptime canary workflow (uptime-canary.yml), " +
+             "which runs the public canary with its token in production.");
 });
 
 // --- The modes --------------------------------------------------------------------------

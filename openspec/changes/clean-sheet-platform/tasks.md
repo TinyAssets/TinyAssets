@@ -2340,14 +2340,17 @@ R, S, M and W.
     held and enabled or not. It also holds the zone, the run id and the time, and no secret.
     Its job summary names the id (the run's). A record it cannot keep stops it before any
     change, and a re-run attempt keeps its first attempt's. So does an egress host that is
-    another Worker's or holds an address record, which wrangler's deploy would replace (the
-    token needs DNS Read for that listing, and DNS Edit for the handback's cleanup). Mode
+    another Worker's or holds an address record, which wrangler's deploy would replace. That
+    listing takes DNS Read or DNS Write, and the handback's cleanup takes DNS Write. The
+    token is recorded with DNS Edit, and a run has shown it reading DNS, so nothing new is
+    owed (the checklist says how to check). Mode
     `handback --record <id>` first holds the zone to the record and stops, naming it, on any
     route changed since `routes`. Then it undoes `routes` in reverse: the hook disabled, the
-    custom domain detached (each unless the record has it so before) and the DNS record its
-    attach made deleted if the detach left it, then the zone's routes as the record
-    has them, only what the handover changed, one change at a time, no path the record
-    served ever unserved. It then reads each back and holds it to the record, and changes
+    custom domain detached (each unless the record has it so before), then the zone's routes
+    as the record has them, and last the DNS record the attach made, deleted if the detach
+    left it. An attach `routes` never recorded leaves the host held to no address record at
+    read-back. The routes go back as the record has them, only what the handover changed,
+    one change at a time, no path the record served ever unserved. It then reads each back and holds it to the record, and changes
     nothing once converged. `dark`'s own changes stay: they serve no one without the
     three. A missing or bad record stops it with nothing changed. Tested against the
     fake world, killed after every route change and rerun (`deploy/guards/deploy.test.ts`).
@@ -2390,13 +2393,15 @@ R, S, M and W.
   4. **The handback, if verify fails,** at any point before the hold ends, in this order:
      - `handback --record <id>`. Before any change, it holds the zone to the record and
        stops, naming any route changed since `routes`. Then it disables the lifecycle webhook
-       and detaches the egress domain, each as the record has it before, and deletes the DNS
-       record the attach made if the detach leaves it. It puts the zone's routes back as
-       recorded, so the doors' patterns go back to `tinyassets-mcp-proxy`, then reads each
+       and detaches the egress domain, each as the record has it before. It puts the zone's
+       routes back as recorded, so the doors' patterns go back to `tinyassets-mcp-proxy`,
+       then deletes the DNS record the attach made if the detach left it, then reads each
        back.
      - The old stack restarts on its untouched volumes.
-     - The handles canary (Fact 11), now that the old stack serves the routes again. The
-       handback doesn't run it itself, since it would fail before the restart.
+     - The canary (Fact 11), now that the old stack serves the routes again: a dispatch of
+       **Uptime canary** (`uptime-canary.yml`), which holds the canary's `production` secret,
+       since no machine does. The handback doesn't run it itself, since it would fail before
+       the restart.
 
      Writes made on the new platform since `routes` are lost unless they are exported
      (decide at verify).

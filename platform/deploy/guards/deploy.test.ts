@@ -139,6 +139,8 @@ interface WorldOptions {
   readonly noisyDns?: boolean;
   /** A route change the API refuses (400): `METHOD pattern`. */
   readonly refusingRoute?: string;
+  /** DNS deletes the API refuses (403): a token without DNS Edit. */
+  readonly refusingDns?: boolean;
 }
 
 /** The world's clock. */
@@ -227,6 +229,9 @@ function world(options: WorldOptions = {}) {
     if (path.startsWith("/zones/z/dns_records/") && method === "DELETE") {
       if (killed()) {
         throw new Error("the run was killed");
+      }
+      if (options.refusingDns === true) {
+        return json({ success: false, errors: [{ code: 10000 }] }, 403);
       }
       const id = path.split("/").at(-1)!;
       if (!inert.has("dns")) {
@@ -967,6 +972,7 @@ describe("a handback run", () => {
     expect([reads[0]! < disabled!, reads[1]! > changes.at(-1)!]).toEqual([true, true]);
     // The canary waits for the old stack's restart, and the run says where it runs.
     order(ran, ["log Changed:", "log The handles canary (Fact 11) waits for the old stack"]);
+    expect(w.logs.at(-1)).toContain("dispatch the Uptime canary workflow (uptime-canary.yml)");
     expect(ran.some((event) => event.startsWith("python3"))).toBe(false);
     // Every path the record served is served after each change.
     const served = PROBES.filter((path) => servedBy(before as Route[], path) !== undefined);
@@ -980,8 +986,6 @@ describe("a handback run", () => {
         NOW.toISOString()}, and the handover's 8 changes`,
       `disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was before routes`,
       `detach the custom domain ${EGRESS_DOMAIN} from ${DOORS}, as it was before routes`,
-      `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_DOMAIN} (100::), where ` +
-      "the detach leaves them",
       "add the route tinyassets.io/.well-known/oauth-protected-resource* back for " +
       "tinyassets-mcp-proxy",
       "add the route tinyassets.io/.well-known/oauth-authorization-server* back for " +
@@ -989,6 +993,8 @@ describe("a handback run", () => {
       `move the route tinyassets.io/mcp* from ${DOORS} back to tinyassets-mcp-proxy`,
       ...["api/*", "hooks/inbound/*", "hooks/e2b/*", "app/api/*", ".well-known/oauth-*"].map(
         (path) => `delete ${DOORS}'s route tinyassets.io/${path}, which the handover added`),
+      `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_DOMAIN} (100::), where ` +
+      "the detach leaves them",
       "the zone's routes, the egress domain and the webhook read back as the record has them",
     ]);
     // The probe's routes, the doors' before the handover, stay theirs.
@@ -1002,9 +1008,9 @@ describe("a handback run", () => {
     expect(again.plan.slice(1)).toEqual([
       `E2B lifecycle webhook ${E2B_HOOK.url}: not enabled already`,
       `the custom domain ${EGRESS_DOMAIN}: detached already`,
+      "the zone's routes are the record's already: nothing to hand back",
       `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_DOMAIN} (100::), where ` +
       "the detach leaves them",
-      "the zone's routes are the record's already: nothing to hand back",
       "the zone's routes, the egress domain and the webhook read back as the record has them"]);
   });
 
@@ -1313,18 +1319,53 @@ describe("a handback run", () => {
     expect(w.dns.map((record) => record.id)).toEqual(["o1", "o2", "o3", "later"]);
   });
 
-  it("leaves a DNS record the record never named, saying so", async () => {
-    // Routes stopped between the attach and writing its DNS record in: the record has none.
+  for (const keepsDns of [true, false]) {
+    it(`holds the host to no address record when the attach's were never recorded, ${keepsDns
+      ? "naming the one the detach left" : "and passes once the detach removed it"}`,
+       async () => {
+      // Routes stopped between the attach and writing its DNS record in: the record has none,
+      // yet proves the host held no address record before routes.
+      const w = world({ held: true, keepsDns });
+      await runMode(w, "routes", ["--yes"], RUN);
+      const record = stored(w);
+      w.kv.set(`${CONTROL_NS}/${KEY}`, JSON.stringify({ ...record, domain: { ...record.domain,
+        created: null } }));
+      const handback = runMode(w, "handback", ["--yes", "--record", "7001"]);
+      if (keepsDns) {
+        await expect(handback).rejects.toThrow("the handback read back unlike the record: " +
+          `${EGRESS_DOMAIN} holds the DNS record AAAA (100::), and held no address record ` +
+          "before routes: the custom domain's own, not recorded, for a hand to remove");
+        // Never deleted: only a recorded record is matched exactly.
+        expect(w.dns.some((each) => each.id === "dns-egress")).toBe(true);
+      } else {
+        const work = await handback;
+        expect(work.plan).toContain(`the DNS records the custom domain made on ${EGRESS_DOMAIN} ` +
+          "were not recorded (routes stopped between its attach and its record), so none is " +
+          "deleted, and the read-back holds the host to no address record, as before routes");
+      }
+      // Every route is back either way: the DNS record serves no one.
+      expect(handover([...w.routes.values()], DOORS, ROUTES).length).toBeGreaterThan(0);
+    });
+  }
+
+  it("hands the routes back before deleting the attach's DNS record, so a refused delete " +
+     "never holds them", async () => {
     const w = world({ held: true, keepsDns: true });
+    const before = kept(w.routes.values());
     await runMode(w, "routes", ["--yes"], RUN);
-    const record = stored(w);
-    w.kv.set(`${CONTROL_NS}/${KEY}`, JSON.stringify({ ...record, domain: { ...record.domain,
-      created: null } }));
-    const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan).toContain(`the DNS records the custom domain made on ${EGRESS_DOMAIN} were ` +
-      "not recorded (routes stopped between its attach and its record): any left stays, for a " +
-      "hand to remove before routes runs again");
-    expect(w.dns.some((each) => each.id === "dns-egress")).toBe(true);
+    const from = w.events.length;
+    await runMode(w, "handback", ["--yes", "--record", "7001"]);
+    const ran = w.events.slice(from);
+    expect(ran.findIndex((event) => event.startsWith("cf DELETE /zones/z/dns_records")))
+      .toBeGreaterThan(ran.findLastIndex((event) => ROUTE_CHANGE.test(event)));
+    expect(kept(w.routes.values())).toEqual(before);
+    // A token without DNS Edit: the delete is refused, loudly, with every route back already.
+    const refused = world({ held: true, keepsDns: true, refusingDns: true });
+    await runMode(refused, "routes", ["--yes"], RUN);
+    await expect(runMode(refused, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
+      `deleting the DNS record AAAA ${EGRESS_DOMAIN} (100::) failed (403, [10000]): run the ` +
+      "handback again");
+    expect(kept(refused.routes.values())).toEqual(before);
   });
 });
 

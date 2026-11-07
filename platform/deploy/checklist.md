@@ -27,13 +27,25 @@ Routes edit (the `plan` job lists R2, KV and queues, so a missing scope stops it
 `E2B_API_KEY` in `production` and nowhere else; `production` limited to `main`, with no
 required reviewer.
 
-**Owed before mode `routes`: the Cloudflare token's DNS scope on the `tinyassets.io` zone.**
-- `routes` needs **DNS Read**: it lists the egress host's DNS records before any change. A
-  token without it stops the `routes` plan job, with nothing changed.
-- `handback` needs **DNS Edit**: it deletes the DNS record the egress custom domain made, if
-  the detach leaves it. Give the token DNS Edit, which covers both.
-- The token also needs **Workers Scripts edit** on the account. The kit's deploys need it,
-  and so do attaching the custom domain and detaching it.
+**The Cloudflare token's scopes for `routes` and `handback`: nothing new is owed, if its
+record holds.**
+- **What the kit needs.** `routes` lists the egress host's DNS records before any change.
+  Cloudflare's API reference accepts either DNS Read or DNS Write (Edit) for that listing.
+  `handback` deletes the DNS record the custom domain made, if the detach leaves it, which
+  needs DNS Write. So **DNS Edit covers both**. Attaching and detaching the custom domain
+  need **Workers Scripts edit** on the account, which the kit's deploys need too.
+- **What the token holds.** The infra-ops reference (`.claude/skills/infra-ops/references/
+  cloudflare.md`) records this secret with Zone DNS Edit and Account Workers Scripts edit,
+  and `emergency-dns.yml` writes DNS records with it. A run has shown it reading DNS:
+  `cloud-only-preflight.yml` (run 35704397255, 2026-09-22) read the zone's records with this
+  secret, and `internal_origin_dns` passed. No run has written DNS with it yet.
+- **How to check without reading the token.**
+  - In the Cloudflare dashboard, My Profile → API Tokens lists each token's permissions and
+    never shows its value.
+  - The `routes` plan job's DNS listing proves the read: without it, the plan job stops with
+    nothing changed.
+  - If DNS Edit were missing, only the handback's last step (that one DNS delete) would fail,
+    loudly, with every route already back.
 
 The rest runs on your own computer, by your Claude session with your own `gh` login. It
 runs `scripts/platform_setup.py` (Windows: `python`); every value is set only where it is
@@ -249,14 +261,18 @@ It never counts as "absent".
   1. E2B's lifecycle webhook is disabled, unless the record has it enabled before. A hook
      `routes` registered is disabled, never deleted: a disabled hook sends nothing.
   2. The doors' egress custom domain is detached, unless the record has it attached before.
-     If the detach leaves the DNS record the attach made, that record is deleted: only it,
-     matched exactly as the record holds it. A second `routes` after the rollback is then
-     not stopped by it.
   3. The zone's routes go back as the record has them (the doors' patterns back to
      `tinyassets-mcp-proxy`), one change at a time, so no path the record served is ever
      served by nothing: the old proxy's deleted narrower routes are added back, `mcp*` is
      moved back in place, then the doors' added routes are deleted, each only while it is
      still the doors'.
+  4. If the detach left the DNS record the attach made, that record is deleted: only it,
+     matched exactly as the record holds it. A second `routes` after the rollback is then
+     not stopped by it. This comes last, since the record serves no one, so a refused
+     delete never holds the routes back. If `routes` stopped before it recorded the
+     attach's DNS record, none is deleted, and the read-back holds the host to no address
+     record, as it was before `routes`. A record left there is named for you to delete by
+     hand.
 
   It changes no other route. Before any change, it holds the zone to the record. If a
   route the record or the handover holds was changed by someone after `routes`, or the egress
@@ -264,7 +280,7 @@ It never counts as "absent".
   changed. Put each back by hand as the record has it, then run it again. Its plan job
   shows this stop too.
 
-  After its changes it reads each of the three back, and stops, naming each difference,
+  After its changes it reads each back, and stops, naming each difference,
   unless they are the record's. A rerun changes only what is not back yet, and a killed run
   is simply run again.
 
@@ -272,8 +288,11 @@ It never counts as "absent".
   serve nothing, so the canary would fail a correct handback. The order is:
   1. the handback;
   2. restart the old stack on its untouched volumes;
-  3. run the handles canary (Fact 11): `python3 scripts/mcp_public_canary.py
-     --assert-handles`.
+  3. the canary (Fact 11). Its token is a `production` secret no machine holds, so dispatch
+     **Uptime canary** (`uptime-canary.yml`, Actions → Run workflow). It runs the public MCP
+     canary and the tool-invocation canary with `TINYASSETS_WIKI_CANARY_TOKEN` in
+     `production`. Only `deploy-prod.yml` and `apply-daemon-env.yml` pass
+     `--assert-handles`, and both change production, so neither is this step.
 
   The run's last line says so.
 
