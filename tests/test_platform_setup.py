@@ -317,8 +317,8 @@ def _discovery(url: str):
 
 
 @pytest.mark.verifies(
-    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
-    "OpenID Connect flow")
+    "clean-sheet-platform:The owner's sign-in is the owner issuer's "
+    "User Management code flow")
 def test_the_variables_are_set_once(capsys) -> None:
     fake, said = Fake(), []
     assert setup.variables(_gh(fake, said), _discovery)
@@ -336,8 +336,8 @@ def test_the_variables_are_set_once(capsys) -> None:
 
 
 @pytest.mark.verifies(
-    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
-    "OpenID Connect flow")
+    "clean-sheet-platform:The owner's sign-in is the owner issuer's "
+    "User Management code flow")
 def test_an_issuer_whose_discovery_names_another_sets_nothing() -> None:
     fake = Fake()
     with pytest.raises(setup.SetupError, match="does not name"):
@@ -540,8 +540,8 @@ def test_the_real_gh_call_sends_bytes_and_no_shell(tmp_path, monkeypatch) -> Non
 
 
 @pytest.mark.verifies(
-    "clean-sheet-platform:The owner's sign-in is the configured issuer's "
-    "OpenID Connect flow")
+    "clean-sheet-platform:The owner's sign-in is the owner issuer's "
+    "User Management code flow")
 def test_the_docs_give_the_windows_command() -> None:
     checklist = (ROOT / "platform/deploy/checklist.md").read_text(encoding="utf-8")
     for doc in (ROOT / "platform/deploy/checklist.md", ROOT / "docs/host-actions.md", PAGE,

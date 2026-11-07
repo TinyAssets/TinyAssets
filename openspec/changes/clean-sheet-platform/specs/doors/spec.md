@@ -12,7 +12,7 @@ One module of the doors Worker SHALL hold every `getByName` call and build every
 - **THEN** the binder refuses it as a bug and no object is reached
 
 ### Requirement: Our authorization server issues the connectors' tokens
-The doors SHALL run their own OAuth authorization server, issuer `https://tinyassets.io`, on Workers OAuth Provider 1.2.4, with the resources `/mcp` (outside clients) and `/app` (first-party clients only). Client ID Metadata Documents SHALL be on; dynamic registration SHALL be served only behind its flag (`DCR_ENABLED`), and then SHALL take a registration only when its `client_name` names a vendor `apps.json` marks `registration: "dcr"` (a vendor that offers no CIMD: the founder's ruling, the one pre-login exception to no anonymous traffic) and every one of its `redirect_uris` is one of that vendor's recorded redirects; a `dcr` vendor with none recorded SHALL take none. Any other registration SHALL be refused `invalid_client_metadata` before anything is stored. A refused registration whose name names a `dcr` vendor SHALL be logged in one bounded, escaped line (`dcr_refused`: the app, `client_name`, `redirect_uris`), and no other. At sign-in the doors SHALL name the client's vendor from `apps.json`: a CIMD client by its document URL's host, verified only when every redirect it registered is that app's own, else unverified; any other by a word of its registered name (unverified); none when no app matches; the grant's props carry it, and its binding every call. Every authorization SHALL run the upstream sign-in with `prompt=login` and server-side PKCE, and SHALL take a sign-in only when at most 600 s old. Consent SHALL never be remembered.
+The doors SHALL run their own OAuth authorization server, issuer `https://tinyassets.io`, on Workers OAuth Provider 1.2.4, with the resources `/mcp` (outside clients) and `/app` (first-party clients only). Client ID Metadata Documents SHALL be on; dynamic registration SHALL be served only behind its flag (`DCR_ENABLED`), and then SHALL take a registration only when its `client_name` names a vendor `apps.json` marks `registration: "dcr"` (a vendor that offers no CIMD: the founder's ruling, the one pre-login exception to no anonymous traffic) and every one of its `redirect_uris` is one of that vendor's recorded redirects; a `dcr` vendor with none recorded SHALL take none. Any other registration SHALL be refused `invalid_client_metadata` before anything is stored. A refused registration whose name names a `dcr` vendor SHALL be logged in one bounded, escaped line (`dcr_refused`: the app, `client_name`, `redirect_uris`), and no other. At sign-in the doors SHALL name the client's vendor from `apps.json`: a CIMD client by its document URL's host, verified only when every redirect it registered is that app's own, else unverified; any other by a word of its registered name (unverified); none when no app matches; the grant's props carry it, and its binding every call. Every authorization SHALL run the upstream sign-in with a forced fresh sign-in (`max_age=0`, and no `prompt` of the upstream's own) and server-side PKCE, and SHALL take a sign-in only when at most 600 s old. Consent SHALL never be remembered.
 
 #### Scenario: A vendor's client registers itself
 - **WHEN** `DCR_ENABLED` is true and clients register as "Grok" with one of Grok's recorded redirects, as "Grok official support" with a stranger's redirect, as "Gemini" before Gemini's redirects are recorded, and as "ChatGPT"
@@ -27,7 +27,7 @@ The doors SHALL run their own OAuth authorization server, issuer `https://tinyas
 - **THEN** the consent screen is shown again, and the object admits the client only from the new, later sign-in
 
 #### Scenario: An upstream that does not ask for a fresh sign-in
-- **WHEN** an upstream's sign-in URL lacks `prompt=login`, the doors' S256 challenge, state or callback
+- **WHEN** an upstream's sign-in URL lacks `max_age=0`, carries a `prompt` of its own, or lacks the doors' S256 challenge, state or callback
 - **THEN** the authorization fails loudly
 
 ### Requirement: The owner is named by the sign-in's issuer and subject
@@ -483,12 +483,27 @@ The MCP door SHALL advertise `events` in its `initialize` and `server/discover` 
 - **WHEN** the owner's app posts `{}` with its session, and posts again from each cursor it reads
 - **THEN** the lines begin with the header and end with `{"t":"end"}`
 
-### Requirement: The owner's sign-in is the configured issuer's OpenID Connect flow
-The doors SHALL sign the owner in with the code flow and PKCE against `OWNER_ISSUER`, its endpoints and client the `UPSTREAM` record, both unset as checked in and filled at deploy from the issuer's discovery, which must name `OWNER_ISSUER` exactly. The ID token SHALL be RS256 under a key of the issuer's JWKS, its issuer, audience, nonce (the flow's challenge), times, subject and `auth_time` checked; a token without `auth_time` SHALL be refused, with no clock fallback.
+### Requirement: The owner's sign-in is the owner issuer's User Management code flow
+The doors SHALL sign the owner in through AuthKit's User Management code flow with PKCE for the environment's client, as the deploy-written `UPSTREAM` record names it. The code SHALL be exchanged on the doors' own request to `api.workos.com`, never redirected, with the verifier and the secret, which stand for a nonce. The access token SHALL be RS256 under the one JWKS key its `kid` names, its `iss`, `client_id`, times, `sub` (the answer's `user.id`), `sid` and `auth_time` checked.
 
-#### Scenario: A token without auth_time, or from another issuer
-- **WHEN** the issuer answers an ID token missing `auth_time`, or naming another issuer
-- **THEN** the sign-in fails and no owner is bound
+#### Scenario: A token without auth_time, from another issuer or for another client
+- **WHEN** the token endpoint answers an access token missing `auth_time` or `sid`, naming another `iss` or another `client_id`, signed by another key, or whose `sub` is not the answer's `user.id`
+- **THEN** the sign-in fails with a 502 naming the check and never a token or a secret, a wrong `iss` named as the token carries it, and no owner is bound
+
+#### Scenario: A stolen code played into another flow
+- **WHEN** someone redeems the owner's code in their own doors flow, with another PKCE verifier
+- **THEN** WorkOS refuses the exchange. This is an assumption, not a check of the doors': WorkOS does not document that it checks `code_verifier` when the client secret is also sent
+
+### Requirement: The deploy proves the sign-in's client and callback before anyone signs in
+Before any Cloudflare change, the deploy SHALL list the callback at WorkOS (registering it when missing, outside the plan), then request the WorkOS authorize URL the doors build (not `tinyassets.io/authorize`), with a throwaway S256 challenge, and stop unless WorkOS redirects it to the owner issuer's sign-in.
+
+#### Scenario: WorkOS refuses the doors' client or callback
+- **WHEN** the deploy's authorize check is redirected to an error page (`client-id-invalid`, `redirect-uri-invalid`) or anywhere but the owner issuer's host
+- **THEN** the deploy stops before any Cloudflare change, naming where it was sent
+
+#### Scenario: A fresh environment's callback is not registered yet
+- **WHEN** WorkOS does not list the callback
+- **THEN** `dark` registers it and then runs the check, and the plan, which cannot list it, reports a `redirect-uri-invalid` answer as `dark`'s to register rather than stopping
 
 ### Requirement: Sign-up is the platform's explicit admit, and erasure its outside record
 The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased or whose object is marked erasing. The erasure door SHALL only mark the object erasing, durable before it answers. The object's erasure job SHALL then put the owner on the erasure queue at its mark and at each attempt until the doors confirm, and the doors' consumer SHALL, each step safe to run again, write the owner's `o:` record erased, delete its `k:`, `h:` and `i:` entries, revoke its every OAuth grant and delete the identity at the issuer, then confirm; the object SHALL wipe only after that confirmation, so a half-done erasure always finishes.

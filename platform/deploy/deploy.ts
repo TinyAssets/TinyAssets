@@ -39,10 +39,11 @@
  * `--probe` (`--yes --probe`, between `dark` and `--routes`) hands the doors only the
  * sign-in's two paths, `PROBE_ROUTES`, which no Worker serves before it, by the same
  * handover; it deploys nothing and changes no gate. It runs only after a dark run: the
- * doors deployed, the control record admitting nobody, and WorkOS listing `CALLBACK`. It
- * then prints the one first-party sign-in link, whose end settles everything sign-in
- * needs at the cutover in the doors' own code: the doors' client and secret at the
- * issuer, the callback, and the ID token's checks, `auth_time` among them (`PROBE_SIGNS`).
+ * doors deployed, the control record admitting nobody, and WorkOS listing `CALLBACK`; before
+ * a route moves, the early sign-in check (`authorizeCheck`) must pass. It then prints the
+ * one first-party sign-in link, whose end settles everything sign-in needs at the cutover in
+ * the doors' own code: the doors' client and secret at User Management, the callback, and
+ * the access token's checks, its exact `iss` and `auth_time` among them (`PROBE_SIGNS`).
  * `--routes` later finds both paths already the doors' and hands over the rest.
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
@@ -57,7 +58,8 @@
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
- *   POST; never a delete);
+ *   POST; never a delete), after every other live check and before any Cloudflare change,
+ *   and only then is the early sign-in check run, which needs it listed;
  * - E2B's lifecycle webhook is listed and checked before any change, registered, disabled,
  *   only when E2B's listing lacks it, its secret changed only with the doors' copy, and
  *   enabled only by `--routes` after the handover; the run that registers it sets the
@@ -69,9 +71,13 @@
  *   and commit the locks with the code first, so a deployed migration is never edited.
  *
  * Before anything is changed it checks, live: the owner issuer's discovery names
- * `OWNER_ISSUER` exactly, takes `client_secret_post` at its token endpoint and names https
- * endpoints; an absent field is unknown, and unknown stops the kit. Whether the issuer's
- * ID token carries `auth_time` no discovery shows: the sign-in probe settles it; the sandbox's
+ * `OWNER_ISSUER` exactly and an https JWKS (an absent field is unknown, and unknown stops the
+ * kit); WorkOS's User Management authorize, sent the WorkOS authorize URL the doors build
+ * (not `tinyassets.io/authorize`) with a throwaway challenge, redirects to AuthKit's sign-in,
+ * so it takes the doors' client and `CALLBACK` (`authorizeCheck`, run once `CALLBACK` is
+ * listed or registered; the plan job, which cannot list it, reports an unlisted one as
+ * dark's to register). The access token's exact `iss` and `auth_time` only a real sign-in
+ * shows: the sign-in probe settles them; the sandbox's
  * `E2B_TEMPLATE` exists at E2B with a ready build; and the pair it deploys, that template
  * and the runner the sandbox Worker ships (its SHA-256, built as the Worker's build makes
  * it), passed its standing checks in this E2B team: E2B holds the pair's tag
@@ -537,11 +543,12 @@ export function deployedConfig(worker: string, ids: Readonly<Record<string, stri
 }
 
 /**
- * The owner issuer's discovery, held to `issuer` exactly, and the doors' `UPSTREAM` from it,
- * which the doors' own parser accepts. The token endpoint must declare
- * `client_secret_post`, the way the doors exchange a code, and every endpoint is https; an
- * absent field is unknown, and unknown stops the kit. What the ID token carries is the
- * sign-in probe's to show (`--probe`).
+ * The doors' `UPSTREAM` record, which the doors' own parser accepts: User Management's
+ * sign-in for the environment's client (ADR-032), its authorize and authenticate endpoints
+ * fixed WorkOS URLs, and the JWKS the owner issuer's discovery names, that discovery held
+ * to `issuer` exactly (an absent or non-https `jwks_uri` is unknown, and unknown stops the
+ * kit). The access token's expected `iss` is derived here alone (`token_issuer`); a wrong
+ * one is the sign-in probe's 502, which names the issuer the token carries.
  */
 export async function upstreamFrom(issuer: string | undefined, clientId: string | undefined,
                                    fetcher: Fetch = fetch): Promise<UpstreamValues> {
@@ -550,6 +557,9 @@ export async function upstreamFrom(issuer: string | undefined, clientId: string 
   }
   if (typeof clientId !== "string" || clientId === "") {
     throw new Error("WORKOS_CLIENT_ID is not set");
+  }
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(clientId)) {
+    throw new Error("WORKOS_CLIENT_ID is a WorkOS client id (letters, digits, _ and -)");
   }
   const url = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
   const response = await fetcher(url, { headers: { Accept: "application/json" } });
@@ -562,25 +572,84 @@ export async function upstreamFrom(issuer: string | undefined, clientId: string 
     throw new Error(`the issuer's discovery names ${JSON.stringify(discovery["issuer"])}, ` +
                     `not OWNER_ISSUER ${JSON.stringify(issuer)}`);
   }
-  const methods = discovery["token_endpoint_auth_methods_supported"];
-  if (!Array.isArray(methods)) {
-    throw new Error("the issuer's discovery declares no token endpoint auth methods: unknown");
+  const jwks = discovery["jwks_uri"];
+  if (typeof jwks !== "string" || !/^https:\/\/\S+$/.test(jwks)) {
+    throw new Error("the issuer's discovery names no https jwks_uri: unknown");
   }
-  if (!methods.includes("client_secret_post")) {
-    throw new Error("the issuer takes no client_secret_post at its token endpoint");
-  }
-  const endpoint = (name: string): string => {
-    const value = discovery[name];
-    if (typeof value !== "string" || !/^https:\/\/\S+$/.test(value)) {
-      throw new Error(`the issuer's discovery names no https ${name}: unknown`);
-    }
-    return value;
-  };
   // The doors' parser (`upstreamConfig`) accepts this record: the kit's guard holds it so.
-  const record = { client_id: clientId, authorization_endpoint: endpoint("authorization_endpoint"),
-                   token_endpoint: endpoint("token_endpoint"), jwks_uri: endpoint("jwks_uri"),
-                   user_delete: `${WORKOS_API}/user_management/users/{sub}` };
+  const record = { client_id: clientId,
+                   authorization_endpoint: `${WORKOS_API}/user_management/authorize`,
+                   token_endpoint: `${WORKOS_API}/user_management/authenticate`,
+                   jwks_uri: jwks,
+                   // WorkOS's docs and SDK fixtures (research, 2026-11-06); the probe proves it.
+                   token_issuer: `${WORKOS_API}/user_management/${clientId}`,
+                   user_delete: `${WORKOS_API}/user_management/users/{sub}`,
+                   authorize_params: { provider: "authkit" } };
   return { issuer, record };
+}
+
+/**
+ * The authorize URL the doors build from `upstream` (`doors/src/oidc.ts` `authorizeUrl`),
+ * for `state` and `challenge` and `CALLBACK`.
+ */
+export function authorizeLink(upstream: UpstreamValues, state: string, challenge: string):
+    string {
+  const record = upstream.record as { authorization_endpoint: string; client_id: string;
+                                      authorize_params?: Record<string, string> };
+  const url = new URL(record.authorization_endpoint);
+  for (const [name, value] of Object.entries({
+    ...record.authorize_params, response_type: "code", client_id: record.client_id,
+    redirect_uri: CALLBACK, state, code_challenge: challenge, code_challenge_method: "S256",
+    max_age: "0" })) {
+    url.searchParams.set(name, value);
+  }
+  return url.href;
+}
+
+/** Where WorkOS sends a browser whose `redirect_uri` the client does not list. */
+export const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
+
+/**
+ * The early sign-in check, before any person signs in: a `GET` of the WorkOS authorize URL
+ * the doors build (`authorizeLink`, User Management's; never `tinyassets.io/authorize`)
+ * with a throwaway state and S256 challenge (its verifier dropped, so no code it could end
+ * in is redeemable), which must answer a 302 to the owner issuer's host, AuthKit's sign-in
+ * page. A refused client or redirect (`error.workos.com/sso/client-id-invalid`,
+ * `…/redirect-uri-invalid`, an `error=` answer) stops the kit, naming where it was sent.
+ *
+ * `unlisted`: `CALLBACK` is not known to be on the client's list yet (the plan job cannot
+ * list it, and a run without `--yes` leaves it missing), so a `redirect-uri-invalid` answer
+ * is reported as `dark`'s to register, not a stop; every other refusal still stops. `dark`
+ * and `routes` register the callback first and run the check with `unlisted` false.
+ */
+export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean,
+                                     fetcher: Fetch = fetch): Promise<string> {
+  const { state, challenge } = throwaway();
+  const link = authorizeLink(upstream, state, challenge);
+  const answer = await fetcher(link, { redirect: "manual" });
+  const location = answer.headers.get("Location");
+  if (answer.status !== 302 || location === null) {
+    throw new Error(`WorkOS's authorize answered ${answer.status}, not a redirect to the ` +
+                    "sign-in page");
+  }
+  let to: URL;
+  try {
+    to = new URL(location, link);
+  } catch {
+    throw new Error("WorkOS's authorize redirected to no URL");
+  }
+  const host = new URL(upstream.issuer).host;
+  if (unlisted && `${to.origin}${to.pathname}` === REDIRECT_UNLISTED) {
+    return `WorkOS's authorize does not take ${CALLBACK} yet: dark registers it, then ` +
+           "checks the client and it again";
+  }
+  if (to.protocol !== "https:" || to.host !== host || to.searchParams.has("error")
+      || /error/i.test(to.pathname)) {
+    throw new Error(`WorkOS's authorize refused the doors' client or ${CALLBACK}: it sent ` +
+                    `the browser to ${to.origin}${to.pathname}, not ${host}'s sign-in`);
+  }
+  return `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser ` +
+         `to ${host}'s sign-in`;
 }
 
 /**
@@ -944,13 +1013,22 @@ export function admitsNobody(record: unknown): boolean {
  * could end in is ever redeemable.
  */
 export function probeLink(): string {
-  const challenge = createHash("sha256").update(randomBytes(32).toString("base64url"))
-    .digest("base64url");
+  const { state, challenge } = throwaway();
   const query = new URLSearchParams({
     response_type: "code", client_id: FIRST_PARTY.client, redirect_uri: FIRST_PARTY.redirect,
-    state: randomBytes(16).toString("base64url"), code_challenge: challenge,
-    code_challenge_method: "S256", resource: FIRST_PARTY.resource });
+    state, code_challenge: challenge, code_challenge_method: "S256",
+    resource: FIRST_PARTY.resource });
   return `https://${ZONE}/authorize?${query}`;
+}
+
+/**
+ * A fresh state and S256 challenge, the challenge's verifier dropped here, so no code a flow
+ * started with them could end in is ever redeemable (the probe's link, `authorizeCheck`).
+ */
+export function throwaway(): { state: string; challenge: string } {
+  return { state: randomBytes(16).toString("base64url"),
+           challenge: createHash("sha256").update(randomBytes(32).toString("base64url"))
+             .digest("base64url") };
 }
 
 /** What the probe's sign-in shows, read from where the browser ends. */
@@ -958,17 +1036,19 @@ export const PROBE_SIGNS = [
   `Pass: the browser's address begins ${FIRST_PARTY.redirect}?error=temporarily_unavailable ` +
   "(more follows it; the page itself is the old app's and reads as a sign-in error, " +
   "which is expected): the closed gate refused the sign-in after every " +
-  "check passed, and no owner was made. The doors' client and API key were taken at the " +
-  "issuer's token endpoint, the callback was its registered redirect, and the ID token's " +
-  "signature, iss, aud, nonce and auth_time held.",
+  "check passed, and no owner was made. The doors' client and API key were taken at User " +
+  "Management's authenticate, the callback was its registered redirect, and the access " +
+  "token's signature, iss, client_id, sub (the answer's user.id) and auth_time held.",
   `Fail, at https://${ZONE}/authorize: a 400 page, so the doors could not read their own ` +
   "app's client document.",
-  "Fail, at the issuer: an error page before or after the sign-in, so it refused the doors' " +
-  "client or the callback.",
+  "Fail, at error.workos.com or another error page before or after the sign-in: WorkOS " +
+  "refused the doors' client or the callback.",
   `Fail, at ${CALLBACK}: a 502 page naming the check that failed (the token endpoint's ` +
-  "status and error code, auth_time, iss, the nonce...), the same line in the doors' log.",
+  "status and error code, auth_time, client_id...), the same line in the doors' log. On " +
+  "issuer, it names the iss the token carries: that value becomes upstreamFrom's " +
+  "token_issuer.",
   `Fail, at ${FIRST_PARTY.redirect}?error=access_denied ("sign in again"): auth_time is more ` +
-  "than 600 s old or ahead of the clock.",
+  "than 600 s old or ahead of the clock, so max_age=0 did not force a fresh sign-in.",
 ].join("\n");
 
 /**
@@ -1021,6 +1101,12 @@ async function probe(apply: boolean, open: boolean): Promise<void> {
     plan.push(`WorkOS lists ${CALLBACK}, as a dark run registers it`);
   }
   const steps = probeSteps(await routesOf(api, zone));
+  if (apply) {
+    // The early sign-in check, before a route moves: WorkOS takes the client and CALLBACK,
+    // which it lists (checked above), so a redirect-uri-invalid answer stops the probe.
+    plan.push(await authorizeCheck(await upstreamFrom(input("OWNER_ISSUER"),
+                                                      input("WORKOS_CLIENT_ID")), false));
+  }
   plan.push(...(steps.length === 0 ? [`${DOORS} holds ${PROBE_ROUTES.join(" and ")} already`]
     : steps.map((step) => describeStep(step, DOORS))));
   if (apply) {
@@ -1142,6 +1228,13 @@ async function main(): Promise<void> {
   const hookAt = hookPlan({ open, routes, missing: listed === null });
   const hook = (change: boolean, setSecret: boolean) => lifecycleHook(
     input("E2B_API_KEY")!, input("E2B_WEBHOOK_SECRET")!, change, hookAt.enable, setSecret);
+  // The WorkOS redirect URI, then the early sign-in check, which needs CALLBACK listed: so
+  // a fresh environment's dark registers it (GET, then POST; additive, never a delete)
+  // before checking it, ahead of any Cloudflare change. The plan job cannot list it, and a
+  // run without --yes leaves it missing: there a redirect-uri-invalid answer is dark's to fix.
+  const redirect = open ? undefined : await registerRedirect(input("WORKOS_API_KEY")!, apply);
+  plan.push(`WorkOS redirect URI ${CALLBACK}: ${redirect ?? later}`);
+  plan.push(await authorizeCheck(upstream, redirect === undefined || redirect === "missing"));
   let steps: RouteStep[] = [];
   if (routes) {
     steps = handover(await routesOf(api, zone), DOORS, ROUTES);
@@ -1233,8 +1326,6 @@ async function main(): Promise<void> {
         }
       }
     }
-    plan.push(`WorkOS redirect URI ${CALLBACK}: ${open ? later
-      : await registerRedirect(input("WORKOS_API_KEY")!, apply)}`);
     // E2B's lifecycle webhook, once the doors hold E2B_WEBHOOK_SECRET (`hookPlan`).
     if (hookAt.at === "none") {
       plan.push(`E2B lifecycle webhook ${E2B_HOOK.url}: ${later}`);

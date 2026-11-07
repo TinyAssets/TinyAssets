@@ -9,7 +9,7 @@
  * only forwards the cookie the browser presented, as a typed binding argument, and
  * never vouches for it.
  *
- * The edge binder runs the sign-in itself (tasks 2: server PKCE, `prompt=login`, the
+ * The edge binder runs the sign-in itself (tasks 2: server PKCE, `max_age=0`, the
  * browser-bound callback) and calls `open` with the verified sign-in's time; the object
  * opens a session only for a sign-in at most `signInMaxAgeS` old, mints the cookie, and
  * keeps only its SHA-256. A session lives 8 hours and slides while its browser renews.

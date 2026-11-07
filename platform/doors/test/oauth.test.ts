@@ -101,7 +101,7 @@ describe("the authorization flow", () => {
     expect(response.status).toBe(403);
   });
 
-  it("shows consent, signs in upstream with prompt=login, and issues a code", async () => {
+  it("shows consent, signs in upstream with max_age=0, and issues a code", async () => {
     const client = await registerClient("Muse <script>");
     const jar = new Jar();
     const { challenge } = await pkce();
@@ -114,7 +114,8 @@ describe("the authorization flow", () => {
     const approved = await decide(jar, handleOf(html), "approve");
     expect(approved.status).toBe(302);
     const upstream = new URL(approved.headers.get("Location")!);
-    expect(upstream.searchParams.get("prompt")).toBe("login");
+    expect(upstream.searchParams.get("max_age")).toBe("0");
+    expect(upstream.searchParams.has("prompt")).toBe(false);
     expect(upstream.searchParams.get("code_challenge_method")).toBe("S256");
     expect(upstream.searchParams.get("redirect_uri")).toBe(
       "https://tinyassets.io/oauth/upstream/callback");
@@ -127,8 +128,9 @@ describe("the authorization flow", () => {
   });
 
   it.each([
-    ["no prompt=login", (u: URL) => u.searchParams.delete("prompt")],
-    ["prompt=consent", (u: URL) => u.searchParams.set("prompt", "consent")],
+    ["no max_age=0", (u: URL) => u.searchParams.delete("max_age")],
+    ["a looser max_age", (u: URL) => u.searchParams.set("max_age", "600")],
+    ["a prompt of its own", (u: URL) => u.searchParams.set("prompt", "none")],
     ["another challenge", (u: URL) => u.searchParams.set("code_challenge", "x")],
     ["a plain challenge", (u: URL) => u.searchParams.set("code_challenge_method", "plain")],
     ["another state", (u: URL) => u.searchParams.set("state", "x")],
@@ -152,7 +154,7 @@ describe("the authorization flow", () => {
       method: "POST", headers: { Cookie: jar.header() },
       body: new URLSearchParams({ handle: handleOf(await page.text()), decision: "approve" }) });
     await expect(serve(approve, doorsEnv, createExecutionContext(), upstream, TEST_SOURCES))
-      .rejects.toThrow("prompt=login");
+      .rejects.toThrow("max_age=0");
   });
 
   it("answers a denied consent with access_denied", async () => {
@@ -197,7 +199,7 @@ describe("the authorization flow", () => {
   });
 
   it("names a failed upstream check at the callback, on its page and in the log", async () => {
-    const reason = "the ID token carries no auth_time";
+    const reason = "the access token carries no auth_time";
     const upstream: Upstream = { ...FAKE_UPSTREAM,
                                  finish: () => Promise.reject(new Error(reason)) };
     const client = await registerClient();

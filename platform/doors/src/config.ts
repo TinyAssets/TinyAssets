@@ -80,7 +80,7 @@ export const REFRESH_TOKEN_TTL_S = 30 * 86_400;
 
 /**
  * How old an upstream sign-in may be when the doors take it: the object opens a session
- * only for one at most this old, and a `prompt=login` flow is at most ten minutes long.
+ * only for one at most this old, and a forced fresh sign-in is at most ten minutes long.
  */
 export const SIGN_IN_MAX_AGE_S = 600;
 export const CLOCK_MARGIN_S = 5;
@@ -177,8 +177,9 @@ export interface DoorsEnv {
    */
   readonly FOREIGN_ISSUERS: string;
   /**
-   * The owner issuer's sign-in endpoints and client, as JSON (`oidc.ts`'s `UpstreamConfig`):
-   * `not-configured` until the deploy fills it from the issuer's live discovery.
+   * The owner issuer's sign-in endpoints, client and token issuer, as JSON (`oidc.ts`'s
+   * `UpstreamConfig`): `not-configured` until the deploy writes it (`upstreamFrom`: User
+   * Management's endpoints, and the JWKS from the issuer's live discovery).
    */
   readonly UPSTREAM: string;
   /**
