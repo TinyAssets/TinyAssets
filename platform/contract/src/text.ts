@@ -23,10 +23,10 @@ const WINDOW_BYTES = 64 * 1024;
  * without holding them: a short text counted by hand, a longer one encoded through one
  * window of at most 64 KiB, so a 16 MiB body costs the window, not its own bytes again.
  * Measured in Node 22 against encoding whole and against counting by hand: the hand count
- * itself below 4 Ki units, faster than it above, and past about 16 Ki units faster than
- * both (16 MiB of ASCII in 0.8 ms, against 8 ms whole and 20 ms by hand). From about 4 to
- * 16 Ki units of ASCII it is a few microseconds slower than encoding whole (2 to 9 times as
- * long).
+ * itself below 4 Ki units, faster than it above, and past about 40 Ki units faster than
+ * both (16 MiB of ASCII in about 1 ms, against 8 to 11 ms whole and 20 to 30 ms by hand).
+ * From about 4 to 40 Ki units of ASCII it is microseconds slower than encoding whole (up to
+ * 9 times as long).
  */
 export function utf8Bytes(text: string): number {
   if (text.length < COUNTED_UNITS) {
