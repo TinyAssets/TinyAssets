@@ -9,7 +9,7 @@
  *
  * Beside what it carries, the tree holds what the import makes: `README.md`, `links.txt`
  * (each link and its target: never followed, never made), `refused.tar` (the names the
- * files plane cannot store) and `ignored.tar` (what the sync's defaults leave out of a
+ * files plane cannot store, and links whose target is not UTF-8) and `ignored.tar` (what the sync's defaults leave out of a
  * live tree, kept verbatim all the same, Fact 9), and the archived stores' table copies.
  * The census makes them in a temporary folder of its own and deletes them; the bundle
  * builder makes them in the bundle's.
@@ -207,7 +207,8 @@ function readme(owner: Owner): string {
                                                (center.retired ? " (retired)" : "")), "");
   }
   if (tree.archived.length > 0) {
-    lines.push("Your old records are SQLite files in the `.records` folders (copies, read-only):",
+    lines.push("Your old records are SQLite files in the `.records` folders (copies, kept as " +
+               "they came: don't write to them):",
                "", "| File | Table | Rows |", "|---|---|---|");
     for (const archived of tree.archived) {
       const file = archived.path.slice(IMPORTED.length + 1);
@@ -221,9 +222,10 @@ function readme(owner: Owner): string {
                "each pointed. They were not followed and are not made here.", "");
   }
   if (tree.refused.length > 0) {
-    lines.push(`\`refused.tar\` keeps ${tree.refused.length} names that cannot be stored as ` +
-               "files here (not UTF-8, or longer than 255 bytes a name or 4,096 a path), " +
-               "with everything in them, unchanged.", "");
+    lines.push(`\`refused.tar\` keeps ${tree.refused.length} entries that cannot be stored ` +
+               "here, unchanged: names that are not UTF-8, or longer than 255 bytes a name or " +
+               "4,096 a path, with everything in them; and links whose target is not UTF-8, " +
+               "which `links.txt` does not list.", "");
   }
   if (tree.ignoredTrees.length > 0) {
     lines.push(`\`ignored.tar\` keeps ${tree.ignored} files your agents can rebuild ` +
