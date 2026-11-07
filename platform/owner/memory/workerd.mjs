@@ -6,18 +6,17 @@
 // - `check()` confirms the child is still alive (after the inspector answers, after a
 //   request), so what answered was this leg's own;
 // - the child is killed when the leg ends however it ends: `stop()`, process exit, SIGTERM,
-//   SIGINT or SIGHUP (the signal's own exit status follows).
+//   SIGINT or SIGHUP (the signal's own exit status follows). The handlers are installed
+//   before the spawn: a signal between the two would end the leg by its default action and
+//   leave the child running.
 import { spawn } from "node:child_process";
 
 export function ownWorkerd(bin, args, { onEarlyExit } = {}) {
-  const child = spawn(bin, args, { stdio: ["ignore", "inherit", "inherit"] });
-  // The leg's own work keeps it running; the child alone never does, so a leg that ends
-  // without `stop()` exits, and its exit kills the child.
-  child.unref();
+  let child = null;
   let stopping = false;
   let exited = null;
   const kill = () => {
-    if (exited === null) {
+    if (child !== null && exited === null) {
       child.kill("SIGKILL");
     }
   };
@@ -36,6 +35,11 @@ export function ownWorkerd(bin, args, { onEarlyExit } = {}) {
       process.off(signal, onSignal);
     }
   };
+  // A signal's handler runs only once this synchronous code is done, so it sees the child.
+  child = spawn(bin, args, { stdio: ["ignore", "inherit", "inherit"] });
+  // The leg's own work keeps it running; the child alone never does, so a leg that ends
+  // without `stop()` exits, and its exit kills the child.
+  child.unref();
   child.on("exit", (code, signal) => {
     exited = { code, signal };
     if (!stopping) {
