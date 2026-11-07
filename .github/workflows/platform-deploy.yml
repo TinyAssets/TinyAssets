@@ -26,9 +26,10 @@ name: Platform deploy (manual, founder-approved)
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
 # probe, routes, h2 and handback here; pair is its own job. `routes` keeps a
-# record of the zone's routes before any change, and its job summary names the
-# record's id (the run's); `handback` takes that id as `record` and puts the
-# zone's routes back as the record has them (the cutover's rollback).
+# record of what it changes (the zone's routes, the egress custom domain, E2B's
+# lifecycle webhook) before any change, and its job summary names the record's
+# id (the run's); `handback` takes that id as `record` and puts each back as the
+# record has it (the cutover's rollback).
 
 on:
   workflow_dispatch:

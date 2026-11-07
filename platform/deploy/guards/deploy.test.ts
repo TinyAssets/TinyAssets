@@ -47,8 +47,8 @@ import {
   shippedRunner, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
 import {
-  boundBy, CALLBACK, CONFIGS, CONTROL_KEY, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES, NAMESPACES, OPTIONAL,
-  PROBE_ROUTES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
+  boundBy, CALLBACK, CONFIGS, CONTROL_KEY, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES,
+  NAMESPACES, OPTIONAL, PROBE_ROUTES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
 } from "../facts";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
 import platform from "../platform.json" with { type: "json" };
@@ -129,6 +129,10 @@ interface WorldOptions {
   readonly failing?: string;
   /** KV keys whose write Cloudflare refuses. */
   readonly refusing?: string;
+  /** The Worker the egress host's custom domain serves already. */
+  readonly egress?: string;
+  /** DNS records the egress host holds, by type. */
+  readonly dns?: readonly string[];
 }
 
 /** The world's clock. */
@@ -165,8 +169,18 @@ function world(options: WorldOptions = {}) {
     ? [[`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(DARK_CONTROL)]] : []);
   /** The zone's routes after each route change, in order. */
   const tables: Route[][] = [];
-  /** The route changes left before the run is killed (undefined: never). */
+  /** The egress host's custom domains, by id. */
+  const domains = new Map<string, { id: string; hostname: string; service: string }>(
+    options.egress === undefined ? []
+      : [["d0", { id: "d0", hostname: EGRESS_DOMAIN, service: options.egress }]]);
+  /**
+   * The outward changes left before the run is killed (undefined: never): a route's, the
+   * custom domain's (wrangler's triggers deploy, a detach) and the webhook's.
+   */
   const kill = { after: undefined as number | undefined };
+  const killed = () => kill.after !== undefined && kill.after-- <= 0;
+  /** Writes that answer as done and change nothing: the hook's, the custom domain's. */
+  const inert = new Set<"hook" | "domain">();
   let made = 0;
   const json = (body: unknown, status = 200) => Response.json(body, { status });
   const cf = (path: string, method: string, body: string | undefined): Response => {
@@ -176,8 +190,24 @@ function world(options: WorldOptions = {}) {
     if (path === "/zones/z/workers/routes" && method === "GET") {
       return json({ success: true, result: [...routes.values()] });
     }
+    if (path === `/accounts/${ACCOUNT}/workers/domains?hostname=${EGRESS_DOMAIN}`) {
+      return json({ success: true, result: [...domains.values()] });
+    }
+    if (path.startsWith(`/accounts/${ACCOUNT}/workers/domains/`) && method === "DELETE") {
+      if (killed()) {
+        throw new Error("the run was killed");
+      }
+      if (!inert.has("domain")) {
+        domains.delete(path.split("/").at(-1)!);
+      }
+      return json({ success: true, result: null });
+    }
+    if (path === `/zones/z/dns_records?name=${EGRESS_DOMAIN}`) {
+      return json({ success: true, result: (options.dns ?? []).map((type) =>
+        ({ type, name: EGRESS_DOMAIN })) });
+    }
     if (path.startsWith("/zones/z/workers/routes")) {
-      if (kill.after !== undefined && kill.after-- <= 0) {
+      if (killed()) {
         throw new Error("the run was killed");
       }
       const id = path.split("/").at(-1)!;
@@ -251,8 +281,19 @@ function world(options: WorldOptions = {}) {
         const tag = at.searchParams.get("tag") ?? "";
         return json({ exists: tag.includes("-r") ? pairPassed : true });
       }
+      if (method !== "GET" && killed()) {
+        throw new Error("the run was killed");
+      }
       if (at.pathname === "/events/webhooks") {
-        return method === "POST" ? json({ id: "w1" }, 201) : json(hooks);
+        if (method === "POST") {
+          hooks.push({ id: "w1", ...JSON.parse(body!) as Json });
+          return json({ id: "w1" }, 201);
+        }
+        return json(hooks);
+      }
+      const hook = hooks.find((each) => at.pathname === `/events/webhooks/${String(each["id"])}`);
+      if (hook !== undefined && method === "PATCH" && !inert.has("hook")) {
+        Object.assign(hook, JSON.parse(body!) as Json);
       }
       return json({});
     }
@@ -275,6 +316,15 @@ function world(options: WorldOptions = {}) {
       }
       if (args[0] === "kv") {
         namespaces.set(args[3]!, `made-${args[3]}`);
+      }
+      if (args[0] === "triggers") {
+        if (killed()) {
+          return { status: 1, stdout: "", stderr: "the run was killed" };
+        }
+        // One custom domain a host: the doors' already is kept as it is.
+        if (![...domains.values()].some((domain) => domain.service === DOORS)) {
+          domains.set("d1", { id: "d1", hostname: EGRESS_DOMAIN, service: DOORS });
+        }
       }
       const stdout = args[1] === "bucket" && args[2] === "list"
         ? (held ? "name:  tinyassets-files\n" : "")
@@ -317,7 +367,8 @@ function world(options: WorldOptions = {}) {
     events.push(`log ${line.trim().split("\n")[0]}`);
   };
   const io: Io = { fetch: fetcher, spawn, exec, log, now: () => NOW };
-  return { io, events, logs, secretsPut, routes, hooks, accounts, kv, tables, kill };
+  return { io, events, logs, secretsPut, routes, hooks, accounts, kv, tables, kill, domains,
+           inert };
 }
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
@@ -745,7 +796,9 @@ describe("the route record", () => {
         at: NOW.toISOString(),
         routes: table.map((route) => ({ pattern: route.pattern, script: route.script ?? null })),
         moved: handover(table, DOORS, ROUTES).map((each) =>
-          ({ method: each.method, pattern: each.pattern })) });
+          ({ method: each.method, pattern: each.pattern })),
+        domain: { hostname: EGRESS_DOMAIN, service: null },
+        hook: { url: E2B_HOOK.url, present: true, enabled: false } });
       // It holds no secret, and not the account.
       const text = w.kv.get(`${CONTROL_NS}/${KEY}`)!;
       for (const secret of [ACCOUNT, ...[...SECRET_INPUTS, ...OPTIONAL, "CLOUDFLARE_API_TOKEN"]
@@ -754,14 +807,33 @@ describe("the route record", () => {
       }
       // The plan says how to hand it back, and the summary holds the record too.
       expect(work.plan).toContain(`record the zone's ${table.length} routes and the handover's 8 ` +
-        `changes as ${KEY} in tinyassets-control, before any change: hand back with --mode ` +
-        "handback --record 7001");
+        "changes, the egress domain (none) and E2B's lifecycle webhook (disabled) as " +
+        `${KEY} in tinyassets-control, before any change: hand back with --mode handback ` +
+        "--record 7001");
       const summaryText = readFileSync(file, "utf8");
       expect(summaryText).toContain(`Route record ${KEY}:`);
       expect(summaryText).toContain(JSON.stringify(stored(w), null, 2));
       expect(summaryText).toContain("--mode handback --record 7001");
     } finally {
       rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("stops routes before any change while the egress host is another Worker's or holds a " +
+     "DNS record, which the custom domain would replace", async () => {
+    for (const [options, why] of [
+      [{ egress: "someone-else" }, `${EGRESS_DOMAIN} is someone-else's custom domain: routes ` +
+       "would take it, and a handback could not give it back; nothing is changed"],
+      [{ dns: ["A", "AAAA"] }, `${EGRESS_DOMAIN} holds 2 DNS record(s) (A, AAAA): the doors' ` +
+       "custom domain would replace them, and a handback could not give them back; nothing is " +
+       "changed"],
+    ] as const) {
+      const w = world({ held: true, ...options });
+      await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow(why);
+      expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+      // The plan job reads them too, so it shows the stop before the apply job.
+      await expect(runMode(world({ held: true, ...options }), "routes", ["--public"], PUBLIC))
+        .rejects.toThrow(why);
     }
   });
 
@@ -788,8 +860,8 @@ describe("the route record", () => {
     expect(taken.events.filter((event) => CHANGE.test(event))).toEqual([]);
   });
 
-  it("is kept as its first attempt wrote it on a re-run, and a converged routes run keeps none",
-     async () => {
+  it("is kept as its first attempt wrote it on a re-run, and a later run's own changes nothing " +
+     "when handed back", async () => {
     const w = world({ held: true });
     w.kill.after = 3;
     await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
@@ -800,8 +872,15 @@ describe("the route record", () => {
     expect(again.plan).toContain(`keep the route record ${KEY} as attempt 1 wrote it at ${
       NOW.toISOString()}, before its first change: hand back with --mode handback --record 7001`);
     const later = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
-    expect(later.plan).toContain("no route moves, so no route record is kept");
-    expect(w.kv.has(`${CONTROL_NS}/deploy:routes:7002`)).toBe(false);
+    expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 11 routes and the handover's 0 changes, the ` +
+      `egress domain (${DOORS}) and E2B's lifecycle webhook (enabled) as deploy:routes:7002 in ` +
+      "tinyassets-control, before any change: hand back with --mode handback --record 7002; " +
+      `${DOORS} holds ${ROUTES.filter((pattern) => !PROBE_ROUTES.includes(pattern)).join(", ")} ` +
+      "already: the record of the routes run that moved them is the one to hand back, and it " +
+      "covers this run's changes too");
+    const at = w.events.length;
+    await runMode(w, "handback", ["--yes", "--record", "7002"]);
+    expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
   });
 
   it("names, when an earlier routes run moved some of the doors' routes, that its record is " +
@@ -811,8 +890,9 @@ describe("the route record", () => {
     await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
     w.kill.after = undefined;
     const fresh = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7002" });
-    expect(fresh.plan).toContain("record the zone's 8 routes and the handover's 7 changes as " +
-      "deploy:routes:7002 in tinyassets-control, before any change: hand back with --mode " +
+    expect(fresh.plan).toContain("record the zone's 8 routes and the handover's 7 changes, the " +
+      "egress domain (none) and E2B's lifecycle webhook (disabled) as deploy:routes:7002 in " +
+      "tinyassets-control, before any change: hand back with --mode " +
       `handback --record 7002; ${DOORS} holds tinyassets.io/mcp* already: the record of the ` +
       "routes run that moved them is the one to hand back, and it covers this run's changes too");
     // The first run's record does: its handback, after the second run, puts the zone back.
@@ -830,12 +910,20 @@ describe("a handback run", () => {
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
     expect(kept(w.routes.values())).toEqual(before);
     const ran = w.events.slice(from);
-    // The zone alone, and the canary after it.
-    expect(ran.filter((event) => /^(wrangler|e2b|workos)/.test(event))).toEqual([]);
+    // The hook disabled and the domain detached, as before routes, then the routes.
+    expect(w.hooks).toEqual([expect.objectContaining({ id: "w1", enabled: false })]);
+    expect([...w.domains.values()]).toEqual([]);
+    expect(ran.filter((event) => /^(wrangler|workos)/.test(event))).toEqual([]);
+    expect(ran.filter((event) => event.startsWith("e2b"))).toEqual([
+      "e2b GET /events/webhooks", 'e2b PATCH /events/webhooks/w1 {"enabled":false}',
+      "e2b GET /events/webhooks"]);
+    const [disabled, detached, first] = order(ran, ["e2b PATCH /events/webhooks/w1",
+      `cf DELETE /accounts/${ACCOUNT}/workers/domains/d1`, "cf POST /zones/z/workers/routes"]);
+    expect([disabled! < detached!, detached! < first!]).toEqual([true, true]);
     const reads = ran.flatMap((event, at) => event === "cf GET /zones/z/workers/routes" ? [at] : []);
     const changes = ran.flatMap((event, at) => ROUTE_CHANGE.test(event) ? [at] : []);
     expect(reads).toHaveLength(2);
-    expect([reads[0]! < changes[0]!, reads[1]! > changes.at(-1)!]).toEqual([true, true]);
+    expect([reads[0]! < disabled!, reads[1]! > changes.at(-1)!]).toEqual([true, true]);
     order(ran, ["log Changed:", "python3 mcp_public_canary.py"]);
     // Every path the record served is served after each change.
     const served = PROBES.filter((path) => servedBy(before as Route[], path) !== undefined);
@@ -847,6 +935,8 @@ describe("a handback run", () => {
     expect(work.plan).toEqual([
       `the route record ${KEY}: the zone's ${before.length} routes as run 7001 read them at ${
         NOW.toISOString()}, and the handover's 8 changes`,
+      `disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was before routes`,
+      `detach the custom domain ${EGRESS_DOMAIN} from ${DOORS}, as it was before routes`,
       "add the route tinyassets.io/.well-known/oauth-protected-resource* back for " +
       "tinyassets-mcp-proxy",
       "add the route tinyassets.io/.well-known/oauth-authorization-server* back for " +
@@ -854,7 +944,7 @@ describe("a handback run", () => {
       `move the route tinyassets.io/mcp* from ${DOORS} back to tinyassets-mcp-proxy`,
       ...["api/*", "hooks/inbound/*", "hooks/e2b/*", "app/api/*", ".well-known/oauth-*"].map(
         (path) => `delete ${DOORS}'s route tinyassets.io/${path}, which the handover added`),
-      "the zone's routes read back as the record has them",
+      "the zone's routes, the egress domain and the webhook read back as the record has them",
     ]);
     // The probe's routes, the doors' before the handover, stay theirs.
     for (const pattern of PROBE_ROUTES) {
@@ -865,29 +955,36 @@ describe("a handback run", () => {
     const again = await runMode(w, "handback", ["--yes", "--record", "7001"]);
     expect(w.events.slice(at).filter((event) => ROUTE_CHANGE.test(event))).toEqual([]);
     expect(again.plan.slice(1)).toEqual([
+      `E2B lifecycle webhook ${E2B_HOOK.url}: not enabled already`,
+      `the custom domain ${EGRESS_DOMAIN}: detached already`,
       "the zone's routes are the record's already: nothing to hand back",
-      "the zone's routes read back as the record has them"]);
+      "the zone's routes, the egress domain and the webhook read back as the record has them"]);
   });
 
-  for (const kill of [0, 1, 2, 3, 4, 5, 6, 7]) {
-    it(`converges when killed after ${kill} route changes, routes and the handback both`,
+  // Ten outward changes each way: routes' eight route changes, the custom domain and the hook;
+  // the handback's hook, domain and eight route changes.
+  for (const kill of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+    it(`converges when killed after ${kill} outward changes, routes and the handback both`,
        async () => {
       const w = world({ held: true });
       const before = kept(w.routes.values());
+      const hooks = JSON.stringify(w.hooks);
       w.kill.after = kill;
       await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
       w.kill.after = undefined;
       await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" });
       expect(handover([...w.routes.values()], DOORS, ROUTES)).toEqual([]);
+      expect([w.domains.size, w.hooks[0]?.["enabled"]]).toEqual([1, true]);
       w.kill.after = kill;
       await expect(runMode(w, "handback", ["--yes", "--record", "7001"]))
         .rejects.toThrow("the run was killed");
       w.kill.after = undefined;
       await runMode(w, "handback", ["--yes", "--record", "7001"]);
       expect(kept(w.routes.values())).toEqual(before);
+      expect([w.domains.size, JSON.stringify(w.hooks)]).toEqual([0, hooks]);
       const at = w.events.length;
       await runMode(w, "handback", ["--yes", "--record", "7001"]);
-      expect(w.events.slice(at).filter((event) => ROUTE_CHANGE.test(event))).toEqual([]);
+      expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
     });
   }
 
@@ -918,6 +1015,13 @@ describe("a handback run", () => {
        "names a change its routes do not allow"],
       [{ ...good, moved: [{ method: "PATCH", pattern: route.pattern }] },
        "names a change its routes do not allow"],
+      [{ ...good, domain: undefined }, "holds no egress domain in shape"],
+      [{ ...good, domain: { hostname: "other.tinyassets.io", service: null } },
+       "holds no egress domain in shape"],
+      [{ ...good, hook: { ...good.hook, url: "https://elsewhere.test/hook" } },
+       "holds no lifecycle webhook in shape"],
+      [{ ...good, hook: { url: E2B_HOOK.url, present: false, enabled: true } },
+       "holds no lifecycle webhook in shape"],
     ] as const) {
       w.kv.set(`${CONTROL_NS}/${KEY}`, typeof bad === "string" ? bad : JSON.stringify(bad));
       const at = w.events.length;
@@ -925,6 +1029,59 @@ describe("a handback run", () => {
         `the record ${KEY} ${why}`);
       expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
     }
+  });
+
+  it("leaves the custom domain and the hook where the record has them already the doors'",
+     async () => {
+    // Attached to the doors and enabled before routes: the record says so, the handback leaves
+    // both, and reads back only the routes for them.
+    const w = world({ held: true, egress: DOORS });
+    w.hooks[0]!["enabled"] = true;
+    await runMode(w, "routes", ["--yes"], RUN);
+    expect([stored(w).domain, stored(w).hook]).toEqual([
+      { hostname: EGRESS_DOMAIN, service: DOORS },
+      { url: E2B_HOOK.url, present: true, enabled: true }]);
+    const at = w.events.length;
+    const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
+    expect(work.plan.slice(1, 3)).toEqual([
+      `E2B lifecycle webhook ${E2B_HOOK.url}: enabled before routes, left`,
+      `the custom domain ${EGRESS_DOMAIN}: ${DOORS}'s before routes, left`]);
+    expect(w.events.slice(at).filter((event) => /^(e2b PATCH|cf DELETE \/accounts)/.test(event)))
+      .toEqual([]);
+    expect([w.domains.size, w.hooks[0]!["enabled"]]).toEqual([1, true]);
+  });
+
+  it("disables a hook routes registered, as it was absent before: never deleted", async () => {
+    const w = world({ held: true });
+    w.hooks.length = 0;
+    await runMode(w, "routes", ["--yes"], RUN);
+    expect(stored(w).hook).toEqual({ url: E2B_HOOK.url, present: false, enabled: false });
+    expect(w.hooks[0]!["enabled"]).toBe(true);
+    const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
+    expect(work.plan[1]).toBe(`disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was absent ` +
+                              "before routes (a disabled hook sends nothing)");
+    expect(w.hooks).toEqual([expect.objectContaining({ id: "w1", enabled: false })]);
+    expect(w.events.some((event) => event.startsWith("e2b DELETE"))).toBe(false);
+  });
+
+  it("stops when the hook or the custom domain reads back unlike the record", async () => {
+    for (const [inert, why] of [
+      ["hook", `E2B lifecycle webhook ${E2B_HOOK.url} is enabled (the record has it disabled)`],
+      ["domain", `${EGRESS_DOMAIN} is ${DOORS}'s custom domain (the record has none)`],
+    ] as const) {
+      const w = world({ held: true });
+      await runMode(w, "routes", ["--yes"], RUN);
+      w.inert.add(inert);
+      await expect(runMode(w, "handback", ["--yes", "--record", "7001"]), inert).rejects.toThrow(
+        `the handback read back unlike the record: ${why}`);
+    }
+    // A custom domain another Worker took since is not the doors' to detach.
+    const { w } = await cutOver();
+    w.domains.set("d1", { id: "d1", hostname: EGRESS_DOMAIN, service: "someone-else" });
+    await expect(runMode(w, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
+      `the handback read back unlike the record: ${EGRESS_DOMAIN} is someone-else's custom ` +
+      "domain (the record has none)");
+    expect(w.domains.get("d1")?.service).toBe("someone-else");
   });
 
   it("takes one record by its id, and nothing it does not use", () => {
@@ -956,7 +1113,9 @@ describe("a handback run", () => {
                                { CLOUDFLARE_API_TOKEN: "cf-token" });
     expect(w.events.slice(from).filter((event) => CHANGE.test(event)
       || event.startsWith("python3"))).toEqual([]);
-    expect(work.plan).toHaveLength(9);
+    expect(work.plan).toHaveLength(11);
+    expect(work.plan[1]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job ` +
+                              "before any change");
     expect(w.logs.at(-1)).toBe("\nNothing was changed.");
   });
 
@@ -974,14 +1133,14 @@ describe("a handback run", () => {
     const api = [...moved.w.routes.values()].find((each) => each.pattern === "tinyassets.io/api/*")!;
     moved.w.routes.set(api.id, { ...api, script: "someone-else" });
     await expect(runMode(moved.w, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
-      "the zone's routes read back unlike the record: tinyassets.io/api/* is still there, " +
+      "the handback read back unlike the record: tinyassets.io/api/* is still there, " +
       "someone-else's (the record does not hold it)");
     expect(moved.w.routes.get(api.id)?.script).toBe("someone-else");
     // Nor is a recorded route the handover never changed, changed since.
     const site = await cutOver();
     site.w.routes.set("r6", { id: "r6", pattern: "tinyassets.io/site*", script: "site-2" });
     await expect(runMode(site.w, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
-      "the zone's routes read back unlike the record: tinyassets.io/site* is site-2's (the " +
+      "the handback read back unlike the record: tinyassets.io/site* is site-2's (the " +
       "record has it site's)");
     expect(site.w.routes.get("r6")?.script).toBe("site-2");
   });
@@ -1941,8 +2100,9 @@ const ROUTES_HELD = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
   "set the doors' OWNER_ISSUER to https://auth.test, held to its discovery",
   `the pair ${PAIR} passed its standing checks in this E2B team`,
-  `record the zone's ${LIVE.length + 2} routes and the handover's 8 changes as ` +
-  `deploy:routes:local-20261107T120000Z in tinyassets-control, before any change: hand back ` +
+  `record the zone's ${LIVE.length + 2} routes and the handover's 8 changes, the egress ` +
+  "domain (none) and E2B's lifecycle webhook (disabled) as " +
+  "deploy:routes:local-20261107T120000Z in tinyassets-control, before any change: hand back " +
   "with --mode handback --record local-20261107T120000Z",
   `WorkOS redirect URI ${CALLBACK}: present`,
   `WorkOS's authorize takes the doors' client and ${CALLBACK}: it sent the browser to ` +

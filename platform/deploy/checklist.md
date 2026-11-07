@@ -220,28 +220,40 @@ It never counts as "absent".
   canary. Every connector then signs in again once. Update the handles
   canary's tool list for the new door first.
 
-  Before any change, `routes` keeps a **route record** in `tinyassets-control`: every
-  route of the zone as it read them, the handover's changes, the zone, the run id and the
-  time, and no secret. The job summary names its id (the run's) and holds a copy. If the
-  record cannot be written, the run stops with nothing changed. A re-run attempt of the
-  same run keeps its first attempt's record.
+  Before any change, `routes` keeps a **route record** in `tinyassets-control`. It holds
+  the before-state of everything `routes` changes that `dark` does not:
+  - every route of the zone as it read them, and the handover's changes;
+  - the egress custom domain's Worker, or none;
+  - whether E2B's lifecycle webhook was held, and enabled.
+
+  It also holds the zone, the run id and the time, and no secret. The job summary names its
+  id (the run's) and holds a copy. If the record cannot be written, the run stops with
+  nothing changed. A re-run attempt of the same run keeps its first attempt's record.
+
+  `routes` also stops before any change while `egress.tinyassets.io` is another Worker's
+  custom domain or holds a DNS record. Run from the workflow, wrangler's custom-domain
+  deploy replaces either, and no handback could give it back. The plan job shows this stop
+  too.
 - **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id
   `routes`' summary names. Its plan job reads the record and the zone and changes nothing,
   so run it once right after `routes`, to see what a handback would do. The apply job puts
-  the zone's routes back as the record has them (the doors' patterns back to
-  `tinyassets-mcp-proxy`), one change at a time, so no path the record served is ever
-  served by nothing:
-  1. the old proxy's deleted narrower routes are added back;
-  2. `mcp*` is moved back in place;
-  3. the doors' added routes are deleted, each only while it is still the doors'.
+  back what `routes` changed, in reverse order:
+  1. E2B's lifecycle webhook is disabled, unless the record has it enabled before. A hook
+     `routes` registered is disabled, never deleted: a disabled hook sends nothing.
+  2. The doors' egress custom domain is detached, unless the record has it attached before.
+  3. The zone's routes go back as the record has them (the doors' patterns back to
+     `tinyassets-mcp-proxy`), one change at a time, so no path the record served is ever
+     served by nothing: the old proxy's deleted narrower routes are added back, `mcp*` is
+     moved back in place, then the doors' added routes are deleted, each only while it is
+     still the doors'.
 
-  It changes no other route. It then reads the zone back and stops, naming each
-  difference, unless the zone is the record's. Then it runs the handles canary, which
-  passes only once the old stack is up again. A rerun changes only what is not back yet.
-  A killed run is simply run again.
+  It changes no other route. It then reads each of the three back and stops, naming each
+  difference, unless they are the record's. Then it runs the handles canary, which passes
+  only once the old stack is up again. A rerun changes only what is not back yet, and a
+  killed run is simply run again.
 
-  It moves routes only. The egress custom domain stays, and so does E2B's lifecycle
-  webhook, which stays enabled and then posts to a path the old stack does not serve.
+  It leaves what `dark` made: storage, secrets, the Workers, the control record and the
+  WorkOS redirect URI. They serve no one without the routes, the domain and the hook.
 - **Optional: a WAF rate-limiting rule of your own.** The platform sets no number on any
   caller. If you ever want a per-IP backstop at the edge, make one zone rule in the
   dashboard (Free allows one, Pro two), with your own number. It is your setting, recorded

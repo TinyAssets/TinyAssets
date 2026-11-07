@@ -2334,14 +2334,19 @@ R, S, M and W.
     never admitted (no `owner_admission` row: `owner.json` says `absent`, and the census and
     the builder refuse and count one); one found is the founder's to rule on.
   - [x] 6. The deploy kit's route handback (`platform/deploy/deploy.ts`). Before any
-    change, mode `routes` keeps a route record in the control namespace: every route of the
-    zone as it read them, the handover's changes, the zone, the run id and the time, no
-    secret. Its job summary names the id (the run's). A record it cannot keep stops it
-    before any change, and a re-run attempt keeps its first attempt's. Mode `handback
-    --record <id>` puts the zone's routes back as the record has them: only what the
-    handover changed, one change at a time, no path the record served ever unserved. It
-    then reads the zone back and holds it to the record, and changes nothing once
-    converged. A missing or bad record stops it with nothing changed. Tested against the
+    change, mode `routes` keeps a route record in the control namespace. It holds the
+    before-state of each outward change `routes` makes beyond `dark`'s: the zone's routes and
+    the handover's changes, the egress custom domain's Worker, and E2B's lifecycle webhook,
+    held and enabled or not. It also holds the zone, the run id and the time, and no secret.
+    Its job summary names the id (the run's). A record it cannot keep stops it before any
+    change, and a re-run attempt keeps its first attempt's. So does an egress host that is
+    another Worker's or holds a DNS record, which wrangler's deploy would replace. Mode
+    `handback --record <id>` undoes `routes` in reverse: the hook disabled, the custom domain
+    detached (each unless the record has it so before), then the zone's routes as the record
+    has them, only what the handover changed, one change at a time, no path the record
+    served ever unserved. It then reads each back and holds it to the record, and changes
+    nothing once converged. `dark`'s own changes stay: they serve no one without the
+    three. A missing or bad record stops it with nothing changed. Tested against the
     fake world, killed after every route change and rerun (`deploy/guards/deploy.test.ts`).
     Its plan job reads the record and the zone and changes nothing, so it can run any time
     after `routes`. That read-only run is its rehearsal: an applied handback can only follow
@@ -2380,9 +2385,10 @@ R, S, M and W.
      what a handback would change. Then the handles canary and every imported owner's
      check.
   4. **The handback, if verify fails,** at any point before the hold ends:
-     `handback --record <id>`. It puts the zone's routes back as recorded, so the doors'
-     patterns go back to `tinyassets-mcp-proxy`, then reads them back. The old stack then
-     restarts on its untouched volumes. Writes made on the new platform since `routes` are
+     `handback --record <id>`. It disables the lifecycle webhook and detaches the egress
+     domain (each as the record has it before), puts the zone's routes back as recorded (so
+     the doors' patterns go back to `tinyassets-mcp-proxy`), then reads each back. The old
+     stack then restarts on its untouched volumes. Writes made on the new platform since `routes` are
      lost unless they are exported (decide at verify).
   Owed before slice L's deploy kit runs mode `routes`, each with this change since each moves
   production routing (slice L's final check, recorded, not yet fixed):

@@ -332,4 +332,40 @@ export class Cloudflare {
       }
     }
   }
+
+  /**
+   * The Workers custom domains on `hostname` (Cloudflare's Workers domains API, as wrangler's
+   * own SDK copy lists them): each its id and the Worker it serves. A failed read throws.
+   */
+  async domains(account: string, hostname: string): Promise<{ id: string; service: string }[]> {
+    const answer = await this.#api(`/accounts/${account}/workers/domains?hostname=${hostname}`);
+    const rows = Array.isArray(answer.body.result)
+      ? answer.body.result as { id?: unknown; hostname?: unknown; service?: unknown }[] : null;
+    if (answer.status !== 200 || answer.body.success !== true || rows === null
+        || !rows.every((row) => typeof row.id === "string" && typeof row.service === "string")) {
+      throw new Error(`the custom domains on ${hostname} could not be read (${answer.status})`);
+    }
+    return rows.filter((row) => row.hostname === undefined || row.hostname === hostname)
+      .map((row) => ({ id: String(row.id), service: String(row.service) }));
+  }
+
+  /** The zone's DNS records named `name`, each its type. A failed read throws. */
+  async dnsRecords(zone: string, name: string): Promise<{ type: string }[]> {
+    const answer = await this.#api(`/zones/${zone}/dns_records?name=${name}`);
+    if (answer.status !== 200 || answer.body.success !== true
+        || !Array.isArray(answer.body.result)) {
+      throw new Error(`the zone's DNS records for ${name} could not be read (${answer.status})`);
+    }
+    return (answer.body.result as { type?: unknown }[]).map((row) => ({ type: String(row.type) }));
+  }
+
+  /** Detaches the custom domain `id` from its Worker; a refusal throws. */
+  async detach(account: string, id: string, hostname: string): Promise<void> {
+    const answer = await this.#api(`/accounts/${account}/workers/domains/${id}`,
+                                   { method: "DELETE" });
+    if (answer.status !== 200 || answer.body.success === false) {
+      throw new Error(`detaching the custom domain ${hostname} failed (${answer.status}, ${
+        JSON.stringify(codes(answer))}): run the handback again`);
+    }
+  }
 }
