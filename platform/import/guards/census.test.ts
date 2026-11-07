@@ -1,0 +1,219 @@
+/**
+ * The census (slice 1) on an old-stack-shaped backup copy (`fixture.ts`): its exact counts,
+ * that it holds no user content and writes nothing to the copy, rule 0's loud refusals,
+ * the backup's own gate, and each owner's fit against the platform's own limits.
+ */
+import {
+  appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import { PLATFORM } from "../../ci/paths";
+import { FILE_DEFAULTS } from "../../contract/src/limits";
+import { DEFAULT_IGNORES, ignoredBy } from "../../contract/src/sync-ignore";
+import { census } from "../census";
+import { IMPORTED, newTree, walkUser } from "../survey";
+import {
+  ALICE, BAD_NAME, BOB, type Fixture, fixture, FOUNDER, keyOf, makeStore, sha, sparse,
+  TIERS,
+} from "./fixture";
+
+const made: Fixture[] = [];
+function fresh(): Fixture {
+  const f = fixture();
+  made.push(f);
+  return f;
+}
+afterEach(() => {
+  for (const f of made.splice(0)) {
+    rmSync(f.work, { recursive: true, force: true });
+  }
+});
+
+/** Every node under `root` as lstat sees it, with each file's bytes' hash: the copy's state. */
+function state(root: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: Buffer) => {
+    for (const name of readdirSync(dir, { encoding: "buffer" }).sort(Buffer.compare)) {
+      const path = Buffer.concat([dir, Buffer.from("/"), name]);
+      const stat = lstatSync(path);
+      const bytes = stat.isFile() ? sha(readFileSync(path)) : "";
+      found.push(`${path.toString("hex")} ${stat.mode} ${stat.size} ${stat.mtimeMs} ${bytes}`);
+      if (stat.isDirectory()) {
+        walk(path);
+      }
+    }
+  };
+  walk(Buffer.from(root));
+  return found;
+}
+
+describe("the census", () => {
+  it("counts the backup copy exactly, ready to import", () => {
+    const f = fresh();
+    const { report, ready } = census(f.copy, TIERS);
+    expect(ready).toBe(true);
+    expect(report["problems"]).toEqual({});
+    expect(report["backup"]).toEqual({ pins: 3, verified: true });
+    expect(report["owners"]).toEqual({
+      identities: 3, imported: 3, erased: 0, admission: { admitted: 2, suspended: 1 },
+      tier: { free: 1, paid: 2 }, with_subscription: 2, not_authkit: 0, with_volume: 3,
+      centers: 4, retired_centers: 1, orphan_accounts: 0,
+    });
+    // user_gone by principal; user_gone2 (erased admission) and user_gone3 by digest alone.
+    expect(report["tombstones"]).toEqual({ by_principal: 1, digest_only: 2 });
+    expect(report["files"]).toEqual({
+      files: 10, dirs: 5, bytes: (report["files"] as { bytes: number }).bytes, inline_files: 9,
+      largest: (report["files"] as { largest: number }).largest, links: 1, refused_names: 2,
+      ignored: 2, specials: 1, hardlinks: 0, sqlite_in_user_files: 0, archived_stores: 8,
+    });
+    expect((report["files"] as { largest: number }).largest).toBe(4 * 1024 * 1024 + 10);
+    expect(report["rows"]).toEqual({ policies: 2, collection_rows: 2, body_bytes: 27 });
+    expect(report["stores"]).toMatchObject({
+      "account/policy.db/policy carry": 2, "account/policy.db/once_approvals drop": 1,
+      "account/policy.db/receipts archive": 1, "account/conversations.db/collection_rows carry": 2,
+      "account/message_ledger.db/ledger_messages archive": 1,
+      "center/.conversation_memory.db/conversation_turns archive": 2,
+      "center/.conversation_memory.db/conversation_backfill drop": 1,
+      "root/.runs.db/runs drop": 2, "root/.runs.db/branch_schedules archive": 1,
+      "root/.tinyassets.db/branch_definitions archive": 1, "sessions/history.db/changes archive": 1,
+      "shared/.broker/state/owner-identities.db/owner_identities carry": 3,
+      "shared/.api-keys.sqlite3/api_keys drop": 2, "shared/.hook-owners.sqlite3/hook_owners drop": 1,
+      "shared/.router-deleted-owners.sqlite3/deleted_owners carry": 1,
+    });
+  });
+
+  it("reports counts only: no principal, no name an owner chose, no secret", () => {
+    const f = fresh();
+    const { report, table } = census(f.copy, TIERS);
+    const text = JSON.stringify(report) + table;
+    for (const secret of [ALICE, BOB, FOUNDER, "user_gone", "novel", "ch1", "big.bin", "chapter",
+                          "sk-secret", "secret-user", "cus_alice", "sub_alice", "inside.md",
+                          BAD_NAME.toString("latin1"), "dark night"]) {
+      expect(text).not.toContain(secret);
+    }
+    expect(table).toContain(`${keyOf(ALICE)}\tfiles\t6`);
+    expect(table).toContain(`${keyOf(BOB)}\tadmission\tsuspended,billing`);
+  });
+
+  it("never writes to the backup copy: every node and byte is as it was, and nothing is added", () => {
+    const f = fresh();
+    const before = state(f.work);
+    census(f.copy, TIERS);
+    expect(state(f.work)).toEqual(before);
+  });
+});
+
+describe("rule 0", () => {
+  it("refuses a table no rule names, by its schema name, and only that owner", () => {
+    const f = fresh();
+    const db = new DatabaseSync(join(f.tree(BOB), ".centers.db"));
+    db.exec("CREATE TABLE mystery (x)");
+    db.close();
+    const { report, ready, table } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toEqual({ unknown_table: 1 });
+    expect(table).toContain(`${keyOf(BOB)}\tproblem unknown_table\troot/.centers.db/mystery`);
+  });
+
+  it("refuses an entry no rule names, naming it by its digest alone", () => {
+    const f = fresh();
+    writeFileSync(join(f.tree(BOB), "main", "mystery-novel.txt"), "who wrote this");
+    const { report, table } = census(f.copy, TIERS);
+    expect(report["problems"]).toEqual({ unknown_entry: 1 });
+    expect(table).toContain(`problem unknown_entry\tcenter/#${sha("mystery-novel.txt").slice(0, 12)}`);
+    expect(table).not.toContain("mystery");
+  });
+
+  it("refuses a store stopped uncleanly (its log not merged), and one that fails its check", () => {
+    const f = fresh();
+    appendFileSync(join(f.tree(ALICE), "novel", ".conversation_memory.db-wal"), "unmerged");
+    writeFileSync(join(f.tree(BOB), "main", "rules.db"),
+                  Buffer.concat([Buffer.from("SQLite format 3\0", "latin1"), Buffer.alloc(200, 7)]));
+    const { report } = census(f.copy, TIERS);
+    expect(report["problems"]).toEqual({ integrity: 1, unclean_store: 1 });
+  });
+
+  it("refuses a shared store's table no rule names: the whole backup is not ready", () => {
+    const f = fresh();
+    makeStore(join(f.work, "data", "_data", ".broker", "plans.db"), "CREATE TABLE coupons (x)");
+    const { report, ready, table } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toEqual({ unknown_table: 1 });
+    expect(table).toContain("fleet\tproblem unknown_table\tshared/.broker/plans.db/coupons");
+  });
+});
+
+describe("the backup's own gate", () => {
+  it("refuses an image whose hash is not its pin, an unpublished snapshot and an unmounted image", () => {
+    const f = fresh();
+    appendFileSync(join(f.work, "300002.img"), "changed");
+    const db = new DatabaseSync(join(f.work, "data", "_data", ".broker", "state",
+                                     "owner-identities.db"));
+    db.prepare("UPDATE owner_volumes SET work = 'snapshot' WHERE principal = ?").run(ALICE);
+    db.close();
+    const copy = { ...f.copy, volume: (uid: number) => uid === 300_003
+      ? { problem: "is mounted writable" } : f.copy.volume(uid) };
+    const { report, ready } = census(copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toEqual({ image_mismatch: 1, not_mounted: 1, pending_work: 1 });
+  });
+});
+
+describe("each owner's fit", () => {
+  it("refuses a file past the platform's largest (FILE_DEFAULTS.max_file_bytes), read by size", () => {
+    const f = fresh();
+    sparse(join(f.tree(BOB), "main", "workspace", "huge.bin"), FILE_DEFAULTS.max_file_bytes + 1);
+    const { report, table } = census(f.copy, TIERS);
+    expect(report["problems"]).toEqual({ over_file_bytes: 1, over_storage: 1 });
+    expect(table).toContain(`${keyOf(BOB)}\tproblem over_file_bytes`);
+  });
+
+  it("counts entries as the files plane does, folders and the starter's seed included", () => {
+    const f = fresh();
+    const { table } = census(f.copy, TIERS);
+    const entries = Number(new RegExp(`${keyOf(BOB)}\\tentries\\t(\\d+)`).exec(table)![1]);
+    // The starter's files and their folders, read from its package here independently.
+    const starter = new Set<string>();
+    for (const file of (JSON.parse(readFileSync(join(PLATFORM, "starter", "starter.json"),
+                                                "utf8")) as { files: { path: string }[] }).files) {
+      const parts = file.path.split("/");
+      for (let i = 3; i <= parts.length; i += 1) {
+        starter.add(parts.slice(0, i).join("/"));
+      }
+    }
+    // Bob's: imported/, main/, MEMORY.md, workspace/, workspace/a.txt and README.md.
+    expect(entries).toBe(6 + starter.size);
+  });
+
+  it("refuses an owner whose entries pass max_entries, folders counted", () => {
+    const f = fresh();
+    const many = join(f.tree(BOB), "main", "workspace", "many");
+    mkdirSync(many);
+    for (let i = 0; i < FILE_DEFAULTS.max_entries; i += 1) {
+      writeFileSync(join(many, String(i)), "");
+    }
+    expect(census(f.copy, TIERS).report["problems"]).toEqual({ over_entries: 1 });
+  });
+});
+
+describe("the walk of an owner's files", () => {
+  it("keeps for refused.tar a name whose stored path would pass 4,096 bytes, and all below it", () => {
+    const f = fresh();
+    const source = join(f.work, "deep");
+    mkdirSync(join(source, "x".repeat(15)), { recursive: true });
+    writeFileSync(join(source, "x".repeat(15), "inner.txt"), "kept");
+    writeFileSync(join(source, "ok.txt"), "carried");
+    // A stored path of 4,085 bytes: its child "ok.txt" fits, a name of 15 does not.
+    const path = `${IMPORTED}${`/${"a".repeat(200)}`.repeat(20)}/${"b".repeat(45)}`;
+    expect(Buffer.byteLength(path)).toBe(4085);
+    const tree = newTree();
+    walkUser(Buffer.from(source), path, Buffer.from("m"), tree, ignoredBy(DEFAULT_IGNORES));
+    expect(tree.carried.map((item) => [item.kind, item.path.slice(path.length)]))
+      .toEqual([["dir", ""], ["file", "/ok.txt"]]);
+    expect(tree.refused.map((refusal) => refusal.member.toString())).toEqual([`m/${"x".repeat(15)}`]);
+  });
+});

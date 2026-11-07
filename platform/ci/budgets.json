@@ -34,6 +34,10 @@
       "slowest_ms": 11017,
       "test": "gateway/test/held.test.ts > the verification's cases (rveg2) never counts a wait for a unit against the sender (V-M2)"
     },
+    "import/guards": {
+      "slowest_ms": 1000,
+      "test": "placeholder until measured"
+    },
     "hooks/guards": {
       "slowest_ms": 51,
       "test": "hooks/guards/isolation.test.ts > hooks isolation guards find no owner binding, no storage and no import from outside"

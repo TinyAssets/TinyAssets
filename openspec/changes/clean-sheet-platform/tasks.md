@@ -2297,9 +2297,32 @@ R, S, M and W.
 
 ## 9. Cutover window
 
+- [ ] **The importer** (`import_research.md`): every existing owner's stores and files carried
+  into the new platform by a job in `platform/import/` (Node, run on the droplet from the
+  verified backup copy), which reads the contract and no Worker's `src` (its isolation guard).
+  It is deleted in the cutover's deletion change, with the import doors, the
+  `tinyassets-import` queue, the staging bucket and `IMPORT_KEY`.
+  - [x] The census (`census.ts`): §1's counts and the per-owner table, rule 0 (`rules.ts`: a
+    reviewed rule for every old store, table and entry, an unknown one stopping its owner
+    loudly), and each owner's fit against `FILE_DEFAULTS`, the stored-path rules and the
+    tier's storage, all read from the contract. Images are read only where the kernel says
+    they are mounted read-only XFS.
+  - [x] The bundle builder (`bundle.ts`): a bundle an owner (a manifest of files with the
+    platform's own content ids, the row batches, `links.txt` and `refused.tar`); the
+    exclusion list's owners (input, never in code) to the private backup instead; a dry run.
+  - [ ] The owner object's platform-only import doors (`pending` only, no new migration),
+    `importCheck` and `importDiscard`.
+  - [ ] The doors' `tinyassets-import` consumer with `IMPORT_KEY` and `IMPORT_STAGING`, and the
+    bundles' upload to staging.
+  - [ ] The deploy kit's route handback.
+  - [ ] A dark rehearsal under `rehearsal-` names, measured, verified and wiped.
+  - [ ] The census on a current backup copy, and the founder's word on what it leaves open:
+    digest-only tombstones, live capability URLs, unacked mail, any owner past 30,000 entries.
+
 - [ ] Full backup; each owner's broker stores imported into their object and each
   volume into object storage, each imported owner admitted (`admissionSet` from the
-  platform caller, and its `o:` record), as sign-up admits one; DNS switched; the droplet paths deleted. S36 reads
+  platform caller, and its `o:` record), as sign-up admits one; DNS switched; the droplet
+  paths deleted, and `platform/import/` with them (the importer above). S36 reads
   converged.
   Owed before slice L's deploy kit runs mode `routes`, each with this change since each moves
   production routing (slice L's final check, recorded, not yet fixed):
