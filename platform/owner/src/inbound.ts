@@ -36,7 +36,7 @@
  */
 import { HEX32, randomHex } from "../../contract/src/ids";
 
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { type Profile, profile as checkedProfile } from "../../contract/src/inbound-proof";
@@ -99,14 +99,14 @@ function shown(row: Row): InboundBinding {
 
 export function agentName(value: unknown): string {
   if (typeof value !== "string" || !AGENT.test(value)) {
-    throw new Invalid("an inbound binding names one of the owner's agents");
+    throw new Refusal("invalid", "an inbound binding names one of the owner's agents");
   }
   return value;
 }
 
 export function bindingId(value: unknown): string {
   if (typeof value !== "string" || !BINDING_ID.test(value)) {
-    throw new Invalid("binding_id is 32 hex");
+    throw new Refusal("invalid", "binding_id is 32 hex");
   }
   return value;
 }
@@ -123,36 +123,39 @@ export interface Created {
 /** A create request checked whole. A shared binding takes no proof of its own. */
 export function created(request: unknown): Created {
   if (typeof request !== "object" || request === null || Array.isArray(request)) {
-    throw new Invalid("an inbound binding is an object");
+    throw new Refusal("invalid", "an inbound binding is an object");
   }
   const r = request as Record<string, unknown>;
   const keys = Object.keys(r);
   if (keys.some((key) => !["kind", "agent", "route", "profile", "secret"].includes(key))) {
-    throw new Invalid("an inbound binding is its kind, agent, route, and a proof and secret");
+    throw new Refusal("invalid",
+                      "an inbound binding is its kind, agent, route, and a proof and secret");
   }
   if (r["kind"] !== "capability" && r["kind"] !== "shared") {
-    throw new Invalid("an inbound binding is a capability URL or a shared app's install");
+    throw new Refusal("invalid",
+                      "an inbound binding is a capability URL or a shared app's install");
   }
   if (r["kind"] === "shared") {
     // Only a shared app's install flow, which proves the owner holds the workspace, may
     // name an installation; until it lands no owner may claim one (another workspace's
     // team id would route that workspace's events here).
-    throw new Refused(INSTALL_PROOF);
+    throw new Refusal("install_proof_required", INSTALL_PROOF);
   }
   if (typeof r["route"] !== "string" || r["route"].length > INBOUND_ROUTE_MAX
       || !ROUTE.test(r["route"])
       || (r["kind"] === "capability") !== r["route"].startsWith("h:")) {
-    throw new Invalid("an inbound binding's route is its directory entry");
+    throw new Refusal("invalid", "an inbound binding's route is its directory entry");
   }
   const proof = r["profile"] === undefined || r["profile"] === null ? null
     : checkedProfile(r["profile"]);
   const secret = r["secret"] === undefined || r["secret"] === null ? null : r["secret"];
   if (secret !== null && (typeof secret !== "string" || secret.length < 16
                           || secret.length > INBOUND_SECRET_MAX)) {
-    throw new Invalid(`an inbound proof secret is 16 to ${INBOUND_SECRET_MAX} characters`);
+    throw new Refusal("invalid",
+                      `an inbound proof secret is 16 to ${INBOUND_SECRET_MAX} characters`);
   }
   if ((proof?.method === "hmac-sha256") !== (secret !== null)) {
-    throw new Invalid("an HMAC proof holds a secret, and only an HMAC proof does");
+    throw new Refusal("invalid", "an HMAC proof holds a secret, and only an HMAC proof does");
   }
   return { kind: r["kind"], agent: agentName(r["agent"]), route: r["route"], profile: proof,
            secret: secret as string | null };
@@ -186,11 +189,11 @@ export class Inbound {
     const sql = this.#storage.sql;
     if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM inbound_bindings").one().n
         >= MAX_BINDINGS) {
-      throw new Refused("too many inbound bindings; revoke one first");
+      throw new Refusal("refused", "too many inbound bindings; revoke one first");
     }
     if (sql.exec("SELECT 1 FROM inbound_bindings WHERE route = ?", change.route).toArray()
           .length > 0) {
-      throw new Refused("this route is bound already");
+      throw new Refusal("refused", "this route is bound already");
     }
     const id = randomHex(16);
     sql.exec("INSERT INTO inbound_bindings (binding_id, kind, agent, enabled, revision, route, " +
@@ -210,17 +213,18 @@ export class Inbound {
     const r = (request ?? {}) as Record<string, unknown>;
     if (Object.keys(r).some((key) => !["binding_id", "expected_revision", "enabled",
                                        "agent"].includes(key))) {
-      throw new Invalid("an inbound change names its binding, its revision, and what moves");
+      throw new Refusal("invalid",
+                        "an inbound change names its binding, its revision, and what moves");
     }
     const row = this.#row(bindingId(r["binding_id"]));
     if (row === undefined) {
-      throw new Refused(NOT_CONFIGURED);
+      throw new Refusal("binding_not_configured", NOT_CONFIGURED);
     }
     if (r["expected_revision"] !== row.revision) {
-      throw new Refused("inbound binding changed");
+      throw new Refusal("refused", "inbound binding changed");
     }
     if (r["enabled"] !== undefined && typeof r["enabled"] !== "boolean") {
-      throw new Invalid("enabled is true or false");
+      throw new Refusal("invalid", "enabled is true or false");
     }
     const enabled = r["enabled"] === undefined ? row.enabled : r["enabled"] ? 1 : 0;
     const agent = r["agent"] === undefined ? row.agent : agentName(r["agent"]);
@@ -246,10 +250,10 @@ export class Inbound {
   current(id: string, revision: unknown): Row {
     const row = this.#row(id);
     if (row === undefined) {
-      throw new Refused(NOT_CONFIGURED);
+      throw new Refusal("binding_not_configured", NOT_CONFIGURED);
     }
     if (row.revision !== revision || row.enabled !== 1) {
-      throw new Refused(WITHDRAWN);
+      throw new Refusal("binding_withdrawn", WITHDRAWN);
     }
     return row;
   }

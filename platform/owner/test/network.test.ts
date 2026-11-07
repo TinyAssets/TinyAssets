@@ -4,10 +4,11 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { Refusal } from "../../contract/src/refusal";
 import {
   KEY_MIN_BYTES, LEASE_LIVED, mintToken, tokenHash, verifyToken,
 } from "../../contract/src/routing-mac";
-import { Invalid, Refused } from "../../contract/src/errors";
+
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { sourceRecord } from "../../sources/src/check";
 import { runEnv } from "../../sources/src/run-env";
@@ -88,7 +89,8 @@ describe("the network document", () => {
                         "[::1]", "::1", "2001:db8::1", "12345"]) {
       const error = thrown(() => networkDocument({ mode, destinations: [{ host, port: 443 }] },
                                                  1, TOKEN));
-      expect([error.name, error.message]).toEqual([Refused.name, EGRESS_IP_LITERAL]);
+      expect([(error as Refusal).code, error.message])
+        .toEqual(["egress_ip_literal", EGRESS_IP_LITERAL]);
     }
   });
 
@@ -106,8 +108,8 @@ describe("the network document", () => {
       [{ mode: "open", destinations: [] }, 1, "T".repeat(43)],
       [{ mode: "open", destinations: [] }, 1, `${btoa("owner-1")}.${"T".repeat(43)}`],
     ] as const) {
-      expect(thrown(() => networkDocument(egress as never, generation, token)).name)
-        .toBe(Invalid.name);
+      expect((thrown(() => networkDocument(egress as never, generation, token)) as Refusal)
+        .invalid).toBe(true);
     }
   });
 
@@ -267,7 +269,7 @@ describe("the sandbox's model clients' environment", () => {
     // A signed-in run is on no connection.
     expect(() => sandboxEnv(EVERY, () => "ab".repeat(16),
                             run("claude-code", "vendor_login_in_sandbox", EVERY[0]!.connection)))
-      .toThrow(Invalid);
+      .toThrow(Refusal);
   });
 
   it("gives an API-key run its one connection, under the rule's names and the engine's own",
@@ -327,9 +329,9 @@ describe("the sandbox's model clients' environment", () => {
     });
     // A connection the owner does not hold, or a provider the engine runs no key of.
     expect(() => sandboxEnv([{ connection: C1, provider: "anthropic", egress: ANTHROPIC }],
-                            random, run("claude-code", "api_key", at(99)))).toThrow(Invalid);
+                            random, run("claude-code", "api_key", at(99)))).toThrow(Refusal);
     expect(() => sandboxEnv([{ connection: C1, provider: "anthropic", egress: ANTHROPIC }],
-                            random, run("codex", "api_key", C1))).toThrow(Invalid);
+                            random, run("codex", "api_key", C1))).toThrow(Refusal);
     // Two names for one variable that disagree, or a name the credential forbids, fail.
     expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
                             { run: R, secret: S, credential: "api_key", connection: C2,

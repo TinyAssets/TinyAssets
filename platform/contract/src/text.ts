@@ -1,5 +1,5 @@
 /** Text and byte rules every Worker reads, matching the Python trusted side's. */
-import { Invalid } from "./errors";
+import { Refusal } from "./refusal";
 
 /** Characters Python's `str.isprintable()` refuses: other, and separators but the space. */
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]|[^\P{Zs} ]/u;
@@ -95,7 +95,7 @@ export function forbids(list: readonly string[], name: string): boolean {
 /** A collection, row or writer name: 1 to 256 printable characters. */
 export function name(value: unknown, what: string): string {
   if (typeof value !== "string" || !value || codePoints(value) > 256 || !isPrintable(value)) {
-    throw new Invalid(`${what} is 1 to 256 printable characters`);
+    throw new Refusal("invalid", `${what} is 1 to 256 printable characters`);
   }
   return value;
 }
@@ -104,7 +104,7 @@ export function name(value: unknown, what: string): string {
 export function principal(value: unknown): string {
   if (typeof value !== "string" || !value.trim() || value !== value.trim()
       || codePoints(value) > 512 || !isPrintable(value)) {
-    throw new Invalid("invalid owner principal");
+    throw new Refusal("invalid", "invalid owner principal");
   }
   return value;
 }

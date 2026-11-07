@@ -39,9 +39,10 @@
  * (owed live). The caller's stop ends every phase at once.
  */
 import { utf8Decoder } from "../../contract/src/text";
+import { Refusal } from "../../contract/src/refusal";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
 import {
-  type Isolate, isolatePool, type Lease, SlotBusy, type SlotPool, UNIT_BYTES,
+  type Isolate, isolatePool, isSlotBusy, type Lease, type SlotPool, UNIT_BYTES,
 } from "../../contract/src/slots";
 
 /** The gateway's pool: 16 slots of one 4 MiB unit, 64 MiB, beside its 12 MiB idle set. */
@@ -85,15 +86,14 @@ export function weightSlots(weight: number): number {
 }
 
 /** Why a held call stopped, as the gateway answers it. */
-export type HeldCode = "busy" | "egress_too_large" | "invalid_request" | "aborted";
+export const HELD_CODES = Object.freeze(["busy", "egress_too_large", "invalid_request",
+                                         "aborted"] as const);
+export type HeldCode = (typeof HELD_CODES)[number];
 
-export class HeldRefusal extends Error {
-  readonly code: HeldCode;
-
-  constructor(code: HeldCode) {
-    super(code);
-    this.code = code;
-  }
+/** The held code a refusal stopped a call with, or null for anything else. */
+export function heldCode(error: unknown): HeldCode | null {
+  return error instanceof Refusal && (HELD_CODES as readonly string[]).includes(error.code)
+    ? error.code as HeldCode : null;
 }
 
 /**
@@ -193,12 +193,12 @@ export class Hold {
   /** At least `units` held, or `egress_too_large`, `busy` (all let go), or the stop's reason. */
   async grow(units: number): Promise<void> {
     if (units > this.#most) {
-      throw new HeldRefusal("egress_too_large");
+      throw new Refusal("egress_too_large");
     }
     try {
       await this.#lease.grow(units, this.#signal);
     } catch (error) {
-      throw error instanceof SlotBusy ? new HeldRefusal("busy") : error;
+      throw isSlotBusy(error) ? new Refusal("busy") : error;
     }
   }
 
@@ -227,7 +227,7 @@ export async function weighedBody(request: Request, length: number, hold: Hold |
 function senderLate(ms: number): { late: Promise<never>; clear: () => void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new HeldRefusal("invalid_request")), Math.max(0, ms));
+    timer = setTimeout(() => reject(new Refusal("invalid_request")), Math.max(0, ms));
   });
   late.catch(() => undefined);
   return { late, clear: () => clearTimeout(timer) };
@@ -251,7 +251,7 @@ export async function readHeld(request: Request, length: number, hold: Hold | nu
   const tokens = new Tokens();
   if (request.body === null) {
     if (length !== 0) {
-      throw new HeldRefusal("invalid_request");
+      throw new Refusal("invalid_request");
     }
     return { text: "", bytes: 0, tokens };
   }
@@ -277,11 +277,11 @@ export async function readHeld(request: Request, length: number, hold: Hold | nu
       const value = chunk.value;
       bytes += value.byteLength;
       if (bytes > length) {
-        throw new HeldRefusal("invalid_request");
+        throw new Refusal("invalid_request");
       }
       tokens.feed(value);
       if (weightSlots(parseWeight(bytes, tokens.count, tokens.ascii)) > most) {
-        throw new HeldRefusal("egress_too_large");
+        throw new Refusal("egress_too_large");
       }
       const units = Math.ceil(TEXT_COST * bytes / UNIT_BYTES);
       if (hold !== null && units > hold.units) {
@@ -292,14 +292,14 @@ export async function readHeld(request: Request, length: number, hold: Hold | nu
     }
     text += decoder.decode();
     if (bytes !== length) {
-      throw new HeldRefusal("invalid_request");
+      throw new Refusal("invalid_request");
     }
   } catch (error) {
     reader.cancel().catch(() => undefined);
-    if (error instanceof HeldRefusal || signal.aborted) {
+    if (heldCode(error) !== null || signal.aborted) {
       throw error;
     }
-    throw new HeldRefusal("invalid_request");  // not UTF-8, or the body failed
+    throw new Refusal("invalid_request");  // not UTF-8, or the body failed
   }
   return { text, bytes, tokens };
 }

@@ -92,7 +92,8 @@ describe("a refusal of one file", () => {
       }
       return door === "commit" ? commitAll(body, sent) : { status: 404, body: {} };
     }), p, mirror, LEASE, []);
-    expect(report.refused).toEqual([{ path: "/workspace/big.bin", reason: FULL }]);
+    expect(report.refused).toEqual([{ path: "/workspace/big.bin", reason: FULL,
+                                      code: "storage_full" }]);
     expect(sent).toContain("/workspace/small.txt");
     // What landed is mirrored; what was refused is not, so the next sync offers it again.
     expect(mirror.get("/workspace/small.txt")).toBeDefined();
@@ -107,7 +108,8 @@ describe("a refusal of one file", () => {
       ? { status: 403, body: { error: { code: "file_quota", message: quota } } }
       : door === "commit" ? commitAll(body) : { status: 404, body: {} }),
                                  p, memoryMirror(), LEASE, []);
-    expect(report.refused).toEqual([{ path: "/workspace/big.bin", reason: quota }]);
+    expect(report.refused).toEqual([{ path: "/workspace/big.bin", reason: quota,
+                                      code: "file_quota" }]);
     // A lost lease still is a fence.
     await expect(syncOut(client(() => ({ status: 403, body: { error: {
       code: "sync_fenced", message: "sync_fenced: the sync lease was lost" } } })),
@@ -457,8 +459,7 @@ describe("verification round 2", () => {
     const report = await syncOut(client((door, body) => door === "commit"
       ? commitAll(body, sent) : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(sent).toEqual(["/workspace/.ta/sync-ignore"]);
-    expect(report.skipped).toEqual([{ path: "/workspace/src/app.ts", reason:
-      "held back by a sync-ignore line: your files keep the version they have" }]);
+    expect(report.skipped).toEqual([{ path: "/workspace/src/app.ts", code: "held_back" }]);
     // Never removed, and the owner's copy stands.
     expect(mirror.get("/workspace/src/app.ts")).toBeDefined();
   });

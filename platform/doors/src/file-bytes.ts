@@ -27,10 +27,11 @@
 import { createHash } from "node:crypto";
 
 import { CHUNK_BYTES } from "../../contract/src/limits";
+import { refusalOf } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
-import { refusal } from "./tools";
+import { refusalResponse } from "./refused";
 
 /** The owner-surface paths of the upload, after `/app/api/`. */
 export const UPLOAD_PREFIX = "files/upload/";
@@ -131,10 +132,10 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
                            pending: target.pending.length - (needed ? 1 : 0) },
                          { headers: { "Cache-Control": "no-store", ...headers } });
   } catch (error) {
-    const refused = refusal(error);
+    const refused = refusalOf(error);
     if (refused === null) {
       throw error;
     }
-    return failure(refused.status, refused.message);
+    return refusalResponse(refused, { "Cache-Control": "no-store" });
   }
 }

@@ -30,6 +30,7 @@ import { sha256Hex } from "../../contract/src/digest";
 
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
 import type { InboundAnswer } from "../../owner/src/owner-do";
+import { refusalOf } from "../../contract/src/refusal";
 
 import apps from "../shared-apps.json" with { type: "json" };
 
@@ -41,7 +42,7 @@ import {
 import { type Control, deleteRoute, putRoute, readControl, readRoute } from "./directory";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
-import { refusal } from "./tools";
+import { shownCode } from "./refused";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
 const STAMP = /^[0-9]{1,12}$/;
@@ -267,15 +268,15 @@ export async function serveInbound(request: Request, env: DoorsEnv): Promise<Res
     return delivered(routed.shared, await stub.inboundAccept(binding, {
       event_id: routed.eventId, event_at: routed.eventAt, body, headers }));
   } catch (error) {
-    const refused = refusal(error);
+    const refused = refusalOf(error);
     if (refused === null) {
       throw error;
     }
     if (routed.shared) {
-      return answer(200, { state: "refused", error: refused.message.split(":")[0] });
+      return answer(200, { state: "refused", error: shownCode(refused) });
     }
-    const code = refused.message.split(":")[0]!;
-    return answer(code === "inbound_proof_invalid" ? 401 : 404, { error: code });
+    return answer(refused.code === "inbound_proof_invalid" ? 401 : 404,
+                  { error: shownCode(refused) });
   }
 }
 

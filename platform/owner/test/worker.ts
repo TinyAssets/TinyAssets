@@ -258,6 +258,8 @@ export interface GatewayFaults {
     Resealed & { readonly expires_at: number | null }) | null;
   /** Awaited before a provider revoke is sent, when set. */
   revokeGate: Promise<void> | null;
+  /** The next chunk read from the files plane rejected with this, when set, then cleared. */
+  chunkRead: unknown;
 }
 
 /**
@@ -282,9 +284,32 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
   };
 }
 
+/** The files plane, its next chunk read rejected with the fault a test sets, once. */
+function faulted(files: OwnerEnv["FILES"], faults: () => GatewayFaults | undefined):
+    OwnerEnv["FILES"] {
+  return new Proxy(files, {
+    get(target, key) {
+      if (key === "getChunks") {
+        return (...args: Parameters<OwnerEnv["FILES"]["getChunks"]>) => {
+          const fault = faults()?.chunkRead;
+          if (fault !== undefined && fault !== null) {
+            faults()!.chunkRead = null;
+            return Promise.reject(fault);
+          }
+          return target.getChunks(...args);
+        };
+      }
+      // Every other method called on the binding itself, as its RPC stub needs.
+      return typeof key === "symbol" || key === "then" ? Reflect.get(target, key)
+        : (...args: unknown[]) =>
+          (target as unknown as Record<string, (...a: unknown[]) => unknown>)[key]!(...args);
+    },
+  });
+}
+
 /**
  * The owner object as production builds it, its GATEWAY calls watched, the faults a test
- * sets on them, and its sandbox's lease API in reach.
+ * sets on them and on its chunk reads, and its sandbox's lease API in reach.
  */
 export class GatedOwnerDO extends OwnerDO {
   /** The sandbox's lease API, owner-internal (`SandboxLeases`). */
@@ -292,14 +317,16 @@ export class GatedOwnerDO extends OwnerDO {
   /** The recording fake behind its `SANDBOX` binding. */
   readonly recorder: RecordingSandbox;
   calls: GatewayCall[] = [];
-  readonly faults: GatewayFaults = { refreshGate: null, refreshed: null, revokeGate: null };
+  readonly faults: GatewayFaults = { refreshGate: null, refreshed: null, revokeGate: null,
+                                      chunkRead: null };
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { self?: GatedOwnerDO; sandbox?: SandboxLeases } = {};
     const pending: GatewayCall[] = [];
     const recorder = new RecordingSandbox();
     super(ctx, { ...env, GATEWAY: watched(env.GATEWAY, () => made.self?.calls ?? pending,
-                                          () => made.self?.faults), SANDBOX: recorder },
+                                          () => made.self?.faults),
+                 FILES: faulted(env.FILES, () => made.self?.faults), SANDBOX: recorder },
           { sandbox: (leases) => { made.sandbox = leases; } });
     made.self = this;
     this.sandbox = made.sandbox!;

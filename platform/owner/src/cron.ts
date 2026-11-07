@@ -19,7 +19,7 @@
  * strictly after `after` that matches, found a day at a time, so it is bounded by the
  * horizon, never by a minute-by-minute scan.
  */
-import { Invalid } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { CRON_MAX_CHARS } from "../../contract/src/limits";
 
 /** The most list items one field takes. */
@@ -51,8 +51,8 @@ export interface Cron {
   readonly anyWeekday: boolean;
 }
 
-function refused(why: string): Invalid {
-  return new Invalid(`a cron expression is five fields of numbers in UTC: ${why}`);
+function refused(why: string): Refusal {
+  return new Refusal("invalid", `a cron expression is five fields of numbers in UTC: ${why}`);
 }
 
 /** One field's values, sorted, from its text. */
@@ -165,7 +165,7 @@ function firstDay(cron: Cron, from: number): number | null {
  */
 export function nextOccurrence(cron: Cron, after: number): number | null {
   if (!Number.isFinite(after)) {
-    throw new Invalid("a time is a number of seconds");
+    throw new Refusal("invalid", "a time is a number of seconds");
   }
   const from = Math.floor(after / 60) * 60 + 60;  // the next whole minute past `after`
   const start = Math.floor(from / DAY_S) * DAY_S;

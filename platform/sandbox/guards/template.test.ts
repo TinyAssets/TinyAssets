@@ -131,10 +131,10 @@ describe("the template", () => {
     const copy = mkdtempSync(join(tmpdir(), "ta-template-"));
     try {
       for (const part of ["sandbox/template", "sources", "owner/src/tier.ts",
-                          "sandbox/runner", "contract/src/failure.ts"]) {
+                          "sandbox/runner", "contract/src/refusal.ts"]) {
         cpSync(join(PLATFORM, part), join(copy, part), { recursive: true });
       }
-      writeFileSync(join(copy, "contract/src/failure.ts"), "export const CHANGED = 1;\n");
+      writeFileSync(join(copy, "contract/src/refusal.ts"), "export const CHANGED = 1;\n");
       writeFileSync(join(copy, "sandbox/runner/runner.ts"), "export {};\n");
       expect(tag(copy)).toBe(tag());
     } finally {

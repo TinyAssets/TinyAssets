@@ -9,8 +9,9 @@ import { describe, expect, it } from "vitest";
 import {
   OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
 } from "../src/holds";
+import { Refusal } from "../../contract/src/refusal";
 import {
-  BUSY, isolatePool, type Slot, SlotBusy, SlotPool, slotted,
+  BUSY, isolatePool, isSlotBusy, type Slot, SlotPool, slotted,
 } from "../../contract/src/slots";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -115,8 +116,8 @@ describe("a pool of units", () => {
     const held = await pool.acquire(1);
     const waiting = pool.acquire(1);
     const over = await pool.acquire(1).catch((error: Error) => error);
-    expect(over).toBeInstanceOf(SlotBusy);
-    expect([(over as Error).name, (over as Error).message]).toEqual(["Refused", BUSY]);
+    expect(isSlotBusy(over)).toBe(true);
+    expect([(over as Refusal).code, (over as Error).message]).toEqual(["busy", BUSY]);
     expect((await waiting.catch((error: Error) => error) as Error).message).toBe(BUSY);
     expect(pool.state()).toMatchObject({ held: 1, waiting: 0 });
     held.release();
@@ -180,7 +181,7 @@ describe("a pool of units", () => {
     await tick();
     expect(pool.state().waiting).toBe(3);
     // Another of a's, past the waiters, is busy itself: a already waits most.
-    expect((await pool.acquire(1, "a").catch((error: Error) => error)) instanceof SlotBusy)
+    expect(isSlotBusy(await pool.acquire(1, "a").catch((error: Error) => error)))
       .toBe(true);
     holding.release();
     expect(await Promise.all(flooded)).toEqual(["landed", "landed", BUSY]);
@@ -198,7 +199,7 @@ describe("a pool of units", () => {
     const fillers = [await pool.acquire(1, "c"), await pool.acquire(1, "c")];
     // The younger cannot grow at once: it dies, its units back, told busy.
     const died = await younger.grow(3).catch((error: Error) => error);
-    expect(died).toBeInstanceOf(SlotBusy);
+    expect(isSlotBusy(died)).toBe(true);
     expect([younger.units, pool.state().held]).toEqual([0, 4]);
     // The oldest waits, and while it waits a newcomer takes nothing it waits for.
     const refill = await pool.acquire(2, "c");

@@ -101,7 +101,7 @@ import {
 import { FILERS } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { bodied, type Cut, fitPage, PAGE_BYTES, whole } from "./pages";
 import {
@@ -308,23 +308,21 @@ export function checkLimits(limits: LedgerLimits): LedgerLimits {
 }
 
 /** The refusal of a post when too much mail is unread (`maxUnacked`). */
-export const LEDGER_FULL = "ledger_full";
+export const LEDGER_FULL = "ledger_full" as const;
 
 /** A post at the hot ceiling while the `archive` lane moves acked mail out: retry soon. */
-export const STORAGE_BUSY = "storage_busy";
-/** How long a `storage_busy` post waits before it tries again: about one lane pass. */
-export const STORAGE_BUSY_RETRY_S = 30;
+export const STORAGE_BUSY = "storage_busy" as const;
 
 /** A message body as a post takes it, or refused; the door checks it before placing it. */
 export function checkMessage(body: unknown): asserts body is string {
   if (typeof body !== "string") {
-    throw new Invalid("body is text");
+    throw new Refusal("invalid", "body is text");
   }
   if (!body || utf8Bytes(body) > MAX_BODY_BYTES) {
-    throw new Invalid(`a message body is 1 to ${MAX_BODY_BYTES} bytes`);
+    throw new Refusal("message_body", `a message body is 1 to ${MAX_BODY_BYTES} bytes`);
   }
   if (LONE_SURROGATE.test(body)) {
-    throw new Invalid("a message body is well-formed text");
+    throw new Refusal("message_body", "a message body is well-formed text");
   }
 }
 
@@ -644,7 +642,7 @@ function round3(value: number): number {
 /** 1 to `limit` printable characters, as the Python's `_text`. */
 function text(value: unknown, limit: number, what: string): string {
   if (typeof value !== "string" || !value || codePoints(value) > limit || !isPrintable(value)) {
-    throw new Invalid(`${what} is 1 to ${limit} printable characters`);
+    throw new Refusal("invalid", `${what} is 1 to ${limit} printable characters`);
   }
   return value;
 }
@@ -691,12 +689,12 @@ export function outsideOrigin(value: unknown): Origin | null {
   }
   if (typeof value !== "object" || Array.isArray(value)
       || Object.keys(value).sort().join() !== "client,family") {
-    throw new Invalid("invalid outside origin");
+    throw new Refusal("invalid", "invalid outside origin");
   }
   const { client, family } = value as Record<string, unknown>;
   if (typeof client !== "string" || typeof family !== "string" || !HEX64.test(client)
       || !HEX64.test(family)) {
-    throw new Invalid("invalid outside origin");
+    throw new Refusal("invalid", "invalid outside origin");
   }
   return { client, family };
 }
@@ -710,22 +708,22 @@ export function outsideOrigin(value: unknown): Origin | null {
 export function registrant(source: unknown, origin: Origin | null): Source {
   if (typeof source !== "object" || source === null || Array.isArray(source)
       || Object.keys(source).sort().join() !== "kind,ref") {
-    throw new Invalid("source is api_key or mcp");
+    throw new Refusal("invalid", "source is api_key or mcp");
   }
   const { kind, ref } = source as Record<string, unknown>;
   if (kind !== "api_key" && kind !== "mcp") {
-    throw new Invalid("source is api_key or mcp");
+    throw new Refusal("invalid", "source is api_key or mcp");
   }
   if (origin === null) {
-    throw new Refused("an agent registers only from its verified outside identity");
+    throw new Refusal("refused", "an agent registers only from its verified outside identity");
   }
   if (kind === "api_key") {
     if (typeof ref !== "string" || !KEY_ID.test(ref)) {
-      throw new Invalid("an api_key source_ref is the key id");
+      throw new Refusal("invalid", "an api_key source_ref is the key id");
     }
     const derived = apiKeyOrigin(ref);
     if (derived.client !== origin.client || derived.family !== origin.family) {
-      throw new Refused("the origin is not this API key's");
+      throw new Refusal("refused", "the origin is not this API key's");
     }
   }
   return { kind, ref: text(ref, 512, "source_ref") };
@@ -734,7 +732,7 @@ export function registrant(source: unknown, origin: Origin | null): Source {
 /** A doorbell's answer as the sender gave it, or refused. */
 export function outcome(value: unknown): Outcome {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Invalid("invalid wake outcome");
+    throw new Refusal("invalid", "invalid wake outcome");
   }
   const o = value as Record<string, unknown>;
   const keys = Object.keys(o);
@@ -745,7 +743,7 @@ export function outcome(value: unknown): Outcome {
       || ("status" in o && !count(o["status"], 100, 599))
       || ("retry_after" in o && o["retry_after"] !== null && typeof o["retry_after"] !== "number")
       || ("reason" in o && (typeof o["reason"] !== "string" || !REASON.test(o["reason"])))) {
-    throw new Invalid("invalid wake outcome");
+    throw new Refusal("invalid", "invalid wake outcome");
   }
   return o as unknown as Outcome;
 }
@@ -974,10 +972,11 @@ function readsOn(first: string, offset: number, named: unknown): void {
     return;
   }
   if (typeof named !== "string") {
-    throw new Invalid("body_offset reads on a message's body: name it by message_id");
+    throw new Refusal("invalid", "body_offset reads on a message's body: name it by message_id");
   }
   if (named !== first) {
-    throw new Refused("message_changed: the page's first message is no longer the one named: " +
+    throw new Refusal("message_changed",
+                      "message_changed: the page's first message is no longer the one named: " +
                       "read again from its start");
   }
 }
@@ -1011,16 +1010,20 @@ export class Ledger {
 
   /** How a posting unit adopts a placed body's content (`Bodies.adopt`); none, none placed. */
   readonly #adopt: Adopt | undefined;
+  /** The one wall's refusal for a post that needs `needed` bytes (`Files.fullRefusal`). */
+  readonly #wall: ((needed: number) => Refusal) | undefined;
 
   constructor(storage: OwnerStorage, grants: GrantReader,
               limits: LedgerLimits = LEDGER_LIMITS, admitted: () => boolean = () => true,
-              changes: () => number = () => 0, adopt?: Adopt) {
+              changes: () => number = () => 0, adopt?: Adopt,
+              wall?: (needed: number) => Refusal) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = checkLimits(limits);
     this.#admitted = admitted;
     this.#changes = changes;
     this.#adopt = adopt;
+    this.#wall = wall;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -1075,10 +1078,10 @@ export class Ledger {
   #liveNative(agent: string): StoredNative {
     const row = this.#nativeNamed(agent);
     if (row === undefined) {
-      throw new Refused(NO_AGENT);
+      throw new Refusal("no_agent", NO_AGENT);
     }
     if (row.retired_at !== null) {
-      throw new Refused(AGENT_RETIRED);
+      throw new Refusal("agent_retired", AGENT_RETIRED);
     }
     return row;
   }
@@ -1102,7 +1105,8 @@ export class Ledger {
       }
       const usage = this.#usage();
       if (usage.enabled_agents >= limits.maxAgents) {
-        throw new Refused(`ledger_agents_full: the owner's agents are at the ledger's ${
+        throw new Refusal("ledger_agents_full",
+                          `ledger_agents_full: the owner's agents are at the ledger's ${
           limits.maxAgents} enabled agents, each a reserved mailbox`);
       }
       if (row !== undefined) {
@@ -1119,7 +1123,8 @@ export class Ledger {
             "RETURNING agent_id",
         ).toArray()[0];
         if (forgotten === undefined) {
-          throw new Refused("ledger_agents_full: the owner's agent registry is full");
+          throw new Refusal("ledger_agents_full",
+                            "ledger_agents_full: the owner's agent registry is full");
         }
         sql.exec("DELETE FROM ledger_readers WHERE reader = ?", forgotten.agent_id);
       }
@@ -1173,18 +1178,21 @@ export class Ledger {
     const recipe = request.recipe_id === null ? null : text(request.recipe_id, 128, "recipe_id");
     const name = displayName(request.display_name);
     if (!name) {
-      throw new Invalid("display_name is required: letters, digits, spaces, dots, dashes");
+      throw new Refusal("invalid",
+                        "display_name is required: letters, digits, spaces, dots, dashes");
     }
     const method = request.delivery_method;
     if (typeof method !== "string" || !DELIVERY_METHODS.includes(method)) {
-      throw new Invalid("unknown delivery method");
+      throw new Refusal("invalid", "unknown delivery method");
     }
     if (!admittedMethods().includes(method)) {
-      throw new Refused(`only ${admittedMethods().join(", ")} delivery are available yet`);
+      throw new Refusal("refused",
+                        `only ${admittedMethods().join(", ")} delivery are available yet`);
     }
     // A client subscribes its own callback over the MCP door; an API key has no such door.
     if (verified.kind === "api_key" && kindFor(method)?.push?.callback === "subscribe") {
-      throw new Refused(`an API-key agent cannot subscribe; ${method} is for MCP clients`);
+      throw new Refusal("refused",
+                        `an API-key agent cannot subscribe; ${method} is for MCP clients`);
     }
     const sql = this.#sql;
     const limits = this.#limits;
@@ -1198,19 +1206,20 @@ export class Ledger {
         "SELECT 1 FROM outside_agents WHERE outside_client = ? AND outside_family = ? " +
           "AND disabled_reason IS NULL AND command_center_id != ?", client, family, commandCenter,
       ).toArray().length) {
-        throw new Refused("this outside identity is already an enabled agent");
+        throw new Refusal("refused", "this outside identity is already an enabled agent");
       }
       const usage = this.#usage();
       if ((row === undefined || row.disabled_reason !== null)
           && usage.enabled_agents >= limits.maxAgents) {
-        throw new Refused("the owner's enabled agents are at their limit");
+        throw new Refusal("refused", "the owner's enabled agents are at their limit");
       }
       // A registration never sets wake limits: they are owner policy (`policyWakeLimits`).
       const fields = [verified.kind, verified.ref, name, method, recipe];
       let agentId: string;
       if (row === undefined) {
         if (usage.agents >= limits.maxAgentRows) {
-          throw new Refused("the owner's agent registry is full; delete a disabled agent " +
+          throw new Refusal("refused",
+                            "the owner's agent registry is full; delete a disabled agent " +
                             "to make room");
         }
         agentId = "agent_" + token(8);
@@ -1250,17 +1259,17 @@ export class Ledger {
           now: number = clock()): Agent {
     text(reason, 200, "reason");
     if (typeof agentId !== "string") {
-      throw new Invalid("agent_id is an agent id");
+      throw new Refusal("invalid", "agent_id is an agent id");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const agent = this.#agent(agentId);
       if (agent === undefined) {
-        throw new Refused("agent not found");
+        throw new Refusal("refused", "agent not found");
       }
       if (origin !== null && (origin.client !== agent.outside_client
                               || origin.family !== agent.outside_family)) {
-        throw new Refused("an outside caller disables only its own agent");
+        throw new Refusal("refused", "an outside caller disables only its own agent");
       }
       this.#erase(agentId, true);
       sql.exec("UPDATE outside_agents SET disabled_reason = ?, revision = revision + 1 " +
@@ -1281,13 +1290,13 @@ export class Ledger {
    */
   remove(agentId: unknown, now: number = clock()): { agent_id: string; messages: number } {
     if (typeof agentId !== "string") {
-      throw new Invalid("agent_id is an agent id");
+      throw new Refusal("invalid", "agent_id is an agent id");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const agent = this.#agent(agentId);
       if (agent === undefined) {
-        throw new Refused("agent not found");
+        throw new Refusal("refused", "agent not found");
       }
       this.#erase(agentId, true);
       const ids = sql.exec<{ message_id: string }>(
@@ -1313,7 +1322,8 @@ export class Ledger {
         // rewriting, and a deletion waits for it, refused in plain words, never lost.
         if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM archive_purges").one().n
             >= this.#limits.maxAgentRows) {
-          throw new Refused(`${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
+          throw new Refusal("storage_busy",
+                            `${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
                             `removed from the archive; try again in ${STORAGE_BUSY_RETRY_S} ` +
                             `seconds. ${JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S })}`);
         }
@@ -1327,15 +1337,16 @@ export class Ledger {
   /** Owner policy (W3): an agent's hourly wake cap and batch window. */
   setWakeLimits(agentId: unknown, maxWakesPerHour: unknown, batchWindowS: unknown): Agent {
     if (typeof agentId !== "string") {
-      throw new Invalid("agent_id is an agent id");
+      throw new Refusal("invalid", "agent_id is an agent id");
     }
     const { low: hourLow, high: hourHigh } = WAKE_SETTINGS.maxWakesPerHour;
     if (maxWakesPerHour !== null && !count(maxWakesPerHour, hourLow, hourHigh)) {
-      throw new Invalid(`max_wakes_per_hour is a whole number from ${hourLow}, or null for none`);
+      throw new Refusal("invalid",
+                        `max_wakes_per_hour is a whole number from ${hourLow}, or null for none`);
     }
     const { low: batchLow, high: batchHigh } = WAKE_SETTINGS.batchWindowS;
     if (!count(batchWindowS, batchLow, batchHigh)) {
-      throw new Invalid(`batch_window_s is a whole number of seconds from ${batchLow}`);
+      throw new Refusal("invalid", `batch_window_s is a whole number of seconds from ${batchLow}`);
     }
     return this.#storage.transactionSync(() => {
       // A changed cap counts afresh: its counter goes with the old cap.
@@ -1344,7 +1355,7 @@ export class Ledger {
           "revision = revision + 1 WHERE agent_id = ? RETURNING agent_id",
         maxWakesPerHour, batchWindowS, agentId,
       ).toArray().length) {
-        throw new Refused("agent not found");
+        throw new Refusal("refused", "agent not found");
       }
       return this.#agent(agentId)!;
     });
@@ -1356,14 +1367,14 @@ export class Ledger {
       return OWNER;
     }
     if (isNative(origin)) {
-      throw new Refused(RUN_NO_MAILBOX);
+      throw new Refusal("run_no_mailbox", RUN_NO_MAILBOX);
     }
     const rows = this.#sql.exec<{ agent_id: string }>(
       "SELECT agent_id FROM outside_agents WHERE outside_client = ? AND outside_family = ? " +
         "AND disabled_reason IS NULL", origin.client, origin.family,
     ).toArray();
     if (rows.length !== 1) {
-      throw new Refused("this outside identity is not one enabled agent");
+      throw new Refusal("refused", "this outside identity is not one enabled agent");
     }
     return rows[0]!.agent_id;
   }
@@ -1391,7 +1402,7 @@ export class Ledger {
           "SELECT * FROM outside_agents WHERE agent_id = ? AND disabled_reason IS NULL", id,
         ).toArray()[0];
         if (agent === undefined) {
-          throw new Refused("room is not an enabled agent's dm");
+          throw new Refusal("refused", "room is not an enabled agent's dm");
         }
         return { kind: "outside", id, agent };
       }
@@ -1399,20 +1410,20 @@ export class Ledger {
         const native = this.#sql.exec<StoredNative>(
           "SELECT * FROM native_agents WHERE agent_id = ?", id).toArray()[0];
         if (native === undefined) {
-          throw new Refused(NO_AGENT);
+          throw new Refusal("no_agent", NO_AGENT);
         }
         if (native.retired_at !== null) {
-          throw new Refused(AGENT_RETIRED);
+          throw new Refusal("agent_retired", AGENT_RETIRED);
         }
         return { kind: "native", id, native };
       }
-      throw new Refused("room is not an enabled agent's dm");
+      throw new Refusal("refused", "room is not an enabled agent's dm");
     };
     if (ids.length === 1) {
       return [{ kind: "owner", id: OWNER }, member(ids[0]!)];
     }
     if (ids.length !== 2 || !(ids[0]! < ids[1]!) || !ids.some((id) => NATIVE_ID.test(id))) {
-      throw new Refused("room is not an enabled agent's dm");
+      throw new Refusal("refused", "room is not an enabled agent's dm");
     }
     return [member(ids[0]!), member(ids[1]!)];
   }
@@ -1422,7 +1433,7 @@ export class Ledger {
     if (actor === null) {
       const owner = members.find((m) => m.kind === "owner");
       if (owner === undefined) {
-        throw new Refused("the owner posts only in its own dm rooms");
+        throw new Refusal("refused", "the owner posts only in its own dm rooms");
       }
       return owner;
     }
@@ -1430,14 +1441,14 @@ export class Ledger {
       const own = this.#liveNative(actor.native);
       const found = members.find((m) => m.id === own.agent_id);
       if (found === undefined) {
-        throw new Refused("an agent posts only in its own dm rooms");
+        throw new Refusal("refused", "an agent posts only in its own dm rooms");
       }
       return found;
     }
     const found = members.find((m) => m.kind === "outside"
       && m.agent.outside_client === actor.client && m.agent.outside_family === actor.family);
     if (found === undefined) {
-      throw new Refused("an outside agent posts only in its own dm room");
+      throw new Refusal("refused", "an outside agent posts only in its own dm room");
     }
     return found;
   }
@@ -1475,7 +1486,7 @@ export class Ledger {
     if ("resend" in addressed) {
       return addressed.resend;
     }
-    this.#roomForOne();
+    this.#roomForOne(utf8Bytes(body));
     return null;
   }
 
@@ -1501,7 +1512,7 @@ export class Ledger {
     ).toArray()[0];
     if (same !== undefined) {
       if (same.body_sha256 !== sha || same.room_id !== room || same.parent_id !== parentKey) {
-        throw new Refused("conflict");
+        throw new Refusal("post_conflict", "conflict");
       }
       return { resend: {
         message_id: same.message_id,
@@ -1530,7 +1541,7 @@ export class Ledger {
         parentArchived = true;
       }
       if (parent === undefined) {
-        throw new Refused("parent is not a message to this sender in this room");
+        throw new Refusal("refused", "parent is not a message to this sender in this room");
       }
     }
     return { room, cmid, parentKey, sha, members, from, to, kind, sender, recipient, parent,
@@ -1558,7 +1569,7 @@ export class Ledger {
       const { room, cmid, parentKey, sha, members, to, kind, sender, recipient,
               parent, parentArchived } = addressed;
       const size = utf8Bytes(body);
-      this.#roomForOne();
+      this.#roomForOne(size);
       return adopted(body, placed, filer, this.#adopt, (contentId) => {
       // The seq is given here, and the id carries it (`orderedId`): an archived message is
       // found by its id with no row for it.
@@ -1642,7 +1653,7 @@ export class Ledger {
       .toArray()[0];
     if (mail === undefined) {
       // Gone with its other side (an outside agent the owner deleted): nothing to answer.
-      throw new Refused("the mail answered is no longer held");
+      throw new Refusal("refused", "the mail answered is no longer held");
     }
     if (mail.sender_kind === "native") {
       return null;
@@ -1659,7 +1670,7 @@ export class Ledger {
   chainStart(messageId: unknown):
       { root: string; root_seq: number; room: string } | { archived: number } {
     if (typeof messageId !== "string") {
-      throw new Invalid("a chain read names a message id");
+      throw new Refusal("invalid", "a chain read names a message id");
     }
     const row = this.#sql.exec<{ chain_root: string; room_id: string }>(
       "SELECT chain_root, room_id FROM ledger_messages WHERE message_id = ?", messageId)
@@ -1670,7 +1681,7 @@ export class Ledger {
     }
     const seq = this.seqOf(messageId);
     if (seq === null) {
-      throw new Refused("no such message held");
+      throw new Refusal("refused", "no such message held");
     }
     return { archived: seq };
   }
@@ -1739,7 +1750,8 @@ export class Ledger {
     const maxRead = this.#limits.maxRead;
     if (typeof messageId !== "string" || !count(after, 0, Number.MAX_SAFE_INTEGER)
         || !count(limit, 1, maxRead)) {
-      throw new Invalid(`a chain read names a message id, after a seq, and 1 to ${maxRead}`);
+      throw new Refusal("invalid",
+                        `a chain read names a message id, after a seq, and 1 to ${maxRead}`);
     }
     const sql = this.#sql;
     let root = archived?.root;
@@ -1748,7 +1760,7 @@ export class Ledger {
         "SELECT chain_root FROM ledger_messages WHERE message_id = ?", messageId).toArray()[0]
         ?.chain_root;
       if (root === undefined) {
-        throw new Refused("no such message held");
+        throw new Refusal("refused", "no such message held");
       }
     }
     const below = archived?.frontier ?? Number.MAX_SAFE_INTEGER;
@@ -2031,7 +2043,8 @@ export class Ledger {
     const parts = new Map<number, MailParts>();
     if (!this.#images(seqs, (message, body, recipients) =>
       parts.set(message.seq, mailParts(message, body, recipients)))) {
-      throw new Refused("archive_changed: a message moved went from the hot set mid-move");
+      throw new Refusal("archive_changed",
+                        "archive_changed: a message moved went from the hot set mid-move");
     }
     return parts;
   }
@@ -2059,13 +2072,15 @@ export class Ledger {
         : this.#sql.exec("DELETE FROM archive_segments WHERE segment = ? AND content_id = ? " +
                            "RETURNING segment", old.segment, old.content_id).toArray();
       if (gone.length === 0) {
-        throw new Refused("archive_changed: a replaced segment went between the units");
+        throw new Refusal("archive_changed",
+                          "archive_changed: a replaced segment went between the units");
       }
     }
     const kept = new Set(replaced.map((old) => old.content_id).filter((id) => made.has(id)));
     if (seqs.length > 0) {
       if (this.#imageDigest(seqs) !== expected) {
-        throw new Refused("archive_changed: the batch changed between the move's units");
+        throw new Refusal("archive_changed",
+                          "archive_changed: the batch changed between the move's units");
       }
       const list = JSON.stringify(seqs);
       const inList = "IN (SELECT message_id FROM ledger_messages WHERE seq IN " +
@@ -2414,17 +2429,31 @@ export class Ledger {
    * `ledger_full`, and the hot ceiling, with acked mail the `archive` lane has to move,
    * `storage_busy` until a move lands (the unread ceiling keeps a segment's records acked).
    */
-  #roomForOne(): void {
+  /**
+   * Room for one more message, else its refusal: too much mail unread (`ledger_full`), or the
+   * hot ceiling. The ceiling is `storage_busy`, transient, while the archive lane can move
+   * acked mail out; while its moves are blocked at the storage figure it clears only when the
+   * owner frees space or upgrades, so it is the one wall (`storage_full`, terminal, its facts
+   * marked `ceiling`), the same answer for every poster: a door, a run's reply, its placement.
+   */
+  #roomForOne(needed: number): void {
     const usage = this.#usage();
     const limits = this.#limits;
     if (usage.unacked + 1 > limits.maxUnacked) {
       const most = limits.maxUnacked;
-      throw new Refused(`${LEDGER_FULL}: too much mail is unread (${most} message${
+      throw new Refusal("ledger_full", `${LEDGER_FULL}: too much mail is unread (${most} message${
         most === 1 ? " waits" : "s wait"} for their readers; the most for ${this.#holders()}); ` +
                         "reading and acking mail makes room");
     }
     if (usage.messages + 1 > limits.maxMessages) {
-      throw new Refused(`${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
+      if (this.#wall !== undefined && this.archiveBlocked()) {
+        // The one wall, marked as the ceiling's: an inbound app's event is told to send it
+        // again (`OwnerDO#inboundRefused`), as at a ceiling that clears by itself.
+        const wall = this.#wall(needed);
+        throw new Refusal(wall.code, wall.message, { facts: { ...wall.facts, ceiling: true } });
+      }
+      throw new Refusal("storage_busy",
+                        `${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
                         `out; try again in ${STORAGE_BUSY_RETRY_S} seconds. ` +
                         JSON.stringify({ retry_after_s: STORAGE_BUSY_RETRY_S }));
     }
@@ -2465,13 +2494,13 @@ export class Ledger {
        bodyOffset = 0, pageBytes: number = PAGE_BYTES, bodyMessage: unknown = null): MailPage {
     const maxRead = this.#limits.maxRead;
     if (!count(limit, 1, maxRead)) {
-      throw new Invalid(`limit is 1 to ${maxRead}`);
+      throw new Refusal("invalid", `limit is 1 to ${maxRead}`);
     }
     if (maxBytes !== null && !count(maxBytes, 1, Number.MAX_SAFE_INTEGER)) {
-      throw new Invalid("max_bytes is a positive integer");
+      throw new Refusal("invalid", "max_bytes is a positive integer");
     }
     if (!count(padBytes, 0, Number.MAX_SAFE_INTEGER)) {
-      throw new Invalid("pad_bytes is a non-negative integer");
+      throw new Refusal("invalid", "pad_bytes is a non-negative integer");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -2559,7 +2588,7 @@ export class Ledger {
       { contents: string[]; first: string | null } {
     const maxRead = this.#limits.maxRead;
     if (!count(limit, 1, maxRead)) {
-      throw new Invalid(`limit is 1 to ${maxRead}`);
+      throw new Refusal("invalid", `limit is 1 to ${maxRead}`);
     }
     const reader = this.#reader(origin);
     const rows = this.#sql.exec<{ body_bytes: number; content_id: string | null }>(
@@ -2597,7 +2626,7 @@ export class Ledger {
   ack(origin: Actor, through: unknown, now: number = clock()):
       { reader: string; through: number } {
     if (!count(through, 0, Number.MAX_SAFE_INTEGER)) {
-      throw new Invalid("through is a ledger seq");
+      throw new Refusal("invalid", "through is a ledger seq");
     }
     return this.#storage.transactionSync(() => {
       const reader = this.#reader(origin);
@@ -2609,7 +2638,7 @@ export class Ledger {
         return { reader, through: before };
       }
       if (through > this.#newest(reader)) {
-        throw new Refused("ack is past this reader's mail");
+        throw new Refusal("refused", "ack is past this reader's mail");
       }
       const sql = this.#sql;
       sql.exec("INSERT INTO ledger_readers (reader, through_seq, acked_at) VALUES (?, ?, ?) " +
@@ -2654,17 +2683,17 @@ export class Ledger {
       { agent_id: string; expires_at: number | null } {
     if (typeof request.subscription_id !== "string"
         || !SUBSCRIPTION_ID.test(request.subscription_id)) {
-      throw new Invalid("invalid subscription id");
+      throw new Refusal("invalid", "invalid subscription id");
     }
     const expires = request.expires_at;
     if (expires !== null && (typeof expires !== "number" || !Number.isFinite(expires)
                              || expires <= now)) {
-      throw new Invalid("expires_at is a time after now, or null");
+      throw new Refusal("invalid", "expires_at is a time after now, or null");
     }
     const follow = follows({ board: request.board, rooms: request.rooms });
     if (typeof request.blob !== "string" || !request.blob || typeof request.kid !== "string"
         || !count(request.version, 1, Number.MAX_SAFE_INTEGER)) {
-      throw new Invalid("invalid sealed subscription");
+      throw new Refusal("invalid", "invalid sealed subscription");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -2676,7 +2705,7 @@ export class Ledger {
       const mine = origin === null ? push?.callback === "owner" && request.kind === kind!.id
         : push?.callback === "subscribe";
       if (agent === undefined || agent.disabled_reason !== null || push === null || !mine) {
-        throw new Refused(origin === null ? "not an agent whose doorbell the owner sets"
+        throw new Refusal("refused", origin === null ? "not an agent whose doorbell the owner sets"
           : "not this caller's subscribing agent");
       }
       const principal = origin === null ? OWNER : origin.client;
@@ -2684,7 +2713,7 @@ export class Ledger {
         "SELECT * FROM wake_callbacks WHERE subscription_id = ?", request.subscription_id,
       ).toArray()[0];
       if (held !== undefined && (held.principal !== principal || held.agent_id !== agent.agent_id)) {
-        throw new Refused("not this caller's subscription");
+        throw new Refusal("refused", "not this caller's subscription");
       }
       // The agent's lapsed subscriptions are let go, so none holds a place it no longer uses.
       sql.exec("DELETE FROM wake_callbacks WHERE agent_id = ? AND expires_at IS NOT NULL " +
@@ -2693,7 +2722,8 @@ export class Ledger {
       if (held === undefined && sql.exec<{ n: number }>(
         "SELECT COUNT(*) AS n FROM wake_callbacks INDEXED BY wake_callbacks_by_agent " +
           "WHERE agent_id = ?", agent.agent_id).one().n >= SUBSCRIPTIONS_PER_AGENT) {
-        throw new Refused(`subscription_limit: ${SUBSCRIPTIONS_PER_AGENT} doorbell ` +
+        throw new Refusal("subscription_limit",
+                          `subscription_limit: ${SUBSCRIPTIONS_PER_AGENT} doorbell ` +
                           "subscriptions an agent; end one first");
       }
       const grace = push.events?.rotation_grace_s ?? 0;
@@ -2723,7 +2753,7 @@ export class Ledger {
    */
   unsubscribe(origin: Origin | null, subscriptionId: unknown): boolean {
     if (typeof subscriptionId !== "string" || !SUBSCRIPTION_ID.test(subscriptionId)) {
-      throw new Invalid("invalid subscription id");
+      throw new Refusal("invalid", "invalid subscription id");
     }
     return this.#storage.transactionSync(() => this.#sql.exec(
       "DELETE FROM wake_callbacks WHERE subscription_id = ? AND principal = ? " +
@@ -2910,7 +2940,7 @@ export class Ledger {
    */
   claim(wakeId: unknown, now: number): Claim {
     if (typeof wakeId !== "string") {
-      throw new Invalid("wake_id is a wake id");
+      throw new Refusal("invalid", "wake_id is a wake id");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync((): Claim => {
@@ -3002,7 +3032,7 @@ export class Ledger {
    */
   settle(wakeId: unknown, claimId: unknown, answer: Settle, now: number): boolean {
     if (typeof wakeId !== "string" || typeof claimId !== "string") {
-      throw new Invalid("invalid wake settle");
+      throw new Refusal("invalid", "invalid wake settle");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {

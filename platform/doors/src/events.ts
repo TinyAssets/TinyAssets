@@ -29,11 +29,12 @@ import {
 } from "../../contract/src/wake-records";
 import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { follows, subscriptionId } from "../../contract/src/wake-kinds";
+import { refusalOf } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
 import { verifyDoorbell } from "./connect";
-import { refusal } from "./tools";
+
 
 /** The design sketch's codes (`-32023` to `-32026`); the verification's is the record's. */
 const NOT_FOUND = -32023;
@@ -141,15 +142,15 @@ function deliveryOf(kind: WakeKind & { push: NonNullable<WakeKind["push"]> }, va
 
 /** An object refusal as the design sketch's error; anything else is a bug, rethrown. */
 function refused(error: unknown): never {
-  const known = refusal(error);
+  const known = refusalOf(error);
   if (known === null) {
     throw error;
   }
-  if (known.message.startsWith("subscription_limit")) {
+  if (known.code === "subscription_limit") {
     throw new ProtocolError(EXHAUSTED, "ResourceExhausted",
                             { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT });
   }
-  if (known.status === 400) {
+  if (known.invalid) {
     throw invalid(known.message);
   }
   throw new ProtocolError(FORBIDDEN, "Forbidden", { reason: known.message });

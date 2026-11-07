@@ -83,7 +83,7 @@ import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRef
          secretAtoms } from "./guards";
 import { project } from "./project";
 import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
-         scratchNotice,
+         scratchCleared, type ScratchCleared,
          markUsed,
          writeOrRelease } from "./scratch";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
@@ -989,23 +989,28 @@ const SLOW_MATCH_MS = 5_000;
 const EVENT_PATHS = 100;
 
 /**
- * What a sync-out reported, to the run's events: each refused file, a full storage's (and
- * open uploads') by its code alone; the one `ta.storage_full` with the object's whole
- * message, once a sync, the only place an upgrade is offered, what did not fit kept in the
- * sandbox and sent again by the next run; `ta.uploads_open` likewise, never an upgrade; what
- * was skipped (changed or gone while the sync ran) once; the conflicts.
+ * What a sync-out reported, to the run's events, as codes and facts (the app says them in
+ * words, `doors/app/view.js`): each refused file, a full storage's (and open uploads') by its
+ * code alone, the object's others in its own words, the sync agent's by its code; the one
+ * `ta.storage_full` with the object's whole message, once a sync, the only place an upgrade
+ * is offered, what did not fit kept in the sandbox and sent again by the next run;
+ * `ta.uploads_open` likewise, never an upgrade; what was skipped (changed or gone while the
+ * sync ran) once; the conflicts.
  */
 function reportSync(outbox: Outbox, report: SyncReport | null): void {
   const refused = report?.refused ?? [];
-  const codeOf = (reason: string) => /^(storage_full|uploads_open):/.exec(reason)?.[1] ?? null;
+  const walls = ["storage_full", "uploads_open"] as const;
+  const wall = (code: string) => walls.find((each) => each === code) ?? null;
   for (const each of refused) {
-    outbox.push({ type: "ta.sync_refused", path: each.path,
-                  reason: codeOf(each.reason) ?? each.reason });
+    outbox.push("reason" in each
+      ? { type: "ta.sync_refused", path: each.path, reason: wall(each.code) ?? each.reason }
+      : { type: "ta.sync_refused", path: each.path, code: each.code });
   }
-  for (const code of ["storage_full", "uploads_open"] as const) {
-    const these = refused.filter((each) => codeOf(each.reason) === code);
+  for (const code of walls) {
+    const these = refused.filter((each) => each.code === code && "reason" in each);
     if (these.length > 0) {
-      outbox.push({ type: `ta.${code}`, message: these[0]!.reason, files: these.length,
+      outbox.push({ type: `ta.${code}`, message: (these[0] as { reason: string }).reason,
+                    files: these.length,
                     kept_in_sandbox: these.slice(0, EVENT_PATHS).map((each) => each.path) });
     }
   }
@@ -1022,40 +1027,20 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
   const unapplied = report?.unapplied ?? [];
   const past = report?.list_bytes_past ?? 0;
   if ((report?.unapplied_count ?? 0) > 0 || past > 0) {
-    const states = unapplied.filter((each) => each.reason === "states").length;
-    const said = [
-      states === 0 ? null : `${states} line${states === 1 ? "" : "s"} past the ${
-        AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
-        "may take together",
-      past === 0 && unapplied.every((each) => each.reason !== "bytes") ? null
-        : `the list past its ${LIST_BYTES.toLocaleString("en")} bytes (${
-          past.toLocaleString("en")} more bytes)`,
-    ].filter((each) => each !== null);
     outbox.push({ type: "ta.sync_ignore_unapplied", lines: unapplied,
                   count: report?.unapplied_count ?? 0, list_bytes_past: past,
-                  message: `In /workspace/.ta/sync-ignore, ${said.join(", and ")} ${
-                    said.length === 1 && states === 1 ? "is" : "are"} not applied, in file ` +
-                    "order: the files they name go on syncing." });
+                  automaton_states: AUTOMATON_STATES, list_bytes: LIST_BYTES });
   }
   // Names that are not UTF-8 never sync (a path is text at the owner's files): said, with
   // their bytes escaped, never silently missed; the object makes it the owner's notice.
   if ((report?.unnamed_count ?? 0) > 0) {
-    const count = report!.unnamed_count;
-    outbox.push({ type: "ta.sync_unnamed", paths: report!.unnamed, count,
-                  message: `${count} file${count === 1 ? "" : "s"} or folder${
-                    count === 1 ? "" : "s"} in your sandbox ${count === 1 ? "has a name" :
-                    "have names"} that ${count === 1 ? "is" : "are"} not UTF-8, so ${
-                    count === 1 ? "it does" : "they do"} not sync to your files: ${
-                    report!.unnamed.slice(0, 5).join(", ")}${count > 5 ? ", …" : ""}. ` +
-                    "Rename them to sync them." });
+    outbox.push({ type: "ta.sync_unnamed", paths: report!.unnamed,
+                  count: report!.unnamed_count });
   }
   // A slow list says so, so the owner sees why a sync took long: its pattern lines (`*`,
   // `?`) cost the most. Said past `SLOW_MATCH_MS`, which refuses nothing.
   if ((report?.match_ms ?? 0) >= SLOW_MATCH_MS) {
-    outbox.push({ type: "ta.sync_ignore_slow", match_ms: report!.match_ms,
-                  message: `Matching /workspace/.ta/sync-ignore took ${
-                    Math.round(report!.match_ms / 1000)} s of this sync; its lines with * or ? ` +
-                    "cost the most." });
+    outbox.push({ type: "ta.sync_ignore_slow", match_ms: report!.match_ms });
   }
 }
 
@@ -1247,7 +1232,8 @@ function cleanScratch(uid: number): void {
  * while the disk is low, never a live run's agent), and the agent's marked used now. What
  * went, in plain words for the agent and the user, or null.
  */
-function scratchFor(start: StartDoc, run: string): { dir: string; notice: string | null } {
+function scratchFor(start: StartDoc, run: string):
+    { dir: string; notice: ScratchCleared | null } {
   const dir = `${LOCAL_SCRATCH}/${start.agent}`;
   safeDirs(TOP, LOCAL_SCRATCH, 0o755);
   const live = new Set([start.agent, ...liveRuns().filter((each) => each.run !== run)
@@ -1264,7 +1250,7 @@ function scratchFor(start: StartDoc, run: string): { dir: string; notice: string
   safeDirs(LOCAL_SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
   writeOrRelease(() => markUsed(index, start.agent, Date.now()), RESERVE);
   keepReserve(RESERVE, RESERVE_SIZE);
-  return { dir, notice: scratchNotice(pruned) };
+  return { dir, notice: scratchCleared(pruned) };
 }
 
 async function runCommand(run: string, recovering: boolean): Promise<number> {
@@ -1372,7 +1358,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
     const scratch = scratchFor(start, run);
     if (scratch.notice !== null) {
-      outbox.push({ type: "ta.scratch_cleared", text: scratch.notice });
+      outbox.push(scratch.notice);
     }
     let conversationDir: string | undefined;
     let continued = false;
@@ -1398,8 +1384,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       ?? projectEnvRefusal(found.project, forbid)
       ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
     if (refusal !== null) {
-      outbox.push({ type: "ta.refused", reason: refusal });
-      throw new RunRefused(refusal);
+      outbox.push({ type: "ta.refused", ...refusal });
+      throw new RunRefused(refusal.code);
     }
     for (const [path, text] of call.files) {
       const inSystem = path.startsWith(`${system}/`);
@@ -1557,7 +1543,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           }
           if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
             outbox.push({ type: "ta.sync_refused", path: `{home}/${session.rel}`,
-                          reason: "holds a secret's bytes" });
+                          code: "secret_bytes" });
             next[session.path] = { ...next[session.path]!, refused: against };
             continue;
           }

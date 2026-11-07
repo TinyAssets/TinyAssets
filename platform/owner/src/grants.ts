@@ -84,7 +84,7 @@
  * - Rows are bounded as above; the Python kept every row.
  */
 import { HEX64 } from "../../contract/src/ids";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { appList, connectUrl, type Vendor } from "../../doors/src/apps";
@@ -223,14 +223,15 @@ export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scop
     !plain(scope) || Object.keys(scope).sort().join() !== "agent,capability,universe"
     || Object.values(scope).some((v) => typeof v !== "string" || !v || v === "*"
                                         || codePoints(v) > 512))) {
-    throw new Invalid("outside scopes require exact universe, agent and capability");
+    throw new Refusal("invalid", "outside scopes require exact universe, agent and capability");
   }
   if (value.some((scope) => !(CAPABILITIES as readonly string[]).includes(
     (scope as Record<string, string>)["capability"]!))) {
-    throw new Invalid(`a scope's capability is one of ${CAPABILITIES.join(", ")}`);
+    throw new Refusal("invalid", `a scope's capability is one of ${CAPABILITIES.join(", ")}`);
   }
   if (utf8Bytes(JSON.stringify(value)) > limits.maxScopesBytes) {
-    throw new Invalid(`a grant's scopes are at most ${limits.maxScopesBytes} bytes of JSON`);
+    throw new Refusal("invalid",
+                      `a grant's scopes are at most ${limits.maxScopesBytes} bytes of JSON`);
   }
   return value as Scope[];
 }
@@ -238,10 +239,10 @@ export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scop
 /** `_outside_client`: a verified client is 64 hex, from an MCP client or an API key. */
 function outsideClient(client: unknown, source: unknown = "mcp"): string {
   if (typeof client !== "string" || !HEX64.test(client)) {
-    throw new Invalid("invalid outside client");
+    throw new Refusal("invalid", "invalid outside client");
   }
   if (typeof source !== "string" || !OUTSIDE_SOURCES.includes(source)) {
-    throw new Invalid("invalid outside client source");
+    throw new Refusal("invalid", "invalid outside client source");
   }
   return client;
 }
@@ -282,14 +283,14 @@ export class Grants {
   /** `_grant`: the grant a call is admitted under, or a refusal naming why. */
   #grant(row: Stored | undefined, authenticatedAt: number | null): Grant {
     if (row === undefined) {
-      throw new Refused("outside client has no grant");
+      throw new Refusal("refused", "outside client has no grant");
     }
     if (row.mode === "revoked") {
-      throw new Refused("outside client revoked");
+      throw new Refusal("refused", "outside client revoked");
     }
     if (row.revoked_at !== null && (authenticatedAt === null
         || authenticatedAt <= row.revoked_at + this.#limits.revokeClockMarginS)) {
-      throw new Refused("a fresh sign-in is required after a revoke");
+      throw new Refusal("refused", "a fresh sign-in is required after a revoke");
     }
     return { mode: row.mode as Grant["mode"], scopes: JSON.parse(row.scopes) as Scope[],
              generation: row.generation, profile: row.profile as ProfileName };
@@ -305,7 +306,7 @@ export class Grants {
         vendor: Vendor | null = null): Grant {
     outsideClient(client, source);
     if (vendor !== null && !appList().some((app) => app.id === vendor.id)) {
-      throw new Invalid("a client's vendor is one of apps.json's");
+      throw new Refusal("invalid", "a client's vendor is one of apps.json's");
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -317,7 +318,7 @@ export class Grants {
           "SELECT mcp_through FROM grant_fences").one().mcp_through;
         if (fence > 0 && (authenticatedAt === null
                           || authenticatedAt <= fence + this.#limits.revokeClockMarginS)) {
-          throw new Refused("a fresh sign-in is required after a revoke");
+          throw new Refusal("refused", "a fresh sign-in is required after a revoke");
         }
         const over = this.#usage().free_clients - this.#limits.maxFreeClients + 1;
         if (over > 0) {
@@ -331,7 +332,7 @@ export class Grants {
                  now, vendor?.id ?? null, vendor?.verified === true ? 1 : 0);
         row = this.#row(client);
       } else if (row !== undefined && row.source !== source) {
-        throw new Refused("outside client source changed");
+        throw new Refusal("refused", "outside client source changed");
       } else if (row !== undefined && now - row.last_seen >= this.#limits.seenIntervalS) {
         sql.exec("UPDATE outside_clients SET last_seen = ? WHERE client = ?", now, client);
       }
@@ -352,7 +353,7 @@ export class Grants {
   standing(clientId: unknown, generation: unknown, authenticatedAt: number | null): Grant {
     const grant = this.#grant(this.#row(outsideClient(clientId)), authenticatedAt);
     if (grant.generation !== generation) {
-      throw new Refused("outside client authority changed");
+      throw new Refusal("refused", "outside client authority changed");
     }
     return grant;
   }
@@ -440,34 +441,35 @@ export class Grants {
     const { mode, expected_revision: expected, name } = change;
     const source = change.source as string;
     if (typeof mode !== "string" || !OUTSIDE_MODES.includes(mode)) {
-      throw new Invalid("invalid outside grant mode");
+      throw new Refusal("invalid", "invalid outside grant mode");
     }
     const held = scopes(change.scopes, this.#limits);
     if ((mode === "scoped") !== (held.length > 0)) {
-      throw new Invalid("a scoped grant, and only a scoped one, names scopes");
+      throw new Refusal("invalid", "a scoped grant, and only a scoped one, names scopes");
     }
     if (typeof expected !== "number" || !Number.isSafeInteger(expected) || expected < 0) {
-      throw new Invalid("expected outside grant revision required");
+      throw new Refusal("invalid", "expected outside grant revision required");
     }
     if (typeof name !== "string" || codePoints(name) > 80) {
-      throw new Invalid("invalid outside client name");
+      throw new Refusal("invalid", "invalid outside client name");
     }
     if (change.profile !== undefined && !(CLIENT_PROFILES as readonly unknown[])
       .includes(change.profile)) {
-      throw new Invalid(`a grant's profile is one of ${CLIENT_PROFILES.join(", ")}`);
+      throw new Refusal("invalid", `a grant's profile is one of ${CLIENT_PROFILES.join(", ")}`);
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = this.#row(client);
       if ((row?.revision ?? 0) !== expected) {
-        throw new Refused("outside grant changed");
+        throw new Refusal("refused", "outside grant changed");
       }
       if (row !== undefined && row.source !== source) {
-        throw new Refused("outside client source changed");
+        throw new Refusal("refused", "outside client source changed");
       }
       const live = row?.owner_set === 1 && row.mode !== "revoked";
       if (mode !== "revoked" && !live && this.#liveSet() >= this.#limits.maxOwnerClients) {
-        throw new Refused("the owner's managed outside clients are at their limit; revoke " +
+        throw new Refusal("refused",
+                          "the owner's managed outside clients are at their limit; revoke " +
                           "one to make room");
       }
       const profile = (change.profile ?? row?.profile ?? DEFAULT_PROFILE) as string;
@@ -506,10 +508,10 @@ export class Grants {
   /** Drop one revoked row nothing holds, receipted; the schema moves the MCP fence. */
   #forget(row: Stored, sessionId: string | null, now: number): void {
     if (row.mode !== "revoked") {
-      throw new Refused("only a revoked grant is forgotten; revoke it first");
+      throw new Refusal("refused", "only a revoked grant is forgotten; revoke it first");
     }
     if (row.agents > 0 || row.held > 0) {
-      throw new Refused("an agent or a held registration still holds this " +
+      throw new Refusal("refused", "an agent or a held registration still holds this " +
                         "client's grant");
     }
     this.#sql.exec("DELETE FROM outside_clients WHERE client = ?", row.client);
@@ -534,7 +536,8 @@ export class Grants {
         return { client, forgotten: false };
       }
       if (row.source !== "api_key") {
-        throw new Refused("only the owner, in its session, forgets an MCP client's revoke");
+        throw new Refusal("refused",
+                          "only the owner, in its session, forgets an MCP client's revoke");
       }
       this.#forget(row, null, now);
       return { client, forgotten: true };
@@ -550,7 +553,7 @@ export class Grants {
       { forgotten: string[]; mcp_fence: number } {
     if (!Array.isArray(clients) || clients.length < 1 || clients.length > MAX_FORGET
         || new Set(clients).size !== clients.length) {
-      throw new Invalid(`forget names 1 to ${MAX_FORGET} distinct outside clients`);
+      throw new Refusal("invalid", `forget names 1 to ${MAX_FORGET} distinct outside clients`);
     }
     const ids = clients.map((client) => outsideClient(client));
     return this.#storage.transactionSync(() => {

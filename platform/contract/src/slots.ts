@@ -33,18 +33,21 @@
  * which objects' tails share the budget, never an owner's data.
  */
 import { CHUNK_BYTES, SLOT_WAIT_MS } from "./limits";
+import { Refusal } from "./refusal";
 
 /** A unit: one chunk, the files plane's own (`CHUNK_BYTES`). */
 export const UNIT_BYTES = CHUNK_BYTES;
 /** The refusal: retryable, never a loss (the doors answer it `503` with `Retry-After`). */
 export const BUSY = "busy: this server is holding as much as it may at once; try again shortly";
 
-/** The refusal's error: named as every told refusal is, so the doors answer it as one. */
-export class SlotBusy extends Error {
-  override readonly name = "Refused";
-  constructor() {
-    super(BUSY);
-  }
+/** The refusal, `busy`: the doors answer it as every refusal, by its code. */
+export function slotBusy(): Refusal {
+  return new Refusal("busy", BUSY);
+}
+
+/** Whether `error` is the pool's refusal. */
+export function isSlotBusy(error: unknown): boolean {
+  return error instanceof Refusal && error.code === "busy";
 }
 
 /** Units taken, held until `release` (a second release is nothing). */
@@ -302,7 +305,7 @@ export class SlotPool {
     }
     if (queue.length >= (asker.large ? this.#waiters : this.#smallWaiters)
         && !queue.makeRoom(asker.owner)) {
-      return Promise.reject(new SlotBusy());
+      return Promise.reject(slotBusy());
     }
     return new Promise<Slot>((resolve, reject) => {
       const done = () => {
@@ -318,7 +321,7 @@ export class SlotPool {
         },
         refuse: (reason?: unknown) => {
           done();
-          reject(reason ?? new SlotBusy());
+          reject(reason ?? slotBusy());
         },
       };
       const leave = (reason?: unknown) => {
@@ -353,7 +356,7 @@ export class SlotPool {
     }
     // Wait-die: only the oldest holder waits while it holds; any other gives way.
     if (this.#holders.values().next().value !== lease || this.#oldest !== null) {
-      return Promise.reject(new SlotBusy());
+      return Promise.reject(slotBusy());
     }
     return new Promise<Slot>((resolve, reject) => {
       const done = () => {
@@ -372,7 +375,7 @@ export class SlotPool {
         },
         refuse: (reason?: unknown) => {
           done();
-          reject(reason ?? new SlotBusy());
+          reject(reason ?? slotBusy());
           this.#drain();
         },
       };
@@ -501,7 +504,7 @@ class LeaseOf implements Lease {
           ? await this.#pool.acquire(need, this.owner, signal, need > 1 || this.large)
           : await this.#pool.grow(this, need, total, signal);
       } catch (error) {
-        if (error instanceof SlotBusy) {
+        if (isSlotBusy(error)) {
           this.release();  // die: everything it holds goes back
         }
         throw error;

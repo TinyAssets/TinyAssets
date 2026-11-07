@@ -10,7 +10,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
 import { builtinCatalog, modelInfos, recordOf } from "../src/catalog";
 import { checkedRecord } from "../../contract/src/model-record";
-import { Failure } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
 import { forward, redact, verify } from "../src/forward";
 import { seal } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, ring, rotate, sealed } from "./support";
@@ -349,15 +349,15 @@ describe("verify", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, "sk-bad", ANTHROPIC);
     const error = await verify(env, ALICE, blob, builtinCatalog()).catch((caught) => caught);
-    expect(error).toBeInstanceOf(Failure);
-    expect((error as Failure).message).toBe("upstream_unauthorized");
+    expect(error).toBeInstanceOf(Refusal);
+    expect((error as Refusal).message).toBe("upstream_unauthorized");
   });
 
   it("never follows a redirect from the setup check", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, "sk-redirect", ANTHROPIC);
     const error = await verify(env, ALICE, blob, builtinCatalog()).catch((caught) => caught);
-    expect((error as Failure).message).toBe("upstream_error");
+    expect((error as Refusal).message).toBe("upstream_error");
     const evil = await (await fetch("https://status.test/evil")).json() as unknown[];
     expect(JSON.stringify(evil)).not.toContain("sk-redirect");
   });

@@ -6,9 +6,11 @@
  * no sandbox at all, simultaneous runs each on their own connection, a run's calls held to
  * its grant, and the `runs` lane. The doors' side is `doors/test/runs.test.ts`.
  */
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { Refusal } from "../../contract/src/refusal";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
@@ -19,7 +21,8 @@ import { AUTHORITY_CHANGED } from "../src/authority";
 import type { Binding } from "../src/owner-do";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
-import { QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
+import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
+import { slotBusy } from "../../contract/src/slots";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, Runs, SIGNIN_LAPSED,
          UNATTENDED_REFUSED } from "../src/runs";
 import { SANDBOX_ABSENT, type SandboxStart } from "../src/sandbox";
@@ -31,6 +34,7 @@ import {
   sandboxOf, secretOf, startOf, TIERS,
 } from "./runs-support";
 import { drainDue, failure, sqlIn } from "./support";
+import type { GatedOwnerDO } from "./worker";
 
 /** The owner's run of Claude Code on its own sign-in: no key, no connection. */
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
@@ -207,7 +211,7 @@ describe("admission", () => {
     // A record past the ceiling, or malformed, is refused, never guessed.
     expect((await failure(() => r.stub.agentSubmit(
       r.bind({ tiers: { ...TIERS, free: { runs: 1001, storage_bytes: 1 } } }),
-      { message: "x", client_send_id: "e-2" }))).name).toBe("Invalid");
+      { message: "x", client_send_id: "e-2" }))).code).toBe("invalid");
   });
 
   it("refuses a run when the control record held no tier numbers", async () => {
@@ -620,7 +624,7 @@ describe("auto and the owner's sign-ins", () => {
                        [{ engine: "claude-code", signed_in: true, models: ["a b"] }],
                        [{ engine: "claude-code", signed_in: true,
                           models: ["m".repeat(256), ...Array(8).fill("m".repeat(256))] }]]) {
-      expect((await report(runnerSandbox(r, start), bad)).name).toBe("Invalid");
+      expect((await report(runnerSandbox(r, start), bad)).code).toBe("invalid");
     }
     expect(await r.sql("SELECT engine FROM engine_signins")).toEqual([]);
     // Its lease over, the sandbox reports nothing.
@@ -639,7 +643,8 @@ describe("the admission unit", () => {
         throw new Error("admission went past the owner's admission");
       };
       const runs = new Runs(gate.storage, {
-        unadmitted: () => "owner_suspended: the owner's account is suspended (billing)",
+        unadmitted: () => new Refusal("owner_suspended", "owner_suspended: the owner's " +
+                                      "account is suspended (billing)"),
         sandboxBound: () => true, sources: never, signinOn: never, usable: never, egressible: never,
         standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,
@@ -804,6 +809,41 @@ describe("the runs lane", () => {
     expect(starts.map((start) => [start.prompt, start.unattended])).toEqual([["report", true]]);
     expect(await r.stub.agentStatus(r.bind(), { run_id: starts[0]!.run }))
       .toMatchObject({ initiator: "schedule" });
+  });
+
+  it("leaves a schedule due when its launch is refused for the moment, and fires it once " +
+     "(review D-1)", async () => {
+    const r = await gated();
+    // An agent's file past an inline one, so the launch reads it from the files plane.
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.fileWrite(r.session(), {
+      path: "/workspace/agents/main/agent.json", content: new TextEncoder().encode(
+        `${JSON.stringify(SIGNED_IN)}${" ".repeat(INLINE_BYTES)}`),
+      expected_etag: (await r.stub.fileStat(r.bind(), {
+        path: "/workspace/agents/main/agent.json" })).entry!.etag });
+    for (const trigger of [{ at: Date.now() / 1000 + 3600 }, { cron: "30 * * * *" }]) {
+      const before = (await recorder(r.stub)).starts.length;
+      await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
+                                                        ...trigger });
+      // The read refused `busy`, as a full slot pool refuses it: the pass fails, unclaimed.
+      await runInDurableObject(r.stub, (instance: GatedOwnerDO) => {
+        instance.faults.chunkRead = slotBusy();
+      });
+      await fireSchedules(r).catch(() => undefined);
+      // The lane's next pass, as its backoff brings it.
+      await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
+      await drainDue(r.stub);
+      expect((await recorder(r.stub)).starts.length - before).toBe(1);
+      const rows = await r.sql("SELECT trigger, next_at, last_error FROM run_schedules");
+      if ("at" in trigger) {
+        expect(rows).toEqual([]);  // fired, once
+      } else {
+        expect(rows).toEqual([{ trigger: "cron", next_at: expect.any(Number), last_error: null }]);
+        expect(rows[0]!["next_at"] as number).toBeGreaterThan(Date.now() / 1000);
+        await r.stub.agentCancel(r.bind(), { schedule_id: (await r.sql(
+          "SELECT id FROM run_schedules"))[0]!["id"] as string });
+      }
+    }
   });
 
   it("cancels a schedule of the caller's", async () => {

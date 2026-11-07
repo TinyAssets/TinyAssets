@@ -23,6 +23,7 @@ import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
          TIERS } from "./runs-support";
 import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
+import { OWNER_WAITERS, ownerSlots } from "../src/holds";
 import { drainDue, failure } from "./support";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */
@@ -322,6 +323,42 @@ describe("mail to an agent", () => {
     await drainDue(r.stub);
     expect(told((await starts(r)).at(-1)!).body).toBe(long);
     expect(await r.sql("SELECT COUNT(*) AS n FROM run_inputs")).toEqual([{ n: 0 }]);
+  });
+
+  it("waits on through a full slot pool: a long mail's waiting run, its body's read refused " +
+     "busy at its turn, keeps waiting and starts once the pool frees (review F1)", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const main = await identity(r, "main");
+    for (let i = 0; i < 5; i++) {
+      await ownerMail(r, `dm:${main.agent_id}`, `job ${i}`);
+    }
+    const long = "w".repeat(5 * 1024 * 1024) + "!";
+    await ownerMail(r, `dm:${main.agent_id}`, long);
+    await drainDue(r.stub);
+    // The isolate's pool full in its larger class, and its queue at its waiters: the body's
+    // read at the run's turn is refused `busy` at once, a transient refusal.
+    const pool = ownerSlots();
+    const held = await pool.acquire(pool.capacity - pool.reserve, "", undefined, true);
+    const stop = new AbortController();
+    const queued = Array.from({ length: OWNER_WAITERS }, () =>
+      pool.acquire(1, "", stop.signal, true).then((slot) => slot.release(), () => undefined));
+    try {
+      await end(r, (await starts(r))[0]!, "done 0");
+      await drainDue(r.stub).catch(() => undefined);  // the pass fails, as a busy pool's does
+      expect(await r.sql("SELECT state, code FROM runs WHERE state NOT IN ('running', " +
+                         "'succeeded')")).toEqual([{ state: "waiting", code: null }]);
+    } finally {
+      stop.abort();
+      held.release();
+      await Promise.all(queued);
+    }
+    // The lane's next try, as its backoff brings it once the pool has freed.
+    await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
+    await drainDue(r.stub);
+    expect(told((await starts(r)).at(-1)!).body).toBe(long);
+    expect(await r.sql("SELECT COUNT(*) AS n FROM runs WHERE state = 'failed'"))
+      .toEqual([{ n: 0 }]);
   });
 
   it("from a client starts a run held to the intersection with that client's grant",

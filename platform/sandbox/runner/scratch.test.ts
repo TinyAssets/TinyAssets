@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { type Disk, keepReserve, markUsed, pruneScratch, readIndex, scratchEnv, scratchNotice,
+import { type Disk, keepReserve, markUsed, pruneScratch, readIndex, scratchCleared, scratchEnv,
          writeOrRelease } from "./scratch";
 
 const DAY = 86_400_000;
@@ -66,17 +66,17 @@ describe("old scratch let go", () => {
 });
 
 describe("what the agent and the user are told", () => {
-  it("names what went and that their storage is unaffected, never an upgrade", () => {
-    const text = scratchNotice({ expired: [], evicted: ["builder"], freed_bytes: 3_100_000_000,
-                                 disk: { free_bytes: 4_000_000_000, total_bytes: 15_000_000_000,
-                                         free_inodes: 1, total_inodes: 1 } })!;
-    expect(text).toContain("builder");
-    expect(text).toContain("3.1 GB freed");
-    expect(text).toContain("Your storage is unaffected.");
-    expect(text.toLowerCase()).not.toContain("upgrade");
-    expect(scratchNotice({ expired: [], evicted: [], freed_bytes: 0,
-                           disk: { free_bytes: 1, total_bytes: 1, free_inodes: 1,
-                                   total_inodes: 1 } })).toBeNull();
+  // Its facts alone: the app says them in words (`doors/guards/app-words.test.ts`).
+  it("names what went and the disk after, and nothing when none went", () => {
+    expect(scratchCleared({ expired: ["old"], evicted: ["builder"], freed_bytes: 3_100_000_000,
+                            disk: { free_bytes: 4_000_000_000, total_bytes: 15_000_000_000,
+                                    free_inodes: 1, total_inodes: 1 } }))
+      .toEqual({ type: "ta.scratch_cleared", evicted: ["builder"], expired: ["old"],
+                 freed_bytes: 3_100_000_000, free_bytes: 4_000_000_000,
+                 total_bytes: 15_000_000_000 });
+    expect(scratchCleared({ expired: [], evicted: [], freed_bytes: 0,
+                            disk: { free_bytes: 1, total_bytes: 1, free_inodes: 1,
+                                    total_inodes: 1 } })).toBeNull();
   });
 
   it("points the run's caches into its scratch", () => {

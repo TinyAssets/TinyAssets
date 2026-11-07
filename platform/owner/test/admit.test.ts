@@ -49,8 +49,8 @@ describe("the platform's admit", () => {
     expect(await o.admissionSet(platform(owner), { admit: true }))
       .toEqual({ state: "suspended", reasons: ["abuse"] });
     for (const request of [{ admit: false }, { admit: true, reason: "abuse" }, {}]) {
-      expect((await failure(() => o.admissionSet(platform(owner), request as never))).name)
-        .toBe("Invalid");
+      expect((await failure(() => o.admissionSet(platform(owner), request as never))).code)
+        .toBe("invalid");
     }
   });
 

@@ -29,7 +29,7 @@ import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
 import { principal, utf8Decoder } from "../../contract/src/text";
 
 import { type Credential, credential } from "./credential";
-import { Failure } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
 
 /** The one secret this Worker holds, as its config declares it. */
 export interface KeyringEnv {
@@ -68,7 +68,7 @@ const SALT = "tinyassets/gateway/v1";
 function ring(env: KeyringEnv): Ring {
   const keys = parseRing(env.GATEWAY_KEYRING);
   if (keys === null) {
-    throw new Failure("keyring_unavailable");
+    throw new Refusal("keyring_unavailable");
   }
   return keys;
 }
@@ -78,11 +78,11 @@ export function binding(owner: unknown, connection: unknown, version: unknown): 
   try {
     principal(owner);
   } catch {
-    throw new Failure("invalid_binding");
+    throw new Refusal("invalid_binding");
   }
   if (typeof connection !== "string" || !CONNECTION.test(connection)
       || typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
-    throw new Failure("invalid_binding");
+    throw new Refusal("invalid_binding");
   }
   return Object.freeze({ owner: owner as string, connection, version });
 }
@@ -97,7 +97,7 @@ async function sealWith(keys: Ring, bound: Binding, plaintext: unknown): Promise
   const blob = await sealBlob(keys, domain(bound),
                               new TextEncoder().encode(JSON.stringify(plaintext)));
   if (blob.length > CONNECTION_BLOB_MAX) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return Object.freeze({ blob, kid: keys.active });
 }
@@ -135,13 +135,13 @@ async function openWith(keys: Ring, bound: Binding, blob: unknown):
     Promise<{ parsed: unknown; kid: string }> {
   const opened = await openBlob(keys, domain(bound), blob, CONNECTION_BLOB_MAX);
   if (opened === null) {
-    throw new Failure("credential_refused");
+    throw new Refusal("credential_refused");
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(utf8Decoder("strip").decode(opened.plain));
   } catch {
-    throw new Failure("credential_refused");
+    throw new Refusal("credential_refused");
   }
   return { parsed, kid: opened.kid };
 }
@@ -167,7 +167,7 @@ export async function openValue<T>(env: KeyringEnv, bound: Binding, blob: unknow
   try {
     value = check(parsed);
   } catch {
-    throw new Failure("credential_refused");
+    throw new Refusal("credential_refused");
   }
   if (kid === keys.active) {
     return Object.freeze({ value, kid });

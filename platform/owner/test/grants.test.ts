@@ -119,7 +119,7 @@ describe("an outside client's grant", () => {
     const key = "0123456789abcdef";
     const keyed = { source: { kind: "api_key", ref: key } } as const;
     const refused = await failure(() => r.stub.outsideAgents(r.bind(apiKeyOrigin(key), keyed)));
-    expect([refused.name, refused.message]).toEqual(["Refused", "outside client has no grant"]);
+    expect([refused.code, refused.message]).toEqual(["refused", "outside client has no grant"]);
     expect(await clients(r)).toEqual([]);
     await r.keyed(key);
     expect((await r.stub.outsideAgents(r.bind(apiKeyOrigin(key), keyed))).agents).toEqual([]);
@@ -145,25 +145,25 @@ describe("an outside client's grant", () => {
       expect((await failure(() => r.stub.grantSet(binding, change))).message).toBe(reason);
     }
     for (const [extra, name, reason] of [
-      [{ client: "x" }, "Invalid", "invalid outside client"],
-      [{ source: "oauth" }, "Invalid", "invalid outside client source"],
-      [{ mode: "admin" }, "Invalid", "invalid outside grant mode"],
-      [{ mode: "scoped" }, "Invalid", "a scoped grant, and only a scoped one, names scopes"],
-      [{ mode: "full", scopes: [READ] }, "Invalid",
+      [{ client: "x" }, "invalid", "invalid outside client"],
+      [{ source: "oauth" }, "invalid", "invalid outside client source"],
+      [{ mode: "admin" }, "invalid", "invalid outside grant mode"],
+      [{ mode: "scoped" }, "invalid", "a scoped grant, and only a scoped one, names scopes"],
+      [{ mode: "full", scopes: [READ] }, "invalid",
         "a scoped grant, and only a scoped one, names scopes"],
-      [{ mode: "scoped", scopes: [{ ...READ, universe: "*" }] }, "Invalid",
+      [{ mode: "scoped", scopes: [{ ...READ, universe: "*" }] }, "invalid",
         "outside scopes require exact universe, agent and capability"],
-      [{ mode: "scoped", scopes: [{ ...READ, extra: "x" }] }, "Invalid",
+      [{ mode: "scoped", scopes: [{ ...READ, extra: "x" }] }, "invalid",
         "outside scopes require exact universe, agent and capability"],
       [{ mode: "scoped", scopes: Array.from({ length: 2_000 }, () => READ) },
-        "Invalid", `a grant's scopes are at most ${GRANT_LIMITS.maxScopesBytes} bytes of JSON`],
-      [{ expected_revision: -1 }, "Invalid", "expected outside grant revision required"],
-      [{ name: "n".repeat(81) }, "Invalid", "invalid outside client name"],
-      [{ expected_revision: 0 }, "Refused", "outside grant changed"],
+        "invalid", `a grant's scopes are at most ${GRANT_LIMITS.maxScopesBytes} bytes of JSON`],
+      [{ expected_revision: -1 }, "invalid", "expected outside grant revision required"],
+      [{ name: "n".repeat(81) }, "invalid", "invalid outside client name"],
+      [{ expected_revision: 0 }, "refused", "outside grant changed"],
     ] as const) {
       const refused = await failure(() => r.stub.grantSet(r.session(null),
                                                           { ...change, ...extra } as never));
-      expect([refused.name, refused.message]).toEqual([name, reason]);
+      expect([refused.code, refused.message]).toEqual([name, reason]);
     }
     expect((await clients(r)).map((c) => [c.mode, c.generation])).toEqual([["full", 1]]);
     expect((await kindsOf(r, "refusal")).length).toBe(14);
@@ -715,7 +715,7 @@ describe("a scoped grant's capabilities (slice 5's review N9)", () => {
     await r.stub.outsideAgents(r.bind(CHATGPT));
     const refused = await failure(() => grant(r, CHATGPT, "scoped",
                                               [{ ...READ, capability: "read_everything" }]));
-    expect([refused.name, refused.message]).toEqual(["Invalid", "a scope's capability is one " +
+    expect([refused.code, refused.message]).toEqual(["invalid", "a scope's capability is one " +
       "of read_graph, write_graph, propose_policy, read_files, write_files, converse, " +
       "run_graph"]);
     for (const capability of ["read_graph", "write_graph", "propose_policy", "read_files",
@@ -821,7 +821,7 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
     for (const [change, expected] of [...changes.map((one) => [one, 1] as const),
                                       [{ name: "Ahead" }, 3] as const]) {
       const refused = await failure(() => set(change, expected));
-      expect([refused.name, refused.message]).toEqual(["Refused", "outside grant changed"]);
+      expect([refused.code, refused.message]).toEqual(["refused", "outside grant changed"]);
     }
     await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });
     expect((await failure(() => set({ mode: "revoked", name: "Old" }, 2))).message)
@@ -890,8 +890,8 @@ describe("a grant's tool profile (slice M)", () => {
       const refused = await failure(() => r.stub.grantSet(r.session(null), {
         client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
         expected_revision: renamed.revision, name: "", profile: profile as never }));
-      expect([refused.name, refused.message])
-        .toEqual(["Invalid", "a grant's profile is one of directory, custom"]);
+      expect([refused.code, refused.message])
+        .toEqual(["invalid", "a grant's profile is one of directory, custom"]);
     }
   });
 
@@ -927,8 +927,8 @@ describe("a grant's tool profile (slice M)", () => {
       const refused = await failure(() => r.stub.grantSet(r.session(null), {
         client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
         expected_revision: renamed.revision, name: "", profile: profile as never }));
-      expect([refused.name, refused.message])
-        .toEqual(["Invalid", "a grant's profile is one of directory, custom"]);
+      expect([refused.code, refused.message])
+        .toEqual(["invalid", "a grant's profile is one of directory, custom"]);
     }
   });
 

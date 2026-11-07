@@ -11,9 +11,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_DIR, agentId, Authority, AUTHORITY_CHANGED, authorityOf, NO_AUTHORITY, NOT_GRANTED,
-  NOT_OWNER, OWNER_ONLY, refusalCode, type Stamped, stamped, stampOf,
+  NOT_OWNER, OWNER_ONLY, type Stamped, stamped, stampOf,
 } from "../src/authority";
-import { Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
 import { Grants, holds } from "../src/grants";
 import type { OwnerDO } from "../src/owner-do";
@@ -27,7 +27,7 @@ const CLIENT = Object.freeze({ by: "client" as const, stamp: STAMP });
 
 /** An authority over grants that answer as `mode`, holding the capabilities `held`. */
 function under(mode: string, held: readonly string[] = [],
-               admission: () => string | null = () => null): Authority {
+               admission: () => Refusal | null = () => null): Authority {
   return new Authority({
     grants: { standing: () => ({ mode, holds: (scope) => scope.universe === "alpha"
                                    && scope.agent === "main" && held.includes(scope.capability) }) },
@@ -63,19 +63,14 @@ describe("a stamp", () => {
       expect(() => agentId(bad)).toThrow(/an agent id/);
     }
   });
-
-  it("reads a refusal's fixed code", () => {
-    expect(refusalCode("owner_suspended: billing")).toBe("owner_suspended");
-    expect(refusalCode(NOT_GRANTED)).toBe(NOT_GRANTED);
-  });
 });
 
 describe("the authority's checks", () => {
   it("hold the owner to everything and none to nothing", () => {
     const authority = under("scoped");
     expect(authority.refusal({ by: "owner" }, OWNER_ONLY)).toBeUndefined();
-    expect(authority.refusal({ by: "none" }, [])).toBe(NO_AUTHORITY);
-    expect(authority.refusal(undefined, [])).toBe(NO_AUTHORITY);
+    expect(authority.refusal({ by: "none" }, [])?.message).toBe(NO_AUTHORITY);
+    expect(authority.refusal(undefined, [])?.message).toBe(NO_AUTHORITY);
   });
 
   it("hold a scoped client to each capability where its work acts, never to the owner's",
@@ -83,30 +78,30 @@ describe("the authority's checks", () => {
     const authority = under("scoped", ["read_files"]);
     expect(authority.refusal(CLIENT, [])).toBeUndefined();
     expect(authority.refusal(CLIENT, ["read_files"])).toBeUndefined();
-    expect(authority.refusal(CLIENT, ["read_files", "write_files"])).toBe(NOT_GRANTED);
-    expect(authority.refusal(CLIENT, OWNER_ONLY)).toBe(NOT_OWNER);
+    expect(authority.refusal(CLIENT, ["read_files", "write_files"])?.message).toBe(NOT_GRANTED);
+    expect(authority.refusal(CLIENT, OWNER_ONLY)?.message).toBe(NOT_OWNER);
     // Where it acts: another universe, or none, holds nothing.
     expect(authority.refusal({ by: "client", stamp: { ...STAMP, universe: "beta" } },
-                             ["read_files"])).toBe(NOT_GRANTED);
+                             ["read_files"])?.message).toBe(NOT_GRANTED);
     expect(authority.refusal({ by: "client", stamp: { ...STAMP, universe: null } },
-                             ["read_files"])).toBe(NOT_GRANTED);
+                             ["read_files"])?.message).toBe(NOT_GRANTED);
   });
 
   it("run everything only under a grant that says full", () => {
     expect(["full", "scoped", "revoked", "unknown"].map((mode) =>
-      under(mode).refusal(CLIENT, ["read_files"]) ?? "runs"))
+      under(mode).refusal(CLIENT, ["read_files"])?.message ?? "runs"))
       .toEqual(["runs", NOT_GRANTED, NOT_GRANTED, NOT_GRANTED]);
     expect(under("full").refusal(CLIENT, ["run_graph", "write_files"])).toBeUndefined();
-    expect(under("full").refusal(CLIENT, OWNER_ONLY)).toBe(NOT_OWNER);
+    expect(under("full").refusal(CLIENT, OWNER_ONLY)?.message).toBe(NOT_OWNER);
   });
 
   it("refuse with the fixed reason a stamp whose grant no longer stands, and fail loudly " +
      "when the grants cannot be read", () => {
     const changed = new Authority({ grants: { standing: () => {
-      throw new Refused("outside client authority changed");
+      throw new Refusal("refused", "outside client authority changed");
     } } });
     // A refusal the grants raise is the fixed reason, whatever it said.
-    expect(changed.refusal(CLIENT, [])).toBe(AUTHORITY_CHANGED);
+    expect(changed.refusal(CLIENT, [])?.message).toBe(AUTHORITY_CHANGED);
     const broken = new Authority({ grants: { standing: () => {
       throw new Error("the grants could not be read");
     } } });
@@ -114,9 +109,10 @@ describe("the authority's checks", () => {
   });
 
   it("refuse every check while the owner is not admitted, the owner's own too", () => {
-    const authority = under("full", [], () => "owner_suspended: billing");
-    expect(authority.refusal({ by: "owner" }, [])).toBe("owner_suspended: billing");
-    expect(authority.refusal(CLIENT, [])).toBe("owner_suspended: billing");
+    const authority = under("full", [], () => new Refusal("owner_suspended",
+                                                         "owner_suspended: billing"));
+    expect(authority.refusal({ by: "owner" }, [])?.message).toBe("owner_suspended: billing");
+    expect(authority.refusal(CLIENT, [])?.message).toBe("owner_suspended: billing");
   });
 
   it("hold one of several needs, else the first one's refusal", () => {
@@ -147,7 +143,7 @@ describe("the authority over the owner's own grants", () => {
           const grant = grants.standing(client, at, signed);
           return { mode: grant.mode, holds: (scope) => holds(grant, scope) };
         } } });
-        return authority.refusal({ by: "client", stamp }, need) ?? "runs";
+        return authority.refusal({ by: "client", stamp }, need)?.message ?? "runs";
       });
     expect(await check(["read_files"])).toBe("runs");
     expect(await check(["write_files"])).toBe(NOT_GRANTED);

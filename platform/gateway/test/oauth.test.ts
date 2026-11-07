@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { builtinCatalog } from "../src/catalog";
 import type { Credential, OAuthGrant } from "../src/credential";
 import type { Source } from "../../contract/src/egress-scope";
-import { Failure } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
 import { open, seal } from "../src/keyring";
 import { exchange, refresh, revokeAtProvider, tokenGuard } from "../src/oauth";
 import { ALICE, OPENAI, ring, sealed } from "./support";
@@ -38,8 +38,8 @@ async function sealedGrant(env: ReturnType<typeof ring>, grant: Partial<OAuthGra
 
 async function code(run: () => Promise<unknown>): Promise<string> {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
-  expect(error).toBeInstanceOf(Failure);
-  return (error as Failure).message;
+  expect(error).toBeInstanceOf(Refusal);
+  return (error as Refusal).message;
 }
 
 /** Everything the fake's `evil.test` has received. */

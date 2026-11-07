@@ -143,7 +143,7 @@ describe("the code door", () => {
     const stranger = { ...r.bind(null), owner: "someone-else", caller: "someone-else" };
     for (const door of [() => r.stub.codeRun(stranger, { script: "return 1;" }),
                         () => r.stub.toolProfile(stranger)]) {
-      expect((await failure(door)).name).toBe("Refused");
+      expect((await failure(door)).code).toBe("refused");
     }
   });
 

@@ -62,7 +62,7 @@ export function runnerShaped(event: object): boolean {
 
 /**
  * A line of the CLI's stdout as its event: its JSON, or its text; one shaped as the runner's
- * own event refused, loudly, its text kept (`ta.cli_refused`).
+ * own event refused, loudly, its text kept (`ta.cli_refused`, by its code: the app says why).
  */
 export function lineEvent(line: string): unknown {
   let parsed: unknown;
@@ -74,8 +74,8 @@ export function lineEvent(line: string): unknown {
   if (typeof parsed !== "object" || parsed === null) {
     return { type: "ta.line", text: line };
   }
-  return runnerShaped(parsed) ? { type: "ta.cli_refused", text: line,
-    reason: "a CLI's line may not carry the runner's own event type (ta.…)" } : parsed;
+  return runnerShaped(parsed) ? { type: "ta.cli_refused", text: line, code: "runner_type" }
+    : parsed;
 }
 
 /** The frames waiting to be posted, in order, each numbered once. */

@@ -11,6 +11,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { Refusal } from "../../contract/src/refusal";
 import {
   EGRESS_ORIGIN, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
@@ -18,12 +19,11 @@ import type { Binding } from "../../owner/src/owner-do";
 import type { SandboxStart } from "../../owner/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
-import { refusedStatus } from "../src/egress";
 import { RUN_INSTRUCTIONS } from "../src/mcp";
 import { profileNames } from "../src/tools";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { SESSION_REFUSED } from "../../owner/src/runs";
-import type { OwnerDO } from "./entry";
+import { type OwnerDO, refuseOnce } from "./entry";
 import {
   appPost, call, connect, OPEN, reached, registerClient, rpcBody, serveFirstPartyDocument,
   setControl, signInApp, sqlIn, type Tokens, url,
@@ -283,9 +283,26 @@ describe("a run's own doors on the egress host", () => {
     expect(wrong.status).not.toBe(200);
   });
 
-  it("answer a post the object holds no room for 503, for the runner to post again", () => {
-    expect(refusedStatus("events_busy", 403)).toBe(503);
-    expect(refusedStatus("run_ended", 403)).toBe(403);
+  it("answer a post refused for the moment 503, for the runner to post again no sooner " +
+     "than the refusal asks", async () => {
+    const { who, app } = await owned();
+    await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "r-1" });
+    const [start] = await starts(who);
+    for (const [refusal, retry] of [
+      [new Refusal("events_busy", "events_busy: the object holds as many runner posts as it may"),
+       "1"],
+      [new Refusal("storage_busy", "storage_busy: your storage is catching up"), "30"],
+      [new Refusal("storage_busy", "storage_busy: the archive moved this mail",
+                   { retryAfterS: 1 }), "1"],
+    ] as const) {
+      refuseOnce("runEvents", who, refusal);
+      const refused = await report(start!, { frames: [] });
+      expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
+        .toEqual([503, retry, { error: { code: refusal.code, message: refusal.code } }]);
+    }
+    refuseOnce("runEvents", who, new Refusal("run_ended", "run_ended: the run is no longer live"));
+    const ended = await report(start!, { frames: [] });
+    expect([ended.status, ended.headers.get("Retry-After")]).toEqual([403, null]);
   });
 
   it("take a run's events only by the runner's secret, within the post's bounds",

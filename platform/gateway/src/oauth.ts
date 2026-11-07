@@ -30,7 +30,7 @@ import {
   keyExchangeSource, type OAuthClient, PROVIDER_REFRESH, source, type Source,
 } from "../../contract/src/egress-scope";
 import { nativeFetch, within } from "./egress";
-import { type Code, Failure } from "../../contract/src/failure";
+import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import { type Binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
 
 /** How long one token-endpoint call may take (pi-ai's own refresh bound). */
@@ -112,7 +112,7 @@ async function boundedJson(answer: Response): Promise<unknown> {
 }
 
 /** The code for a token endpoint's refusal: `invalid_grant` is the grant, else the call. */
-async function refused(answer: Response): Promise<Code> {
+async function refused(answer: Response): Promise<GatewayCode> {
   if (answer.status >= 500) {
     await answer.body?.cancel();
     return "oauth_unavailable";
@@ -142,7 +142,7 @@ async function post(client: OAuthClient, url: string, params: Record<string, str
     return await nativeFetch(url, { method: "POST", headers, body, redirect: "manual",
                                     signal: AbortSignal.timeout(TOKEN_DEADLINE_MS) });
   } catch {
-    throw new Failure("oauth_unreachable");
+    throw new Refusal("oauth_unreachable");
   }
 }
 
@@ -152,12 +152,12 @@ async function token(client: OAuthClient, params: Record<string, string>): Promi
     ...params, ...(client.resource === undefined ? {} : { resource: client.resource }),
   });
   if (answer.status !== 200) {
-    throw new Failure(answer.status >= 300 && answer.status < 400
+    throw new Refusal(answer.status >= 300 && answer.status < 400
       ? "oauth_rejected" : await refused(answer));
   }
   const body = await boundedJson(answer);
   if (!object(body)) {
-    throw new Failure("oauth_malformed");
+    throw new Refusal("oauth_malformed");
   }
   const { access_token: access, token_type: type, expires_in: expires,
           refresh_token: refresh, scope } = body;
@@ -167,7 +167,7 @@ async function token(client: OAuthClient, params: Record<string, string>): Promi
                                     || expires <= 0))
       || (refresh !== undefined && (typeof refresh !== "string" || !TOKEN.test(refresh)))
       || (scope !== undefined && (typeof scope !== "string" || !SCOPE.test(scope)))) {
-    throw new Failure("oauth_malformed");
+    throw new Refusal("oauth_malformed");
   }
   return {
     access,
@@ -188,16 +188,16 @@ function authorizationGrant(grant: unknown): { code: string; verifier: string; r
       || typeof grant["code"] !== "string" || !CODE.test(grant["code"])
       || typeof grant["verifier"] !== "string" || !VERIFIER.test(grant["verifier"])
       || typeof grant["redirect_uri"] !== "string") {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
   let redirect: URL;
   try {
     redirect = new URL(grant["redirect_uri"]);
   } catch {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
   if (redirect.protocol !== "https:" || redirect.hash !== "") {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
   return { code: grant["code"], verifier: grant["verifier"], redirect };
 }
@@ -215,7 +215,7 @@ export async function exchange(env: KeyringEnv, bound: Binding, grant: unknown,
   const client = checked.oauth;
   const { code, verifier, redirect } = authorizationGrant(grant);
   if (client === undefined) {
-    throw new Failure("invalid_request");
+    throw new Refusal("invalid_request");
   }
   const answer = await token(client, {
     grant_type: "authorization_code", code, redirect_uri: redirect.href,
@@ -246,16 +246,16 @@ async function keyExchange(env: KeyringEnv, bound: Binding, grant: unknown,
       redirect: "manual", signal: AbortSignal.timeout(TOKEN_DEADLINE_MS),
     });
   } catch {
-    throw new Failure("oauth_unreachable");
+    throw new Refusal("oauth_unreachable");
   }
   if (answer.status !== 200) {
-    throw new Failure(answer.status >= 300 && answer.status < 400
+    throw new Refusal(answer.status >= 300 && answer.status < 400
       ? "oauth_rejected" : await refused(answer));
   }
   const body = await boundedJson(answer);
   const key = object(body) ? body["key"] : undefined;
   if (typeof key !== "string" || !TOKEN.test(key)) {
-    throw new Failure("oauth_malformed");
+    throw new Refusal("oauth_malformed");
   }
   const sealed = await seal(env, bound, { kind: "api_key", secret: key,
                                           upstream: checked.upstream,
@@ -268,7 +268,7 @@ export function tokenGuard(endpoint: string): FetchFunction {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init);
     if (request.method !== "POST" || request.url !== endpoint) {
-      throw new Failure("endpoint_refused");
+      throw new Refusal("endpoint_refused");
     }
     return nativeFetch(request, { redirect: "manual" });
   };
@@ -281,12 +281,12 @@ async function providerRefresh(catalog: Catalog, credential: Extract<Credential,
   // Sealed only for Sign in with ChatGPT (`credential.ts`), and checked again here.
   if (!Object.hasOwn(PROVIDER_REFRESH, credential.upstream.provider)
       || PROVIDER_REFRESH[credential.upstream.provider] !== endpoint) {
-    throw new Failure("not_refreshable");
+    throw new Refusal("not_refreshable");
   }
   const auth = providerFor(catalog, credential.upstream).auth.oauth;
   const refresh = credential.oauth.refresh;
   if (auth === undefined || refresh === undefined) {
-    throw new Failure("not_refreshable");
+    throw new Refusal("not_refreshable");
   }
   // pi-ai loads each provider's OAuth flow through an import a bundler cannot follow;
   // this registers the statically bundled flows instead. Each call registers the same
@@ -305,12 +305,12 @@ async function providerRefresh(catalog: Catalog, credential: Extract<Credential,
                         () => auth.refresh(current, AbortSignal.timeout(TOKEN_DEADLINE_MS)));
   } catch {
     // pi-ai's message quotes the provider's body; only the fixed code goes on.
-    throw new Failure("oauth_rejected");
+    throw new Refusal("oauth_rejected");
   }
   if (typeof next.access !== "string" || !TOKEN.test(next.access)
       || typeof next.refresh !== "string" || !TOKEN.test(next.refresh)
       || typeof next.expires !== "number" || !Number.isFinite(next.expires)) {
-    throw new Failure("oauth_malformed");
+    throw new Refusal("oauth_malformed");
   }
   const scopes = next["scopes"];
   return {
@@ -328,7 +328,7 @@ export async function refresh(env: KeyringEnv, bound: Binding, blob: unknown,
                               catalog: Catalog): Promise<Refreshed> {
   const { credential } = await open(env, bound, blob);
   if (credential.kind !== "oauth2" || credential.oauth.refresh === undefined) {
-    throw new Failure("not_refreshable");
+    throw new Refusal("not_refreshable");
   }
   const answer = credential.oauth.refresh_with === "provider"
     ? await providerRefresh(catalog, credential)
@@ -361,7 +361,7 @@ export async function revokeAtProvider(env: KeyringEnv, bound: Binding,
     : { token: refreshToken, token_type_hint: "refresh_token" });
   // RFC 7009 §2.2: 200 whether or not the token was still valid.
   if (answer.status !== 200) {
-    throw new Failure(answer.status >= 300 && answer.status < 400
+    throw new Refusal(answer.status >= 300 && answer.status < 400
       ? "oauth_rejected" : await refused(answer));
   }
   await answer.body?.cancel();

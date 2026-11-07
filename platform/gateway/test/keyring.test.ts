@@ -6,16 +6,16 @@ import { describe, expect, it } from "vitest";
 
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { credential } from "../src/credential";
-import { Failure } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
 import { doorbellSecret } from "../src/doorbell";
 import { binding, open, openValue, reseal, seal } from "../src/keyring";
 import { ALICE, ANTHROPIC, apiKey, ring, rotate, sealed } from "./support";
 
 async function refused(run: () => Promise<unknown>, code = "credential_refused") {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
-  expect(error).toBeInstanceOf(Failure);
-  expect((error as Failure).code).toBe(code);
-  expect((error as Failure).message).toBe(code);
+  expect(error).toBeInstanceOf(Refusal);
+  expect((error as Refusal).code).toBe(code);
+  expect((error as Refusal).message).toBe(code);
 }
 
 describe("seal and open", () => {

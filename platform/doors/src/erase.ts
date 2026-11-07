@@ -21,6 +21,7 @@
  *   A failure retries the message; the object's job sends it again anyway, so a half-done
  *   erasure always finishes.
  */
+import { refusalOf } from "../../contract/src/refusal";
 import { principal } from "../../contract/src/text";
 
 import { bindPlatformFor, type Bound } from "./binder";
@@ -79,8 +80,10 @@ export async function erasureQueue(batch: MessageBatch<unknown>, env: DoorsEnv,
       await eraseOutside(env, owner, upstream);
       message.ack();
     } catch (error) {
-      // A refusal (no erasure under way) is the object's word: dropped, never retried.
-      if (error instanceof Error && error.name === "Refused") {
+      // A refusal (no erasure under way) is the object's word: dropped, never retried; one
+      // for the moment only (a full pool) is retried, as any failure is.
+      const refused = refusalOf(error);
+      if (refused !== null && !refused.invalid && !refused.transient) {
         console.error("an erasure message names no erasure under way; dropped");
         message.ack();
         continue;

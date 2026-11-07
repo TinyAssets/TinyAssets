@@ -15,10 +15,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ADMIN_CALLER } from "../../admin/src/caller";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
-import { ERASING } from "../../contract/src/errors";
+import { ERASING } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
 import { NO_ERASURE } from "../../owner/src/owner-do";
-import { nativeId } from "../../owner/src/ledger";
+import { LEDGER_LIMITS, nativeId } from "../../owner/src/ledger";
 import type { Binding } from "../../owner/src/owner-do";
 import { defineAgent } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
@@ -27,7 +27,8 @@ import { readOwner, readRoute } from "../src/directory";
 import { eraseOutside, erasureQueue } from "../src/erase";
 import { contentDigest } from "../src/file-bytes";
 import { sharedApps } from "../src/inbound";
-import type { OwnerDO } from "./entry";
+import { type OwnerDO, refuseOnce } from "./entry";
+import { slotBusy } from "../../contract/src/slots";
 import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
   appCallback, appPost, call, connect, doorsEnv, legacyTool, NAVIGATE, OPEN, refresh,
@@ -214,6 +215,20 @@ describe("the erasure", () => {
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
                        doorsEnv, () => FAKE_UPSTREAM);
     expect([acked, retried]).toEqual([["m1", "m2"], []]);
+  });
+
+  it("retries an erasure message the object refuses for the moment, never drops it",
+     async () => {
+    const { who } = await owned();
+    refuseOnce("erasureOutside", who, slotBusy());
+    const acked: string[] = [];
+    const retried: string[] = [];
+    await erasureQueue({ queue: ERASURE_QUEUE, messages: [{
+      id: "m1", timestamp: new Date(), attempts: 1, body: { owner: who },
+      ack: () => { acked.push("m1"); }, retry: () => { retried.push("m1"); } }],
+      retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
+                       doorsEnv, () => FAKE_UPSTREAM);
+    expect([acked, retried]).toEqual([[], ["m1"]]);
   });
 
   it("retries an outside record whose identity deletion fails, and finishes on the next try",
@@ -555,6 +570,26 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     const shared = await call(slackRequest({ ...slackEvent(team, "EvX"),
                                              is_ext_shared_channel: true }));
     expect(await shared.json()).toEqual({ state: "no_op" });
+  });
+
+  it("is told to send an event again at the hot ceiling, whether it clears by itself or is " +
+     "held by a full storage (review E-2)", async () => {
+    const who = owner();
+    await signInApp({ owner: who });
+    await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
+    const team = `T${crypto.randomUUID().slice(0, 8)}`;
+    await slackInstall(who, team);
+    for (const blocked of [0, ...Array<number>(BREAKER_FAILURES + 1).fill(1)]) {
+      // The hot ceiling; blocked, the archive's moves wait for the owner to free space.
+      await sqlIn(who, "UPDATE ledger_usage SET messages = ?, archive_blocked = ?",
+                  LEDGER_LIMITS.maxMessages, blocked);
+      const refused = await call(slackRequest(slackEvent(team, `EvC${crypto.randomUUID()}`)));
+      expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
+        .toEqual([429, "5", { state: "refused", error: "mailbox_full", retry: true }]);
+    }
+    // Never the breaker's: more refusals than trip it, and the events still told to retry.
+    const { notices } = await env.OWNER.getByName(who).noticeList(ownerBinding(who));
+    expect(notices.map((notice) => notice.type)).not.toContain("inbound");
   });
 
   it("trips its breaker after the agent's mailbox refuses it, then no-ops until re-armed",

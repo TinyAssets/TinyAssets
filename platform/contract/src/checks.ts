@@ -3,7 +3,7 @@
  * gateway's `credential.ts`): each refuses anything else as `invalid_source`, the gateway's
  * fixed code, so nothing about the value crosses the boundary.
  */
-import { Failure } from "./failure";
+import { Refusal } from "./refusal";
 
 export function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -13,33 +13,33 @@ export function object(value: unknown): value is Record<string, unknown> {
 export function shape(value: unknown, required: readonly string[],
                       optional: readonly string[] = []): Record<string, unknown> {
   if (!object(value)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   const keys = Object.keys(value);
   if (required.some((key) => !keys.includes(key))
       || keys.some((key) => !required.includes(key) && !optional.includes(key))) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return value;
 }
 
 export function text(value: unknown, pattern: RegExp, max = 1024): string {
   if (typeof value !== "string" || value.length > max || !pattern.test(value)) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return value;
 }
 
 export function count(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return value;
 }
 
 export function list<T>(value: unknown, min: number, max: number, each: (item: unknown) => T): T[] {
   if (!Array.isArray(value) || value.length < min || value.length > max) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return value.map(each);
 }

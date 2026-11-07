@@ -15,7 +15,7 @@
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
-import { Invalid } from "./errors";
+import { Refusal } from "./refusal";
 import { HEX64 } from "./ids";
 
 const HEADER = /^[a-z0-9][a-z0-9-]{0,127}$/;
@@ -43,53 +43,54 @@ export type Profile = HmacProfile | TokenProfile;
 
 function header(value: unknown): string {
   if (typeof value !== "string" || !HEADER.test(value)) {
-    throw new Invalid("a proof header is a lowercase header name");
+    throw new Refusal("invalid", "a proof header is a lowercase header name");
   }
   return value;
 }
 
-/** A profile checked whole, or `Invalid`. */
+/** A profile checked whole, or `invalid`. */
 export function profile(value: unknown): Profile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Invalid("a proof profile is an object");
+    throw new Refusal("invalid", "a proof profile is an object");
   }
   const fields = value as Record<string, unknown>;
   const keys = Object.keys(fields);
   if (fields["method"] === "token") {
     if (keys.sort().join() !== "digest,header,method" || typeof fields["digest"] !== "string"
         || !HEX64.test(fields["digest"])) {
-      throw new Invalid("a token profile is its header and its value's SHA-256");
+      throw new Refusal("invalid", "a token profile is its header and its value's SHA-256");
     }
     return Object.freeze({ method: "token", header: header(fields["header"]),
                            digest: fields["digest"] });
   }
   if (fields["method"] !== "hmac-sha256") {
-    throw new Invalid("a proof profile's method is hmac-sha256 or token");
+    throw new Refusal("invalid", "a proof profile's method is hmac-sha256 or token");
   }
   const allowed = ["method", "signature_header", "encoding", "prefix", "version",
                    "timestamp_header", "max_skew_seconds"];
   if (keys.some((key) => !allowed.includes(key))
       || !["signature_header", "encoding", "prefix"].every((key) => keys.includes(key))) {
-    throw new Invalid("an HMAC profile names its signature header, encoding and prefix");
+    throw new Refusal("invalid", "an HMAC profile names its signature header, encoding and prefix");
   }
   const { encoding, prefix, version } = fields;
   if (encoding !== "hex" && encoding !== "base64") {
-    throw new Invalid("an HMAC profile's encoding is hex or base64");
+    throw new Refusal("invalid", "an HMAC profile's encoding is hex or base64");
   }
   if (typeof prefix !== "string" || prefix.length > 32 || !/^[\x21-\x7e]*$/.test(prefix)) {
-    throw new Invalid("an HMAC profile's prefix is at most 32 visible ASCII characters");
+    throw new Refusal("invalid", "an HMAC profile's prefix is at most 32 visible ASCII characters");
   }
   if (version !== undefined && (typeof version !== "string" || !/^[A-Za-z0-9]{1,16}$/.test(version))) {
-    throw new Invalid("an HMAC profile's version is 1 to 16 letters or digits");
+    throw new Refusal("invalid", "an HMAC profile's version is 1 to 16 letters or digits");
   }
   const timed = fields["timestamp_header"] !== undefined;
   if (timed !== (fields["max_skew_seconds"] !== undefined)) {
-    throw new Invalid("an HMAC profile's timestamp has a finite skew, and only with one");
+    throw new Refusal("invalid",
+                      "an HMAC profile's timestamp has a finite skew, and only with one");
   }
   const skew = fields["max_skew_seconds"];
   if (timed && (typeof skew !== "number" || !Number.isSafeInteger(skew) || skew < 1
                 || skew > MAX_SKEW_S)) {
-    throw new Invalid(`an HMAC profile's skew is 1 to ${MAX_SKEW_S} seconds`);
+    throw new Refusal("invalid", `an HMAC profile's skew is 1 to ${MAX_SKEW_S} seconds`);
   }
   return Object.freeze({
     method: "hmac-sha256", signature_header: header(fields["signature_header"]), encoding,

@@ -224,8 +224,8 @@ describe("the object's name", () => {
     const { stub, as, name } = ownerObject();
     for (const binding of [as("bob", "cara"), as("cara", "cara"), as(name, `${name}x`)]) {
       const refused = await failure(() => stub.collectionPull(binding, PULL));
-      expect([refused.name, refused.message])
-        .toEqual(["Refused", "this object belongs to another owner"]);
+      expect([refused.code, refused.message])
+        .toEqual(["refused", "this object belongs to another owner"]);
     }
     const write = failure(() => stub.collectionWrite(as(name, "bob"), {
       collection: "board", row_id: "t", body: "1", expected_etag: "", private: false,
@@ -241,8 +241,8 @@ describe("the object's name", () => {
     const unnamed = env.OWNER.get(env.OWNER.newUniqueId());
     const refused = await failure(() => unnamed.collectionPull({ owner: "alice", caller: "alice", origin: null },
                                                                 PULL));
-    expect([refused.name, refused.message])
-      .toEqual(["Refused", "this object is not named by an owner"]);
+    expect([refused.code, refused.message])
+      .toEqual(["refused", "this object is not named by an owner"]);
     await runInDurableObject(unnamed, (_instance: OwnerDO, state) => {
       expect(state.storage.sql.exec("SELECT owner FROM object_owner").toArray()).toEqual([]);
     });
@@ -268,8 +268,8 @@ describe("the object's stored owner", () => {
        });
        await evictDurableObject(stub);
        const refused = await failure(() => stub.collectionPull(as(name), PULL));
-       expect([refused.name, refused.message])
-         .toEqual(["Refused", "this object belongs to another owner"]);
+       expect([refused.code, refused.message])
+         .toEqual(["refused", "this object belongs to another owner"]);
      });
 
   it("refuses an invalid principal before binding anything", async () => {
@@ -288,11 +288,11 @@ describe("the object's stored owner", () => {
   it("keeps the error's kind across RPC", async () => {
     const { stub, as, name } = ownerObject();
     await stub.collectionPull(as(name), PULL);
-    expect((await failure(() => stub.collectionPull(as("bob", "bob"), PULL))).name)
-      .toBe("Refused");
+    expect((await failure(() => stub.collectionPull(as("bob", "bob"), PULL))).code)
+      .toBe("refused");
     expect((await failure(() => stub.collectionPull(as(name), {
       ...PULL, limit: 0,
-    }))).name).toBe("Invalid");
+    }))).code).toBe("invalid");
   });
 });
 

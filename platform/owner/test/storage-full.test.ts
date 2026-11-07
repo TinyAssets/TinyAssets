@@ -12,9 +12,10 @@ import { describe, expect, it } from "vitest";
 import { TIERS } from "../../ci/fixtures";
 import { PLATFORM_CALLER } from "../src/admission";
 import {
-  heldOnly, shownBytes, STORAGE_FULL, storageFull, storageFullMessage, storageFullOf,
+  heldOnly, shownBytes, STORAGE_FULL, storageFull, type StorageFull, storageFullRefusal,
   UPLOADS_OPEN,
 } from "../src/storage-full";
+import { refusalOf } from "../../contract/src/refusal";
 import { LIST_BYTES } from "../../contract/src/sync-ignore";
 import { CHUNK_BYTES } from "../../contract/src/limits";
 import { sha256Hex } from "../../contract/src/digest";
@@ -39,11 +40,12 @@ function write(r: Rig, path: string, n: number, seed = 1) {
                                                            content: bytes(n, seed) });
 }
 
+/** The refusal `call` makes, as it crossed RPC: its code, its message and its facts. */
 async function refusedAs(code: string, call: () => Promise<unknown>) {
-  const error = await failure(call);
-  expect(error.name).toBe("Refused");
+  const error = refusalOf(await failure(call))!;
+  expect(error.code).toBe(code);
   expect(error.message.startsWith(`${code}: `)).toBe(true);
-  return { message: error.message, facts: storageFullOf(error.message)! };
+  return { message: error.message, facts: error.facts as unknown as StorageFull };
 }
 
 const full = (call: () => Promise<unknown>) => refusedAs(STORAGE_FULL, call);
@@ -328,24 +330,29 @@ describe("the sync's ignore list", () => {
   });
 });
 
-describe("the storage_full message", () => {
-  it("round-trips its facts and reads plainly", () => {
+describe("the storage_full refusal", () => {
+  it("carries its facts and reads plainly", () => {
     const facts = storageFull(24_500_000_000, 2_000_000_000, 0, 25_000_000_000, "free", TIERS);
-    const message = storageFullMessage(facts);
-    expect(message).toContain("your storage is full: 24.5 GB of 25.0 GB used, and this needs " +
-                              "2.0 GB more (500 MB free)");
-    expect(message).toContain("upgrade to paid for 250 GB");
-    expect(storageFullOf(message)).toEqual(facts);
-    expect(storageFullOf("file_quota: something else")).toBeNull();
+    const refusal = storageFullRefusal(facts);
+    expect(refusal.code).toBe(STORAGE_FULL);
+    expect(refusal.facts).toEqual(facts);
+    expect(refusal.message).toContain("your storage is full: 24.5 GB of 25.0 GB used, and this " +
+                                      "needs 2.0 GB more (500 MB free)");
+    expect(refusal.message).toContain("upgrade to paid for 250 GB");
+    // Its message ends with the facts as clients have always been shown them.
+    expect(refusal.message.endsWith(` ${JSON.stringify(facts)}`)).toBe(true);
   });
 
   it("tells held uploads apart, and only they make uploads_open", () => {
     const held = storageFull(1_000, 2_000, 9_000, 10_000, "free", TIERS);
     expect(heldOnly(held)).toBe(true);
-    expect(storageFullMessage(held).startsWith(`${UPLOADS_OPEN}: `)).toBe(true);
+    expect(storageFullRefusal(held).code).toBe(UPLOADS_OPEN);
+    expect(storageFullRefusal(held).message.startsWith(`${UPLOADS_OPEN}: `)).toBe(true);
     const both = storageFull(9_000, 2_000, 500, 10_000, "free", TIERS);
     expect(heldOnly(both)).toBe(false);
-    expect(storageFullMessage(both)).toContain("500 bytes more is held by uploads still open");
+    expect(storageFullRefusal(both).code).toBe(STORAGE_FULL);
+    expect(storageFullRefusal(both).message)
+      .toContain("500 bytes more is held by uploads still open");
   });
 
   it("shows bytes in decimal units", () => {
@@ -356,7 +363,7 @@ describe("the storage_full message", () => {
   it("without the tier numbers, says nothing of plans", () => {
     const facts = storageFull(10, 1, 0, 10, null, null);
     expect(facts).toMatchObject({ tier: null, upgrade: null, own_limit: false });
-    const message = storageFullMessage(facts);
+    const { message } = storageFullRefusal(facts);
     expect(message).toContain("10 bytes of 10 bytes used, and this needs 1 bytes more");
     expect(message.slice(0, message.indexOf("{"))).not.toMatch(/upgrade|largest|plan/);
   });

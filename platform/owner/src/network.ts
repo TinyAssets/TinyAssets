@@ -55,7 +55,7 @@ import { tokenShaped } from "../../contract/src/routing-mac";
 import {
   DNS_SERVERS as RESOLVERS, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
-import { Invalid, Refused } from "../../contract/src/errors";
+import { Refusal } from "../../contract/src/refusal";
 
 /**
  * The egress host and the pinned resolver as `sandbox/template/build.py` reads them: by their
@@ -91,18 +91,18 @@ const IPV4 = /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/;
 export function checkDestination(entry: unknown): void {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)
       || Object.keys(entry).sort().join() !== "host,port") {
-    throw new Invalid("invalid egress destination");
+    throw new Refusal("invalid", "invalid egress destination");
   }
   const { host, port } = entry as Record<string, unknown>;
   if (typeof host !== "string" || typeof port !== "number" || !Number.isSafeInteger(port)
       || port < 1 || port > 65_535) {
-    throw new Invalid("invalid egress destination");
+    throw new Refusal("invalid", "invalid egress destination");
   }
   if (host.includes(":") || host.startsWith("[")) {
-    throw new Refused(EGRESS_IP_LITERAL);
+    throw new Refusal("egress_ip_literal", EGRESS_IP_LITERAL);
   }
   if (!host || host.length > 253 || !host.split(".").every((label) => LABEL.test(label))) {
-    throw new Invalid("invalid egress destination");
+    throw new Refusal("invalid", "invalid egress destination");
   }
   // The host as a URL reads it: any spelling of an IPv4 address (decimal, hex, octal,
   // short forms) comes back dotted, and a name ending in a number is no host at all.
@@ -110,10 +110,10 @@ export function checkDestination(entry: unknown): void {
   try {
     parsed = new URL(`https://${host}/`).hostname;
   } catch {
-    throw new Invalid("invalid egress destination");
+    throw new Refusal("invalid", "invalid egress destination");
   }
   if (IPV4.test(parsed)) {
-    throw new Refused(EGRESS_IP_LITERAL);
+    throw new Refusal("egress_ip_literal", EGRESS_IP_LITERAL);
   }
 }
 
@@ -178,13 +178,13 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
     NetworkPlan {
   const mode = egress.mode;
   if (mode !== "open" && mode !== "allowlist" && mode !== "ask") {
-    throw new Invalid("invalid egress policy");
+    throw new Refusal("invalid", "invalid egress policy");
   }
   if (!Number.isSafeInteger(generation) || generation < 1) {
-    throw new Invalid("a policy generation is a whole number from 1");
+    throw new Refusal("invalid", "a policy generation is a whole number from 1");
   }
   if (!tokenShaped(token)) {
-    throw new Invalid("a sandbox token is its owner, its secret and its MAC, base64url");
+    throw new Refusal("invalid", "a sandbox token is its owner, its secret and its MAC, base64url");
   }
   const allowed = new Set<string>();
   const unexpressed: Unexpressed[] = [];

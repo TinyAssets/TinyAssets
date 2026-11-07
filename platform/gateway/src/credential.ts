@@ -15,7 +15,7 @@ import {
   CLIENT_KEYS, CLIENT_OPTIONAL, endpoint, type Endpoint, ENDPOINTS_MAX, oauthClient,
   type OAuthClient, secret, SECRET_MAX, TOKEN, upstream, type Upstream,
 } from "../../contract/src/egress-scope";
-import { Failure } from "../../contract/src/failure";
+import { Refusal } from "../../contract/src/refusal";
 
 /** An OAuth connection's tokens, with its client. */
 export interface OAuthGrant extends OAuthClient {
@@ -72,7 +72,7 @@ export function credential(value: unknown): Credential {
   } catch {
     // Falls through to the one refusal below.
   }
-  throw new Failure("credential_refused");
+  throw new Refusal("credential_refused");
 }
 
 /** The secret a credential sends upstream: the API key, or the OAuth access token. */

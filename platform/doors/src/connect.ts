@@ -51,6 +51,9 @@
  * dropped silently.
  */
 import { secret } from "../../contract/src/egress-scope";
+import {
+  GATEWAY_CODES, type GatewayCode, REFUSALS, refusalOf,
+} from "../../contract/src/refusal";
 import type { Verified } from "../../gateway/src/forward";
 
 import type { Bound } from "./binder";
@@ -84,10 +87,6 @@ export interface ConnectContext {
 
 const STATE = /^[A-Za-z0-9_-]{43}$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
-/** A gateway failure's message: one of its fixed codes (`contract/src/failure.ts`). */
-const GATEWAY_CODE = /^(?:upstream|oauth)_[a-z_]+$/;
-/** Any of the gateway's fixed codes, as a failed setup is committed with. */
-const ANY_CODE = /^[a-z][a-z_]{0,63}$/;
 /** The authorization response's parameters the callback reads, each at most once. */
 const RESPONSE_PARAMS: readonly string[] = Object.freeze(["state", "code", "iss", "error"]);
 const TOO_EARLY = "the source is not connectable yet";
@@ -145,24 +144,34 @@ function revocable(oauth: OAuthSpec | undefined): boolean {
   return oauth?.protocol === "rfc6749" && oauth.revocation_endpoint !== undefined;
 }
 
+/** The gateway's refusal `error` is, by its own codes alone; null for anything else. */
+function gatewayRefusal(error: unknown): GatewayCode | null {
+  const code = refusalOf(error)?.code;
+  return code !== undefined && (GATEWAY_CODES as readonly string[]).includes(code)
+    ? code as GatewayCode : null;
+}
+
 /**
- * A gateway failure as the connect answers it: a failure of the provider or its token
- * endpoint is the gateway's fixed code (`502`), its deadline `504`, a malformed request
- * `400`; anything else is a fault here or in the config, so it is thrown as it came,
- * loudly.
+ * A gateway refusal the connect does not answer, a fault here or in the config: thrown
+ * loudly, as a bug, never answered as a refusal of the owner's.
+ */
+function gatewayFault(error: unknown): unknown {
+  const code = gatewayRefusal(error);
+  return code === null ? error : new Error(`the gateway refused the call: ${code}`);
+}
+
+/**
+ * A gateway failure as the connect answers it, with its code's status: a failure of the
+ * provider or its token endpoint (`502`), its deadline (`504`) or a malformed request
+ * (`400`); anything else is a fault here or in the config, so it is thrown, loudly.
  */
 function answered(error: unknown): never {
-  const code = error instanceof Error ? error.message : "";
-  if (GATEWAY_CODE.test(code)) {
-    throw new ConnectRefused(502, code);
+  const code = gatewayRefusal(error);
+  if (code !== null && (REFUSALS[code].status === 502 || code === "deadline"
+                        || code === "invalid_request")) {
+    throw new ConnectRefused(REFUSALS[code].status, code);
   }
-  if (code === "deadline") {
-    throw new ConnectRefused(504, code);  // the gateway's own status for its deadline
-  }
-  if (code === "invalid_request") {
-    throw new ConnectRefused(400, code);
-  }
-  throw error;
+  throw gatewayFault(error);
 }
 
 /**
@@ -374,10 +383,9 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
   } catch (error) {
     // The provider issued a credential: it is committed failed, never dropped, so the
     // object revokes it at the provider or tells the owner to delete it there.
-    const message = error instanceof Error ? error.message : "";
     await stub.connectionCommit(binding, {
       connection, version, blob, kid, models: [], expires_at,
-      failed: ANY_CODE.test(message) ? message : "internal" });
+      failed: gatewayRefusal(error) ?? "internal" });
     return answered(error);
   }
   const view = await stub.connectionCommit(binding, {
@@ -405,14 +413,22 @@ async function list({ bound: { binding, stub }, body }: ConnectContext): Promise
  * Events callback verified by its signed challenge and sealed (`verifyDoorbell`). The
  * doors keep neither; the owner's object stores only the blob.
  */
-export function sealDoorbell(env: DoorsEnv, owner: string, subscription: string,
-                             input: { record: string; url: string; secret: string }) {
-  return env.GATEWAY.sealDoorbell(owner, subscription, 1, input);
+export async function sealDoorbell(env: DoorsEnv, owner: string, subscription: string,
+                                   input: { record: string; url: string; secret: string }) {
+  try {
+    return await env.GATEWAY.sealDoorbell(owner, subscription, 1, input);
+  } catch (error) {
+    throw gatewayFault(error);
+  }
 }
 
-export function verifyDoorbell(env: DoorsEnv, owner: string, subscription: string,
-                               input: { record: string; url: string; secret: string }) {
-  return env.GATEWAY.verifyDoorbell(owner, subscription, 1, input);
+export async function verifyDoorbell(env: DoorsEnv, owner: string, subscription: string,
+                                     input: { record: string; url: string; secret: string }) {
+  try {
+    return await env.GATEWAY.verifyDoorbell(owner, subscription, 1, input);
+  } catch (error) {
+    throw gatewayFault(error);
+  }
 }
 
 export const CONNECT_ROUTES: Readonly<Record<string, (context: ConnectContext) =>

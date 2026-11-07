@@ -5,7 +5,7 @@
 import {
   call, follow, randomText, Refused, signIn, signOut, signedIn, whenSignedOut,
 } from "/app/static/api.js";
-import { action, bytes, field, fill, h, when } from "/app/static/view.js";
+import { action, bytes, eventShown, field, fill, h, when } from "/app/static/view.js";
 
 const main = document.getElementById("main");
 const nav = document.getElementById("nav");
@@ -293,7 +293,7 @@ function talkOf(name) {
 
 function frameLine(frame) {
   const event = typeof frame.event === "string" ? frame.event
-    : String(JSON.stringify(frame.event) ?? "");
+    : String(JSON.stringify(eventShown(frame.event)) ?? "");
   return h("div", { class: "frame" }, h("b", {}, frame.kind ?? "event"),
            event.length > 600 ? `${event.slice(0, 600)}…` : event);
 }

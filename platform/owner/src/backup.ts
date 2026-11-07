@@ -52,7 +52,7 @@ import {
 import type { ChunkSpace, ChunkStore } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
-import { type Slot, SlotBusy, type SlotPool } from "../../contract/src/slots";
+import { isSlotBusy, type Slot, slotBusy, type SlotPool } from "../../contract/src/slots";
 
 /** The manifest lane's name in the schedule. */
 export const MANIFEST_LANE = "manifest";
@@ -149,7 +149,7 @@ function dayStart(day: string): number {
  */
 async function unitsNow(pool: SlotPool, units: number): Promise<Slot> {
   const turn = new AbortController();
-  const timer = setTimeout(() => turn.abort(new SlotBusy()), 0);
+  const timer = setTimeout(() => turn.abort(slotBusy()), 0);
   try {
     return await pool.acquire(units, "", turn.signal);
   } finally {
@@ -431,7 +431,7 @@ export class Backups {
           Date.now() / 1000 + MANIFEST_CONTINUE_S, writing.gen));
       }
     } catch (error) {
-      if (error instanceof SlotBusy) {
+      if (isSlotBusy(error)) {
         // A burst or a segment's ship found the pool full: nothing of it was read or put; it
         // goes on once units turn over, never counted a failure.
         await this.#write(() => this.#sql.exec(

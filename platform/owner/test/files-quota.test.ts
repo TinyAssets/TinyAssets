@@ -6,8 +6,9 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { storageFull, storageFullMessage, storageFullOf } from "../src/storage-full";
+import { storageFull, storageFullRefusal } from "../src/storage-full";
 
+import { refusalOf } from "../../contract/src/refusal";
 import { CHUNK_BYTES, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { type FileLimits, KEEP_CEILING } from "../src/files";
@@ -15,7 +16,7 @@ import { canonical, DEFAULT_POLICY_JSON, FILE_SETTINGS } from "../src/policy";
 import type { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/tier";
-import { failure, fileCounters, inFiles, laneAt, sqlIn, text, TIERS } from "./support";
+import { failure, fileCounters, inFiles, laneAt, namedCode, sqlIn, text, TIERS } from "./support";
 
 const W = "/workspace";
 
@@ -30,7 +31,7 @@ async function refusedWithNothingLeft(r: Rig, limits: Partial<FileLimits>,
                                       act: Parameters<typeof inFiles>[2], reason: string) {
   const before = await snapshot(r);
   const error = await failure(() => inFiles(r.stub, limits, act));
-  expect([error.name, error.message]).toEqual(["Refused", reason]);
+  expect([error.code, error.message]).toEqual([namedCode(reason), reason]);
   expect(await snapshot(r)).toEqual(before);
 }
 
@@ -88,8 +89,8 @@ describe("a file quota", () => {
     await refusedWithNothingLeft(r, { max_bytes: INLINE_BYTES + 1 }, (files) =>
       files.write(`${W}/b`, new Uint8Array(INLINE_BYTES + 1).fill(2),
                   { expected: null, writer: "owner" }),
-    storageFullMessage(storageFull(INLINE_BYTES + 1, INLINE_BYTES + 1, 0, INLINE_BYTES + 1,
-                                   null, null)));
+    storageFullRefusal(storageFull(INLINE_BYTES + 1, INLINE_BYTES + 1, 0, INLINE_BYTES + 1,
+                                   null, null)).message);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 1 }]);
   });
 
@@ -483,7 +484,7 @@ describe("the files policy", () => {
     await put(`${W}/a`, 1, small);
     expect((await r.stub.fileUsage(r.bind(null, { tiers: small }))).limits.max_bytes)
       .toBe(INLINE_BYTES + 1);
-    expect(storageFullOf((await failure(() => put(`${W}/b`, 2, small))).message))
+    expect(refusalOf((await failure(() => put(`${W}/b`, 2, small))))?.facts)
       .toMatchObject({ limit_bytes: INLINE_BYTES + 1, tier: "free",
                        upgrade: { tier: "paid", limit_bytes: 250_000_000_000 } });
     // The owner's own figure binds only below the tier's.

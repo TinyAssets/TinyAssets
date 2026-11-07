@@ -88,6 +88,7 @@
  * Sign-out tells the object first, whether or not a session cookie came, so the sockets
  * opened under the device's grant close before the grant is revoked (`socketsEnd`).
  */
+import { refusalOf } from "../../contract/src/refusal";
 import { utf8Decoder } from "../../contract/src/text";
 import { answerJson } from "./answers";
 import {
@@ -112,7 +113,8 @@ import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "../../sources/src/schema";
-import { callDoor, refusal, refusalHeaders, toolTable } from "./tools";
+import { refusalResponse } from "./refused";
+import { callDoor, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../contract/src/capabilities";
@@ -122,8 +124,10 @@ import { follows, subscriptionId } from "../../contract/src/wake-kinds";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
 
+const NO_STORE = Object.freeze({ "Cache-Control": "no-store" });
+
 function json(status: number, body: unknown, headers: HeadersInit = {}): Response {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
+  return Response.json(body, { status, headers: { ...NO_STORE, ...headers } });
 }
 
 /**
@@ -600,9 +604,9 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
     if (error instanceof KeyRefused || error instanceof ConnectRefused) {
       return failure(error.status, error.message);
     }
-    const refused = refusal(error);
+    const refused = refusalOf(error);
     if (refused !== null) {
-      return failure(refused.status, refused.message, refusalHeaders(refused));
+      return refusalResponse(refused, NO_STORE);
     }
     throw error;
   }

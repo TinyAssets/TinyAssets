@@ -46,13 +46,14 @@
  */
 import type { Reservation } from "../../gateway/src/forward";
 import {
-  EGRESS_BEAT_S, EGRESS_ORIGIN, EGRESS_STATUS, EVENTS_DOOR, GENERATION_HEADER, MCP_DOOR,
+  EGRESS_BEAT_S, EGRESS_ORIGIN, EVENTS_DOOR, GENERATION_HEADER, MCP_DOOR,
   MODEL_DOOR, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
   SIGNIN_DOOR, SIGNIN_EVENTS_DOOR, SYNC_DOOR, SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SYNC_BODY_MAX } from "../../contract/src/limits";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../contract/src/run-events";
+import { faultOf, type Refusal, REFUSALS, refusalOf } from "../../contract/src/refusal";
 
 import { type Bound, bindRun, bindSandbox, bindSync, type Presented, rebound } from "./binder";
 import { jsonObject } from "./body";
@@ -60,7 +61,7 @@ import type { DoorsEnv } from "./config";
 import { ownerGate } from "./control";
 import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 import { serveMcp } from "./mcp";
-import { refusal } from "./tools";
+
 
 /** The run's own secret: its path's, else its header's, else none (refused by the object). */
 function secretOf(request: Request, inPath: string | undefined): string | undefined {
@@ -81,28 +82,36 @@ type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string
   | { state: "failed" }
   | { state: "unknown" };
 
-/** A refusal in the gateway's own error shape, so a provider SDK shows its code. */
+/**
+ * A refusal in the gateway's own error shape, so a provider SDK shows its code. A 429 or 503
+ * says `Retry-After`: a second, or the refusal's own wait when it asks a longer one
+ * (`storage_busy`'s 30). The runner waits that long, up to its heartbeat (`HEARTBEAT_MS`,
+ * 20 s, which its posts keep the lease by): so a 30 s wait is posted again after 20 s.
+ */
 function refused(code: string, status: number, receipt?: string | null,
-                 message: string = code): Response {
+                 message: string = code, retryAfterS?: number): Response {
+  const retry = status === 429 || status === 503 || retryAfterS !== undefined;
   return Response.json({ error: { code, message },
                          ...(receipt === undefined || receipt === null ? {} : { receipt }) },
                        { status, headers: { "Cache-Control": "no-store",
-                                            ...(status === 429 || status === 503
-                                              ? { "Retry-After": "1" } : {}) } });
+                                            ...(retry ? { "Retry-After":
+                                              String(Math.max(1, retryAfterS ?? 1)) } : {}) } });
+}
+
+/** The object's refusal as a door answers it: `refused`, from its code, status and wait. */
+function refusedBy(refusal: Refusal, message?: string): Response {
+  return refused(codeOf(refusal), refusal.status, null, message ?? codeOf(refusal),
+                 refusal.retryAfter);
 }
 
 /**
- * The status a run door's refusal goes back with: the object's held posts full
- * (`events_busy`), or another batch of the run landing between a post's units
- * (`events_raced`), is a 503 the runner retries after `Retry-After`; any other, its own.
+ * The object's refusal as a run door answers it: its code when its message names one, else
+ * `egress_refused`, with its code's status (`contract/src/refusal.ts`: the object's held
+ * posts full, `events_busy`, or another batch of the run landing between a post's units,
+ * `events_raced`, is a 503 the runner retries after `Retry-After`).
  */
-export function refusedStatus(code: string, status: number): number {
-  return code === "events_busy" || code === "events_raced" ? 503 : status;
-}
-
-/** A refusal's code from the object's message: its fixed prefix, as the doors keep them. */
-function codeOf(message: string): string {
-  return /^[a-z][a-z_]{0,63}(?=:)/.exec(message)?.[0] ?? "egress_refused";
+function codeOf(refusal: Refusal): string {
+  return refusal.named ? refusal.code : "egress_refused";
 }
 
 /** The gateway's metered outcome, read from its one line, or `unknown`. */
@@ -126,7 +135,7 @@ async function settleOnce(env: DoorsEnv, bound: Bound, request: Record<string, u
   try {
     await bound.stub.egressSettle(bound.binding, request);
   } catch (first) {
-    if (refusal(first) !== null) {
+    if (refusalOf(first) !== null) {
       throw first;  // the object answered: nothing to retry
     }
     const again = rebound(env, bound);
@@ -214,12 +223,11 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
     return Response.json(await bound.stub.runEvents(bound.binding, body as never),
                          { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    const answer = refusal(error);
+    const answer = refusalOf(error);
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
-                                                       answer.status));
+    return refusedBy(answer);
   }
 }
 
@@ -261,12 +269,11 @@ async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
       id, frames: body["frames"], ...(body["end"] === undefined ? {} : { end: body["end"] }) }),
                          { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    const answer = refusal(error);
+    const answer = refusalOf(error);
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
-                                                       answer.status));
+    return refusedBy(answer);
   }
 }
 
@@ -300,11 +307,11 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
     return Response.json(await bound.stub.signinReport(bound.binding, body as never),
                          { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    const answer = refusal(error);
+    const answer = refusalOf(error);
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer.message), answer.status);
+    return refusedBy(answer);
   }
 }
 
@@ -421,17 +428,18 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
         return answer(await stub.fileSyncUploadAbort(binding, body as never));
     }
   } catch (error) {
-    if (error instanceof Error && error.name === "FileFault") {
+    const fault = faultOf(error);
+    if (fault !== null) {
       // A path missing or of the wrong kind, or one the sandbox may not see: its code.
-      return refused(/^[a-z_]{1,32}/.exec(error.message)?.[0] ?? "not_found", 404);
+      return refused(fault, 404);
     }
-    const refusedAs = refusal(error);
+    const refusedAs = refusalOf(error);
     if (refusedAs === null) {
       throw error;
     }
     // The object's whole message, so the sync agent can say what was refused and why (the
     // used and the total of a full storage among it); its code first, as every door's.
-    return refused(codeOf(refusedAs.message), refusedAs.status, null, refusedAs.message);
+    return refusedBy(refusedAs, refusedAs.message);
   }
 }
 
@@ -486,21 +494,21 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   // call is admitted by, within the gateway's own bound.
   const carries = request.method !== "GET" && request.method !== "HEAD";
   if (carries && bytesHint !== null && bytesHint > EGRESS_BODY_MAX) {
-    return refused("egress_too_large", EGRESS_STATUS.egress_too_large);
+    return refused("egress_too_large", REFUSALS.egress_too_large.status);
   }
   let opened: Awaited<ReturnType<typeof stub.egressOpen>>;
   try {
     opened = await stub.egressOpen(binding, {
       run, connection, method: request.method, path, bytes_hint: bytesHint });
   } catch (error) {
-    const answer = refusal(error);
+    const answer = refusalOf(error);
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer.message), answer.status);
+    return refusedBy(answer);
   }
   if (!opened.ok) {
-    return refused(opened.code, EGRESS_STATUS[opened.code], opened.receipt);
+    return refused(opened.code, REFUSALS[opened.code].status, opened.receipt);
   }
   const { reservation, blob, version } = opened;
 
@@ -578,15 +586,15 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
         if (reserved.ok) {
           return { metering: reserved.metering };
         }
-        kept.rejected = refused(reserved.code, EGRESS_STATUS[reserved.code], reserved.receipt);
+        kept.rejected = refused(reserved.code, REFUSALS[reserved.code].status, reserved.receipt);
         return { refused: reserved.code };
       }, (error: unknown): Reservation => {
-        const answer = refusal(error);
+        const answer = refusalOf(error);
         if (answer === null) {
           throw error;
         }
-        kept.rejected = refused(codeOf(answer.message), answer.status);
-        return { refused: codeOf(answer.message) };
+        kept.rejected = refusedBy(answer);
+        return { refused: codeOf(answer) };
       });
     reserving = asked.catch(() => undefined);
     return asked;

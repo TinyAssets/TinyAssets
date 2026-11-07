@@ -25,6 +25,7 @@ import {
   call, connect, doorsEnv, NAVIGATE, OPEN, ORIGIN, registerClient, serveFirstPartyDocument,
   setControl, signInApp, url,
 } from "./support";
+import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 
 interface Call {
   readonly method: string;
@@ -224,10 +225,10 @@ describe("a pasted key", () => {
     ["the provider's", "upstream_rate_limited", 502],
     ["a token endpoint's", "oauth_unavailable", 502],
     ["a malformed request's", "invalid_request", 400],
-  ])("answers %s failure with the gateway's fixed code", async (_what, code, status) => {
+  ] as const)("answers %s failure with the gateway's fixed code", async (_what, code, status) => {
     const app = await signedIn();
     const failing = { ...doorsEnv, GATEWAY: { ...doorsEnv.GATEWAY,
-                                              seal: () => Promise.reject(new Error(code)) } };
+                                              seal: () => Promise.reject(new Refusal(code)) } };
     const answer = await post(app, "connections/key", { source: "groq", key: "gsk-good-4" },
                               failing);
     expect(answer.status).toBe(status);
@@ -237,9 +238,13 @@ describe("a pasted key", () => {
 
   it("throws any other gateway failure as it came, giving the connection up first", async () => {
     const app = await signedIn();
-    for (const message of ["keyring_unavailable", "internal", "Network connection lost."]) {
+    for (const [message, thrown] of [
+      ["keyring_unavailable", new Refusal("keyring_unavailable")],
+      ["internal", new Refusal("internal")],
+      ["Network connection lost.", new Error("Network connection lost.")],
+    ] as const) {
       const failing = { ...doorsEnv, GATEWAY: { ...doorsEnv.GATEWAY,
-                                                seal: () => Promise.reject(new Error(message)) } };
+                                                seal: () => Promise.reject(thrown) } };
       await expect(post(app, "connections/key", { source: "groq", key: "gsk-good-5" }, failing))
         .rejects.toThrow(message);
     }
@@ -529,13 +534,13 @@ describe("an OAuth connect", () => {
 });
 
 describe("a credential the provider issued whose setup check then fails", () => {
-  function failingVerify(code: string): DoorsEnv {
+  function failingVerify(code: GatewayCode): DoorsEnv {
     return { ...doorsEnv, GATEWAY: {
       ...doorsEnv.GATEWAY,
       seal: (...args: Parameters<DoorsEnv["GATEWAY"]["seal"]>) => doorsEnv.GATEWAY.seal(...args),
       exchange: (...args: Parameters<DoorsEnv["GATEWAY"]["exchange"]>) =>
         doorsEnv.GATEWAY.exchange(...args),
-      verify: () => Promise.reject(new Error(code)) } };
+      verify: () => Promise.reject(new Refusal(code)) } };
   }
 
   it("is committed in error, its blob kept for the provider revoke", async () => {

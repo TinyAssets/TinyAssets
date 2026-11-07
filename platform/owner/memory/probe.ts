@@ -46,6 +46,7 @@ import { Ledger, LEDGER_LIMITS, type LedgerLimits, type Origin } from "../src/le
 import { type ChunkStore, Files } from "../src/files";
 import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
+import { Refusal } from "../../contract/src/refusal";
 import { CHUNK_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { type Binding, EDIT_BYTES_MAX, OwnerDO, type OwnerEnv } from "../src/owner-do";
@@ -286,7 +287,7 @@ export class LegOwner extends OwnerDO {
     this.#gate = new WriteGate(state.storage);
     const bodyFiles = new Files(this.#gate.storage, files,
                             () => ({ ...FILE_DEFAULTS, max_bytes: 25_000_000_000 }),
-                            this.#gate.write, () => "storage_full");
+                            this.#gate.write, () => new Refusal("storage_full"));
     this.#bodies = new Bodies(bodyFiles, this.#gate.storage, this.#gate.write);
     this.#files = bodyFiles;
   }

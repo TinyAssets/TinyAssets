@@ -7,9 +7,9 @@
 import { describe, expect, it } from "vitest";
 
 import { MANIFEST_PROTECT_S, manifestDay } from "../src/backup";
+import { refusalOf } from "../../contract/src/refusal";
 import { GC_GRACE_S, INLINE_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../src/owner-do";
-import { storageFullOf } from "../src/storage-full";
 import { MUSE, rig } from "./ledger-support";
 import { drainDue, failure, laneAt, sqlIn, TIERS } from "./support";
 
@@ -85,7 +85,7 @@ describe("the one storage number", () => {
         refused = error as Error;
       }
     }
-    expect(storageFullOf(refused!.message)).toMatchObject({ limit_bytes: 8000, tier: "free" });
+    expect(refusalOf(refused!)?.facts).toMatchObject({ limit_bytes: 8000, tier: "free" });
     const usage = await r.stub.storageUsage(small);
     expect(usage.used_bytes).toBeLessThanOrEqual(8000);
     expect(usage.limit_bytes).toBe(8000);
@@ -236,7 +236,7 @@ describe("the one storage number", () => {
       }
     }
     // Mail is never let go at the figure (ADR-036): the post is refused, the mail held kept.
-    expect(storageFullOf(refused!.message)).toMatchObject({ limit_bytes: 3000, tier: "free" });
+    expect(refusalOf(refused!)?.facts).toMatchObject({ limit_bytes: 3000, tier: "free" });
     const held = (await r.stub.storageUsage(small)).breakdown.messages;
     expect(held).toBeGreaterThan(1500);
     expect(held).toBeLessThanOrEqual(3000);

@@ -32,10 +32,13 @@ import {
 
 import { resultText } from "./answers";
 import type { Bound } from "./binder";
+import { refusalOf } from "../../contract/src/refusal";
+
 import type { DoorsEnv } from "./config";
 import { serveEvents } from "./events";
 import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "./instructions";
-import { callDoor, type ProfileName, refusal, type Tool, toolsNamed } from "./tools";
+import { refusalResponse } from "./refused";
+import { callDoor, type ProfileName, type Tool, toolsNamed } from "./tools";
 
 export { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS };
 
@@ -46,7 +49,7 @@ async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallTool
   try {
     result = await callDoor(bound.stub, bound.binding, tool, args);
   } catch (error) {
-    const refused = refusal(error);
+    const refused = refusalOf(error);
     if (refused === null) {
       // A bug, never a refusal: reported here in full, and to the client without its
       // detail (the SDK answers every thrown error as the tool's error result).
@@ -99,12 +102,11 @@ async function profileOf(bound: Bound):
     const { profile, tools } = await bound.stub.toolProfile(bound.binding);
     return { profile, tools: toolsNamed(tools) };
   } catch (error) {
-    const refused = refusal(error);
+    const refused = refusalOf(error);
     if (refused === null) {
       throw error;
     }
-    return Response.json({ error: refused.message },
-                         { status: refused.status, headers: { "Cache-Control": "no-store" } });
+    return refusalResponse(refused, { "Cache-Control": "no-store" });
   }
 }
 

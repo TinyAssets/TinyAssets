@@ -110,7 +110,7 @@ describe("an append (file_append)", () => {
     const r = await rig();
     for (const content of ["", 7, "y".repeat(CHUNK_BYTES + 1)]) {
       expect((await failure(() => r.stub.fileAppend(r.bind(MUSE), {
-        path: NOTES, content: content as string }))).name).toBe("Invalid");
+        path: NOTES, content: content as string }))).code).toBe("invalid");
     }
     await r.stub.fileMkdir(r.bind(null), { path: "/workspace/dir", expected_etag: null });
     expect((await failure(() => r.stub.fileAppend(r.bind(MUSE), {
@@ -143,7 +143,7 @@ describe("an edit (file_edit)", () => {
       "old_text is not in the file: read it again and give its exact text");
     expect((await edit("a")).message).toBe(
       "old_text occurs 2 times: give more of the text around the one to change");
-    expect((await edit("")).name).toBe("Invalid");
+    expect((await edit("")).code).toBe("invalid");
     expect((await failure(() => r.stub.fileEdit(r.bind(MUSE), { path: "/workspace/none.md",
       old_text: "a", new_text: "b", expected_etag: made.etag }))).message)
       .toBe("not_found: no such file");

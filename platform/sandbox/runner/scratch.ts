@@ -173,29 +173,29 @@ export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
            disk: after };
 }
 
-/** Bytes as a person reads them, decimal (as storage is sold). */
-function shown(bytes: number): string {
-  const gb = bytes / 1e9;
-  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+/** When scratch went: which agents' and why, and the disk after, which the app says in words. */
+export interface ScratchCleared {
+  readonly type: "ta.scratch_cleared";
+  readonly evicted: readonly string[];
+  readonly expired: readonly string[];
+  readonly freed_bytes: number;
+  readonly free_bytes: number;
+  readonly total_bytes: number;
 }
 
 /**
- * What the agent and the user are told when scratch went: the working disk is temporary
- * and the same on every plan, so this never offers an upgrade; the owner's storage is
- * unaffected.
+ * What the agent and the user are told when scratch went, as its facts: the app's words
+ * (`doors/app/view.js`) say the working disk is temporary and the same on every plan, so
+ * they never offer an upgrade, and that the owner's storage is unaffected. Null when none
+ * went.
  */
-export function scratchNotice(pruned: Pruned): string | null {
-  const gone = [...pruned.evicted, ...pruned.expired];
-  if (gone.length === 0) {
+export function scratchCleared(pruned: Pruned): ScratchCleared | null {
+  if (pruned.evicted.length + pruned.expired.length === 0) {
     return null;
   }
-  const why = pruned.evicted.length > 0
-    ? "The sandbox's working disk was running low"
-    : "Some working files had not been used for a long time";
-  return `${why}, so old scratch was cleared (${gone.join(", ")}; ${shown(pruned.freed_bytes)} ` +
-    `freed; ${shown(pruned.disk.free_bytes)} of ${shown(pruned.disk.total_bytes)} free now). ` +
-    "Scratch is a temporary cache: a cleared repository is cloned again when needed. Your " +
-    "storage is unaffected.";
+  return { type: "ta.scratch_cleared", evicted: pruned.evicted, expired: pruned.expired,
+           freed_bytes: pruned.freed_bytes, free_bytes: pruned.disk.free_bytes,
+           total_bytes: pruned.disk.total_bytes };
 }
 
 /** The ballast that keeps the runner's own room: made when there is room for it and more. */

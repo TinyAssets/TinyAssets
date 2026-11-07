@@ -18,7 +18,7 @@
  * checker, so a record the gateway lists is one the object commits.
  */
 import { count, shape } from "./checks";
-import { Failure } from "./failure";
+import { Refusal } from "./refusal";
 
 /** pi-ai's thinking levels (`ModelThinkingLevel`). */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -73,7 +73,7 @@ const TIERS_MAX = 16;
 
 function price(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > PRICE_MAX) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return value;
 }
@@ -92,7 +92,7 @@ function cost(value: unknown): ModelRecord["cost"] {
     return Object.freeze(rates(fields));
   }
   if (!Array.isArray(tiers) || tiers.length < 1 || tiers.length > TIERS_MAX) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return Object.freeze({
     ...rates(fields),
@@ -107,7 +107,7 @@ function thinkingLevelMap(value: unknown): NonNullable<ModelRecord["thinkingLeve
   const fields = shape(value, [], LEVELS);
   for (const level of Object.values(fields)) {
     if (level !== null && (typeof level !== "string" || !LEVEL_VALUE.test(level))) {
-      throw new Failure("invalid_source");
+      throw new Refusal("invalid_source");
     }
   }
   return Object.freeze({ ...fields }) as NonNullable<ModelRecord["thinkingLevelMap"]>;
@@ -117,7 +117,7 @@ function promptCache(value: unknown): NonNullable<ModelRecord["promptCache"]> {
   const fields = shape(value, [], ["short", "long"]);
   for (const lifetime of Object.values(fields)) {
     if (typeof lifetime !== "number" || !Number.isFinite(lifetime) || lifetime <= 0) {
-      throw new Failure("invalid_source");
+      throw new Refusal("invalid_source");
     }
   }
   return Object.freeze({ ...fields }) as NonNullable<ModelRecord["promptCache"]>;
@@ -129,7 +129,7 @@ function integers(value: unknown, named: readonly string[], max = Number.MAX_SAF
   return Object.fromEntries(Object.entries(shape(value, [], named)).map(([key, entry]) => {
     const checked = count(entry, 1);
     if (checked > max) {
-      throw new Failure("invalid_source");
+      throw new Refusal("invalid_source");
     }
     return [key, checked];
   }));
@@ -168,13 +168,13 @@ export function checkedRecord(value: unknown): ModelRecord {
   if (typeof fields["reasoning"] !== "boolean" || typeof fields["id"] !== "string"
       || !MODEL_ID.test(fields["id"]) || typeof fields["name"] !== "string"
       || !NAME.test(fields["name"]) || fields["name"].length > NAME_UNITS) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   const input = fields["input"];
   if (!Array.isArray(input) || input.length < 1 || input.length > 2
       || new Set(input).size !== input.length
       || input.some((kind) => kind !== "text" && kind !== "image")) {
-    throw new Failure("invalid_source");
+    throw new Refusal("invalid_source");
   }
   return Object.freeze({
     id: fields["id"],
