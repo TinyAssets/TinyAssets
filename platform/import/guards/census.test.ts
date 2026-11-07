@@ -532,6 +532,12 @@ describe("an image whose tombstones cannot be read whole", () => {
     ["a link at the root no rule names", "300004/unreadable", (f) => {
       symlinkSync(f.tree(ALICE), join(f.tree(DORA), "elsewhere"));
     }],
+    ["a link in place of a folder a root rule claims (scratch)", "300001/unreadable", (f) => {
+      makeStore(join(f.work, "elsewhere", ".tinyassets.db"), TOMBSTONES,
+                { deleted_principals: [[sha(BOB)]] });
+      rmSync(join(f.tree(ALICE), "scratch"), { recursive: true, force: true });
+      symlinkSync(join(f.work, "elsewhere"), join(f.tree(ALICE), "scratch"));
+    }],
     ["a folder at the root whose name no center has", "300004/unreadable", (f) => {
       mkdirSync(join(f.tree(DORA), "not a center"));
     }],

@@ -209,8 +209,8 @@ export function imageTombstones(root: string): ImageRead {
     }
   }
   // Every other folder at the root that is not dotted. One a root rule claims (`scratch`,
-  // `wiki`) is read too, its own rule aside; of the rest, a file is no universe and anything
-  // but a folder is not told.
+  // `wiki`) is read too, its own rule aside. A file is no universe; anything else that is no
+  // folder (a link above all: the old stack makes none) is not told, whatever rule names it.
   for (const entry of readdirSync(root, { encoding: "buffer" })) {
     const name = nameText(entry);
     if (entry[0] === 0x2e || (name !== null && listed.has(name))) {
@@ -221,10 +221,11 @@ export function imageTombstones(root: string): ImageRead {
     }
     const stray = join(root, name);
     const stat = lstatSync(stray);
-    if (ruleOf(ROOT, name) !== null) {
-      if (stat.isDirectory()) {
-        folders.push(join(root, name));
+    if (ruleOf(ROOT, name) !== null && !stat.isFile()) {
+      if (!stat.isDirectory()) {
+        return { problem: "unreadable" };
       }
+      folders.push(join(root, name));
       continue;
     }
     if (stat.isFile()) {
