@@ -779,6 +779,15 @@ describe("an engine record that does not fit", () => {
   });
 
   it.each([
+    ["a list holding one", ["allowed"]],
+    ["a word outside the three", "permitted"],
+    ["no string at all", true],
+  ])("refuses a hosted-use verdict that is %s, as the verdict itself is read", (_what, verdict) => {
+    expect(refused(cli((s) => { at(s, "login.hosted_use")["verdict"] = verdict; })))
+      .toMatch(/cli\.login\.hosted_use\.verdict is allowed, unclear or forbidden/);
+  });
+
+  it.each([
     ["an invoke backend", cli((s) => { s["invoke"] = { argv: ["{bin}", "-p"] }; })],
     ["an invoke inside the engine", cli((s) => { at(s, "engine")["invoke"] = {}; })],
   ])("fails loudly, never a backend: %s", (_what, record) => {
