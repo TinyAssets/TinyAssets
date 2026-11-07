@@ -191,8 +191,10 @@ export interface Fleet {
   /** Identities with no volume row and no pin: owners who never had a box. */
   readonly noVolume: number;
   /**
-   * Owners whose box never ran: a volume row with no snapshot and no image (`noImage`), so
-   * no files. The old stack formats their volume on first wake, so they import empty.
+   * Owners with a volume row but no snapshot and no image (`noImage`), so no files: a box
+   * never run, and a box whose local image was lost before any snapshot (`image_absent`,
+   * which sets the row back to `create`; the old stack lost those files itself). The old
+   * stack formats either volume on first wake, so they import empty.
    */
   readonly neverRan: number;
   /** Owners withheld for a deletion job not finished. */

@@ -208,6 +208,8 @@ export function census(copy: Copy, tiers: Tiers): Census {
       not_authkit: fleet.owners.filter((owner) => !owner.principal.startsWith("user_")).length,
       with_volume: fleet.owners.filter((owner) => owner.volume !== null).length,
       no_volume: fleet.noVolume,
+      // A box never run, or one whose local image the old stack lost before any snapshot
+      // (`image_absent`): either way no files, imported empty.
       never_ran: fleet.neverRan,
       centers: sum((owner) => owner.centers.length),
       retired_centers: sum((owner) => owner.centers.filter((center) => center.retired).length),

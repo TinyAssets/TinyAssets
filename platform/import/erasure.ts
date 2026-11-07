@@ -150,11 +150,14 @@ export function erasureFacts(read: Rows, shared: string): ErasureFacts {
 export type ImageRead = { readonly digests: readonly string[] } | { readonly problem: string };
 
 /**
- * The tombstones one mounted image's main stores hold, at its root and in each center: those
- * its `.centers.db` lists, and every folder the old daemon would take for one, listed or not
- * (`daemon_server.owned_universe_id` knows a universe by its folder's name, a dotted name
- * never one). An entry it cannot tell is a folder or not, or whose name no center has, is
- * a problem. Each store is read whole or not at all: a link in a store's place,
+ * The tombstones one mounted image's main stores hold: at its root, in each center its
+ * `.centers.db` lists, and in every other folder at the root that is not dotted, whatever
+ * rule names it. The old daemon knows a universe by its ownership rows
+ * (`daemon_server.owned_universe_ids`: `universe_acl` and `founder_home`), never a dotted
+ * name; reading every such folder is the safe superset of those, so no folder a row could
+ * name, or a rule claims (`scratch`), holds a tombstone unread. An entry no rule names that
+ * is not a file or a folder, or a folder whose name no center has, is a problem. Each store
+ * is read whole or not at all: a link in a store's place,
  * a log beside it not merged (`-wal` or `-journal`, whose rows an immutable read never
  * sees), a store that fails `integrity_check` or cannot be opened is a problem, never a
  * store with no tombstones.
@@ -205,11 +208,12 @@ export function imageTombstones(root: string): ImageRead {
       folders.push(folder);
     }
   }
-  // Every other folder the old daemon would read as a universe: not dotted, and no entry a
-  // root rule names (`wiki`, the stores). A file is no universe; anything else is not told.
+  // Every other folder at the root that is not dotted. One a root rule claims (`scratch`,
+  // `wiki`) is read too, its own rule aside; of the rest, a file is no universe and anything
+  // but a folder is not told.
   for (const entry of readdirSync(root, { encoding: "buffer" })) {
     const name = nameText(entry);
-    if (entry[0] === 0x2e || (name !== null && (listed.has(name) || ruleOf(ROOT, name) !== null))) {
+    if (entry[0] === 0x2e || (name !== null && listed.has(name))) {
       continue;
     }
     if (name === null) {
@@ -217,6 +221,12 @@ export function imageTombstones(root: string): ImageRead {
     }
     const stray = join(root, name);
     const stat = lstatSync(stray);
+    if (ruleOf(ROOT, name) !== null) {
+      if (stat.isDirectory()) {
+        folders.push(join(root, name));
+      }
+      continue;
+    }
     if (stat.isFile()) {
       continue;
     }

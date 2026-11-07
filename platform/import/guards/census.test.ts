@@ -577,6 +577,24 @@ describe("an image whose tombstones cannot be read whole", () => {
     expect(live.table).toContain(`${keyOf(BOB)}\terasure_pending\ttrue`);
   });
 
+  it("reads a folder a root rule claims (scratch) for tombstones all the same", () => {
+    // Dora is withheld, her image never walked; alice is live, her scratch its own rule's.
+    for (const owner of [DORA, ALICE]) {
+      const f = fresh();
+      makeStore(join(f.tree(owner), "scratch", ".tinyassets.db"), TOMBSTONES,
+                { deleted_principals: [[sha(BOB)]] });
+      const { table } = census(f.copy, TIERS);
+      expect(table, owner).toContain(`${keyOf(BOB)}\terasure_pending\ttrue`);
+    }
+    // And one that cannot be read whole stops the run, as for any center.
+    const f = fresh();
+    mkdirSync(join(f.tree(DORA), "scratch"));
+    writeFileSync(join(f.tree(DORA), "scratch", ".tinyassets.db"),
+                  Buffer.concat([Buffer.from("SQLite format 3\0", "latin1"), Buffer.alloc(200, 7)]));
+    expect(census(f.copy, TIERS).table)
+      .toContain("fleet\tproblem erasure_unread\terasure/300004/");
+  });
+
   it("reads a store whose log is merged (an empty -wal), and every pinned image", () => {
     const f = fresh();
     writeFileSync(join(f.tree(DORA), ".centers.db-wal"), "");
