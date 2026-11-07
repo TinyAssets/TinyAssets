@@ -40,7 +40,7 @@
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
- * - `login-launch <id>`: the vendor's own sign-in (slice SIGNIN_ID; `login.ts`), its document
+ * - `login-launch <id>`: the vendor's own sign-in (slice SIGNIN; `login.ts`), its document
  *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
  *   login as a user of its own, its home made from the engine's store, the URL or code the
  *   record's patterns find and its pinned page admits relayed (`ta.signin` frames on the
@@ -1629,7 +1629,7 @@ async function safeSignedIn(rec: SourceRecord): Promise<boolean> {
 }
 
 
-// -- the vendor's own sign-in (slice SIGNIN_ID) ------------------------------------------
+// -- the vendor's own sign-in (slice SIGNIN) ------------------------------------------
 
 
 function signinDir(id: string): string {

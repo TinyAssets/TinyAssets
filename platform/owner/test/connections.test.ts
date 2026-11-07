@@ -828,6 +828,13 @@ describe("a connected model's record", () => {
     ["a cost with an unknown rate", { cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
                                               cacheWrite1h: 2 } }],
     ["a context window of zero", { contextWindow: 0 }],
+    // The one checker (`contract/src/model-record.ts`) is the stricter of the owner's and the
+    // gateway's on every rule: the owner's bound in UTF-16 units, the gateway's on the rest.
+    ["a name past 200 UTF-16 units", { name: "\u{1F600}".repeat(150) }],
+    ["an empty name", { name: "" }],
+    ["a control character in its name", { name: "a\u0007b" }],
+    ["no input type", { input: [] }],
+    ["a repeated input type", { input: ["text", "text"] }],
   ])("refuses a model with %s", async (_what, change) => {
     const r = await gated();
     const [model] = await catalog(ANTHROPIC);

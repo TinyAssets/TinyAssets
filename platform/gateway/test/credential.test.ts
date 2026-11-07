@@ -190,6 +190,9 @@ describe("source", () => {
     ["an output limit past the owner's bound", { ...WHOLE, maxTokens: 100_000_001 }],
     ["an id past the owner's bound", { ...WHOLE, id: "m".repeat(201) }],
     ["a name past the owner's bound", { ...WHOLE, name: "n".repeat(201) }],
+    // 150 characters, 300 UTF-16 units: the owner's bound counts units.
+    ["a name past the owner's bound in UTF-16 units",
+     { ...WHOLE, name: "\u{1F600}".repeat(150) }],
   ])("refuses a declared model with %s", (_what, model) => {
     expect(() => source(declared(model), false)).toThrow("invalid_source");
   });

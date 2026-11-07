@@ -1,7 +1,8 @@
 /**
  * Owner file paths (plan §6): absolute POSIX paths under the owner's two roots, stored
- * verbatim. The owner's object stores them, and the cutover's importer checks every name it
- * would write against the same rule (`platform/import/`).
+ * verbatim. The owner's object stores them, the sandbox's runner holds paths of the owner's
+ * agent trees, and the cutover's importer checks every name it would write against the same
+ * rule (`platform/import/`).
  *
  * `/workspace` holds the owner's files; `/.ta/tmp` is the reserved temporary area
  * (`createTempDir`, spill files), whose entries expire. Both roots always exist and are
@@ -13,6 +14,10 @@
  *
  * `resolve` is the one place a relative or dotted path is turned into a stored one, against
  * a `cwd`; the RPC doors take only stored paths and refuse anything else.
+ *
+ * The owner's agent trees (Direction 3: abilities are editable files): the agent
+ * definitions, the abilities' trees that reach every engine's instructions, the owner's
+ * goals and the owner's profile.
  */
 import { Invalid } from "./errors";
 import { utf8Bytes } from "./text";
@@ -23,6 +28,38 @@ export const ROOTS: readonly string[] = Object.freeze([WORKSPACE, TEMP]);
 export const MAX_PATH_BYTES = 4096;
 export const MAX_NAME_BYTES = 255;
 const LONE_SURROGATE = /\p{Cs}/u;
+
+/** The owner's agent definitions, `/workspace/agents/<agent>/`: the owner's alone to change. */
+export const AGENTS_DIR = "/workspace/agents";
+/** The agent's abilities: its `SKILL.md` folders, which every engine discovers itself. */
+export const ABILITIES_DIR = "/workspace/.agents";
+export const SKILLS_DIR = "/workspace/skills";
+export const PROMPTS_DIR = "/workspace/prompts";
+/** The abilities' trees, which reach an engine's instructions: every run reads them. */
+export const ABILITY_TREES: readonly string[] = Object.freeze([
+  ABILITIES_DIR, SKILLS_DIR, PROMPTS_DIR]);
+/**
+ * The owner's goals, one page a goal: what its agents may do toward each without asking is
+ * the goal's Agreed section, so a goal is the owner's own word, as an agent's definition is.
+ */
+export const GOALS_DIR = "/workspace/goals";
+/** The owner's profile: its directives are every agent's standing preferences. */
+export const PROFILE = "/workspace/USER.md";
+/**
+ * Every tree only the owner's own authority changes: the agent definitions, the abilities'
+ * trees, the goals and the profile. A grant the owner narrowed changes nothing in them
+ * (`owner/src/paths.ts`'s `ownersOnly`).
+ */
+export const OWNER_TREES: readonly string[] = Object.freeze([
+  AGENTS_DIR, ABILITIES_DIR, SKILLS_DIR, PROMPTS_DIR, GOALS_DIR, PROFILE]);
+/**
+ * What an outside client's sandbox holds read-only and never sends back: the agent
+ * definitions and the abilities' trees, its always-read set (owner-object spec, a client's
+ * sandbox). Its goals and the owner's profile are not in it: a client under a full grant
+ * may write them, and the owner's object holds a narrowed one to `OWNER_TREES`.
+ */
+export const CLIENT_READ_ONLY: readonly string[] = Object.freeze([
+  AGENTS_DIR, ABILITIES_DIR, SKILLS_DIR, PROMPTS_DIR]);
 
 /** Whether `path` is one of the two roots. */
 export function isRoot(path: string): boolean {

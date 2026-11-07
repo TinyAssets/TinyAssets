@@ -9,8 +9,8 @@ import { describe, expect, it } from "vitest";
 
 import { type Origin } from "../src/ledger";
 import { type Binding, OwnerDO } from "../src/owner-do";
-import { AGENTS_DIR, AGENTS_OWNER_ONLY, GOALS_DIR, OWNER_TREES } from "../src/paths";
-import { within } from "../../contract/src/paths";
+import { AGENTS_DIR, GOALS_DIR, OWNER_TREES, within } from "../../contract/src/paths";
+import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { ALL_SCOPES } from "./runs-support";
 import { failure, TIERS } from "./support";

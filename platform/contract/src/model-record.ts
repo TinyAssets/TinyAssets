@@ -60,7 +60,9 @@ const LEVELS: readonly string[] = Object.freeze(["off", "minimal", "low", "mediu
                                                  "xhigh", "max"]);
 /** The one rule for a model's id and name, the owner's object's and the gateway's alike. */
 const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
+/** A name: 1 to 200 characters, none a control character, and at most 200 UTF-16 units. */
 const NAME = /^[^\p{Cc}]{1,200}$/u;
+const NAME_UNITS = 200;
 /** Dollars per million tokens. */
 const PRICE_MAX = 1_000_000;
 /** A context window, an output limit and a tier's threshold, in tokens. */
@@ -165,7 +167,7 @@ export function checkedRecord(value: unknown): ModelRecord {
                                "cost"], ["thinkingLevelMap", "promptCache", "inputLimits"]);
   if (typeof fields["reasoning"] !== "boolean" || typeof fields["id"] !== "string"
       || !MODEL_ID.test(fields["id"]) || typeof fields["name"] !== "string"
-      || !NAME.test(fields["name"])) {
+      || !NAME.test(fields["name"]) || fields["name"].length > NAME_UNITS) {
     throw new Failure("invalid_source");
   }
   const input = fields["input"];

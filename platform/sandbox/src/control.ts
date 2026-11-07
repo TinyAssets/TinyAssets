@@ -721,7 +721,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * The vendor's own sign-in started in the authority's sandbox (slice SIGNIN_ID), or its
+   * The vendor's own sign-in started in the authority's sandbox (slice SIGNIN), or its
    * sign-out: the sandbox found, resumed or made as a run's start finds it (its turn in the
    * line, `sandbox_waiting` past the ceiling), its network let out to the engine's vendor
    * hosts (and the chosen region's), and the runner's `login-launch` started with the

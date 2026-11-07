@@ -47,6 +47,7 @@ import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeW
          walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
 import { SYNC_HEADER } from "../../contract/src/egress";
+import { CLIENT_READ_ONLY } from "../../contract/src/paths";
 import {
   CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_LIST, MAX_SYNC_OPS, SYNC_BODY_MAX,
 } from "../../contract/src/limits";
@@ -61,9 +62,6 @@ export const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
  * commit's own fields (its lease id, epoch and the JSON around them, under 128 bytes).
  */
 const BODY_MAX = SYNC_BODY_MAX - 128;
-/** The owner's trees a client's sandbox never writes (`owner/src/paths.ts`). */
-export const OWNER_TREES = Object.freeze(["/workspace/agents", "/workspace/.agents",
-                                          "/workspace/skills", "/workspace/prompts"]);
 export const SESSIONS = "/workspace/.sessions";
 /** The mirror's rows a page of a removal scan or a reset reads at once. */
 const PAGE = 1000;
@@ -266,7 +264,7 @@ export interface Place {
   /** The sync agent's own directory: sessions in from the feed, and out from the store. */
   readonly sessionsIn: string;
   readonly sessionsOut: string;
-  /** Whose sandbox: `owner`, or a client's id (the owner's trees read-only, never written). */
+  /** Whose sandbox: `owner`, or a client's id (`CLIENT_READ_ONLY` read-only, never written). */
   readonly authority: string;
   /** The records, for each engine's own `session_paths`. */
   readonly records: ReadonlyMap<string, SourceRecord>;
@@ -276,8 +274,8 @@ function localOf(place: Pick<Place, "local">, path: string): string {
   return join(place.local, relative("/workspace", path));
 }
 
-function inOwnerTrees(path: string): boolean {
-  return OWNER_TREES.some((tree) => path === tree || path.startsWith(`${tree}/`));
+function clientReadOnly(path: string): boolean {
+  return CLIENT_READ_ONLY.some((tree) => path === tree || path.startsWith(`${tree}/`));
 }
 
 /**
@@ -363,7 +361,7 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
     return;
   }
   const local = localOf(place, path);
-  const readOnly = place.authority !== "owner" && inOwnerTrees(path);
+  const readOnly = place.authority !== "owner" && clientReadOnly(path);
   if (kind === null) {
     remove(local);
     mirror.dropUnder(path);
@@ -833,7 +831,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
   })) {
     const path = `/workspace/${rel.split("\\").join("/")}`;
-    if (place.authority !== "owner" && inOwnerTrees(path)) {
+    if (place.authority !== "owner" && clientReadOnly(path)) {
       continue;
     }
     if (path === SYNC_IGNORE) {
@@ -847,7 +845,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
        known = mirror.page(after, PAGE)) {
     for (const path of known) {
       if (path.startsWith(`${SESSIONS}/`) || !path.startsWith("/workspace/")
-          || (place.authority !== "owner" && inOwnerTrees(path))) {
+          || (place.authority !== "owner" && clientReadOnly(path))) {
         continue;
       }
       if (ignored(path.slice("/workspace/".length)) === "custom") {

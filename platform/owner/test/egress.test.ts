@@ -15,8 +15,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
 import type { ModelRecord } from "../../contract/src/model-record";
-import { EGRESS_BEAT_S, EGRESS_LIMITS, type EgressMetering, type EgressOpened,
-         type EgressRefusal, LOST_AFTER_S } from "../src/egress";
+import { EGRESS_BEAT_S } from "../../contract/src/egress";
+import {
+  EGRESS_LIMITS, type EgressMetering, type EgressOpened, type EgressRefusal, LOST_AFTER_S,
+} from "../src/egress";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import type { Binding } from "../src/owner-do";
 import { apiRules } from "../../contract/src/api-rules";
