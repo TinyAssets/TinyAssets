@@ -20,23 +20,45 @@ import { RecordingSandbox } from "../../owner/test/sandbox-fake";
  * and a recording fake behind its `SANDBOX` binding (tests only: slice S binds the real
  * sandbox Worker).
  */
+/** The doors a test may have refused once, as the object's own. */
+type Refusable = "outsideAgents" | "toolProfile" | "fileUploadTarget";
+
 /**
- * Owners whose next `agents_list` is refused with the refusal kept here, thrown in the
- * object and carried across its RPC to the doors (as a full slot pool refuses it `busy`,
- * `contract/src/slots.ts`): the tests of the doors' statuses, `Retry-After` and the
- * refusal's transport.
+ * An owner's next call of a door (`agents_list`, the tool profile, an upload's target),
+ * refused with the refusal kept here, thrown in the object and carried across its RPC to
+ * the doors (as a full slot pool refuses it `busy`, `contract/src/slots.ts`): the tests of
+ * the doors' statuses, `Retry-After` and the refusal's transport, on each surface.
  */
-export const REFUSE_ONCE = new Map<string, Refusal>();
+const REFUSE_ONCE = new Map<string, Refusal>();
+
+export function refuseOnce(door: Refusable, owner: string, refusal: Refusal): void {
+  REFUSE_ONCE.set(`${door} ${owner}`, refusal);
+}
+
+/** The refusal kept for `owner`'s next call of `door`, taken once. */
+function refusedOnce(door: Refusable, owner: string): Refusal | undefined {
+  const refusal = REFUSE_ONCE.get(`${door} ${owner}`);
+  REFUSE_ONCE.delete(`${door} ${owner}`);
+  return refusal;
+}
 
 export class OwnerDO extends RealOwnerDO {
   override outsideAgents(...args: Parameters<RealOwnerDO["outsideAgents"]>):
       ReturnType<RealOwnerDO["outsideAgents"]> {
-    const refusal = REFUSE_ONCE.get(args[0].owner);
-    if (refusal !== undefined) {
-      REFUSE_ONCE.delete(args[0].owner);
-      return Promise.reject(refusal);
-    }
-    return super.outsideAgents(...args);
+    const refusal = refusedOnce("outsideAgents", args[0].owner);
+    return refusal !== undefined ? Promise.reject(refusal) : super.outsideAgents(...args);
+  }
+
+  override toolProfile(...args: Parameters<RealOwnerDO["toolProfile"]>):
+      ReturnType<RealOwnerDO["toolProfile"]> {
+    const refusal = refusedOnce("toolProfile", args[0].owner);
+    return refusal !== undefined ? Promise.reject(refusal) : super.toolProfile(...args);
+  }
+
+  override fileUploadTarget(...args: Parameters<RealOwnerDO["fileUploadTarget"]>):
+      ReturnType<RealOwnerDO["fileUploadTarget"]> {
+    const refusal = refusedOnce("fileUploadTarget", args[0].owner);
+    return refusal !== undefined ? Promise.reject(refusal) : super.fileUploadTarget(...args);
   }
 
   readonly sandbox: SandboxLeases;

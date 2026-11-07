@@ -5,7 +5,7 @@
  */
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { BUSY, slotBusy } from "../../contract/src/slots";
-import { REFUSE_ONCE } from "./entry";
+import { refuseOnce } from "./entry";
 import { createHash } from "node:crypto";
 
 import { env } from "cloudflare:workers";
@@ -18,8 +18,8 @@ import {
 } from "../src/api-keys";
 import { type DoorsEnv, now } from "../src/config";
 import {
-  appPost, call, doorsEnv, OPEN, reached, serveFirstPartyDocument, setControl, signInApp,
-  sqlIn, url,
+  appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient,
+  serveFirstPartyDocument, setControl, signInApp, sqlIn, url,
 } from "./support";
 
 const SCOPES = [{ universe: "cc", agent: "main", capability: "read_graph" }];
@@ -97,7 +97,7 @@ describe("a refusal across the object's RPC", () => {
 
   it("reaches the caller with its code, its Retry-After and its facts", async () => {
     const o = await signedIn();
-    REFUSE_ONCE.set(o.owner, new Refusal("storage_busy", "storage_busy: catching up",
+    refuseOnce("outsideAgents", o.owner, new Refusal("storage_busy", "storage_busy: catching up",
                                          { retryAfterS: 7, facts: FACTS }));
     const error = await env.OWNER.getByName(o.owner).outsideAgents({ owner: o.owner } as never)
       .then(() => null, (caught: unknown) => caught);
@@ -119,17 +119,50 @@ describe("a refusal across the object's RPC", () => {
                                                               retry) => {
     const o = await signedIn();
     const { key } = await mint(o);
-    REFUSE_ONCE.set(o.owner, new Refusal(code, message, more));
+    refuseOnce("outsideAgents", o.owner, new Refusal(code, message, more));
     const refused = await api(key, "agents_list", {});
     expect([refused.status, refused.headers.get("Retry-After"), await refused.json()])
       .toEqual([status, retry, { error: message }]);
+  });
+
+  // The doors' one answer on every surface that answers as JSON (review N1): a busy
+  // refusal's 503 and its Retry-After on the app's tools, MCP's profile and an upload's
+  // bytes, as on the API above.
+  it("answers busy 503 with Retry-After on the app's tools", async () => {
+    const o = await signedIn();
+    refuseOnce("outsideAgents", o.owner, slotBusy());
+    const busy = await appPost("tools/agents_list", o.token, o.session, {});
+    expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
+      .toEqual([503, "1", { error: BUSY }]);
+  });
+
+  it("answers busy 503 with Retry-After on MCP's profile", async () => {
+    const who = owner();
+    const tokens = await connect(await registerClient(), { owner: who });
+    refuseOnce("toolProfile", who, slotBusy());
+    const busy = await legacyPost(tokens.access_token, { jsonrpc: "2.0", id: 1,
+                                                         method: "tools/list" });
+    expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
+      .toEqual([503, "1", { error: BUSY }]);
+  });
+
+  it("answers a refusal's Retry-After on an upload's bytes", async () => {
+    const o = await signedIn();
+    refuseOnce("fileUploadTarget", o.owner, slotBusy());
+    const busy = await call(new Request(url(`/app/api/files/upload/${"a".repeat(32)}/0`), {
+      method: "PUT", body: new Uint8Array(1),
+      headers: { "Content-Type": "application/octet-stream", Origin: "https://tinyassets.io",
+                 "Sec-Fetch-Site": "same-origin", Authorization: `Bearer ${o.token}`,
+                 Cookie: `__Host-ta-owner=${o.session}` } }));
+    expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
+      .toEqual([503, "1", { error: BUSY }]);
   });
 
   it("is a bug, loudly, when its code is no code of the list", async () => {
     const o = await signedIn();
     const forged = new Refusal("refused", "from another version");
     (forged as unknown as { code: string }).code = "not_a_code";
-    REFUSE_ONCE.set(o.owner, forged);
+    refuseOnce("outsideAgents", o.owner, forged);
     const error = await env.OWNER.getByName(o.owner).outsideAgents({ owner: o.owner } as never)
       .then(() => null, (caught: unknown) => caught);
     expect(refusalOf(error)).toBeNull();
@@ -141,7 +174,7 @@ describe("the key format", () => {
      async () => {
     const o = await signedIn();
     const { key } = await mint(o);
-    REFUSE_ONCE.set(o.owner, slotBusy());
+    refuseOnce("outsideAgents", o.owner, slotBusy());
     const busy = await api(key, "agents_list", {});
     expect([busy.status, busy.headers.get("Retry-After")]).toEqual([503, "1"]);
     expect(await busy.json()).toEqual({ error: BUSY });

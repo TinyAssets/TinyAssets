@@ -9,8 +9,13 @@
  * compatibility date 2026-04-21, every Worker's is later) that keeps an error's `name`, its
  * `message` and its own properties, but never its class: the caller gets an `Error`. So a
  * refusal keeps its fields as own data properties, and `refusalOf` rebuilds one from that
- * shape (`contract/guards/refusal.test.ts` holds the compatibility settings; owner's
- * `refusal-rpc.test.ts` crosses a real boundary).
+ * shape (`contract/guards/refusal.test.ts` holds the compatibility settings;
+ * `doors/test/api-keys.test.ts` crosses the owner's object's real RPC boundary).
+ *
+ * A code is `transient` or terminal. A transient refusal (a pool, a ceiling or a post gate
+ * full for the moment, each with its `Retry-After`) says nothing of the request: the same one
+ * succeeds later. So a lane that settles a run, a schedule or a mail on a refusal settles it
+ * only on a terminal one, and leaves the item to be tried again on a transient one.
  *
  * Most codes are named by the message too, as its prefix (`storage_busy: ...`): the doors
  * show that code where a protocol carries one (the egress door, the inbound hooks), and the
@@ -26,6 +31,8 @@ interface Entry {
   readonly retryAfterS?: number;
   /** A code its message never names (see the header). */
   readonly quiet?: true;
+  /** A refusal for the moment, the same request taken later (see the header). */
+  readonly transient?: true;
 }
 
 /** How long a `storage_busy` refusal says to wait before trying again: about one lane pass. */
@@ -59,8 +66,8 @@ export const REFUSALS = Object.freeze({
   egress_ip_literal: REFUSED,
   // The runner's posts: the object's held posts full, or another batch of the run landing
   // between a post's units; the runner posts again after `Retry-After`.
-  events_busy: Object.freeze({ status: 503, retryAfterS: 1 }),
-  events_raced: Object.freeze({ status: 503, retryAfterS: 1 }),
+  events_busy: Object.freeze({ status: 503, retryAfterS: 1, transient: true }),
+  events_raced: Object.freeze({ status: 503, retryAfterS: 1, transient: true }),
   // Another writer changed the file under each try.
   file_busy: Object.freeze({ status: 409 }),
   file_quota: REFUSED,
@@ -93,7 +100,8 @@ export const REFUSALS = Object.freeze({
   signin_off: REFUSED,
   sockets_full: REFUSED,
   // The hot ceiling while the archive lane moves acked mail out: about one lane pass.
-  storage_busy: Object.freeze({ status: 503, retryAfterS: STORAGE_BUSY_RETRY_S }),
+  storage_busy: Object.freeze({ status: 503, retryAfterS: STORAGE_BUSY_RETRY_S,
+                                transient: true }),
   // The one wall (`owner/src/storage-full.ts`), and open uploads that alone leave no room.
   storage_full: Object.freeze({ status: 507 }),
   uploads_open: Object.freeze({ status: 409 }),
@@ -164,7 +172,7 @@ export const REFUSALS = Object.freeze({
   egress_too_large: Object.freeze({ status: 413 }),
   // A pool full past its wait, the gateway's (`held.ts`) or an isolate's (`slots.ts`):
   // told, retryable after `Retry-After`, never a loss.
-  busy: Object.freeze({ status: 503, retryAfterS: 1 }),
+  busy: Object.freeze({ status: 503, retryAfterS: 1, transient: true }),
   unknown_model: Object.freeze({ status: 404 }),
   unsupported_source: Object.freeze({ status: 422 }),
   not_refreshable: Object.freeze({ status: 409 }),
@@ -254,6 +262,11 @@ export class Refusal extends Error {
   /** Whether a protocol that shows a code shows this one: its message names it. */
   get named(): boolean {
     return (REFUSALS[this.code] as Entry).quiet !== true;
+  }
+
+  /** Whether it is for the moment only: the same request may succeed later. */
+  get transient(): boolean {
+    return (REFUSALS[this.code] as Entry).transient === true;
   }
 }
 

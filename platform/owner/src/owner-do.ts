@@ -3377,6 +3377,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (refused === "storage_busy") {
       return { state: "refused", error: "mailbox_full", retry: true };
     }
+    if (error instanceof Refusal && error.transient) {
+      throw error;  // for the moment only (a full pool): never the event's own refusal
+    }
     if (refused === "ledger_full") {
       if (row.kind === "shared" && this.#inbound.failed(row, Math.floor(now))) {
         this.#notices.add("inbound", `An inbound app's events to ${row.agent} were paused: ` +
@@ -7005,8 +7008,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           ...waiting.ask, prompt, tiers: tierNumbers(this.#storage, undefined, clock()) }),
                            waiting.run);
       } catch (error) {
-        if (!(error instanceof Refusal)) {
-          throw error;
+        if (!(error instanceof Refusal) || error.transient) {
+          throw error;  // a transient refusal fails the pass, and the run waits on
         }
         if (error.code === "conversation_busy" || error.code === "tier_runs") {
           break;  // not its turn after all: it keeps waiting, and the lane comes back
@@ -7054,8 +7057,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           prompt: row.input, mail: null }));
         await this.#door(() => this.#runs.ran(row.id, run, null));
       } catch (error) {
-        if (!(error instanceof Refusal)) {
-          throw error;
+        if (!(error instanceof Refusal) || error.transient) {
+          throw error;  // a transient refusal fails the pass, and the schedule fires again
         }
         const reason = error.message;
         await this.#door(() => {
@@ -7126,8 +7129,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         prompt, mail: { message: mail.message_id, conversation } }), null,
                          () => this.#ledger.taken(mail.message_id, mail.agent_id, clock()));
     } catch (error) {
-      if (!(error instanceof Refusal)) {
-        throw error;
+      if (!(error instanceof Refusal) || error.transient) {
+        throw error;  // a transient refusal fails the pass, and the mail is delivered again
       }
       if (error.code === "agent_changed") {
         return;  // read again on the next turn of the pass

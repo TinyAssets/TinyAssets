@@ -79,6 +79,21 @@ describe("a refusal", () => {
   });
 });
 
+describe("a transient refusal", () => {
+  it("is one of the codes that say when to try again, and no other", () => {
+    const transient = Object.entries(REFUSALS)
+      .filter(([, entry]) => (entry as { transient?: true }).transient === true)
+      .map(([code]) => code).sort();
+    expect(transient).toEqual(["busy", "events_busy", "events_raced", "storage_busy"]);
+    expect(Object.entries(REFUSALS)
+      .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
+      .map(([code]) => code).sort()).toEqual(transient);
+    expect([new Refusal("busy").transient, new Refusal("storage_busy").transient,
+            new Refusal("tier_runs").transient, new Refusal("refused").transient])
+      .toEqual([true, true, false, false]);
+  });
+});
+
 describe("the code list", () => {
   it("gives each code one status, and every gateway and egress code one", () => {
     for (const [code, entry] of Object.entries(REFUSALS)) {
