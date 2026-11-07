@@ -196,13 +196,14 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  * The numbers the SQL spells for reasons of its own as well as at a bound's places, each with
  * how many times it is left once every place is set aside. A new one, or one more, fails:
  * - 4096 the manifest's page and 64 a hash's or a content id's length, in every charge;
- * - 256 a charge's widths, and the checks on a model's, a session id's, an origin's, an
- *   error's and a source's text, which code bounds with no constant (`runs.ts`, `ledger.ts`);
+ * - 256 the checks on a model's (two tables), a served model's, an origin's (three tables), a
+ *   session id's and a schedule's last error, which code bounds with no constant (`runs.ts`);
  * - 1024 a stamp's (three tables), a binding's profile and the tier record, the same;
+ * A number inside a name (`sha256`) is no number: only one standing alone is counted.
  * - 16 a generation's id, a key id and a readable id, 35 a sign-in's id (`si_` and 32 hex)
  *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold.
  */
-const SHARED: Values = Object.freeze({ 16: 4, 35: 1, 36: 1, 64: 281, 256: 53, 1024: 5,
+const SHARED: Values = Object.freeze({ 16: 4, 35: 1, 36: 1, 64: 281, 256: 8, 1024: 5,
                                        4096: 240 });
 
 /**
@@ -320,7 +321,7 @@ export function unaccounted(values: Values = LIMITS,
   const left: Record<string, number> = {};
   migrations.forEach((migration, m) => migration.forEach((sql, s) => {
     const marks = taken.get(`${m}.${s}`) ?? new Set<number>();
-    for (const match of sql.matchAll(/(?<![0-9.])[0-9]+(?![0-9.])/g)) {
+    for (const match of sql.matchAll(/(?<![0-9A-Za-z_.])[0-9]+(?![0-9A-Za-z_.])/g)) {
       if (numbers.has(match[0]) && !marks.has(match.index)) {
         left[match[0]] = (left[match[0]] ?? 0) + 1;
       }
@@ -445,6 +446,12 @@ describe("the owner's frozen bounds", () => {
     // A bound's number spelled where no place is: left over.
     const stray = [...MIGRATIONS, ["CREATE TABLE stray (x TEXT CHECK (length(x) <= 71303168))"]];
     expect(unaccounted(LIMITS, SPELLED, stray)).toEqual({ ...SHARED, 71303168: 1 });
+    // A number inside a name is none: a new `sha256` column leaves nothing over; a bare 256
+    // is one more.
+    const hashed = [...MIGRATIONS, ["CREATE TABLE stray (sha256 TEXT, body_sha256 TEXT)"]];
+    expect(unaccounted(LIMITS, SPELLED, hashed)).toEqual(SHARED);
+    const bare = [...MIGRATIONS, ["CREATE TABLE stray (x TEXT CHECK (length(x) <= 256))"]];
+    expect(unaccounted(LIMITS, SPELLED, bare)).toEqual({ ...SHARED, 256: SHARED[256]! + 1 });
     expect(unheld(LIMITS, { CRON_MAX_CHARS: TABLE("no_such_table", ID("x")) })).toHaveLength(1);
     expect(unheld(LIMITS, { NOT_A_BOUND: [] })).toEqual(["NOT_A_BOUND is no frozen bound"]);
     expect(unnamed([["CREATE TABLE file_chunks", 1, "holder TEXT NOT NULL DEFAULT 'own'"]]))
