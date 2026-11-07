@@ -91,6 +91,9 @@ export const SLOT_WAIT_MS = 10_000;
  */
 export const MAX_KEYS = 1_000;
 
+/** Chunks one upload intent may hold: a 40 GiB file, policy's highest `max_file_bytes`. */
+export const MAX_INTENT_CHUNKS = 10_000;
+
 /**
  * A pasted sign-in code, one line typed to the CLI's terminal: at most what a Linux terminal
  * line holds (`N_TTY_BUF_SIZE`, 4096 bytes, its newline among them), so a longer one is no

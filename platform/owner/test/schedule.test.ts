@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { type Write, WriteGate } from "../src/gate";
 import type { Ledger } from "../src/ledger";
 import { type LaneDeps, type OwnerDO, ownerLanes } from "../src/owner-do";
-import { FILE_DEFAULTS } from "../src/policy";
+import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { NOT_BINDER_SHAPE } from "../src/relay";
 import {
   inTime, type Lane, LANE_HUNG_S, LANE_PASS_S, LANE_RETRY_S, laneJob, Schedule, SCHEDULE,

@@ -1,6 +1,6 @@
 {
   "factor": 4,
-  "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05; contract/guards from a local run of its first commit (untangle A1 part 1), 2026-11-06, until a CI measurement replaces it",
+  "measured": "CI runs 41979077463, 41982185069 and 41982199017 (Tests, workflow_dispatch of land/4b at fc56a880f and of land/4d at 72b72be78 twice, its legs and sizes shards with a JSON report each; each project's slowest test across the three), 2026-11-05; contract/guards from a local run of its first commit (untangle A1 part 1), 2026-11-06, until a CI measurement replaces it; import/guards from a local run of its first commit (cutover import slices 1-2), 2026-11-07, until a CI measurement replaces it",
   "medium": {
     "ci/guards": {
       "slowest_ms": 1614,
@@ -37,6 +37,10 @@
     "hooks/guards": {
       "slowest_ms": 51,
       "test": "hooks/guards/isolation.test.ts > hooks isolation guards find no owner binding, no storage and no import from outside"
+    },
+    "import/guards": {
+      "slowest_ms": 4495,
+      "test": "import/guards/census.test.ts > each owner's fit refuses an owner whose entries pass max_entries, folders counted"
     },
     "owner/guards": {
       "slowest_ms": 2367,

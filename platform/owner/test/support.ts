@@ -13,7 +13,7 @@ import {
   HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
 import type { Binding, OwnerDO } from "../src/owner-do";
-import { FILE_DEFAULTS } from "../src/policy";
+import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { SCHEDULE } from "../src/schedule";
 import { storageFull, storageFullMessage } from "../src/storage-full";
 
