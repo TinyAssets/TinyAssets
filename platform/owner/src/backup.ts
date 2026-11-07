@@ -37,19 +37,20 @@
  * Nothing here limits the owner: a generation is the platform's recovery copy and the
  * owner's export, bounded by the object it copies (`limits-audit.md`).
  */
-import { createHash, randomBytes } from "node:crypto";
+import { randomHex } from "../../contract/src/ids";
+import { createHash } from "node:crypto";
 
-import { MANIFEST_PARTS } from "../../files/src/keys";
+import { CHUNK_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import type { ChangeLog } from "./changelog";
 import {
   chunkLine, type Cursor, decodeCursor, encodeCursor, encodeLines, endLine, EXPORT_PAGE_BYTES,
   type Lines,
   readPage,
 } from "./export";
-import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
+import { type ChunkSpace, type ChunkStore } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
-import { type Slot, SLOT_WAIT_MS, SlotBusy, type SlotPool } from "./slots";
+import { type Slot, SlotBusy, type SlotPool } from "../../contract/src/slots";
 
 /** The manifest lane's name in the schedule. */
 export const MANIFEST_LANE = "manifest";
@@ -471,7 +472,7 @@ export class Backups {
 
   /** In a unit: a new generation begun at `now`, its capture on; its id. */
   #open(now: number): string {
-    const gen = randomBytes(8).toString("hex");
+    const gen = randomHex(8);
     this.#sql.exec("UPDATE owner_backup_state SET changed = 0");
     const s = this.#parts.log.begin(gen);
     this.#sql.exec(

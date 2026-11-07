@@ -25,15 +25,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { keyring as newKeyring } from "../../ci/fixtures.ts";
+import { CHUNK_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits.ts";
 import { freePorts } from "./ports.mjs";
 import { ownWorkerd } from "./workerd.mjs";
 
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(OWNER, "package.json"));
 const MIB = 1024 * 1024;
-const CHUNK = 4 * MIB;
-/** The pool's wait (`SLOT_WAIT_MS`), and a hold past it. */
-const SLOT_WAIT_MS = 10_000;
+const CHUNK = CHUNK_BYTES;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**

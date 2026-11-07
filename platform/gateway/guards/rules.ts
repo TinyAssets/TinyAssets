@@ -40,16 +40,22 @@ export const KEYRING_HOME = "gateway/src/keyring.ts";
  *   the env handed to a call is the only way to the keyring;
  * - no source names `OWNER` or `getByName`: the gateway is handed the owner and never looks
  *   one up, and its config binds no namespace to look one up in;
- * - it reaches outside `gateway/src/` only the owner grammar, its errors, the wake records
- *   with their callback checks (which the doorbell applies again where it sends) and their
- *   kinds' file, and the isolate's slot pool, which imports nothing;
+ * - it reaches outside `gateway/src/` only the contract's vocabulary it speaks: the owner
+ *   grammar, the errors and its own fixed codes, the ids, the limits, the egress wire and
+ *   scope with the per-API rules and the model record, the wake records with their callback
+ *   checks (which the doorbell applies again where it sends) and their kinds' file, and the
+ *   isolate's slot pool; none of it imports anything but itself;
  * - its packages are pi-ai, `cloudflare:workers`, and `node:async_hooks` in `egress.ts` alone.
  */
 export const IMPORTS: ImportRules = Object.freeze({
   worker: "gateway",
   called: "the gateway",
-  outside: Object.freeze(["owner/src/text", "owner/src/errors", "owner/src/wake-records",
-                          "owner/wake-kinds.json", "owner/src/slots"]),
+  outside: Object.freeze([
+    "contract/src/api-rules", "contract/src/checks", "contract/src/egress",
+    "contract/src/egress-scope", "contract/src/errors", "contract/src/failure",
+    "contract/src/ids", "contract/src/limits", "contract/src/model-record", "contract/src/slots",
+    "contract/src/text", "contract/src/wake-records", "contract/wake-kinds.json",
+  ]),
   packages: Object.freeze(["@earendil-works/pi-ai"]),
   bare: Object.freeze({ "cloudflare:workers": null, "node:async_hooks": "gateway/src/egress.ts" }),
   banned: Object.freeze([

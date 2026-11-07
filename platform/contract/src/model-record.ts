@@ -13,20 +13,52 @@
  * client reads none of them.
  *
  * The same record is what a declared (`custom`) endpoint's source lists, checked whole
- * when it is sealed and again when it is opened (`credential.ts`).
+ * when it is sealed and again when it is opened (`gateway/src/credential.ts`), and what the
+ * owner's object holds every model a connection serves to (`owner/src/connections.ts`): one
+ * checker, so a record the gateway lists is one the object commits.
  */
-import type { Api, Model } from "@earendil-works/pi-ai";
-
+import { count, shape } from "./checks";
 import { Failure } from "./failure";
 
-export type ModelRecord = Readonly<Pick<Model<Api>,
-  "id" | "name" | "reasoning" | "thinkingLevelMap" | "promptCache" | "input" | "inputLimits"
-  | "contextWindow" | "maxTokens" | "cost">>;
+/** pi-ai's thinking levels (`ModelThinkingLevel`). */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/** A price list, dollars per million tokens (pi-ai's `ModelCostRates`). */
+export interface CostRates {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+}
+
+/** The fields of pi-ai 1.4.0's `Model` the record keeps, as pi-ai types them. */
+export interface ModelRecord {
+  readonly id: string;
+  readonly name: string;
+  readonly reasoning: boolean;
+  readonly thinkingLevelMap?: { readonly [level in ThinkingLevel]?: string | null };
+  readonly promptCache?: { readonly short?: number; readonly long?: number };
+  readonly input: ("text" | "image")[];
+  readonly inputLimits?: {
+    readonly maxRequestBytes?: number;
+    readonly images?: {
+      readonly resize?: { readonly maxWidth?: number; readonly maxHeight?: number;
+                          readonly maxBytes?: number; readonly jpegQuality?: number };
+      readonly maxPerMessage?: number;
+      readonly maxPerRequest?: number;
+    };
+  };
+  readonly contextWindow: number;
+  readonly maxTokens: number;
+  readonly cost: CostRates & {
+    readonly tiers?: (CostRates & { readonly inputTokensAbove: number })[];
+  };
+}
 
 /** pi-ai's thinking levels a map may name (`MODEL_THINKING_LEVELS`). */
 const LEVELS: readonly string[] = Object.freeze(["off", "minimal", "low", "medium", "high",
                                                  "xhigh", "max"]);
-/** The owner's own bounds (`connections.ts`), so a record sealed here commits there. */
+/** The one rule for a model's id and name, the owner's object's and the gateway's alike. */
 const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
 const NAME = /^[^\p{Cc}]{1,200}$/u;
 /** Dollars per million tokens. */
@@ -36,45 +68,6 @@ const TOKENS_MAX = 100_000_000;
 /** A provider's value for a thinking level: a word it takes. */
 const LEVEL_VALUE = /^[\x21-\x7e]{1,64}$/;
 const TIERS_MAX = 16;
-
-/** The record pi-ai's catalog holds for `model`: only the kept fields, each as pi-ai has it. */
-export function recordOf(model: Model<Api>): ModelRecord {
-  const { id, name, reasoning, thinkingLevelMap, promptCache, input, inputLimits,
-          contextWindow, maxTokens, cost } = model;
-  return Object.freeze({
-    id, name, reasoning,
-    ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap }),
-    ...(promptCache === undefined ? {} : { promptCache }),
-    input: input.filter((kind) => kind === "text" || kind === "image"),
-    ...(inputLimits === undefined ? {} : { inputLimits }),
-    contextWindow, maxTokens, cost,
-  });
-}
-
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Exactly `required`, plus any of `optional`. */
-function shape(value: unknown, required: readonly string[], optional: readonly string[] = []):
-    Record<string, unknown> {
-  if (!object(value)) {
-    throw new Failure("invalid_source");
-  }
-  const keys = Object.keys(value);
-  if (required.some((key) => !keys.includes(key))
-      || keys.some((key) => !required.includes(key) && !optional.includes(key))) {
-    throw new Failure("invalid_source");
-  }
-  return value;
-}
-
-function count(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
-    throw new Failure("invalid_source");
-  }
-  return value;
-}
 
 function price(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > PRICE_MAX) {

@@ -1,4 +1,4 @@
-/** Text rules shared by the object's doors, matching the Python trusted side's. */
+/** Text and byte rules every Worker reads, matching the Python trusted side's. */
 import { Invalid } from "./errors";
 
 /** Characters Python's `str.isprintable()` refuses: other, and separators but the space. */
@@ -13,8 +13,38 @@ export function codePoints(value: string): number {
   return count;
 }
 
-export function utf8Bytes(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
+/** The UTF-8 bytes of `text`, without encoding it; a lone surrogate as U+FFFD (3). */
+export function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) {
+      bytes += 1;
+    } else if (c < 0x800) {
+      bytes += 2;
+    } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length
+               && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      bytes += 4;
+      i++;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+/**
+ * A strict UTF-8 decoder: malformed bytes throw. `keep` leaves a leading byte-order mark in
+ * the text, as a stored file's bytes are read back verbatim (Fact 9); `strip` drops it, as a
+ * parser reads a body, a name or a document.
+ */
+export function utf8Decoder(bom: "keep" | "strip"): TextDecoder {
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: bom === "keep" });
+}
+
+/** `bytes` as strict UTF-8 (`utf8Decoder`), whole. */
+export function utf8Text(bytes: ArrayBuffer | ArrayBufferView, bom: "keep" | "strip"): string {
+  return utf8Decoder(bom).decode(bytes);
 }
 
 export function isPrintable(value: string): boolean {

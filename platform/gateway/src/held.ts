@@ -38,11 +38,26 @@
  * the pool, not measured: no sandbox's upload rate could be measured without a live sandbox
  * (owed live). The caller's stop ends every phase at once.
  */
-import { isolatePool, type Lease, SLOT_WAIT_MS, SlotBusy, type SlotPool, UNIT_BYTES }
-  from "../../owner/src/slots";
+import { utf8Decoder } from "../../contract/src/text";
+import { SLOT_WAIT_MS } from "../../contract/src/limits";
+import {
+  type Isolate, isolatePool, type Lease, SlotBusy, type SlotPool, UNIT_BYTES,
+} from "../../contract/src/slots";
 
 /** The gateway's pool: 16 slots of one 4 MiB unit, 64 MiB, beside its 12 MiB idle set. */
 export const GATEWAY_POOL_SLOTS = 16;
+/**
+ * The gateway isolate's one pool, held at module scope: one of the platform's pinned
+ * exemptions from the no-module-state rule (`owner/guards/module-state.test.ts`). It holds a
+ * count of units in use and the calls waiting, never an owner's data.
+ */
+const ISOLATE: Isolate = { pool: null, tails: null };
+
+/** The isolate's pool, at the gateway's capacity. */
+export function gatewaySlots(): SlotPool {
+  return isolatePool(ISOLATE, GATEWAY_POOL_SLOTS);
+}
+
 /** The text while it is read, a byte. */
 export const TEXT_COST = 2.25;
 /** The parse, stringify and encode's most, a byte, for a body with a non-ASCII character. */
@@ -51,8 +66,6 @@ export const BYTE_COST = 4.25;
 export const ASCII_BYTE_COST = 2.25;
 /** Each structural token's node in the tree. */
 export const TOKEN_COST = 32;
-/** The metered call's declared length's bound: the egress door's (`EGRESS_BODY_MAX`). */
-export const BODY_MAX = 16 * 1024 * 1024;
 /** The slowest a sender may be while it holds a slot, in bytes a second (see the header). */
 export const MIN_RATE = UNIT_BYTES / TEXT_COST / (SLOT_WAIT_MS / 1000);
 
@@ -162,7 +175,7 @@ export class Hold {
   readonly #signal: AbortSignal;
 
   constructor(owner: string, signal: AbortSignal,
-              pool: SlotPool = isolatePool(GATEWAY_POOL_SLOTS)) {
+              pool: SlotPool = gatewaySlots()) {
     this.#lease = pool.lease(owner);
     this.#most = pool.most;
     this.#signal = signal;
@@ -244,7 +257,7 @@ export async function readHeld(request: Request, length: number, hold: Hold | nu
   }
   const most = hold?.most ?? Number.POSITIVE_INFINITY;
   const reader = request.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
+  const decoder = utf8Decoder("strip");
   let text = "";
   let bytes = 0;
   try {

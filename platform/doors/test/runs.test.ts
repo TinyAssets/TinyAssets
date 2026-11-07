@@ -11,16 +11,17 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { GENERATION_HEADER, SANDBOX_HEADER } from "../../owner/src/network";
+import {
+  EGRESS_ORIGIN, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
+} from "../../contract/src/egress";
 import type { Binding } from "../../owner/src/owner-do";
 import type { SandboxStart } from "../../owner/src/sandbox";
-import { TICKET_REFUSED } from "../../owner/src/socket-shape";
+import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
-import { EGRESS_ORIGIN } from "../src/config";
-import { refusedStatus, RUN_HEADER, RUNNER_HEADER } from "../src/egress";
+import { refusedStatus } from "../src/egress";
 import { RUN_INSTRUCTIONS } from "../src/mcp";
 import { profileNames } from "../src/tools";
-import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
+import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { SESSION_REFUSED } from "../../owner/src/runs";
 import type { OwnerDO } from "./entry";
 import {

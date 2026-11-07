@@ -38,13 +38,13 @@
  * Every change runs in one `transactionSync`, so a refusal or a thrown error leaves
  * nothing behind.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../contract/src/digest";
 
 import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import { PAGE_BYTES } from "./pages";
-import { codePoints, name, utf8Bytes } from "./text";
+import { codePoints, name, utf8Bytes } from "../../contract/src/text";
 
 export interface Limits {
   /** A row body, in UTF-8 bytes: one call through the object whole (`BODY_BYTES_MAX`). */
@@ -216,10 +216,6 @@ function paged<T extends { body_bytes: number }>(rows: readonly T[], most: numbe
   return page;
 }
 
-export function digest(body: string): string {
-  return createHash("sha256").update(body, "utf8").digest("hex");
-}
-
 function shown(row: StoredRow): Row {
   return {
     row_id: row.row_id,
@@ -374,7 +370,7 @@ export class Collections {
             "updated_at = excluded.updated_at, body_bytes = excluded.body_bytes, " +
             "content_id = excluded.content_id, filer = excluded.filer, " +
             "change = excluded.change",
-          collection, rowId, revision, seq, digest(`${seq}:${body}`), caller,
+          collection, rowId, revision, seq, sha256Hex(`${seq}:${body}`), caller,
           isPrivate ? 1 : 0, kept, at, caller, bytes, contentId, filer, change,
         );
         sql.exec(

@@ -5,13 +5,15 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { aliased, apiRules, ruledApis, valueAt } from "../src/api-rules";
-import type { Meter } from "../src/credential";
-import { ASCII_BYTE_COST, BODY_MAX, BYTE_COST, GATEWAY_POOL_SLOTS, heldDeadlineMs, MIN_RATE,
-         parseWeight, TEXT_COST, Tokens, TOKEN_COST, weightSlots } from "../src/held";
+import { aliased, apiRules, ruledApis, valueAt } from "../../contract/src/api-rules";
+import type { Meter } from "../../contract/src/egress-scope";
+import {
+  ASCII_BYTE_COST, BYTE_COST, GATEWAY_POOL_SLOTS, heldDeadlineMs, MIN_RATE, parseWeight, TEXT_COST,
+  TOKEN_COST, Tokens, weightSlots,
+} from "../src/held";
+import { EGRESS_BODY_MAX, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { clamped } from "../src/meter";
-import { EGRESS_BODY_MAX } from "../../owner/src/network";
-import { SLOT_WAIT_MS, UNIT_BYTES } from "../../owner/src/slots";
+import { UNIT_BYTES } from "../../contract/src/slots";
 
 describe("a key the rules read, spelled another way (egress shape research §4)", () => {
   it("is refused at every level the rules read: Google's snake_case, any case-folded alias",
@@ -191,7 +193,6 @@ describe("the gateway's weight of a held call (review H1)", () => {
 
   it("weighs a call by its bytes and its tokens, refusing one past the pool", () => {
     expect(GATEWAY_POOL_SLOTS).toBe(16);
-    expect(BODY_MAX).toBe(EGRESS_BODY_MAX);
     expect(parseWeight(100, 0, true)).toBe(ASCII_BYTE_COST * 100);
     expect(parseWeight(100, 0, false)).toBe(BYTE_COST * 100);
     expect(parseWeight(0, 10, true)).toBe(TOKEN_COST * 10);
@@ -201,16 +202,17 @@ describe("the gateway's weight of a held call (review H1)", () => {
     // The ceilings the costs derive: an ASCII body of the door's 16 MiB fits; a 16 MiB body
     // with a non-ASCII character, or a 4 MiB one of empty objects, does not.
     const pool = GATEWAY_POOL_SLOTS * UNIT_BYTES;
-    expect(parseWeight(BODY_MAX, 0, true)).toBeLessThanOrEqual(pool);
+    expect(parseWeight(EGRESS_BODY_MAX, 0, true)).toBeLessThanOrEqual(pool);
     expect(parseWeight(15 * 1024 * 1024, 0, false)).toBeLessThanOrEqual(pool);
-    expect(parseWeight(BODY_MAX, 0, false)).toBeGreaterThan(pool);
+    expect(parseWeight(EGRESS_BODY_MAX, 0, false)).toBeGreaterThan(pool);
     expect(parseWeight(4 * 1024 * 1024, 4 * 1024 * 1024 * 2 / 3, true)).toBeGreaterThan(pool);
   });
 
   it("holds a slot no longer than the pool's wait plus its body at the slowest rate", () => {
     expect(MIN_RATE).toBe(UNIT_BYTES / TEXT_COST / (SLOT_WAIT_MS / 1000));
     expect(heldDeadlineMs(0)).toBe(SLOT_WAIT_MS);
-    expect(heldDeadlineMs(BODY_MAX)).toBe(SLOT_WAIT_MS + Math.ceil(1000 * BODY_MAX / MIN_RATE));
-    expect(heldDeadlineMs(BODY_MAX)).toBeLessThan(120_000);
+    expect(heldDeadlineMs(EGRESS_BODY_MAX))
+      .toBe(SLOT_WAIT_MS + Math.ceil(1000 * EGRESS_BODY_MAX / MIN_RATE));
+    expect(heldDeadlineMs(EGRESS_BODY_MAX)).toBeLessThan(120_000);
   });
 });

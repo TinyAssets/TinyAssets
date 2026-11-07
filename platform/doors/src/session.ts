@@ -23,7 +23,7 @@
  * though that navigation came from the identity provider.
  */
 import { PUBLIC_ORIGIN } from "./config";
-import { codePoints } from "../../owner/src/text";
+import { codePoints } from "../../contract/src/text";
 
 export const COOKIE = "__Host-ta-owner";
 /** The Python's 28 800 s, the object's session life (`SESSION_LIMITS.ttlS`). */

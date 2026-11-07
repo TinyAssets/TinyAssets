@@ -42,7 +42,7 @@
  * nothing ever makes owner state there again. The erasure door is the owner's
  * `ownerErase` (slice L), which marks the owner and leaves the rest to the job.
  */
-import { Refused } from "./errors";
+import { ERASING, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 
 /**
@@ -70,8 +70,6 @@ export function erasureAnswer(markedAt: number, wipedAt: number | null):
              "past complete_at, nothing of it remains." };
 }
 
-/** What every door and lane answers while the owner is erased. */
-export const ERASING = "this owner is being erased";
 /** How long an erasure waits before it is tried again, should an attempt fail. */
 export const ERASE_RETRY_MS = 60_000;
 

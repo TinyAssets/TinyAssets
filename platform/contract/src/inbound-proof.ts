@@ -16,9 +16,9 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 import { Invalid } from "./errors";
+import { HEX64 } from "./ids";
 
 const HEADER = /^[a-z0-9][a-z0-9-]{0,127}$/;
-const HEX64 = /^[0-9a-f]{64}$/;
 const STAMP = /^[0-9]{1,12}$/;
 /** The longest skew a profile may allow: Slack's own five minutes. */
 export const MAX_SKEW_S = 300;

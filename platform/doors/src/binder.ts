@@ -15,19 +15,20 @@
  * builds a binding (`guards/binder.test.ts`). The object checks the owner again against
  * its own name and stored owner, so a bug here reaching the wrong object fails there.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../contract/src/digest";
+import { HEX16, HEX32, HEX64, RUN_ID } from "../../contract/src/ids";
 
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
-} from "../../owner/src/socket-shape";
-import { principal } from "../../owner/src/text";
+} from "../../contract/src/socket-shape";
+import { principal } from "../../contract/src/text";
 import { ADMIN_CALLER } from "../../admin/src/caller";
 
 import type { Vendor } from "./apps";
-import { LEASE_LIVED, verifyToken } from "./routing-mac";
+import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 
 import {
   APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
@@ -36,9 +37,7 @@ import {
 import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
 
-const HEX64 = /^[0-9a-f]{64}$/;
-const KEY_ID = /^[0-9a-f]{16}$/;
-const RUN = /^run_[0-9a-f]{32}$/;
+const KEY_ID = HEX16;
 
 /** What an MCP grant's props hold (research §1.4), encrypted by the provider. */
 export interface McpProps {
@@ -146,7 +145,7 @@ export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): P
  * ledger-boundary guard).
  */
 export function apiKeyOrigin(keyId: string): Origin {
-  const hash = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+  const hash = (text: string) => sha256Hex(text);
   return { client: hash(`tinyassets-api-key-client\0${keyId}`),
            family: hash(`tinyassets-api-key-family\0${keyId}`) };
 }
@@ -232,9 +231,9 @@ export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
   }
   const named = principal(owner);
   const extra = presented.secret !== undefined
-    ? { secret: createHash("sha256").update(presented.secret, "utf8").digest("hex") }
+    ? { secret: sha256Hex(presented.secret) }
     : presented.runner !== undefined
-      ? { runner: createHash("sha256").update(presented.runner, "utf8").digest("hex") } : {};
+      ? { runner: sha256Hex(presented.runner) } : {};
   return bound(env, { owner: named, caller: named, origin: null,
                       sandbox: { kind: "egress", token: tokenHash, generation, ...extra } });
 }
@@ -292,7 +291,7 @@ export interface Presented {
  */
 export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generation: number,
                         run: string, presented: Presented): Bound {
-  if (!RUN.test(run)) {
+  if (!RUN_ID.test(run)) {
     throw new Error("a run binding names its run");
   }
   const { binding, stub } = bindSandbox(env, owner, tokenHash, generation, presented);
@@ -433,7 +432,7 @@ export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
  * it for the run the mail starts.
  */
 export function bindInbound(env: DoorsEnv, entry: RouteEntry): Bound {
-  if (!/^[0-9a-f]{32}$/.test(entry.b) || !Number.isSafeInteger(entry.r) || entry.r < 1) {
+  if (!HEX32.test(entry.b) || !Number.isSafeInteger(entry.r) || entry.r < 1) {
     throw new Error("an inbound binding needs its route's binding and revision");
   }
   const owner = principal(entry.o);

@@ -10,7 +10,7 @@
  * hop; the object accepts nothing else, and consumes the ticket itself.
  *
  * The ticket the app holds is a routing-MAC token of the `socket` kind
- * (`doors/src/routing-mac.ts`): the doors verify its MAC and its expiry before any object is
+ * (`contract/src/routing-mac.ts`): the doors verify its MAC and its expiry before any object is
  * reached, so a forged or altered ticket reaches none, and hand the object only its
  * secret's hash, which the object consumes once against the one row it keeps.
  */

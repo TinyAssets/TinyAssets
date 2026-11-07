@@ -17,7 +17,8 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
-  "include": ["owner/src/**/*.ts", "owner/test/**/*.ts", "owner/guards/**/*.ts", "owner/*.ts",
+  "include": ["contract/src/**/*.ts", "contract/guards/**/*.ts", "contract/*.ts",
+              "owner/src/**/*.ts", "owner/test/**/*.ts", "owner/guards/**/*.ts", "owner/*.ts",
               "owner/memory/**/*.ts",
               "files/src/**/*.ts", "files/test/**/*.ts", "files/guards/**/*.ts", "files/*.ts",
               "doors/src/**/*.ts", "doors/test/**/*.ts", "doors/guards/**/*.ts", "doors/*.ts",

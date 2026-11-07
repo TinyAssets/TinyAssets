@@ -50,7 +50,7 @@
  * revokes it at the provider or tells the owner to delete it there. Nothing minted is
  * dropped silently.
  */
-import { secret } from "../../gateway/src/credential";
+import { secret } from "../../contract/src/egress-scope";
 import type { Verified } from "../../gateway/src/forward";
 
 import type { Bound } from "./binder";
@@ -85,7 +85,7 @@ export interface ConnectContext {
 
 const STATE = /^[A-Za-z0-9_-]{43}$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
-/** A gateway failure's message: one of its fixed codes (`gateway/src/failure.ts`). */
+/** A gateway failure's message: one of its fixed codes (`contract/src/failure.ts`). */
 const GATEWAY_CODE = /^(?:upstream|oauth)_[a-z_]+$/;
 /** Any of the gateway's fixed codes, as a failed setup is committed with. */
 const ANY_CODE = /^[a-z][a-z_]{0,63}$/;

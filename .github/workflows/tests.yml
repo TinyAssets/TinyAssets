@@ -208,6 +208,8 @@ jobs:
             command: npm run test:root -w sandbox
           - leg: ci
             command: npm run test -w ci
+          - leg: contract
+            command: npm run test -w contract
     defaults:
       run:
         working-directory: platform

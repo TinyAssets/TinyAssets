@@ -24,11 +24,12 @@
  *    so a delivery replayed later is refused by the time it signs, and one replayed sooner
  *    by the execution it names. A sandbox with no route of ours answers `200`, logged.
  */
+import { utf8Decoder } from "../../contract/src/text";
 import { createHash, timingSafeEqual } from "node:crypto";
 
 import { sandboxHookOwner } from "./binder";
 import type { DoorsEnv } from "./config";
-import { openRoute } from "./routing-mac";
+import { openRoute } from "../../contract/src/routing-mac";
 
 export const E2B_HOOK_PATH = "/hooks/e2b/lifecycle";
 /** A lifecycle event's most bytes: a few hundred in practice, the metadata's included. */
@@ -150,7 +151,7 @@ export async function cappedText(request: Request, most: number): Promise<string
     at += part.byteLength;
   }
   try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    return utf8Decoder("keep").decode(bytes);
   } catch {
     return null;
   }

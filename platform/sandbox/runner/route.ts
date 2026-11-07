@@ -10,6 +10,7 @@
  * answers each model request with a minimal valid reply in its sealed API's wire format
  * (`reply`), so a CLI completes its turn, and its resume and compaction are judged the same.
  */
+import { RUN_HEADER } from "../../contract/src/egress";
 
 /** One request the capture server took. */
 export interface Captured {
@@ -100,7 +101,7 @@ export function routeVerdict(requests: readonly Captured[], connects: readonly s
       text.includes(expect.placeholder))) {
       return `a model request carried no placeholder key (${what})`;
     }
-    if (expect.secretInHeader ? request.headers["x-ta-run"] !== expect.secret
+    if (expect.secretInHeader ? request.headers[RUN_HEADER] !== expect.secret
       : !request.url.includes(`/${expect.secret}/`)) {
       return `a model request carried no run secret where the record puts it (${what})`;
     }

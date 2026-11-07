@@ -40,7 +40,7 @@
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
- * - `login-launch <id>`: the vendor's own sign-in (slice SIGNIN; `login.ts`), its document
+ * - `login-launch <id>`: the vendor's own sign-in (slice SIGNIN_ID; `login.ts`), its document
  *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
  *   login as a user of its own, its home made from the engine's store, the URL or code the
  *   record's patterns find and its pinned page admits relayed (`ta.signin` frames on the
@@ -55,8 +55,10 @@
  *   template build's standing check, the login run up to its prompt and stopped, its shape
  *   checked.
  */
+import { sha256Hex } from "../../contract/src/digest";
+import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync,
          readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -64,12 +66,13 @@ import { createServer as createHttpServer, type IncomingMessage } from "node:htt
 import { createConnection, createServer } from "node:net";
 import { createInterface } from "node:readline";
 
-import type { EgressScope } from "../../gateway/src/credential";
+import type { EgressScope } from "../../contract/src/egress-scope";
 import { bundledRecords, bundledSources, type LoginSpec, RUN_BASICS, runEnv, SIGNIN_REFUSALS,
          type SigninRefusal, signinShape, type SourceRecord } from "../../doors/src/sources";
-import { EGRESS_ORIGIN, egressBaseUrl, sandboxEnv } from "../../owner/src/network";
-import { FRAME_UNITS_MAX, readEvent } from "../../owner/src/run-events";
-import { SIGNIN_PASTE_MAX } from "../../owner/src/run-rows";
+import { EGRESS_ORIGIN, egressBaseUrl, RUNNER_HEADER, sandboxEnv } from "../../contract/src/egress";
+import { LEASE_TTL_S } from "../../contract/src/limits";
+import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
+import { SIGNIN_PASTE_MAX } from "../../contract/src/run-rows";
 
 import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
          WORKSPACE } from "./engine";
@@ -85,9 +88,10 @@ import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, s
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
-import { AUTOMATON_STATES, LIST_BYTES, stepNanos } from "../../owner/src/sync-ignore";
-import { openMirror, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport }
-  from "./sync";
+import { AUTOMATON_STATES, LIST_BYTES, stepNanos } from "../../contract/src/sync-ignore";
+import {
+  openMirror, RACY_MS, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport,
+} from "./sync";
 import { PROTOCOL } from "./protocol";
 import { checkFormat, dropRunners } from "./state-format";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
@@ -112,8 +116,6 @@ const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
 const RUNNERS = `${ROOT}/opt/ta/runner`;
 /** What the runner keeps that is a cache alone, discarded when its format changes. */
 const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
-/** A change time the runner trusts: older than the coarsest filesystem tick (`sync.ts`). */
-const RACY_MS = 2_000;
 /** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
 const RESERVE_SIZE = ROOT === "" ? RESERVE_BYTES : 1024 * 1024;
 
@@ -131,11 +133,8 @@ const FLUSH_MS = 250;
  * well inside the lease's TTL (`LEASE_TTL_MS`), its runner's last post included.
  */
 export const CANCEL_GRACE_MS = HEARTBEAT_MS;
-/**
- * The lease's TTL (`owner/src/files.ts`'s `LEASE_TTL_S`, which `guards/config.test.ts` holds
- * this equal to; the runner's bundle takes nothing of the object's storage modules).
- */
-export const LEASE_TTL_MS = 60_000;
+/** The lease's TTL, the object's (`LEASE_TTL_S`). */
+export const LEASE_TTL_MS = LEASE_TTL_S * 1000;
 /**
  * The longest a status check, or the wait for a runner's ack, may take: the lease's TTL,
  * past which a start's run is lost anyway (a run with no post within it is settled lost).
@@ -171,9 +170,8 @@ function writeJson(path: string, value: unknown): void {
   renameSync(`${path}.tmp`, path);
 }
 
-const RUN = /^run_[0-9a-f]{32}$/;
 function runDir(run: string): string {
-  if (!RUN.test(run)) {
+  if (!RUN_ID.test(run)) {
     throw new Error("a run id is run_ and 32 hex");
   }
   return `${STATE}/runs/${run}`;
@@ -213,7 +211,7 @@ function liveRuns(): { run: string; state: RunState }[] {
   if (!existsSync(dir)) {
     return [];
   }
-  return readdirSync(dir).filter((run) => RUN.test(run)).flatMap((run) => {
+  return readdirSync(dir).filter((run) => RUN_ID.test(run)).flatMap((run) => {
     const state = readState(run);
     return state !== null && !state.ended && alive(state.pid) ? [{ run, state }] : [];
   });
@@ -401,7 +399,7 @@ async function makeHome(name: string, rec: SourceRecord, signedIn = true): Promi
 }
 
 function digest(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  return sha256Hex(bytes);
 }
 
 /** Every entry of a tree root just made given to `as`, links as links. */
@@ -688,7 +686,7 @@ function lockDown(): void {
 /** The digest the loader ran this runner by, or null (not run by the loader: a test's). */
 function ownDigest(): string | null {
   const own = process.env["TA_RUNNER_DIGEST"];
-  return own !== undefined && /^[0-9a-f]{64}$/.test(own) ? own : null;
+  return own !== undefined && HEX64.test(own) ? own : null;
 }
 
 /**
@@ -832,7 +830,7 @@ async function renewWait(deadline: number): Promise<number> {
 
 async function recover(): Promise<number> {
   const dir = `${STATE}/runs`;
-  for (const run of existsSync(dir) ? readdirSync(dir).filter((each) => RUN.test(each)) : []) {
+  for (const run of existsSync(dir) ? readdirSync(dir).filter((each) => RUN_ID.test(each)) : []) {
     const state = readState(run);
     if (state !== null && !state.ended && !alive(state.pid)) {
       // The rebooted run's home: its kept paths into the store first (its processes died
@@ -1091,7 +1089,7 @@ class Poster {
     try {
       response = await fetch(this.url, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-ta-runner": this.token },
+        headers: { "content-type": "application/json", [RUNNER_HEADER]: this.token },
         body: JSON.stringify({ frames, ...(last ? { end } : {}) }) });
     } catch {
       await new Promise((resolve) => setTimeout(resolve, this.#wait));
@@ -1615,7 +1613,8 @@ async function postSignins(url: string, lease: LeaseFile,
   try {
     await fetch(url, {
       method: "POST", body: JSON.stringify({ signins }),
-      headers: { "content-type": "application/json", "x-ta-runner": lease.tokens.runner_token } });
+      headers: { "content-type": "application/json",
+                 [RUNNER_HEADER]: lease.tokens.runner_token } });
   } catch {
     // a report that did not land is made again at the next start
   }
@@ -1630,12 +1629,11 @@ async function safeSignedIn(rec: SourceRecord): Promise<boolean> {
 }
 
 
-// -- the vendor's own sign-in (slice SIGNIN) ------------------------------------------
+// -- the vendor's own sign-in (slice SIGNIN_ID) ------------------------------------------
 
-const SIGNIN = /^si_[0-9a-f]{32}$/;
 
 function signinDir(id: string): string {
-  if (!SIGNIN.test(id)) {
+  if (!SIGNIN_ID.test(id)) {
     throw new Error("a sign-in id is si_ and 32 hex");
   }
   return `${STATE}/signin/${id}`;
@@ -1662,7 +1660,7 @@ function liveLogins(): string[] {
   if (!existsSync(dir)) {
     return [];
   }
-  return readdirSync(dir).filter((id) => SIGNIN.test(id)).filter((id) => {
+  return readdirSync(dir).filter((id) => SIGNIN_ID.test(id)).filter((id) => {
     const state = loginState(id);
     return state !== null && !state.ended && alive(state.pid);
   });

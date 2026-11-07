@@ -3,15 +3,33 @@
  * the first-party clients, and the environment it binds (`wrangler.jsonc`, held by
  * `guards/config.test.ts`).
  */
-import type { Source } from "../../gateway/src/credential";
+import type { Source } from "../../contract/src/egress-scope";
 import type { ChunkPut } from "../../files/src/index";
-import type { EgressService } from "../../owner/src/network";
 import type { Verified } from "../../gateway/src/forward";
 import type { Sealed } from "../../gateway/src/keyring";
 import type { Exchanged } from "../../gateway/src/oauth";
 import type { OwnerDO } from "../../owner/src/owner-do";
 
-export { EGRESS_HOST, EGRESS_ORIGIN } from "../../owner/src/network";
+/**
+ * The gateway as the egress door binds it (`EGRESS`, its `EgressGateway` entrypoint): one
+ * sandbox model call forwarded, metered, under the sealed endpoints of the blob the owner's
+ * object handed out for it, its body streamed; a model call's reservation made through
+ * `reserve` (the door's callback, a stub over RPC) once the gateway's one parse read the
+ * body's model and tier, null for a free call; its metered outcome comes as one JSON line on
+ * `outcome`, and closing `stop` aborts it. Every refusal is a fixed-code answer; the
+ * provider's own answers pass through.
+ */
+export interface EgressService {
+  forward(owner: string, connection: string, version: number, blob: string, request: Request,
+          reserve: ((call: { readonly model: string; readonly tier: string | null }) =>
+            Promise<{ readonly metering: { readonly max_output_tokens: number;
+                                           readonly input_bytes: number;
+                                           readonly model: string;
+                                           readonly tier: string | null } }
+                    | { readonly refused: string }>) | null,
+          stop: ReadableStream<Uint8Array>):
+    Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }>;
+}
 
 /** The one configured public origin; the Capacitor WebView loads it too. */
 export const PUBLIC_HOST = "tinyassets.io";

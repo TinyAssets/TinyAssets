@@ -23,7 +23,7 @@ import { describe, expect, it } from "vitest";
 
 import * as holds from "../src/holds";
 import { MOVE_RECORDS } from "../src/segments";
-import { UNIT_BYTES } from "../src/slots";
+import { UNIT_BYTES } from "../../contract/src/slots";
 import { ISOLATE_BYTES, memoryTerms } from "./relay-memory";
 import { PLATFORM } from "../../ci/paths";
 

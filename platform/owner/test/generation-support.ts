@@ -14,7 +14,8 @@ import { Backups, type GenerationSizes } from "../src/backup";
 import {
   OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
 } from "../src/holds";
-import { SLOT_WAIT_MS, SlotPool } from "../src/slots";
+import { SLOT_WAIT_MS } from "../../contract/src/limits";
+import { SlotPool } from "../../contract/src/slots";
 import { ChangeLog } from "../src/changelog";
 import { exported } from "../src/export";
 import type { ChunkStore, Files } from "../src/files";

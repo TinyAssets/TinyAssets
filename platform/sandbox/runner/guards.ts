@@ -18,6 +18,7 @@
  *   least `ATOM_MIN` characters; a file holding any is refused whole, whatever path it was
  *   written to.
  */
+import { forbids } from "../../contract/src/text";
 import { CREDENTIAL_NAME } from "../../doors/src/sources";
 
 /** A settings key naming a credential helper. */
@@ -30,12 +31,6 @@ const HELPER_KEY = /helper/i;
  * refusing it would refuse files that hold no secret.
  */
 export const ATOM_MIN = 39;
-
-/** Whether `name` is in `forbid` (an exact name, or a `PREFIX*`). */
-function forbidden(forbid: readonly string[], name: string): boolean {
-  return forbid.some((entry) => entry.endsWith("*") ? name.startsWith(entry.slice(0, -1))
-    : entry === name);
-}
 
 /** A `.env` file's variable names (`NAME=...`, `export NAME=...`). */
 export function dotenvNames(text: string): string[] {
@@ -114,7 +109,7 @@ export function projectEnvRefusal(files: ReadonlyMap<string, string>,
       }
       names = settings.env;
     }
-    const bad = names.find((name) => forbidden(forbid, name)
+    const bad = names.find((name) => forbids(forbid, name)
       || CREDENTIAL_NAME.test(name.toUpperCase()));
     if (bad !== undefined) {
       return `project_env_refused: ${path} sets ${bad}, which a run's environment never ` +

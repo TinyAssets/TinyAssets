@@ -13,9 +13,10 @@ import { describe, expect, it } from "vitest";
 import { storageFullOf } from "../src/storage-full";
 
 import { Bodies, PLACE_BYTES } from "../src/bodies";
-import { jsonBytes, RESULT_CHARS } from "../src/encoded";
+import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { LIMITS } from "../src/collections";
-import { GC_GRACE_S, INLINE_BYTES, PLACE_TTL_S } from "../src/files";
+import { GC_GRACE_S, PLACE_TTL_S } from "../src/files";
+import { INLINE_BYTES } from "../../contract/src/limits";
 import { WriteGate } from "../src/gate";
 import { GRANT_LIMITS, scopes } from "../src/grants";
 import { MAX_BODY_BYTES } from "../src/ledger";

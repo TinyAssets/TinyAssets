@@ -48,13 +48,15 @@ import {
 } from "agents/lifecycle";
 import { type WebSocketHandlers, WebSockets } from "agents/websockets";
 
-import { Invalid, Refused } from "./errors";
-import { isolateTails, type Sharer } from "./slots";
-import type { Frame } from "./run-events";
+import { Invalid, Refused } from "../../contract/src/errors";
+import type { Sharer } from "../../contract/src/slots";
+
+import { ownerTails } from "./holds";
+import type { Frame } from "../../contract/src/run-events";
 import {
-  BINDING_HEADER, CONVERSATION_HEADER, SHAPE_HEADERS, SOCKET_FAILED, SOCKET_URL,
-  SOCKET_VERSION, TICKET_HEADER,
-} from "./socket-shape";
+  BINDING_HEADER, CONVERSATION_HEADER, SHAPE_HEADERS, SOCKET_FAILED, SOCKET_URL, SOCKET_VERSION,
+  TICKET_HEADER,
+} from "../../contract/src/socket-shape";
 
 type Connection = Parameters<NonNullable<WebSocketHandlers["onConnect"]>>[0];
 
@@ -319,7 +321,7 @@ export class Relay extends LifecycleCapability {
     tail.frames.push(text);
     tail.units += text.length;
     this.#tailUnits += text.length;
-    const tails = isolateTails(TAIL_UNITS);
+    const tails = ownerTails(TAIL_UNITS);
     tails.join(this.#sharer);
     tails.trim();
   }
@@ -352,7 +354,7 @@ export class Relay extends LifecycleCapability {
       this.#tails.delete(run);
     }
     if (this.#tails.size === 0) {
-      isolateTails(TAIL_UNITS).leave(this.#sharer);
+      ownerTails(TAIL_UNITS).leave(this.#sharer);
     }
   }
 

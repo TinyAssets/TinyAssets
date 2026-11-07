@@ -11,8 +11,8 @@
  * silently.
  */
 import type { Window } from "./bodies";
-import { FIT_SLACK, fitted, jsonBytes, RESULT_CHARS } from "./encoded";
-import { Refused } from "./errors";
+import { FIT_SLACK, fitted, jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
+import { Refused } from "../../contract/src/errors";
 
 /** The bytes a page fits its items to: the answer, less what its last fields may add. */
 export const PAGE_BYTES = RESULT_CHARS - FIT_SLACK;

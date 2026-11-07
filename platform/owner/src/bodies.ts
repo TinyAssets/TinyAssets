@@ -21,21 +21,23 @@
  * each chunk rechecked against its hash, outside any unit: a body a later write let go stays
  * in R2 for its grace, so a read that raced the write still finds it.
  */
-import { createHash } from "node:crypto";
+import { utf8Decoder } from "../../contract/src/text";
+import { sha256Hex } from "../../contract/src/digest";
 
-import { RESULT_CHARS } from "./encoded";
-import { Invalid } from "./errors";
+import { RESULT_CHARS } from "../../contract/src/encoded";
+import { Invalid } from "../../contract/src/errors";
 import { windowEnd } from "./file-search";
 import type { Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { bodyUnits, ownerSlots, WINDOW_UNITS } from "./holds";
-import { CHUNK_BYTES, PLACE_BYTES } from "./manifest";
-import { slotted } from "./slots";
+import { CHUNK_BYTES } from "../../contract/src/limits";
+import { PLACE_BYTES } from "./manifest";
+import { slotted } from "../../contract/src/slots";
 
 export { PLACE_BYTES } from "./manifest";
 
 /**
- * The most bytes a body takes: half of a request body's one ceiling (`network.ts`'s
+ * The most bytes a body takes: half of a request body's one ceiling (`limits.ts`'s
  * `EGRESS_BODY_MAX`, 16 MiB, the isolate's 128 MB), so the body with its JSON escapes fits
  * the tool call that carries it; two chunks. A technical ceiling; a larger thing is a file,
  * uploaded a chunk at a time.
@@ -103,7 +105,7 @@ export function inlineWindow(body: string, offset: number): Window {
   if (offset < bytes.byteLength && (bytes[offset]! & 0xc0) === 0x80) {
     throw new Invalid(BODY_OFFSET_INSIDE);
   }
-  return { text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+  return { text: utf8Decoder("keep")
              .decode(bytes.subarray(offset)),
            offset, end: bytes.byteLength, size: bytes.byteLength };
 }
@@ -158,7 +160,7 @@ function chunked(bytes: Uint8Array): { sha256: string; bytes: Uint8Array }[] {
   const chunks: { sha256: string; bytes: Uint8Array }[] = [];
   for (let at = 0; at < bytes.byteLength; at += CHUNK_BYTES) {
     const piece = bytes.subarray(at, Math.min(at + CHUNK_BYTES, bytes.byteLength));
-    chunks.push({ sha256: createHash("sha256").update(piece).digest("hex"), bytes: piece });
+    chunks.push({ sha256: sha256Hex(piece), bytes: piece });
   }
   return chunks;
 }
@@ -280,7 +282,7 @@ export class Bodies {
       // A body of at most two chunks (`BODY_BYTES_MAX`), its bytes and its text held in a
       // step weighted by its chunks (`bodyUnits`, `holds.ts`).
       bodies.set(contentId, await slotted(ownerSlots(), bodyUnits(chunks.length), async () => {
-        const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+        const decoder = utf8Decoder("keep");
         const parts = await this.#files.fetch(chunks.map((sha256) => ({ sha256 })));
         let text = "";
         for (const part of parts) {
@@ -352,7 +354,7 @@ export class Bodies {
     if (cut === null) {
       throw new Invalid(BODY_OFFSET_INSIDE);
     }
-    return { text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+    return { text: utf8Decoder("keep")
                .decode(bytes.subarray(0, cut)),
              offset, end: offset + cut, size };
   }

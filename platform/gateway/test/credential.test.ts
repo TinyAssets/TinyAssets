@@ -4,8 +4,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { allows, credential, type Endpoint, source } from "../src/credential";
-import { failureResponse, upstreamCode } from "../src/failure";
+import { allows, type Endpoint, source } from "../../contract/src/egress-scope";
+import { credential } from "../src/credential";
+import { failureResponse, upstreamCode } from "../../contract/src/failure";
 import { ANTHROPIC, apiKey, GOOGLE, OPENAI } from "./support";
 
 const ENDPOINTS: readonly Endpoint[] = Object.freeze([

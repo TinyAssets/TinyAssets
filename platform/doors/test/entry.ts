@@ -11,7 +11,7 @@ import { bundledRecords, catalogOf } from "../src/sources";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
 import { type OwnerEnv, OwnerDO as RealOwnerDO, type SandboxLeases } from "../../owner/src/owner-do";
-import { SlotBusy } from "../../owner/src/slots";
+import { SlotBusy } from "../../contract/src/slots";
 import { RecordingErasures } from "../../owner/test/erasure-fake";
 import { RecordingSandbox } from "../../owner/test/sandbox-fake";
 
@@ -22,7 +22,7 @@ import { RecordingSandbox } from "../../owner/test/sandbox-fake";
  */
 /**
  * Owners whose next `agents_list` is refused `busy`, as a full slot pool refuses it
- * (`owner/src/slots.ts`): the tests of the doors' 503 and `Retry-After`.
+ * (`contract/src/slots.ts`): the tests of the doors' 503 and `Retry-After`.
  */
 export const BUSY_ONCE = new Set<string>();
 

@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { readWrangler } from "../../ci/workers";
+import { DNS_SERVERS, EGRESS_HOST } from "../../contract/src/egress";
 import { STEP_NS } from "../../owner/src/sync-ignore";
 
 const TEMPLATE = join(PLATFORM, "sandbox", "template");
@@ -130,15 +131,29 @@ describe("the template", () => {
     const copy = mkdtempSync(join(tmpdir(), "ta-template-"));
     try {
       for (const part of ["sandbox/template", "sources", "owner/src/tier.ts",
-                          "sandbox/runner", "gateway/src/failure.ts"]) {
+                          "sandbox/runner", "contract/src/failure.ts"]) {
         cpSync(join(PLATFORM, part), join(copy, part), { recursive: true });
       }
-      writeFileSync(join(copy, "gateway/src/failure.ts"), "export const CHANGED = 1;\n");
+      writeFileSync(join(copy, "contract/src/failure.ts"), "export const CHANGED = 1;\n");
       writeFileSync(join(copy, "sandbox/runner/runner.ts"), "export {};\n");
       expect(tag(copy)).toBe(tag());
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }
+  });
+
+  it("reads the platform's egress host and resolvers where build.py reads them", () => {
+    // `build.py`'s `network_constants`, by its own patterns, over the text it reads; the
+    // contract's are the platform's one definition (fix A6 moves the build's reads).
+    const text = readFileSync(join(PLATFORM, "owner", "src", "network.ts"), "utf8");
+    const host = /export const EGRESS_HOST = "([^"]+)";/.exec(text);
+    const servers = /export const DNS_SERVERS: readonly string\[\] = Object\.freeze\(\[([^\]]*)\]\);/
+      .exec(text);
+    expect(host?.[1]).toBe(EGRESS_HOST);
+    expect([...(servers?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((found) => found[1]))
+      .toEqual([...DNS_SERVERS]);
+    expect(readFileSync(join(PLATFORM, "owner", "src", "sync-ignore.ts"), "utf8"))
+      .toMatch(/export const STEP_NS = ([0-9.]+);/);
   });
 
   it("is given the runner the Worker ships, the same bytes every build", () => {

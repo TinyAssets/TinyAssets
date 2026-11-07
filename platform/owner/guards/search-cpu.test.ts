@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { RESULT_CHARS } from "../src/encoded";
+import { RESULT_CHARS } from "../../contract/src/encoded";
 import {
   SEARCH_ANSWER_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, type Scanned, searchPage, words,
 } from "../src/file-search";

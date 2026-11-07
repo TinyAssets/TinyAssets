@@ -68,14 +68,15 @@
  *
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../contract/src/digest";
 
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
-import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
+import { CHUNK_BYTES } from "../../contract/src/limits";
+import { KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
 import { checkDestination } from "./network";
 import { profileNames, toolNames } from "../../doors/src/tools";
-import { codePoints, SOURCE_ID } from "./text";
+import { codePoints, SOURCE_ID } from "../../contract/src/text";
 
 export { EGRESS_IP_LITERAL } from "./network";
 
@@ -476,7 +477,7 @@ export function canonical(value: unknown): string {
 
 /** `_digest`: `sha256:` over the canonical JSON. */
 export function policyDigest(value: unknown): string {
-  return "sha256:" + createHash("sha256").update(canonical(value), "utf8").digest("hex");
+  return "sha256:" + sha256Hex(canonical(value));
 }
 
 /** A non-negative whole number the store can hold exactly: the Python's `type(v) is int`. */

@@ -63,11 +63,12 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { type Cipher, cipherOf, open, seal } from "./cipher";
 import { chunkName, type KeyringSecret, mint, rewrap, unwrap } from "./datakey";
+import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
-  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, chunkPrefix, DELETE_BATCH, Invalid, listedChunk,
-  generation, listedManifest, MANIFEST_PARTS, manifestKey, manifestPart, manifestPrefix,
-  type ManifestAt, manifestObjectKey, namespace, segmentKey, segmentSpan,
+  chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedManifest, type ManifestAt,
+  manifestKey, manifestObjectKey, manifestPart, manifestPrefix, namespace, segmentKey, segmentSpan,
 } from "./keys";
+import { Invalid } from "../../contract/src/errors";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
 

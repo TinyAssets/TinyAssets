@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { credential } from "../src/credential";
-import { Failure } from "../src/failure";
+import { Failure } from "../../contract/src/failure";
 import { binding, open, reseal, seal } from "../src/keyring";
 import { ALICE, ANTHROPIC, apiKey, ring, rotate, sealed } from "./support";
 

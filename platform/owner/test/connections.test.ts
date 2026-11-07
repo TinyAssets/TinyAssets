@@ -13,11 +13,13 @@ import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { verifyToken } from "../../doors/src/routing-mac";
-import { type Credential, type Source, SUPPORTED_APIS } from "../../gateway/src/credential";
-import { recordOf } from "../../gateway/src/model-record";
+import { verifyToken } from "../../contract/src/routing-mac";
+import { type Credential } from "../../gateway/src/credential";
+import { type Source, SUPPORTED_APIS } from "../../contract/src/egress-scope";
+import { recordOf } from "../../gateway/src/catalog";
 import { open } from "../../gateway/src/keyring";
-import { CONNECTION_LIMITS, type ModelInfo, MODELS_JSON_MAX } from "../src/connections";
+import { CONNECTION_LIMITS, MODELS_JSON_MAX } from "../src/connections";
+import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../src/egress";
 import type { Binding } from "../src/owner-do";
 import { MUSE } from "./ledger-support";
@@ -772,7 +774,7 @@ describe("a connected model's record", () => {
     const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
     return r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                   blob: sealed.blob, kid: sealed.kid,
-                                                  models: models as ModelInfo[],
+                                                  models: models as ModelRecord[],
                                                   egress: await scopeOf(ANTHROPIC) })
       .then(() => null, (error: Error) => error.message);
   }
@@ -780,7 +782,7 @@ describe("a connected model's record", () => {
   it("is kept whole for every model of every built-in catalog", async () => {
     const records = builtinProviders().flatMap((provider) => provider.getModels()
       .filter((model) => isModelType(model, "chat")).map((model, i) => ({
-        ...JSON.parse(JSON.stringify(recordOf(model))) as ModelInfo,
+        ...JSON.parse(JSON.stringify(recordOf(model))) as ModelRecord,
         id: `${provider.id}.${i}` })));
     expect(records.length).toBeGreaterThan(CONNECTION_LIMITS.maxModels);
     const r = await gated();
@@ -794,7 +796,7 @@ describe("a connected model's record", () => {
   it("keeps maxModels of the largest built-in record", async () => {
     const largest = builtinProviders().flatMap((provider) => provider.getModels()
       .filter((model) => isModelType(model, "chat"))
-      .map((model) => JSON.parse(JSON.stringify(recordOf(model))) as ModelInfo))
+      .map((model) => JSON.parse(JSON.stringify(recordOf(model))) as ModelRecord))
       .reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
     const models = Array.from({ length: CONNECTION_LIMITS.maxModels }, (_, i) =>
       ({ ...largest, id: `${largest.id.slice(0, 190)}.${String(i).padStart(4, "0")}` }));

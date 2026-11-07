@@ -1,15 +1,12 @@
 /**
  * Building a wake from its record (slice W, tasks 7): what a subscription follows, its
  * server-derived id, and each wake's headers and body (`doorbellRequest`). The records and
- * the callback checks are `wake-records.ts`, which this module re-exports.
+ * the callback checks are `wake-records.ts`.
  */
-import { createHash } from "node:crypto";
-
+import { sha256Hex } from "./digest";
 import { Invalid } from "./errors";
 import { codePoints, isPrintable } from "./text";
 import { ARGUMENTS_CHARS, type WakeKind } from "./wake-records";
-
-export * from "./wake-records";
 
 /** What a wake says changed: mail to the agent, a room's rows, or the board's. */
 export type Change = "mail" | "rooms" | "board";
@@ -80,8 +77,7 @@ export function follows(args: unknown, allowed: readonly string[] = []): Follows
  */
 export function subscriptionId(principal: string, url: string, name: string,
                                args: unknown): string {
-  return "sub_" + createHash("sha256").update(canonicalJson([principal, url, name, args]), "utf8")
-    .digest("hex").slice(0, 32);
+  return "sub_" + sha256Hex(canonicalJson([principal, url, name, args])).slice(0, 32);
 }
 
 /** The wake's one line, for a kind whose body is text: the change and where to read it. */

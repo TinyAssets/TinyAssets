@@ -17,9 +17,8 @@ import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
   tombstoned, writeTombstone,
 } from "../src/admission";
-import {
-  ERASE_RETRY_MS, ERASING, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S,
-} from "../src/erasure";
+import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S } from "../src/erasure";
+import { ERASING } from "../../contract/src/errors";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, Ledger } from "../src/ledger";

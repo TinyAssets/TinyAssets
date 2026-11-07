@@ -11,9 +11,9 @@ import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { RUN_CAPABILITIES } from "../../owner/src/agent-file";
+import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { CAPABILITIES } from "../../owner/src/grants";
-import { wakeKinds } from "../../owner/src/wake-kinds";
+import { wakeKinds } from "../../contract/src/wake-records";
 import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../src/sources";
 import { profileNames, toolNames } from "../src/tools";

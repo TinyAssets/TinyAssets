@@ -19,7 +19,7 @@
  * strictly after `after` that matches, found a day at a time, so it is bounded by the
  * horizon, never by a minute-by-minute scan.
  */
-import { Invalid } from "./errors";
+import { Invalid } from "../../contract/src/errors";
 
 /** The longest expression accepted, in characters. */
 export const CRON_MAX_CHARS = 256;

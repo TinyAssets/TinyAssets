@@ -2,7 +2,8 @@
  * Shared test helpers: keyrings, and source records like the ones the binder will pass.
  */
 import { keyring } from "../../ci/fixtures";
-import type { Credential, Source } from "../src/credential";
+import type { Credential } from "../src/credential";
+import type { Source } from "../../contract/src/egress-scope";
 import { type Binding, seal } from "../src/keyring";
 
 export { ANTHROPIC, OPENAI } from "../../ci/fixtures";

@@ -14,15 +14,15 @@ import { createExecutionContext, env, runInDurableObject } from "cloudflare:test
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PLATFORM_CALLER } from "../../owner/src/admission";
-import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, GENERATION_HEADER, SANDBOX_HEADER }
-  from "../../owner/src/network";
+import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
+import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
 import type { NetworkPlan } from "../../owner/src/network";
 import type { Binding } from "../../owner/src/owner-do";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import type { Bound } from "../src/binder";
-import { type DoorsEnv, EGRESS_ORIGIN } from "../src/config";
+import { type DoorsEnv } from "../src/config";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
-import { mintToken, verifyToken } from "../src/routing-mac";
+import { mintToken, verifyToken } from "../../contract/src/routing-mac";
 import worker, { type OwnerDO } from "./entry";
 import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
 import {

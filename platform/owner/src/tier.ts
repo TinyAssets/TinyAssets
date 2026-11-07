@@ -29,7 +29,7 @@
  * database is costed for (the owner-bound guard counts each live run's rows at it), so a
  * record past it is malformed.
  */
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import { TIER_STORAGE_MAX } from "./segments";
 

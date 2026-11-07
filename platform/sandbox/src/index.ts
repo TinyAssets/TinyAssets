@@ -18,7 +18,7 @@
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { principal } from "../../owner/src/text";
+import { principal } from "../../contract/src/text";
 import type {
   SandboxService, SandboxSignin, SandboxStart, Started,
 } from "../../owner/src/sandbox";

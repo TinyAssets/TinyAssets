@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import { cutParts, GENERATION_SIZES } from "../src/backup";
 import { chunkLine, encodeLines, EXPORT_PAGE_BYTES, type Lines } from "../src/export";
-import { CHUNK_BYTES } from "../src/manifest";
+import { CHUNK_BYTES } from "../../contract/src/limits";
 import { CPU_LIMIT_MS, cpuMs, STEP_CPU_MS } from "./cpu";
 
 /** The cut `cutParts` replaced, verbatim but for its inputs: the reference for its bytes. */

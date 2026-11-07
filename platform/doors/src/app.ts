@@ -88,6 +88,7 @@
  * Sign-out tells the object first, whether or not a session cookie came, so the sockets
  * opened under the device's grant close before the grant is revoked (`socketsEnd`).
  */
+import { utf8Decoder } from "../../contract/src/text";
 import { answerJson } from "./answers";
 import {
   type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
@@ -114,11 +115,10 @@ import type { Sources } from "./sources";
 import { callDoor, refusal, refusalHeaders, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
-import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../owner/src/agent-file";
-import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
-import {
-  callbackSecret, callbackUrl, follows, kindNamed, subscriptionId, wakeKinds,
-} from "../../owner/src/wake-kinds";
+import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../contract/src/capabilities";
+import { SOCKET_FAILED, TICKET_REFUSED } from "../../contract/src/socket-shape";
+import { callbackSecret, callbackUrl, kindNamed, wakeKinds } from "../../contract/src/wake-records";
+import { follows, subscriptionId } from "../../contract/src/wake-kinds";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
 
@@ -231,7 +231,7 @@ const fileRead: Route = async (_env, { binding, stub }, request) => {
     return json(200, { entry, text: null, why: "larger than one chunk" });
   }
   try {
-    return json(200, { entry, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(inline) });
+    return json(200, { entry, text: utf8Decoder("strip").decode(inline) });
   } catch {
     return json(200, { entry, text: null, why: "not UTF-8 text" });
   }

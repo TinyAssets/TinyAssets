@@ -25,9 +25,10 @@
  * app's install no owner made); the directory's lag can only route a dead entry to the
  * object's own refusal (`binding_withdrawn`).
  */
-import { createHash } from "node:crypto";
+import { utf8Decoder } from "../../contract/src/text";
+import { sha256Hex } from "../../contract/src/digest";
 
-import { type Profile, profile as checkedProfile, proves } from "../../owner/src/inbound-proof";
+import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
 import type { InboundAnswer } from "../../owner/src/owner-do";
 
 import apps from "../shared-apps.json" with { type: "json" };
@@ -98,7 +99,7 @@ function answer(status: number, body: unknown, retry = false): Response {
 }
 
 function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+  return sha256Hex(text);
 }
 
 /** The request's headers for the object: lowercase names, bounded (its `Cookie` is gone). */
@@ -122,7 +123,7 @@ function envelopeOf(request: Request, body: Uint8Array): Record<string, unknown>
     return null;
   }
   try {
-    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false })
+    const value: unknown = JSON.parse(utf8Decoder("strip")
       .decode(body));
     return typeof value === "object" && value !== null && !Array.isArray(value)
       ? value as Record<string, unknown> : null;

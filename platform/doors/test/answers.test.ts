@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RESULT_CHARS } from "../../owner/src/encoded";
+import { RESULT_CHARS } from "../../contract/src/encoded";
 import { resultText } from "../src/answers";
 import {
   answerOf, connect, legacyTool, OPEN, registerClient, setControl, sqlIn,

@@ -24,6 +24,8 @@
  * as its pieces are taken (`letGo`), so a step holds the chunk in hand and no more. Its cost
  * is reads: about four a changed chunk.
  */
+import { utf8Decoder } from "../../contract/src/text";
+import { sha256Hex } from "../../contract/src/digest";
 import { createHash } from "node:crypto";
 
 /** The source: its chunks in order, each read whole and verified (`read`). */
@@ -64,8 +66,6 @@ function indexOfBytes(hay: Uint8Array, needle: Uint8Array, from: number): number
     .indexOf(Buffer.from(needle.buffer, needle.byteOffset, needle.byteLength), from);
 }
 
-const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-
 /**
  * A source chunk's bytes let go as its step ends: the edit owns what `read` answers, so its
  * buffer is detached (`transfer(0)`), and no reference the collector cannot yet rule out
@@ -93,7 +93,7 @@ export async function planEdit(source: Source, old: string, replacement: string,
   const newBytes = new TextEncoder().encode(replacement);
   const k = oldBytes.byteLength;
   // Pass 1: scan.
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const decoder = utf8Decoder("keep");
   let carry = new Uint8Array(0);
   let carryAt = 0;
   let times = 0;
@@ -239,7 +239,7 @@ export async function planEdit(source: Source, old: string, replacement: string,
         out.set(piece, written);
         written += piece.byteLength;
       }, direct);
-      if (sha(out) !== hashes[index]) {
+      if (sha256Hex(out) !== hashes[index]) {
         throw new Error("a file's source changed between an edit's passes");
       }
       return out;

@@ -6,16 +6,17 @@
 import { describe, expect, it } from "vitest";
 
 import { physicalId, rankOf, ranked } from "../src/auto";
-import type { ModelInfo, Usable } from "../src/connections";
+import type { ModelRecord } from "../../contract/src/model-record";
+import type { Usable } from "../src/connections";
 import ranking from "../src/model-ranking.json" with { type: "json" };
 
-function model(id: string, output = 1): ModelInfo {
+function model(id: string, output = 1): ModelRecord {
   return { id, name: id, reasoning: true, input: ["text"], contextWindow: 100_000,
            maxTokens: 8_000, cost: { input: 1, output, cacheRead: 0, cacheWrite: 0 } };
 }
 
 function usable(connection: string, provider: string, created: number,
-                ...models: ModelInfo[]): Usable {
+                ...models: ModelRecord[]): Usable {
   return { connection, source: provider, provider, display_name: connection, created_at: created,
            models };
 }

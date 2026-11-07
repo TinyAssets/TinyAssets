@@ -4,13 +4,13 @@
  * (under `GC_GRACE_S`, so every chunk it names is still in the bucket). At most
  * `EXPORTS_OPEN` are open; a new one past them ends the oldest.
  */
-import { randomBytes } from "node:crypto";
+import { HEX32, randomHex } from "../../contract/src/ids";
 
-import { Invalid } from "./errors";
+import { Invalid } from "../../contract/src/errors";
 import { EXPORT_LIFE_S, EXPORTS_OPEN } from "./export";
 import type { OwnerStorage } from "./gate";
 
-const EXPORT_ID = /^[0-9a-f]{32}$/;
+const EXPORT_ID = HEX32;
 
 /** An open export: its id, when (s) it ends, and the generation it reads. */
 export interface OpenExport {
@@ -42,7 +42,7 @@ export class OpenExports {
     this.#sql.exec("DELETE FROM owner_exports WHERE ends_at <= ?", now);
     this.#sql.exec("DELETE FROM owner_exports WHERE export_id IN (SELECT export_id FROM " +
                      "owner_exports ORDER BY opened_at DESC LIMIT -1 OFFSET ?)", EXPORTS_OPEN - 1);
-    const id = randomBytes(16).toString("hex");
+    const id = randomHex(16);
     const ends = now + EXPORT_LIFE_S;
     this.#sql.exec("INSERT INTO owner_exports (export_id, opened_at, ends_at, gen) VALUES " +
                      "(?, ?, ?, ?)", id, now, ends, gen);

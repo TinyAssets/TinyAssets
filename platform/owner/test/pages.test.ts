@@ -10,9 +10,8 @@ import { describe, expect, it } from "vitest";
 import type { Window } from "../src/bodies";
 import { bodied } from "../src/pages";
 
-import {
-  escapedBytes, fitted, jsonBytes, RESULT_CHARS, unitAt, utf8Length,
-} from "../src/encoded";
+import { escapedBytes, fitted, jsonBytes, RESULT_CHARS, unitAt } from "../../contract/src/encoded";
+import { utf8Bytes } from "../../contract/src/text";
 import type { Row } from "../src/collections";
 import type { WrittenRow } from "../src/owner-do";
 import { MUSE, rig } from "./ledger-support";
@@ -38,7 +37,7 @@ describe("the exact count", () => {
                       "\ud800", "\udc00x", "a\ud834", "\u0000\u001f"]) {
       const text = `a${ch.repeat(37)}b`;
       expect(escapedBytes(text)).toBe(bytes(text));
-      expect(utf8Length(text)).toBe(enc.encode(text).byteLength);
+      expect(utf8Bytes(text)).toBe(enc.encode(text).byteLength);
     }
     const value = { a: [1, -2.5, null, undefined, () => 0, "q\"", { b: true }], c: undefined,
                     d: Number.NaN, e: { toJSON: () => "j" }, f: [], g: {} };
@@ -87,7 +86,7 @@ describe("a read's pages", () => {
   it("reads a row of each escape class whole by range, cut only at characters", { tags: ["large"] }, async () => {
     const { stub, as, name } = ownerObject();
     for (const [shape, ch] of Object.entries(SHAPES)) {
-      const body = ch.repeat(Math.floor(MIB / 2 / utf8Length(ch)));
+      const body = ch.repeat(Math.floor(MIB / 2 / utf8Bytes(ch)));
       const { row: { etag } } = await stub.collectionWrite(as(name), {
         collection: "board", row_id: shape, body, expected_etag: "", private: false }) as
         { row: WrittenRow };

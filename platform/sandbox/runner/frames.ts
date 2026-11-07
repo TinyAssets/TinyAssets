@@ -9,7 +9,7 @@
  * runner's own event (`runnerShaped`) is never posted as it: it is `{type: "ta.cli_refused",
  * text}`, so every `ta.…` event the doors and the object read is the runner's.
  */
-import { EVENT_FRAMES_MAX, EVENTS_BODY_MAX, FRAME_UNITS_MAX } from "../../owner/src/run-events";
+import { EVENT_FRAMES_MAX, EVENTS_BODY_MAX, FRAME_UNITS_MAX } from "../../contract/src/run-events";
 
 export interface PostedFrame {
   readonly seq: number;

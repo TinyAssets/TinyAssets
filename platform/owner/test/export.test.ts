@@ -10,7 +10,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { mint } from "../../files/src/datakey";
-import { MANIFEST_PARTS } from "../../files/src/keys";
+import { CHUNK_BYTES, INLINE_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { PLATFORM_CALLER, PLATFORM_ONLY } from "../src/admission";
 import {
   GENERATION_SIZES, MANIFEST_BUSY_RETRY_S, MANIFEST_CEILING, MANIFEST_CONTINUE_S,
@@ -20,15 +20,13 @@ import {
   BURST_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
   SHIP_UNITS,
 } from "../src/holds";
-import { SLOT_WAIT_MS, SlotPool } from "../src/slots";
+import { SlotPool } from "../../contract/src/slots";
 import {
   decodeCursor, encodeLines, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED,
   readPage,
 } from "../src/export";
 import type FilesService from "../../files/src/index";
-import {
-  CHUNK_BYTES, CHUNK_GONE, type Files, GC_GRACE_S, INLINE_BYTES,
-} from "../src/files";
+import { CHUNK_GONE, type Files, GC_GRACE_S } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";

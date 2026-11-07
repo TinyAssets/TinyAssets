@@ -36,11 +36,12 @@
  * - An owner's admission (the Python's `active_owner`) is the binder's, from the owner
  *   directory (tasks 2).
  */
-import { createHash, randomBytes } from "node:crypto";
+import { sha256Hex } from "../../contract/src/digest";
+import { randomBytes } from "node:crypto";
 
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
-import { codePoints } from "./text";
+import { codePoints } from "../../contract/src/text";
 
 export interface SessionLimits {
   /** A session's life from its sign-in or its last renewal: the Python's 28,800 s. */
@@ -60,10 +61,6 @@ export const SESSION_LIMITS: SessionLimits = Object.freeze({
 });
 
 export const SESSION_REQUIRED = "interactive owner session required";
-
-function hashed(proof: string): string {
-  return createHash("sha256").update(proof, "utf8").digest("hex");
-}
 
 /** A cookie the browser presented: 32 to 512 characters, as the Python's. */
 function proofOf(value: unknown): string | null {
@@ -108,7 +105,7 @@ export class Sessions {
                  live - limits.maxSessions + 1);
       }
       sql.exec("INSERT INTO owner_sessions (session_hash, created_at, expires_at) " +
-                 "VALUES (?, ?, ?)", hashed(session), now, expiresAt);
+                 "VALUES (?, ?, ?)", sha256Hex(session), now, expiresAt);
     });
     return { session, expires_at: expiresAt };
   }
@@ -118,7 +115,7 @@ export class Sessions {
     const cookie = proofOf(proof);
     const row = cookie === null ? undefined : this.#sql.exec<{ session_hash: string }>(
       "SELECT session_hash FROM owner_sessions WHERE session_hash = ? AND expires_at > ?",
-      hashed(cookie), now,
+      sha256Hex(cookie), now,
     ).toArray()[0];
     if (row === undefined) {
       throw new Refused(SESSION_REQUIRED);
@@ -140,7 +137,7 @@ export class Sessions {
   /** The id a session's cookie is kept under (its hash), or null for no cookie. */
   id(proof: unknown): string | null {
     const cookie = proofOf(proof);
-    return cookie === null ? null : hashed(cookie);
+    return cookie === null ? null : sha256Hex(cookie);
   }
 
   /** Sign one session out; signing out a session that is gone changes nothing. */
@@ -149,7 +146,7 @@ export class Sessions {
       throw new Invalid("a session is the cookie its sign-in returned");
     }
     return { closed: this.#sql.exec("DELETE FROM owner_sessions WHERE session_hash = ? " +
-                                      "RETURNING session_hash", hashed(proof)).toArray().length };
+                                      "RETURNING session_hash", sha256Hex(proof)).toArray().length };
   }
 
   /** Sign every session out: the Python's `revoke_owner`. */

@@ -15,8 +15,9 @@ import {
   heldOnly, shownBytes, STORAGE_FULL, storageFull, storageFullMessage, storageFullOf,
   UPLOADS_OPEN,
 } from "../src/storage-full";
-import { LIST_BYTES } from "../src/sync-ignore";
-import { CHUNK_BYTES, sha256Hex } from "../src/files";
+import { LIST_BYTES } from "../../contract/src/sync-ignore";
+import { CHUNK_BYTES } from "../../contract/src/limits";
+import { sha256Hex } from "../../contract/src/digest";
 import { rig, type Rig } from "./ledger-support";
 import { failure, inFiles, sqlIn, text } from "./support";
 

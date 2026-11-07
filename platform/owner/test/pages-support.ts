@@ -1,7 +1,7 @@
 /** Reading one body through by range, as a client reads a cut one (`pages.ts`). */
 import { expect } from "vitest";
 
-import { jsonBytes, RESULT_CHARS } from "../src/encoded";
+import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 
 /** An item as a page answers it: its body, and when cut, where the rest starts. */
 export interface Bodied {

@@ -9,7 +9,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { verifyToken } from "../../doors/src/routing-mac";
+import { verifyToken } from "../../contract/src/routing-mac";
 import { bundledSources, runEnv } from "../../doors/src/sources";
 import { PLATFORM_CALLER } from "../src/admission";
 import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
@@ -18,7 +18,7 @@ import { AUTHORITY_CHANGED } from "../src/authority";
 import type { Binding } from "../src/owner-do";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
-import { QUEUE_BYTES, QUEUE_ROWS } from "../src/run-rows";
+import { QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/run-rows";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, Runs, SIGNIN_LAPSED,
          UNATTENDED_REFUSED } from "../src/runs";
 import { SANDBOX_ABSENT, type SandboxStart } from "../src/sandbox";

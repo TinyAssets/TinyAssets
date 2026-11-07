@@ -20,7 +20,7 @@
  * 2. For OAuth, the callback's `flowFinish`, in the same session, uses the flow up and
  *    hands back the verifier for the gateway's exchange.
  * 3. `commit`: the sealed blob, its kid, the models the gateway's setup check listed (each
- *    its whole pi-ai capability record, which the object has no catalog for: `ModelInfo`),
+ *    its whole pi-ai capability record, which the object has no catalog for: `ModelRecord`),
  *    where sandbox egress may forward its credential (`egress`: the sealed base URL and
  *    endpoints the check read from the blob, no secret; the egress door's admission reads
  *    it, G4) and, for OAuth, the access expiry in clear.
@@ -59,17 +59,19 @@
  * live (pending, active or failed) connections; the newest `maxRevokedKept` revoked ones
  * that hold no blob; `maxFlowRows` flow rows, swept at their expiry.
  */
+import { CONNECTION_ID, randomHex } from "../../contract/src/ids";
+import { sha256Hex } from "../../contract/src/digest";
 import { createHash, randomBytes } from "node:crypto";
 
-import type { Api, Model } from "@earendil-works/pi-ai";
 
-import { type EgressScope, egressScope } from "../../gateway/src/credential";
+import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
+import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
 import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
-import { codePoints, isPrintable, SOURCE_ID, utf8Bytes } from "./text";
+import { codePoints, isPrintable, SOURCE_ID, utf8Bytes } from "../../contract/src/text";
 
 export interface ConnectionLimits {
   readonly maxConnections: number;
@@ -111,18 +113,6 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   revokeMs: (LANE_HUNG_S - LANE_PASS_S) * 1000,
   revokesPerPass: 8,
 });
-
-/**
- * A model a connection serves, as the gateway's setup check lists it: pi-ai's own `Model`
- * record whole (pi audit F6), but for what is the gateway's (`provider`, `api`, `baseUrl`,
- * and the request shaping its adapter applies: `headers`, `compat`, sampling parameters;
- * the gateway's `model-record.ts`). So a call is reserved and settled at its own prices,
- * long-context tiers included (pi-ai's `calculateCost`, `usage.ts`, `egress.ts`), and the
- * runs slice (R) ranks it (`auto.ts`).
- */
-export type ModelInfo = Readonly<Pick<Model<Api>,
-  "id" | "name" | "reasoning" | "thinkingLevelMap" | "promptCache" | "input" | "inputLimits"
-  | "contextWindow" | "maxTokens" | "cost">>;
 
 /** A sealed blob the gateway hands back at the next version (a reseal or a refresh). */
 export interface Resealed {
@@ -188,7 +178,7 @@ export interface Usable {
   readonly provider: string;
   readonly display_name: string;
   readonly created_at: number;
-  readonly models: readonly ModelInfo[];
+  readonly models: readonly ModelRecord[];
 }
 
 /** The credential a call carries in its envelope. */
@@ -213,14 +203,12 @@ type RevokeOutcome = "revoked" | "not_revocable" | "failed";
 export const CONNECTION_UNAVAILABLE = "connection_unavailable";
 export const CREDENTIAL_EXPIRED = "credential_expired";
 
-const ID = /^c[0-9a-f]{24}$/;
 const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KID = /^[A-Za-z0-9_-]{1,32}$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
 /** A setup check's failure: the gateway's fixed code. */
 const FAILURE = /^[a-z][a-z_]{0,63}$/;
-const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
 const BLOB_MAX = 64 * 1024;
 /**
  * The models a connection keeps, as JSON, in bytes: the schema's own ceiling. The largest record of
@@ -234,14 +222,6 @@ export const MODELS_JSON_MAX = 640 * 1024;
  * so a scope past it is refused at commit, loudly, rather than kept half.
  */
 export const EGRESS_JSON_MAX = 16 * 1024;
-const COST_MAX = 1_000_000;
-const TOKENS_MAX = 100_000_000;
-/** pi-ai's thinking levels a map may name (`MODEL_THINKING_LEVELS`), and a value's grammar. */
-const LEVELS: readonly string[] = Object.freeze(["off", "minimal", "low", "medium", "high",
-                                                 "xhigh", "max"]);
-const LEVEL_VALUE = /^[\x21-\x7e]{1,64}$/;
-const TIERS_MAX = 16;
-const RATES: readonly string[] = Object.freeze(["input", "output", "cacheRead", "cacheWrite"]);
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -280,91 +260,17 @@ function count(value: unknown, max: number): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max;
 }
 
-function price(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= COST_MAX;
-}
-
-/** Its keys are all of `required` and any of `optional`. */
-function keyed(value: Record<string, unknown>, required: readonly string[],
-               optional: readonly string[] = []): boolean {
-  const keys = Object.keys(value);
-  return required.every((key) => keys.includes(key))
-    && keys.every((key) => required.includes(key) || optional.includes(key));
-}
-
-/** A record of the named fields, each a positive integer of at most `max`. */
-function integers(value: unknown, named: readonly string[], max = Number.MAX_SAFE_INTEGER):
-    boolean {
-  return object(value) && keyed(value, [], named) && Object.values(value)
-    .every((entry) => count(entry, max) && entry >= 1);
-}
-
-/** pi-ai's `ModelCost`: four rates, and long-context tiers each above an input count. */
-function cost(value: unknown): boolean {
-  if (!object(value) || !keyed(value, RATES, ["tiers"])
-      || !RATES.every((rate) => price(value[rate]))) {
-    return false;
-  }
-  const tiers = value["tiers"];
-  return tiers === undefined || (Array.isArray(tiers) && tiers.length >= 1
-    && tiers.length <= TIERS_MAX && tiers.every((tier) => object(tier)
-      && keyed(tier, [...RATES, "inputTokensAbove"])
-      && RATES.every((rate) => price(tier[rate]))
-      && count(tier["inputTokensAbove"], TOKENS_MAX)));
-}
-
-function thinkingLevelMap(value: unknown): boolean {
-  return object(value) && keyed(value, [], LEVELS) && Object.values(value)
-    .every((level) => level === null || (typeof level === "string" && LEVEL_VALUE.test(level)));
-}
-
-function promptCache(value: unknown): boolean {
-  return object(value) && keyed(value, [], ["short", "long"]) && Object.values(value)
-    .every((lifetime) => typeof lifetime === "number" && Number.isFinite(lifetime)
-      && lifetime > 0);
-}
-
-function inputLimits(value: unknown): boolean {
-  if (!object(value) || !keyed(value, [], ["maxRequestBytes", "images"])
-      || (value["maxRequestBytes"] !== undefined
-        && !integers({ bytes: value["maxRequestBytes"] }, ["bytes"]))) {
-    return false;
-  }
-  const images = value["images"];
-  if (images === undefined) {
-    return true;
-  }
-  if (!object(images) || !keyed(images, [], ["resize", "maxPerMessage", "maxPerRequest"])) {
-    return false;
-  }
-  const { resize, ...counts } = images;
-  return integers(counts, ["maxPerMessage", "maxPerRequest"])
-    && (resize === undefined || (object(resize)
-      && keyed(resize, [], ["maxWidth", "maxHeight", "maxBytes", "jpegQuality"])
-      && Object.entries(resize).every(([key, entry]) =>
-        count(entry, key === "jpegQuality" ? 100 : Number.MAX_SAFE_INTEGER) && entry >= 1)));
-}
-
-/** One model of the gateway's setup check, its whole record checked. */
-function modelInfo(value: unknown): ModelInfo {
-  const ok = object(value)
-    && keyed(value, ["contextWindow", "cost", "id", "input", "maxTokens", "name", "reasoning"],
-             ["thinkingLevelMap", "promptCache", "inputLimits"])
-    && typeof value["id"] === "string" && MODEL_ID.test(value["id"])
-    && typeof value["name"] === "string" && value["name"].length <= 200
-    && typeof value["reasoning"] === "boolean"
-    && Array.isArray(value["input"]) && value["input"].length <= 2
-    && value["input"].every((kind) => kind === "text" || kind === "image")
-    && count(value["contextWindow"], TOKENS_MAX) && count(value["maxTokens"], TOKENS_MAX)
-    && value["contextWindow"] >= 1 && value["maxTokens"] >= 1
-    && cost(value["cost"])
-    && (value["thinkingLevelMap"] === undefined || thinkingLevelMap(value["thinkingLevelMap"]))
-    && (value["promptCache"] === undefined || promptCache(value["promptCache"]))
-    && (value["inputLimits"] === undefined || inputLimits(value["inputLimits"]));
-  if (!ok) {
+/**
+ * One model of the gateway's setup check, its whole record checked by the one rule the
+ * gateway seals by (`contract/src/model-record.ts`), and kept as the gateway sent it.
+ */
+function modelInfo(value: unknown): ModelRecord {
+  try {
+    checkedRecord(value);
+  } catch {
     throw new Invalid("invalid connection model");
   }
-  return value as unknown as ModelInfo;
+  return value as ModelRecord;
 }
 
 /** A sealed blob as the gateway writes it: `v1.<kid>.<nonce>.<ciphertext>`. */
@@ -398,10 +304,6 @@ function scopeJson(value: unknown): string {
   return json;
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
 function base64url(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64url");
 }
@@ -427,7 +329,7 @@ function view(row: Row): ConnectionView {
   return {
     connection: row.id, source: row.source, kind: row.kind, display_name: row.display_name,
     provider: row.provider, status: row.status, version: row.version,
-    models: (JSON.parse(row.models) as ModelInfo[]).map((model) => model.id),
+    models: (JSON.parse(row.models) as ModelRecord[]).map((model) => model.id),
     expires_at: row.expires_at, created_at: row.created_at, revoked_at: row.revoked_at,
     provider_revocable: row.revocable === 1, provider_revoke_pending: row.revoke_due !== null,
   };
@@ -517,7 +419,7 @@ export class Connections {
         throw new Refused("too many connection flows; finish or wait for one");
       }
     }
-    const id = `c${randomBytes(12).toString("hex")}`;
+    const id = `c${randomHex(12)}`;
     const until = now + this.#limits.pendingTtlS;
     this.#sql.exec("INSERT INTO connections (id, source, kind, display_name, provider, " +
                      "status, version, created_at, pending_until, revocable) " +
@@ -538,7 +440,7 @@ export class Connections {
   commit(request: unknown, now: number): ConnectionView {
     const r = fields(request, ["connection", "version", "blob", "kid", "models"],
                      ["expires_at", "failed", "egress"]);
-    const id = grammar(r["connection"], ID, "connection");
+    const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const kid = grammar(r["kid"], KID, "kid");
     const blob = blobOf(r["blob"], kid);
     const models = r["models"];
@@ -622,7 +524,7 @@ export class Connections {
   revoke(request: unknown, now: number): { connection: string; revoked: boolean;
                                            provider_revoke: boolean } {
     const r = fields(request, ["connection"]);
-    const id = grammar(r["connection"], ID, "connection");
+    const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const row = this.#row(id);
     if (row === undefined) {
       throw new Refused("no such connection");
@@ -681,7 +583,7 @@ export class Connections {
     this.#sql.exec("INSERT INTO connection_flows (flow, connection_id, session_id, verifier, " +
                      "redirect_uri, created_at, expires_at, status) " +
                      "VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
-                   sha256(state), id, sessionId, verifier, redirect, now, until);
+                   sha256Hex(state), id, sessionId, verifier, redirect, now, until);
     return { state, code_challenge: challenge, code_challenge_method: "S256", expires_at: until };
   }
 
@@ -698,7 +600,7 @@ export class Connections {
     const flow = this.#sql.exec<{ connection_id: string; session_id: string; verifier: string;
                                   redirect_uri: string }>(
       "SELECT connection_id, session_id, verifier, redirect_uri FROM connection_flows " +
-        "WHERE flow = ? AND status = 'open' AND expires_at > ?", sha256(state), now)
+        "WHERE flow = ? AND status = 'open' AND expires_at > ?", sha256Hex(state), now)
       .toArray()[0];
     if (flow === undefined || flow.session_id !== sessionId) {
       throw new Refused("no open connection flow for this state in this session");
@@ -708,7 +610,7 @@ export class Connections {
       throw new Refused("no open connection flow for this state in this session");
     }
     this.#sql.exec("UPDATE connection_flows SET status = 'used', verifier = NULL WHERE flow = ?",
-                   sha256(state));
+                   sha256Hex(state));
     return { connection: row.id, version: row.version, source: row.source,
              verifier: flow.verifier, redirect_uri: flow.redirect_uri };
   }
@@ -732,7 +634,7 @@ export class Connections {
       .map((row) => Object.freeze({
         connection: row.id, source: row.source, provider: row.provider,
         display_name: row.display_name, created_at: row.created_at,
-        models: Object.freeze(JSON.parse(row.models) as ModelInfo[]),
+        models: Object.freeze(JSON.parse(row.models) as ModelRecord[]),
       })));
     this.#usable = { revision: this.#revision, usable };
     return usable;
@@ -775,13 +677,13 @@ export class Connections {
    */
   egressOf(id: string): { readonly scope: EgressScope; readonly source: string;
                           readonly provider: string;
-                          readonly models: readonly ModelInfo[] } | null {
+                          readonly models: readonly ModelRecord[] } | null {
     const row = this.#row(id);
     if (row === undefined || row.status !== "active" || row.egress === null) {
       return null;
     }
     return { scope: egressScope(JSON.parse(row.egress)), source: row.source,
-             provider: row.provider, models: JSON.parse(row.models) as ModelInfo[] };
+             provider: row.provider, models: JSON.parse(row.models) as ModelRecord[] };
   }
 
   /** The active connections the sandbox may reach, oldest first, each with its scope. */
@@ -815,7 +717,7 @@ export class Connections {
         await running;
         continue;
       }
-      const holder = randomBytes(12).toString("hex");
+      const holder = randomHex(12);
       const step = await this.#write(() => this.#lease(id, holder, Date.now()));
       if (step === null) {
         return;  // fresh, or not an OAuth credential, or not usable (the reserve refuses)

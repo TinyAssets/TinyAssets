@@ -8,11 +8,10 @@ import { describe, expect, it } from "vitest";
 import { isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-import { builtinCatalog, modelInfos } from "../src/catalog";
-import { checkedRecord, recordOf } from "../src/model-record";
-import { Failure } from "../src/failure";
-import { FORWARD_DEADLINE_MS, forward, redact, verify } from "../src/forward";
-import { EGRESS_DEADLINE_S } from "../../owner/src/network";
+import { builtinCatalog, modelInfos, recordOf } from "../src/catalog";
+import { checkedRecord } from "../../contract/src/model-record";
+import { Failure } from "../../contract/src/failure";
+import { forward, redact, verify } from "../src/forward";
 import { seal } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, ring, rotate, sealed } from "./support";
 
@@ -29,10 +28,6 @@ async function call(blob: string, request: Request, env = ring("k1"), deadlineMs
 }
 
 describe("forward", () => {
-  it("cuts at the deadline the egress door keeps too", () => {
-    expect(FORWARD_DEADLINE_MS).toBe(EGRESS_DEADLINE_S * 1000);
-  });
-
   it("strips every inbound credential, injects the sealed one, and passes the rest", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
