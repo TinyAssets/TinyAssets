@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import { agentFile } from "../src/agent-file";
 import { type Entry } from "../src/files";
-import { nativeId } from "../src/ledger";
+import { LEDGER_LIMITS, nativeId } from "../src/ledger";
 import { Notices } from "../src/notices";
 import { fileUrl, type OwnerDO, RUN_STARTS_NONE } from "../src/owner-do";
 import { SEARCH_SCAN } from "../src/file-search";
@@ -367,6 +367,44 @@ describe("a scheduled run's result", () => {
     const { messages } = await r.stub.mailboxRead(r.bind(), { limit: 50 });
     expect(messages.map((message) => [message.room_id, message.body]))
       .toEqual([[`dm:${nativeId("main")}`, "Your brief: nothing due today."]]);
+    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
+  });
+
+  it("is kept when its post is refused for the moment: the runner's batch is refused " +
+     "storage_busy, the run stays live, and its next post posts it once (review D-2)",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
+                                                      at: Date.now() / 1000 + 3600 });
+    await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
+                Date.now() / 1000 - 1);
+    await r.stub.fileMkdir(r.bind(), { path: `/workspace/d-${crypto.randomUUID()}`,
+                                       expected_etag: null });
+    await drainDue(r.stub);
+    const start = (await recorder(r.stub)).starts.at(-1)!;
+    await startOf(r.stub, start.run);
+    const done = { frames: [{ seq: 1, at: 1, event: { type: "system", subtype: "init",
+                                                      session_id: `s-${start.run}` } },
+                            { seq: 2, at: 2, event: { type: "result", result: "The brief." } }],
+                   end: { exit_code: 0 } };
+    // The hot mail ceiling, as a busy archive leaves it: the reply's post is refused.
+    const [{ messages: held }] = await r.sql("SELECT messages FROM ledger_usage") as
+      [{ messages: number }];
+    await r.sql("UPDATE ledger_usage SET messages = ?", LEDGER_LIMITS.maxMessages);
+    const refused = await failure(() => r.stub.runEvents(runnerBinding(r, start), done));
+    expect([refused.code, (refused as { retryAfterS?: number }).retryAfterS])
+      .toEqual(["storage_busy", undefined]);
+    expect(await r.stub.agentStatus(r.bind(), { run_id: start.run }))
+      .toMatchObject({ state: "running" });
+    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
+    // The ceiling clears; the runner posts the batch again: the run settles, its reply posted.
+    await r.sql("UPDATE ledger_usage SET messages = ?", held);
+    expect(await r.stub.runEvents(runnerBinding(r, start), done))
+      .toMatchObject({ settled: "succeeded" });
+    const { messages } = await r.stub.mailboxRead(r.bind(), { limit: 50 });
+    expect(messages.map((message) => [message.room_id, message.body]))
+      .toEqual([[`dm:${nativeId("main")}`, "The brief."]]);
     expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
   });
 });

@@ -1540,16 +1540,27 @@ export class Runs {
     return times.length === 0 ? null : Math.min(...times);
   }
 
-  /**
-   * In a unit: the next due schedule claimed: its next time moved on (a cron's next
-   * occurrence; an `at` removed), so it fires once. Null when none is due.
-   */
-  claim(now: number): ScheduleRow | null {
-    const row = this.#sql.exec<ScheduleRow>(
+  /** The next due schedule, as it stands, not yet claimed; null when none is due. A read. */
+  due(now: number): ScheduleRow | null {
+    return this.#sql.exec<ScheduleRow>(
       "SELECT * FROM run_schedules WHERE next_at IS NOT NULL AND next_at <= ? " +
-        "ORDER BY next_at, id LIMIT 1", now).toArray()[0];
-    if (row === undefined) {
-      return null;
+        "ORDER BY next_at, id LIMIT 1", now).toArray()[0] ?? null;
+  }
+
+  /** Whether `row`, as `due` read it, still stands: not cancelled, nor claimed. A read. */
+  stands(row: ScheduleRow): boolean {
+    return this.#sql.exec("SELECT 1 FROM run_schedules WHERE id = ? AND next_at = ?", row.id,
+                          row.next_at).toArray().length === 1;
+  }
+
+  /**
+   * In a unit: `row`, as `due` read it, claimed: its next time moved on (a cron's next
+   * occurrence; an `at` removed), so it fires once. False when it no longer stands as read
+   * (cancelled, or claimed already): nothing changes.
+   */
+  claim(row: ScheduleRow, now: number): boolean {
+    if (!this.stands(row)) {
+      return false;
     }
     if (row.trigger === "at") {
       this.#sql.exec("DELETE FROM run_schedules WHERE id = ?", row.id);
@@ -1557,7 +1568,7 @@ export class Runs {
       this.#sql.exec("UPDATE run_schedules SET next_at = ? WHERE id = ?",
                      nextOccurrence(parseCron(row.cron), now), row.id);
     }
-    return row;
+    return true;
   }
 
   /** In a unit: what came of a schedule's run: the run, or why it was refused. */

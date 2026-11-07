@@ -80,8 +80,10 @@ export async function erasureQueue(batch: MessageBatch<unknown>, env: DoorsEnv,
       await eraseOutside(env, owner, upstream);
       message.ack();
     } catch (error) {
-      // A refusal (no erasure under way) is the object's word: dropped, never retried.
-      if (refusalOf(error)?.invalid === false) {
+      // A refusal (no erasure under way) is the object's word: dropped, never retried; one
+      // for the moment only (a full pool) is retried, as any failure is.
+      const refused = refusalOf(error);
+      if (refused !== null && !refused.invalid && !refused.transient) {
         console.error("an erasure message names no erasure under way; dropped");
         message.ack();
         continue;

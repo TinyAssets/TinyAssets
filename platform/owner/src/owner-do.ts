@@ -131,7 +131,7 @@ import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./age
 import { agentId, AUTHORITY_CHANGED, type Stamped } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay";
 import { type Ask, SIGNIN_REQUIRED, type LiveRun, type MailAnswer,
-         mailConversation,
+         mailConversation, NO_SCHEDULE,
          type PostedFrame, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
          scheduleAuthority, } from "./runs";
 import {
@@ -6371,8 +6371,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return this.#bodies.begin(answer.result,
                                 answer.stamp === null ? "owner" : `client:${answer.stamp.client}`);
     } catch (error) {
-      if (!(error instanceof Refusal)) {
-        throw error;
+      if (!(error instanceof Refusal) || error.transient) {
+        throw error;  // a transient refusal fails the batch, posted again: the reply is kept
       }
       return null;
     }
@@ -6418,6 +6418,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
       });
     } catch (error) {
+      if (error instanceof Refusal && error.transient) {
+        // For the moment only (the hot mail ceiling, `storage_busy`): the settle's unit
+        // fails with it, so the run stays live and its runner posts the batch again after
+        // its Retry-After; the reply is posted then, never dropped.
+        throw error;
+      }
       if (!(error instanceof Refusal)) {
         console.error("a mail's reply failed in the ledger; the run's settle stands");
       }
@@ -7042,28 +7048,45 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       await this.#deliver(mail);
     }
+    // A due schedule is claimed in its run's admission unit, once the run is admitted, so
+    // it fires once: a run admitted claims it; a terminal refusal claims it with the refusal
+    // kept; a transient refusal claims nothing, and it stays due for the lane's next pass.
+    // (A unit keeps what it wrote before a throw, `gate.ts`: so the claim is the admission's
+    // last write, never its first.)
     while (clock() < until) {
       const row = await this.#door(() => workRefusal(admission(this.#storage)) !== null
-        ? null : this.#runs.claim(clock()));
+        ? null : this.#runs.due(clock()));
       if (row === null) {
         return;
       }
+      let gone = false;
       try {
         const read = await this.#readAgent(row.agent);
-        const run = await this.#launch(read, () => ({
-          initiator: "schedule", ...scheduleAuthority(row), agent: row.agent,
-          conversation: null, request: null,
-          tiers: tierNumbers(this.#storage, undefined, clock()), unattended: true,
-          prompt: row.input, mail: null }));
+        const run = await this.#launch(read, () => {
+          if (!this.#runs.stands(row)) {
+            gone = true;
+            throw new Refusal("no_schedule", NO_SCHEDULE);
+          }
+          return {
+            initiator: "schedule", ...scheduleAuthority(row), agent: row.agent,
+            conversation: null, request: null,
+            tiers: tierNumbers(this.#storage, undefined, clock()), unattended: true,
+            prompt: row.input, mail: null };
+        }, null, () => this.#runs.claim(row, clock()));
         await this.#door(() => this.#runs.ran(row.id, run, null));
       } catch (error) {
         if (!(error instanceof Refusal) || error.transient) {
-          throw error;  // a transient refusal fails the pass, and the schedule fires again
+          throw error;  // a transient refusal fails the pass: unclaimed, the schedule stays due
+        }
+        if (gone) {
+          continue;  // cancelled, or claimed, since it was read: nothing of it fires now
         }
         const reason = error.message;
         await this.#door(() => {
-          this.#runs.ran(row.id, null, reason);
-          this.#notices.add("run_refused", `${row.agent}: ${reason}`, clock());
+          if (this.#runs.claim(row, clock())) {
+            this.#runs.ran(row.id, null, reason);
+            this.#notices.add("run_refused", `${row.agent}: ${reason}`, clock());
+          }
         });
       }
     }

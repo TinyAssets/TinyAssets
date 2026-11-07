@@ -21,7 +21,7 @@ import { RecordingSandbox } from "../../owner/test/sandbox-fake";
  * sandbox Worker).
  */
 /** The doors a test may have refused once, as the object's own. */
-type Refusable = "outsideAgents" | "toolProfile" | "fileUploadTarget";
+type Refusable = "outsideAgents" | "toolProfile" | "fileUploadTarget" | "erasureOutside";
 
 /**
  * An owner's next call of a door (`agents_list`, the tool profile, an upload's target),
@@ -53,6 +53,12 @@ export class OwnerDO extends RealOwnerDO {
       ReturnType<RealOwnerDO["toolProfile"]> {
     const refusal = refusedOnce("toolProfile", args[0].owner);
     return refusal !== undefined ? Promise.reject(refusal) : super.toolProfile(...args);
+  }
+
+  override erasureOutside(...args: Parameters<RealOwnerDO["erasureOutside"]>):
+      ReturnType<RealOwnerDO["erasureOutside"]> {
+    const refusal = refusedOnce("erasureOutside", args[0].owner);
+    return refusal !== undefined ? Promise.reject(refusal) : super.erasureOutside(...args);
   }
 
   override fileUploadTarget(...args: Parameters<RealOwnerDO["fileUploadTarget"]>):

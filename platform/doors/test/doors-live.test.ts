@@ -27,7 +27,8 @@ import { readOwner, readRoute } from "../src/directory";
 import { eraseOutside, erasureQueue } from "../src/erase";
 import { contentDigest } from "../src/file-bytes";
 import { sharedApps } from "../src/inbound";
-import type { OwnerDO } from "./entry";
+import { type OwnerDO, refuseOnce } from "./entry";
+import { slotBusy } from "../../contract/src/slots";
 import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
   appCallback, appPost, call, connect, doorsEnv, legacyTool, NAVIGATE, OPEN, refresh,
@@ -214,6 +215,20 @@ describe("the erasure", () => {
       retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
                        doorsEnv, () => FAKE_UPSTREAM);
     expect([acked, retried]).toEqual([["m1", "m2"], []]);
+  });
+
+  it("retries an erasure message the object refuses for the moment, never drops it",
+     async () => {
+    const { who } = await owned();
+    refuseOnce("erasureOutside", who, slotBusy());
+    const acked: string[] = [];
+    const retried: string[] = [];
+    await erasureQueue({ queue: ERASURE_QUEUE, messages: [{
+      id: "m1", timestamp: new Date(), attempts: 1, body: { owner: who },
+      ack: () => { acked.push("m1"); }, retry: () => { retried.push("m1"); } }],
+      retryAll: () => undefined, ackAll: () => undefined } as unknown as MessageBatch<unknown>,
+                       doorsEnv, () => FAKE_UPSTREAM);
+    expect([acked, retried]).toEqual([[], ["m1"]]);
   });
 
   it("retries an outside record whose identity deletion fails, and finishes on the next try",
