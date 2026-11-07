@@ -21,6 +21,7 @@ import type { Config } from "../../ci/kit/sources";
  */
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "hooks",
+  env: Object.freeze(["src/index.ts#HooksEnv"]),
   name: "tinyassets-hooks",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",

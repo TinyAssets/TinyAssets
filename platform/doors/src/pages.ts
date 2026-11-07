@@ -17,7 +17,7 @@
  * script, style, font or image (`CSP`), and no inline script, so the return pages' own first
  * script is the first to run (it clears the code from the address bar before anything else).
  */
-import type { DoorsEnv } from "./config";
+import { type DoorsEnv, PUBLIC_HOST } from "./config";
 
 /** The pages, by path: each is its file. */
 const PAGES: Readonly<Record<string, string>> = Object.freeze({
@@ -44,7 +44,7 @@ const STATIC_PREFIX = "/app/static/";
  * framed, no form posts, and the DOM's script sinks closed (Trusted Types with no policy).
  */
 export const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
-  "connect-src 'self' wss://tinyassets.io; base-uri 'none'; form-action 'none'; " +
+  `connect-src 'self' wss://${PUBLIC_HOST}; base-uri 'none'; form-action 'none'; ` +
   "frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
 
 export const HEADERS: Readonly<Record<string, string>> = Object.freeze({

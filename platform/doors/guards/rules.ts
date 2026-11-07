@@ -39,6 +39,7 @@ import type { ConfigRules } from "../../ci/kit/config";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "doors",
+  env: Object.freeze(["src/config.ts#DoorsEnv"]),
   name: "tinyassets-doors",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",

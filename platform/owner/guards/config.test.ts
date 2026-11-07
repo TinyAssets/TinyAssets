@@ -10,15 +10,14 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { classProblems, exactProblems, flagProblems, keyProblems, NO_EXPORTS, secretProblems }
-  from "../../ci/kit/config";
+import { bindingTypesTest, classProblems, exactProblems, flagProblems, keyProblems, NO_EXPORTS,
+         secretProblems } from "../../ci/kit/config";
 import { PLATFORM } from "../../ci/paths";
 import { type Config, configFiles, platformConfigs, workerSources } from "../../ci/kit/sources";
 import { readWrangler, wranglerKeys } from "../../ci/workers";
 
-import { BOUND_KEYS, type Bound, CLASSES, ENV_KEYS, LIMITS, OWNER_QUEUES, RING_QUEUES, SECRETS,
-         SERVICES,
-         TOP_KEYS } from "./rules";
+import { BOUND_KEYS, type Bound, CLASSES, ENV, ENV_KEYS, LIMITS, OWNER_QUEUES, RING_QUEUES,
+         SECRETS, SERVICES, TOP_KEYS } from "./rules";
 
 const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
@@ -291,6 +290,8 @@ const SOURCES: ReadonlyMap<string, string> = workerSources();
 const OWNER_CONTROL = controlUses(SOURCES);
 
 describe("owner Worker config", () => {
+  bindingTypesTest("owner", ENV);
+
   it("binds only FILES, to a Worker that binds one bucket, GATEWAY, to one that binds " +
      "nothing, and HOOKS, to one that binds its own class, and turns ctx.exports off", () => {
     expect(configProblems(config, platformConfigs())).toEqual([]);

@@ -1,0 +1,12 @@
+{
+  "host": "tinyassets.io",
+  "egress": "egress.tinyassets.io",
+  "routes": ["/mcp*", "/api/*", "/hooks/inbound/*", "/hooks/e2b/*", "/app/api/*", "/authorize*",
+             "/oauth/*", "/.well-known/oauth-*"],
+  "mcp": "/mcp",
+  "signin": { "authorize": "/authorize", "callback": "/oauth/upstream/callback" },
+  "first_party": { "client": "/oauth/clients/web.json", "redirect": "/app/signed-in",
+                   "resource": "/app" },
+  "hook": "/hooks/e2b/lifecycle",
+  "control_key": "c:control"
+}

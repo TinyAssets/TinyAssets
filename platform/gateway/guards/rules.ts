@@ -20,6 +20,7 @@ import type { ImportRules } from "../../ci/kit/imports";
  */
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "gateway",
+  env: Object.freeze(["src/keyring.ts#KeyringEnv"]),
   name: "tinyassets-gateway",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",

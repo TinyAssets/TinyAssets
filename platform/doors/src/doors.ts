@@ -34,7 +34,7 @@
  * caller's: `index.ts` passes `UNWIRED` until the AuthKit slice and the bundled records,
  * and the tests a fake sign-in and the records with a test source beside them.
  */
-import { E2B_HOOK_PATH, e2bLifecycle } from "./e2b-hooks";
+import { e2bLifecycle } from "./e2b-hooks";
 import { serveApi } from "./api";
 import { serveApp } from "./app";
 import { serveEgress } from "./egress";
@@ -42,8 +42,8 @@ import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
 import { bindMcp, withTiers } from "./binder";
 import {
-  CONNECT_CALLBACK_PATH, type DoorsEnv, INBOUND_PATH, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT,
-  WEB_REDIRECT,
+  AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, type DoorsEnv, E2B_HOOK_PATH, INBOUND_PATH, MCP_ORIGINS,
+  MCP_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK_PATH, WEB_CLIENT, WEB_REDIRECT,
 } from "./config";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
 import { outsideRead } from "./control";
@@ -117,7 +117,7 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
     return notFound();
   }
   const path = url.pathname;
-  if (path === "/mcp" || path.startsWith("/mcp/")) {
+  if (path === MCP_PATH || path.startsWith(`${MCP_PATH}/`)) {
     return mcpDoor(withoutCookie(request), env, ctx);
   }
   if (path.startsWith("/api/")) {
@@ -141,10 +141,10 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   if (path === CONNECT_CALLBACK_PATH || path.startsWith(`${CONNECT_CALLBACK_PATH}/`)) {
     return connectCallback(request, sources);
   }
-  if (path === "/authorize") {
+  if (path === AUTHORIZE_PATH) {
     return authorize(request, env, upstream);
   }
-  if (path === "/oauth/upstream/callback") {
+  if (path === UPSTREAM_CALLBACK_PATH) {
     return callback(request, env, upstream);
   }
   if (url.href === WEB_CLIENT) {
