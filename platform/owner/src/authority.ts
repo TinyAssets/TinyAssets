@@ -147,7 +147,7 @@ export class Authority {
       return this.#parts.grants.standing(stamp.client, stamp.generation, stamp.authenticated_at);
     } catch (error) {
       if (error instanceof Refusal && !error.invalid) {
-        throw new Refusal("refused", AUTHORITY_CHANGED);
+        throw new Refusal("authority_changed", AUTHORITY_CHANGED);
       }
       throw error;
     }
@@ -168,12 +168,12 @@ export class Authority {
       return;
     }
     if (state?.by !== "client") {
-      throw new Refusal("refused", NO_AUTHORITY);
+      throw new Refusal("no_authority", NO_AUTHORITY);
     }
     const stamp = state.stamp;
     const grant = this.#standing(stamp);
     if (need === OWNER_ONLY) {
-      throw new Refusal("refused", NOT_OWNER);
+      throw new Refusal("not_owner", NOT_OWNER);
     }
     if (grant.mode === "full") {
       return;
@@ -181,7 +181,7 @@ export class Authority {
     if (need === undefined || stamp.universe === null
         || !need.every((capability) => grant.holds({ universe: stamp.universe!,
                                                      agent: stamp.agent, capability }))) {
-      throw new Refusal("refused", NOT_GRANTED);
+      throw new Refusal("not_granted", NOT_GRANTED);
     }
   }
 
@@ -209,6 +209,6 @@ export class Authority {
       }
       first ??= reason;
     }
-    throw first ?? new Refusal("refused", NOT_GRANTED);
+    throw first ?? new Refusal("not_granted", NOT_GRANTED);
   }
 }

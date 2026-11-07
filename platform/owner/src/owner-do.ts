@@ -2612,7 +2612,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       } catch (error) {
         if (error instanceof Refusal && !error.invalid) {
           this.#cancelInSandbox(this.#runs.endClient(grant.stamp.client, clock()));
-          throw new Refusal("refused", AUTHORITY_CHANGED);
+          throw new Refusal("authority_changed", AUTHORITY_CHANGED);
         }
         throw error;
       }
@@ -6797,7 +6797,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     try {
       text = utf8Decoder("strip").decode(bytes);
     } catch {
-      throw new Refusal("invalid", `${path} is not UTF-8 text`);
+      throw new Refusal("agent_file_invalid", `${path} is not UTF-8 text`);
     }
     return { file: agentFile(text), etag: content.entry.etag };
   }
@@ -7305,7 +7305,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     try {
       engine = runEnv(bundledSources(), run.engine, run.credential);
     } catch (error) {
-      throw error instanceof SourceRecordError ? new Refusal("invalid", error.message) : error;
+      throw error instanceof SourceRecordError ? new Refusal("run_config_invalid", error.message) : error;
     }
     if (typeof run.secret !== "string" || !HEX64.test(run.secret)) {
       throw new Refusal("invalid", "a sandbox run carries its own secret, 64 hex");

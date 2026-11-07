@@ -741,6 +741,24 @@ describe("the tier numbers (review L-1)", () => {
     const [job] = await r.sql("SELECT time FROM cf_agents_jobs WHERE id = 'owner-schedule/runs'");
     expect(job!["time"]).toBeGreaterThan(Date.now() + 30_000);
   });
+
+  it("settle a waiting run refused at its turn with the refusal's own code, its words its error",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const first = await r.stub.agentSubmit(r.bind(), { message: "a1", client_send_id: "w-1" });
+    const waiting = await r.stub.agentSubmit(r.bind(), {
+      message: "a2", client_send_id: "w-2", conversation_id: first.conversation_id });
+    expect(waiting.state).toBe("waiting");
+    // Its agent's file no longer holds by its turn: refused as the lane reads it again.
+    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, unknown_key: true });
+    await r.stub.runEvents(runnerBinding(r, await startOf(r.stub, first.run_id)),
+                           { frames: [], end: { exit_code: 0 } });
+    await drainDue(r.stub);
+    const refused = await r.stub.agentStatus(r.bind(), { run_id: waiting.run_id });
+    expect(refused).toMatchObject({ state: "failed", code: "agent_file_invalid",
+                                    error: expect.stringMatching(/^agent\.json holds only /) });
+  });
 });
 
 describe("the reviewer's untested cases (review M-6)", () => {

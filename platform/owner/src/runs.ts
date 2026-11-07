@@ -901,7 +901,7 @@ export class Runs {
       grant = this.#deps.standing(stamp);
     } catch (error) {
       if (error instanceof Refusal && !error.invalid) {
-        throw new Refusal("refused", AUTHORITY_CHANGED);
+        throw new Refusal("authority_changed", AUTHORITY_CHANGED);
       }
       throw error;
     }

@@ -105,7 +105,15 @@ export const REFUSALS = Object.freeze({
   tool_not_served: REFUSED,
   unattended_refused: REFUSED,
 
-  // The owner's object, never named in a message: the object tells these apart inside.
+  // The owner's object, never named in a message: the object tells these apart inside, and
+  // a refused waiting run keeps its code as its own (`runs.ts` `refuseWaiting`).
+  authority_changed: QUIET_REFUSED,
+  no_authority: QUIET_REFUSED,
+  not_granted: QUIET_REFUSED,
+  not_owner: QUIET_REFUSED,
+  // The agent's `agent.json`, and the run its record and connection make, that do not hold.
+  agent_file_invalid: QUIET_INVALID,
+  run_config_invalid: QUIET_INVALID,
   connection_unavailable: QUIET_REFUSED,
   credential_expired: QUIET_REFUSED,
   chunk_deleting: QUIET_REFUSED,

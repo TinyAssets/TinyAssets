@@ -191,17 +191,20 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
                            run: EngineRun): Readonly<Record<string, string>> {
   if (run.credential === "vendor_login_in_sandbox") {
     if (run.connection !== null) {
-      throw new Refusal("invalid", "a run on the vendor's own sign-in is on no connection");
+      throw new Refusal("run_config_invalid",
+                        "a run on the vendor's own sign-in is on no connection");
     }
     return Object.freeze({});
   }
   const own = connections.find((entry) => entry.connection === run.connection);
   if (own === undefined) {
-    throw new Refusal("invalid", "an API-key run is on one of the owner's active connections");
+    throw new Refusal("run_config_invalid",
+                      "an API-key run is on one of the owner's active connections");
   }
   const { connection, provider, egress } = own;
   if (!Object.hasOwn(run.api_key_env, provider)) {
-    throw new Refusal("invalid", "the engine runs on no key of this connection's provider");
+    throw new Refusal("run_config_invalid",
+                      "the engine runs on no key of this connection's provider");
   }
   const env: Record<string, string> = {};
   const set = (name: string, value: string) => {
