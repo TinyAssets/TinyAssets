@@ -2,8 +2,13 @@
  * Rule 0's own table (`rules.ts`): it names nothing twice (it would not load), every rule
  * says why, a shared store's table is never archived into one owner's tree (it holds every
  * owner's rows), and a name is matched by its exact rule or a family the old stack minted,
- * never by a default.
+ * never by a default; and every table the old stack's own DDL makes in a store ruled table
+ * by table has its rule.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -59,5 +64,40 @@ describe("rule 0", () => {
     expect(policy.kind === "store" && [tableUse(policy, "policy"), tableUse(policy, "receipts"),
       tableUse(policy, "once_approvals"), tableUse(policy, "coupons")])
       .toEqual(["carry", "archive", "drop", null]);
+  });
+});
+
+/**
+ * The old stack's DDL by store (`old-tables.json`): rule 0's sweep, every `CREATE TABLE` of
+ * `tinyassets/` placed in the store its module opens (`import12_report.md` says how). A
+ * store's older names (`.workflow.db`, `.author_server.db`) hold the main store's tables.
+ */
+const OLD = (JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)),
+                                          "old-tables.json"), "utf8")) as
+  { stores: Record<string, { tables: string[] }> }).stores;
+const LEVELS = { SHARED, ACCOUNT, ROOT, CENTER, SESSIONS } as const;
+const ALIASES: Readonly<Record<string, string>> = { ".workflow.db": ".tinyassets.db",
+                                                    ".author_server.db": ".tinyassets.db" };
+const swept = (store: string): string => {
+  const [where, name] = store.split(":") as [string, string];
+  return `${where}:${ALIASES[name] ?? name}`;
+};
+
+describe("rule 0 against the old stack's own DDL", () => {
+  const mapped = Object.entries(LEVELS).flatMap(([where, level]) => rules(level)
+    .filter(([, rule]) => rule.kind === "store" && typeof rule.tables === "object")
+    .map(([name, rule]) => [`${where}:${name}`, rule] as const));
+
+  it("names every table each table-mapped store's old DDL makes", () => {
+    const missing = mapped.flatMap(([store, rule]) => (OLD[swept(store)]?.tables ?? [])
+      .filter((table) => rule.kind === "store" && tableUse(rule, table) === null)
+      .map((table) => `${store}/${table}`));
+    expect(missing).toEqual([]);
+  });
+
+  it("swept every table-mapped store, and rules each swept store table by table", () => {
+    const keys = new Set(mapped.map(([store]) => swept(store)));
+    expect([...keys].filter((key) => OLD[key] === undefined)).toEqual([]);
+    expect(Object.keys(OLD).filter((key) => !keys.has(key))).toEqual([]);
   });
 });

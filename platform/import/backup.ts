@@ -15,8 +15,8 @@
  * is not UTF-8 is never guessed at.
  */
 import { createHash } from "node:crypto";
-import { closeSync, constants, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, lstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { CHUNK_BYTES } from "../contract/src/limits";
@@ -114,14 +114,25 @@ export function isStore(path: string | Buffer): boolean {
   }
 }
 
-/** A store opened read-only and immutable: no lock taken, no sidecar read or written. */
+/**
+ * A store's URI, read-only and immutable: SQLite takes no lock and reads or writes no
+ * sidecar. Both matter: `mode=ro` alone, on a store in WAL mode, makes its `-wal` and
+ * `-shm` beside it (node:sqlite 22, measured), and the shared layer is an extracted
+ * archive on a writable disk. Immutable reads the main file alone, so a store with an
+ * unmerged log is refused before it is opened (`survey.ts`, `unclean_store`). The path is
+ * made absolute as written, never resolved through a link.
+ */
+export function storeUri(path: string | Buffer): string {
+  const text = resolve(typeof path === "string" ? path : utf8Text(path, "keep"));
+  return `file:${encodeURI(text).replace(/[?#]/g, encodeURIComponent)}?mode=ro&immutable=1`;
+}
+
+/** A store opened by `storeUri`, once `lstat` has it a regular file. */
 export function openStore(path: string | Buffer): DatabaseSync {
-  const real = realpathSync(path, { encoding: "buffer" });
   if (!lstatSync(path).isFile()) {
     throw new Error("a store is a regular file");
   }
-  return new DatabaseSync(`file:${encodeURI(utf8Text(real, "keep")).replace(/[?#]/g,
-    encodeURIComponent)}?mode=ro&immutable=1`, { readOnly: true });
+  return new DatabaseSync(storeUri(path), { readOnly: true });
 }
 
 /** `name` as an SQL identifier. */
@@ -176,15 +187,18 @@ function unescaped(field: string): string {
  * (`/proc/self/mountinfo`, the last mount at that point), or null when it is. Held before
  * an owner's image is read, so the job never reads a live volume or a writable one.
  */
-export function mountProblem(mountinfo: string, at: string): string | null {
-  let found: { options: string[]; type: string } | null = null;
+export function mountProblem(mountinfo: string, at: string,
+                             backing: (device: string) => string | null = () => null,
+                             image: string | null = null): string | null {
+  let found: { options: string[]; type: string; source: string } | null = null;
   for (const line of mountinfo.split("\n")) {
     const [left, right] = line.split(" - ");
     const fields = (left ?? "").split(" ");
     if (right === undefined || fields.length < 6 || unescaped(fields[4]!) !== at) {
       continue;
     }
-    found = { options: fields[5]!.split(","), type: right.split(" ")[0]! };
+    const [type, source] = right.split(" ");
+    found = { options: fields[5]!.split(","), type: type!, source: unescaped(source ?? "") };
   }
   if (found === null) {
     return "is not a mount point";
@@ -192,7 +206,29 @@ export function mountProblem(mountinfo: string, at: string): string | null {
   if (!found.options.includes("ro")) {
     return "is mounted writable";
   }
-  return found.type === "xfs" ? null : `is ${found.type}, not an owner's XFS image`;
+  if (found.type !== "xfs") {
+    return `is ${found.type}, not an owner's XFS image`;
+  }
+  if (image !== null && backing(found.source) !== image) {
+    return "is not its own image: its loop device's backing file is another";
+  }
+  return null;
+}
+
+/**
+ * The file a loop device reads (`/sys/block/loopN/loop/backing_file`), or null when the
+ * device is none: what ties a mount to the image whose hash was its pin.
+ */
+export function loopBacking(device: string): string | null {
+  const loop = /^\/dev\/(loop\d+)$/.exec(device);
+  if (loop === null) {
+    return null;
+  }
+  try {
+    return readFileSync(`/sys/block/${loop[1]}/loop/backing_file`, "utf8").trim();
+  } catch {
+    return null;
+  }
 }
 
 /** `mount`'s arguments for one owner image (run as root on the host, never on a live volume). */

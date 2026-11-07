@@ -20,9 +20,15 @@ function octal(value: number, width: number): Buffer {
   return Buffer.from(`${value.toString(8).padStart(width - 1, "0")}\0`, "latin1");
 }
 
-/** One 512-byte header. */
+/** A member's most bytes: what the header's 11 octal digits can say (8 GiB less a byte). */
+export const TAR_MEMBER_MAX = 0o77777777777;
+
+/** One 512-byte header; a member past `TAR_MEMBER_MAX` is refused, never written short. */
 function header(name: Buffer, type: string, size: number, mode: number, mtime: number,
                 link: Buffer = Buffer.alloc(0)): Buffer {
+  if (size > TAR_MEMBER_MAX) {
+    throw new Error(`a tar member of ${size} bytes is past the format's ${TAR_MEMBER_MAX}`);
+  }
   const block = Buffer.alloc(BLOCK);
   name.copy(block, 0, 0, Math.min(name.length, 100));
   octal(mode & 0o7777, 8).copy(block, 100);

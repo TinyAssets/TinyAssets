@@ -16,7 +16,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, truncateSync, writeFileSync,
+  chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -42,9 +43,15 @@ export const keyOf = (principal: string) => sha(principal).slice(0, 16);
 
 /** A store made at `path` from DDL and rows. */
 export function makeStore(path: string, sql: string,
-                          rows: Readonly<Record<string, readonly unknown[][]>> = {}): void {
+                          rows: Readonly<Record<string, readonly unknown[][]>> = {},
+                          wal = false): void {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
+  if (wal) {
+    // A store in WAL mode, as the old stack kept its own: its log merged at the last
+    // close, so the copy holds the main file alone, its header saying WAL.
+    db.exec("PRAGMA journal_mode=WAL");
+  }
   db.exec(sql);
   for (const [table, values] of Object.entries(rows)) {
     for (const row of values) {
@@ -119,7 +126,7 @@ export function fixture(): Fixture {
                 [p, uid, 3, snapshot(p), sha(images[p]!), null, 0, 1.5, null]),
               owner_box_secrets: Object.keys(UIDS).map((p) => [p, `secret-${p}`]),
               routing_sequence: [[7]],
-            });
+            }, true);
   makeStore(join(shared, ".broker/plans.db"),
             "CREATE TABLE plans (owner TEXT PRIMARY KEY, tier TEXT NOT NULL, " +
             "event_created REAL NOT NULL, ends_at REAL, customer_id TEXT UNIQUE, " +
@@ -174,7 +181,7 @@ export function fixture(): Fixture {
                                                                          destinations: [] } })]],
               receipts: [[1, 1.0, "set", ALICE, null, null, sha("p"), null, 2, null, "ok", "ok"]],
               once_approvals: [[sha("t"), sha("r"), "s", 2, 9.0, null]],
-            });
+            }, true);
   makeStore(join(account(ALICE), "conversations.db"),
             "CREATE TABLE message_bodies (message_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, " +
             "body TEXT NOT NULL CHECK(length(body) <= 16384), created_at REAL NOT NULL);" +
@@ -223,7 +230,7 @@ export function fixture(): Fixture {
             "CREATE TABLE universes (id TEXT PRIMARY KEY);", {
               branch_definitions: [["bd1", ALICE, "my workflow"]],
               universes: [["novel"]],
-            });
+            }, true);
   makeStore(join(a, ".runs.db"),
             "CREATE TABLE runs (run_id TEXT PRIMARY KEY, owner_user_id TEXT);" +
             "CREATE TABLE branch_schedules (schedule_id TEXT PRIMARY KEY, cron TEXT);", {
@@ -284,6 +291,27 @@ export function fixture(): Fixture {
     volume: (uid) => ({ root: join(work, "mnt", String(uid)) }),
   };
   return { work, copy, tree, account };
+}
+
+/**
+ * A store at `path` whose log is not merged: written in WAL mode with checkpoints off, and
+ * copied, main file and log, while its writer still holds it (as a box killed mid-write
+ * leaves it).
+ */
+export function unmergedStore(path: string): void {
+  const scratch = mkdtempSync(join(tmpdir(), "ta-wal-"));
+  try {
+    const db = new DatabaseSync(join(scratch, "s.db"));
+    db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; " +
+            "CREATE TABLE authoring_versions (id INTEGER PRIMARY KEY, text TEXT)");
+    db.prepare("INSERT INTO authoring_versions VALUES (1, 'a draft only the log holds')").run();
+    mkdirSync(dirname(path), { recursive: true });
+    copyFileSync(join(scratch, "s.db"), path);
+    copyFileSync(join(scratch, "s.db-wal"), `${path}-wal`);
+    db.close();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /** A sparse file of `size` bytes: past the files plane's largest file, with no disk taken. */

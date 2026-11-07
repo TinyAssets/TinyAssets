@@ -7,7 +7,8 @@
  */
 import { execFileSync } from "node:child_process";
 import {
-  appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
+  appendFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync,
+  symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,8 +18,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { contentIdOf } from "../../contract/src/content";
 import { CHUNK_BYTES, FILE_DEFAULTS, INLINE_BYTES } from "../../contract/src/limits";
-import { buildBundles, type Entry, exclusionList, NOTICE, type Options, pages, PAGE_ROWS,
-         type Row } from "../bundle";
+import { type Entry, type Row } from "../build";
+import {
+  buildBundles, DIGESTS, exclusionList, NOTICE, type Options, pages, PAGE_ROWS, PRIVATE_RECORD,
+} from "../bundle";
+import { TarWriter, TAR_MEMBER_MAX } from "../tar";
 import {
   ALICE, BAD_DIR, BAD_NAME, bigBytes, BOB, type Fixture, fixture, FOUNDER, keyOf, sha, sparse,
   TIERS,
@@ -79,6 +83,7 @@ describe("the bundle builder", () => {
       `file ${I}/.records/broker/message_ledger.db`,
       `file ${I}/.records/broker/policy.db`,
       `file ${I}/README.md`,
+      `file ${I}/ignored.tar`,
       `file ${I}/links.txt`,
       `dir ${I}/novel`,
       `dir ${I}/novel/.records`,
@@ -207,7 +212,7 @@ describe("the bundle builder", () => {
     const { f, out, priv, options } = setup();
     const summary = buildBundles(f.copy, options);
     expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(BOB)].sort());
-    expect(readdirSync(priv).sort()).toEqual([keyOf(FOUNDER), "cutover.private.json"].sort());
+    expect(readdirSync(priv).sort()).toEqual([keyOf(FOUNDER), DIGESTS, PRIVATE_RECORD].sort());
     expect(json(join(priv, keyOf(FOUNDER), "owner.json"))["owner"]).toBe(FOUNDER);
     expect(manifest(join(priv, keyOf(FOUNDER))).map((entry) => entry.path))
       .toContain(`${I}/home/notes/n.md`);
@@ -215,9 +220,85 @@ describe("the bundle builder", () => {
     const record = json(join(priv, "cutover.private.json"))["owners"] as Record<string, unknown>[];
     expect(record.map((owner) => [owner["owner"], owner["excluded"], owner["subscription_id"]]))
       .toEqual([[ALICE, false, "sub_alice"], [BOB, false, null], [FOUNDER, true, "sub_founder"]]);
-    expect(Object.keys(summary.digests).sort())
+    // The digests are keyed by owner: a 0600 file of the private folder's, never stdout.
+    expect(lstatSync(join(priv, DIGESTS)).mode & 0o777).toBe(0o600);
+    expect(Object.keys(json(join(priv, DIGESTS))["digests"] as object).sort())
       .toEqual([keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER)].sort());
-    expect(JSON.stringify(summary)).not.toContain("user_");
+    const text = JSON.stringify(summary);
+    for (const name of [ALICE, BOB, FOUNDER, keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER)]) {
+      expect(text).not.toContain(name);
+    }
+  });
+
+  it("refuses the private folder inside the out folder, or the out folder inside it, by real path",
+     () => {
+    const { f, out, priv, options } = setup();
+    const nested = join(out, "deep", "private");
+    mkdirSync(nested, { recursive: true });
+    const linked = join(priv, "to-out");
+    symlinkSync(out, linked);
+    const inner = join(priv, "out");
+    mkdirSync(inner);
+    for (const [o, p] of [[out, nested], [inner, priv], [out, linked], [out, `${out}/`],
+                          [out, out]] as const) {
+      expect(() => buildBundles(f.copy, { ...options, out: o, private: p }), `${o} ${p}`)
+        .toThrow(/one inside the other/);
+    }
+    expect(readdirSync(out)).toEqual(["deep"]);
+    expect(readdirSync(priv).sort()).toEqual(["out", "to-out"]);
+  });
+
+  it("refuses an empty exclusion list: the founder's owner is never bundled as an ordinary one",
+     () => {
+    const { f, out, priv, options } = setup();
+    for (const list of ["", "# nobody\n\n"]) {
+      expect(() => buildBundles(f.copy, { ...options, exclude: exclusionList(list) }))
+        .toThrow(/names no owner/);
+    }
+    expect(() => buildBundles(f.copy, { ...options, out: null, private: null,
+                                        exclude: new Set() })).toThrow(/names no owner/);
+    expect([readdirSync(out), readdirSync(priv)]).toEqual([[], []]);
+  });
+
+  it("keeps what the sync's defaults ignore verbatim in ignored.tar, counted", () => {
+    const { f, out, options } = setup();
+    buildBundles(f.copy, options);
+    const bundle = join(out, keyOf(ALICE));
+    const tar = mkdtempSync(join(tmpdir(), "ta-tar-"));
+    temps.push(tar);
+    writeFileSync(join(tar, "ignored.tar"),
+                  bytesOf(bundle, manifest(bundle).find((e) => e.path === `${I}/ignored.tar`)!));
+    execFileSync("tar", ["-xf", join(tar, "ignored.tar"), "-C", tar]);
+    const dep = join(tar, "novel", "workspace", "node_modules", "dep");
+    expect(readdirSync(dep).sort()).toEqual(["index.js", "package.json"]);
+    expect(readFileSync(join(dep, "index.js"))
+      .equals(readFileSync(join(f.tree(ALICE), "novel", "workspace", "node_modules", "dep",
+                                "index.js")))).toBe(true);
+    expect(manifest(bundle).some((e) => e.path.includes("/node_modules"))).toBe(false);
+  });
+
+  it("refuses a tar member past the header's size field, before writing it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ta-tar-"));
+    temps.push(dir);
+    sparse(join(dir, "huge"), TAR_MEMBER_MAX + 1);
+    const tar = new TarWriter(openSync(join(dir, "out.tar"), "w"));
+    expect(() => tar.add(Buffer.from("huge"), Buffer.from(join(dir, "huge"))))
+      .toThrow(/past the format/);
+    tar.end();
+    expect(lstatSync(join(dir, "out.tar")).size).toBe(1024);
+  });
+
+  it("refuses an owner the old stack never admitted, and backs one up as absent", () => {
+    const { f, out, priv, options } = setup();
+    const db = new DatabaseSync(join(f.work, "data", "_data", ".broker", "state",
+                                     "owner-identities.db"));
+    db.prepare("DELETE FROM owner_admission WHERE digest IN (?, ?)").run(sha(BOB), sha(FOUNDER));
+    db.close();
+    const summary = buildBundles(f.copy, options);
+    expect(summary).toMatchObject({ bundled: 1, excluded: 1, refused: { never_admitted: 1 } });
+    expect(readdirSync(out)).toEqual([keyOf(ALICE)]);
+    expect(json(join(priv, keyOf(FOUNDER), "owner.json"))["admission"])
+      .toEqual({ state: "absent", reasons: [] });
   });
 
   it("refuses an exclusion list naming no owner of the backup, before anything is written", () => {
@@ -230,11 +311,12 @@ describe("the bundle builder", () => {
   });
 
   it("seals each bundle: its index holds every part's hash, and its own hash is the digest", () => {
-    const { f, out, options } = setup();
-    const summary = buildBundles(f.copy, options);
+    const { f, out, priv, options } = setup();
+    buildBundles(f.copy, options);
     const bundle = join(out, keyOf(ALICE));
     const index = readFileSync(join(bundle, "bundle.json"));
-    expect(summary.digests[keyOf(ALICE)]).toBe(sha(index));
+    expect((json(join(priv, DIGESTS))["digests"] as Record<string, string>)[keyOf(ALICE)])
+      .toBe(sha(index));
     const parts = (JSON.parse(index.toString()) as { parts: Record<string, string> }).parts;
     expect(Object.keys(parts).sort()).toEqual(["manifest/0.json", "owner.json", "rows/0.json"]);
     for (const [name, digest] of Object.entries(parts)) {
@@ -272,18 +354,18 @@ describe("the bundle builder", () => {
     expect([readdirSync(out), readdirSync(priv)]).toEqual([[], []]);
   });
 
-  it("reads and hashes everything in a dry run, and writes nothing", () => {
-    const { f } = setup();
-    const before = execFileSync("find", [f.work, "-printf", "%p %s %T@\n"], { encoding: "utf8" });
-    const summary = buildBundles(f.copy, { out: null, private: null, exclude: new Set([FOUNDER]),
-                                           tiers: TIERS });
-    expect(summary).toMatchObject({ dry_run: true, bundled: 2, excluded: 1, digests: {},
-                                    refused: {} });
-    // big.bin's two chunks, and one each for the two stores copied whole (8 KiB each); the
-    // files the import makes (README, links, the tar, the tables' copies) are not made.
-    expect(summary.chunks).toBe(4);
-    expect(execFileSync("find", [f.work, "-printf", "%p %s %T@\n"], { encoding: "utf8" }))
-      .toBe(before);
+  it("reads and hashes everything in a dry run, counting as the real run does, and writes nothing",
+     () => {
+    const { f, options } = setup();
+    const find = () => execFileSync("find", [f.work, "-printf", "%p %s %T@ %m\n"],
+                                    { encoding: "utf8" });
+    const before = find();
+    const dry = buildBundles(f.copy, { out: null, private: null, exclude: new Set([FOUNDER]),
+                                       tiers: TIERS });
+    expect(dry).toMatchObject({ dry_run: true, bundled: 2, excluded: 1, refused: {} });
+    expect(find()).toBe(before);
+    const real = buildBundles(f.copy, options);
+    expect({ ...dry, dry_run: false }).toEqual(real);
   });
 
   it("pages at most PAGE_ROWS items and a MiB encoded", () => {

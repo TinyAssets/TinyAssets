@@ -3,31 +3,23 @@
  * held over every store, table and entry (`rules.ts`), and each owner's fit against the new
  * platform's own limits: `FILE_DEFAULTS` (`max_entries`, `max_inline_bytes`,
  * `max_file_bytes`), the stored-path rules (`contract/src/paths.ts`, read by the survey) and
- * the tier's storage from the control record. Every later choice is made from its numbers.
+ * the tier's storage from the control record, each counted by the files plane's own rule on
+ * the tree the bundle builder would make (`build.ts`). Every later choice is made from its
+ * numbers.
  *
- * Its report is counts only: no principal, no name an owner chose, no secret. The
+ * Its report is counts only: no principal, no name an owner chose, no secret, no key. The
  * per-owner table is keyed by `sha256(principal)[:16]` and is the caller's to keep 0600.
  */
 import { lstatSync, readdirSync } from "node:fs";
 
-import { ancestors, WORKSPACE } from "../contract/src/paths";
 import { FILE_DEFAULTS, INLINE_BYTES } from "../contract/src/limits";
-import starterJson from "../starter/starter.json" with { type: "json" };
 
 import { fileSha256, layout } from "./backup";
-import {
-  type Copy, type Fleet, IMPORTED, type Owner, type Problem, type Refusal, survey,
-} from "./survey";
+import { type Built, buildTree, type Fit, fitOf, starterPaths, type Tiers } from "./build";
+import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
+import { TAR_MEMBER_MAX } from "./tar";
 
-/** The tier numbers, as the control record (`c:control`'s `tiers`) holds them. */
-export type Tiers = Readonly<Record<string, { readonly storage_bytes: number }>>;
-
-/** The files the import itself writes into an owner's tree beside what it carries. */
-export const README = `${IMPORTED}/README.md`;
-export const LINKS = `${IMPORTED}/links.txt`;
-export const REFUSED = `${IMPORTED}/refused.tar`;
-/** A tar member's header, and the most padding it takes. */
-const TAR_BLOCK = 512;
+export type { Tiers } from "./build";
 
 /**
  * The backup copy's own integrity, before anything is read from it (research §4.4): the
@@ -60,106 +52,85 @@ function exists(path: string): boolean {
   }
 }
 
-/** The starter's own paths, which it seeds around the imported tree (`starter.ts`). */
-export function starterPaths(): string[] {
-  return (starterJson as { files: { path: string }[] }).files.map((file) => file.path);
-}
-
-/** The bytes of a refused node and everything below it, and its members. */
-function refusedSize(refusal: Refusal): { bytes: number; members: number } {
-  const stat = lstatSync(refusal.source);
-  let bytes = stat.isFile() ? stat.size : 0;
-  let members = 1;
-  if (stat.isDirectory()) {
-    for (const name of readdirSync(refusal.source, { encoding: "buffer" })) {
-      const inner = refusedSize({ member: refusal.member,
-                                  source: Buffer.concat([refusal.source, Buffer.from("/"), name]) });
-      bytes += inner.bytes;
-      members += inner.members;
-    }
-  }
-  return { bytes, members };
-}
-
-export interface Fit {
-  readonly entries: number;
-  readonly inline_bytes: number;
-  readonly largest: number;
-  readonly stored: number;
-  readonly problems: Problem[];
-}
-
-/**
- * The owner's fit, as an upper bound the bundle then makes exact: the entries the files
- * plane would hold after the import and the starter's seed (folders count as entries), the
- * small files kept inline, the largest file, and every byte stored against the tier. An
- * owner past one is refused before the window (research §3: the import never raises a
- * setting; the fix is the owner's, told). `max_manifest_bytes` and `max_history` cannot bind
- * first: 30,000 entries at one version each take well under either.
- */
-export function fitOf(owner: Owner, tiers: Tiers): Fit {
-  const tree = owner.tree;
-  const sizes = [...tree.carried.filter((item) => item.kind === "file").map((item) => item.size),
-                 ...tree.archived.map((item) => item.size)];
-  const generated: string[] = [];
-  if (tree.links.length > 0) {
-    generated.push(LINKS);
-  }
-  let refused = 0;
-  if (tree.refused.length > 0) {
-    generated.push(REFUSED);
-    for (const refusal of tree.refused) {
-      const { bytes, members } = refusedSize(refusal);
-      refused += bytes + members * 3 * TAR_BLOCK;
-    }
-    refused += 2 * TAR_BLOCK;
-    sizes.push(refused);
-  }
-  const paths = [...tree.carried.map((item) => item.path), ...tree.archived.map((a) => a.path),
-                 ...generated];
-  if (paths.length > 0) {
-    paths.push(README);
-    sizes.push(INLINE_BYTES);
-  }
-  const all = new Set<string>([...paths, ...starterPaths()]);
-  for (const path of [...all]) {
-    for (const dir of ancestors(path)) {
-      all.add(dir);
-    }
-  }
-  all.delete(WORKSPACE);
-  const tier = tiers[owner.plan?.tier ?? "free"];
-  const fit = {
-    entries: all.size,
-    inline_bytes: sizes.filter((size) => size <= INLINE_BYTES).reduce((a, b) => a + b, 0),
-    largest: sizes.reduce((a, b) => Math.max(a, b), 0),
-    stored: sizes.reduce((a, b) => a + b, 0) + tree.rows.body_bytes,
-    problems: [] as Problem[],
-  };
-  const over = (code: Problem["code"], value: number, limit: number) => {
-    if (value > limit) {
-      fit.problems.push({ code, at: `owner/${owner.key}` });
-    }
-  };
-  over("over_entries", fit.entries, FILE_DEFAULTS.max_entries);
-  over("over_inline_bytes", fit.inline_bytes, FILE_DEFAULTS.max_inline_bytes);
-  over("over_file_bytes", fit.largest, FILE_DEFAULTS.max_file_bytes);
-  if (tier === undefined) {
-    fit.problems.push({ code: "no_tier", at: `owner/${owner.key}` });
-  } else {
-    over("over_storage", fit.stored, tier.storage_bytes);
-  }
-  return fit;
-}
-
 /** Whether the owner is imported at all: never one the old stack erased. */
 export function erased(owner: Owner): boolean {
   return owner.admission?.state === "erased" || owner.erasedMarker;
 }
 
-/** Every problem that stops the owner's import: its tree's, and its fit's. */
-export function ownerProblems(owner: Owner, tiers: Tiers): Problem[] {
-  return [...owner.tree.problems, ...fitOf(owner, tiers).problems];
+/**
+ * An owner the old stack never admitted (no `owner_admission` row: `admission.py`'s
+ * "absent", `OwnerUnadmitted`): refused and counted, so slice 5's admit step never admits
+ * one by accident.
+ */
+export function admissionProblems(owner: Owner): Problem[] {
+  return owner.admission === null ? [{ code: "never_admitted", at: `owner/${owner.key}` }] : [];
+}
+
+/** The largest regular file at or below `source`, never following a link. */
+function largestBelow(source: Buffer): number {
+  const stat = lstatSync(source);
+  if (stat.isFile()) {
+    return stat.size;
+  }
+  if (!stat.isDirectory()) {
+    return 0;
+  }
+  let largest = 0;
+  for (const name of readdirSync(source, { encoding: "buffer" })) {
+    largest = Math.max(largest, largestBelow(Buffer.concat([source, Buffer.from("/"), name])));
+  }
+  return largest;
+}
+
+/**
+ * What refuses an owner before its tree is made, read from sizes alone: a file past the
+ * platform's largest or the tier's storage, more carried paths than `max_entries`, or a
+ * file past what a tar member can hold in `refused.tar` or `ignored.tar`. So a 40 GiB file
+ * is refused by its size, never read.
+ */
+export function precheck(owner: Owner, tiers: Tiers): Problem[] {
+  const tree = owner.tree;
+  const at = `owner/${owner.key}`;
+  const largest = [...tree.carried.map((item) => item.size), ...tree.archived.map((a) => a.size)]
+    .reduce((a, b) => Math.max(a, b), 0);
+  const members = (list: readonly Refusal[]) =>
+    list.reduce((a, member) => Math.max(a, largestBelow(member.source)), 0);
+  const problems: Problem[] = [];
+  if (largest > FILE_DEFAULTS.max_file_bytes) {
+    problems.push({ code: "over_file_bytes", at });
+  }
+  const tier = tiers[owner.plan?.tier ?? "free"];
+  if (tier !== undefined && largest > tier.storage_bytes) {
+    problems.push({ code: "over_storage", at });
+  }
+  if (tree.carried.length + tree.archived.length + starterPaths().length
+      > FILE_DEFAULTS.max_entries) {
+    problems.push({ code: "over_entries", at });
+  }
+  if (Math.max(members(tree.refused), members(tree.ignoredTrees)) > TAR_MEMBER_MAX) {
+    problems.push({ code: "over_tar_member", at });
+  }
+  return problems;
+}
+
+/**
+ * The owner's fit, measured on its tree as the bundle builder makes it (written to `dir`,
+ * or counted and not kept), once nothing refuses it first. With `tiers` null (a backup,
+ * which the limits do not bind) only what a tar cannot hold refuses it.
+ */
+export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null):
+    { built: Built | null; fit: Fit | null; problems: Problem[] } {
+  const first = precheck(owner, tiers ?? {})
+    .filter((problem) => tiers !== null || problem.code === "over_tar_member");
+  if (first.length > 0) {
+    return { built: null, fit: null, problems: first };
+  }
+  const built = buildTree(owner, copy, dir);
+  if (tiers === null) {
+    return { built, fit: null, problems: [] };
+  }
+  const fit = fitOf(owner, built, tiers);
+  return { built, fit, problems: fit.problems };
 }
 
 const tally = <T extends string>(items: readonly T[]): Record<string, number> => {
@@ -184,12 +155,26 @@ export function census(copy: Copy, tiers: Tiers): Census {
   const copyProblems = verifyCopy(copy);
   const fleet = survey(copy);
   const live = fleet.owners.filter((owner) => !erased(owner));
-  const fits = new Map(live.map((owner) => [owner.key, fitOf(owner, tiers)]));
-  const problems = [...copyProblems, ...fleet.problems,
-                    ...live.flatMap((owner) => [...owner.tree.problems,
-                                                ...fits.get(owner.key)!.problems])];
+  const fits = new Map<string, Fit>();
+  const owned = new Map<string, Problem[]>();
+  for (const owner of live) {
+    const problems = [...owner.tree.problems, ...admissionProblems(owner)];
+    if (owner.tree.problems.length === 0) {
+      const measured = measure(owner, copy, tiers, null);
+      problems.push(...measured.problems);
+      if (measured.fit !== null) {
+        fits.set(owner.key, measured.fit);
+      }
+    }
+    owned.set(owner.key, problems);
+  }
+  const problems = [...copyProblems, ...fleet.problems, ...[...owned.values()].flat()];
   const stores: Record<string, number> = {};
   for (const store of [...fleet.stores, ...fleet.owners.flatMap((owner) => owner.tree.stores)]) {
+    if (store.tables.length === 0) {
+      // A store kept only in the final backup, never read: how many there are.
+      stores[`${store.at} drop, not read`] = (stores[`${store.at} drop, not read`] ?? 0) + 1;
+    }
     for (const table of store.tables) {
       const key = `${store.at}/${table.table} ${table.use}`;
       stores[key] = (stores[key] ?? 0) + table.rows;
@@ -197,20 +182,25 @@ export function census(copy: Copy, tiers: Tiers): Census {
   }
   const sum = (pick: (owner: Owner) => number) => live.reduce((a, owner) => a + pick(owner), 0);
   const files = (owner: Owner) => owner.tree.carried.filter((item) => item.kind === "file");
+  const most = (pick: (fit: Fit) => number) =>
+    [...fits.values()].reduce((a, fit) => Math.max(a, pick(fit)), 0);
   const report = {
     backup: { pins: copy.manifest.snapshots.length, verified: copyProblems.length === 0 },
     owners: {
       identities: fleet.owners.length,
       imported: live.length,
       erased: fleet.owners.length - live.length,
-      admission: tally(fleet.owners.map((owner) => owner.admission?.state ?? "none")),
+      admission: tally(fleet.owners.map((owner) => owner.admission?.state ?? "absent")),
       tier: tally(live.map((owner) => owner.plan?.tier ?? "none")),
+      with_customer: live.filter((owner) => owner.plan?.customer_id != null).length,
       with_subscription: live.filter((owner) => owner.plan?.subscription_id != null).length,
       not_authkit: fleet.owners.filter((owner) => !owner.principal.startsWith("user_")).length,
       with_volume: fleet.owners.filter((owner) => owner.volume !== null).length,
+      no_volume: fleet.noVolume,
       centers: sum((owner) => owner.centers.length),
       retired_centers: sum((owner) => owner.centers.filter((center) => center.retired).length),
       orphan_accounts: fleet.orphanAccounts,
+      orphan_rows: fleet.orphans,
     },
     tombstones: { by_principal: fleet.tombstones.principals.length,
                   digest_only: fleet.tombstones.digests.length },
@@ -219,10 +209,11 @@ export function census(copy: Copy, tiers: Tiers): Census {
       dirs: sum((owner) => owner.tree.carried.length - files(owner).length),
       bytes: sum((owner) => files(owner).reduce((a, item) => a + item.size, 0)),
       inline_files: sum((owner) => files(owner).filter((f) => f.size <= INLINE_BYTES).length),
-      largest: live.reduce((a, owner) => Math.max(a, fits.get(owner.key)!.largest), 0),
+      largest: most((fit) => fit.largest),
       links: sum((owner) => owner.tree.links.length),
       refused_names: sum((owner) => owner.tree.refused.length),
       ignored: sum((owner) => owner.tree.ignored),
+      ignored_trees: sum((owner) => owner.tree.ignoredTrees.length),
       specials: sum((owner) => owner.tree.specials),
       hardlinks: sum((owner) => owner.tree.hardlinks),
       sqlite_in_user_files: sum((owner) => owner.tree.sqliteInUser),
@@ -233,8 +224,8 @@ export function census(copy: Copy, tiers: Tiers): Census {
             body_bytes: sum((owner) => owner.tree.rows.body_bytes) },
     fit: {
       max_entries: FILE_DEFAULTS.max_entries,
-      most_entries: live.reduce((a, owner) => Math.max(a, fits.get(owner.key)!.entries), 0),
-      most_stored: live.reduce((a, owner) => Math.max(a, fits.get(owner.key)!.stored), 0),
+      most_entries: most((fit) => fit.entries),
+      most_stored: most((fit) => fit.stored),
     },
     stores,
     problems: tally(problems.map((problem) => problem.code)),
@@ -245,13 +236,13 @@ export function census(copy: Copy, tiers: Tiers): Census {
     const fit = fits.get(owner.key);
     const row = (field: string, value: unknown) => lines.push(`${owner.key}\t${field}\t${value}`);
     row("uid", owner.uid);
-    row("admission", owner.admission === null ? "none"
+    row("admission", owner.admission === null ? "absent"
       : [owner.admission.state, ...owner.admission.reasons].join(","));
     row("tier", owner.plan?.tier ?? "none");
     row("erased", erased(owner));
     row("centers", owner.centers.length);
+    row("files", files(owner).length);
     if (fit !== undefined) {
-      row("files", files(owner).length);
       row("entries", fit.entries);
       row("inline_bytes", fit.inline_bytes);
       row("largest", fit.largest);
@@ -265,7 +256,7 @@ export function census(copy: Copy, tiers: Tiers): Census {
         row(`rows ${store.at}/${table.table}`, table.rows);
       }
     }
-    for (const problem of [...owner.tree.problems, ...(fit?.problems ?? [])]) {
+    for (const problem of owned.get(owner.key) ?? []) {
       row(`problem ${problem.code}`, problem.at);
     }
   }

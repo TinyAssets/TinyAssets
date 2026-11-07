@@ -39,7 +39,7 @@
       "test": "hooks/guards/isolation.test.ts > hooks isolation guards find no owner binding, no storage and no import from outside"
     },
     "import/guards": {
-      "slowest_ms": 1341,
+      "slowest_ms": 4495,
       "test": "import/guards/census.test.ts > each owner's fit refuses an owner whose entries pass max_entries, folders counted"
     },
     "owner/guards": {

@@ -19,7 +19,7 @@ export const IMPORTS: ImportRules = Object.freeze({
   called: "the importer",
   outside: Object.freeze([...CONTRACT, "starter/starter.json"]),
   bare: Object.freeze({
-    "node:crypto": null, "node:fs": null, "node:path": null, "node:sqlite": null,
+    "node:crypto": null, "node:fs": null, "node:os": null, "node:path": null, "node:sqlite": null,
     "node:child_process": "import/cli.ts",
   }),
   banned: Object.freeze([{

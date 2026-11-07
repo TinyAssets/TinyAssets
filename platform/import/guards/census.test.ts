@@ -4,8 +4,10 @@
  * the backup's own gate, and each owner's fit against the platform's own limits.
  */
 import {
-  appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
+  appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync,
+  symlinkSync, writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -14,11 +16,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { PLATFORM } from "../../ci/paths";
 import { FILE_DEFAULTS } from "../../contract/src/limits";
 import { DEFAULT_IGNORES, ignoredBy } from "../../contract/src/sync-ignore";
+import { buildBundles } from "../bundle";
 import { census } from "../census";
+import { TAR_MEMBER_MAX } from "../tar";
 import { IMPORTED, newTree, walkUser } from "../survey";
 import {
   ALICE, BAD_NAME, BOB, type Fixture, fixture, FOUNDER, keyOf, makeStore, sha, sparse,
-  TIERS,
+  TIERS, unmergedStore,
 } from "./fixture";
 
 const made: Fixture[] = [];
@@ -60,26 +64,28 @@ describe("the census", () => {
     expect(report["backup"]).toEqual({ pins: 3, verified: true });
     expect(report["owners"]).toEqual({
       identities: 3, imported: 3, erased: 0, admission: { admitted: 2, suspended: 1 },
-      tier: { free: 1, paid: 2 }, with_subscription: 2, not_authkit: 0, with_volume: 3,
-      centers: 4, retired_centers: 1, orphan_accounts: 0,
+      tier: { free: 1, paid: 2 }, with_customer: 2, with_subscription: 2, not_authkit: 0,
+      with_volume: 3, no_volume: 0, centers: 4, retired_centers: 1, orphan_accounts: 0,
+      orphan_rows: { admission: 0, plans: 0, volumes: 0 },
     });
     // user_gone by principal; user_gone2 (erased admission) and user_gone3 by digest alone.
     expect(report["tombstones"]).toEqual({ by_principal: 1, digest_only: 2 });
     expect(report["files"]).toEqual({
       files: 10, dirs: 5, bytes: (report["files"] as { bytes: number }).bytes, inline_files: 9,
       largest: (report["files"] as { largest: number }).largest, links: 1, refused_names: 2,
-      ignored: 2, specials: 1, hardlinks: 0, sqlite_in_user_files: 0, archived_stores: 8,
+      ignored: 2, ignored_trees: 1, specials: 1, hardlinks: 0, sqlite_in_user_files: 0,
+      archived_stores: 8,
     });
     expect((report["files"] as { largest: number }).largest).toBe(4 * 1024 * 1024 + 10);
     expect(report["rows"]).toEqual({ policies: 2, collection_rows: 2, body_bytes: 27 });
     expect(report["stores"]).toMatchObject({
       "account/policy.db/policy carry": 2, "account/policy.db/once_approvals drop": 1,
       "account/policy.db/receipts archive": 1, "account/conversations.db/collection_rows carry": 2,
-      "account/message_ledger.db/ledger_messages archive": 1,
+      "account/message_ledger.db/* archive": 1, "sessions/steering.db drop, not read": 1,
       "center/.conversation_memory.db/conversation_turns archive": 2,
       "center/.conversation_memory.db/conversation_backfill drop": 1,
       "root/.runs.db/runs drop": 2, "root/.runs.db/branch_schedules archive": 1,
-      "root/.tinyassets.db/branch_definitions archive": 1, "sessions/history.db/changes archive": 1,
+      "root/.tinyassets.db/branch_definitions archive": 1, "sessions/history.db/* archive": 1,
       "shared/.broker/state/owner-identities.db/owner_identities carry": 3,
       "shared/.api-keys.sqlite3/api_keys drop": 2, "shared/.hook-owners.sqlite3/hook_owners drop": 1,
       "shared/.router-deleted-owners.sqlite3/deleted_owners carry": 1,
@@ -99,11 +105,45 @@ describe("the census", () => {
     expect(table).toContain(`${keyOf(BOB)}\tadmission\tsuspended,billing`);
   });
 
-  it("never writes to the backup copy: every node and byte is as it was, and nothing is added", () => {
+  it("never writes to the backup copy, its stores in WAL mode: not a census, not a bundle", () => {
     const f = fresh();
+    // The fleet's, an account's and an image root's stores are in WAL mode, as the old
+    // stack's were: opened by `mode=ro` alone, SQLite would make each one's -wal and -shm.
+    for (const store of [join(f.work, "data", "_data", ".broker", "state", "owner-identities.db"),
+                         join(f.account(ALICE), "policy.db"), join(f.tree(ALICE), ".tinyassets.db")]) {
+      expect(readFileSync(store).subarray(18, 20)).toEqual(Buffer.from([2, 2]));
+    }
     const before = state(f.work);
     census(f.copy, TIERS);
     expect(state(f.work)).toEqual(before);
+    const out = mkdtempSync(join(tmpdir(), "ta-out-"));
+    const priv = mkdtempSync(join(tmpdir(), "ta-priv-"));
+    try {
+      expect(buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]),
+                                    tiers: TIERS }).bundled).toBe(2);
+      expect(state(f.work)).toEqual(before);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+      rmSync(priv, { recursive: true, force: true });
+    }
+  });
+
+  it("counts storage as the files plane charges it, the same number the bundle seals", () => {
+    const f = fresh();
+    const { table } = census(f.copy, TIERS);
+    const stored = Number(new RegExp(`${keyOf(ALICE)}\\tstored\\t(\\d+)`).exec(table)![1]);
+    const out = mkdtempSync(join(tmpdir(), "ta-out-"));
+    const priv = mkdtempSync(join(tmpdir(), "ta-priv-"));
+    try {
+      buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]), tiers: TIERS });
+      const counts = (JSON.parse(readFileSync(join(out, keyOf(ALICE), "bundle.json"), "utf8")) as
+        { counts: { chunk_bytes: number; inline_bytes: number } }).counts;
+      // Unique chunks, unique inline content, and the collections' bodies (27 bytes).
+      expect(stored).toBe(counts.chunk_bytes + counts.inline_bytes + 27);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+      rmSync(priv, { recursive: true, force: true });
+    }
   });
 });
 
@@ -130,11 +170,30 @@ describe("rule 0", () => {
 
   it("refuses a store stopped uncleanly (its log not merged), and one that fails its check", () => {
     const f = fresh();
-    appendFileSync(join(f.tree(ALICE), "novel", ".conversation_memory.db-wal"), "unmerged");
+    unmergedStore(join(f.tree(ALICE), "novel", ".authoring.db"));
     writeFileSync(join(f.tree(BOB), "main", "rules.db"),
                   Buffer.concat([Buffer.from("SQLite format 3\0", "latin1"), Buffer.alloc(200, 7)]));
     const { report } = census(f.copy, TIERS);
     expect(report["problems"]).toEqual({ integrity: 1, unclean_store: 1 });
+  });
+
+  it("reports a store kept whole by one total, never the names its tables were given", () => {
+    const f = fresh();
+    makeStore(join(f.tree(ALICE), "knowledge.db"), "CREATE TABLE my_secret_plot (x);",
+              { my_secret_plot: [[1], [2]] });
+    const { report, table } = census(f.copy, TIERS);
+    expect(report["stores"]).toMatchObject({ "root/knowledge.db/* archive": 2 });
+    expect(JSON.stringify(report) + table).not.toContain("my_secret_plot");
+  });
+
+  it("refuses an account folder that is a link, never following it", () => {
+    const f = fresh();
+    const real = f.account(ALICE);
+    renameSync(real, join(f.work, "elsewhere"));
+    symlinkSync(join(f.work, "elsewhere"), real);
+    const { report, ready } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toEqual({ unknown_entry: 1 });
   });
 
   it("refuses a shared store's table no rule names: the whole backup is not ready", () => {
@@ -163,6 +222,70 @@ describe("the backup's own gate", () => {
   });
 });
 
+describe("the fleet's rows", () => {
+  const identities = (f: Fixture) =>
+    new DatabaseSync(join(f.work, "data", "_data", ".broker", "state", "owner-identities.db"));
+
+  it("refuses a pinned image no owner_volumes row binds: never left unread", () => {
+    const f = fresh();
+    const db = identities(f);
+    db.prepare("DELETE FROM owner_volumes WHERE principal = ?").run(BOB);
+    db.close();
+    const { report, ready, table } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toEqual({ pin_mismatch: 1 });
+    expect(table).toContain(`${keyOf(BOB)}\tproblem pin_mismatch\tvolume/300002`);
+  });
+
+  it("counts an identity with no volume row and no pin, and refuses none for it", () => {
+    const f = fresh();
+    const db = identities(f);
+    db.prepare("INSERT INTO owner_identities VALUES (?, ?)").run("user_nobox", 300_009);
+    db.prepare("INSERT INTO owner_admission VALUES (?, 'admitted', '[]')").run(sha("user_nobox"));
+    db.close();
+    const { report } = census(f.copy, TIERS);
+    expect(report["problems"]).toEqual({});
+    expect((report["owners"] as { no_volume: number }).no_volume).toBe(1);
+  });
+
+  it("counts and refuses an admission, plan or volume row that is no identity's", () => {
+    for (const [what, sql] of [
+      ["admission", "INSERT INTO owner_admission VALUES ('" + sha("user_x") + "', 'admitted', '[]')"],
+      ["volumes", "INSERT INTO owner_volumes VALUES ('user_x', 300010, 1, NULL, NULL, NULL, 0, " +
+                  "NULL, NULL)"],
+    ] as const) {
+      const f = fresh();
+      const db = identities(f);
+      db.exec(sql);
+      db.close();
+      const { report, ready } = census(f.copy, TIERS);
+      expect(ready, what).toBe(false);
+      expect(report["problems"], what).toEqual({ orphan_row: 1 });
+      expect((report["owners"] as { orphan_rows: Record<string, number> }).orphan_rows[what])
+        .toBe(1);
+    }
+    const f = fresh();
+    const plans = new DatabaseSync(join(f.work, "data", "_data", ".broker", "plans.db"));
+    plans.exec("INSERT INTO plans VALUES ('user_x', 'paid', 1, NULL, 'cus_x', NULL, NULL)");
+    plans.close();
+    const { report } = census(f.copy, TIERS);
+    expect(report["problems"]).toEqual({ orphan_row: 1 });
+    expect((report["owners"] as { orphan_rows: { plans: number } }).orphan_rows.plans).toBe(1);
+  });
+
+  it("refuses an owner the old stack never admitted (no admission row), counted", () => {
+    const f = fresh();
+    const db = identities(f);
+    db.prepare("DELETE FROM owner_admission WHERE digest = ?").run(sha(BOB));
+    db.close();
+    const { report, table } = census(f.copy, TIERS);
+    expect(report["problems"]).toEqual({ never_admitted: 1 });
+    expect((report["owners"] as { admission: Record<string, number> }).admission)
+      .toEqual({ absent: 1, admitted: 2 });
+    expect(table).toContain(`${keyOf(BOB)}\tadmission\tabsent`);
+  });
+});
+
 describe("each owner's fit", () => {
   it("refuses a file past the platform's largest (FILE_DEFAULTS.max_file_bytes), read by size", () => {
     const f = fresh();
@@ -187,6 +310,12 @@ describe("each owner's fit", () => {
     }
     // Bob's: imported/, main/, MEMORY.md, workspace/, workspace/a.txt and README.md.
     expect(entries).toBe(6 + starter.size);
+  });
+
+  it("refuses a file past what a tar member holds, ignored or refused, read by size", () => {
+    const f = fresh();
+    sparse(join(f.tree(BOB), "main", "workspace", "node_modules"), TAR_MEMBER_MAX + 1);
+    expect(census(f.copy, TIERS).report["problems"]).toEqual({ over_tar_member: 1 });
   });
 
   it("refuses an owner whose entries pass max_entries, folders counted", () => {

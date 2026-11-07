@@ -36,9 +36,10 @@ export type Code =
   | "pin_mismatch" | "not_mounted"
   // rule 0
   | "unknown_entry" | "unknown_table" | "unknown_center" | "bad_store" | "unclean_store"
-  | "integrity" | "path_collision" | "unreadable"
+  | "integrity" | "path_collision" | "unreadable" | "orphan_row" | "never_admitted"
   // the new platform's limits
-  | "over_entries" | "over_inline_bytes" | "over_file_bytes" | "over_storage" | "no_tier";
+  | "over_entries" | "over_inline_bytes" | "over_file_bytes" | "over_storage" | "no_tier"
+  | "over_tar_member";
 
 export interface Problem {
   readonly code: Code;
@@ -95,7 +96,9 @@ export interface Tree {
   readonly archived: Archived[];
   readonly stores: StoreCount[];
   readonly problems: Problem[];
-  /** Counts of what is walked and not carried. */
+  /** What the sync's defaults leave out of the live tree: kept verbatim in `ignored.tar`. */
+  readonly ignoredTrees: Refusal[];
+  /** Counts of what is walked and not carried live: the ignored files, and the rest. */
   ignored: number;
   specials: number;
   hardlinks: number;
@@ -145,6 +148,10 @@ export interface Fleet {
   /** Erasure tombstones: by principal, and by digest alone (no principal to hold them). */
   readonly tombstones: { readonly principals: readonly string[]; readonly digests: readonly string[] };
   readonly orphanAccounts: number;
+  /** Fleet rows whose principal or digest is no owner's: each a fleet problem too. */
+  readonly orphans: { readonly admission: number; readonly plans: number; readonly volumes: number };
+  /** Identities with no volume row and no pin: owners who never had a box. */
+  readonly noVolume: number;
 }
 
 /** The digest of a name the owner may have chosen: how a problem names it. */
@@ -154,7 +161,7 @@ export function hidden(name: Buffer | string): string {
 
 export function newTree(): Tree {
   return { carried: [], links: [], refused: [], archived: [], stores: [], problems: [],
-           ignored: 0, specials: 0, hardlinks: 0, sqliteInUser: 0,
+           ignoredTrees: [], ignored: 0, specials: 0, hardlinks: 0, sqliteInUser: 0,
            rows: { policy: 0, collection: 0, body_bytes: 0 } };
 }
 
@@ -171,6 +178,10 @@ const at = (dir: Buffer, name: Buffer): Buffer => Buffer.concat([dir, Buffer.fro
  */
 function checkStore(path: Buffer, rule: StoreRule, where: string, sidecars: Map<string, Stats>,
                     problems: Problem[]): TableCount[] | null {
+  if (rule.tables === "drop") {
+    // Kept only in the final backup, so never read: no table of it is the import's.
+    return [];
+  }
   const stat = lstatSync(path);
   if (!stat.isFile() || !isStore(path)) {
     problems.push({ code: "bad_store", at: where });
@@ -199,6 +210,11 @@ function checkStore(path: Buffer, rule: StoreRule, where: string, sidecars: Map<
     if (!whole) {
       problems.push({ code: "integrity", at: where });
       return null;
+    }
+    if (rule.tables === "archive") {
+      // Kept whole: one total, so no name a table was given (an agent's own) is reported.
+      return [{ table: "*", use: "archive",
+                rows: tablesOf(db).reduce((sum, table) => sum + rowsIn(db, table), 0) }];
     }
     const counts: TableCount[] = [];
     for (const table of tablesOf(db)) {
@@ -341,6 +357,7 @@ function walkNode(source: Buffer, path: string, member: Buffer, tree: Tree,
     return;
   }
   if (ignores(matcher, path, stat.isDirectory())) {
+    tree.ignoredTrees.push({ member, source });
     tree.ignored += stat.isDirectory() ? countFiles(source) : 1;
     return;
   }
@@ -471,20 +488,49 @@ export function survey(copy: Copy): Fleet {
     ...[...admitted].filter(([, a]) => a.state === "erased").map(([digest]) => digest),
   ].filter((digest, i, list) => !knownDigests.has(digest) && list.indexOf(digest) === i);
 
+  // Every fleet row is some identity's, or a counted problem: never a row nothing reads.
+  const principals = new Set(identities.map((identity) => identity.principal));
+  const orphans = { admission: 0, plans: 0, volumes: 0 };
+  for (const [digest, admission] of admitted) {
+    if (!digests.has(digest) && admission.state !== "erased") {
+      orphans.admission += 1;
+      problems.push({ code: "orphan_row", at: `owner_admission/${digest.slice(0, 16)}` });
+    }
+  }
+  for (const [principal] of plans) {
+    if (!principals.has(principal)) {
+      orphans.plans += 1;
+      problems.push({ code: "orphan_row", at: `plans/${sha256Hex(principal).slice(0, 16)}` });
+    }
+  }
+  for (const [principal, volume] of volumes) {
+    if (!principals.has(principal)) {
+      orphans.volumes += 1;
+      problems.push({ code: "orphan_row", at: `owner_volumes/${volume.uid}` });
+    }
+  }
+
+  // The accounts' folder and each account in it are folders, never followed through a link.
   const accounts = join(where.shared, ".broker", "accounts");
   let orphanAccounts = 0;
   let accountNames: Buffer[] = [];
-  try {
-    accountNames = entriesOf(Buffer.from(accounts));
-  } catch {
-    accountNames = [];
+  if (lstatExists(accounts)) {
+    if (lstatSync(accounts).isDirectory()) {
+      accountNames = entriesOf(Buffer.from(accounts));
+    } else {
+      problems.push({ code: "unknown_entry", at: "shared/.broker/accounts" });
+    }
   }
+  const accountDirs = new Set<string>();
   for (const name of accountNames) {
     const text = nameText(name);
-    if (text === null || !ACCOUNT_NAME.test(text)) {
+    if (text === null || !ACCOUNT_NAME.test(text)
+        || !lstatSync(at(Buffer.from(accounts), name)).isDirectory()) {
       problems.push({ code: "unknown_entry", at: `shared/.broker/accounts/${hidden(name)}` });
     } else if (!digests.has(text)) {
       orphanAccounts += 1;
+    } else {
+      accountDirs.add(text);
     }
   }
   const pins = new Map(copy.manifest.snapshots.map((pin) => [pin.uid, pin]));
@@ -496,14 +542,20 @@ export function survey(copy: Copy): Fleet {
       principal: identity.principal, digest, key: digest.slice(0, 16),
       uid: identity.uid, admission: admitted.get(digest) ?? null,
       plan: plans.get(identity.principal) ?? null, volume,
-      erasedMarker: accountNames.some((name) => nameText(name) === digest)
-        && lstatExists(join(accounts, digest, ".deleted")),
+      erasedMarker: accountDirs.has(digest) && lstatExists(join(accounts, digest, ".deleted")),
       centers: [], tree: newTree(),
     };
     if (owner.admission?.state === "erased" || owner.erasedMarker) {
       return owner;
     }
-    surveyAccount(owner, join(accounts, digest));
+    if (accountDirs.has(digest)) {
+      surveyAccount(owner, join(accounts, digest));
+    }
+    if (volume === null && pins.has(identity.uid)) {
+      // A pinned image no volume row binds: never left unread.
+      owner.tree.problems.push({ code: "pin_mismatch", at: `volume/${identity.uid}` });
+      return owner;
+    }
     return surveyVolume(owner, copy, pins.get(volume?.uid ?? -1) ?? null, matcher);
   });
   for (const pin of copy.manifest.snapshots) {
@@ -511,7 +563,9 @@ export function survey(copy: Copy): Fleet {
       problems.push({ code: "pin_mismatch", at: `pin/${pin.uid}` });
     }
   }
-  return { problems, stores, owners, orphanAccounts,
+  const noVolume = owners.filter((owner) => owner.volume === null && !pins.has(owner.uid!))
+    .length;
+  return { problems, stores, owners, orphanAccounts, orphans, noVolume,
            tombstones: { principals: deleted, digests: digestOnly } };
 }
 
@@ -593,6 +647,12 @@ function surveyVolume(owner: Owner, copy: Copy, pin: { snapshot_id: string; sha2
     }
   }
   const names = new Set(centers.map((center) => center.name));
+  for (const center of centers) {
+    if (ruleOf(ROOT, center.name) !== null) {
+      // A center named as a root entry would be read by that entry's rule, not as a center.
+      tree.problems.push({ code: "path_collision", at: `center/${hidden(center.name)}` });
+    }
+  }
   const centerDirs: string[] = [];
   visitLevel(root, ROOT, "root", {
     store: (name, path, rule, tables) =>
@@ -619,7 +679,8 @@ function surveyVolume(owner: Owner, copy: Copy, pin: { snapshot_id: string; sha2
   if (lstatExists(sessions) && lstatSync(sessions).isDirectory()) {
     for (const name of entriesOf(Buffer.from(sessions))) {
       const center = nameText(name);
-      if (center === null || !names.has(center)) {
+      if (center === null || !names.has(center)
+          || !lstatSync(at(Buffer.from(sessions), name)).isDirectory()) {
         tree.problems.push({ code: "unknown_center", at: `sessions/${hidden(name)}` });
         continue;
       }

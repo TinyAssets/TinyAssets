@@ -7,7 +7,8 @@
  * - `census <work> --tiers <control.json> --table <file>`: the counts to stdout, the
  *   per-owner table to `<file>` (0600); exit 0 when the backup is ready to import, 3 when not;
  * - `bundle <work> --tiers <control.json> --exclude <list> --out <dir> --private <dir>`
- *   (or `--dry-run`, which writes nothing): the bundles, and a summary of counts to stdout.
+ *   (or `--dry-run`, which writes nothing): the bundles, the digests and billing ids in 0600
+ *   files of the private folder, and counts alone on stdout.
  *
  * The images are read only through mounts the kernel says are read-only XFS
  * (`/proc/self/mountinfo`), so a live or writable volume is never read. stdout holds counts
@@ -15,8 +16,9 @@
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-import { layout, manifestOf, mountArgs, mountProblem } from "./backup";
+import { layout, loopBacking, manifestOf, mountArgs, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
 import { census, type Tiers } from "./census";
 import type { Copy } from "./survey";
@@ -46,20 +48,28 @@ export function tiersOf(text: string): Tiers {
   return tiers as Tiers;
 }
 
-/** The backup copy at `work`, each image read only where it is mounted read-only. */
-export function copyAt(work: string, mountinfo: string): Copy {
+/** What reads a loop device's backing file: the kernel's, or a test's. */
+export type Backing = (device: string) => string | null;
+
+/**
+ * The backup copy at `work`, each image read only where it is mounted read-only XFS, from
+ * the loop device whose backing file is that image (`<uid>.img`, whose hash is its pin).
+ */
+export function copyAt(work: string, mountinfo: string, backing: Backing = loopBacking): Copy {
   const where = layout(work);
   return {
     work,
     manifest: manifestOf(readFileSync(where.manifest, "utf8")),
     volume: (uid) => {
       let at: string;
+      let image: string;
       try {
         at = realpathSync(where.mount(uid));
+        image = realpathSync(where.image(uid));
       } catch {
-        return { problem: "has no mount point" };
+        return { problem: "has no mount point or no image" };
       }
-      const problem = mountProblem(mountinfo, at);
+      const problem = mountProblem(mountinfo, at, backing, image);
       return problem === null ? { root: at } : { problem };
     },
   };
@@ -83,7 +93,8 @@ function mount(work: string): void {
     mkdirSync(where.mount(pin.uid), { recursive: true, mode: 0o700 });
     run("mount", mountArgs(where.image(pin.uid), where.mount(pin.uid)));
     const problem = mountProblem(readFileSync("/proc/self/mountinfo", "utf8"),
-                                 realpathSync(where.mount(pin.uid)));
+                                 realpathSync(where.mount(pin.uid)), loopBacking,
+                                 realpathSync(where.image(pin.uid)));
     if (problem !== null) {
       throw new Error(`image ${pin.uid}'s mount ${problem}`);
     }
@@ -99,11 +110,13 @@ function unmount(work: string): void {
 }
 
 /** The job: one command; returns the process's exit code. */
-export function main(argv: readonly string[], mountinfo: () => string): number {
-  const [command, work] = argv;
-  if (work === undefined) {
+export function main(argv: readonly string[], mountinfo: () => string,
+                     backing: Backing = loopBacking): number {
+  const [command, given] = argv;
+  if (given === undefined) {
     throw new Error("usage: <mount|unmount|census|bundle> <work> [options]");
   }
+  const work = resolve(given);
   if (command === "mount") {
     mount(work);
     return 0;
@@ -113,7 +126,7 @@ export function main(argv: readonly string[], mountinfo: () => string): number {
     return 0;
   }
   const tiers = tiersOf(readFileSync(required(argv, "--tiers"), "utf8"));
-  const copy = copyAt(work, mountinfo());
+  const copy = copyAt(work, mountinfo(), backing);
   if (command === "census") {
     const table = required(argv, "--table");
     const result = census(copy, tiers);

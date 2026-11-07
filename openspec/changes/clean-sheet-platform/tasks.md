@@ -2314,27 +2314,43 @@ R, S, M and W.
   verified backup copy), which reads the contract and no Worker's `src` (its isolation guard).
   It is deleted in the cutover's deletion change, with the import doors, the
   `tinyassets-import` queue, the staging bucket and `IMPORT_KEY`.
-  - [x] The census (`census.ts`): §1's counts and the per-owner table, rule 0 (`rules.ts`: a
-    reviewed rule for every old store, table and entry, an unknown one stopping its owner
-    loudly), and each owner's fit against `FILE_DEFAULTS`, the stored-path rules and the
-    tier's storage, all read from the contract. Images are read only where the kernel says
-    they are mounted read-only XFS.
-  - [x] The bundle builder (`bundle.ts`): a bundle an owner (a manifest of files with the
-    platform's own content ids, the row batches, `links.txt` and `refused.tar`); the
-    exclusion list's owners (input, never in code) to the private backup instead; a dry run.
-  - [ ] The owner object's platform-only import doors (`pending` only, no new migration),
-    `importCheck` and `importDiscard`.
-  - [ ] The doors' `tinyassets-import` consumer with `IMPORT_KEY` and `IMPORT_STAGING`, and the
-    bundles' upload to staging.
-  - [ ] The deploy kit's route handback.
-  - [ ] A dark rehearsal under `rehearsal-` names, measured, verified and wiped.
-  - [ ] The census on a current backup copy, and the founder's word on what it leaves open:
-    digest-only tombstones, live capability URLs, unacked mail, any owner past 30,000 entries.
+  - [x] 1. The census (`census.ts`): §1's counts and the per-owner table, rule 0 (`rules.ts`:
+    a reviewed rule for every old store, table and entry, held to the old stack's own DDL by
+    `guards/old-tables.json`, an unknown one stopping its owner loudly), every fleet row
+    some identity's or a counted problem, and each owner's fit against `FILE_DEFAULTS`, the
+    stored-path rules and the tier's storage, counted as the files plane charges it. Images
+    are read only where the kernel says they are mounted read-only XFS from their own image.
+  - [x] 2. The bundle builder (`bundle.ts`): a bundle an owner (a manifest of files with the
+    platform's own content ids, the row batches, `links.txt`, `refused.tar` and
+    `ignored.tar`); the exclusion list's owners (input, never in code, never empty) to the
+    private backup, a folder never inside the out folder nor holding it; a dry run.
+  - [ ] 3. The owner object's platform-only import doors (`pending` only, no new migration).
+  - [ ] 4. The doors' `tinyassets-import` consumer with `IMPORT_KEY` and `IMPORT_STAGING`, and
+    the bundles' upload to staging.
+  - [ ] 5. `importCheck` and `importDiscard`, the job's verify and wipe steps, and the admit
+    step after them (`tierSet`, `admissionSet`, `o:`). It never admits an owner the old stack
+    never admitted (no `owner_admission` row: `owner.json` says `absent`, and the census and
+    the builder refuse and count one); one found is the founder's to rule on.
+  - [ ] 6. The deploy kit's route handback.
+  - [ ] 7. A dark rehearsal under `rehearsal-` names, measured, verified and wiped (the founder
+    approved it on real data, 2026-11-07).
+  - [ ] 8. The starter's onboarding skill reads `/workspace/imported/` and offers to merge; it
+    tells an imported owner to connect their connectors, model sources and API keys again.
+    That is how they learn it: the window is not announced (the founder, 2026-11-07).
+  - [ ] The census on a current backup copy. The founder's answers (2026-11-07): the window
+    has no announcement and runs when both agree it is ready; any paid owner or Stripe id the
+    census counts (`tier = paid`, `with_customer`, `with_subscription`) is raised before the
+    window; the edge cases (digest-only tombstones, live capability URLs, unacked mail, an
+    owner past 30,000 entries) are not expected, and any the census finds stops it loudly
+    and goes to the founder then. The exclusion list and tester B are owed from the old
+    stack's records and `docs/host-actions.md`.
 
 - [ ] Full backup; each owner's broker stores imported into their object and each
   volume into object storage, each imported owner admitted (`admissionSet` from the
   platform caller, and its `o:` record), as sign-up admits one; DNS switched; the droplet
-  paths deleted, and `platform/import/` with them (the importer above). S36 reads
+  paths deleted, and `platform/import/` with them (the importer above). The droplet is
+  stopped, not destroyed, through a hold of 14 days after the cutover, and the founder is
+  told before it and the final backup are destroyed (the founder, 2026-11-07). S36 reads
   converged.
   Owed before slice L's deploy kit runs mode `routes`, each with this change since each moves
   production routing (slice L's final check, recorded, not yet fixed):
