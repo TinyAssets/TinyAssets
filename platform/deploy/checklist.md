@@ -219,6 +219,29 @@ It never counts as "absent".
   enables E2B's lifecycle webhook now that the doors serve its path, and runs the handles
   canary. Every connector then signs in again once. Update the handles
   canary's tool list for the new door first.
+
+  Before any change, `routes` keeps a **route record** in `tinyassets-control`: every
+  route of the zone as it read them, the handover's changes, the zone, the run id and the
+  time, and no secret. The job summary names its id (the run's) and holds a copy. If the
+  record cannot be written, the run stops with nothing changed. A re-run attempt of the
+  same run keeps its first attempt's record.
+- **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id
+  `routes`' summary names. Its plan job reads the record and the zone and changes nothing,
+  so run it once right after `routes`, to see what a handback would do. The apply job puts
+  the zone's routes back as the record has them (the doors' patterns back to
+  `tinyassets-mcp-proxy`), one change at a time, so no path the record served is ever
+  served by nothing:
+  1. the old proxy's deleted narrower routes are added back;
+  2. `mcp*` is moved back in place;
+  3. the doors' added routes are deleted, each only while it is still the doors'.
+
+  It changes no other route. It then reads the zone back and stops, naming each
+  difference, unless the zone is the record's. Then it runs the handles canary, which
+  passes only once the old stack is up again. A rerun changes only what is not back yet.
+  A killed run is simply run again.
+
+  It moves routes only. The egress custom domain stays, and so does E2B's lifecycle
+  webhook, which stays enabled and then posts to a path the old stack does not serve.
 - **Optional: a WAF rate-limiting rule of your own.** The platform sets no number on any
   caller. If you ever want a per-IP backstop at the edge, make one zone rule in the
   dashboard (Free allows one, Pro two), with your own number. It is your setting, recorded

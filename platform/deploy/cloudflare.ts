@@ -103,6 +103,104 @@ export function describeStep(step: RouteStep, script: string): string {
     : `delete ${step.from}'s narrower route ${step.pattern}, its paths now ${script}'s`;
 }
 
+/** A route as a record keeps it: its pattern, and the Worker it points to (null: none). */
+export interface Kept {
+  readonly pattern: string;
+  readonly script: string | null;
+}
+
+/** One change a handover made, as its record keeps it: the method and the pattern. */
+export interface Moved {
+  readonly method: RouteStep["method"];
+  readonly pattern: string;
+}
+
+/** One change of a handback, in order, each to the script the record holds. */
+export type BackStep =
+  | { readonly method: "POST"; readonly pattern: string; readonly script: string | null }
+  | { readonly method: "PUT"; readonly id: string; readonly pattern: string;
+      readonly script: string | null; readonly from: string }
+  | { readonly method: "DELETE"; readonly id: string; readonly pattern: string;
+      readonly from: string };
+
+/**
+ * The handback of a handover to `script` that `moved` the zone's routes from `before`, on the
+ * zone's `routes` now: the reverse of the handover, each change checked against the zone so a
+ * rerun changes only what is not back yet. In this order, so no path the record served is
+ * ever served by nothing:
+ * 1. each pattern the handover deleted, added back with its record's Worker (it takes its
+ *    paths back from `script`'s wider pattern);
+ * 2. each pattern the handover moved in place, moved back in place;
+ * 3. each pattern the handover added, deleted, and only while it is still `script`'s: its
+ *    paths fall to whatever wider pattern the record holds, as before the handover.
+ * Nothing else is touched: no route the handover did not change, and no route it added that
+ * now points elsewhere (`unlike` then names it).
+ */
+export function handback(before: readonly Kept[], moved: readonly Moved[],
+                         routes: readonly Route[], script: string): BackStep[] {
+  const steps: BackStep[] = [];
+  const now = (pattern: string) => routes.find((route) => route.pattern === pattern);
+  const restore = (pattern: string) => {
+    const wanted = before.find((route) => route.pattern === pattern)!.script;
+    const held = now(pattern);
+    if (held === undefined) {
+      steps.push({ method: "POST", pattern, script: wanted });
+    } else if ((held.script ?? null) !== wanted) {
+      steps.push({ method: "PUT", id: held.id, pattern, script: wanted,
+                   from: held.script ?? "no Worker" });
+    }
+  };
+  for (const each of moved.filter((one) => one.method === "DELETE")) {
+    restore(each.pattern);
+  }
+  for (const each of moved.filter((one) => one.method === "PUT")) {
+    restore(each.pattern);
+  }
+  for (const each of moved.filter((one) => one.method === "POST")) {
+    const held = now(each.pattern);
+    if (held !== undefined && held.script === script) {
+      steps.push({ method: "DELETE", id: held.id, pattern: each.pattern, from: script });
+    }
+  }
+  return steps;
+}
+
+/**
+ * How the zone's `routes` differ from the record's: each route of `before` missing or another
+ * Worker's, and each pattern the handover added still there. Empty when they are back.
+ */
+export function unlike(before: readonly Kept[], moved: readonly Moved[],
+                       routes: readonly Route[]): string[] {
+  const differences: string[] = [];
+  for (const kept of before) {
+    const held = routes.find((route) => route.pattern === kept.pattern);
+    if (held === undefined) {
+      differences.push(`${kept.pattern} is missing (the record has it ${
+        kept.script ?? "no Worker"}'s)`);
+    } else if ((held.script ?? null) !== kept.script) {
+      differences.push(`${kept.pattern} is ${held.script ?? "no Worker"}'s (the record has it ${
+        kept.script ?? "no Worker"}'s)`);
+    }
+  }
+  for (const each of moved.filter((one) => one.method === "POST")) {
+    const held = routes.find((route) => route.pattern === each.pattern);
+    if (held !== undefined) {
+      differences.push(`${each.pattern} is still there, ${held.script ?? "no Worker"}'s (the ` +
+                       "record does not hold it)");
+    }
+  }
+  return differences;
+}
+
+/** A handback's step, as the plan says it. */
+export function describeBack(step: BackStep): string {
+  return step.method === "POST"
+    ? `add the route ${step.pattern} back for ${step.script ?? "no Worker"}`
+    : step.method === "PUT"
+      ? `move the route ${step.pattern} from ${step.from} back to ${step.script ?? "no Worker"}`
+      : `delete ${step.from}'s route ${step.pattern}, which the handover added`;
+}
+
 /** The kit's one Cloudflare client: each call checked, a failure never read as absent. */
 export class Cloudflare {
   readonly #api: CfApi;
@@ -215,6 +313,22 @@ export class Cloudflare {
       if (answer.status !== 200 || answer.body.success !== true) {
         throw new Error(`${describeStep(step, script)} failed (${answer.status}, ${
           JSON.stringify(codes(answer))}); the steps before it are done, the rest are not`);
+      }
+    }
+  }
+
+  /** Runs a handback's steps in order, each answer checked; the first failure stops it. */
+  async handBack(zone: string, steps: readonly BackStep[]): Promise<void> {
+    for (const step of steps) {
+      const path = `/zones/${zone}/workers/routes${step.method === "POST" ? "" : `/${step.id}`}`;
+      const answer = await this.#api(path, step.method === "DELETE" ? { method: "DELETE" } : {
+        method: step.method, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pattern: step.pattern,
+                               ...(step.script === null ? {} : { script: step.script }) }) });
+      if (answer.status !== 200 || answer.body.success !== true) {
+        throw new Error(`${describeBack(step)} failed (${answer.status}, ${
+          JSON.stringify(codes(answer))}); the steps before it are done, the rest are not: run ` +
+          "the handback again");
       }
     }
   }

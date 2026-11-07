@@ -8,7 +8,7 @@
  * mode a run (`MODES`, each a row of steps):
  *
  *   node --experimental-strip-types platform/deploy/deploy.ts --mode <mode> [--public | --yes]
- *        [--rotate <secrets>] [--migrate <Workers>]
+ *        [--rotate <secrets>] [--migrate <Workers>] [--record <id>]
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
  *
@@ -20,7 +20,11 @@
  *   nothing deployed and no gate changed, then the canary and the one sign-in link to open,
  *   with its pass and fail signs (`PROBE_SIGNS`).
  * - `routes`: `dark`, then the doors' routes handed over one at a time, the egress custom
- *   domain, and the webhook enabled.
+ *   domain, and the webhook enabled. Before any change it keeps a record of the zone's routes
+ *   and the handover's changes (`RouteRecord`), and the job summary names its id.
+ * - `handback`: the record `--record` names, handed back (the cutover's rollback): the zone's
+ *   routes put back as the record has them, only what the handover changed, one at a time,
+ *   then read back and held to the record, then the canary.
  * - `h2`: H2's probes alone, once a probe owner exists.
  * - `pair`: the pinned template with the runner this checkout ships, checked together on
  *   throwaway sandboxes unless E2B already holds their pair's tag (`build.py --check-pair`).
@@ -79,7 +83,8 @@ import { WRANGLER } from "../ci/workers.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import { E2b } from "../sandbox/src/e2b.ts";
 import {
-  cfApi, Cloudflare, describeStep, handover, narrower, type Route, type RouteStep,
+  type BackStep, cfApi, Cloudflare, describeBack, describeStep, handback, handover, type Kept,
+  type Moved, narrower, type Route, type RouteStep, unlike,
 } from "./cloudflare.ts";
 import {
   AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, CONTROL_KEY, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
@@ -123,6 +128,8 @@ export interface Io {
   readonly spawn: typeof spawnSync;
   readonly exec: typeof execFileSync;
   readonly log: (line: string) => void;
+  /** The clock: a route record's time. */
+  readonly now: () => Date;
 }
 
 export const IO: Io = Object.freeze({
@@ -131,9 +138,10 @@ export const IO: Io = Object.freeze({
   exec: ((...args: Parameters<typeof execFileSync>) => execFileSync(...args)) as
     typeof execFileSync,
   log: (line: string) => console.log(line),
+  now: () => new Date(),
 });
 
-export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair";
+export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -144,6 +152,8 @@ export interface Run {
   readonly apply: boolean;
   readonly rotate: ReadonlySet<string>;
   readonly migrate: ReadonlySet<string>;
+  /** `--record`: the id of the route record `handback` hands back (mode `handback` alone). */
+  readonly record: string | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly io: Io;
@@ -162,6 +172,11 @@ export interface Work {
   hook?: Json | null;
   redirect?: "present" | "missing" | "registered";
   routes?: RouteStep[];
+  /** The zone's routes as the route plan read them, before any change. */
+  table?: Route[];
+  /** The route record `handback` reads, and its handback on the zone as it stands. */
+  record?: RouteRecord;
+  back?: BackStep[];
   ids?: Record<string, string>;
   /** The namespaces a plan would make: not there yet. */
   unmade?: Set<string>;
@@ -742,6 +757,91 @@ export const PROBE_SIGNS = [
   "than 600 s old or ahead of the clock, so max_age=0 did not force a fresh sign-in.",
 ].join("\n");
 
+// --- The route record -------------------------------------------------------------------
+
+/**
+ * What `routes` keeps before it changes anything, so `handback` can put the zone's routes back
+ * (the import research's rollback, Fact 13): every route of the zone as the route plan read
+ * it, each pattern and its Worker, the changes the handover makes, the zone, the run and its
+ * time. It holds no secret and not the account id. It is kept in the control namespace, the
+ * kit's own record store (the control record is written there, and read back by a later
+ * `probe`): the kit writes it itself, before its first change, over the client and token it
+ * already holds, so a refused write stops the run before anything is changed, and `handback`
+ * reads it with that same token, with no host and no GitHub API in between. Its key is the
+ * run's (`GITHUB_RUN_ID`), which a re-run attempt keeps, and the job summary names it.
+ */
+export interface RouteRecord {
+  readonly kind: typeof RECORD_KIND;
+  readonly zone: string;
+  readonly zone_id: string;
+  readonly run: string;
+  readonly attempt: string | null;
+  readonly at: string;
+  readonly routes: readonly Kept[];
+  readonly moved: readonly Moved[];
+}
+
+const RECORD_KIND = "tinyassets-routes";
+/** A route record's key in the control namespace, after its run's id. */
+export const RECORD_PREFIX = "deploy:routes:";
+const RECORD_ID = /^[A-Za-z0-9-]{1,64}$/;
+
+/** The run's record id: the workflow run's, or, run by hand, the time's. */
+export function recordId(run: Run): string {
+  return input(run, "GITHUB_RUN_ID")
+    ?? `local-${run.io.now().toISOString().replace(/[-:]|\.\d+/g, "")}`;
+}
+
+/** The record `routes` keeps of `table` and its handover `steps`, on the zone `zoneId`. */
+export function routeRecord(run: Run, zoneId: string, table: readonly Route[],
+                            steps: readonly RouteStep[]): RouteRecord {
+  return {
+    kind: RECORD_KIND, zone: ZONE, zone_id: zoneId, run: recordId(run),
+    attempt: input(run, "GITHUB_RUN_ATTEMPT") ?? null, at: run.io.now().toISOString(),
+    routes: table.map((route) => ({ pattern: route.pattern, script: route.script ?? null })),
+    moved: steps.map((each) => ({ method: each.method, pattern: each.pattern })),
+  };
+}
+
+/**
+ * `value`, as KV holds the record `key`, read as a route record of the zone `zoneId`: its every
+ * field in shape, each pattern once, each change it names one its routes allow (a moved or
+ * deleted pattern among them, an added one not). Anything else throws: a bad record is never
+ * handed back.
+ */
+export function recordOf(value: unknown, key: string, zoneId: string): RouteRecord {
+  const bad = (why: string) => new Error(`the record ${key} ${why}: nothing is changed`);
+  const held = value as Partial<Record<keyof RouteRecord, unknown>> | null;
+  if (typeof held !== "object" || held === null || held.kind !== RECORD_KIND) {
+    throw bad("is not a route record");
+  }
+  if (held.zone !== ZONE || held.zone_id !== zoneId) {
+    throw bad(`is of another zone (${String(held.zone)}, ${String(held.zone_id)})`);
+  }
+  if (typeof held.run !== "string" || typeof held.at !== "string"
+      || !(held.attempt === null || typeof held.attempt === "string")
+      || !Array.isArray(held.routes) || !Array.isArray(held.moved)) {
+    throw bad("is out of shape");
+  }
+  const routes = held.routes as Partial<Kept>[];
+  if (!routes.every((route) => typeof route?.pattern === "string" && route.pattern !== ""
+                    && (route.script === null || typeof route.script === "string"))) {
+    throw bad("holds a route out of shape");
+  }
+  const patterns = routes.map((route) => route.pattern!);
+  if (new Set(patterns).size !== patterns.length) {
+    throw bad("holds a pattern twice");
+  }
+  for (const each of held.moved as Partial<Moved>[]) {
+    const recorded = typeof each?.pattern === "string" && patterns.includes(each.pattern);
+    if (!(each?.method === "POST" ? typeof each.pattern === "string" && !recorded
+      : (each?.method === "PUT" || each?.method === "DELETE") && recorded)) {
+      throw bad(`names a change its routes do not allow (${JSON.stringify(each)})`);
+    }
+  }
+  return held as RouteRecord;
+}
+
 // --- The steps --------------------------------------------------------------------------
 
 /** The run's production secrets reached: its E2B client and keys. */
@@ -859,7 +959,73 @@ const authorize = step("authorize", async (run, work) => {
 /** The doors' routes' handover, from the zone's routes as they stand. */
 const routePlan = step("route plan", async (_run, work) => {
   const routes = await made(work.cloudflare, "Cloudflare").routes(made(work.zone, "the zone"));
+  work.table = routes;
   work.routes = handover(routes, DOORS, ROUTES);
+});
+
+/** The control namespace's id, or undefined while no dark run has made it. */
+async function controlNamespace(work: Work): Promise<string | undefined> {
+  return (await made(work.cloudflare, "Cloudflare").namespaces(made(work.account, "the account")))
+    .get(NAMESPACES["CONTROL"]!);
+}
+
+/**
+ * The route record (`RouteRecord`), kept before any change: written when the handover moves
+ * a route and the run's record is not there yet, and kept as it is when it is (a re-run
+ * attempt keeps the table its first attempt read). A record that cannot be written stops the
+ * run, nothing changed.
+ */
+const recorded = step("route record", async (run, work) => {
+  const steps = made(work.routes, "the route plan");
+  if (steps.length === 0) {
+    work.plan.push("no route moves, so no route record is kept");
+    return;
+  }
+  const id = recordId(run);
+  const key = `${RECORD_PREFIX}${id}`;
+  const title = NAMESPACES["CONTROL"]!;
+  const namespace = await controlNamespace(work);
+  if (namespace === undefined) {
+    if (run.apply) {
+      throw new Error(`routes keeps its route record in ${title}, which a dark run makes: run ` +
+                      "dark first; nothing is changed");
+    }
+    work.plan.push(`record the zone's routes as ${key}: ${title} is not made yet, so the apply ` +
+                   "job stops until a dark run makes it");
+    return;
+  }
+  const cloudflare = made(work.cloudflare, "Cloudflare");
+  const account = made(work.account, "the account");
+  const table = made(work.table, "the route plan");
+  const held = await cloudflare.value(account, namespace, key);
+  if (held !== undefined) {
+    const kept = recordOf(held, key, made(work.zone, "the zone"));
+    work.plan.push(`keep the route record ${key} as attempt ${kept.attempt ?? "-"} wrote it at ` +
+                   `${kept.at}, before its first change: hand back with --mode handback ` +
+                   `--record ${id}`);
+    return;
+  }
+  // Doors on more of their routes than the probe's: an earlier routes run moved them.
+  const earlier = table.filter((route) => route.script === DOORS && ROUTES.includes(route.pattern)
+    && !PROBE_ROUTES.includes(route.pattern)).map((route) => route.pattern);
+  work.plan.push(`record the zone's ${table.length} routes and the handover's ${steps.length} ` +
+                 `changes as ${key} in ${title}, before any change: hand back with --mode ` +
+                 `handback --record ${id}${earlier.length === 0 ? "" : `; ${DOORS} holds ${
+                   earlier.join(", ")} already: the record of the routes run that moved them ` +
+                   "is the one to hand back, and it covers this run's changes too"}`);
+  if (run.apply) {
+    const record = routeRecord(run, made(work.zone, "the zone"), table, steps);
+    const status = await cloudflare.put(account, namespace, key, record);
+    if (status !== 200) {
+      throw new Error(`writing the route record ${key} failed (${status}): nothing is changed`);
+    }
+    // A copy beside the plan, in the job summary, for the founder to read.
+    const file = run.env["GITHUB_STEP_SUMMARY"];
+    if (file !== undefined) {
+      writeFileSync(file, `Route record ${key}:\n\n\`\`\`json\n${
+        JSON.stringify(record, null, 2)}\n\`\`\`\n\n`, { flag: "a" });
+    }
+  }
 });
 
 /** Each KV namespace by its title, made when the account's listing lacks it. */
@@ -1193,6 +1359,66 @@ const pair = step("pair check", async (run) => {
   run.io.log(`the pair ${tag} passed its standing checks, run now`);
 });
 
+/** The handback's one input: the Cloudflare token (the record's id is `parse`'s). */
+const handbackInputs = step("handback inputs", (run) => {
+  if (input(run, "CLOUDFLARE_API_TOKEN") === undefined) {
+    throw new Error("CLOUDFLARE_API_TOKEN is not set");
+  }
+});
+
+/** The route record `--record` names, read and held to its shape; missing or bad stops it. */
+const recordRead = step("record read", async (run, work) => {
+  const key = `${RECORD_PREFIX}${made(run.record ?? undefined, "the record's id")}`;
+  const namespace = await controlNamespace(work);
+  const value = namespace === undefined ? undefined
+    : await made(work.cloudflare, "Cloudflare").value(made(work.account, "the account"),
+                                                      namespace, key);
+  if (value === undefined) {
+    throw new Error(`there is no route record ${key} in ${NAMESPACES["CONTROL"]}: name the ` +
+                    "id a routes run's job summary gives; nothing is changed");
+  }
+  work.record = recordOf(value, key, made(work.zone, "the zone"));
+  work.plan.push(`the route record ${key}: the zone's ${work.record.routes.length} routes as ` +
+                 `run ${work.record.run} read them at ${work.record.at}, and the handover's ` +
+                 `${work.record.moved.length} changes`);
+});
+
+/** The record's handback, on the zone's routes as they stand. */
+const backPlan = step("handback plan", async (_run, work) => {
+  const record = made(work.record, "the record");
+  const routes = await made(work.cloudflare, "Cloudflare").routes(made(work.zone, "the zone"));
+  work.back = handback(record.routes, record.moved, routes, DOORS);
+  const scope = new Set([...record.routes, ...record.moved].map((each) => each.pattern));
+  work.plan.push(...routes.filter((route) => !scope.has(route.pattern)).map((route) =>
+    `leave the route ${route.pattern} (${route.script ?? "no Worker"}'s): neither the record ` +
+    "nor the handover holds it"));
+});
+
+/** The handback's changes, one at a time, no path the record served ever served by nothing. */
+const handBack = step("hand back", async (run, work) => {
+  const steps = made(work.back, "the handback plan");
+  work.plan.push(...(steps.length === 0
+    ? ["the zone's routes are the record's already: nothing to hand back"]
+    : steps.map(describeBack)));
+  if (run.apply) {
+    await made(work.cloudflare, "Cloudflare").handBack(made(work.zone, "the zone"), steps);
+  }
+});
+
+/** The zone read back after a handback: the record's routes, or the run stops naming each. */
+const handedBack = step("handback verified", async (run, work) => {
+  if (!run.apply) {
+    return;
+  }
+  const record = made(work.record, "the record");
+  const differences = unlike(record.routes, record.moved, await made(work.cloudflare,
+    "Cloudflare").routes(made(work.zone, "the zone")));
+  if (differences.length > 0) {
+    throw new Error(`the zone's routes read back unlike the record: ${differences.join("; ")}`);
+  }
+  work.plan.push("the zone's routes read back as the record has them");
+});
+
 // --- The modes --------------------------------------------------------------------------
 
 /** One mode: its steps, in order, and what it takes. */
@@ -1204,11 +1430,14 @@ export interface Row {
   readonly applies: boolean;
   /** Whether it takes `--rotate` and `--migrate`. */
   readonly options: boolean;
+  /** Whether it reads a route record, which `--record` names (and only then takes one). */
+  readonly record?: true;
 }
 
-/** The checks every deploy makes before any change, in this order. */
-const CHECKS: readonly Step[] = [inputs, keyrings, locks, zone, upstream, templateBuilt,
-                                 pairPassed, hookListed, redirect, authorize];
+/** The checks every deploy makes before any change, in this order: the reads, then WorkOS. */
+const READS: readonly Step[] = [inputs, keyrings, locks, zone, upstream, templateBuilt,
+                                pairPassed, hookListed];
+const CHECKS: readonly Step[] = [...READS, redirect, authorize];
 /** Storage, then the Workers, then the control record. */
 const STORAGE: readonly Step[] = [namespaces, buckets, queues, listings];
 const DEPLOY: readonly Step[] = [staged, secrets, workers, control, hookLater];
@@ -1225,14 +1454,21 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
             signInLink],
     plans: true, applies: true, options: false,
   },
+  // The route plan read and its record kept before the first change, WorkOS's redirect too.
   routes: {
-    steps: [...CHECKS, routePlan, ...STORAGE, ...DEPLOY, handOver, customDomain,
-            hook(true, ", after the routes"), reported("\nNothing was changed."), canary,
-            h2Next],
+    steps: [...READS, routePlan, recorded, redirect, authorize, ...STORAGE, ...DEPLOY, handOver,
+            customDomain, hook(true, ", after the routes"), reported("\nNothing was changed."),
+            canary, h2Next],
     plans: true, applies: true, options: true,
   },
   h2: { steps: [h2], plans: false, applies: true, options: true },
   pair: { steps: [pair], plans: false, applies: true, options: true },
+  // A routes run's record handed back, the zone read back, then the canary.
+  handback: {
+    steps: [handbackInputs, zone, recordRead, backPlan, handBack, handedBack,
+            reported("\nNothing was changed."), canary],
+    plans: true, applies: true, options: false, record: true,
+  },
 });
 
 // --- The keyring tools ------------------------------------------------------------------
@@ -1281,11 +1517,20 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     throw new Error("--mode is given once: a run is one mode");
   }
   const row = MODES[mode as Mode];
+  const named = argv.indexOf("--record");
+  const record = named < 0 ? null : argv[named + 1] ?? "";
   const run: Run = Object.freeze({
     mode: mode as Mode, reach: argv.includes("--public") ? "public" : "secrets",
     apply: argv.includes("--yes"), rotate: option(argv, "--rotate"),
-    migrate: option(argv, "--migrate"), env, io });
+    migrate: option(argv, "--migrate"), record, env, io });
+  if (row.record === true && (record === null || !RECORD_ID.test(record))) {
+    throw new Error(`mode ${mode} hands back a routes run's record: --record <id>, the run id ` +
+                    "its job summary names (letters, digits and -)");
+  }
   if (row.plans) {
+    if (row.record !== true && record !== null) {
+      throw new Error(`mode ${mode} reads no route record: --record is mode handback's`);
+    }
     if (run.apply && run.reach === "public") {
       throw new Error("--public is the plan job's: it never changes anything");
     }
