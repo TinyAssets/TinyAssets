@@ -10,6 +10,7 @@
  * The count is the bytes `JSON.stringify` would make, from the value itself: no page is
  * serialized to be measured, so a page never holds the copy it is measuring.
  */
+import { utf8Bytes } from "./text";
 
 /**
  * The most UTF-8 bytes of JSON one answer's text holds: the strictest documented client
@@ -28,26 +29,6 @@ export const RESULT_CHARS = 50_000;
  * against `RESULT_CHARS` less this.
  */
 export const FIT_SLACK = 64;
-
-/** The UTF-8 bytes of `text`, without encoding it; a lone surrogate as U+FFFD (3). */
-export function utf8Length(text: string): number {
-  let bytes = 0;
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    if (c < 0x80) {
-      bytes += 1;
-    } else if (c < 0x800) {
-      bytes += 2;
-    } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length
-               && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
-      bytes += 4;
-      i++;
-    } else {
-      bytes += 3;
-    }
-  }
-  return bytes;
-}
 
 /** The UTF-8 bytes `JSON.stringify(text)` makes, quotes included, without making it. */
 export function escapedBytes(text: string): number {

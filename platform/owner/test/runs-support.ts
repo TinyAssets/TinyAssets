@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { verifyToken } from "../../doors/src/routing-mac";
+import { verifyToken } from "../../contract/src/routing-mac";
 
 import type { Binding, OwnerDO } from "../src/owner-do";
 import type { RunReceipt } from "../src/runs";

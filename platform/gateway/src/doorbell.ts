@@ -5,7 +5,7 @@
  * plaintext straight to the seal; nothing else ever sees it.
  *
  * - `sealDoorbell`: the owner's pasted token (the doors' connect entrypoint), checked
- *   against its wake kind's record (`owner/wake-kinds.json`: its host, path and secret
+ *   against its wake kind's record (`contract/wake-kinds.json`: its host, path and secret
  *   shape) and sealed with the callback URL and the record's auth, so the blob can only
  *   ever be sent where it was pasted for, the way it was meant to be.
  * - `verifyDoorbell`: an MCP Events subscribe's callback, verified before it is activated
@@ -28,10 +28,12 @@
  * Every fetch is the runtime's (`global_fetch_strictly_public`): never the egress
  * interposer's, since no model call's scope is open here.
  */
+import { utf8Decoder } from "../../contract/src/text";
+import { SUBSCRIPTION_ID } from "../../contract/src/ids";
 import {
-  callbackSecret, callbackUrl, kindNamed, type Push,
-} from "../../owner/src/wake-records";
-import { Failure } from "./failure";
+  AUTH_HEADER, callbackSecret, callbackUrl, kindNamed, type Push,
+} from "../../contract/src/wake-records";
+import { Failure } from "../../contract/src/failure";
 import { binding, type KeyringEnv, openValue, type Resealed, sealValue, type Sealed } from "./keyring";
 
 /** What a doorbell blob holds: where it goes, how it is sent, and its secret. */
@@ -109,7 +111,7 @@ export function doorbellSecret(value: unknown): DoorbellSecret {
 
 /** A subscription's binding: its own key space, never a model connection's. */
 function bound(owner: string, subscription: string, version: number) {
-  if (typeof subscription !== "string" || !/^sub_[0-9a-f]{32}$/.test(subscription)) {
+  if (typeof subscription !== "string" || !SUBSCRIPTION_ID.test(subscription)) {
     throw new Failure("invalid_binding");
   }
   return binding(owner, `wake.${subscription}`, version);
@@ -248,7 +250,7 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
   let echoed: unknown;
   try {
     echoed = bytes === null ? null
-      : (JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as
+      : (JSON.parse(utf8Decoder("strip").decode(bytes)) as
          { challenge?: unknown }).challenge;
   } catch {
     echoed = null;
@@ -279,7 +281,7 @@ function ringRequest(value: unknown): RingRequest {
       || !/^[A-Za-z0-9_-]{1,128}$/.test(r["event_id"])
       || typeof headers !== "object" || headers === null || Array.isArray(headers)
       || !Object.entries(headers).every(([name, v]) => typeof v === "string"
-                                        && !/^authorization$|^webhook-/i.test(name))) {
+                                        && !AUTH_HEADER.test(name))) {
     throw new Failure("invalid_request");
   }
   return r as unknown as RingRequest;

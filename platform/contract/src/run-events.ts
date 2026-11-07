@@ -14,9 +14,29 @@
  * conversation's session id (`init`), the run's result text (`final_text`, the last match,
  * or every match joined where the matcher says `accumulate`) and its first error.
  */
-import type { EngineEvents, EventMatcher } from "../../doors/src/sources";
-
 import { Refused } from "./errors";
+
+/**
+ * One event matcher, as a source record's `engine.events` holds it: an event whose fields at
+ * `match` equal those values, read at `path`.
+ */
+export interface EventMatcher {
+  readonly match: Readonly<Record<string, string | number | boolean>>;
+  /** A dotted path into the event; empty for the event itself. */
+  readonly path: string;
+  /** Every match's value is joined in order (a streamed text), not only the last. */
+  readonly accumulate?: true;
+}
+
+/** How the runner reads the engine's stream (ADR-034 decision 10), and the object its events. */
+export interface EngineEvents {
+  readonly format: "jsonl" | "json";
+  readonly session_id: readonly EventMatcher[];
+  readonly final_text: readonly EventMatcher[];
+  readonly error: readonly EventMatcher[];
+  readonly usage: readonly EventMatcher[];
+  readonly tool_call: readonly EventMatcher[];
+}
 
 export const FRAME_VERSION = 1;
 

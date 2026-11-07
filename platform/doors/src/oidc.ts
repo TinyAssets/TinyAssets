@@ -28,6 +28,7 @@
  * error code with it) and never a token or a secret; a wrong issuer names the issuer the
  * token carries, which is no secret. A sign-in is never taken on less than every check.
  */
+import { utf8Decoder } from "../../contract/src/text";
 import { CLOCK_MARGIN_S, now } from "./config";
 import type { SignIn, Upstream } from "./upstream";
 
@@ -151,7 +152,7 @@ function unbase64url(text: string): Uint8Array {
 function json(bytes: Uint8Array, what: string): Record<string, unknown> {
   let value: unknown;
   try {
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+    value = JSON.parse(utf8Decoder("strip").decode(bytes));
   } catch {
     value = null;
   }

@@ -24,12 +24,12 @@ import { runInNewContext } from "node:vm";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { AUTOMATON_STATES, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP }
-  from "../../owner/src/sync-ignore";
 import {
-  CHUNK_BYTES, COMMIT_OPS, ignoredBy, INLINE_BYTES, INTENT_ID_CHARS, memoryMirror,
-  openMirror, type Place,
-  SYNC_BODY, SyncClient, SyncFenced, syncIn, syncOut, wildcard,
+  AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, wildcard,
+} from "../../contract/src/sync-ignore";
+import { CHUNK_BYTES, INLINE_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX } from "../../contract/src/limits";
+import {
+  INTENT_ID_CHARS, memoryMirror, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut,
 } from "./sync";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -397,10 +397,10 @@ describe("memory, whatever the tree holds", () => {
   }
 
   it("sync-out over many paths holds about what it holds over few", { tags: ["large"] }, async () => {
-    // One batch: `COMMIT_OPS` files, which sync-out sends as one commit. A batch's live set,
+    // One batch: `MAX_SYNC_OPS` files, which sync-out sends as one commit. A batch's live set,
     // measured, is the unit; the steps' own objects are a quarter of it (the owner memory
     // leg's allowance, a quarter unit, ADR-037).
-    const BATCH = COMMIT_OPS / 100;
+    const BATCH = MAX_SYNC_OPS / 100;
     const FEW = 10 * BATCH;
     const MANY = 100 * BATCH;
     // Each size the least of two runs (a run's peak is the path's own plus whatever the
@@ -418,11 +418,11 @@ describe("memory, whatever the tree holds", () => {
     const many = await sized(MANY);
     const QUARTER = batch.peak / 4;
     // Its shape, from the code's constants: one commit open at once, each at most
-    // `COMMIT_OPS` ops in a body of at most `SYNC_BODY`.
+    // `MAX_SYNC_OPS` ops in a body of at most `SYNC_BODY_MAX`.
     const inFlight = Math.max(...all.map((run) => run.inFlight));
     expect(inFlight).toBe(1);
-    expect(Math.max(...all.map((run) => run.ops))).toBe(COMMIT_OPS);
-    expect(Math.max(...all.map((run) => run.body))).toBeLessThanOrEqual(SYNC_BODY);
+    expect(Math.max(...all.map((run) => run.ops))).toBe(MAX_SYNC_OPS);
+    expect(Math.max(...all.map((run) => run.body))).toBeLessThanOrEqual(SYNC_BODY_MAX);
     // What a tree may cost past one batch is the sync-ignore matcher's memory of names,
     // `REMEMBERED_NAME_BYTES` at most (of folders it keeps only the path's own,
     // `sync-ignore.test.ts`), never its paths: the walk holds one directory a level, and the
@@ -636,7 +636,7 @@ describe("a commit's body", () => {
   it("stays within the door's limit whatever its paths' characters", async () => {
     // A path's characters as the body carries them: a non-ASCII one 2 to 4 bytes, a control
     // character escaped to 6. A folder chain near the path's most (4,096 bytes), each name of
-    // `é` and U+0001 (3 bytes on disk, 8 in the body), and `COMMIT_OPS` files of
+    // `é` and U+0001 (3 bytes on disk, 8 in the body), and `MAX_SYNC_OPS` files of
     // `INLINE_BYTES` under it: about 15 MB of ops, past the door's 12 MiB, though their
     // paths count about 8 MB in UTF-16 units.
     const { place: p, local } = place();
@@ -646,7 +646,7 @@ describe("a commit's body", () => {
       dir = join(dir, name);
     }
     mkdirSync(dir, { recursive: true });
-    for (let f = 0; f < COMMIT_OPS; f++) {
+    for (let f = 0; f < MAX_SYNC_OPS; f++) {
       writeFileSync(join(dir, `file-${f}`), "x".repeat(INLINE_BYTES));
     }
     const bodies: number[] = [];
@@ -662,9 +662,9 @@ describe("a commit's body", () => {
     }) as unknown as typeof fetch;
     await syncOut(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p,
                   memoryMirror(), LEASE, []);
-    expect(sent.filter((path) => path.includes("/file-"))).toHaveLength(COMMIT_OPS);
-    expect(bodies.reduce((sum, each) => sum + each, 0)).toBeGreaterThan(SYNC_BODY);
-    expect(Math.max(...bodies)).toBeLessThanOrEqual(SYNC_BODY);
+    expect(sent.filter((path) => path.includes("/file-"))).toHaveLength(MAX_SYNC_OPS);
+    expect(bodies.reduce((sum, each) => sum + each, 0)).toBeGreaterThan(SYNC_BODY_MAX);
+    expect(Math.max(...bodies)).toBeLessThanOrEqual(SYNC_BODY_MAX);
   });
 
   it("fails loudly on an intent id of another length than it counted", async () => {

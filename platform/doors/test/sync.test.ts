@@ -9,13 +9,13 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { mintToken } from "../src/routing-mac";
+import { mintToken } from "../../contract/src/routing-mac";
 import type { Binding } from "../../owner/src/owner-do";
 import type { SandboxStart } from "../../owner/src/sandbox";
 import { defineAgent } from "../../owner/test/runs-support";
-import { EGRESS_ORIGIN } from "../src/config";
-import { SYNC_HEADER } from "../src/egress";
-import { GENERATION_HEADER, SANDBOX_HEADER } from "../../owner/src/network";
+import {
+  EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER, SYNC_HEADER,
+} from "../../contract/src/egress";
 import type { OwnerDO } from "./entry";
 import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } from "./support";
 

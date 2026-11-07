@@ -13,7 +13,7 @@ import {
   AGENT_DIR, agentId, Authority, AUTHORITY_CHANGED, authorityOf, NO_AUTHORITY, NOT_GRANTED,
   NOT_OWNER, OWNER_ONLY, refusalCode, type Stamped, stamped, stampOf,
 } from "../src/authority";
-import { Refused } from "../src/errors";
+import { Refused } from "../../contract/src/errors";
 import { WriteGate } from "../src/gate";
 import { Grants, holds } from "../src/grants";
 import type { OwnerDO } from "../src/owner-do";

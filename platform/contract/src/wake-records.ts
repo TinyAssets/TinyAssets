@@ -33,10 +33,12 @@
  * (S31): the main agent reads the change itself, through its own grant.
  *
  * This module is the records and the callback checks alone, importing nothing but the
- * errors and the records' file, so the gateway applies the same checks where it sends
+ * errors, the zone and the records' file, so the gateway applies the same
+ * checks where it sends
  * (`gateway/src/doorbell.ts`; its isolation guard walks the closure). What builds a wake,
  * and a subscription's id, is `wake-kinds.ts`.
  */
+import { ZONE } from "./egress";
 import { Invalid } from "./errors";
 import raw from "../wake-kinds.json" with { type: "json" };
 
@@ -112,8 +114,6 @@ export const ARGUMENTS_CHARS = 1024;
  */
 export const SUBSCRIPTIONS_PER_AGENT = 16;
 export const DOORBELL_BLOB_CHARS = 8192;
-/** A subscription id: `sub_` and 32 hex of a SHA-256, derived by the server, never sent. */
-export const SUBSCRIPTION_ID = /^sub_[0-9a-f]{32}$/;
 /** A Standard Webhooks key's decoded bytes (OpenAI's page: 24 to 64). */
 const WHSEC = Object.freeze({ low: 24, high: 64 });
 /**
@@ -123,8 +123,10 @@ const WHSEC = Object.freeze({ low: 24, high: 64 });
  * public name resolves to is the platform's to refuse (owed live probe, `tasks.md`).
  */
 const REFUSED_SUFFIXES: readonly string[] = Object.freeze([
-  "localhost", "local", "internal", "arpa", "tinyassets.io", "workers.dev",
+  "localhost", "local", "internal", "arpa", ZONE, "workers.dev",
 ]);
+/** A header a record's or a wake's own may never be: the auth's, which the gateway sets. */
+export const AUTH_HEADER = /^authorization$|^webhook-/i;
 /** A DNS label, and a dotted IPv4 address as the URL parser writes every spelling of one. */
 const LABEL = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
 const IPV4 = /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/;
@@ -227,7 +229,7 @@ function push(value: unknown, what: string): Push | null {
   if (typeof headers !== "object" || headers === null || Array.isArray(headers)
       || !Object.entries(headers).every(([name, v]) => HEADER.test(name)
                                         && typeof v === "string"
-                                        && !/^authorization$|^webhook-/i.test(name))) {
+                                        && !AUTH_HEADER.test(name))) {
     throw new Error(`wake kinds: ${what}.headers are names to text, never the auth's own`);
   }
   template(headers, `${what}.headers`);

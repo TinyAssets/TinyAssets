@@ -15,8 +15,8 @@ import { checkLimits, LEDGER_LIMITS } from "../src/ledger";
 import {
   MOVE_PASS_UNITS, MOVE_RECORD_BYTES, moveTableUnits, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS,
 } from "../src/holds";
-import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
-import { UNIT_BYTES } from "../src/slots";
+import { PLACE_BYTES } from "../src/manifest";
+import { UNIT_BYTES } from "../../contract/src/slots";
 import { WORST_FILL } from "../src/manifest";
 import {
   DATABASE_BYTES, IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES, RUNTIME, SHARE, type Term, termBytes,

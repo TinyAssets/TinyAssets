@@ -7,7 +7,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BODY_BYTES_MAX } from "../../owner/src/bodies";
-import { EGRESS_BODY_MAX } from "../../owner/src/network";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { parseKey } from "../src/api-keys";
 import { mcpClient } from "../src/binder";
 import {

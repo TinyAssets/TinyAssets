@@ -43,7 +43,8 @@
  * the owner's object keeps the plain hash, and only this Worker, holding the data key for a
  * call, turns one into the other.
  */
-import { Invalid, namespace } from "./keys";
+import { Invalid } from "../../contract/src/errors";
+import { namespace } from "./keys";
 
 /** The one secret this module reads. */
 export type KeyringSecret = unknown;

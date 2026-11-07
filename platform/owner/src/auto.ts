@@ -9,7 +9,8 @@
  * - With no connected model, nothing ranks: there is no platform-paid default (a founder
  *   call).
  */
-import type { ModelInfo, Usable } from "./connections";
+import type { ModelRecord } from "../../contract/src/model-record";
+import type { Usable } from "./connections";
 import ranking from "./model-ranking.json" with { type: "json" };
 
 /** One connected model `auto` may route to. */
@@ -19,7 +20,7 @@ export interface Candidate {
   readonly provider: string;
   readonly display_name: string;
   readonly created_at: number;
-  readonly model: ModelInfo;
+  readonly model: ModelRecord;
 }
 
 /** The physical model id of a candidate, as a connection lists it. */

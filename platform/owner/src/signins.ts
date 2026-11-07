@@ -28,19 +28,19 @@
  * call (`Binding.signins`), kept for the runs the object's own lane starts
  * (`platform_signins`). None kept, none is on.
  */
-import { randomBytes } from "node:crypto";
+import { HEX64, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
 import { bundledSources, type LoginSpec, SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal,
          signinShape } from "../../doors/src/sources";
 
-import { Invalid, Refused } from "./errors";
-import { LEASE_TTL_S, OWNER_AUTHORITY } from "./files";
+import { Invalid, Refused } from "../../contract/src/errors";
+import { LEASE_TTL_S } from "../../contract/src/limits";
+import { OWNER_AUTHORITY } from "./files";
 import type { OwnerStorage } from "./gate";
-import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX } from "./run-rows";
-import { isPrintable } from "./text";
+import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX } from "../../contract/src/run-rows";
+import { isPrintable } from "../../contract/src/text";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */
-export const SIGNIN_ID = /^si_[0-9a-f]{32}$/;
 
 /** A live sign-in is the authority's one at a time. */
 export const SIGNIN_LIVE = "signin_live: a sign-in is already in progress in that sandbox";
@@ -128,7 +128,7 @@ export class Signins {
 
   /** A new sign-in's id. */
   static id(): string {
-    return `si_${randomBytes(16).toString("hex")}`;
+    return `si_${randomHex(16)}`;
   }
 
   #row(id: unknown): SigninRow | undefined {
@@ -338,7 +338,7 @@ export function signinAuthority(value: unknown): string {
   if (value === undefined || value === OWNER_AUTHORITY) {
     return OWNER_AUTHORITY;
   }
-  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+  if (typeof value !== "string" || !HEX64.test(value)) {
     throw new Invalid("a sign-in's sandbox is the owner's own, or one client's id");
   }
   return value;

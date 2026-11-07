@@ -20,13 +20,13 @@ import { join } from "node:path";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
-import { SUPPORTED_APIS } from "../../gateway/src/credential";
+import { SUPPORTED_APIS } from "../../contract/src/egress-scope";
 import { PLATFORM } from "../../ci/paths";
 import {
-  bundledRecords, catalogOf, forbids, type Install, RUN_BASICS, runEnv, sealedSource,
-  type LoginSpec, type SourceRecord,
-  SourceRecordError, sourceRecord,
+  bundledRecords, catalogOf, type Install, type LoginSpec, RUN_BASICS, runEnv, sealedSource,
+  type SourceRecord, sourceRecord, SourceRecordError,
 } from "../src/sources";
+import { forbids } from "../../contract/src/text";
 
 const SOURCES = join(PLATFORM, "sources");
 

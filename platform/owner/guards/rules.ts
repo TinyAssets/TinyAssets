@@ -67,7 +67,7 @@ export const OWNER_QUEUES = Object.freeze({ producers: Object.freeze([
   Object.freeze({ binding: "ERASURES", queue: "tinyassets-erasure" })]) });
 /**
  * The owner Worker's one secret, declared by name (it binds nothing): the routing key the
- * sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), the doors Worker's too.
+ * sandbox tokens are MAC'd under (`contract/src/routing-mac.ts`), the doors Worker's too.
  */
 export const SECRETS = Object.freeze(["ROUTING_MAC_KEY"]);
 /**

@@ -19,8 +19,9 @@
  * The runs slice (R) mints a run's grant from this, and checks it at every call the run
  * makes (ADR-034 decision 6).
  */
-import { Invalid, Refused } from "./errors";
-import { codePoints, isPrintable } from "./text";
+import { HEX64 } from "../../contract/src/ids";
+import { Invalid, Refused } from "../../contract/src/errors";
+import { codePoints, isPrintable } from "../../contract/src/text";
 
 /** The capabilities of a scoped grant that work needs (`grants.ts`'s `CAPABILITIES`). */
 export type ToolCapability = "read_files" | "write_files" | "propose_policy" | "converse"
@@ -73,7 +74,6 @@ export function stampOf(state: Readonly<AuthorityState> | undefined): Stamped | 
   return state?.by === "client" ? state.stamp : null;
 }
 
-const HEX64 = /^[0-9a-f]{64}$/;
 const STAMP_KEYS = "agent,authenticated_at,client,generation,universe";
 
 /** An agent id, or a universe: 1 to `max` printable characters, never a wildcard. */

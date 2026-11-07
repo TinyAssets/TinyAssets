@@ -47,7 +47,7 @@
  * exists); a reservation shrinks its output to fit what the ceilings leave, where the
  * Python counted attempts only.
  */
-import { randomBytes } from "node:crypto";
+import { randomHex } from "../../contract/src/ids";
 
 import type { Api, Model, Usage as PiUsage } from "@earendil-works/pi-ai";
 import { calculateCost } from "@earendil-works/pi-ai/models";
@@ -238,7 +238,7 @@ export class Usage {
       if (output < floor || output < 1) {
         return refuse(costRule ?? "max_output_tokens");
       }
-      const id = `r${randomBytes(16).toString("hex")}`;
+      const id = `r${randomHex(16)}`;
       const cost = priced(ask.rates, ask.inputTokens, output);
       this.#insert(ask, "reserved", null, output, ask.inputTokens + output, cost, generation,
                    day, month, now, id);
@@ -260,7 +260,7 @@ export class Usage {
 
   #insert(ask: Ask, state: State, rule: string | null, output: number, tokens: number,
           cost: number, generation: number, day: string, month: string, now: number,
-          id = `r${randomBytes(16).toString("hex")}`): void {
+          id = `r${randomHex(16)}`): void {
     this.#sql.exec("INSERT INTO model_reservations (id, run, connection_id, source, model, " +
                      "state, rule, max_output_tokens, est_tokens, est_cost, policy_generation, " +
                      "day, month, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

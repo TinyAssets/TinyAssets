@@ -5,7 +5,7 @@
  */
 import { createHash } from "node:crypto";
 
-import { CHUNK_BYTES } from "../src/manifest";
+import { CHUNK_BYTES } from "../../contract/src/limits";
 import {
   type Content, joined, makeChunk, type Placement, type Plan, recordParts, type SegmentRecord,
   type Source, type Trailer,

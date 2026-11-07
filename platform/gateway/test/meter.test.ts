@@ -6,13 +6,15 @@ import { describe, expect, it } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
-import { aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, ruledApis,
-         servedPriced,
-         tierMultiplier, unpricedOption } from "../src/api-rules";
+import {
+  apiRules, fallbackList, freeCall, manyChoices, paidTool, ruledApis, servedPriced, tierMultiplier,
+  unpricedOption,
+} from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
-import { egressTarget, meteredCall } from "../src/credential";
-import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage, sentHeaders,
-         snapshotOf } from "../src/meter";
+import { egressTarget, meteredCall, meteredModel } from "../../contract/src/egress-scope";
+import {
+  clamped, describes, learnMeter, meteredRecord, meteredUsage, sentHeaders, snapshotOf,
+} from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
 import { bundledRecords, sourceRecord } from "../../doors/src/sources";
@@ -68,7 +70,9 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
     expect(freeCall(rules, "anthropic", "POST", "/v1/messages/count_tokens?beta=true"))
       .toBe(true);
     expect(freeCall(rules, "anthropic", "POST", "/v1/messages")).toBe(false);
-    expect(freeCall(rules, "anthropic", "GET", "/v1/messages/count_tokens")).toBe(false);
+    // A read is free by its method, whatever its path (`READS`).
+    expect(freeCall(rules, "anthropic", "GET", "/v1/messages/count_tokens")).toBe(true);
+    expect(freeCall(null, "custom", "HEAD", "/v1/models")).toBe(true);
     // Anthropic's page covers Anthropic's endpoint, not another provider on the same API.
     expect(freeCall(rules, "custom", "POST", "/v1/messages/count_tokens")).toBe(false);
     expect(freeCall(rules, "minimax", "POST", "/v1/messages/count_tokens")).toBe(false);
@@ -131,9 +135,9 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
     }
     expect(paidTool(rules, { model: "m", input: "hi", tools: [{ type: "function",
                                                                   name: "f" }] })).toBe(false);
-    // A WebSocket upgrade is a GET of the model path, which no key seals.
+    // A WebSocket upgrade is a GET of the model path: free as a read, but no key seals it.
     expect(egressTarget(scopeOf("openai"), "GET", "/v1/responses")).toBeNull();
-    expect(freeCall(rules, "openai", "GET", "/v1/responses")).toBe(false);
+    expect(freeCall(rules, "openai", "GET", "/v1/responses")).toBe(true);
   });
 });
 

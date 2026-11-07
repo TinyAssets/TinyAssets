@@ -34,11 +34,11 @@
  * re-arms it by any change of the binding (a new revision). A capability URL has no
  * breaker: its sender retries on its own `429`.
  */
-import { randomBytes } from "node:crypto";
+import { HEX32, randomHex } from "../../contract/src/ids";
 
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
-import { type Profile, profile as checkedProfile } from "./inbound-proof";
+import { type Profile, profile as checkedProfile } from "../../contract/src/inbound-proof";
 
 /** The bindings an owner holds at most: a technical ceiling (the 10 GB, guard terms). */
 export const MAX_BINDINGS = 1_000;
@@ -56,7 +56,7 @@ export const PROOF_INVALID = "inbound_proof_invalid: the event's proof does not 
 export const INSTALL_PROOF = "install_proof_required: a shared app's installation is made by " +
   "its install flow alone";
 
-const BINDING_ID = /^[0-9a-f]{32}$/;
+const BINDING_ID = HEX32;
 const ROUTE = /^(?:h:[0-9a-f]{64}|i:[a-z][a-z0-9_]{0,31}:(?:workspace|enterprise):[0-9a-f]{64})$/;
 const AGENT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
@@ -194,7 +194,7 @@ export class Inbound {
           .length > 0) {
       throw new Refused("this route is bound already");
     }
-    const id = randomBytes(16).toString("hex");
+    const id = randomHex(16);
     sql.exec("INSERT INTO inbound_bindings (binding_id, kind, agent, enabled, revision, route, " +
                "profile, secret, created_at, changed_at) VALUES (?, ?, ?, 1, 1, ?, ?, ?, ?, ?)",
              id, change.kind, change.agent, change.route,

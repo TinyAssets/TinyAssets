@@ -10,8 +10,8 @@ import {
   OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_SMALL_WAITERS, OWNER_WAITERS,
 } from "../src/holds";
 import {
-  BUSY, isolatePool, type Slot, SlotBusy, slotted, SlotPool,
-} from "../src/slots";
+  BUSY, isolatePool, type Slot, SlotBusy, SlotPool, slotted,
+} from "../../contract/src/slots";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The owner's pool, with a shorter wait. */
@@ -303,8 +303,9 @@ describe("a pool of units", () => {
   });
 
   it("is one pool an isolate, its capacity and reserve its Worker's one figure", () => {
-    const pool = isolatePool(7, 1, 7);
-    expect(isolatePool(7, 1, 7)).toBe(pool);
-    expect(() => isolatePool(8, 1)).toThrow(/holds 7 units \(1 reserved\), not 8 \(1\)/);
+    const isolate = { pool: null, tails: null };
+    const pool = isolatePool(isolate, 7, 1, 7);
+    expect(isolatePool(isolate, 7, 1, 7)).toBe(pool);
+    expect(() => isolatePool(isolate, 8, 1)).toThrow(/holds 7 units \(1 reserved\), not 8 \(1\)/);
   });
 });

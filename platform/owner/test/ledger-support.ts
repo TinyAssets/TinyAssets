@@ -9,7 +9,7 @@ import {
 } from "../src/ledger";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
-import { subscriptionId } from "../src/wake-kinds";
+import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import { alarmOf, EVERY_SIGNIN, laneAt, TIERS } from "./support";
 

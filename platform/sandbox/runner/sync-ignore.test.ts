@@ -1,5 +1,5 @@
 /**
- * The sync-ignore matcher (`owner/src/sync-ignore.ts`) as git reads a `.gitignore`, `git
+ * The sync-ignore matcher (`contract/src/sync-ignore.ts`) as git reads a `.gitignore`, `git
  * check-ignore` the oracle: GitHub's 310 templates (github/gitignore at `df4087095eb4`, CC0,
  * in `test-data/gitignore/`) and random lists, every path's answer git's; the hostile lists
  * of the review's rounds 1 to 6, answered as git does with the lines that fit, at a cost a
@@ -22,7 +22,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   AGENT_PEAK, AUTOMATON_STATES, automatonStates, defaultSyncIgnore, HEAP_PER_LIST_BYTE,
   ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, unappliedLines,
-} from "../../owner/src/sync-ignore";
+} from "../../contract/src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES = join(HERE, "test-data", "gitignore");

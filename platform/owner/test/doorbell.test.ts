@@ -21,9 +21,10 @@ import { PLATFORM_CALLER } from "../src/admission";
 import { WriteGate } from "../src/gate";
 import { clock, type Origin, WAKE_LEASE_S } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
-import { checkKinds, SUBSCRIPTIONS_PER_AGENT, subscriptionId, wakeKinds } from "../src/wake-kinds";
+import { checkKinds, SUBSCRIPTIONS_PER_AGENT, wakeKinds } from "../../contract/src/wake-records";
+import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, Doorbell, type RingAnswer, retryAfterOf, runWakes } from "../src/wakes";
-import raw from "../wake-kinds.json" with { type: "json" };
+import raw from "../../contract/wake-kinds.json" with { type: "json" };
 import { DOT, EVENT, ledgerOn, ledgerSubscription, MCP, MUSE, rig, type Rig, WHSEC }
   from "./ledger-support";
 import { failure } from "./support";

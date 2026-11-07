@@ -12,7 +12,7 @@
  * whole read. A range read fetches the whole object (at most 4 MiB) and slices it: GCM
  * authenticates the whole.
  */
-import { Invalid } from "./keys";
+import { Invalid } from "../../contract/src/errors";
 
 export type Cipher = "ssec" | "aes-gcm";
 

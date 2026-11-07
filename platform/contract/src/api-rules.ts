@@ -273,13 +273,20 @@ export function valueAt(body: unknown, path: readonly string[]): unknown {
       ? (at as Record<string, unknown>)[key] : undefined), body);
 }
 
+/** The methods that read and carry no body: a sealed endpoint's reads (a model list). */
+export const READS: readonly string[] = Object.freeze(["GET", "HEAD"]);
+
 /**
- * Whether a call is one its provider does not bill (`free`): `provider`, `method` and the
- * bare `path` (from the origin, its query dropped) exactly a listed call's. A read (`GET`,
- * `HEAD`) is free by its method, as the egress door has it; this is every other free call.
+ * Whether a call is one its provider does not bill (`free`), the one rule the owner's
+ * object admits by and the gateway forwards by: a read (`READS`), which carries no model
+ * use, or a call whose `provider`, `method` and bare `path` (from the origin, its query
+ * dropped) are exactly a listed call's (a token count).
  */
 export function freeCall(rules: ApiRules | null, provider: string, method: string,
                          path: string): boolean {
+  if (READS.includes(method)) {
+    return true;
+  }
   const bare = path.split("?")[0]!;
   return rules !== null && rules.free.some((call) => call.provider === provider
     && call.method === method && call.path === bare);

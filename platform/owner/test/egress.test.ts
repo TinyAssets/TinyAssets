@@ -12,14 +12,16 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { verifyToken } from "../../doors/src/routing-mac";
+import { verifyToken } from "../../contract/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
-import type { ModelInfo } from "../src/connections";
-import { EGRESS_BEAT_S, EGRESS_LIMITS, type EgressMetering, type EgressOpened,
-         type EgressRefusal, LOST_AFTER_S } from "../src/egress";
-import { EGRESS_DEADLINE_S } from "../src/network";
+import type { ModelRecord } from "../../contract/src/model-record";
+import { EGRESS_BEAT_S } from "../../contract/src/egress";
+import {
+  EGRESS_LIMITS, type EgressMetering, type EgressOpened, type EgressRefusal, LOST_AFTER_S,
+} from "../src/egress";
+import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import type { Binding } from "../src/owner-do";
-import { apiRules } from "../../gateway/src/api-rules";
+import { apiRules } from "../../contract/src/api-rules";
 import { egressPrice, NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
 import { SPEND_KEPT } from "../src/schema";
 import { priced } from "../src/usage";
@@ -277,7 +279,7 @@ describe("an egress call", () => {
     // body's bytes, and its output at that model's cap.
     const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
                                       connection)) as [{ models: string }];
-    const named = (JSON.parse(models) as ModelInfo[]).find((model) => model.id === MODEL)!;
+    const named = (JSON.parse(models) as ModelRecord[]).find((model) => model.id === MODEL)!;
     const output = opened.metering!.max_output_tokens;
     expect(output).toBe(named.maxTokens);
     expect(charge).toMatchObject({ source: "anthropic", charge: "held", cost: null,
@@ -678,7 +680,7 @@ const OPENROUTER = Object.freeze({
 async function pricedModels(r: Gated, connection: string) {
   const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
                                     connection)) as [{ models: string }];
-  return (JSON.parse(models) as ModelInfo[]).filter((model) => model.cost.output > 0)
+  return (JSON.parse(models) as ModelRecord[]).filter((model) => model.cost.output > 0)
     .map((model) => ({ model, holds: egressPrice([model], model.contextWindow,
                                                  model.maxTokens) }))
     .sort((a, b) => a.holds - b.holds);
@@ -894,9 +896,9 @@ describe("the spend caps", () => {
 
   it("price each model to its own window and cap, at its dearest rates", () => {
     const rates = { input: 1, output: 10, cacheRead: 0, cacheWrite: 2 };
-    const wide = { cost: rates, contextWindow: 1_000_000, maxTokens: 1_000 } as ModelInfo;
+    const wide = { cost: rates, contextWindow: 1_000_000, maxTokens: 1_000 } as ModelRecord;
     const dear = { cost: { ...rates, output: 20, cacheWrite: 3 }, contextWindow: 100_000,
-                   maxTokens: 50_000 } as ModelInfo;
+                   maxTokens: 50_000 } as ModelRecord;
     // The wide model's million input tokens at 2, its thousand output at 10; the dear one's
     // hundred thousand at 3 and its 50,000 at 20: the dearer of the two.
     expect(egressPrice([wide, dear], 1_000_000, 50_000))
@@ -908,7 +910,7 @@ describe("the spend caps", () => {
     const connection = await r.connect("sk-good");
     const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
                                       connection)) as [{ models: string }];
-    const window = (JSON.parse(models) as ModelInfo[]).find((model) => model.id === MODEL)!
+    const window = (JSON.parse(models) as ModelRecord[]).find((model) => model.id === MODEL)!
       .contextWindow;
     // Room for the input and 500 output tokens: under the 1,024 a call is worth.
     const lease = await cappedLeased(r, { ...ROOMY, turn_tokens: window + 500 });

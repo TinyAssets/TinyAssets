@@ -62,30 +62,33 @@
  * taken, or a live run's lease expiry while runs are live, never a poll: with none the lane
  * has no job.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { CONVERSATION_ID, randomHex, RUN_ID, SCHEDULE_ID } from "../../contract/src/ids";
+import { sha256Hex } from "../../contract/src/digest";
 
-import type { CredentialKind, EngineEvents, Sources } from "../../doors/src/sources";
+import type { CredentialKind, Sources } from "../../doors/src/sources";
+import {
+  type EngineEvents, type Frame, FRAME_VERSION, readEvent,
+} from "../../contract/src/run-events";
 
-import { AGENT_DISABLED, type AgentFile, AUTO, RUN_CAPABILITIES, type RunCapability }
-  from "./agent-file";
+import { AGENT_DISABLED, type AgentFile, AUTO } from "./agent-file";
+import type { RunCapability } from "../../contract/src/capabilities";
 import { AUTHORITY_CHANGED, type StandingGrant, type Stamped } from "./authority";
-import { LEASE_TTL_S, MAX_LIST, OWNER_AUTHORITY } from "./files";
+import { LEASE_TTL_S, MAX_LIST } from "../../contract/src/limits";
+import { OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
 import { nextOccurrence, parseCron } from "./cron";
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import { periods } from "./money";
 import {
-  CONVERSATION_ID, CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, QUEUE_BYTES, QUEUE_ROWS,
-  RESULT_BYTES, RUN_ID, RUNS_KEPT, SCHEDULE_ID,
-} from "./run-rows";
-import { type Frame, FRAME_VERSION, readEvent } from "./run-events";
+  CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUNS_KEPT,
+} from "../../contract/src/run-rows";
 import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
 import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF } from "./signins";
 import { TIER_RUNS, type TierName, type Tiers } from "./tier";
-import { utf8Bytes } from "./text";
+import { utf8Bytes } from "../../contract/src/text";
 
 export const NO_CONVERSATION = "no_conversation: no such conversation of the caller's";
 export const CONVERSATION_BUSY = "conversation_busy: a run in this conversation is still live";
@@ -414,14 +417,10 @@ function planModel(model: string): Candidate["model"] {
 }
 
 function id(prefix: string): string {
-  return `${prefix}${randomBytes(16).toString("hex")}`;
+  return `${prefix}${randomHex(16)}`;
 }
 
 /** A secret's SHA-256 hex: all the object keeps of one. */
-export function secretHash(secret: string): string {
-  return createHash("sha256").update(secret, "utf8").digest("hex");
-}
-
 /** Whose sandbox a run of `ask` runs in: the client it came through, else the owner's. */
 function authorityOf(origin: { readonly client: string } | null): string {
   return origin?.client ?? OWNER_AUTHORITY;
@@ -658,7 +657,7 @@ export class Runs {
       this.#limits(chosen.source!, now);
     }
     const runId = waiting ?? id("run_");
-    const secret = randomBytes(32).toString("hex");
+    const secret = randomHex(32);
     // The run's environment, before anything is written: a run its record refuses writes
     // nothing.
     const config = prepare({ run: runId, engine: chosen.engine, credential: chosen.credential,
@@ -707,7 +706,7 @@ export class Runs {
     this.#sql.exec(
       "INSERT INTO run_grants (run, secret, stamp, origin, scopes, connection, created_at) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-      runId, secretHash(secret), ask.stamp === null ? null : JSON.stringify(ask.stamp),
+      runId, sha256Hex(secret), ask.stamp === null ? null : JSON.stringify(ask.stamp),
       ask.origin === null ? null : JSON.stringify(ask.origin), JSON.stringify(scopes),
       chosen.connection, now);
     this.#prune();
@@ -1568,7 +1567,6 @@ export function scheduleAuthority(row: ScheduleRow): {
 }
 
 export type { ScheduleRow };
-export { RUN_CAPABILITIES };
 
 /**
  * The conversation id of a mail thread to `agent` under `client`'s authority (none: the
@@ -1577,7 +1575,5 @@ export { RUN_CAPABILITIES };
  */
 export function mailConversation(agent: string, thread: string, client: string | null):
     string {
-  return "cv_" + createHash("sha256")
-    .update(`tinyassets-mail-conversation\0${agent}\0${thread}\0${client ?? ""}`, "utf8")
-    .digest("hex").slice(0, 32);
+  return "cv_" + sha256Hex(`tinyassets-mail-conversation\0${agent}\0${thread}\0${client ?? ""}`).slice(0, 32);
 }

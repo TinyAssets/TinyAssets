@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { MANIFEST_LOG_OVERFLOW } from "../src/backup";
 import { ChangeLog, IMAGE_MAX, LOG_BYTES, LOG_WIDE } from "../src/changelog";
 import { exported } from "../src/export";
-import { CHUNK_BYTES, INLINE_BYTES } from "../src/files";
+import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { LOGGED } from "../src/schema";

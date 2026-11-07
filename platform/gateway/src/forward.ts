@@ -23,27 +23,36 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 import { type Catalog, modelInfos } from "./catalog";
+import { bearer, type Credential } from "./credential";
 import {
-  bearer, type Credential, type EgressScope, egressTarget, type Meter, meteredCall,
-} from "./credential";
-import type { ModelRecord } from "./model-record";
-import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
+  type EgressScope, egressTarget, type Meter, meteredCall, meteredModel,
+} from "../../contract/src/egress-scope";
+import type { ModelRecord } from "../../contract/src/model-record";
+import {
+  type Code, codeOf, Failure, failureResponse, upstreamCode,
+} from "../../contract/src/failure";
 import { nativeFetch } from "./egress";
-import { aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, servedPriced,
-         tierMultiplier, unpricedOption, valueAt } from "./api-rules";
-import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
+import {
+  aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, READS, servedPriced,
+  tierMultiplier, unpricedOption, valueAt,
+} from "../../contract/src/api-rules";
+import { clamped, learnMeter, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
-import { BODY_MAX, heldDeadlineMs, Hold, HeldRefusal, raced, weighedBody, weightSlots }
+import { heldDeadlineMs, Hold, HeldRefusal, raced, weighedBody, weightSlots }
   from "./held";
-import { SLOT_WAIT_MS } from "../../owner/src/slots";
+import { RESEALED_HEADER } from "../../contract/src/egress";
+import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract/src/limits";
 
-/** The longest one forwarded request may run (§6: a policy write's bound on a stream). */
-export const FORWARD_DEADLINE_MS = 24 * 60 * 60 * 1000;
+/**
+ * The longest one forwarded request may run: the egress deadline (`EGRESS_DEADLINE_S`, a
+ * day), which the egress door and the owner's object keep too. A policy write ends a stream
+ * sooner, through the caller's stop.
+ */
+export const FORWARD_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 
 /** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;
 
-export { BODY_MAX, GATEWAY_POOL_SLOTS } from "./held";
 
 /** The bytes each write of a metered call's upload carries. */
 const UPLOAD_SLICE = 64 * 1024;
@@ -205,8 +214,11 @@ function secretsOf(credential: Credential): string[] {
 
 /** A refusal's answer (`failure.ts`), carrying a resealed credential when there is one. */
 function refusal(code: Code, resealed?: Resealed): Response {
-  return failureResponse(code, resealed === undefined ? {}
-    : { "x-ta-resealed": JSON.stringify(resealed) });
+  const extra: Record<string, string> = {};
+  if (resealed !== undefined) {
+    extra[RESEALED_HEADER] = JSON.stringify(resealed);
+  }
+  return failureResponse(code, extra);
 }
 
 /**
@@ -433,9 +445,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     return refused("endpoint_refused", resealed);
   }
   // A sandbox's unmetered call (`free`): only a read, or a call its API's rules cite as free.
-  if (free && request.method !== "GET" && request.method !== "HEAD"
-      && !freeCall(apiRules(credential.upstream.api), credential.upstream.provider,
-                   request.method, target.pathname)) {
+  if (free && !freeCall(apiRules(credential.upstream.api), credential.upstream.provider,
+                        request.method, target.pathname)) {
     return refused("unmetered", resealed);
   }
   // Every spelling of each credential parameter, as some servers read them case-blind.
@@ -444,8 +455,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       target.searchParams.delete(name);
     }
   }
-  let body: BodyInit | null = request.method === "GET" || request.method === "HEAD"
-    ? null : request.body;
+  let body: BodyInit | null = READS.includes(request.method) ? null : request.body;
   let model: Model<Api> | null = null;
   let listed = false;
   let upload: Upload | null = null;
@@ -465,7 +475,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     }
     // Its declared length, which the owner's object admitted it by: read exactly it.
     const declared = request.headers.get("content-length");
-    if (declared === null || !/^[0-9]{1,15}$/.test(declared) || Number(declared) > BODY_MAX) {
+    if (declared === null || !/^[0-9]{1,15}$/.test(declared)
+        || Number(declared) > EGRESS_BODY_MAX) {
       return refused("invalid_request", resealed);
     }
     // Held from its first unit to its upload's last write, to its stop; its sender's deadline
@@ -546,7 +557,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   // The body is rewritten when redacted, so its encoding headers no longer describe it.
   answer.delete("content-encoding");
   if (resealed !== undefined) {
-    answer.set("x-ta-resealed", JSON.stringify(resealed));
+    answer.set(RESEALED_HEADER, JSON.stringify(resealed));
   }
   let outcome: Promise<MeterOutcome> = Promise.resolve(UNKNOWN);
   let source = upstream.body;

@@ -10,13 +10,16 @@ import { exports } from "cloudflare:workers";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { aliased, apiRules } from "../src/api-rules";
+import { aliased, apiRules } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
-import { BODY_MAX, GATEWAY_POOL_SLOTS, type Reserve } from "../src/forward";
-import { Hold, HeldRefusal, heldDeadlineMs, readHeld, Tokens } from "../src/held";
+import { EGRESS_BODY_MAX } from "../../contract/src/limits";
+import { type Reserve } from "../src/forward";
+import {
+  GATEWAY_POOL_SLOTS, gatewaySlots, Hold, HeldRefusal, heldDeadlineMs, readHeld, Tokens,
+} from "../src/held";
 import Gateway, { EgressGateway } from "../src/index";
 import { learnMeter, meteredRecord } from "../src/meter";
-import { isolatePool, SlotPool } from "../../owner/src/slots";
+import { SlotPool } from "../../contract/src/slots";
 import { GOOGLE, OPENAI } from "./support";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
@@ -47,7 +50,7 @@ async function until(check: () => boolean, tries = 1500): Promise<void> {
 function granting(asked: unknown[] = []): Reserve {
   return async (call) => {
     asked.push(call);
-    return { metering: { max_output_tokens: 77, input_bytes: BODY_MAX, model: call.model,
+    return { metering: { max_output_tokens: 77, input_bytes: EGRESS_BODY_MAX, model: call.model,
                          tier: call.tier } };
   };
 }
@@ -127,7 +130,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
       granting(asked), new ReadableStream());
     expect(await answer.response.json()).toMatchObject({ error: { code: "invalid_request" } });
     expect(asked).toEqual([]);
-    expect(isolatePool(GATEWAY_POOL_SLOTS).state().held).toBe(0);
+    expect(gatewaySlots().state().held).toBe(0);
   });
 
   it("refuses a body whose tree would weigh more than the pool, before its parse", async () => {
@@ -143,7 +146,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     expect([answer.response.status, await answer.response.json()]).toEqual(
       [413, { error: { code: "egress_too_large", message: "egress_too_large" } }]);
     expect(asked).toEqual([]);
-    expect(isolatePool(GATEWAY_POOL_SLOTS).state().held).toBe(0);
+    expect(gatewaySlots().state().held).toBe(0);
   });
 
   it("lets every slot go at the caller's stop of a stalled body, another owner's call landing",
@@ -152,7 +155,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const mallory = (await gateway.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
-    const pool = isolatePool(GATEWAY_POOL_SLOTS);
+    const pool = gatewaySlots();
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
     // One sandbox declares the bound and sends 10 bytes, then nothing.
     const stalled = new ReadableStream<Uint8Array>({ start(controller) {
@@ -161,7 +164,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     const stop = new IdentityTransformStream();
     const first = egress.forward("mallory", "c1", 1, mallory, new Request(
       "https://egress/v1/responses", { method: "POST", body: stalled,
-                                        headers: { "content-length": String(BODY_MAX) } }),
+                                        headers: { "content-length": String(EGRESS_BODY_MAX) } }),
       granting(), stop.readable);
     // It holds only what its bytes need: one slot, not the pool.
     await until(() => pool.state().held === 1);
@@ -193,7 +196,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     expect(await answer.response.json()).toMatchObject({ error: { code: "invalid_request" } });
     expect(Date.now() - started).toBeGreaterThanOrEqual(heldDeadlineMs(100) - 50);
     expect(await outcome(answer)).toEqual({ state: "failed" });
-    expect(isolatePool(GATEWAY_POOL_SLOTS).state().held).toBe(0);
+    expect(gatewaySlots().state().held).toBe(0);
   });
 
   it("stops a reserve its caller stopped, its slots let go, nothing sent", async () => {
@@ -213,7 +216,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     const stopped = await answer;
     expect(await stopped.response.json()).toMatchObject({ error: { code: "aborted" } });
     expect(await outcome(stopped)).toEqual({ state: "failed" });
-    expect(isolatePool(GATEWAY_POOL_SLOTS).state().held).toBe(0);
+    expect(gatewaySlots().state().held).toBe(0);
   });
 
   it("settles `failed`, never `unknown`, a call it threw on after the reserve", async () => {
@@ -249,10 +252,10 @@ describe("the verification's cases (rveg2)", () => {
     const alice = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const mallory = (await gateway.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
-    const pool = isolatePool(GATEWAY_POOL_SLOTS);
+    const pool = gatewaySlots();
     const hogs = Array.from({ length: GATEWAY_POOL_SLOTS }, () => egress.forward(
       "mallory", "c1", 1, mallory, new Request("https://egress/v1/responses", {
-        method: "POST", headers: { "content-length": String(BODY_MAX) },
+        method: "POST", headers: { "content-length": String(EGRESS_BODY_MAX) },
         body: new ReadableStream<Uint8Array>({ start() { /* sends nothing */ } }),
       }), granting(), new ReadableStream()));
     await until(() => pool.state().held === GATEWAY_POOL_SLOTS);
@@ -300,7 +303,7 @@ describe("the verification's cases (rveg2)", () => {
     expect([answer.response.status, await answer.response.json()]).toEqual(
       [413, { error: { code: "egress_too_large", message: "egress_too_large" } }]);
     expect(Date.now() - started).toBeLessThan(5_000);
-    expect(isolatePool(GATEWAY_POOL_SLOTS).state().held).toBe(0);
+    expect(gatewaySlots().state().held).toBe(0);
   });
 });
 

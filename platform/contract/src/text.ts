@@ -1,0 +1,110 @@
+/** Text and byte rules every Worker reads, matching the Python trusted side's. */
+import { Invalid } from "./errors";
+
+/** Characters Python's `str.isprintable()` refuses: other, and separators but the space. */
+const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]|[^\P{Zs} ]/u;
+
+/** Python's `len()`: code points, not UTF-16 units. */
+export function codePoints(value: string): number {
+  let count = 0;
+  for (const _ of value) {
+    count++;
+  }
+  return count;
+}
+
+/** Below this many UTF-16 units, a count by hand is the fastest (measured in Node 22). */
+const COUNTED_UNITS = 4096;
+/** The window a longer text is encoded through, a piece at a time, and let go. */
+const WINDOW_BYTES = 64 * 1024;
+
+/**
+ * The UTF-8 bytes of `text`, a lone surrogate as U+FFFD (3), as `TextEncoder` makes them,
+ * without holding them: a short text counted by hand, a longer one encoded through one
+ * window of at most 64 KiB, so a 16 MiB body costs the window, not its own bytes again.
+ * Measured in Node 22 against encoding whole and against counting by hand: the hand count
+ * itself below 4 Ki units, faster than it above, and past about 40 Ki units faster than
+ * both (16 MiB of ASCII in about 1 ms, against 8 to 11 ms whole and 20 to 30 ms by hand).
+ * From about 4 to 40 Ki units of ASCII it is microseconds slower than encoding whole (up to
+ * 9 times as long).
+ */
+export function utf8Bytes(text: string): number {
+  if (text.length < COUNTED_UNITS) {
+    let bytes = 0;
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (c < 0x80) {
+        bytes += 1;
+      } else if (c < 0x800) {
+        bytes += 2;
+      } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length
+                 && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+        bytes += 4;
+        i++;
+      } else {
+        bytes += 3;
+      }
+    }
+    return bytes;
+  }
+  const encoder = new TextEncoder();
+  const window = new Uint8Array(Math.min(WINDOW_BYTES, 3 * text.length));
+  let bytes = 0;
+  for (let rest = text; rest.length > 0;) {
+    const { read, written } = encoder.encodeInto(rest, window);
+    bytes += written;
+    rest = rest.slice(read);
+  }
+  return bytes;
+}
+
+/**
+ * A strict UTF-8 decoder: malformed bytes throw. `keep` leaves a leading byte-order mark in
+ * the text, as a stored file's bytes are read back verbatim (Fact 9); `strip` drops it, as a
+ * parser reads a body, a name or a document.
+ */
+export function utf8Decoder(bom: "keep" | "strip"): TextDecoder {
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: bom === "keep" });
+}
+
+/** `bytes` as strict UTF-8 (`utf8Decoder`), whole. */
+export function utf8Text(bytes: ArrayBuffer | ArrayBufferView, bom: "keep" | "strip"): string {
+  return utf8Decoder(bom).decode(bytes);
+}
+
+export function isPrintable(value: string): boolean {
+  return !NOT_PRINTABLE.test(value);
+}
+
+/**
+ * A model source record's id, which a connection names its source by (`connections.ts`)
+ * and owner policy keys a source's ceilings by (`policy.ts`): the Python's
+ * `source_ceilings` key, so a source's ceilings outlive any one connection of it.
+ */
+export const SOURCE_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+
+/**
+ * Whether `list` (variable names and `PREFIX_*` patterns, as a source record's
+ * `forbid_env` holds them) names `name`.
+ */
+export function forbids(list: readonly string[], name: string): boolean {
+  return list.some((entry) => entry.endsWith("*") ? name.startsWith(entry.slice(0, -1))
+    : entry === name);
+}
+
+/** A collection, row or writer name: 1 to 256 printable characters. */
+export function name(value: unknown, what: string): string {
+  if (typeof value !== "string" || !value || codePoints(value) > 256 || !isPrintable(value)) {
+    throw new Invalid(`${what} is 1 to 256 printable characters`);
+  }
+  return value;
+}
+
+/** An owner or caller, as `validate_principal`: trimmed, 1 to 512 printable characters. */
+export function principal(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value !== value.trim()
+      || codePoints(value) > 512 || !isPrintable(value)) {
+    throw new Invalid("invalid owner principal");
+  }
+  return value;
+}

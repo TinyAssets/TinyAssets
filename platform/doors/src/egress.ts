@@ -1,7 +1,7 @@
 /**
  * The egress door (gateway research §5.4 step 4; tasks 4 G4):
  * `egress.tinyassets.io/r/<run>/<secret>/c/<connection>/*`, where a run's model clients send
- * their providers' own APIs with placeholder keys (`network.ts`'s `sandboxEnv`). The run in
+ * their providers' own APIs with placeholder keys (the contract's `sandboxEnv`). The run in
  * the path is what the object holds the call to (that run's own connection, slice R), and
  * the run's own secret beside it is what lets a call act as that run: only the run's CLI
  * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), and
@@ -45,28 +45,22 @@
  * sandbox binding at every door but the egress doors.
  */
 import type { Reservation } from "../../gateway/src/forward";
-import { EGRESS_BEAT_S, EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER,
-         type Outcome, SANDBOX_HEADER } from "../../owner/src/network";
-import { EVENTS_BODY_MAX, eventsBounded } from "../../owner/src/run-events";
+import {
+  EGRESS_BEAT_S, EGRESS_ORIGIN, EGRESS_STATUS, EVENTS_DOOR, GENERATION_HEADER, MCP_DOOR,
+  MODEL_DOOR, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
+  SIGNIN_DOOR, SIGNIN_EVENTS_DOOR, SYNC_DOOR, SYNC_HEADER, type SyncDoor,
+} from "../../contract/src/egress";
+import { HEX64 } from "../../contract/src/ids";
+import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SYNC_BODY_MAX } from "../../contract/src/limits";
+import { EVENTS_BODY_MAX, eventsBounded } from "../../contract/src/run-events";
 
 import { type Bound, bindRun, bindSandbox, bindSync, type Presented, rebound } from "./binder";
 import { jsonObject } from "./body";
-import { type DoorsEnv, EGRESS_ORIGIN } from "./config";
+import type { DoorsEnv } from "./config";
 import { ownerGate } from "./control";
-import { LEASE_LIVED, verifyToken } from "./routing-mac";
+import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 import { serveMcp } from "./mcp";
 import { refusal } from "./tools";
-
-/** A run's model call: its run, a connection id, then the provider's own path. */
-const ROUTE = /^\/r\/(run_[0-9a-f]{32})(?:\/([0-9a-f]{64}))?\/c\/(c[0-9a-f]{24})(\/.*)$/;
-/** A run's MCP door, by its own secret. */
-const MCP_DOOR = /^\/r\/(run_[0-9a-f]{32})(?:\/([0-9a-f]{64}))?\/mcp$/;
-/**
- * The run's own secret as a header, where its CLI sends one (`run_secret_env`, its MCP
- * file's `headers`); the path carries it otherwise. Never forwarded (`x-ta-*`).
- */
-export const RUN_HEADER = "x-ta-run";
-const SECRET = /^[0-9a-f]{64}$/;
 
 /** The run's own secret: its path's, else its header's, else none (refused by the object). */
 function secretOf(request: Request, inPath: string | undefined): string | undefined {
@@ -74,33 +68,15 @@ function secretOf(request: Request, inPath: string | undefined): string | undefi
     return inPath;
   }
   const header = request.headers.get(RUN_HEADER);
-  return header !== null && SECRET.test(header) ? header : undefined;
+  return header !== null && HEX64.test(header) ? header : undefined;
 }
-/** A run's event door, the runner's. */
-const EVENTS_DOOR = /^\/r\/(run_[0-9a-f]{32})\/events$/;
-/** The runner's own secret, beside the egress token, on its event and sign-in posts. */
-export const RUNNER_HEADER = "x-ta-runner";
-const RUNNER = /^[0-9a-f]{64}$/;
-/** The runner's report of the engines' sign-ins, for the sandbox as a whole. */
-const SIGNIN_DOOR = "/signin";
+
 const GENERATION = /^[1-9][0-9]{0,14}$/;
 const LENGTH = /^[0-9]{1,15}$/;
-/** The gateway's own header on its answer, for the object alone. */
-const RESEALED = "x-ta-resealed";
 export const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 /** How long a completed answer's metered outcome is waited for before it is `unknown`. */
 const OUTCOME_WAIT_MS = 10_000;
 
-/** The HTTP status each refusal is answered with. */
-const STATUS: Readonly<Record<EgressCode, number>> = Object.freeze({
-  egress_token_missing: 401, egress_token_unknown: 401, egress_token_expired: 401,
-  egress_lease_closed: 401, egress_run_closed: 401, egress_run_connection: 403,
-  egress_policy_stale: 409,
-  egress_network_stale: 409,
-  egress_connection_refused: 403, egress_endpoint_refused: 403, egress_unmetered: 403,
-  egress_length_required: 411, egress_rate: 429, egress_spend_refused: 402,
-  egress_unknown_model: 404, egress_unpriced_option: 403, egress_too_large: 413,
-});
 type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string }
   | { state: "failed" }
   | { state: "unknown" };
@@ -193,7 +169,7 @@ async function sandboxToken(request: Request, env: DoorsEnv):
 /** The runner's secret its call presents, or the refusal: none, or not 64 hex. */
 function runnerOf(request: Request): Response | Presented {
   const runner = request.headers.get(RUNNER_HEADER);
-  return runner !== null && RUNNER.test(runner) ? { runner }
+  return runner !== null && HEX64.test(runner) ? { runner }
     : refused("runner_token_missing", 401);
 }
 
@@ -248,7 +224,6 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
 }
 
 /** A sign-in's event door's path: the sign-in's id. */
-const SIGNIN_EVENTS_DOOR = /^\/signin\/(si_[0-9a-f]{32})\/events$/;
 
 /**
  * A sign-in's event door (slice SIGNIN): the runner's `ta.signin` frames of the vendor's own
@@ -345,16 +320,6 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
  * (`#syncer`), so a content door never shows a path the feed would not. Bytes cross as base64; a body is bounded
  * (`SYNC_BODY_MAX`), so the runner sends more calls, not bigger ones.
  */
-const SYNC_DOOR =
-  /^\/sync\/(changes|list|read|chunks|commit|upload_begin|upload_chunks|upload_abort)$/;
-type SyncDoor = "changes" | "list" | "read" | "chunks" | "commit" | "upload_begin"
-  | "upload_chunks" | "upload_abort";
-export const SYNC_HEADER = "x-ta-sync";
-/**
- * A sync door's body: two 4 MiB chunks' base64 (the files plane's most a call,
- * `BATCH_BYTES`), or the object's read of them, with room for the request's own fields.
- */
-export const SYNC_BODY_MAX = 12 * 1024 * 1024;
 
 function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
@@ -499,7 +464,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (sync !== null && url.search === "") {
     return serveSync(request, env, sync[1] as SyncDoor);
   }
-  const route = ROUTE.exec(url.pathname);
+  const route = MODEL_DOOR.exec(url.pathname);
   if (route === null) {
     return refused("not_found", 404);
   }
@@ -521,7 +486,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   // call is admitted by, within the gateway's own bound.
   const carries = request.method !== "GET" && request.method !== "HEAD";
   if (carries && bytesHint !== null && bytesHint > EGRESS_BODY_MAX) {
-    return refused("egress_too_large", STATUS.egress_too_large);
+    return refused("egress_too_large", EGRESS_STATUS.egress_too_large);
   }
   let opened: Awaited<ReturnType<typeof stub.egressOpen>>;
   try {
@@ -535,7 +500,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
     return refused(codeOf(answer.message), answer.status);
   }
   if (!opened.ok) {
-    return refused(opened.code, STATUS[opened.code], opened.receipt);
+    return refused(opened.code, EGRESS_STATUS[opened.code], opened.receipt);
   }
   const { reservation, blob, version } = opened;
 
@@ -613,7 +578,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
         if (reserved.ok) {
           return { metering: reserved.metering };
         }
-        kept.rejected = refused(reserved.code, STATUS[reserved.code], reserved.receipt);
+        kept.rejected = refused(reserved.code, EGRESS_STATUS[reserved.code], reserved.receipt);
         return { refused: reserved.code };
       }, (error: unknown): Reservation => {
         const answer = refusal(error);
@@ -655,8 +620,8 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   outcome = answer.outcome;
   status = response.status;
   const headers = new Headers(response.headers);
-  const reseal = headers.get(RESEALED);
-  headers.delete(RESEALED);
+  const reseal = headers.get(RESEALED_HEADER);
+  headers.delete(RESEALED_HEADER);
   try {
     resealed = reseal === null ? undefined : JSON.parse(reseal);
   } catch {

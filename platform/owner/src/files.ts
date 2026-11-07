@@ -76,12 +76,19 @@
  * cross to `FILES` open their own, one for each step around a call, so no write waits on
  * the files Worker.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { HEX32, HEX64, randomHex } from "../../contract/src/ids";
+import { createHash } from "node:crypto";
+
+import { sha256Hex } from "../../contract/src/digest";
+import {
+  BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, INLINE_BYTES, INTENT_ID_BYTES, LEASE_TTL_S, MAX_LIST,
+  MAX_SYNC_OPS,
+} from "../../contract/src/limits";
 
 import { letGo } from "./edit";
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage, Write } from "./gate";
-import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
+import { CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import { refuseErasing } from "./erasure";
 import { TIER_UNREAD } from "./tier";
@@ -89,10 +96,9 @@ import {
   AGENTS_OWNER_ONLY, ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, ownersOnly,
   parentOf, storedPath, TEMP, within, WORKSPACE,
 } from "./paths";
-import { codePoints, isPrintable, utf8Bytes } from "./text";
+import { codePoints, isPrintable, utf8Bytes } from "../../contract/src/text";
 
 
-export { CHUNK_BYTES } from "./manifest";
 /**
  * The fixed codes a quota's refusal starts with: the owner's whole storage, the tier's
  * figure or the owner's own lower one (`storage_full`, `storage-full.ts`: the one wall a
@@ -103,20 +109,10 @@ export const FILE_QUOTA = "file_quota";
 export const FILE_SHARE = "file_share";
 const FILE_TOO_LARGE = `${FILE_QUOTA}: the file is larger than the owner's file size quota`;
 /**
- * The most bytes one `FILES` call moves, the files Worker's `BATCH_BYTES`: two chunks, so
- * no call holds much of the isolate's memory.
- */
-export const BATCH_BYTES = 2 * CHUNK_BYTES;
-/**
  * The most bytes one whole-file write moves through the object (four chunks, two `FILES`
  * calls); larger files go by upload, a chunk at a time.
  */
 export const WHOLE_BYTES = 4 * CHUNK_BYTES;
-/**
- * Files this size or smaller are kept inline in the object, so reading `AGENTS.md` or a skill
- * touches no bucket; a placed body's own threshold is `PLACE_BYTES` (ADR-035).
- */
-export const INLINE_BYTES = 4096;
 /** An upload intent's life: past it, its uncommitted chunks become garbage. */
 export const INTENT_TTL_S = 86_400;
 /**
@@ -137,8 +133,6 @@ export const PLACE_TTL_S = 600;
 export const GC_GRACE_S = 30 * 86_400;
 /** When a failed chunk delete is tried again. */
 export const GC_RETRY_S = 300;
-/** A sandbox lease's life without a renewal; a run's heartbeat lapses as soon. */
-export const LEASE_TTL_S = 60;
 /** The owner's own work's sandbox: the authority every run the owner started holds. */
 export const OWNER_AUTHORITY = "owner";
 /** A temporary directory's life. */
@@ -148,8 +142,6 @@ export const TEMP_TTL_S = 7 * 86_400;
  * an hour rather than each prune or delete arming its own.
  */
 export const HOUSEKEEPING_SLACK_S = 3600;
-/** R2's most keys in one delete, and so the most chunks one alarm run deletes. */
-export const DELETE_BATCH = 1000;
 /**
  * The least of a pass's budget a chunk delete is begun with: one that could not finish
  * would only mark its chunks `deleting` to be tried again `GC_RETRY_S` later.
@@ -157,21 +149,14 @@ export const DELETE_BATCH = 1000;
 export const DELETE_FLOOR_MS = 1000;
 /** Rows one alarm run prunes or expires per kind, and paths it re-marks for retention. */
 export const HOUSEKEEPING_BATCH = 500;
-export const MAX_LIST = 1000;
 /** Chunks one intent may hold: a 40 GiB file, policy's highest `max_file_bytes`. */
 export const MAX_INTENT_CHUNKS = 10_000;
 /** Open upload intents, and the chunks they hold in all. */
 export const MAX_OPEN_INTENTS = 64;
-/** An upload intent's id: this many random bytes, as hex. */
-export const INTENT_ID_BYTES = 16;
 export const MAX_HELD_CHUNKS = 20_000;
-/** Ops in one sync commit. */
-export const MAX_SYNC_OPS = 1000;
 /** The most versions policy can keep of a path (`FILE_SETTINGS.keep_versions`). */
 export const KEEP_CEILING = 1000;
 
-const HEX64 = /^[0-9a-f]{64}$/;
-const HEX32 = /^[0-9a-f]{32}$/;
 
 /** The owner's files settings the object enforces (owner policy's `files` table). */
 export interface FileLimits {
@@ -496,10 +481,6 @@ const FIT_BATCH = 64;
 
 type Intent = { size: number; chunks: string[]; pending: string[]; writer: string };
 
-export function sha256Hex(bytes: Uint8Array | string): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
 /** The content id of small content kept inline: its kind, size and bytes. */
 export function inlineId(bytes: Uint8Array): string {
   return createHash("sha256").update(`ta-inline\n${bytes.byteLength}\n`).update(bytes)
@@ -684,7 +665,7 @@ export class Files {
     if (stored !== null) {
       return stored;
     }
-    const made = randomBytes(16).toString("hex");
+    const made = randomHex(16);
     this.#sql.exec("UPDATE file_space SET ns = ?", made);
     return made;
   }
@@ -1614,7 +1595,7 @@ export class Files {
       }
       wanted.set(sha256, plan[index]!);
     });
-    const intentId = randomBytes(INTENT_ID_BYTES).toString("hex");
+    const intentId = randomHex(INTENT_ID_BYTES);
     const outerPast = this.#pastFigure;
     this.#pastFigure = pastFigure;
     try {
@@ -2044,7 +2025,7 @@ export class Files {
       throw new Invalid(`a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
                         "printable characters, no slash");
     }
-    const name = `${prefix}${randomBytes(8).toString("hex")}`;
+    const name = `${prefix}${randomHex(8)}`;
     const path = `${TEMP}/${name}`;
     this.#change(writer, (now) => {
       this.#sql.exec("INSERT INTO file_temps (name, expires_at, writer) VALUES (?, ?, ?)", name,
@@ -2107,7 +2088,7 @@ export class Files {
       }
       const row = this.#sql.exec<{ epoch: number; seq: number }>(
         "UPDATE file_space SET epoch = epoch + 1 RETURNING epoch, seq").one();
-      const leaseId = randomBytes(16).toString("hex");
+      const leaseId = randomHex(16);
       this.#sql.exec(
         "INSERT INTO sandbox_leases (authority, lease_id, epoch, holder, lease_expires, " +
           "egress_token, sync_token, runner_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

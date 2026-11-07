@@ -10,7 +10,7 @@
  * reads one directory entry at a time (`walkFiles`), the mirror of what was synced is a
  * SQLite database on disk read a row or a page at a time (`openMirror`), a file's bytes move
  * a chunk at a time in both directions, and a commit holds one batch of ops (at most
- * `COMMIT_OPS`, small files at most `INLINE_BYTES` each).
+ * `MAX_SYNC_OPS`, small files at most `INLINE_BYTES` each).
  *
  * - **In:** the change feed from the mirror's cursor, each path's last change applied with
  *   no link followed (`fsafe.ts`), a file's chunks streamed into a temporary file and renamed
@@ -34,6 +34,7 @@
  *   bytes (`guards.ts`) is refused here and reported, never sent. The agents' scratch
  *   (`/scratch`, `scratch.ts`) is outside `/workspace`, so never synced.
  */
+import { sha256Hex } from "../../contract/src/digest";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
@@ -45,35 +46,22 @@ import { isKept, keptPaths } from "./engine";
 import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,
          walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
-import { defaultSyncIgnore, ignoredBy, LIST_BYTES, SYNC_IGNORE, type Unapplied }
-  from "../../owner/src/sync-ignore";
+import { SYNC_HEADER } from "../../contract/src/egress";
+import { CLIENT_READ_ONLY } from "../../contract/src/paths";
+import {
+  CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_LIST, MAX_SYNC_OPS, SYNC_BODY_MAX,
+} from "../../contract/src/limits";
+import {
+  defaultSyncIgnore, ignoredBy, LIST_BYTES, SYNC_IGNORE, type Unapplied,
+} from "../../contract/src/sync-ignore";
 
-export { DEFAULT_IGNORES, defaultSyncIgnore, ignoredBy, SYNC_IGNORE, wildcard }
-  from "../../owner/src/sync-ignore";
-
-/**
- * The object's sync bounds: ops a commit (`MAX_SYNC_OPS`), a chunk (`CHUNK_BYTES`), and an
- * inline write (`INLINE_BYTES`): a file past it goes through the files plane's upload. The
- * runner's bundle takes nothing of the object's storage modules, so `guards/config.test.ts`
- * holds each equal to the object's.
- */
-export const COMMIT_OPS = 1000;
-export const CHUNK_BYTES = 4 * 1024 * 1024;
-export const INLINE_BYTES = 4096;
-/** A sync door's body, the doors' own most (`SYNC_BODY_MAX`). */
-export const SYNC_BODY = 12 * 1024 * 1024;
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
-export const INTENT_ID_CHARS = 32;
+export const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
 /**
  * A commit's ops, each counted at its bytes in the body (`opBytes`): the door's body less the
  * commit's own fields (its lease id, epoch and the JSON around them, under 128 bytes).
  */
-const BODY_MAX = SYNC_BODY - 128;
-/** The feed's page, at the object's own most (`MAX_LIST`). */
-export const FEED_LIMIT = 1000;
-/** The owner's trees a client's sandbox never writes (`owner/src/paths.ts`). */
-export const OWNER_TREES = Object.freeze(["/workspace/agents", "/workspace/.agents",
-                                          "/workspace/skills", "/workspace/prompts"]);
+const BODY_MAX = SYNC_BODY_MAX - 128;
 export const SESSIONS = "/workspace/.sessions";
 /** The mirror's rows a page of a removal scan or a reset reads at once. */
 const PAGE = 1000;
@@ -108,7 +96,7 @@ export class SyncClient {
       try {
         response = await this.fetcher(`${this.origin}/sync/${door}`, {
           method: "POST", body: JSON.stringify(body),
-          headers: { "content-type": "application/json", "x-ta-sync": this.token } });
+          headers: { "content-type": "application/json", [SYNC_HEADER]: this.token } });
       } catch {
         await new Promise((resolve) => setTimeout(resolve, wait));
         continue;
@@ -266,7 +254,7 @@ export function openMirror(path: string): Mirror {
 }
 
 function sha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  return sha256Hex(bytes);
 }
 
 /** Where the sandbox keeps the owner's files, and the sync agent's own directories. */
@@ -276,7 +264,7 @@ export interface Place {
   /** The sync agent's own directory: sessions in from the feed, and out from the store. */
   readonly sessionsIn: string;
   readonly sessionsOut: string;
-  /** Whose sandbox: `owner`, or a client's id (the owner's trees read-only, never written). */
+  /** Whose sandbox: `owner`, or a client's id (`CLIENT_READ_ONLY` read-only, never written). */
   readonly authority: string;
   /** The records, for each engine's own `session_paths`. */
   readonly records: ReadonlyMap<string, SourceRecord>;
@@ -286,8 +274,8 @@ function localOf(place: Pick<Place, "local">, path: string): string {
   return join(place.local, relative("/workspace", path));
 }
 
-function inOwnerTrees(path: string): boolean {
-  return OWNER_TREES.some((tree) => path === tree || path.startsWith(`${tree}/`));
+function clientReadOnly(path: string): boolean {
+  return CLIENT_READ_ONLY.some((tree) => path === tree || path.startsWith(`${tree}/`));
 }
 
 /**
@@ -373,7 +361,7 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
     return;
   }
   const local = localOf(place, path);
-  const readOnly = place.authority !== "owner" && inOwnerTrees(path);
+  const readOnly = place.authority !== "owner" && clientReadOnly(path);
   if (kind === null) {
     remove(local);
     mirror.dropUnder(path);
@@ -399,7 +387,7 @@ async function listApply(client: SyncClient, place: Place, mirror: Mirror,
                          dir: string): Promise<void> {
   let after: string | null = null;
   for (;;) {
-    const page = await client.post("list", { dir, limit: FEED_LIMIT,
+    const page = await client.post("list", { dir, limit: MAX_LIST,
                                              ...(after === null ? {} : { after }) });
     for (const entry of page["entries"] as { path: string; kind: string }[]) {
       await apply(client, place, mirror, entry.path, entry.kind);
@@ -419,7 +407,7 @@ async function listApply(client: SyncClient, place: Place, mirror: Mirror,
 export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): Promise<void> {
   for (;;) {
     const cursor = mirror.cursor();
-    const page = await client.post("changes", { after: cursor, limit: FEED_LIMIT });
+    const page = await client.post("changes", { after: cursor, limit: MAX_LIST });
     const changes = page["changes"] as { path: string; kind: string | null; version: number }[];
     if (page["reset"] === true) {
       mirror.resetBegin();
@@ -451,7 +439,7 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
       }
     }
     mirror.setCursor(page["cursor"] as number);
-    if (changes.length < FEED_LIMIT) {
+    if (changes.length < MAX_LIST) {
       return;
     }
   }
@@ -502,8 +490,11 @@ const HELD_BACK = "held back by a sync-ignore line: your files keep the version 
 function trusted(mtime: number, at: number): number {
   return mtime >= at - RACY_MS ? RACY : mtime;
 }
-/** The coarsest change-time tick a filesystem keeps (FAT's two seconds), in ms. */
-const RACY_MS = 2_000;
+/**
+ * The coarsest change-time tick a filesystem keeps (FAT's two seconds), in ms: a change time
+ * newer than this is not trusted (here and in `runner.ts`).
+ */
+export const RACY_MS = 2_000;
 const RACY = -1;
 
 /**
@@ -736,7 +727,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       ? { held_back: { kept, changed: held } } : {}) });
   const add = async (op: Op) => {
     const size = opBytes(op, fieldsOf(op));
-    if (batch.length >= COMMIT_OPS || bytes + size > BODY_MAX) {
+    if (batch.length >= MAX_SYNC_OPS || bytes + size > BODY_MAX) {
       await send();
     }
     batch.push(op);
@@ -840,7 +831,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
   })) {
     const path = `/workspace/${rel.split("\\").join("/")}`;
-    if (place.authority !== "owner" && inOwnerTrees(path)) {
+    if (place.authority !== "owner" && clientReadOnly(path)) {
       continue;
     }
     if (path === SYNC_IGNORE) {
@@ -854,7 +845,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
        known = mirror.page(after, PAGE)) {
     for (const path of known) {
       if (path.startsWith(`${SESSIONS}/`) || !path.startsWith("/workspace/")
-          || (place.authority !== "owner" && inOwnerTrees(path))) {
+          || (place.authority !== "owner" && clientReadOnly(path))) {
         continue;
       }
       if (ignored(path.slice("/workspace/".length)) === "custom") {

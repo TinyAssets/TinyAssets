@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "workspaces": [
+    "contract",
     "owner",
     "files",
     "doors",
@@ -16,7 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   },
   "devDependencies": {
     "typescript": "6.0.3"

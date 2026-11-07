@@ -61,12 +61,13 @@
  * The alarm is armed again on every path, a failed look included (backing off from the
  * measured request time, never past the soonest edge), so no run dies at the ceiling.
  */
+import { HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
 import { readControl, type SandboxCeilings } from "../../doors/src/directory";
 import { bundledSources } from "../../doors/src/sources";
-import { LEASE_TTL_S } from "../../owner/src/files";
-import { DNS_SERVERS, EGRESS_HOST } from "../../owner/src/network";
+import { LEASE_TTL_S } from "../../contract/src/limits";
+import { DNS_SERVERS, EGRESS_HOST } from "../../contract/src/egress";
 import type { SandboxSignin, SandboxStart, Started } from "../../owner/src/sandbox";
 import { migrate } from "../../owner/src/migrate";
 import { METER_BATCH, type MeterEvent } from "../../owner/src/sandbox-time";
@@ -197,8 +198,7 @@ interface Box extends Handle {
   readonly runner: string;
 }
 
-const RUN = /^run_[0-9a-f]{32}$/;
-const LEASE = /^[0-9a-f]{32}$/;
+const LEASE = HEX32;
 const AUTHORITY = /^(?:owner|[0-9a-f]{64})$/;
 /** A sealed route (`sealRoute`), as E2B's metadata carries it. */
 const ROUTE = /^[A-Za-z0-9_-]{40,2048}$/;
@@ -256,7 +256,6 @@ function engineHosts(engine: string, region: string | null): string[] {
 }
 
 /** A sign-in's id: `si_` and 32 hex. */
-const SIGNIN = /^si_[0-9a-f]{32}$/;
 
 /**
  * The run's doors, each `https` on the egress host: E2B's transform sets the egress token
@@ -662,7 +661,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   async start(owner: string, start: SandboxStart): Promise<Started> {
-    if (!RUN.test(start.run) || !AUTHORITY.test(start.authority)
+    if (!RUN_ID.test(start.run) || !AUTHORITY.test(start.authority)
         || !LEASE.test(start.lease.lease_id) || (start.tokens === null) !== (start.network === null)
         || typeof start.route !== "string" || !ROUTE.test(start.route)
         || !httpsDoors(start.urls)) {
@@ -729,7 +728,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * sign-in's document (no secret); the sign-in holds the lease as a launched run does.
    */
   async signin(owner: string, signin: SandboxSignin): Promise<Started> {
-    if (!SIGNIN.test(signin.id) || !AUTHORITY.test(signin.authority)
+    if (!SIGNIN_ID.test(signin.id) || !AUTHORITY.test(signin.authority)
         || !LEASE.test(signin.lease.lease_id) || (signin.tokens === null) !== (signin.network === null)
         || typeof signin.route !== "string" || !ROUTE.test(signin.route)
         || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")) {
@@ -796,7 +795,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    */
   async signinInput(_owner: string, request: { authority: string; id: string; code: string }):
       Promise<{ delivered: boolean }> {
-    if (!SIGNIN.test(request.id) || !AUTHORITY.test(request.authority)
+    if (!SIGNIN_ID.test(request.id) || !AUTHORITY.test(request.authority)
         || typeof request.code !== "string" || /[\r\n]/.test(request.code)) {
       throw new Error("a pasted code names its sign-in and is one line");
     }
@@ -819,7 +818,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /** A live sign-in stopped (`login-cancel`). */
   async signinCancel(_owner: string, request: { authority: string; id: string }):
       Promise<{ cancelled: boolean }> {
-    if (!SIGNIN.test(request.id) || !AUTHORITY.test(request.authority)) {
+    if (!SIGNIN_ID.test(request.id) || !AUTHORITY.test(request.authority)) {
       throw new Error("a sign-in's cancel names its sign-in");
     }
     return this.#serial(async () => {
@@ -843,7 +842,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   async cancel(_owner: string, request: { run: string; lease_id: string }):
       Promise<{ cancelled: boolean }> {
-    if (!RUN.test(request.run)) {
+    if (!RUN_ID.test(request.run)) {
       throw new Error("a cancel names its run");
     }
     return this.#serial(async () => {
@@ -858,7 +857,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   async status(_owner: string, request: { run: string; lease_id: string }):
       Promise<{ state: "running" | "exited" | "gone" }> {
-    if (!RUN.test(request.run)) {
+    if (!RUN_ID.test(request.run)) {
       throw new Error("a status names its run");
     }
     return this.#serial(async () => {

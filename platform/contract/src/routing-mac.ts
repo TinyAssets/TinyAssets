@@ -20,13 +20,16 @@
  * object; the object then checks the secret's hash against its live lease. It is generated
  * at deploy (32 random bytes, base64url, at least `KEY_MIN_BYTES`), and a Worker without a
  * usable one fails loudly on its first token. The kind is in the MAC, so an egress token
- * is never a sync token, nor the reverse. One module, so the two Workers cannot disagree.
+ * is never a sync token, nor the reverse. One module, so the two Workers cannot disagree:
+ * it is the token's and the route's format, which both compute; the key itself is each
+ * Worker's own secret, read from its own env and handed in.
  */
 import {
-  createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual,
+  createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual,
 } from "node:crypto";
 
-import { principal } from "../../owner/src/text";
+import { sha256Hex } from "./digest";
+import { principal, utf8Text } from "./text";
 
 /** A lease's egress or sync token's expiry: none of its own, its lease's (renewed). */
 export const LEASE_LIVED = 0;
@@ -37,7 +40,7 @@ export const ROUTING_MAC_KEY = "ROUTING_MAC_KEY";
 export const KEY_MIN_BYTES = 32;
 /**
  * What a token is for: E2B's transform on the egress door, the in-VM sync agent, or the owner
- * app's socket ticket (`owner/src/socket-shape.ts`), which the doors verify before any object.
+ * app's socket ticket (`contract/src/socket-shape.ts`), which the doors verify before any object.
  */
 export type TokenKind = "egress" | "sync" | "socket";
 
@@ -63,7 +66,7 @@ function mac(key: Buffer, kind: TokenKind, owner: string, expires: string, secre
 
 /** The SHA-256 hex of a token's secret part: what the owner's object keeps. */
 export function tokenHash(secret: string): string {
-  return createHash("sha256").update(secret, "utf8").digest("hex");
+  return sha256Hex(secret);
 }
 
 /**
@@ -109,8 +112,7 @@ export function verifyToken(key: unknown, kind: TokenKind, token: unknown):
   // The MAC covers the routing part exactly as the owner's object wrote it, so it decodes to
   // the owner that object minted it for.
   try {
-    const owner = principal(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false })
-      .decode(Buffer.from(routing, "base64url")));
+    const owner = principal(utf8Text(Buffer.from(routing, "base64url"), "strip"));
     return { owner, expires: Number(at), hash: tokenHash(secret) };
   } catch {
     return null;

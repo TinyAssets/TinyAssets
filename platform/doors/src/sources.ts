@@ -38,13 +38,14 @@
  * gateway's own `source` (so its `SUPPORTED_APIS`, its endpoint and URL grammar are the
  * one rule), here and again in the gateway when it seals.
  */
+import { HEX64 } from "../../contract/src/ids";
 import {
   type Endpoint, keyExchangeSource, type Source, source as gatewaySource, type Upstream,
-} from "../../gateway/src/credential";
-import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../owner/src/run-rows";
-import { forbids, SOURCE_ID } from "../../owner/src/text";
-
-export { forbids };
+} from "../../contract/src/egress-scope";
+import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/run-rows";
+import { RUN_HEADER } from "../../contract/src/egress";
+import type { EngineEvents, EventMatcher } from "../../contract/src/run-events";
+import { forbids, SOURCE_ID } from "../../contract/src/text";
 
 import anthropic from "../../sources/anthropic.json";
 import cerebras from "../../sources/cerebras.json";
@@ -115,25 +116,6 @@ export type Install =
       readonly lock_sha256: string; readonly bin: string; readonly verify_argv: readonly string[] }
   | { readonly manager: "binary"; readonly url: string; readonly sha256: string;
       readonly version: string; readonly bin: string; readonly verify_argv: readonly string[] };
-
-/** One event matcher: an event whose fields at `match` equal those values, read at `path`. */
-export interface EventMatcher {
-  readonly match: Readonly<Record<string, string | number | boolean>>;
-  /** A dotted path into the event; empty for the event itself. */
-  readonly path: string;
-  /** Every match's value is joined in order (a streamed text), not only the last. */
-  readonly accumulate?: true;
-}
-
-/** How the runner reads the engine's stream (ADR-034 decision 10). */
-export interface EngineEvents {
-  readonly format: "jsonl" | "json";
-  readonly session_id: readonly EventMatcher[];
-  readonly final_text: readonly EventMatcher[];
-  readonly error: readonly EventMatcher[];
-  readonly usage: readonly EventMatcher[];
-  readonly tool_call: readonly EventMatcher[];
-}
 
 /**
  * One run of the engine (ADR-034 decision 4.3): a new conversation's argv, and the argv
@@ -701,9 +683,9 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   if (fields["run_secret_env"] !== undefined) {
     const header = check.keys(fields["run_secret_env"], "cli.run_secret_env", ["env", "value"]);
     if (!keyed || !ENV_NAME.test(String(header["env"])) || typeof header["value"] !== "string"
-        || !/^x-ta-run: \{run_secret\}$/.test(header["value"])) {
+        || header["value"] !== `${RUN_HEADER}: {run_secret}`) {
       check.fail("cli.run_secret_env names the variable an API-key run reads extra headers " +
-                 "from, and the value x-ta-run: {run_secret}");
+                 `from, and the value ${RUN_HEADER}: {run_secret}`);
     }
     runSecretEnv = { env: header["env"] as string, value: header["value"] as string };
   }
@@ -1071,7 +1053,7 @@ function installSpec(check: ReturnType<typeof checker>, value: unknown, argv: Ar
       "integrity", "bin", "verify_argv", "lock_sha256"], ["lifecycle_scripts"]);
     if (!/^(?:@[a-z0-9-]+\/)?[a-z0-9-]+$/.test(String(fields["package"]))
         || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(String(fields["integrity"]))
-        || !/^[0-9a-f]{64}$/.test(String(fields["lock_sha256"]))
+        || !HEX64.test(String(fields["lock_sha256"]))
         || (fields["lifecycle_scripts"] !== undefined && fields["lifecycle_scripts"] !== true)) {
       check.fail("cli.install pins an npm package by exact version, integrity and lock digest");
     }
@@ -1082,7 +1064,7 @@ function installSpec(check: ReturnType<typeof checker>, value: unknown, argv: Ar
     const fields = check.keys(value, "cli.install", ["manager", "package", "version", "bin",
                                                      "verify_argv", "lock_sha256"]);
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(String(fields["package"]))
-        || !/^[0-9a-f]{64}$/.test(String(fields["lock_sha256"]))) {
+        || !HEX64.test(String(fields["lock_sha256"]))) {
       check.fail("cli.install pins a pip package by exact version and hashed-lock digest");
     }
     pinned(fields, "pins a pip package");
@@ -1092,7 +1074,7 @@ function installSpec(check: ReturnType<typeof checker>, value: unknown, argv: Ar
     const fields = check.keys(value, "cli.install", ["manager", "url", "sha256", "version",
                                                      "bin", "verify_argv"]);
     check.https(fields["url"], "cli.install.url");
-    if (!/^[0-9a-f]{64}$/.test(String(fields["sha256"]))) {
+    if (!HEX64.test(String(fields["sha256"]))) {
       check.fail("cli.install pins a binary by its https URL and SHA-256");
     }
     pinned(fields, "pins a binary");
@@ -1721,7 +1703,7 @@ export function catalogOf(records: readonly unknown[]): Sources {
 }
 
 /**
- * What one engine run's environment is made from (`sandboxEnv`, G4's `network.ts`): the
+ * What one engine run's environment is made from (`sandboxEnv`, G4's `contract/src/egress.ts`): the
  * credential it runs on, the engine's own variables for each provider's key (an API-key
  * run's alone), and the variables that credential forbids.
  */

@@ -21,8 +21,9 @@
  */
 import { CRON_MAX_CHARS } from "./cron";
 import { GC_GRACE_S } from "./files";
+import { CHUNK_BYTES, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
-  CHUNK_BYTES, CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES,
+  CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES,
   HISTORY_BYTES as FILE_HISTORY_BYTES, INDEX_KEPT, OWNER_SCOPE, PLACE_BYTES, record,
   SCOPE_REF_BYTES, SHARE_BYTES, TABLE_KEPT, TEMP_BYTES,
 } from "./manifest";
@@ -32,13 +33,14 @@ import {
   INPUT_BYTES, MESSAGE_ID_CHARS, NATIVE_ID_CHARS, QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES,
   RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_CODE_MAX, SIGNIN_LIST_CHARS,
   SIGNIN_MODELS_CHARS, SIGNIN_URL_MAX,
-} from "./run-rows";
-import { SOCKET_TICKETS } from "./socket-shape";
+} from "../../contract/src/run-rows";
+import { SOCKET_TICKETS } from "../../contract/src/socket-shape";
 import { PART_ENTRY, SEGMENT_ENTRY } from "./backup";
 import { CURSOR_CHARS } from "./export";
 import { IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES, LOG_WIDE } from "./changelog";
-import { MANIFEST_PARTS } from "../../files/src/keys";
-import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "./wake-kinds";
+import {
+  ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT,
+} from "../../contract/src/wake-records";
 import { RUNS_CEILING } from "./tier";
 import type { Migration } from "./migrate";
 

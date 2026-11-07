@@ -89,30 +89,31 @@
  * object's (`owner-do.ts`, `sessions.ts`, `policy.ts`), as the Python's router op ran
  * them around the ledger.
  */
+import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { sha256Hex } from "../../contract/src/digest";
+import { HEX16, HEX64, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
 
 import { AGENT_DIR } from "./authority";
 import {
   type Adopt, adopted, BODY_BYTES_MAX, inlineWindow, type Placed, type Window,
 } from "./bodies";
-import { digest, FILERS } from "./collections";
-import { jsonBytes } from "./encoded";
+import { FILERS } from "./collections";
+import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
-import { Invalid, Refused } from "./errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
 import { bodied, type Cut, fitPage, PAGE_BYTES, whole } from "./pages";
 import {
-  bloomHas, bloomOf, bytesOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
+  bloomHas, bloomOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
   parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_LEAST_BYTES,
   SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
-import { codePoints, isPrintable, utf8Bytes } from "./text";
 import {
-  admittedMethods, type Change, CHANGES, type Follows, follows, kindFor, ringingMethods,
-  SUBSCRIPTION_ID, SUBSCRIPTIONS_PER_AGENT,
-} from "./wake-kinds";
+  admittedMethods, kindFor, ringingMethods, SUBSCRIPTIONS_PER_AGENT,
+} from "../../contract/src/wake-records";
+import { type Change, CHANGES, type Follows, follows } from "../../contract/src/wake-kinds";
 
 /**
  * The reader and sender id of the object's owner. An outside agent's id is `agent_` + hex;
@@ -167,7 +168,7 @@ export function mailInput(mail: Pick<Delivery, "sender_id" | "sender_kind" | "se
 
 /** The ledger id of the owner's agent `agent`: `ta_` and its name's digest, 16 hex. */
 export function nativeId(agent: string): string {
-  return "ta_" + digest(`tinyassets-native-agent\0${agent}`).slice(0, 16);
+  return "ta_" + sha256Hex(`tinyassets-native-agent\0${agent}`).slice(0, 16);
 }
 /** New mail to or from an agent whose `agent.json` is gone. */
 export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed; its mail " +
@@ -194,8 +195,7 @@ const SETTLED: readonly string[] = Object.freeze(["sent", "unknown", "failed", "
 const WAKE_RECEIPTS: Readonly<Record<string, string>> = Object.freeze({
   sent: "wake_accepted", rate_limited: "rate_limited", failed: "failed", unknown: "wake_sent",
 });
-const HEX64 = /^[0-9a-f]{64}$/;
-const KEY_ID = /^[0-9a-f]{16}$/;
+const KEY_ID = HEX16;
 const REASON = /^[a-z_]{1,32}$/;
 const SECRETISH = /(ta_key_|bearer|eyJ|sk-|sk_|https?[:/]|token[=:])/i;
 const LONE_SURROGATE = /\p{Cs}/u;
@@ -680,8 +680,8 @@ export function displayName(value: unknown): string {
 /** The outside identity an API key resolves to (`api_keys._client`, `_family`). */
 export function apiKeyOrigin(keyId: string): Origin {
   return {
-    client: digest("tinyassets-api-key-client\0" + keyId),
-    family: digest("tinyassets-api-key-family\0" + keyId),
+    client: sha256Hex("tinyassets-api-key-client\0" + keyId),
+    family: sha256Hex("tinyassets-api-key-family\0" + keyId),
   };
 }
 
@@ -826,8 +826,8 @@ function mailLineBytes(message: Readonly<Record<string, unknown>>,
                        recipient: Readonly<Record<string, unknown>>): number {
   const size = body["body_bytes"] as number;
   const of = (rows: readonly SegmentRow[]): number => rows.reduce((sum, [table, row, raw]) =>
-    sum + (raw === undefined ? bytesOf(rowLine(table, row))
-      : bytesOf(rowLine(table, row, size)) + size + 1), 0);
+    sum + (raw === undefined ? utf8Bytes(rowLine(table, row))
+      : utf8Bytes(rowLine(table, row, size)) + size + 1), 0);
   let bytes = 0;
   for (let i = 0; i < 6; i++) {
     const next = of(mailRecord({ ...message, line_bytes: bytes },
@@ -863,7 +863,7 @@ export function archivedMail(bytes: Uint8Array, offset: number | null = 0): Arch
   }
   recipients.sort((a, b) => (a.agent_id < b.agent_id ? -1 : a.agent_id > b.agent_id ? 1 : 0));
   return { message, recipients, body: offset === null ? null : inlineWindow(
-    new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body), offset) };
+    utf8Decoder("keep").decode(body), offset) };
 }
 
 /**
@@ -878,7 +878,7 @@ export function archivedHead(bytes: Uint8Array):
   if (two < 0) {
     return null;
   }
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const decoder = utf8Decoder("keep");
   const line = (from: number, to: number): { table?: unknown; row?: Record<string, unknown>;
                                              raw_bytes?: unknown } =>
     JSON.parse(decoder.decode(bytes.subarray(from, to)));
@@ -996,7 +996,7 @@ function checked(row: { body_sha256: string },
   }
   const whole = stored.content_id === null ? stored.body
     : window.offset === 0 && window.end === window.size ? window.text : null;
-  return whole !== null && digest(whole) !== row.body_sha256 ? [null, "tampered"]
+  return whole !== null && sha256Hex(whole) !== row.body_sha256 ? [null, "tampered"]
     : [window, "ok"];
 }
 
@@ -1490,7 +1490,7 @@ export class Ledger {
     const room = text(roomId, 128, "room_id");
     const cmid = text(clientMessageId, 128, "client_message_id");
     const parentKey = parentId === null ? null : text(parentId, 128, "parent_id");
-    const sha = digest(body);
+    const sha = sha256Hex(body);
     const sql = this.#sql;
     const members = this.#room(room);
     const from = this.#sender(origin, members);
@@ -1775,7 +1775,7 @@ export class Ledger {
         const whole = window !== null && window.offset === 0 && window.end === window.size
           ? window.text : null;
         const integrity: Integrity = window === null ? "missing"
-          : whole !== null && digest(whole) !== message.body_sha256 ? "tampered" : "ok";
+          : whole !== null && sha256Hex(whole) !== message.body_sha256 ? "tampered" : "ok";
         return {
           mail: {
             seq: message.seq, message_id: message.message_id, room_id: message.room_id,
@@ -2011,7 +2011,7 @@ export class Ledger {
       const parts = mailParts(message, body, recipients);
       const placed = body["content_id"] as string | null;
       if (parts.inline !== null
-          && createHash("sha256").update(parts.inline).digest("hex") !== message.body_sha256) {
+          && sha256Hex(parts.inline) !== message.body_sha256) {
         throw new Error("an archived body is not the body its message holds");
       }
       table.push(message.seq, message.chain_root, message.room_id, message.created_at,
@@ -2334,7 +2334,7 @@ export class Ledger {
     const unread = stored?.content_id != null && kept === undefined ? stored.content_id : null;
     const [body, integrity]: [string | null, Integrity] = kept === undefined
       ? [null, "missing"]
-      : digest(kept) !== row.body_sha256 ? [null, "tampered"] : [kept, "ok"];
+      : sha256Hex(kept) !== row.body_sha256 ? [null, "tampered"] : [kept, "ok"];
     return { content_id: unread, message_id: row.message_id, agent: row.agent,
              agent_id: row.recipient, room_id: row.room_id, thread: row.chain_root,
              sender_id: row.sender_id, sender_kind: row.sender_kind,

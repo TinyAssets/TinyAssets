@@ -6,15 +6,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   KEY_MIN_BYTES, LEASE_LIVED, mintToken, tokenHash, verifyToken,
-} from "../../doors/src/routing-mac";
-import { Invalid, Refused } from "../src/errors";
+} from "../../contract/src/routing-mac";
+import { Invalid, Refused } from "../../contract/src/errors";
 import {
   bundledRecords, bundledSources, runEnv, sourceRecord,
 } from "../../doors/src/sources";
+import { ALL_TRAFFIC, BOUNDARY_NOTE, EGRESS_IP_LITERAL, networkDocument } from "../src/network";
 import {
-  ALL_TRAFFIC, BOUNDARY_NOTE, DNS_SERVERS, EGRESS_HOST, EGRESS_IP_LITERAL, egressBaseUrl,
-  GENERATION_HEADER, networkDocument, SANDBOX_HEADER, sandboxEnv,
-} from "../src/network";
+  DNS_SERVERS, EGRESS_HOST, egressBaseUrl, GENERATION_HEADER, SANDBOX_HEADER, sandboxEnv,
+} from "../../contract/src/egress";
 
 const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)}.${
   "M".repeat(43)}`;

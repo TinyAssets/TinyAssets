@@ -9,15 +9,16 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { socketRequest } from "../../doors/src/binder";
-import { verifyToken } from "../../doors/src/routing-mac";
+import { verifyToken } from "../../contract/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
 import { AGENT_DISABLED } from "../src/agent-file";
 import { AGENT_CHANGED, type Binding } from "../src/owner-do";
 import { Files } from "../src/files";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
-import { RUNS_KEPT } from "../src/run-rows";
-import { EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate }
-  from "../src/run-events";
+import { RUNS_KEPT } from "../../contract/src/run-rows";
+import {
+  EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,
+} from "../../contract/src/run-events";
 import { NO_CONVERSATION, RUN_ENDED, SIGNIN_REQUIRED } from "../src/runs";
 import { SANDBOX_ABSENT } from "../src/sandbox";
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";

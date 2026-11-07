@@ -10,7 +10,7 @@ import type { WrittenRow } from "../src/owner-do";
 import { describe, expect, it } from "vitest";
 
 import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
-import { Invalid, Refused } from "../src/errors";
+import { Invalid, Refused } from "../../contract/src/errors";
 import { HISTORY_CHARGE, ROW_CHARGE, SEQ_CHARGE, USAGE_CHARGE } from "../src/schema";
 import { etags, failure, history, inObject, type Owner, ownerObject, rows } from "./support";
 

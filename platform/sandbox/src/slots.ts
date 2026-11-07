@@ -29,7 +29,7 @@
  */
 import { DurableObject } from "cloudflare:workers";
 
-import { LEASE_TTL_S } from "../../owner/src/files";
+import { LEASE_TTL_S } from "../../contract/src/limits";
 import { migrate } from "../../owner/src/migrate";
 
 import { SLOTS_MIGRATIONS } from "./schema";

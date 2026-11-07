@@ -8,9 +8,8 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { GENERATION_HEADER, SANDBOX_HEADER } from "../../owner/src/network";
+import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
 import type { SandboxSignin } from "../../owner/src/sandbox";
-import { EGRESS_ORIGIN } from "../src/config";
 import type { OwnerDO } from "./entry";
 import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } from "./support";
 

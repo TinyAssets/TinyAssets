@@ -41,9 +41,9 @@
 import starterJson from "../../starter/starter.json" with { type: "json" };
 
 import { agentFile } from "./agent-file";
-import { Invalid } from "./errors";
-import { type Content, cut, chunkedId, FileConflict, type Files, INLINE_BYTES, inlineId }
-  from "./files";
+import { Invalid } from "../../contract/src/errors";
+import { chunkedId, type Content, cut, FileConflict, type Files, inlineId } from "./files";
+import { INLINE_BYTES } from "../../contract/src/limits";
 import type { OwnerStorage, Write } from "./gate";
 import { ownersOnly, storedPath, within, WORKSPACE } from "./paths";
 

@@ -27,30 +27,14 @@
  * sync). The owner's own app changes them only in its live session. The roots are never
  * removed or renamed, so no change outside the trees reaches into them.
  */
-import { Invalid } from "./errors";
-import { utf8Bytes } from "./text";
+import { Invalid } from "../../contract/src/errors";
+import { OWNER_TREES } from "../../contract/src/paths";
+import { utf8Bytes } from "../../contract/src/text";
 
 export const WORKSPACE = "/workspace";
 export const TEMP = "/.ta/tmp";
 export const ROOTS: readonly string[] = Object.freeze([WORKSPACE, TEMP]);
 export const MAX_PATH_BYTES = 4096;
-/** The owner's agent definitions, `/workspace/agents/<agent>/`: the owner's alone to change. */
-export const AGENTS_DIR = "/workspace/agents";
-/** The agent's abilities: its `SKILL.md` folders, which every engine discovers itself. */
-export const ABILITIES_DIR = "/workspace/.agents";
-/** The abilities' trees, which reach an engine's instructions: every run reads them. */
-export const ABILITY_TREES: readonly string[] = Object.freeze([
-  ABILITIES_DIR, "/workspace/skills", "/workspace/prompts"]);
-/**
- * The owner's goals, one page a goal: what its agents may do toward each without asking is
- * the goal's Agreed section, so a goal is the owner's own word, as an agent's definition is.
- */
-export const GOALS_DIR = "/workspace/goals";
-/** The owner's profile: its directives are every agent's standing preferences. */
-export const PROFILE = "/workspace/USER.md";
-/** Every tree only the owner's own authority changes. */
-export const OWNER_TREES: readonly string[] = Object.freeze([
-  AGENTS_DIR, ABILITIES_DIR, "/workspace/skills", "/workspace/prompts", GOALS_DIR, PROFILE]);
 /** The refusal of a change to an `OWNER_TREES` path under a grant the owner narrowed. */
 export const AGENTS_OWNER_ONLY = "a grant the owner narrowed changes nothing under " +
   "/workspace/agents, /workspace/.agents, /workspace/skills, /workspace/prompts or " +

@@ -4,8 +4,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { allows, credential, type Endpoint, source } from "../src/credential";
-import { failureResponse, upstreamCode } from "../src/failure";
+import { allows, type Endpoint, source } from "../../contract/src/egress-scope";
+import { credential } from "../src/credential";
+import { failureResponse, upstreamCode } from "../../contract/src/failure";
 import { ANTHROPIC, apiKey, GOOGLE, OPENAI } from "./support";
 
 const ENDPOINTS: readonly Endpoint[] = Object.freeze([
@@ -189,6 +190,9 @@ describe("source", () => {
     ["an output limit past the owner's bound", { ...WHOLE, maxTokens: 100_000_001 }],
     ["an id past the owner's bound", { ...WHOLE, id: "m".repeat(201) }],
     ["a name past the owner's bound", { ...WHOLE, name: "n".repeat(201) }],
+    // 150 characters, 300 UTF-16 units: the owner's bound counts units.
+    ["a name past the owner's bound in UTF-16 units",
+     { ...WHOLE, name: "\u{1F600}".repeat(150) }],
   ])("refuses a declared model with %s", (_what, model) => {
     expect(() => source(declared(model), false)).toThrow("invalid_source");
   });

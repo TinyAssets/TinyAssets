@@ -26,15 +26,12 @@
  * checks without the ledger's code.
  */
 
-/** `run_` and 32 hex. */
+/** `run_` and 32 hex (`ids.ts`'s `RUN_ID`). */
 export const RUN_ID_CHARS = 36;
-/** `cv_` and 32 hex. */
+/** `cv_` and 32 hex (`CONVERSATION_ID`). */
 export const CONVERSATION_ID_CHARS = 35;
-/** `sch_` and 32 hex. */
+/** `sch_` and 32 hex (`SCHEDULE_ID`). */
 export const SCHEDULE_ID_CHARS = 36;
-export const RUN_ID = /^run_[0-9a-f]{32}$/;
-export const CONVERSATION_ID = /^cv_[0-9a-f]{32}$/;
-export const SCHEDULE_ID = /^sch_[0-9a-f]{32}$/;
 
 export const RUNS_KEPT = 2000;
 export const RESULT_BYTES = 16384;

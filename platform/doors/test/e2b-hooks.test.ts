@@ -14,7 +14,7 @@ import type { SandboxSignin } from "../../owner/src/sandbox";
 import type { DoorsEnv } from "../src/config";
 import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
 import { E2B_HOOK_PATH, HOOK_BODY_MAX, lifecycleEvent, signed } from "../src/e2b-hooks";
-import { openRoute, sealRoute } from "../src/routing-mac";
+import { openRoute, sealRoute } from "../../contract/src/routing-mac";
 import type { OwnerDO } from "./entry";
 import {
   admitOwner, appPost, call, doorsEnv, OPEN, serveFirstPartyDocument, setControl, signInApp, url,

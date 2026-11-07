@@ -32,13 +32,11 @@
 import type { Api, AssistantMessageEvent, Context, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 
-import { type ApiRules, apiRules, valueAt } from "./api-rules";
+import { apiRules, type ApiRules, valueAt } from "../../contract/src/api-rules";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
-import { GLOBAL_FETCH_APIS, type Meter, meteredModel, type Upstream } from "./credential";
+import { GLOBAL_FETCH_APIS, type Meter, type Upstream } from "../../contract/src/egress-scope";
 
-export type { Meter };
-export { meteredModel };
 import { within } from "./egress";
 
 /** The model id and output cap the learning run asks with: neither is any real value. */

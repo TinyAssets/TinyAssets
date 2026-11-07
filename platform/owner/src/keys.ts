@@ -20,15 +20,12 @@
  * The rows are bounded by the grants': a row exists only while its key's owner-set grant
  * row does (the owner-bound guard counts `maxOwnerClients` of them).
  */
-import { Invalid, Refused } from "./errors";
+import { HEX16 } from "../../contract/src/ids";
+import { MAX_KEYS } from "../../contract/src/limits";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
-import { codePoints } from "./text";
+import { codePoints } from "../../contract/src/text";
 
-/**
- * The live keys an owner holds at most: its owner-set clients' bound
- * (`GRANT_LIMITS.maxOwnerClients`), which a test holds equal.
- */
-export const MAX_KEYS = 1_000;
 /** A key's name, in code points (`doors/src/api-keys.ts` held it to the same). */
 export const KEY_NAME_MAX = 80;
 /** How stale a key's `last_used_at` may be before a call marks it again. */
@@ -38,7 +35,7 @@ export const KEY_REQUEST = "api_key_request";
 
 export const TOO_MANY_KEYS = "too many live API keys; revoke one first";
 
-const KEY_ID = /^[0-9a-f]{16}$/;
+const KEY_ID = HEX16;
 
 /** One key as the owner is shown it. */
 export interface ApiKey {

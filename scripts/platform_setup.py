@@ -147,7 +147,7 @@ class Gh:
 
 
 def make_mac() -> str:
-    """32 random bytes, base64url: `ROUTING_MAC_KEY` (`doors/src/routing-mac.ts`)."""
+    """32 random bytes, base64url: `ROUTING_MAC_KEY` (`contract/src/routing-mac.ts`)."""
     return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
 
 

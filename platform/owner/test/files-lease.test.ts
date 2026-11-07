@@ -6,7 +6,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { type Entry, INLINE_BYTES, type Lease, sha256Hex, type SyncOp } from "../src/files";
+import { type Entry, type Lease, type SyncOp } from "../src/files";
+import { INLINE_BYTES } from "../../contract/src/limits";
+import { sha256Hex } from "../../contract/src/digest";
 import { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, sqlIn, text } from "./support";

@@ -22,10 +22,11 @@
  *   them one outside client's (counted on its index), each request at most
  *   `maxRequest` characters.
  */
-import { digest } from "./collections";
-import { Invalid, Refused } from "./errors";
+import { sha256Hex } from "../../contract/src/digest";
+import { HEX64 } from "../../contract/src/ids";
+import { Invalid, Refused } from "../../contract/src/errors";
 import type { OwnerStorage } from "./gate";
-import { codePoints } from "./text";
+import { codePoints } from "../../contract/src/text";
 
 /** The outside authority a held card was filed under: its client, generation and sign-in. */
 export interface Stamp {
@@ -56,7 +57,6 @@ export const CARD_LIMITS: CardLimits = Object.freeze({
 export type Fields = Readonly<Record<string, string | number | boolean | null>>;
 
 const CARD_ID = /^card_[0-9a-f]{32}$/;
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** A held card, as the owner is shown it. */
 export interface Card {
@@ -143,7 +143,7 @@ export class Registrations {
         throw new Refused("too many pending agent registrations");
       }
       const cardId = "card_" + token(16);
-      const shown = digest(JSON.stringify([cardId, origin.client, origin.family, sourceRef,
+      const shown = sha256Hex(JSON.stringify([cardId, origin.client, origin.family, sourceRef,
                                            body]));
       sql.exec("INSERT INTO agent_cards (card_id, client, family, source_ref, generation, " +
                  "authenticated_at, request, digest, filed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",

@@ -19,7 +19,8 @@
  *   (a `.json` file's values JSON-escaped), several templates of one JSON file merged.
  */
 import type { CliSpec, CredentialKind, SourceRecord } from "../../doors/src/sources";
-import { forbids } from "../../owner/src/text";
+import { envStem, MCP_DOOR } from "../../contract/src/egress";
+import { forbids } from "../../contract/src/text";
 
 /** A start as the sandbox Worker hands it to the runner: no lease secrets in it. */
 export interface StartDoc {
@@ -81,11 +82,11 @@ export function fill(text: string, values: Readonly<Record<string, string>>,
 
 /** The run's own secret, as its MCP URL's path carries it (`/r/<run>/<secret>/mcp`). */
 export function runSecret(mcpUrl: string): string {
-  const match = /\/r\/run_[0-9a-f]{32}\/([0-9a-f]{64})\/mcp$/.exec(new URL(mcpUrl).pathname);
-  if (match === null) {
+  const secret = MCP_DOOR.exec(new URL(mcpUrl).pathname)?.[2];
+  if (secret === undefined) {
     throw new Error("a run's MCP URL carries its secret");
   }
-  return match[1]!;
+  return secret;
 }
 
 /**
@@ -96,7 +97,7 @@ export function runSecret(mcpUrl: string): string {
 export function keyProvider(cli: CliSpec, env: Readonly<Record<string, string>>):
     { provider: string; base_url: string } | null {
   const found = Object.keys(cli.api_key_env ?? {}).filter((provider) =>
-    Object.hasOwn(env, `${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_BASE_URL`));
+    Object.hasOwn(env, `${envStem(provider)}_BASE_URL`));
   if (found.length > 1) {
     throw new Error("an API-key run is on one provider's connection");
   }
@@ -104,8 +105,7 @@ export function keyProvider(cli: CliSpec, env: Readonly<Record<string, string>>)
     return null;
   }
   const provider = found[0]!;
-  return { provider,
-           base_url: env[`${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_BASE_URL`]! };
+  return { provider, base_url: env[`${envStem(provider)}_BASE_URL`]! };
 }
 
 /**

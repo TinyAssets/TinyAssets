@@ -1,8 +1,9 @@
 /**
- * The sandbox's network and its model clients' environment, from the owner's own state
- * (gateway research §5.4 steps 1-3; tasks 4 G4). Pure functions: the sandbox slice (8b)
- * sends the network document to E2B and sets the environment in the sandbox, and nothing
- * here reaches E2B.
+ * The sandbox's network, from the owner's own state (gateway research §5.4 steps 1-3; tasks
+ * 4 G4). Pure functions: the sandbox slice (8b) sends the network document to E2B, and
+ * nothing here reaches E2B. The egress wire it names (the door's host, its headers, the
+ * resolver) and the environment a run's model clients reach the door by (`sandboxEnv`) are
+ * the contract's (`contract/src/egress.ts`).
  *
  * **The network document** (`networkDocument`) is E2B's network configuration, in the field
  * names E2B documents for `Sandbox.create({ network })` and `updateNetwork`:
@@ -49,49 +50,22 @@
  *   key can read it back from the sandbox's info (`SandboxNetworkRuleInfo`), so that key is
  *   a platform secret with the token's custody.
  *
- * **The environment** (`sandboxEnv`): one engine run's, and it carries only that run's own
- * credential. A run on the vendor's own sign-in in the sandbox carries no API-key or
- * base-URL variable at all, and none its record forbids (`forbid_env`), so the CLI runs on
- * the sign-in and never on a key or through the door. An API-key run carries its one
- * connection's: a base URL on the egress door and a placeholder key,
- * `ta_ph_<connection>_<random>`, which carries no secret: the door ignores it, the gateway
- * strips it with every other inbound credential (`forward.ts`) and injects the sealed one.
- * The names follow one rule, never a provider's own code: `<PROVIDER>_BASE_URL` and
- * `<PROVIDER>_API_KEY` (the provider id in upper case, `-` as `_`: `ANTHROPIC_BASE_URL`,
- * `OPENAI_API_KEY`, `GROQ_API_KEY`), `TA_<CONNECTION>_BASE_URL` and
- * `TA_<CONNECTION>_API_KEY`, and the engine's own names for that provider as its source
- * record declares them (`cli.api_key_env`). A base URL is the door, the run, the connection, then
- * the path of the sealed base URL: `https://egress.tinyassets.io/r/<run>/c/<connection>/` for
- * Anthropic's, `…/r/<run>/c/<connection>/v1` for OpenAI's, so a client appends its own API path.
  */
-import type { EgressScope } from "../../gateway/src/credential";
-
-import { tokenShaped } from "../../doors/src/routing-mac";
-
-
-import { Invalid, Refused } from "./errors";
-import { forbids } from "./text";
+import { tokenShaped } from "../../contract/src/routing-mac";
+import {
+  DNS_SERVERS as RESOLVERS, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER, SANDBOX_HEADER,
+} from "../../contract/src/egress";
+import { Invalid, Refused } from "../../contract/src/errors";
 
 /**
- * The gateway as the egress door binds it (`EGRESS`, its `EgressGateway` entrypoint): one
- * sandbox model call forwarded, metered, under the sealed endpoints of the blob the owner's
- * object handed out for it, its body streamed; a model call's reservation made through
- * `reserve` (the door's callback, a stub over RPC) once the gateway's one parse read the
- * body's model and tier, null for a free call; its metered outcome comes as one JSON line on
- * `outcome`, and closing `stop` aborts it. Every refusal is a fixed-code answer; the
- * provider's own answers pass through.
+ * The egress host and the pinned resolver as `sandbox/template/build.py` reads them: by their
+ * text at this path (`network_constants`), for the template build's checks, which no code
+ * imports. The platform's one definition is the contract's (`contract/src/egress.ts`), which
+ * the network document below uses; `sandbox/guards/template.test.ts` holds this text to it.
+ * Fix A6 moves the build's reads to the runner bundle's own facts, and these two go.
  */
-export interface EgressService {
-  forward(owner: string, connection: string, version: number, blob: string, request: Request,
-          reserve: ((call: { readonly model: string; readonly tier: string | null }) =>
-            Promise<{ readonly metering: { readonly max_output_tokens: number;
-                                           readonly input_bytes: number;
-                                           readonly model: string;
-                                           readonly tier: string | null } }
-                    | { readonly refused: string }>) | null,
-          stop: ReadableStream<Uint8Array>):
-    Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }>;
-}
+export const EGRESS_HOST = "egress.tinyassets.io";
+export const DNS_SERVERS: readonly string[] = Object.freeze(["1.1.1.1"]);
 
 /**
  * The refusal of an IP-literal egress destination. Workers `fetch` shows no resolved
@@ -143,59 +117,6 @@ export function checkDestination(entry: unknown): void {
   }
 }
 
-/**
- * Every refusal the egress door and the owner's object answer a sandbox request with, each
- * a fixed code (`egress.ts`, `doors/src/egress.ts`).
- */
-export const EGRESS_CODES = Object.freeze([
-  "egress_token_missing", "egress_token_unknown", "egress_token_expired",
-  "egress_lease_closed", "egress_run_closed", "egress_run_connection", "egress_policy_stale",
-  "egress_network_stale",
-  "egress_connection_refused", "egress_endpoint_refused", "egress_unmetered",
-  "egress_length_required", "egress_rate", "egress_spend_refused", "egress_unknown_model",
-  "egress_unpriced_option", "egress_too_large",
-] as const);
-export type EgressCode = typeof EGRESS_CODES[number];
-
-/** How the egress door saw a stream end. */
-export const OUTCOMES: readonly string[] = Object.freeze(["complete", "aborted", "failed",
-                                                          "deadline", "ended"]);
-export type Outcome = "complete" | "aborted" | "failed" | "deadline" | "ended";
-
-/**
- * The longest one sandbox request may stream, in seconds: a day, the sandbox's own most (an
- * E2B Pro session runs at most 24 hours, `engines-replan.md` §3), since a Worker's
- * subrequest has no time limit while its client stays connected (Cloudflare's Workers
- * limits). The gateway's own forward deadline (`FORWARD_DEADLINE_MS`, a test holds the two
- * equal), which the door keeps too, so a stream the gateway never ends is still settled.
- */
-export const EGRESS_DEADLINE_S = 86_400;
-/**
- * How often a streaming call's door beats its open reservation (`egressBeat`), in seconds:
- * the object settles a reservation lost three missed beats on (`LOST_AFTER_S`).
- */
-export const EGRESS_BEAT_S = 60;
-/**
- * The most bytes one request body a Worker reads whole: the platform's one ceiling for it,
- * the egress door's and the gateway's model call (`BODY_MAX`), the API's and the owner
- * surface's tool calls (`API_BODY_MAX`, `APP_BODY_MAX`), a row's or a message's body at
- * half of it (`BODY_BYTES_MAX`, room for its JSON escapes). A technical ceiling: the egress
- * door streams a model call's body and holds none of it, and the gateway, which parses it
- * once, weighs each call by its bytes and its structural tokens in slots of its pool
- * (`gateway/src/held.ts`, measured in workerd and asserted by the memory leg), so an ASCII body
- * of 16 MiB fits the pool and one with a non-ASCII character fits to 15 MiB, a heavier one
- * refused `egress_too_large`. Providers take more (Anthropic's Messages API, 128 MB), past
- * what one pool holds.
- */
-export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
-
-/** The egress door's host: always allowed, the one host the transform is set on. */
-export const EGRESS_HOST = "egress.tinyassets.io";
-export const EGRESS_ORIGIN = `https://${EGRESS_HOST}`;
-/** The header the transform sets to the sandbox's egress token. */
-export const SANDBOX_HEADER = "x-ta-sandbox";
-/** The header the transform sets to the egress generation its network was made under. */
-export const GENERATION_HEADER = "x-ta-network-generation";
 /** What the owner is told of an allowlist: not a data boundary in v1 (above). */
 export const BOUNDARY_NOTE = "An egress allowlist keeps the sandbox's tools to the listed " +
   "hosts, but is not a data boundary: the sandbox's DNS resolver is reachable on every port, " +
@@ -203,49 +124,8 @@ export const BOUNDARY_NOTE = "An egress allowlist keeps the sandbox's tools to t
 
 /** E2B's `ALL_TRAFFIC`. */
 export const ALL_TRAFFIC = "0.0.0.0/0";
-/**
- * The one resolver the sandbox may reach. Which resolver is best is unverified (research
- * §5.4.1); 8b's live probe checks that the sandbox resolves through it and nothing else.
- */
-export const DNS_SERVERS: readonly string[] = Object.freeze(["1.1.1.1"]);
 /** The ports E2B matches a name on: HTTP's `Host` and TLS's SNI. */
 const NAMED_PORTS: readonly number[] = Object.freeze([80, 443]);
-const CONNECTION = /^c[0-9a-f]{24}$/;
-const RUN = /^run_[0-9a-f]{32}$/;
-const SECRET = /^[0-9a-f]{64}$/;
-/** The egress door's path segment before a connection id: `/c/<connection>/...`. */
-const CONNECTION_SEGMENT = "c";
-/** The egress door's path segment before a run id: `/r/<run>/...`. */
-const RUN_SEGMENT = "r";
-
-/**
- * A run's own path on the egress host: `/r/<run>/<secret>`, before its model calls and its
- * MCP door. The run's own secret is in it, so only a process holding the run's URLs (its
- * CLI's environment) calls as that run; without the secret, `/r/<run>` (its event door,
- * the runner's).
- */
-export function runPath(run: string, secret?: string): string {
-  if (!RUN.test(run)) {
-    throw new Invalid("invalid run");
-  }
-  if (secret !== undefined && !SECRET.test(secret)) {
-    throw new Invalid("invalid run secret");
-  }
-  return `/${RUN_SEGMENT}/${run}${secret === undefined ? "" : `/${secret}`}`;
-}
-
-/**
- * The run's MCP door (the record's `{mcp_url}`), its event door, and the sandbox's sign-in
- * report door, on the egress host.
- */
-export function runUrls(run: string, secret: string):
-    { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
-      readonly signin: string } {
-  return Object.freeze({ mcp: `${EGRESS_ORIGIN}${runPath(run, secret)}/mcp`,
-                         mcp_bare: `${EGRESS_ORIGIN}${runPath(run)}/mcp`,
-                         events: `${EGRESS_ORIGIN}${runPath(run)}/events`,
-                         signin: `${EGRESS_ORIGIN}/signin` });
-}
 
 export type EgressMode = "open" | "allowlist" | "ask";
 
@@ -316,19 +196,19 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
       allowed.add(entry.host);
     }
   }
-  allowed.delete(EGRESS_HOST);
-  const allowOut = mode === "open" ? ["*", EGRESS_HOST] : [...[...allowed].sort(), EGRESS_HOST];
+  allowed.delete(DOOR_HOST);
+  const allowOut = mode === "open" ? ["*", DOOR_HOST] : [...[...allowed].sort(), DOOR_HOST];
   const headers: Record<string, string> = {};
   headers[SANDBOX_HEADER] = token;
   headers[GENERATION_HEADER] = String(generation);
   const rules: Record<string, readonly NetworkRule[]> = {};
-  rules[EGRESS_HOST] = Object.freeze([Object.freeze({
+  rules[DOOR_HOST] = Object.freeze([Object.freeze({
     transform: Object.freeze({ headers: Object.freeze(headers) }) })]);
   return Object.freeze({
     network: Object.freeze({
       allowOut: Object.freeze(allowOut),
       denyOut: Object.freeze([ALL_TRAFFIC]),
-      dnsServers: DNS_SERVERS,
+      dnsServers: RESOLVERS,
       rules: Object.freeze(rules),
     }),
     mode,
@@ -338,119 +218,4 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
     boundary: false,
     note: BOUNDARY_NOTE,
   });
-}
-
-
-/** A connection the sandbox may reach: its id, its provider and where it may be forwarded. */
-export interface Egressible {
-  readonly connection: string;
-  readonly provider: string;
-  readonly egress: EgressScope;
-}
-
-/** The environment-variable stem a name makes: upper case, every other character `_`. */
-function stem(name: string): string {
-  return name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
-}
-
-/**
- * One engine run, as its environment is made (from its record, by `doors/src/sources.ts`'s
- * `runEnv`): the credential it runs on; an API-key run's connection (null on the vendor's
- * own sign-in); the engine's own variables for each provider's key: its base-URL variable
- * (none when its base URL comes by a file template) and key variable, and whether its base
- * URL is the sealed one on the door (`sealed`) or the door and the connection alone
- * (`connection`: its SDK appends the API version itself, as Gemini CLI's `@google/genai`
- * client appends `/v1beta`); and the variables the credential forbids. No provider is
- * named here.
- */
-export interface EngineRun {
-  /** The run itself, whose path its base URLs carry, so each call names its run. */
-  readonly run: string;
-  /** The run's own secret, which its base URLs carry beside it, or its header. */
-  readonly secret: string;
-  /** Where the CLI takes the secret as a header instead (its record's `run_secret_env`). */
-  readonly secret_header?: { readonly env: string; readonly value: string };
-  readonly credential: "vendor_login_in_sandbox" | "api_key";
-  readonly connection: string | null;
-  readonly api_key_env: Readonly<Record<string, {
-    readonly base_url: string | null; readonly api_key: string;
-    readonly base: "sealed" | "connection" }>>;
-  readonly forbid_env: readonly string[];
-}
-
-/**
- * The base URL a run's clients use for a connection: the door, the run, the connection, the
- * sealed path (or, with no scope, the door, the run and the connection alone). The run is in
- * the path so that each call names its run, and the door holds it to that run's own
- * connection: simultaneous runs each spend on their own.
- */
-export function egressBaseUrl(connection: string, egress: EgressScope | null, run: string,
-                              secret: string | undefined): string {
-  if (!CONNECTION.test(connection)) {
-    throw new Invalid("invalid connection");
-  }
-  const path = egress === null ? "/" : new URL(egress.base_url).pathname;
-  return `${EGRESS_ORIGIN}${runPath(run, secret)}/${CONNECTION_SEGMENT}/${connection}${
-    path === "/" ? "/" : path.replace(/\/+$/, "")}`;
-}
-
-/**
- * One engine run's environment (`run`), from the owner's egress-able `connections`:
- * nothing on the vendor's own sign-in; on an API key, its one connection's base URL on the
- * door and a placeholder key, `random()` making the placeholder's random part (hex), under
- * the rule's names and the engine's own. A placeholder carries no secret. A connection
- * that is not the owner's egress-able one, a provider the engine runs no key of, two names
- * for one variable that disagree, or a variable the credential forbids fails loudly.
- */
-export function sandboxEnv(connections: readonly Egressible[], random: () => string,
-                           run: EngineRun): Readonly<Record<string, string>> {
-  if (run.credential === "vendor_login_in_sandbox") {
-    if (run.connection !== null) {
-      throw new Invalid("a run on the vendor's own sign-in is on no connection");
-    }
-    return Object.freeze({});
-  }
-  const own = connections.find((entry) => entry.connection === run.connection);
-  if (own === undefined) {
-    throw new Invalid("an API-key run is on one of the owner's active connections");
-  }
-  const { connection, provider, egress } = own;
-  if (!Object.hasOwn(run.api_key_env, provider)) {
-    throw new Invalid("the engine runs on no key of this connection's provider");
-  }
-  const env: Record<string, string> = {};
-  const set = (name: string, value: string) => {
-    if (env[name] !== undefined && env[name] !== value) {
-      throw new Error(`the source records set ${name} to two values`);
-    }
-    if (forbids(run.forbid_env, name)) {
-      throw new Error(`the run's credential forbids ${name}`);
-    }
-    env[name] = value;
-  };
-  // The secret in the path, unless the CLI sends it as a header (`x-ta-run`).
-  const inPath = run.secret_header === undefined ? run.secret : undefined;
-  const base = egressBaseUrl(connection, egress, run.run, inPath);
-  const part = random();
-  if (!/^[0-9a-f]{16,64}$/.test(part)) {
-    throw new Error("a placeholder's random part is 16 to 64 hex");
-  }
-  const placeholder = `ta_ph_${connection}_${part}`;
-  set(`TA_${stem(connection)}_BASE_URL`, base);
-  set(`TA_${stem(connection)}_API_KEY`, placeholder);
-  set(`${stem(provider)}_BASE_URL`, base);
-  set(`${stem(provider)}_API_KEY`, placeholder);
-  const names = run.api_key_env[provider]!;
-  if (names.base_url !== null) {
-    set(names.base_url, names.base === "connection"
-      ? egressBaseUrl(connection, null, run.run, inPath) : base);
-  }
-  if (run.secret_header !== undefined) {
-    if (!/^[0-9a-f]{64}$/.test(run.secret)) {
-      throw new Invalid("invalid run secret");
-    }
-    set(run.secret_header.env, run.secret_header.value.replace("{run_secret}", run.secret));
-  }
-  set(names.api_key, placeholder);
-  return Object.freeze(env);
 }

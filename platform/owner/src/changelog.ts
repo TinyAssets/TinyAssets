@@ -19,7 +19,7 @@
 import { Buffer } from "node:buffer";
 
 import { exported } from "./export";
-import { CHUNK_BYTES } from "./files";
+import { CHUNK_BYTES } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 
 /**

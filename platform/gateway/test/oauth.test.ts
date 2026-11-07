@@ -6,8 +6,9 @@
 import { describe, expect, it } from "vitest";
 
 import { builtinCatalog } from "../src/catalog";
-import type { Credential, OAuthGrant, Source } from "../src/credential";
-import { Failure } from "../src/failure";
+import type { Credential, OAuthGrant } from "../src/credential";
+import type { Source } from "../../contract/src/egress-scope";
+import { Failure } from "../../contract/src/failure";
 import { open, seal } from "../src/keyring";
 import { exchange, refresh, revokeAtProvider, tokenGuard } from "../src/oauth";
 import { ALICE, OPENAI, ring, sealed } from "./support";

@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { EVENTS_DOOR, SIGNIN_EVENTS_DOOR } from "../../contract/src/egress";
 import { bundledSources } from "../../doors/src/sources";
 
 import { binPath, type StartDoc } from "./engine";
@@ -350,8 +351,7 @@ export class Doors {
           response.writeHead(status, { "content-type": "application/json", ...headers });
           response.end(JSON.stringify(value));
         };
-        if (/^\/r\/run_[0-9a-f]{32}\/events$/.test(path)
-            || /^\/signin\/si_[0-9a-f]{32}\/events$/.test(path)) {
+        if (EVENTS_DOOR.test(path) || SIGNIN_EVENTS_DOOR.test(path)) {
           if (this.ended) {
             return json(403, { error: { code: "run_ended" } });
           }
