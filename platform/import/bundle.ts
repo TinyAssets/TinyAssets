@@ -35,7 +35,7 @@ import { CHUNK_BYTES, FILE_DEFAULTS, INLINE_BYTES } from "../contract/src/limits
 import { ancestors, WORKSPACE } from "../contract/src/paths";
 import { utf8Text } from "../contract/src/text";
 
-import { openFile, openStore, quoted } from "./backup";
+import { layout, openFile, openStore, quoted } from "./backup";
 import {
   erased, LINKS, ownerProblems, README, REFUSED, starterPaths, type Tiers, verifyCopy,
 } from "./census";
@@ -135,7 +135,7 @@ export function pages<T>(items: readonly T[]): T[][] {
 
 /** The owner's live rows: its policy document, then its collections' rows by collection and seq. */
 function rowsOf(owner: Owner, copy: Copy): Row[] {
-  const account = join(copy.work, "data", "_data", ".broker", "accounts", owner.digest);
+  const account = join(layout(copy.work).shared, ".broker", "accounts", owner.digest);
   const read = (store: string, sql: string): Record<string, unknown>[] => {
     const at = join(account, store);
     try {
