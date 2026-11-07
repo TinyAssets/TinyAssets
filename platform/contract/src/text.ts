@@ -22,8 +22,11 @@ const WINDOW_BYTES = 64 * 1024;
  * The UTF-8 bytes of `text`, a lone surrogate as U+FFFD (3), as `TextEncoder` makes them,
  * without holding them: a short text counted by hand, a longer one encoded through one
  * window of at most 64 KiB, so a 16 MiB body costs the window, not its own bytes again.
- * Faster than both at every length (Node 22: 16 MiB of ASCII in 0.9 ms, against 6.7 ms
- * encoded whole and 20 ms by hand).
+ * Measured in Node 22 against encoding whole and against counting by hand: the hand count
+ * itself below 4 Ki units, faster than it above, and past about 40 Ki units faster than
+ * both (16 MiB of ASCII in about 1 ms, against 8 to 11 ms whole and 20 to 30 ms by hand).
+ * From about 4 to 40 Ki units of ASCII it is microseconds slower than encoding whole (up to
+ * 9 times as long).
  */
 export function utf8Bytes(text: string): number {
   if (text.length < COUNTED_UNITS) {
