@@ -9,8 +9,9 @@
  *    revoke included, and only the owner's own consent brings a revoked client back.
  *    The owner's own app (`FIRST_PARTY_CLIENTS`) is ours, so it goes straight on.
  * 3. On approval, the upstream sign-in, with our own PKCE verifier kept in the
- *    provider's browser-bound, single-use upstream record and `prompt=login`, so the
- *    sign-in's time is always fresh, and after any revoke the owner made before.
+ *    provider's browser-bound, single-use upstream record and `max_age=0`, which forces a
+ *    fresh sign-in, so the sign-in's time is always fresh, and after any revoke the owner
+ *    made before.
  * 4. At the callback: the provider recovers the request in the same browser only, the
  *    upstream verifies the sign-in, and the doors take it only when at most 600 s old. A
  *    failed verification is a `502` naming the check, logged the same.
@@ -145,12 +146,12 @@ async function signIn(oauth: OAuthHelpers, upstream: Upstream, request: AuthRequ
                                            redirect_uri: UPSTREAM_CALLBACK });
   const url = new URL(location);
   const params = url.searchParams;
-  if (url.protocol !== "https:" || params.get("prompt") !== "login"
+  if (url.protocol !== "https:" || params.get("max_age") !== "0" || params.has("prompt")
       || params.get("state") !== started.state || params.get("code_challenge") !== challenge
       || params.get("code_challenge_method") !== "S256"
       || params.get("redirect_uri") !== UPSTREAM_CALLBACK) {
-    throw new Error("the upstream's sign-in URL must ask for prompt=login with our S256 " +
-                    "challenge, state and callback");
+    throw new Error("the upstream's sign-in URL must ask for a fresh sign-in (max_age=0, " +
+                    "no prompt of its own) with our S256 challenge, state and callback");
   }
   return redirect(location, started.headers);
 }
