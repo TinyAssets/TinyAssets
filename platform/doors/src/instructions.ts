@@ -21,8 +21,10 @@ export const RUN_INSTRUCTIONS = "Working files: clone repositories, install depe
  * profiles; slice BRAIN, shared_brain_research.md §6.2, autoconnect_research.md §5.1,
  * goals_research.md §6.2): the user's workspace is the one brain all their agents share.
  * Read the goals before acting, look here before asking, save what the user says here, and
- * claim an act before taking it; then onboarding for a user new to TinyAssets, and the
- * offer, once, of an assistant they use that is not connected. Fixed platform text, the
+ * claim an act before taking it; then onboarding for a user new to TinyAssets (inside it,
+ * once, what to tell one who moved from the old TinyAssets, keyed on the importer's
+ * `/workspace/imported/README.md`: the starter's onboarding skill's section, import slice 8),
+ * and the offer, once, of an assistant they use that is not connected. Fixed platform text, the
  * brain's rules in the first 512 characters (`CLIENT_KEY`), where OpenAI says to keep the
  * most important details. It names only TinyAssets' own tools and files, never another
  * vendor's tool, never "always", and asks no agent to save to its own memory or install
@@ -37,7 +39,13 @@ export const CLIENT_KEY = "This is the user's own TinyAssets workspace, shared b
   "is taken.";
 export const CLIENT_INSTRUCTIONS = `${CLIENT_KEY} If /workspace/USER.md is missing, or its ` +
   "Profile has neither an Onboarded date nor a time zone, the user is new to TinyAssets: " +
-  "after doing what they asked, ask in one message what to call them, their time zone, what " +
+  "after doing what they asked, if /workspace/imported/README.md begins \"# Your files from " +
+  "the old TinyAssets\", first tell them their old data came across there, that their old " +
+  "schedules no longer run, and to connect their connectors, model sources and API keys " +
+  "again in TinyAssets, never by pasting a secret; offer to merge the imported files, merging " +
+  "only what they pick and never deleting or moving anything there unless they ask, and save " +
+  "that rule in USER.md as a directive (the onboarding skill has the details); then ask in " +
+  "one message what to call them, their time zone, what " +
   "they want help with and are working toward, and when not to message them; save the " +
   "answers in USER.md's Profile; ask which other AI assistants they use and, for each that " +
   "agents_list's apps shows not connected, give its connect_url; then fill in the Profile's " +

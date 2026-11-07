@@ -390,6 +390,44 @@ describe("tool table guard", () => {
     expect(RUN_INSTRUCTIONS).not.toBe(CLIENT_INSTRUCTIONS);
   });
 
+  it("tells an outside client's agent, once, inside onboarding, what to say to a user who " +
+     "moved from the old TinyAssets, and never to act on the old files alone (import slice 8)",
+     () => {
+    const first = "# Your files from the old TinyAssets";
+    // The key is the first line of the README the importer writes.
+    expect(readFileSync(join(PLATFORM, "import", "build.ts"), "utf8")).toContain(`"${first}",`);
+    const start = CLIENT_INSTRUCTIONS.indexOf("If /workspace/USER.md is missing");
+    const onboarding = CLIENT_INSTRUCTIONS.slice(start, CLIENT_INSTRUCTIONS.indexOf(". ", start) + 1);
+    // The gate: onboarding's own condition, so it runs once, until the Onboarded date is
+    // written; and nowhere else in the text.
+    expect(onboarding.endsWith("fill in the Profile's Onboarded line with today's date.")).toBe(true);
+    expect(CLIENT_INSTRUCTIONS.split("/workspace/imported/")).toHaveLength(2);
+    expect(onboarding).toContain("/workspace/imported/");
+    // After the user's own request, first in onboarding's message, keyed on the README.
+    const clause = onboarding.slice(onboarding.indexOf("after doing what they asked, if "),
+                                    onboarding.indexOf("; then ask in one message"));
+    expect(clause).toContain(`if /workspace/imported/README.md begins "${first}", first tell ` +
+                             "them");
+    for (const said of ["their old data came across there",
+                        "their old schedules no longer run",
+                        "connectors, model sources and API keys again in TinyAssets, never by " +
+                        "pasting a secret",
+                        "offer to merge the imported files, merging only what they pick",
+                        "never deleting or moving anything there unless they ask",
+                        "save that rule in USER.md as a directive"]) {
+      expect(clause, said).toContain(said);
+    }
+    // No word that lets an agent act alone; and the pattern sees each kind an edit could add.
+    const permissions = /\b(?:you|agents?|it) (?:may|can|should) (?:delete|move|remove|merge|overwrite)\b|\bautomatic(?:ally)?\b|\b(?:merge|delete|move|remove) (?:everything|all|them all|the whole)\b|\b(?:delete|move|remove) the imported\b|\bif they do not answer\b/i;
+    expect(CLIENT_INSTRUCTIONS).not.toMatch(permissions);
+    for (const added of ["you may delete the imported files once merged",
+                         "merge them automatically", "merge everything there"]) {
+      expect(`${clause}; ${added}`, added).toMatch(permissions);
+    }
+    // The brain's rules in the first 512 characters hold none of it.
+    expect(CLIENT_KEY).not.toContain("/workspace/imported/");
+  });
+
   it("lists exactly each profile's tools: the directory's all but code, a run's all but " +
      "converse and the mailbox tools, custom's by default all", () => {
     const all = toolNames();

@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "tinyassets",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Your own workspace, shared by every AI assistant you connect: what you tell one, the others know; your goals, notes and projects in one place; and a board where your assistants claim a task so two never do the same one.",
   "author": {
     "name": "TinyAssets",
