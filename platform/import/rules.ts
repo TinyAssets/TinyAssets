@@ -210,8 +210,8 @@ const BROKER_STATE: Level = level([
     drop: "owner_volumes owner_snapshots box_records owner_box_secrets owner_box_revocations " +
           "routing_sequence deletion_jobs center_admissions",
   }), "who the owners are (the principal is the owner's name) and their admission; the " +
-      "volume bindings are read by the census's backup gate, and the deletion jobs withhold " +
-      "every owner whose erasure has not finished")],
+      "volume bindings are read by the census's backup gate, and the deletion jobs and the " +
+      "deleted revocations are erasure facts (`erasure.ts`)")],
   ["next-wake.db", store("drop", "old wake times: no schedule goes live (research §2)")],
   ["ops.db", store("drop", RUNTIME)],
 ], named("fence.json architecture-signing.json", drop(RUNTIME)));
@@ -262,20 +262,28 @@ export const SHARED: Level = level([
   [".router-deleted-owners.sqlite3", store(uses({ carry: "deleted_owners" }),
                                            "erasure tombstones, by principal")],
   [".erasure-ledger.sqlite3", store(uses({ drop: "events initialized" }),
-                                    "the router's erasure work log; the erased owners are in " +
-                                    "owner_admission and deleted_owners")],
+                                    "the router's erasure work log: each entry is an erasure " +
+                                    "fact (`erasure.ts`)")],
+  [".workos-revocations.sqlite3", store(uses({ drop: "revocations" }),
+                                        "bearer revocations: sign-ins start again, and a " +
+                                        "deleted one is an erasure fact (`erasure.ts`)")],
+  [".boxhost", dir(level([
+    ["boxhost.db", store(uses({ drop: "host boxes ops execs owner_destroys" }),
+                         "the box host's generations and receipts: each owner destroy is an " +
+                         "erasure fact (`erasure.ts`)")],
+  ], named("boxhost.lock", drop(RUNTIME))), "the box host's private state")],
   [".owner_devices.db", store("drop", "the app registers again")],
   [".outside-client-authority.sqlite3", store("drop", "outside clients are made at each " +
                                               "client's first call (#5343)")],
   [".runtime", drop("sign-in and approval sessions: " + CREDENTIALS)],
   [".published", drop("shared copies of published definitions; there is no commons now")],
-], named(".auth.db .hosted-model-auth.db .workos-revocations.sqlite3", store("drop", CREDENTIALS)),
+], named(".auth.db .hosted-model-auth.db", store("drop", CREDENTIALS)),
    named(".inbound-routing.sqlite3 .remote-ta-receipts.sqlite3 metering.db",
          store("drop", RUNTIME)),
    named(".source_channel_policy.db", store("drop", "a retired store nothing reads " +
                                              "(`box_layout_migration.py` `RETIRED_STORES`)")),
    named(".connect", drop(CREDENTIALS)),
-   named(".boxhost .locks .layout.json .layout.lock .owner-cutover.json " +
+   named(".locks .layout.json .layout.lock .owner-cutover.json " +
          ".ordinary-admission.json .router-credentials.json .disaster-restore.json " +
          ".platform-recovery.json platform-expected-instance.json release-state.json " +
          ".billing_webhook_verified.json .custody.lock .deploy-pending.json", drop(RUNTIME)),

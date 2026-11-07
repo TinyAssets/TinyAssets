@@ -18,11 +18,12 @@ import { FILE_DEFAULTS } from "../../contract/src/limits";
 import { DEFAULT_IGNORES, ignoredBy } from "../../contract/src/sync-ignore";
 import { buildBundles } from "../bundle";
 import { census } from "../census";
+import { ERASURE_SOURCES } from "../erasure";
 import { TAR_MEMBER_MAX } from "../tar";
 import { IMPORTED, newTree, walkUser } from "../survey";
 import {
-  ALICE, BAD_NAME, BOB, deletionJob, DORA, type Fixture, fixture, FOUNDER, keyOf, makeStore, sha,
-  sparse, TIERS, unmergedStore,
+  ALICE, BAD_NAME, BOB, deletionJob, DORA, ERASED, ERASING, type Fixture, fixture, FOUNDER, keyOf,
+  makeStore, sha, sparse, TIERS, unmergedStore,
 } from "./fixture";
 
 const made: Fixture[] = [];
@@ -63,8 +64,8 @@ describe("the census", () => {
     expect(report["problems"]).toEqual({});
     expect(report["backup"]).toEqual({ pins: 4, verified: true });
     expect(report["owners"]).toEqual({
-      identities: 4, imported: 3, erased: 0, erasure_pending: 1,
-      admission: { admitted: 3, suspended: 1 },
+      identities: 15, imported: 3, erased: 1, erasure_pending: 11,
+      admission: { admitted: 13, suspended: 1, erased: 1 },
       tier: { free: 1, paid: 2 }, with_customer: 2, with_subscription: 2, not_authkit: 0,
       with_volume: 4, no_volume: 0, centers: 4, retired_centers: 1, orphan_accounts: 0,
       orphan_rows: { admission: 0, plans: 0, volumes: 0 },
@@ -87,10 +88,14 @@ describe("the census", () => {
       "center/.conversation_memory.db/conversation_backfill drop": 1,
       "root/.runs.db/runs drop": 2, "root/.runs.db/branch_schedules archive": 1,
       "root/.tinyassets.db/branch_definitions archive": 1, "sessions/history.db/* archive": 1,
-      "shared/.broker/state/owner-identities.db/owner_identities carry": 4,
+      "shared/.broker/state/owner-identities.db/owner_identities carry": 15,
       "shared/.broker/state/owner-identities.db/deletion_jobs drop": 1,
       "shared/.api-keys.sqlite3/api_keys drop": 2, "shared/.hook-owners.sqlite3/hook_owners drop": 1,
-      "shared/.router-deleted-owners.sqlite3/deleted_owners carry": 1,
+      "shared/.router-deleted-owners.sqlite3/deleted_owners carry": 2,
+      "shared/.broker/state/owner-identities.db/owner_box_revocations drop": 2,
+      "shared/.boxhost/boxhost.db/owner_destroys drop": 1,
+      "shared/.erasure-ledger.sqlite3/events drop": 1,
+      "shared/.workos-revocations.sqlite3/revocations drop": 2,
     });
   });
 
@@ -298,7 +303,7 @@ describe("the fleet's rows", () => {
     const { report, table } = census(f.copy, TIERS);
     expect(report["problems"]).toEqual({ never_admitted: 1 });
     expect((report["owners"] as { admission: Record<string, number> }).admission)
-      .toEqual({ absent: 1, admitted: 3 });
+      .toEqual({ absent: 1, admitted: 13, erased: 1 });
     expect(table).toContain(`${keyOf(BOB)}\tadmission\tabsent`);
   });
 });
@@ -315,11 +320,54 @@ describe("an erasure the owner asked for", () => {
     const f = fresh();
     const { report, ready, table } = census(f.copy, TIERS);
     expect(ready).toBe(true);
-    expect(report["owners"]).toMatchObject({ identities: 4, imported: 3, erasure_pending: 1 });
+    expect(report["owners"]).toMatchObject({ identities: 15, imported: 3, erasure_pending: 11 });
     expect(table).toContain(`${keyOf(DORA)}\terasure_pending\ttrue`);
     // Nothing of hers is read: her files are in no count.
     expect(table).toContain(`${keyOf(DORA)}\tfiles\t0`);
     expect(table).not.toContain(`${keyOf(DORA)}\tentries`);
+  });
+
+  it("withholds every owner any erasure source names, each source alone", () => {
+    const f = fresh();
+    const { report, ready, table } = census(f.copy, TIERS);
+    expect(ready).toBe(true);
+    for (const [source, principal] of Object.entries(ERASING)) {
+      expect(table, source).toContain(`${keyOf(principal)}\terasure_pending\ttrue`);
+      expect(table, source).toContain(`${keyOf(principal)}\tfiles\t0`);
+    }
+    expect(table).toContain(`${keyOf(ERASED)}\terased\ttrue`);
+    expect(table).toContain(`${keyOf(ALICE)}\terasure_pending\tfalse`);
+    expect(table).toContain(`${keyOf(BOB)}\terasure_pending\tfalse`);
+    // An owner is no tombstone: only those no identity holds are counted as one.
+    expect(report["tombstones"]).toEqual({ by_principal: 1, digest_only: 2 });
+  });
+
+  it("holds an owner in the fixture for every erasure source the importer reads", () => {
+    const held = new Set([...Object.keys(ERASING).filter((k) => k !== "center_deleted_principals"),
+                          "deletion_jobs", "owner_admission"]);
+    expect([...held].sort()).toEqual([...ERASURE_SOURCES].sort());
+  });
+
+  it("stops the run on an image whose tombstones cannot be read whole", () => {
+    const f = fresh();
+    writeFileSync(join(f.tree(BOB), "main", ".tinyassets.db"),
+                  Buffer.concat([Buffer.from("SQLite format 3\0", "latin1"), Buffer.alloc(200, 7)]));
+    const { report, ready, table } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toMatchObject({ unreadable: 1 });
+    expect(table).toContain("fleet\tproblem unreadable\terasure/volume/300002");
+  });
+
+  it("stops the run on a disaster report's unfinished erasures, and on no other", () => {
+    for (const [doc, ready] of [[{ pending_erasures: ["a/b"], erasure_failures: [] }, false],
+                                [{ pending_erasures: [], erasure_failures: ["c"] }, false],
+                                [{ pending_erasures: [], erasure_failures: [] }, true]] as const) {
+      const f = fresh();
+      writeFileSync(join(f.work, "data", "_data", ".disaster-restore.json"), JSON.stringify(doc));
+      const { report } = census(f.copy, TIERS);
+      expect(report["problems"], JSON.stringify(doc))
+        .toEqual(ready ? {} : { unfinished_erasure: 1 });
+    }
   });
 
   it("withholds one whose job finished but whose admission does not yet read erased", () => {
@@ -329,7 +377,7 @@ describe("an erasure the owner asked for", () => {
                                            "billing", "credentials", "identity", "receipt"]);
     jobs(f, "INSERT INTO deletion_jobs VALUES (?, ?)", id, record);
     expect(census(f.copy, TIERS).report["owners"])
-      .toMatchObject({ imported: 3, erasure_pending: 1 });
+      .toMatchObject({ imported: 3, erasure_pending: 11 });
   });
 
   it("stops the run on a job whose owner is no identity", () => {

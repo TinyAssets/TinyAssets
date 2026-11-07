@@ -11,6 +11,10 @@
  *   past 255 bytes, a center store with archived and dropped tables, platform entries.
  * - bob (`user_bob`, uid 300002): suspended for billing, free, one center, no broker stores.
  * - the founder (`user_founder`, uid 300003): admitted, paid; the exclusion list's.
+ * - dora (`user_dora`, uid 300004): admitted, her deletion job not through.
+ * - `ERASING`: an admitted owner with no volume for each other erasure source
+ *   (`erasure.ts`), named by that source alone; and `user_erased`, its admission erased.
+ *   Were a source not read, its owner would be bundled (an empty bundle).
  * - tombstones: `user_gone` by principal, and two by digest alone.
  */
 import { execFileSync } from "node:child_process";
@@ -37,6 +41,21 @@ export const FOUNDER = "user_founder";
 export const DORA = "user_dora";
 export const UIDS = Object.freeze({ [ALICE]: 300_001, [BOB]: 300_002, [FOUNDER]: 300_003,
                                     [DORA]: 300_004 });
+/**
+ * One owner per erasure source (`erasure.ts` `ERASURE_SOURCES`), each named by that source
+ * alone; dora is `deletion_jobs`'s and `ERASED` `owner_admission`'s.
+ */
+export const ERASING = Object.freeze({
+  deleted_owners: "user_erase_router", deleted_principals: "user_erase_custody",
+  main_deleted_principals: "user_erase_main", owner_box_revocations: "user_erase_box",
+  owner_destroys: "user_erase_destroy", erasure_ledger: "user_erase_ledger",
+  workos_revocations: "user_erase_signin", deleted_marker: "user_erase_marker",
+  image_deleted_principals: "user_erase_image", center_deleted_principals: "user_erase_center",
+});
+/** An identity whose admission reads erased. */
+export const ERASED = "user_erased";
+const ERASING_UIDS: readonly [string, number][] = [...Object.values(ERASING), ERASED]
+  .map((principal, i) => [principal, 300_011 + i]);
 /** The old broker's deletion job for `owner`, its steps done so far (`deletion_jobs.py`). */
 export function deletionJob(owner: string, completed: readonly string[]): [string, string] {
   return [sha(owner), JSON.stringify({
@@ -130,11 +149,17 @@ export function fixture(): Fixture {
             "CREATE TABLE owner_box_secrets (principal TEXT PRIMARY KEY NOT NULL, " +
             "secret TEXT NOT NULL);" +
             "CREATE TABLE routing_sequence (revision INTEGER NOT NULL);" +
-            "CREATE TABLE deletion_jobs (id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL);", {
-              owner_identities: Object.entries(UIDS).map(([p, uid]) => [p, uid]),
+            "CREATE TABLE deletion_jobs (id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL);" +
+            "CREATE TABLE owner_box_revocations (principal TEXT PRIMARY KEY NOT NULL, " +
+            "deleted INTEGER NOT NULL);", {
+              owner_identities: [...Object.entries(UIDS), ...ERASING_UIDS],
               owner_admission: [[sha(ALICE), "admitted", "[]"], [sha(BOB), "suspended", '["billing"]'],
                                 [sha(FOUNDER), "admitted", "[]"], [sha(DORA), "admitted", "[]"],
-                                [sha("user_gone2"), "erased", "[]"]],
+                                [sha("user_gone2"), "erased", "[]"],
+                                ...Object.values(ERASING).map((p) => [sha(p), "admitted", "[]"]),
+                                [sha(ERASED), "erased", "[]"]],
+              // A revocation not marked deleted is no erasure: alice's is bundled.
+              owner_box_revocations: [[ERASING.owner_box_revocations, 1], [ALICE, 0]],
               owner_volumes: Object.entries(UIDS).map(([p, uid]) =>
                 [p, uid, 3, snapshot(p), sha(images[p]!), null, 0, 1.5, null]),
               owner_box_secrets: Object.keys(UIDS).map((p) => [p, `secret-${p}`]),
@@ -155,10 +180,33 @@ export function fixture(): Fixture {
             });
   makeStore(join(shared, ".broker/credential-custody.db"),
             "CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY);",
-            { deleted_principals: [[sha("user_gone3")], [sha("user_gone")]] });
+            { deleted_principals: [[sha("user_gone3")], [sha("user_gone")],
+                                   [sha(ERASING.deleted_principals)]] });
   makeStore(join(shared, ".router-deleted-owners.sqlite3"),
             "CREATE TABLE deleted_owners (owner TEXT PRIMARY KEY, receipt TEXT);",
-            { deleted_owners: [["user_gone", "{}"]] });
+            { deleted_owners: [["user_gone", "{}"], [ERASING.deleted_owners, "{}"]] });
+  makeStore(join(shared, ".boxhost", "boxhost.db"),
+            "CREATE TABLE host (k TEXT PRIMARY KEY, v INTEGER NOT NULL);" +
+            "CREATE TABLE boxes (command_center_id TEXT PRIMARY KEY, epoch INTEGER NOT NULL, " +
+            "generation INTEGER NOT NULL);" +
+            "CREATE TABLE owner_destroys (owner_id TEXT PRIMARY KEY, uid INTEGER, receipt TEXT);",
+            { owner_destroys: [[ERASING.owner_destroys, 300_015, "{}"]] });
+  file(join(shared, ".boxhost", "boxhost.lock"), "");
+  makeStore(join(shared, ".erasure-ledger.sqlite3"),
+            "CREATE TABLE events (id TEXT PRIMARY KEY, digest TEXT NOT NULL, at INTEGER NOT NULL, " +
+            "payload TEXT NOT NULL);" +
+            "CREATE TABLE initialized (singleton INTEGER PRIMARY KEY);", {
+              events: [["e1", sha(ERASING.erasure_ledger), 0, JSON.stringify({
+                principal: ERASING.erasure_ledger, uids: [], receipt: {}, done: [],
+                tasks: { identity: "identity" } })]],
+              initialized: [[1]],
+            });
+  makeStore(join(shared, ".workos-revocations.sqlite3"),
+            "CREATE TABLE revocations (owner TEXT PRIMARY KEY, not_before REAL NOT NULL, " +
+            "deleted INTEGER NOT NULL);",
+            // A sign-out alone is no erasure: bob's is bundled.
+            { revocations: [[ERASING.workos_revocations, 1.0, 1], [BOB, 1.0, 0]] });
+  file(join(account(ERASING.deleted_marker), ".deleted"), "");
   makeStore(join(shared, ".api-keys.sqlite3"),
             "CREATE TABLE api_keys (key_id TEXT PRIMARY KEY, owner TEXT NOT NULL, " +
             "name TEXT NOT NULL, secret_sha256 TEXT NOT NULL, created_at REAL NOT NULL, " +
@@ -171,8 +219,10 @@ export function fixture(): Fixture {
             { hook_owners: [[sha("hook"), ALICE]] });
   makeStore(join(shared, ".tinyassets.db"),
             "CREATE TABLE user_accounts (id TEXT PRIMARY KEY);" +
-            "CREATE TABLE user_sessions (id TEXT PRIMARY KEY);",
-            { user_accounts: [[ALICE], [BOB]] });
+            "CREATE TABLE user_sessions (id TEXT PRIMARY KEY);" +
+            "CREATE TABLE deleted_principals (founder_sub TEXT PRIMARY KEY);",
+            { user_accounts: [[ALICE], [BOB]],
+              deleted_principals: [[sha(ERASING.main_deleted_principals)]] });
   file(join(shared, ".layout.json"), '{"layout": 2, "state": "stable", "box_layout": "owner-box"}');
   file(join(shared, ".connect", "client_id"), "client");
   file(join(shared, ".broker", "browser-vault", "keys"), "secret");
@@ -243,9 +293,12 @@ export function fixture(): Fixture {
   makeStore(join(a, ".tinyassets.db"),
             "CREATE TABLE branch_definitions (branch_def_id TEXT PRIMARY KEY, author TEXT, " +
             "body TEXT);" +
-            "CREATE TABLE universes (id TEXT PRIMARY KEY);", {
+            "CREATE TABLE universes (id TEXT PRIMARY KEY);" +
+            "CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY);", {
               branch_definitions: [["bd1", ALICE, "my workflow"]],
               universes: [["novel"]],
+              // A tombstone in an owner's own store (`account_deletion.py`) names another.
+              deleted_principals: [[sha(ERASING.image_deleted_principals)]],
             }, true);
   makeStore(join(a, ".runs.db"),
             "CREATE TABLE runs (run_id TEXT PRIMARY KEY, owner_user_id TEXT);" +
@@ -297,6 +350,9 @@ export function fixture(): Fixture {
             "CREATE TABLE centers (center TEXT PRIMARY KEY, retired INTEGER NOT NULL DEFAULT 0);",
             { centers: [["main", 0]] });
   file(join(b, "main", "MEMORY.md"), "bob remembers\n");
+  makeStore(join(b, "main", ".tinyassets.db"),
+            "CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY);",
+            { deleted_principals: [[sha(ERASING.center_deleted_principals)]] });
   file(join(b, "main", "workspace", "a.txt"), "a\n");
 
   // Dora's image: what she asked to have erased.

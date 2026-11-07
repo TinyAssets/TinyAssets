@@ -52,17 +52,18 @@ function exists(path: string): boolean {
   }
 }
 
-/** Whether the old stack erased the owner. */
+/** Whether the old stack erased the owner (its admission reads erased). */
 export function erased(owner: Owner): boolean {
-  return owner.admission?.state === "erased" || owner.erasedMarker;
+  return owner.erasure === "erased";
 }
 
 /**
- * Whether the owner is withheld from every bundle: erased, or with a deletion job not
- * finished (the person's request honoured, though the backup predates its end).
+ * Whether the owner is withheld from every bundle: any erasure fact names them
+ * (`erasure.ts`), erased or with the erasure not yet through (the person's request
+ * honoured, though the backup predates its end).
  */
 export function withheld(owner: Owner): boolean {
-  return erased(owner) || owner.erasurePending;
+  return owner.erasure !== null;
 }
 
 /**
@@ -249,7 +250,7 @@ export function census(copy: Copy, tiers: Tiers): Census {
       : [owner.admission.state, ...owner.admission.reasons].join(","));
     row("tier", owner.plan?.tier ?? "none");
     row("erased", erased(owner));
-    row("erasure_pending", owner.erasurePending);
+    row("erasure_pending", owner.erasure === "pending");
     row("centers", owner.centers.length);
     row("files", files(owner).length);
     if (fit !== undefined) {

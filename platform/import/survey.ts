@@ -21,6 +21,9 @@ import {
   intact, isStore, layout, type Manifest, nameText, openStore, quoted, rowsIn, tablesOf,
 } from "./backup";
 import {
+  type ErasureFacts, erasureFacts, imageTombstones, names, withImageFacts,
+} from "./erasure";
+import {
   ACCOUNT, ACCOUNT_NAME, CENTER, CENTER_NAME, type EntryRule, type Level, ROOT, ruleOf,
   SESSIONS, SHARED, SIDECAR, type StoreRule, tableUse, type Use,
 } from "./rules";
@@ -137,13 +140,13 @@ export interface Owner {
   readonly admission: Admission | null;
   readonly plan: Plan | null;
   readonly volume: Volume | null;
-  readonly erasedMarker: boolean;
   /**
-   * A deletion job names the owner and the erasure it asked for has not finished (or the
-   * admission does not yet say erased): the person's request is honoured, so the owner is
-   * never bundled, neither imported nor backed up, and is counted.
+   * What the old stack's erasure facts say of the owner (`erasure.ts`, their one reader):
+   * `erased` when its admission reads erased, `pending` when any other source names it
+   * (an erasure asked for and not yet through), null when none does. Either way the owner
+   * is in no bundle.
    */
-  readonly erasurePending: boolean;
+  readonly erasure: "erased" | "pending" | null;
   readonly centers: readonly { readonly name: string; readonly retired: boolean }[];
   readonly tree: Tree;
 }
@@ -152,7 +155,9 @@ export interface Fleet {
   readonly problems: Problem[];
   readonly stores: StoreCount[];
   readonly owners: Owner[];
-  /** Erasure tombstones: by principal, and by digest alone (no principal to hold them). */
+  /** Every erasure fact the shared layer and the mounted images hold (`erasure.ts`). */
+  readonly erasure: ErasureFacts;
+  /** Erasure tombstones no identity holds: by principal, and by digest alone. */
   readonly tombstones: { readonly principals: readonly string[]; readonly digests: readonly string[] };
   readonly orphanAccounts: number;
   /** Fleet rows whose principal or digest is no owner's: each a fleet problem too. */
@@ -520,16 +525,14 @@ export function survey(copy: Copy): Fleet {
     subscription_id: row["subscription_id"] as string | null,
   }]));
   const jobs = deletionJobs(read(".broker/state/owner-identities.db", "deletion_jobs"));
-  const deleted = read(".router-deleted-owners.sqlite3", "deleted_owners")
-    .map((row) => String(row["owner"]));
   const identities = read(".broker/state/owner-identities.db", "owner_identities")
     .map((row) => ({ principal: String(row["principal"]), uid: Number(row["machine_id"]) }));
   const digests = new Set(identities.map((identity) => sha256Hex(identity.principal)));
-  const knownDigests = new Set([...digests, ...deleted.map((principal) => sha256Hex(principal))]);
-  const digestOnly = [
-    ...read(".broker/credential-custody.db", "deleted_principals").map((row) => String(row["digest"])),
-    ...[...admitted].filter(([, a]) => a.state === "erased").map(([digest]) => digest),
-  ].filter((digest, i, list) => !knownDigests.has(digest) && list.indexOf(digest) === i);
+  // Erasure is read once, here, from every source the old stack consults.
+  const erasure = erasureFacts(read, where.shared);
+  if (erasure.unfinished > 0) {
+    problems.push({ code: "unfinished_erasure", at: "shared/.disaster-restore.json" });
+  }
 
   // Every fleet row is some identity's, or a counted problem: never a row nothing reads.
   const principals = new Set(identities.map((identity) => identity.principal));
@@ -578,6 +581,22 @@ export function survey(copy: Copy): Fleet {
   }
   const pins = new Map(copy.manifest.snapshots.map((pin) => [pin.uid, pin]));
   const matcher = ignoredBy(DEFAULT_IGNORES);
+  // Every mounted image's own tombstones, read before any owner is: erasure facts too. An
+  // image not mounted is that owner's `not_mounted` below.
+  const inImages: string[] = [];
+  for (const volume of volumes.values()) {
+    const mounted = copy.volume(volume.uid);
+    if (!("problem" in mounted)) {
+      const found = imageTombstones(mounted.root);
+      if (found === null) {
+        problems.push({ code: "unreadable", at: `erasure/volume/${volume.uid}` });
+      } else {
+        inImages.push(...found);
+      }
+    }
+  }
+  const facts = withImageFacts(erasure, inImages);
+  const tombstones = [...facts.facts].filter(([digest]) => !digests.has(digest));
   const owners = identities.map((identity) => {
     const digest = sha256Hex(identity.principal);
     const volume = volumes.get(identity.principal) ?? null;
@@ -585,12 +604,11 @@ export function survey(copy: Copy): Fleet {
       principal: identity.principal, digest, key: digest.slice(0, 16),
       uid: identity.uid, admission: admitted.get(digest) ?? null,
       plan: plans.get(identity.principal) ?? null, volume,
-      erasedMarker: accountDirs.has(digest) && lstatExists(join(accounts, digest, ".deleted")),
-      erasurePending: jobs.has(identity.principal)
-        && (!jobs.get(identity.principal)!.finished || admitted.get(digest)?.state !== "erased"),
+      erasure: admitted.get(digest)?.state === "erased" ? "erased"
+        : names(facts, identity.principal) ? "pending" : null,
       centers: [], tree: newTree(),
     };
-    if (owner.admission?.state === "erased" || owner.erasedMarker || owner.erasurePending) {
+    if (owner.erasure !== null) {
       return owner;
     }
     if (accountDirs.has(digest)) {
@@ -608,7 +626,8 @@ export function survey(copy: Copy): Fleet {
       problems.push({ code: "pin_mismatch", at: `pin/${pin.uid}` });
     }
   }
-  const noVolume = owners.filter((owner) => owner.volume === null && !pins.has(owner.uid!))
+  const noVolume = owners.filter((owner) => owner.erasure === null && owner.volume === null
+                                 && !pins.has(owner.uid!))
     .length;
   // A job whose owner is no identity: whose data it would withhold cannot be told.
   for (const [principal, job] of jobs) {
@@ -616,9 +635,15 @@ export function survey(copy: Copy): Fleet {
       problems.push({ code: "orphan_row", at: `deletion_jobs/${job.id.slice(0, 16)}` });
     }
   }
-  const erasurePending = owners.filter((owner) => owner.erasurePending).length;
+  const erasurePending = owners.filter((owner) => owner.erasure === "pending").length;
   return { problems, stores, owners, orphanAccounts, orphans, noVolume, erasurePending,
-           tombstones: { principals: deleted, digests: digestOnly } };
+           erasure: facts,
+           tombstones: {
+             principals: tombstones.filter(([, fact]) => fact.principal !== null)
+               .map(([, fact]) => fact.principal!),
+             digests: tombstones.filter(([, fact]) => fact.principal === null)
+               .map(([digest]) => digest),
+           } };
 }
 
 function lstatExists(path: string): boolean {

@@ -20,6 +20,29 @@
     "deleted_owners"
    ]
   },
+  "SHARED:.boxhost/boxhost.db": {
+   "modules": [
+    "boxes/state.py",
+    "box_layout_migration.py (_census_rules)",
+    "cutover_deletions.py (reader)"
+   ],
+   "tables": [
+    "boxes",
+    "execs",
+    "host",
+    "ops",
+    "owner_destroys"
+   ]
+  },
+  "SHARED:.workos-revocations.sqlite3": {
+   "modules": [
+    "router_account_deletion.py",
+    "auth/workos_provider.py (reader)"
+   ],
+   "tables": [
+    "revocations"
+   ]
+  },
   "ROOT:.tinyassets.db": {
    "modules": [
     "command_center_release_series.py",

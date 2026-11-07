@@ -1,0 +1,216 @@
+/**
+ * Every erasure fact the old stack keeps, in one place: the union of every source its own
+ * code consults when it decides a principal is erased or being erased. The census and the
+ * bundle builder read erasure through this alone, so an owner any source names is in no
+ * bundle (`import12_report.md` lists each reader of the old code these come from).
+ *
+ * The sources, each keyed by the owner's digest (`sha256(principal)`, `admission.digest`
+ * and `account_deletion.principal_digest` alike):
+ * - `owner_admission` with state `erased` (`broker/admission.py`);
+ * - `deletion_jobs`, every job (`broker/deletion_jobs.py`): a job exists only once its
+ *   owner asked to be erased, finished or not;
+ * - the router's `deleted_owners` (`.router-deleted-owners.sqlite3`, by principal);
+ * - custody's `deleted_principals` (`.broker/credential-custody.db`, by digest);
+ * - the main store's own `deleted_principals` (`.tinyassets.db` at the shared root, by
+ *   `founder_sub`, a digest: `cutover_deletions._legacy_main_digests`), and the same table
+ *   in each mounted image's root and center main stores (`digest`, `deletion_schema.py`;
+ *   `account_deletion._tombstone_clause` reads it): `imageTombstones`, read for every image
+ *   before any owner is decided, an erasing owner's included;
+ * - `owner_box_revocations` where `deleted = 1` (`owner-identities.db`);
+ * - `.boxhost/boxhost.db` `owner_destroys` (by `owner_id`);
+ * - every `.erasure-ledger.sqlite3` `events` entry (its digest, and the principal its
+ *   payload names), the router's erasure work log;
+ * - the router's `.workos-revocations.sqlite3` `revocations` where `deleted = 1`
+ *   (`router_account_deletion.revoke_local_tokens`: "deletion can never be undone");
+ * - each `.broker/accounts/<digest>/.deleted` marker.
+ *
+ * And one that names no principal: `.disaster-restore.json`'s `pending_erasures` and
+ * `erasure_failures` (`cutover_deletions.census_count`), paths an erasure has not finished.
+ * Any is `unfinished_erasure`, stopping the run, since no owner can be told from a path.
+ */
+import { lstatSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
+import { sha256Hex } from "../contract/src/digest";
+
+import { intact, isStore, openStore, readSmall, tablesOf } from "./backup";
+import { CENTER_NAME } from "./rules";
+
+/** One digest's facts: which sources name it, and its principal where any does. */
+export interface Fact {
+  readonly sources: Set<string>;
+  principal: string | null;
+}
+
+export interface ErasureFacts {
+  /** Every digest any source names as erased or being erased. */
+  readonly facts: ReadonlyMap<string, Fact>;
+  /** What stops the run: a disaster report's unfinished erasures. */
+  readonly unfinished: number;
+}
+
+/** A fleet store's rows (`survey.ts`'s `read`: none when the store or table is absent). */
+export type Rows = (store: string, table: string) => Record<string, unknown>[];
+
+/** The main store's names (`storage/__init__.py`'s legacy chain). */
+export const MAIN_STORES: readonly string[] = Object.freeze([".tinyassets.db", ".workflow.db",
+                                                             ".author_server.db"]);
+
+/** A main store's tombstones, by digest, in either column the old code wrote. */
+export function mainTombstones(rows: readonly Record<string, unknown>[]): string[] {
+  return rows.map((row) => String(row["founder_sub"] ?? row["digest"]));
+}
+
+function exists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The union of every erasure fact the shared layer holds. */
+export function erasureFacts(read: Rows, shared: string): ErasureFacts {
+  const facts = new Map<string, Fact>();
+  const add = (source: string, digest: string, principal: string | null = null) => {
+    const fact = facts.get(digest) ?? { sources: new Set<string>(), principal: null };
+    fact.sources.add(source);
+    fact.principal ??= principal;
+    facts.set(digest, fact);
+  };
+  const byPrincipal = (source: string, principal: unknown) => {
+    if (typeof principal === "string" && principal !== "") {
+      add(source, sha256Hex(principal.trim()), principal);
+    }
+  };
+  const identities = ".broker/state/owner-identities.db";
+  for (const row of read(identities, "owner_admission")) {
+    if (row["state"] === "erased") {
+      add("owner_admission", String(row["digest"]));
+    }
+  }
+  for (const row of read(identities, "deletion_jobs")) {
+    const record = JSON.parse(String(row["record"])) as { owner?: unknown };
+    byPrincipal("deletion_jobs", record.owner);
+  }
+  for (const row of read(".router-deleted-owners.sqlite3", "deleted_owners")) {
+    byPrincipal("deleted_owners", row["owner"]);
+  }
+  for (const row of read(".broker/credential-custody.db", "deleted_principals")) {
+    add("deleted_principals", String(row["digest"]));
+  }
+  for (const store of MAIN_STORES) {
+    for (const digest of mainTombstones(read(store, "deleted_principals"))) {
+      add("main_deleted_principals", digest);
+    }
+  }
+  for (const row of read(identities, "owner_box_revocations")) {
+    if (Number(row["deleted"]) !== 0) {
+      byPrincipal("owner_box_revocations", row["principal"]);
+    }
+  }
+  for (const row of read(".boxhost/boxhost.db", "owner_destroys")) {
+    byPrincipal("owner_destroys", row["owner_id"]);
+  }
+  for (const row of read(".erasure-ledger.sqlite3", "events")) {
+    const payload = JSON.parse(String(row["payload"] ?? "{}")) as { principal?: unknown };
+    add("erasure_ledger", String(row["digest"]),
+        typeof payload.principal === "string" ? payload.principal : null);
+  }
+  for (const row of read(".workos-revocations.sqlite3", "revocations")) {
+    if (Number(row["deleted"]) !== 0) {
+      byPrincipal("workos_revocations", row["owner"]);
+    }
+  }
+  const accounts = join(shared, ".broker", "accounts");
+  if (exists(accounts) && lstatSync(accounts).isDirectory()) {
+    for (const name of readdirSync(accounts)) {
+      if (/^[0-9a-f]{64}$/.test(name) && exists(join(accounts, name, ".deleted"))) {
+        add("deleted_marker", name);
+      }
+    }
+  }
+  let unfinished = 0;
+  const report = join(shared, ".disaster-restore.json");
+  if (exists(report)) {
+    const doc = JSON.parse(readSmall(report).toString("utf8")) as Record<string, unknown>;
+    for (const key of ["pending_erasures", "erasure_failures"]) {
+      unfinished += Array.isArray(doc[key]) ? (doc[key] as unknown[]).length : 0;
+    }
+  }
+  return { facts, unfinished };
+}
+
+/**
+ * The tombstones one mounted image's main stores hold, at its root and in each center its
+ * `.centers.db` lists; null when any such store cannot be read whole (the run then stops).
+ */
+export function imageTombstones(root: string): string[] | null {
+  const isFile = (path: string) => exists(path) && lstatSync(path).isFile();
+  const tombstonesIn = (path: string, table: string): Record<string, unknown>[] | null => {
+    if (!isFile(path) || !isStore(path)) {
+      return isFile(path) ? null : [];
+    }
+    try {
+      const db = openStore(path);
+      try {
+        if (!intact(db)) {
+          return null;
+        }
+        return tablesOf(db).includes(table)
+          ? db.prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[] : [];
+      } finally {
+        db.close();
+      }
+    } catch {
+      return null;
+    }
+  };
+  const centers = tombstonesIn(join(root, ".centers.db"), "centers");
+  if (centers === null) {
+    return null;
+  }
+  const folders = [root];
+  for (const row of centers) {
+    const name = String(row["center"]);
+    const folder = join(root, name);
+    if (CENTER_NAME.test(name) && exists(folder) && lstatSync(folder).isDirectory()) {
+      folders.push(folder);
+    }
+  }
+  const found: string[] = [];
+  for (const folder of folders) {
+    for (const store of MAIN_STORES) {
+      const rows = tombstonesIn(join(folder, store), "deleted_principals");
+      if (rows === null) {
+        return null;
+      }
+      found.push(...mainTombstones(rows));
+    }
+  }
+  return found;
+}
+
+/** The facts with the tombstones the images' main stores hold. */
+export function withImageFacts(erasure: ErasureFacts, digests: Iterable<string>): ErasureFacts {
+  const facts = new Map(erasure.facts);
+  for (const digest of digests) {
+    const fact = facts.get(digest) ?? { sources: new Set<string>(), principal: null };
+    facts.set(digest, { sources: new Set([...fact.sources, "image_deleted_principals"]),
+                        principal: fact.principal });
+  }
+  return { facts, unfinished: erasure.unfinished };
+}
+
+/** Whether any erasure fact names the principal (by its digest, trimmed or not). */
+export function names(erasure: ErasureFacts, principal: string): boolean {
+  return erasure.facts.has(sha256Hex(principal)) || erasure.facts.has(sha256Hex(principal.trim()));
+}
+
+/** Every source this module reads: what each mutation of the guards removes in turn. */
+export const ERASURE_SOURCES = Object.freeze([
+  "owner_admission", "deletion_jobs", "deleted_owners", "deleted_principals",
+  "main_deleted_principals", "owner_box_revocations", "owner_destroys", "erasure_ledger",
+  "workos_revocations", "deleted_marker", "image_deleted_principals",
+]);

@@ -20,12 +20,14 @@ import { contentIdOf } from "../../contract/src/content";
 import { CHUNK_BYTES, FILE_DEFAULTS, INLINE_BYTES } from "../../contract/src/limits";
 import { type Entry, type Row } from "../build";
 import {
-  buildBundles, DIGESTS, exclusionList, NOTICE, type Options, pages, PAGE_ROWS, PRIVATE_RECORD,
+  buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, pages, PAGE_ROWS,
+  PRIVATE_RECORD,
 } from "../bundle";
+import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
 import {
-  ALICE, BAD_DIR, BAD_NAME, bigBytes, BOB, DORA, type Fixture, fixture, FOUNDER, keyOf, sha, sparse,
-  TIERS,
+  ALICE, BAD_DIR, BAD_NAME, bigBytes, BOB, DORA, ERASED, ERASING, type Fixture, fixture, FOUNDER,
+  keyOf, sha, sparse, TIERS,
 } from "./fixture";
 
 const temps: string[] = [];
@@ -69,8 +71,8 @@ describe("the bundle builder", () => {
   it("writes each owner's tree with the platform's own content ids for the backup's bytes", () => {
     const { f, out, options } = setup();
     const summary = buildBundles(f.copy, options);
-    expect(summary).toMatchObject({ dry_run: false, owners: 4, bundled: 2, excluded: 1, erased: 0,
-                                    erasure_pending: 1,
+    expect(summary).toMatchObject({ dry_run: false, owners: 15, bundled: 2, excluded: 1, erased: 1,
+                                    erasure_pending: 11,
                                     refused: {} });
     const bundle = join(out, keyOf(ALICE));
     const entries = manifest(bundle);
@@ -302,10 +304,40 @@ describe("the bundle builder", () => {
       .toEqual({ state: "absent", reasons: [] });
   });
 
+  it("bundles no owner any erasure source names: not in either folder, nor either record", () => {
+    const { f, out, priv, options } = setup();
+    const erasing = [...Object.values(ERASING), DORA, ERASED];
+    const summary = buildBundles(f.copy, { ...options, exclude: new Set([FOUNDER, ...erasing]) });
+    expect(summary).toMatchObject({ bundled: 2, excluded: 1, erased: 1, erasure_pending: 11,
+                                    refused: {} });
+    expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(BOB)].sort());
+    expect(readdirSync(priv).sort())
+      .toEqual([keyOf(FOUNDER), DIGESTS, PRIVATE_RECORD].sort());
+    const record = json(join(priv, PRIVATE_RECORD))["owners"] as Record<string, unknown>[];
+    expect(record.map((owner) => owner["owner"]).sort()).toEqual([ALICE, BOB, FOUNDER].sort());
+    expect(Object.keys(json(join(priv, DIGESTS))["digests"] as object).sort())
+      .toEqual([keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER)].sort());
+    for (const dir of [out, priv]) {
+      for (const principal of erasing) {
+        expect(() => execFileSync("grep", ["-rlF", principal, dir]), principal).toThrow();
+      }
+    }
+  });
+
+  it("refuses the run, the guard inside the bundle step, for any erased or erasing name", () => {
+    const { f } = setup();
+    const fleet = survey(f.copy);
+    expect(() => erasureGuard(fleet, [ALICE, BOB, FOUNDER])).not.toThrow();
+    for (const principal of [...Object.values(ERASING), DORA, ERASED, "user_gone", "user_gone2"]) {
+      expect(() => erasureGuard(fleet, [ALICE, principal]), principal)
+        .toThrow(/erased or erasing owner/);
+    }
+  });
+
   it("bundles an owner whose erasure is pending into neither folder, excluded or not", () => {
     const { f, out, priv, options } = setup();
     const summary = buildBundles(f.copy, { ...options, exclude: new Set([FOUNDER, DORA]) });
-    expect(summary).toMatchObject({ bundled: 2, excluded: 1, erasure_pending: 1, refused: {} });
+    expect(summary).toMatchObject({ bundled: 2, excluded: 1, erasure_pending: 11, refused: {} });
     expect(readdirSync(out)).not.toContain(keyOf(DORA));
     expect(readdirSync(priv)).not.toContain(keyOf(DORA));
     const record = json(join(priv, PRIVATE_RECORD))["owners"] as Record<string, unknown>[];

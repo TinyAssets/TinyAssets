@@ -31,7 +31,8 @@ import { sha256Hex } from "../contract/src/digest";
 
 import { type Tiers } from "./build";
 import { admissionProblems, erased, measure, verifyCopy, withheld } from "./census";
-import { type Copy, type Owner, type Problem, survey } from "./survey";
+import { names } from "./erasure";
+import { type Copy, type Fleet, type Owner, type Problem, survey } from "./survey";
 
 /** The bundle format this builder writes. */
 export const FORMAT = 1;
@@ -111,6 +112,20 @@ export function foldersProblem(out: string, privateDir: string): string | null {
     child === parent || child.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`);
   return inside(a, b) || inside(b, a)
     ? "the private folder and the out folder are one inside the other: keep them apart" : null;
+}
+
+/**
+ * The last word before anything is written: refuses the run if any principal about to be
+ * bundled, into the out folder or the private one, is erased or named by any erasure fact
+ * (`erasure.ts`). The census withholds every such owner first, so this throwing is a bug.
+ */
+export function erasureGuard(fleet: Fleet, principals: Iterable<string>): void {
+  const owners = new Map(fleet.owners.map((owner) => [owner.principal, owner]));
+  for (const principal of principals) {
+    if (names(fleet.erasure, principal) || (owners.get(principal)?.erasure ?? null) !== null) {
+      throw new Error("an erased or erasing owner reached a bundle: the run is refused");
+    }
+  }
 }
 
 /** One owner's bundle at `dir`, or the fit's problems (and nothing left at `dir`). */
@@ -217,6 +232,7 @@ export function buildBundles(copy: Copy, options: Options): Summary {
       count(problems);
       continue;
     }
+    erasureGuard(fleet, [owner.principal]);
     const base = excluded ? options.private : options.out;
     const built = writeBundle(owner, copy, base === null ? null : join(base, owner.key),
                               options.tiers, !excluded);
@@ -236,6 +252,7 @@ export function buildBundles(copy: Copy, options: Options): Summary {
                   customer_id: owner.plan?.customer_id ?? null,
                   subscription_id: owner.plan?.subscription_id ?? null });
   }
+  erasureGuard(fleet, record.map((entry) => String(entry["owner"])));
   if (!dry) {
     writeFileSync(join(options.private!, PRIVATE_RECORD),
                   `${JSON.stringify({ format: FORMAT, owners: record }, null, 2)}\n`,
