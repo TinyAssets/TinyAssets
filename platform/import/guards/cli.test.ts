@@ -99,13 +99,15 @@ describe("the job's entry", () => {
     const writable = mounted.replaceAll("ro,nosuid", "rw,nosuid");
     expect(main(["census", f.work, "--tiers", control, "--table", join(scratch, "t2")],
                 () => writable, backing)).toBe(3);
-    expect(JSON.parse(out.slice(-1)[0]!)["problems"]).toEqual({ not_mounted: 3 });
+    expect(JSON.parse(out.slice(-1)[0]!)["problems"])
+      .toEqual({ not_mounted: 3, erasure_unread: 4 });
     // Each image mounted where another's should be: never read as that owner's.
     const swapped = (device: string) => backing(device === "/dev/loop0" ? "/dev/loop1"
       : device === "/dev/loop1" ? "/dev/loop0" : device);
     expect(main(["census", f.work, "--tiers", control, "--table", join(scratch, "t3")],
                 () => mounted, swapped)).toBe(3);
-    expect(JSON.parse(out.slice(-1)[0]!)["problems"]).toEqual({ not_mounted: 2 });
+    expect(JSON.parse(out.slice(-1)[0]!)["problems"])
+      .toEqual({ not_mounted: 2, erasure_unread: 2 });
   });
 
   it("runs the bundle from its arguments, the exclusion list read from its file", () => {
@@ -134,7 +136,8 @@ describe("the job's entry", () => {
                                              "--table", join(scratch, "t")], { encoding: "utf8" });
     // This host's own mounts hold none of the fixture's images: each owner is refused.
     expect(run.status).toBe(3);
-    expect(JSON.parse(run.stdout)).toMatchObject({ ready: false, problems: { not_mounted: 3 } });
+    expect(JSON.parse(run.stdout))
+      .toMatchObject({ ready: false, problems: { not_mounted: 3, erasure_unread: 4 } });
     for (const principal of [ALICE, BOB, FOUNDER]) {
       expect(run.stdout).not.toContain(principal);
     }

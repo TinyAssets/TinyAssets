@@ -383,13 +383,14 @@ export function fixture(): Fixture {
  * copied, main file and log, while its writer still holds it (as a box killed mid-write
  * leaves it).
  */
-export function unmergedStore(path: string): void {
+export function unmergedStore(
+    path: string, ddl = "CREATE TABLE authoring_versions (id INTEGER PRIMARY KEY, text TEXT)",
+    insert = "INSERT INTO authoring_versions VALUES (1, 'a draft only the log holds')"): void {
   const scratch = mkdtempSync(join(tmpdir(), "ta-wal-"));
   try {
     const db = new DatabaseSync(join(scratch, "s.db"));
-    db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; " +
-            "CREATE TABLE authoring_versions (id INTEGER PRIMARY KEY, text TEXT)");
-    db.prepare("INSERT INTO authoring_versions VALUES (1, 'a draft only the log holds')").run();
+    db.exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; ${ddl}`);
+    db.prepare(insert).run();
     mkdirSync(dirname(path), { recursive: true });
     copyFileSync(join(scratch, "s.db"), path);
     copyFileSync(join(scratch, "s.db-wal"), `${path}-wal`);

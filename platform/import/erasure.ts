@@ -14,8 +14,8 @@
  * - the main store's own `deleted_principals` (`.tinyassets.db` at the shared root, by
  *   `founder_sub`, a digest: `cutover_deletions._legacy_main_digests`), and the same table
  *   in each mounted image's root and center main stores (`digest`, `deletion_schema.py`;
- *   `account_deletion._tombstone_clause` reads it): `imageTombstones`, read for every image
- *   before any owner is decided, an erasing owner's included;
+ *   `account_deletion._tombstone_clause` reads it): `imageTombstones`, read from every
+ *   image the manifest pins before any owner is decided, an erased owner's included;
  * - `owner_box_revocations` where `deleted = 1` (`owner-identities.db`);
  * - `.boxhost/boxhost.db` `owner_destroys` (by `owner_id`);
  * - every `.erasure-ledger.sqlite3` `events` entry (its digest, and the principal its
@@ -27,6 +27,10 @@
  * And one that names no principal: `.disaster-restore.json`'s `pending_erasures` and
  * `erasure_failures` (`cutover_deletions.census_count`), paths an erasure has not finished.
  * Any is `unfinished_erasure`, stopping the run, since no owner can be told from a path.
+ * So is any image whose tombstones cannot be read whole (`erasure_unread`): pinned with no
+ * volume row, not mounted as itself, a store not intact or unreadable, a log not merged;
+ * and a volume row whose image the manifest does not pin, since that image is not in the
+ * copy at all.
  */
 import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -142,54 +146,71 @@ export function erasureFacts(read: Rows, shared: string): ErasureFacts {
   return { facts, unfinished };
 }
 
+/** One image's tombstones, or why they cannot be read whole (`erasure_unread`). */
+export type ImageRead = { readonly digests: readonly string[] } | { readonly problem: string };
+
 /**
  * The tombstones one mounted image's main stores hold, at its root and in each center its
- * `.centers.db` lists; null when any such store cannot be read whole (the run then stops).
+ * `.centers.db` lists. Each store is read whole or not at all: a link in a store's place,
+ * a log beside it not merged (`-wal` or `-journal`, whose rows an immutable read never
+ * sees), a store that fails `integrity_check` or cannot be opened is a problem, never a
+ * store with no tombstones.
  */
-export function imageTombstones(root: string): string[] | null {
-  const isFile = (path: string) => exists(path) && lstatSync(path).isFile();
-  const tombstonesIn = (path: string, table: string): Record<string, unknown>[] | null => {
-    if (!isFile(path) || !isStore(path)) {
-      return isFile(path) ? null : [];
+export function imageTombstones(root: string): ImageRead {
+  type Read = { rows: Record<string, unknown>[] } | { problem: string };
+  const tombstonesIn = (path: string, table: string): Read => {
+    if (!exists(path)) {
+      return { rows: [] };
+    }
+    for (const log of [`${path}-wal`, `${path}-journal`]) {
+      if (exists(log) && (!lstatSync(log).isFile() || lstatSync(log).size > 0)) {
+        return { problem: "unclean" };
+      }
     }
     try {
+      if (!isStore(path)) {
+        return { problem: "unreadable" };
+      }
       const db = openStore(path);
       try {
         if (!intact(db)) {
-          return null;
+          return { problem: "not_intact" };
         }
-        return tablesOf(db).includes(table)
-          ? db.prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[] : [];
+        return { rows: tablesOf(db).includes(table)
+          ? db.prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[] : [] };
       } finally {
         db.close();
       }
     } catch {
-      return null;
+      return { problem: "unreadable" };
     }
   };
   const centers = tombstonesIn(join(root, ".centers.db"), "centers");
-  if (centers === null) {
-    return null;
+  if ("problem" in centers) {
+    return centers;
   }
   const folders = [root];
-  for (const row of centers) {
+  for (const row of centers.rows) {
     const name = String(row["center"]);
     const folder = join(root, name);
-    if (CENTER_NAME.test(name) && exists(folder) && lstatSync(folder).isDirectory()) {
+    if (!CENTER_NAME.test(name) || (exists(folder) && !lstatSync(folder).isDirectory())) {
+      return { problem: "unreadable" };
+    }
+    if (exists(folder)) {
       folders.push(folder);
     }
   }
   const found: string[] = [];
   for (const folder of folders) {
     for (const store of MAIN_STORES) {
-      const rows = tombstonesIn(join(folder, store), "deleted_principals");
-      if (rows === null) {
-        return null;
+      const read = tombstonesIn(join(folder, store), "deleted_principals");
+      if ("problem" in read) {
+        return read;
       }
-      found.push(...mainTombstones(rows));
+      found.push(...mainTombstones(read.rows));
     }
   }
-  return found;
+  return { digests: found };
 }
 
 /** The facts with the tombstones the images' main stores hold. */

@@ -4,8 +4,8 @@
  * the backup's own gate, and each owner's fit against the platform's own limits.
  */
 import {
-  appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync,
-  symlinkSync, writeFileSync,
+  appendFileSync, closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync,
+  renameSync, rmSync, symlinkSync, writeFileSync, writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -240,7 +240,8 @@ describe("the backup's own gate", () => {
       ? { problem: "is mounted writable" } : f.copy.volume(uid) };
     const { report, ready } = census(copy, TIERS);
     expect(ready).toBe(false);
-    expect(report["problems"]).toEqual({ image_mismatch: 1, not_mounted: 1, pending_work: 1 });
+    expect(report["problems"])
+      .toEqual({ image_mismatch: 1, not_mounted: 1, pending_work: 1, erasure_unread: 1 });
   });
 });
 
@@ -255,8 +256,10 @@ describe("the fleet's rows", () => {
     db.close();
     const { report, ready, table } = census(f.copy, TIERS);
     expect(ready).toBe(false);
-    expect(report["problems"]).toEqual({ pin_mismatch: 1 });
+    expect(report["problems"]).toEqual({ pin_mismatch: 1, erasure_unread: 1 });
     expect(table).toContain(`${keyOf(BOB)}\tproblem pin_mismatch\tvolume/300002`);
+    // Its tombstones cannot be read as any owner's: the whole run stops.
+    expect(table).toContain("fleet\tproblem erasure_unread\terasure/300002/no_volume");
   });
 
   it("counts an identity with no volume row and no pin, and refuses none for it", () => {
@@ -282,7 +285,9 @@ describe("the fleet's rows", () => {
       db.close();
       const { report, ready } = census(f.copy, TIERS);
       expect(ready, what).toBe(false);
-      expect(report["problems"], what).toEqual({ orphan_row: 1 });
+      // A volume row the manifest does not pin is an image not in the copy: the run stops.
+      expect(report["problems"], what).toEqual(what === "volumes"
+        ? { orphan_row: 1, erasure_unread: 1 } : { orphan_row: 1 });
       expect((report["owners"] as { orphan_rows: Record<string, number> }).orphan_rows[what])
         .toBe(1);
     }
@@ -346,16 +351,6 @@ describe("an erasure the owner asked for", () => {
     const held = new Set([...Object.keys(ERASING).filter((k) => k !== "center_deleted_principals"),
                           "deletion_jobs", "owner_admission"]);
     expect([...held].sort()).toEqual([...ERASURE_SOURCES].sort());
-  });
-
-  it("stops the run on an image whose tombstones cannot be read whole", () => {
-    const f = fresh();
-    writeFileSync(join(f.tree(BOB), "main", ".tinyassets.db"),
-                  Buffer.concat([Buffer.from("SQLite format 3\0", "latin1"), Buffer.alloc(200, 7)]));
-    const { report, ready, table } = census(f.copy, TIERS);
-    expect(ready).toBe(false);
-    expect(report["problems"]).toMatchObject({ unreadable: 1 });
-    expect(table).toContain("fleet\tproblem unreadable\terasure/volume/300002");
   });
 
   it("stops the run on a disaster report's unfinished erasures, and on no other", () => {
@@ -475,5 +470,91 @@ describe("the walk of an owner's files", () => {
     expect(tree.carried.map((item) => [item.kind, item.path.slice(path.length)]))
       .toEqual([["dir", ""], ["file", "/ok.txt"]]);
     expect(tree.refused.map((refusal) => refusal.member.toString())).toEqual([`m/${"x".repeat(15)}`]);
+  });
+});
+
+describe("an image whose tombstones cannot be read whole", () => {
+  const TOMBSTONES = "CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)";
+  /**
+   * A store holding `digest`'s tombstone whose table and index disagree: one row's bytes
+   * changed in place, so `integrity_check` reports it, and every read still works.
+   */
+  const corrupt = (path: string, digest: string) => {
+    makeStore(path, `${TOMBSTONES}; CREATE TABLE filler (x TEXT); CREATE INDEX by_x ON filler (x);`,
+              { deleted_principals: [[digest]], filler: [["a-filler-marker"]] });
+    const bytes = readFileSync(path);
+    const at = bytes.indexOf("a-filler-marker");
+    const fd = openSync(path, "r+");
+    writeSync(fd, Buffer.from("b"), 0, 1, at);
+    closeSync(fd);
+  };
+  const identities = (f: Fixture) =>
+    new DatabaseSync(join(f.work, "data", "_data", ".broker", "state", "owner-identities.db"));
+  /** Bob's tombstone in alice's root store, the reviewer's probe: no shared source names him. */
+  const tombstoneBob = (f: Fixture) => {
+    const db = new DatabaseSync(join(f.tree(ALICE), ".tinyassets.db"));
+    db.prepare("INSERT INTO deleted_principals VALUES (?)").run(sha(BOB));
+    db.close();
+  };
+  const cases: [string, string, (f: Fixture) => Fixture["copy"] | void][] = [
+    ["not mounted, the image holding Bob's tombstone", "300001/not_mounted", (f) => {
+      tombstoneBob(f);
+      return { ...f.copy, volume: (uid: number) => uid === 300_001
+        ? { problem: "not mounted" } : f.copy.volume(uid) };
+    }],
+    ["an erasing owner's volume row the manifest does not pin", "300011/not_pinned", (f) => {
+      const db = identities(f);
+      db.prepare("INSERT INTO owner_volumes VALUES (?, 300011, 1, 'snap', NULL, NULL, 0, NULL, " +
+                 "NULL)").run(ERASING.deleted_owners);
+      db.close();
+    }],
+    ["Bob's tombstone only in an unmerged log, in an erasing owner's image", "300004/unclean",
+     (f) => unmergedStore(join(f.tree(DORA), ".tinyassets.db"), TOMBSTONES,
+                          `INSERT INTO deleted_principals VALUES ('${sha(BOB)}')`)],
+    ["a hot journal beside a center's store", "300002/unclean", (f) => {
+      writeFileSync(join(f.tree(BOB), "main", ".tinyassets.db-journal"), "a journal");
+    }],
+    ["an unmerged log beside the centers list", "300004/unclean", (f) => {
+      writeFileSync(join(f.tree(DORA), ".centers.db-wal"), "a log");
+    }],
+    ["a store that fails its check", "300004/not_intact",
+     (f) => corrupt(join(f.tree(DORA), "diary", ".tinyassets.db"), sha(BOB))],
+    ["a link in a store's place", "300004/unreadable", (f) => {
+      makeStore(join(f.work, "elsewhere.db"), TOMBSTONES, { deleted_principals: [[sha(BOB)]] });
+      symlinkSync(join(f.work, "elsewhere.db"), join(f.tree(DORA), ".tinyassets.db"));
+    }],
+    ["a center that is a link", "300004/unreadable", (f) => {
+      rmSync(join(f.tree(DORA), "diary"), { recursive: true });
+      symlinkSync(f.tree(ALICE), join(f.tree(DORA), "diary"));
+    }],
+  ];
+  for (const [what, at, change] of cases) {
+    it(`stops the run: ${what}`, () => {
+      const f = fresh();
+      const copy = change(f) ?? f.copy;
+      const { report, ready, table } = census(copy, TIERS);
+      expect(ready).toBe(false);
+      expect(report["problems"]).toMatchObject({ erasure_unread: 1 });
+      expect(table).toContain(`fleet\tproblem erasure_unread\terasure/${at}`);
+      // Nothing is written: Bob never reaches a folder.
+      const out = join(f.work, "out");
+      const priv = join(f.work, "private");
+      mkdirSync(out);
+      mkdirSync(priv);
+      expect(() => buildBundles(copy, { out, private: priv, exclude: new Set([FOUNDER]),
+                                        tiers: TIERS })).toThrow(/erasure_unread/);
+      expect([...readdirSync(out), ...readdirSync(priv)]).toEqual([]);
+    });
+  }
+
+  it("reads a store whose log is merged (an empty -wal), and every pinned image", () => {
+    const f = fresh();
+    writeFileSync(join(f.tree(DORA), ".centers.db-wal"), "");
+    makeStore(join(f.tree(DORA), ".tinyassets.db"), TOMBSTONES, { deleted_principals: [[sha(BOB)]] });
+    const { report, ready, table } = census(f.copy, TIERS);
+    // Dora is withheld, her image never walked, and still her tombstone for Bob is read.
+    expect(ready).toBe(true);
+    expect(report["problems"]).toEqual({});
+    expect(table).toContain(`${keyOf(BOB)}\terasure_pending\ttrue`);
   });
 });

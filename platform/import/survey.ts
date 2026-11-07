@@ -40,7 +40,7 @@ export type Code =
   // rule 0
   | "unknown_entry" | "unknown_table" | "unknown_center" | "bad_store" | "unclean_store"
   | "integrity" | "path_collision" | "unreadable" | "orphan_row" | "never_admitted"
-  | "unfinished_erasure"
+  | "unfinished_erasure" | "erasure_unread"
   // the new platform's limits
   | "over_entries" | "over_inline_bytes" | "over_file_bytes" | "over_storage" | "no_tier"
   | "over_tar_member";
@@ -581,18 +581,33 @@ export function survey(copy: Copy): Fleet {
   }
   const pins = new Map(copy.manifest.snapshots.map((pin) => [pin.uid, pin]));
   const matcher = ignoredBy(DEFAULT_IGNORES);
-  // Every mounted image's own tombstones, read before any owner is: erasure facts too. An
-  // image not mounted is that owner's `not_mounted` below.
+  // Every image's own tombstones, read before any owner is decided: every image the manifest
+  // pins, an erased owner's too. One that cannot be read whole stops the run, since whom
+  // its tombstones name cannot be told.
   const inImages: string[] = [];
-  for (const volume of volumes.values()) {
-    const mounted = copy.volume(volume.uid);
-    if (!("problem" in mounted)) {
-      const found = imageTombstones(mounted.root);
-      if (found === null) {
-        problems.push({ code: "unreadable", at: `erasure/volume/${volume.uid}` });
-      } else {
-        inImages.push(...found);
-      }
+  const unread = (uid: number, why: string) =>
+    problems.push({ code: "erasure_unread", at: `erasure/${uid}/${why}` });
+  const bound = new Set([...volumes.values()].map((volume) => volume.uid));
+  for (const pin of copy.manifest.snapshots) {
+    if (!bound.has(pin.uid)) {
+      unread(pin.uid, "no_volume");
+      continue;
+    }
+    const mounted = copy.volume(pin.uid);
+    if ("problem" in mounted) {
+      unread(pin.uid, "not_mounted");
+      continue;
+    }
+    const found = imageTombstones(mounted.root);
+    if ("problem" in found) {
+      unread(pin.uid, found.problem);
+    } else {
+      inImages.push(...found.digests);
+    }
+  }
+  for (const uid of bound) {
+    if (!pins.has(uid)) {
+      unread(uid, "not_pinned");
     }
   }
   const facts = withImageFacts(erasure, inImages);
