@@ -5,7 +5,7 @@ API takes each write from the founder's `gh` login (`repo` scope), so no setup t
 Every value is set only where it is absent, and travels on stdin alone: never in an argv,
 on disk or in the output, which names each value and its status, nothing more.
 
-    python scripts/platform_setup.py secrets    # ROUTING_MAC_KEY, E2B_WEBHOOK_SECRET, the keyrings
+    python scripts/platform_setup.py secrets    # the secrets platform/deploy/platform.json makes
     python scripts/platform_setup.py variables  # OWNER_ISSUER, WORKOS_CLIENT_ID
     Get-Clipboard | python scripts/platform_setup.py workos   # a WorkOS key into `production`
     # (Git Bash: powershell.exe -NoProfile -Command Get-Clipboard | python ... workos)
@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 
 REPO = "TinyAssets/TinyAssets"
 OWNER = "TinyAssets"
@@ -162,9 +163,13 @@ def make_keyring() -> str:
         secrets.token_bytes(32)).decode("ascii")}}, separators=(",", ":"))
 
 
+# The secrets this setup makes, each by its kind: the deploy's facts (`platform.json`).
+PLATFORM_FACTS = Path(__file__).resolve().parent.parent / "platform" / "deploy" / "platform.json"
+MAKERS: dict[str, Callable[[], str]] = {"mac": make_mac, "token": make_token,
+                                        "keyring": make_keyring}
 MADE: dict[str, Callable[[], str]] = {
-    "ROUTING_MAC_KEY": make_mac, "E2B_WEBHOOK_SECRET": make_token,
-    "GATEWAY_KEYRING": make_keyring, "FILES_KEYRING": make_keyring}
+    name: MAKERS[kind] for name, kind in
+    json.loads(PLATFORM_FACTS.read_text(encoding="utf-8"))["made"]["secrets"].items()}
 
 
 def ensure_secret(gh: Gh, name: str, make: Callable[[], str], env: str = PRODUCTION) -> str:

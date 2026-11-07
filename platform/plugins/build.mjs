@@ -16,7 +16,12 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILLS = join(HERE, "..", "starter", "workspace", ".agents", "skills");
 const STARTER = JSON.parse(readFileSync(join(HERE, "..", "starter", "manifest.json"), "utf8"));
-const APPS = JSON.parse(readFileSync(join(HERE, "..", "doors", "apps.json"), "utf8"));
+// The doors' public identity: the origin, and the MCP door the plugins connect to.
+const IDENTITY = JSON.parse(readFileSync(join(HERE, "..", "doors", "src", "identity.json"),
+                                         "utf8"));
+const ORIGIN = `https://${IDENTITY.host}`;
+const SERVER = `${ORIGIN}${IDENTITY.mcp}`;
+const LEGAL = `${ORIGIN}/legal/`;
 
 /** The skills each plugin carries, in this order: the brain's first. */
 export const BUNDLED = Object.freeze(["shared-brain", "onboarding", "goals", "knowledge",
@@ -31,7 +36,7 @@ const NAME = "tinyassets";
 const DESCRIPTION = "Your own workspace, shared by every AI assistant you connect: what you " +
   "tell one, the others know; your goals, notes and projects in one place; and a board where " +
   "your assistants claim a task so two never do the same one.";
-const AUTHOR = { name: "TinyAssets", url: "https://tinyassets.io" };
+const AUTHOR = { name: "TinyAssets", url: ORIGIN };
 /** The plugin's version: the starter's, whose skills it carries. */
 const VERSION = `1.0.${STARTER.version}`;
 
@@ -69,7 +74,7 @@ export function plugins() {
   out["chatgpt/plugin.json"] = json({
     $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
     name: NAME, version: VERSION, description: DESCRIPTION, author: AUTHOR,
-    homepage: "https://tinyassets.io", license: "Proprietary",
+    homepage: ORIGIN, license: "Proprietary",
     keywords: ["memory", "workspace", "goals", "notes"],
     extensions: { "com.openai": {
       onboardingSkill: "./skills/onboarding/SKILL.md",
@@ -80,26 +85,26 @@ export function plugins() {
         developerName: "TinyAssets",
         category: "Productivity",
         capabilities: ["Read", "Write"],
-        websiteURL: "https://tinyassets.io",
-        privacyPolicyURL: "https://tinyassets.io/legal/",
-        termsOfServiceURL: "https://tinyassets.io/legal/",
+        websiteURL: ORIGIN,
+        privacyPolicyURL: LEGAL,
+        termsOfServiceURL: LEGAL,
         defaultPrompt: [...PROMPTS],
       },
     } },
   });
   out["chatgpt/mcp.json"] = json({
     $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-    mcpServers: { [NAME]: { type: "streamable-http", url: APPS.server,
+    mcpServers: { [NAME]: { type: "streamable-http", url: SERVER,
                             extensions: { "com.openai": { auth: { type: "oauth" } } } } },
   });
   out["claude/.claude-plugin/plugin.json"] = json({
     name: NAME, displayName: "TinyAssets", version: VERSION, description: DESCRIPTION,
-    author: AUTHOR, homepage: "https://tinyassets.io", license: "Proprietary",
+    author: AUTHOR, homepage: ORIGIN, license: "Proprietary",
     keywords: ["memory", "workspace", "goals", "notes"],
-    privacyPolicyUrl: "https://tinyassets.io/legal/",
-    termsOfServiceUrl: "https://tinyassets.io/legal/",
+    privacyPolicyUrl: LEGAL,
+    termsOfServiceUrl: LEGAL,
   });
-  out["claude/.mcp.json"] = json({ mcpServers: { [NAME]: { type: "http", url: APPS.server } } });
+  out["claude/.mcp.json"] = json({ mcpServers: { [NAME]: { type: "http", url: SERVER } } });
   return out;
 }
 

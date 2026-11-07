@@ -29,6 +29,8 @@ import { PLATFORM } from "../../ci/paths";
 import { type Config, platformConfigs } from "../../ci/kit/sources";
 import { readWrangler } from "../../ci/workers";
 
+import { ERASURE_QUEUE } from "../src/config";
+
 import { CONFIG } from "./rules";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -294,5 +296,28 @@ describe("doors Worker config", () => {
     // Its own members are still putChunks alone; RPC would serve every inherited method.
     expect(exportedMethods(inherits).get("FilesUpload")).toEqual(["putChunks"]);
     expect(doorsConfigProblems(config, platform, gatewaySource, inherits)).not.toEqual([]);
+  });
+});
+
+/** The queue the Worker at `worker` sends to through its producer `binding`. */
+function produced(worker: string, binding: string): string | undefined {
+  const queues = readWrangler(join(PLATFORM, worker))["queues"] as
+    { producers?: { binding: string; queue: string }[] } | undefined;
+  return queues?.producers?.find((producer) => producer.binding === binding)?.queue;
+}
+
+describe("the doors' two queue consumers", () => {
+  it("take erasures by the name the owner sends them under, and every other batch from the " +
+     "sandbox's ring", () => {
+    // The doors' queue handler takes a batch named ERASURE_QUEUE as erasures and any other as
+    // rings (`src/index.ts`): a name that drifted from the owner's producer would hand every
+    // erasure to the ring handler, so the name is held to the owner's config here.
+    const erasures = produced("owner", "ERASURES");
+    const rings = produced("sandbox", "RING");
+    expect(erasures).toBeDefined();
+    expect(ERASURE_QUEUE).toBe(erasures);
+    expect(rings).not.toBe(erasures);
+    expect((config["queues"] as { consumers: { queue: string }[] }).consumers
+      .map((consumer) => consumer.queue).sort()).toEqual([erasures, rings].sort());
   });
 });

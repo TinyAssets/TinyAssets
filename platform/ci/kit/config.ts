@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import { readWrangler, wranglerKeys } from "../workers.ts";
 import { PLATFORM } from "../paths.ts";
 import { type Config, configFiles, platformConfigs } from "./sources.ts";
+import { envProblems, staleTypes } from "./types.ts";
 
 /** The flag that keeps a Worker's own namespaces out of its `ctx.exports`. */
 export const NO_EXPORTS = "disable_ctx_exports";
@@ -48,6 +49,11 @@ export interface ConfigRules {
   readonly exact?: Readonly<Record<string, unknown>>;
   /** What the Worker checks against the platform's other configs. */
   readonly across?: (config: Config, platform: ReadonlyMap<string, Config>) => string[];
+  /**
+   * Its env interfaces, `<file from its folder>#<interface>`: together their own members
+   * name exactly the bindings its config makes (`types.ts`).
+   */
+  readonly env: readonly string[];
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -175,6 +181,18 @@ export function configProblems(config: Config, rules: ConfigRules,
   return problems;
 }
 
+/**
+ * The test that `worker`'s committed binding types are what `wrangler types` makes from its
+ * config now, and that its env interfaces (`env`) name exactly those bindings.
+ */
+export function bindingTypesTest(worker: string, env: readonly string[]): void {
+  it("has its binding types as wrangler types makes them now, its env naming each binding",
+     () => {
+    expect(staleTypes(worker)).toBeNull();
+    expect(envProblems(worker, env)).toEqual([]);
+  });
+}
+
 /** `config` with `patch` laid over it, a key the patch sets `undefined` removed. */
 export function patched(config: Config, patch: Config): Config {
   const probe: Config = { ...config, ...patch };
@@ -229,6 +247,8 @@ export function configTests(rules: ConfigRules, tests: ConfigTests): Config {
     it(`is the only wrangler config in the ${rules.worker} Worker`, () => {
       expect(configFiles(dir)).toEqual(["wrangler.jsonc"]);
     });
+
+    bindingTypesTest(rules.worker, rules.env);
   });
   return config;
 }

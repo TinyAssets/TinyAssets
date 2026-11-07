@@ -48,7 +48,6 @@ export interface App {
 }
 
 export interface Apps {
-  readonly server: string;
   readonly page: string;
   readonly apps: readonly App[];
 }
@@ -200,8 +199,7 @@ export function checkedApps(value: unknown = raw): Apps {
   seen("id", apps.map((app) => app.id));
   seen("host", apps.flatMap((app) => app.match.hosts));
   seen("name", apps.flatMap((app) => app.match.names.map((name) => name.toLowerCase())));
-  return Object.freeze({ server: https(file["server"], "server"), page: https(file["page"], "page"),
-                         apps: Object.freeze(apps) });
+  return Object.freeze({ page: https(file["page"], "page"), apps: Object.freeze(apps) });
 }
 
 /** The apps, as `apps.json` holds them, checked. */

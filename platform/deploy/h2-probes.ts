@@ -20,7 +20,14 @@
  *    (the script's next call refused); the alarm's reach is read from the owner Worker's
  *    logs for that minute.
  */
-const BASE = (process.env["TA_DOORS_URL"] ?? "https://tinyassets.io").replace(/\/$/, "");
+import { fileURLToPath } from "node:url";
+
+import { ORIGIN } from "./facts.ts";
+
+/** The probe owners' keys the probes need, by the names the workflow's apply job sets. */
+export const INPUTS = Object.freeze({ a: "TA_PROBE_KEY", b: "TA_PROBE_KEY_B",
+                                      token: "TA_PROBE_APP_TOKEN", keyId: "TA_PROBE_KEY_ID" });
+const BASE = (process.env["TA_DOORS_URL"] ?? ORIGIN).replace(/\/$/, "");
 
 function need(name: string): string {
   const value = process.env[name];
@@ -57,8 +64,8 @@ function row(probe: string, answer: Answer): void {
 }
 
 async function main(): Promise<void> {
-  const a = need("TA_PROBE_KEY");
-  const b = need("TA_PROBE_KEY_B");
+  const a = need(INPUTS.a);
+  const b = need(INPUTS.b);
   console.log("| probe | status | time | answer |\n|---|---|---|---|");
   row("1 interrupt budget vs cpu_ms", await code(a, "let i = 0; for (;;) { i++; }"));
   const busy = code(a, "const t = Date.now(); while (Date.now() - t < 10000) {} return 1;");
@@ -70,11 +77,11 @@ async function main(): Promise<void> {
   row("4 tool calls back to back past the deadline", await code(a,
     "const t = Date.now(); let n = 0; while (Date.now() - t < 600000) " +
     "{ await tools.agents_list({}); n++; } return { n, ms: Date.now() - t };"));
-  const token = process.env["TA_PROBE_APP_TOKEN"];
-  const keyId = process.env["TA_PROBE_KEY_ID"];
+  const token = process.env[INPUTS.token];
+  const keyId = process.env[INPUTS.keyId];
   if (token === undefined || keyId === undefined) {
-    console.log("| 5 revoke and app read during a script | skipped | | TA_PROBE_APP_TOKEN and " +
-                "TA_PROBE_KEY_ID unset |");
+    console.log(`| 5 revoke and app read during a script | skipped | | ${INPUTS.token} and ` +
+                `${INPUTS.keyId} unset |`);
     return;
   }
   const looping = code(a, "const t = Date.now(); let n = 0; const errors = []; " +
@@ -96,7 +103,9 @@ async function main(): Promise<void> {
   row(`5 the script after the revoke (revoked ${revokedAt} ms epoch)`, ended);
 }
 
-main().catch((error: Error) => {
-  console.error(`H2 stopped: ${error.message}`);
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error: Error) => {
+    console.error(`H2 stopped: ${error.message}`);
+    process.exit(1);
+  });
+}
