@@ -35,7 +35,8 @@ import { createHash } from "node:crypto";
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { TIERS } from "../../ci/fixtures";
-import { bundledSources, signinsOn } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { signinsOn } from "../../sources/src/signin";
 import { PLATFORM_CALLER } from "../src/admission";
 import { Backups } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";

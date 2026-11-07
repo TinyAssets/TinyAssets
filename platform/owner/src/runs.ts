@@ -65,7 +65,7 @@
 import { CONVERSATION_ID, randomHex, RUN_ID, SCHEDULE_ID } from "../../contract/src/ids";
 import { sha256Hex } from "../../contract/src/digest";
 
-import type { CredentialKind, Sources } from "../../doors/src/sources";
+import type { CredentialKind, Sources } from "../../sources/src/schema";
 import {
   type EngineEvents, type Frame, FRAME_VERSION, readEvent,
 } from "../../contract/src/run-events";

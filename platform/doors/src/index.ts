@@ -11,9 +11,8 @@ import { serve } from "./doors";
 import { oidcUpstream, upstreamConfig } from "./oidc";
 import { ringQueue } from "./ring";
 import { ERASURE_QUEUE, erasureQueue } from "./erase";
-import { connectSources } from "./redirects";
-import { bundledRecords } from "./sources";
 import { UNWIRED, type Upstream } from "./upstream";
+import { bundledSources } from "../../sources/src/catalog";
 
 /**
  * The owner's sign-in as the Worker is configured: `UNWIRED` while both the issuer and its
@@ -34,7 +33,7 @@ export function upstreamOf(env: DoorsEnv): Upstream {
 
 export default Object.freeze({
   fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
-    serve(request, env, ctx, () => upstreamOf(env), connectSources(bundledRecords())),
+    serve(request, env, ctx, () => upstreamOf(env), bundledSources()),
   // Two queues: the sandbox line's doorbell (`ring.ts`), and the erasure's outside record
   // (`erase.ts`), each its one consumer.
   queue: (batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> =>

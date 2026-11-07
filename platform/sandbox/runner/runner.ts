@@ -67,8 +67,10 @@ import { createConnection, createServer } from "node:net";
 import { createInterface } from "node:readline";
 
 import type { EgressScope } from "../../contract/src/egress-scope";
-import { bundledRecords, bundledSources, type LoginSpec, RUN_BASICS, runEnv, SIGNIN_REFUSALS,
-         type SigninRefusal, signinShape, type SourceRecord } from "../../doors/src/sources";
+import { bundledRecords, bundledSources } from "../../sources/src/catalog";
+import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
+import type { SourceRecord } from "../../sources/src/schema";
+import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { EGRESS_ORIGIN, egressBaseUrl, RUNNER_HEADER, sandboxEnv } from "../../contract/src/egress";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
@@ -531,14 +533,13 @@ function atoms(): string[] {
  * `status_equals`), or, for a record with none, its `state_checks` over the engine's store.
  */
 export async function signedIn(rec: SourceRecord): Promise<boolean> {
-  const login = rec.cli?.login as { status_argv?: string[];
-                                    status_equals?: Record<string, unknown> } | undefined;
+  const login = rec.cli?.login;
   if (login === undefined) {
     return false;
   }
   if (login.status_argv === undefined) {
     const store = `${STORE}/${rec.id}`;
-    return statesHold(login as Record<string, unknown>, (path) => {
+    return statesHold(login, (path) => {
       const rel = path.replace(/^\{home\}\//, "");
       return existsSync(store) ? safeRead(store, join(store, rel))?.toString("utf8") ?? null
         : null;
@@ -1734,7 +1735,7 @@ async function loginRun(id: string): Promise<number> {
   const doc = readJson<SigninDoc>(`${dir}/start.json`);
   const lease = readJson<LeaseFile>(`${STATE}/lease.json`);
   const rec = record(doc.engine);
-  const login = rec.cli!.login as (LoginSpec & Readonly<Record<string, unknown>>) | undefined;
+  const login = rec.cli!.login;
   const outbox = new Outbox(0);
   const proc: { child: ChildProcess | null; kill: ReturnType<typeof setTimeout> | null;
                 stopped: boolean } = { child: null, kill: null, stopped: false };
@@ -1785,7 +1786,7 @@ async function loginRun(id: string): Promise<number> {
         }
       }
       // The vendor's own sign-out first, which may revoke the login on the vendor's side.
-      const logout = login["logout_argv"] as string[] | undefined;
+      const logout = login.logout_argv;
       if (logout !== undefined) {
         as = take(ROOT, STATE, id);
         home = await makeHome(id, rec);
@@ -1848,7 +1849,7 @@ async function loginRun(id: string): Promise<number> {
           }
           shown = next;
           outbox.push({ type: "ta.signin", state: "open", url: shown.url, code: shown.code,
-                        accepts_code: login["accepts_code"] === true });
+                        accepts_code: login.accepts_code === true });
         };
         child.stdout!.on("data", read);
         child.stderr!.on("data", read);
@@ -1892,7 +1893,7 @@ async function loginRun(id: string): Promise<number> {
           if (existsSync(`${dir}/cancel`)) {
             stop();
           }
-          if (login["complete_on_state"] === true && !complete && statesHold(login, (path) =>
+          if (login.complete_on_state === true && !complete && statesHold(login, (path) =>
             safeRead(madeHome, path.replaceAll("{home}", madeHome))?.toString("utf8") ?? null)) {
             complete = true;  // signed in: a CLI that stays up after is stopped
             stop();
@@ -1961,7 +1962,7 @@ async function loginRun(id: string): Promise<number> {
  */
 async function loginProbe(engine: string, region: string | null): Promise<number> {
   const rec = record(engine);
-  const login = rec.cli!.login as Readonly<Record<string, unknown>> | undefined;
+  const login = rec.cli!.login;
   if (login === undefined) {
     throw new Error(`engine ${engine} has no vendor sign-in`);
   }
@@ -1995,7 +1996,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
       const read = (data: Buffer) => {
         text = (text + plain(data.toString("utf8"))).slice(-FRAME_UNITS_MAX);
         shown = prompted(login, text, shown);
-        const wantsCode = typeof login["code_pattern"] === "string";
+        const wantsCode = login.code_pattern !== undefined;
         if (shown.url !== null && (!wantsCode || shown.code !== null)) {
           clearTimeout(timer);
           done();

@@ -111,7 +111,7 @@ import { HOOK_ROUTES } from "./inbound";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
-import type { Sources } from "./sources";
+import type { Sources } from "../../sources/src/schema";
 import { callDoor, refusal, refusalHeaders, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
@@ -268,7 +268,7 @@ function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
           // Whether the platform offers it (the control record's switch, or the verdict), and
           // the verdict on the vendor's terms for hosted use, cited.
           enabled: switchedOn.includes(id),
-          hosted_use: (record.cli.login as { hosted_use: unknown }).hosted_use },
+          hosted_use: record.cli.login.hosted_use },
       };
     }),
   };

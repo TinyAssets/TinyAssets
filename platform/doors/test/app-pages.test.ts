@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import { CSP } from "../src/pages";
-import { SIGNIN_REFUSALS, SIGNIN_STATES } from "../src/sources";
+import { SIGNIN_REFUSALS, SIGNIN_STATES } from "../../sources/src/signin";
 import { call, url } from "./support";
 
 const PAGES = ["/app", "/app/signed-in", "/app/connected"];

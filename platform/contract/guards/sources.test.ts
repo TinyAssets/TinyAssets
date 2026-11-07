@@ -1,7 +1,7 @@
 /**
  * The model source records (`platform/sources/`) are data that fits (tasks 4 G3).
  *
- * - Every file is bundled by the doors, and every bundled record passes the schema
+ * - Every file is in the catalog (`sources/src/records.ts`), and every record passes the schema
  *   (`sourceRecord`), whose gateway part is the gateway's own check: so a record naming an
  *   API outside the gateway's `SUPPORTED_APIS` fails here, from that one list.
  * - pi-ai's catalog supplies a known provider: a record of one restates its base URL and
@@ -20,13 +20,13 @@ import { join } from "node:path";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
-import { SUPPORTED_APIS } from "../../contract/src/egress-scope";
 import { PLATFORM } from "../../ci/paths";
-import {
-  bundledRecords, catalogOf, type Install, type LoginSpec, RUN_BASICS, runEnv, sealedSource,
-  type SourceRecord, sourceRecord, SourceRecordError,
-} from "../src/sources";
-import { forbids } from "../../contract/src/text";
+import { bundledRecords, catalogOf } from "../../sources/src/catalog";
+import { sealedSource, sourceRecord } from "../../sources/src/check";
+import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
+import { type Install, type SourceRecord, SourceRecordError } from "../../sources/src/schema";
+import { SUPPORTED_APIS } from "../src/egress-scope";
+import { forbids } from "../src/text";
 
 const SOURCES = join(PLATFORM, "sources");
 
@@ -141,6 +141,36 @@ describe("the source records", () => {
       .toBe("https://api.groq.com/openai/v1");
     expect(catalogOf(bundledRecords()).get("Groq")).toBeUndefined();
     expect(catalogOf(bundledRecords()).get("nope")).toBeUndefined();
+  });
+});
+
+describe("the key exchange's residual mix-up", () => {
+  const exchange = String(openrouter["id"]);
+  const uncurated = { ...chatgpt, id: "mcp_server_x", curated: false };
+  const without = bundledRecords().filter((record) => (record as Json)["id"] !== exchange);
+
+  it("is no catalog with an uncurated authorization server beside a key exchange", () => {
+    expect(() => catalogOf([...bundledRecords(), uncurated])).toThrow(SourceRecordError);
+    expect(() => catalogOf([uncurated, ...bundledRecords()])).toThrow(/does not curate/);
+  });
+
+  it("serves one where no key exchange is, an uncurated key beside one, and the curated alone",
+     () => {
+    expect(catalogOf([...without, uncurated]).get("mcp_server_x")).toMatchObject({
+      curated: false, oauth: { protocol: "rfc6749" } });
+    const key = { ...groq, id: "package_key", curated: false };
+    expect(catalogOf([...bundledRecords(), key]).get("package_key")?.curated).toBe(false);
+    expect(catalogOf(bundledRecords()).get(exchange)).not.toHaveProperty("curated");
+  });
+
+  it("marks a record uncurated only as false", () => {
+    expect(refused({ ...groq, curated: true })).toMatch(/curated is false or absent/);
+    expect(refused({ ...groq, curated: "false" })).toMatch(/curated is false or absent/);
+  });
+
+  it("counts a record marked curated at all as uncurated, beside a key exchange", () => {
+    expect(() => catalogOf([...bundledRecords(), { ...uncurated, curated: true }]))
+      .toThrow(/does not curate/);
   });
 });
 
@@ -399,7 +429,7 @@ describe("the engine records", () => {
   it("pin each sign-in's page on its own login hosts, and cite its code's lifetime", () => {
     for (const id of ["claude-code", "codex", "gemini", "kimi"]) {
       const spec = sourceRecord(records.get(id)).cli!;
-      const login = spec.login as unknown as LoginSpec;
+      const login = spec.login!;
       const hosts = new Set([...spec.hosts.login, ...Object.values(spec.regions ?? {})
         .flatMap((region) => region.hosts.login)]);
       expect(login.url.hosts.every((host) => hosts.has(host)), id).toBe(true);
@@ -410,11 +440,11 @@ describe("the engine records", () => {
 
   it("let a Kimi member sign in from either region, its hosts by the choice (M2)", () => {
     const spec = sourceRecord(records.get("kimi")).cli!;
-    expect(spec.login!["argv"]).toEqual(["{bin}", "login", "--region", "{region}"]);
+    expect(spec.login!.argv).toEqual(["{bin}", "login", "--region", "{region}"]);
     expect(Object.keys(spec.regions!).sort()).toEqual(["global", "mainland-cn"]);
     expect(spec.regions!["global"]!.hosts.login).toContain("auth.kimi.ai");
     expect(spec.regions!["mainland-cn"]!.hosts.login).toContain("auth.kimi.com");
-    const pattern = new RegExp(String(spec.login!["url_pattern"]));
+    const pattern = new RegExp(spec.login!.url_pattern);
     for (const url of ["https://www.kimi.ai/device?x=1", "https://auth.kimi.com/device"]) {
       expect(pattern.exec(url)?.[1], url).toBe(url);
     }

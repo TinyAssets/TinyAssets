@@ -155,7 +155,7 @@ export function envStem(name: string): string {
 }
 
 /**
- * One engine run, as its environment is made (from its record, by `doors/src/sources.ts`'s
+ * One engine run, as its environment is made (from its record, by `sources/src/run-env.ts`'s
  * `runEnv`): the credential it runs on; an API-key run's connection (null on the vendor's
  * own sign-in); the engine's own variables for each provider's key: its base-URL variable
  * (none when its base URL comes by a file template) and key variable, and whether its base

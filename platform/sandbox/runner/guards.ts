@@ -19,7 +19,7 @@
  *   written to.
  */
 import { forbids } from "../../contract/src/text";
-import { CREDENTIAL_NAME } from "../../doors/src/sources";
+import { CREDENTIAL_NAME } from "../../sources/src/check";
 
 /** A settings key naming a credential helper. */
 const HELPER_KEY = /helper/i;

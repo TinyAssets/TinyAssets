@@ -19,7 +19,7 @@
  * (`AGENT_UNDEFINED`, `Invalid`), never a stand-in.
  */
 import { CONNECTION_ID } from "../../contract/src/ids";
-import { CREDENTIAL_KINDS, type CredentialKind } from "../../doors/src/sources";
+import { CREDENTIAL_KINDS, type CredentialKind } from "../../sources/src/schema";
 
 import { RUN_CAPABILITIES, type RunCapability } from "../../contract/src/capabilities";
 import { Invalid } from "../../contract/src/errors";

@@ -19,7 +19,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { bundledSources, runEnv } from "../../doors/src/sources";
+import { bundledSources } from "../../sources/src/catalog";
+import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
 import { readEvent } from "../../contract/src/run-events";
 
@@ -304,7 +305,7 @@ describe("the env files a CLI would load", () => {
     ["the workspace's .env", "/workspace/.env", "GOOGLE_GEMINI_BASE_URL=https://x\n"],
     ["an ancestor's .gemini/.env", "/workspace/agents/.gemini/.env", "GEMINI_API_KEY=x\n"],
     // S44: a proxy would take the run's calls past the egress door; the runner refuses it by
-    // the doors' own `CREDENTIAL_NAME`, which refuses one in a record.
+    // the source checker's own `CREDENTIAL_NAME`, which refuses one in a record.
     ["the agent's .env proxy", "/workspace/agents/main/.env", "HTTPS_PROXY=http://x.test:3128\n"],
   ])("refuse the run when %s sets a variable", async (_what, file, text) => {
     doors.files.set(file, { text, version: 9 });
@@ -484,7 +485,7 @@ describe("the vendor's own sign-in", () => {
   it.each(Object.keys(LOGINS))("relays %s's own prompt by its record's patterns, and signs in",
                                async (engine) => {
     const plan = LOGINS[engine]!;
-    const login = sources.get(engine)!.cli!.login as Record<string, unknown>;
+    const login = sources.get(engine)!.cli!.login!;
     box.cli(engine, { lines: [], login: { lines: plan.lines, code: plan.paste !== undefined,
                                           writes: plan.writes,
                                           ...(plan.exits === true ? { exit: 0 } : {}) },
@@ -495,7 +496,7 @@ describe("the vendor's own sign-in", () => {
     const open = await frameWhere(id, (frame) => frame["state"] === "open"
       && (frame["url"] !== null || frame["code"] !== null));
     expect(open).toMatchObject({ type: "ta.signin", url: plan.url,
-                                 accepts_code: login["accepts_code"] === true });
+                                 accepts_code: login.accepts_code === true });
     // What the real runner keeps of a live sign-in is its format's record.
     expect(shapeProblems(JSON.parse(readFileSync(box.path(`/var/lib/ta/signin/${id}/state.json`),
                                                  "utf8")),
@@ -513,7 +514,7 @@ describe("the vendor's own sign-in", () => {
     const seen = box.ran(engine)[0]!;
     // The record's own login, `{region}` filled, as a user of its own, never root.
     expect(seen.uid).not.toBe(0);
-    expect(seen.argv).toEqual((login["argv"] as string[]).slice(1).map((arg) =>
+    expect(seen.argv).toEqual(login.argv.slice(1).map((arg) =>
       arg.replaceAll("{region}", plan.region ?? "")));
     // Always on a terminal of its own, each directory its record's home variables name made
     // (a CLI may refuse a configured home that is not there, as on a first sign-in).

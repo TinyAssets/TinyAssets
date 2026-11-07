@@ -1,20 +1,17 @@
 /**
- * The OAuth sources' redirect registrations as data, and the key exchange's residual
- * mix-up (tasks 2; slice L). Each RFC 6749 record registers exactly its own callback,
- * matched exactly by its provider, never a prefix (RFC 9700 §4.1); a key exchange registers
- * none (its provider takes any callback) and its state rides the callback's last segment;
- * `registrations.ts` holds both to the URI the doors derive. The data lives beside the
- * records (`redirect-registrations.json`), never in them: the records are digested into the
- * sandbox template's tag. And no catalog serves an uncurated OAuth source beside a key
- * exchange.
+ * The OAuth sources' redirect registrations as data (tasks 2; slice L). Each RFC 6749
+ * record registers exactly its own callback, matched exactly by its provider, never a prefix
+ * (RFC 9700 §4.1); a key exchange registers none (its provider takes any callback) and its
+ * state rides the callback's last segment; `registrations.ts` holds both to the URI the
+ * doors derive. The data lives beside the records (`redirect-registrations.json`), never in
+ * them: the records are digested into the sandbox template's tag. The key exchange's
+ * residual mix-up is the source checker's rule (`contract/guards/sources.test.ts`).
  */
 import { describe, expect, it } from "vitest";
 
 import data from "../redirect-registrations.json" with { type: "json" };
-import {
-  allRegistrations, connectSources, redirectOf, registrationOf,
-} from "../src/redirects";
-import { bundledRecords } from "../src/sources";
+import { allRegistrations, redirectOf, registrationOf } from "../src/redirects";
+import { bundledRecords } from "../../sources/src/catalog";
 
 type Json = Record<string, unknown>;
 
@@ -64,19 +61,5 @@ describe("a redirect registration", () => {
       .toThrow(/no OAuth/);
     expect(() => allRegistrations(records, { ...data, ghost: { match: "exact", uri: "x" } }))
       .toThrow(/no served source/);
-  });
-});
-
-describe("the key exchange's residual mix-up", () => {
-  const uncurated = { ...rfc6749, id: "mcp_server_x" };
-
-  it("refuses an uncurated authorization server beside a key exchange", () => {
-    expect(() => connectSources(records, [uncurated])).toThrow(/does not curate/);
-  });
-
-  it("allows one where no key exchange is served, and serves the curated ones alone", () => {
-    const without = records.filter((record) => record !== exchange);
-    expect(connectSources(without, [uncurated]).get("mcp_server_x")).toBeDefined();
-    expect(connectSources(records).get(xid)).toBeDefined();
   });
 });
