@@ -10,9 +10,10 @@ import { describe, expect, it } from "vitest";
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import { type Entry } from "../src/files";
 import { sha256Hex } from "../../contract/src/digest";
-import type { Binding, OwnerDO } from "../src/owner-do";
+import type { OwnerDO } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
-import { apiKeyOrigin } from "../src/ledger";
+import { apiKeyOrigin } from "../../contract/src/binding";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, laneAt, ownerObject, sqlIn, text } from "./support";
 
@@ -562,7 +563,7 @@ describe("the manifest's queries", () => {
     await inFiles(r.stub, { keep_versions: 1, retention_days: 0 }, async (files) => {
       await files.write(`${W}/z/c.bin`, new Uint8Array(INLINE_BYTES * 2).fill(5),
                         { expected: null, writer: "t" });
-      await files.collect(Date.now() / 1000 + 10);
+      await files.run(Date.now() / 1000 + 10);
     });
     const [after, recount] = await fileCounters(r.stub);
     expect(after).toEqual(recount);

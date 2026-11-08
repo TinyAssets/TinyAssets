@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { MANIFEST_PROTECT_S, manifestDay } from "../src/backup";
 import { refusalOf } from "../../contract/src/refusal";
 import { GC_GRACE_S, INLINE_BYTES } from "../../contract/src/limits";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { MUSE, rig } from "./ledger-support";
 import { drainDue, failure, laneAt, sqlIn, TIERS } from "./support";
 

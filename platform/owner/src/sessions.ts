@@ -42,6 +42,8 @@ import { randomBytes } from "node:crypto";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
+import type { Call, Door, OwnerState } from "./owner-do";
+import { clock } from "./clock";
 
 export interface SessionLimits {
   /** A session's life from its sign-in or its last renewal: the Python's 28,800 s. */
@@ -155,3 +157,36 @@ export class Sessions {
       .toArray().length };
   }
 }
+
+// -- THE DOORS: the `sessions` rows' handlers (`contract/doors.json`) -----------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `sessions` doors' handlers, by door. */
+export const sessionsDoors = Object.freeze({
+  sessionOpen(o: OwnerState, { binding }: Call<undefined>):
+      { session: string; expires_at: number } {
+    return o.sessions.open(binding.authenticated_at, clock());
+  },
+  sessionExtend(o: OwnerState, { binding }: Call<undefined>): { expires_at: number } {
+    return o.sessions.extend(binding.session, clock());
+  },
+  sessionClose(o: OwnerState, { binding }: Call<undefined>): { closed: number } {
+    const id = o.sessions.id(binding.session);
+    const closed = o.sessions.close(binding.session);
+    if (id !== null) {
+      o.connections.cancelFlows(id);
+    }
+    return closed;
+  },
+  async sessionCloseAll(o: OwnerState, door: Door<undefined>): Promise<{ closed: number }> {
+    const closed = await o.synced(() => door.within(() => {
+      o.connections.cancelFlows(null);
+      return o.sessions.closeAll();
+    }));
+    o.relay.closeAll("signedOut");  // account revocation: every device's sockets
+    return closed;
+  },
+});

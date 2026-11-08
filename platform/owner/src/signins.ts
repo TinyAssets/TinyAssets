@@ -37,11 +37,22 @@ import {
 
 import { Refusal } from "../../contract/src/refusal";
 import {
-  ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
+ ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
 } from "../../contract/src/limits";
 import { OWNER_AUTHORITY } from "./files";
 import type { OwnerStorage } from "./gate";
 import { isPrintable } from "../../contract/src/text";
+import type {
+  Call, Door, OwnerState,
+} from "./owner-do";
+import { EGRESS_ORIGIN, runUrls } from "../../contract/src/egress";
+import { FRAME_VERSION } from "../../contract/src/run-events";
+import { SANDBOX_ABSENT, started } from "./sandbox";
+import type { Started } from "./sandbox";
+import { clock } from "./clock";
+import { sealRoute } from "../../contract/src/routing-mac";
+import type { Runs } from "./runs";
+import { eventsRequest, signinRequest } from "./reports";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */
 
@@ -347,3 +358,227 @@ export function signinAuthority(value: unknown): string {
   }
   return value;
 }
+
+/** The owner's ask to sign in to an engine inside a sandbox (`signinStart`). */
+export interface SigninStartRequest {
+  readonly engine: string;
+  /** `owner` (the default), or one client's id: that client's own sandbox. */
+  readonly authority?: string;
+  /** The owner's choice among the record's `cli.regions`, when it has any. */
+  readonly region?: string;
+  readonly mode?: SigninMode;
+}
+export interface SigninRequestById {
+  readonly id: string;
+}
+export interface SigninCodeRequest extends SigninRequestById {
+  readonly code: string;
+}
+/** A sign-in's runner's post: its frames, and its end. */
+export interface SigninEventsRequest extends SigninRequestById {
+  readonly frames: unknown;
+  readonly end?: unknown;
+}
+/**
+ * The runner's report of the sandbox's engines' sign-ins (`signinReport`): for each engine
+ * that signs in with the vendor's own login, whether its record's `status_argv` succeeded,
+ * and the models it read the engine offers. Presence only: never a credential.
+ */
+export interface SigninRequest {
+  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean;
+                               readonly models?: readonly string[] }[];
+}
+
+// -- THE DOORS: the `signins` rows' handlers (`contract/doors.json`) ------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** Whether `id` is a live sign-in's: an app socket may watch it (the owner's own). A read. */
+export function signinOwned(o: OwnerState, id: unknown): boolean {
+  if (typeof id !== "string" || !SIGNIN_ID.test(id)) {
+    return false;
+  }
+  try {
+    o.signins.get(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The `signins` doors' handlers, by door. */
+export const signinsDoors = Object.freeze({
+  /** A vendor sign-in begun, its call checked in its first unit (`signinStart`). */
+  async signinStart(o: OwnerState, door: Door<SigninStartRequest>):
+      Promise<SigninView | { started: false; code: string }> {
+    const begun = await o.door(() => {
+      const { r } = door.check();
+      const rec = typeof r["engine"] === "string" ? bundledSources().get(r["engine"]) : undefined;
+      const cli = rec?.cli;
+      if (rec === undefined || cli === undefined || rec.unwired !== undefined
+          || cli.login === undefined || !cli.credential.includes("vendor_login_in_sandbox")) {
+        throw new Refusal("invalid",
+                          "a sign-in names an engine that signs in with the vendor's own login");
+      }
+      const mode = (r["mode"] ?? "in") as SigninMode;
+      if (mode !== "in" && mode !== "out") {
+        throw new Refusal("invalid", "a sign-in's mode is in or out");
+      }
+      // A sign-in sits behind its source's switch; a sign-out never does, so a login is
+      // always removable (review H1).
+      if (mode === "in" && !switchedOn(o.storage, door.binding.signins, clock()).has(rec.id)) {
+        throw new Refusal("signin_off", SIGNIN_OFF);
+      }
+      const regions = cli.regions === undefined ? [] : Object.keys(cli.regions);
+      const region = r["region"] ?? null;
+      if (mode === "in" ? (regions.length === 0 ? region !== null
+                                                : !regions.includes(region as string))
+          : region !== null) {
+        throw new Refusal("invalid", regions.length === 0 ? "this sign-in takes no region"
+          : `this sign-in takes the owner's choice of region: ${regions.join(", ")}`);
+      }
+      const authority = signinAuthority(r["authority"]);
+      if (authority !== OWNER_AUTHORITY && !o.grants.live(authority)) {
+        throw new Refusal("refused",
+                          "no such client: a client's own sandbox is signed in for a client " +
+                          "the owner has connected");
+      }
+      const now = clock();
+      o.signins.lost(now, new Set(o.files.liveLeases(now).map((each) => each.lease_id)));
+      const live = o.files.sandboxLease(now, authority);
+      const opened = live === null ? o.launcher.openLease(now, authority) : null;
+      const lease = live ?? opened!.lease;
+      const row = o.signins.begin(authority, rec.id, mode, region as string | null,
+                                      { lease_id: lease.lease_id, epoch: lease.epoch }, now);
+      return { row, opened, region: region as string | null,
+               lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
+    });
+    let answer: Started | null = null;
+    try {
+      answer = started(await o.env.SANDBOX!.signin(o.owner(), {
+        id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
+        authority: begun.row.authority, lease: begun.lease,
+        tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
+        route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
+                                                     authority: begun.row.authority }),
+        urls: { events: `${EGRESS_ORIGIN}/signin/${begun.row.id}/events`,
+                signin: runUrls(`run_${"0".repeat(32)}`, "0".repeat(64)).signin } }));
+    } catch {
+      console.error("a sign-in's start had no answer");
+      answer = null;
+    }
+    if (answer?.started === true) {
+      return signinView(begun.row);
+    }
+    await o.door(() => {
+      o.signins.end(begun.row.id);
+      o.launcher.leaseFreed(begun.lease.lease_id, begun.lease.epoch);
+    });
+    return { started: false, code: answer === null ? "start_lost" : answer.code };
+  },
+  /** A sign-in's frames, its call checked in its unit (`signinEvents`). */
+  async signinEvents(o: OwnerState, door: Door<SigninEventsRequest>):
+      Promise<{ accepted: number; ended: boolean }> {
+    const { row, ended, stopped, events, frames } = await o.door(() => {
+      const lease = door.check().lease!;
+      const r = eventsRequest({ frames: door.request.frames, ...(door.request.end === undefined ? {}
+        : { end: door.request.end }) });
+      const now = clock();
+      const done = o.signins.frames(door.request.id, lease, r.frames.map((frame) => frame.event),
+                                        r.end !== null, now);
+      o.files.leaseRenew(lease.lease_id, lease.epoch);
+      if (done.ended) {
+        o.launcher.leaseFreed(lease.lease_id, lease.epoch);
+      }
+      return { ...done, frames: r.frames };
+    });
+    // Only what the trusted side kept: each frame's own, checked event.
+    const last = frames.at(-1);
+    o.relay.relay(row.id, events.map((event, i) => ({
+      v: FRAME_VERSION, run: row.id, seq: (last?.seq ?? 0) - events.length + i + 1,
+      at: last?.at ?? clock(), kind: "event" as const, event })));
+    if (ended) {
+      o.relay.settled(row.id);  // its tail goes with it
+    }
+    if (stopped) {
+      // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
+      await o.env.SANDBOX?.signinCancel(o.owner(), { authority: row.authority,
+                                                                id: row.id })
+        .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
+    }
+    return { accepted: frames.length, ended };
+  },
+  async signinCode(o: OwnerState, door: Door<SigninCodeRequest>): Promise<{ delivered: boolean }> {
+    const { row, code } = await o.door(() => {
+      const { r } = door.check();
+      const code = pastedCode(r["code"]);
+      const row = o.signins.wantsCode(r["id"], clock());
+      if (!switchedOn(o.storage, door.binding.signins, clock()).has(row.engine)) {
+        throw new Refusal("signin_off", SIGNIN_OFF);
+      }
+      return { row, code };
+    });
+    const sandbox = o.env.SANDBOX;
+    if (sandbox === undefined) {
+      throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
+    }
+    return sandbox.signinInput(o.owner(), { authority: row.authority, id: row.id,
+                                                    code });
+  },
+  async signinCancel(o: OwnerState, door: Door<SigninRequestById>):
+      Promise<{ cancelled: boolean }> {
+    const row = await o.door(() => o.signins.get(door.check().r["id"]));
+    const sandbox = o.env.SANDBOX;
+    if (sandbox === undefined) {
+      throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
+    }
+    return sandbox.signinCancel(o.owner(), { authority: row.authority, id: row.id });
+  },
+  signinList(o: OwnerState, _call: Call<undefined>): { signins: SigninView[];
+                                           engines: ReturnType<Runs["signins"]> } {
+    const now = clock();
+    o.signins.lost(now, new Set(o.files.liveLeases(now).map((each) => each.lease_id)));
+    return { signins: o.signins.list().map(signinView), engines: o.runs.signins() };
+  },
+  signinReport(o: OwnerState, { lease: held, r }: Call<SigninRequest>):
+      { recorded: number; lapsed: string[] } {
+    const lease = held!;
+    const reports = signinRequest(r);
+    const lapsed: string[] = [];
+    if (lease.authority !== OWNER_AUTHORITY) {
+      // An outside client's sandbox's own sign-ins, kept on its lease: a login is never
+      // copied between sandboxes, so none of the owner's own reaches it.
+      const now = new Set(lease.signins);
+      for (const report of reports) {
+        if (report.signed_in) {
+          now.add(report.engine);
+        } else {
+          now.delete(report.engine);
+        }
+      }
+      const joined = [...now].sort().join(",");
+      if (joined.length > SIGNIN_LIST_CHARS) {
+        throw new Refusal("invalid",
+                          `a sandbox's signed-in engines are at most ${SIGNIN_LIST_CHARS} ` +
+                          "characters joined");
+      }
+      const before = o.files.leaseSignins(lease.lease_id, [...now]);
+      for (const engine of before.filter((each) => !now.has(each))) {
+        lapsed.push(engine);
+        o.notices.add("signin_lapsed",
+                          `${engine}: sign in again inside ${lease.authority}'s sandbox`, clock());
+      }
+      return { recorded: reports.length, lapsed };
+    }
+    for (const report of reports) {
+      if (o.runs.reportSignin(report.engine, report.signed_in, report.models, clock())
+            .lapsed) {
+        lapsed.push(report.engine);
+        o.notices.add("signin_lapsed", `${report.engine}: sign in again`, clock());
+      }
+    }
+    return { recorded: reports.length, lapsed };
+  },
+});

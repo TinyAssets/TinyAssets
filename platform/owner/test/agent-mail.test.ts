@@ -13,9 +13,11 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { toolsNamed } from "../../contract/src/doors";
-import { AGENT_RETIRED, type Ledger, MAIL_HEADER_BYTES, mailInput, NO_AGENT, nativeId,
-         RUN_NO_MAILBOX } from "../src/ledger";
-import type { Binding } from "../src/owner-do";
+import {
+  AGENT_RETIRED, type Ledger, MAIL_HEADER_BYTES, mailInput, NO_AGENT, RUN_NO_MAILBOX,
+} from "../src/ledger";
+import { nativeId } from "../../contract/src/binding";
+import type { Binding } from "../../contract/src/binding";
 import { mailConversation, type RunReceipt, UNATTENDED_REFUSED } from "../src/runs";
 import type { SandboxStart } from "../src/sandbox";
 import { gated, type Gated } from "./gateway-support";

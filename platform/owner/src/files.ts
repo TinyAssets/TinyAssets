@@ -85,7 +85,7 @@ import {
   MAX_INTENT_CHUNKS, MAX_LIST, MAX_PATH_BYTES, MAX_SYNC_OPS,
 } from "../../contract/src/limits";
 
-import { letGo } from "./edit";
+import { letGo, planEdit } from "./edit";
 import { FileFault, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage, Write } from "./gate";
 import { CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
@@ -97,7 +97,25 @@ import {
   ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within,
   WORKSPACE,
 } from "../../contract/src/paths";
-import { codePoints, isPrintable, utf8Bytes } from "../../contract/src/text";
+import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
+import {
+  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
+} from "../../contract/src/sync-ignore";
+import type {
+  Account, Call, Door, OwnerState,
+} from "./owner-do";
+import type { Binding } from "../../contract/src/binding";
+import type { Edited, EditRefusal } from "./edit";
+import { fitList, PAGE_BYTES, RESULT_TOO_LARGE } from "./pages";
+import {
+  frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
+  windowEnd, words,
+} from "./file-search";
+import { clock } from "./clock";
+import { fitted, jsonBytes } from "../../contract/src/encoded";
+import { slotted } from "../../contract/src/slots";
+import { APP_RESOURCE } from "../../contract/src/identity";
 
 
 /**
@@ -2416,9 +2434,9 @@ export class Files {
    * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
    * change still to apply, or garbage past the owner's storage figure that it may collect
    * early. Garbage waiting on a failed delete's retry is due at that retry, never at once,
-   * and garbage the newest manifest names is never collected early.
+   * and garbage the newest manifest names is never collected early. The `files` lane's.
    */
-  nextAlarm(now: number): number | null {
+  next(now: number): number | null {
     if (this.#reretaining(this.#space(), this.#limits())
         || (this.#garbageOver() > 0 && this.#earlyCollectable(now))) {
       return now;
@@ -2443,9 +2461,10 @@ export class Files {
    * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
    * lane's contract: an outside call's failure is its rows', a throw is a bug). No delete
    * is begun with less than `DELETE_FLOOR_MS` left before `until`. Each step that writes
-   * is a unit of the gate of its own, between the calls, never the whole pass.
+   * is a unit of the gate of its own, between the calls, never the whole pass. The `files`
+   * lane's pass.
    */
-  async collect(now: number, until: number = Infinity): Promise<void> {
+  async run(now: number, until: number = Infinity): Promise<void> {
     const sql = this.#sql;
     await this.#write(() => this.#change(null, () => {
       this.#reretain();
@@ -2593,3 +2612,1072 @@ export class Files {
     }
   }
 }
+
+
+/** Who a file change is by, in its history: the owner, or the outside client it came through. */
+export function fileWriter(account: Account): string {
+  return account.origin === null ? "owner" : `client:${account.origin.client}`;
+}
+
+/** The owner app's page of the folder holding `path`: where a citation of it points. */
+export function fileUrl(path: string): string {
+  return `${APP_RESOURCE}#data/${encodeURIComponent(parentOf(path))}`;
+}
+
+/** A non-negative whole number of a request, or its default. */
+export function whole(value: unknown, what: string, fallback: number, high: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > high) {
+    throw new Refusal("invalid", `${what} is a whole number from 0 to ${high}`);
+  }
+  return value;
+}
+
+/**
+ * A search's `next_cursor`: the stored path it resumes after, as base64url (review L5), an
+ * opaque token at most 5,462 characters with nothing to escape, so a path of escaped
+ * characters never makes an answer too wide to go on.
+ */
+export function pathCursor(path: string): string {
+  return Buffer.from(path, "utf8").toString("base64url");
+}
+
+export function cursorPath(cursor: unknown): string {
+  if (typeof cursor !== "string" || !/^[A-Za-z0-9_-]{1,5462}$/.test(cursor)) {
+    throw new Refusal("invalid", "a cursor is a next_cursor a search answered");
+  }
+  return Buffer.from(cursor, "base64url").toString("utf8");
+}
+
+/** Files an append never changes: text put after their end breaks what they mean. */
+export const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
+
+/**
+ * The tries a large append makes before it is refused `file_busy` (a small one is one unit
+ * and never retries). A try is lost only when another write to the same file commits while
+ * this one's chunks are out at `FILES`. Another chunked write holds one of the owner's open
+ * uploads while its chunks are out, and the owner has at most `MAX_OPEN_INTENTS` open, this
+ * one's among them, so those in flight when it starts can beat it at most
+ * `MAX_OPEN_INTENTS - 1` times before every one has landed: `MAX_OPEN_INTENTS` tries outlast
+ * them. A small whole write holds no upload; one landing in each of that many windows in a
+ * row is a flood, refused loudly rather than retried without end. Measured (review rvbr):
+ * 80 and then 300 concurrent appends to one small file all landed, none refused.
+ */
+export const APPEND_TRIES = MAX_OPEN_INTENTS;
+
+/**
+ * An outside agent's or a run's remove, rename or restore with no etag: it never removes,
+ * moves or overwrites an entry it did not read (review R2-L3, as `UNREAD_WRITE`).
+ */
+export const UNREAD_CHANGE = "expected_etag is the entry's current etag, or \"\" where there " +
+  "is none: read it first (file_stat, fetch or file_read)";
+
+/** A change by an outside client or a run names the etag it read; the owner's app need not. */
+export function heldToRead(account: Account, asked: unknown): void {
+  if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
+    throw new Refusal("invalid", UNREAD_CHANGE);
+  }
+}
+
+/** An outside agent's or a run's whole write with no etag: it never replaces a file unread. */
+export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
+  "only when absent: read the file first (fetch, file_read or file_stat)";
+
+export function fileConflicted<T>(act: () => T): T | FileConflicted {
+  try {
+    return act();
+  } catch (error) {
+    if (error instanceof FileConflict) {
+      return { conflict: error.current };
+    }
+    throw error;
+  }
+}
+
+export async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileConflicted> {
+  try {
+    return await act();
+  } catch (error) {
+    if (error instanceof FileConflict) {
+      return { conflict: error.current };
+    }
+    throw error;
+  }
+}
+
+/**
+ * The most bytes one `file_edit` edits (ADR-037's ruling 2): no longer `WHOLE_BYTES`, since a
+ * chunk-wise edit's memory does not depend on the file, but the time one call takes, its
+ * tightest bound. The workerd memory leg times the worst edit (the first chunk's, longer, so
+ * every chunk is read, remade and put) on the real path, with the files Worker's own hashing
+ * left out: about 17 ms a chunk of wall time, at least the CPU it spent (2026-11-04, its log
+ * in `limits-audit.md`); a request has 30 s of CPU, and two thirds are left for a slower
+ * host, so 500 chunks (about 9 s). The leg fails if the measured time passes 30 s at this
+ * figure. Its subrequests, about five a chunk, are 2,500 at most. Production's wall time a
+ * chunk (R2's round trips) is owed live; an edit commits whole or not at all.
+ */
+export const EDIT_BYTES_MAX = 500 * CHUNK_BYTES;
+
+/**
+ * An edit's output small enough to keep inline (at most `INLINE_BYTES`, under one chunk):
+ * its one chunk made, in a making step (`hold`).
+ */
+export function inlineOf(plan: Edited, hold: <T>(work: () => Promise<T>) => Promise<T>):
+    Promise<Uint8Array> {
+  if (plan.sizes.length !== 1) {
+    throw new Error("an inline edit's output is one chunk");
+  }
+  return hold(() => plan.make(0));
+}
+
+export function flag(value: unknown, what: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Refusal("invalid", `${what} is true or false`);
+  }
+  return value;
+}
+
+/** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
+export const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
+
+/**
+ * What a sync commit's write of the sync-ignore list says of the files it holds back, as its
+ * sync agent counted them (`sync.ts`): the kept files its lines name, and those with changes.
+ */
+export function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
+  const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
+    ? value as number : null;
+  for (const op of Array.isArray(ops) ? ops as unknown[] : []) {
+    const fields = (typeof op === "object" && op !== null ? op : {}) as Record<string, unknown>;
+    const held = fields["held_back"] as Record<string, unknown> | undefined;
+    if (fields["path"] === SYNC_IGNORE && fields["op"] === "write" && typeof held === "object"
+        && held !== null) {
+      const kept = count(held["kept"]);
+      const changed = count(held["changed"]);
+      if (kept !== null && changed !== null && changed <= kept) {
+        return { kept, changed };
+      }
+    }
+  }
+  return null;
+}
+
+/** A sync token that is not the live lease's, or names another lease or epoch. */
+export const SYNC_FENCED = "sync_fenced: the sync lease was lost; this sync is fenced";
+
+export interface UploadStoredRequest {
+  readonly intent_id: string;
+  readonly chunks: readonly string[];
+}
+export interface FileRequest {
+  readonly path: string;
+}
+export interface FileListRequest {
+  readonly dir: string;
+  readonly after?: string;
+  readonly limit: number;
+  /** At most this many characters of each small file's text (`file-search.ts`). */
+  readonly head_chars?: number;
+}
+/** A window of a file's text (`file_read`): from a byte offset, at most `max_bytes`. */
+export interface FileTextRequest {
+  readonly path: string;
+  readonly offset?: number;
+  readonly max_bytes?: number;
+}
+/** A search of the owner's files (`search`), from a cursor a search answered. */
+export interface FileSearchRequest {
+  readonly query: string;
+  readonly cursor?: string;
+}
+/** A file by the id a search answered (`fetch`): its stored path. */
+export interface FileFetchRequest {
+  readonly id: string;
+}
+/** A search's hit, in the shape ChatGPT's deep research and company knowledge read. */
+export interface SearchResult {
+  readonly id: string;
+  readonly title: string;
+  readonly url: string;
+}
+/** What `fetch` says of a file beside its text. */
+export interface FetchMetadata {
+  /** Its path, its id's; left out when its fields were cut to fit one answer (`fields_cut`). */
+  readonly path?: string;
+  /** Whether its frontmatter's fields were cut to fit one answer (review L5). */
+  readonly fields_cut?: true;
+  readonly size: number;
+  readonly version: number;
+  /** When it last changed, ISO 8601. */
+  readonly modified: string;
+  readonly writer: string;
+  /** Its etag, which `file_edit` and `file_write` take. */
+  readonly etag: string;
+  readonly type?: string;
+  readonly description?: string;
+  readonly tags?: readonly string[];
+  /** Whether the file is not UTF-8 text: its text is then empty. */
+  readonly binary?: true;
+  /** Whether the text stops short of the file's end: `file_read` reads on from `next_offset`. */
+  readonly truncated: boolean;
+  readonly next_offset?: number;
+}
+export interface FileReadRequest {
+  readonly path: string;
+  readonly etag?: string;
+}
+export interface FileChunksRequest {
+  readonly path: string;
+  readonly version: number;
+  readonly first: number;
+  readonly count: number;
+}
+export interface FileWriteRequest {
+  readonly path: string;
+  readonly expected_etag: string | null;
+  /** The file's bytes, or its text, written as UTF-8 (`file_write`, slice BRAIN). */
+  readonly content: Uint8Array | string;
+  readonly mode?: number;
+}
+/** Text added at the end of a file, which is made when absent (`file_append`). */
+export interface FileAppendRequest {
+  readonly path: string;
+  readonly content: string;
+}
+/** One exact occurrence of `old_text` in a file's text replaced, at its etag (`file_edit`). */
+export interface FileEditRequest {
+  readonly path: string;
+  readonly old_text: string;
+  readonly new_text: string;
+  readonly expected_etag: string;
+}
+export interface UploadBeginRequest {
+  /** The file's size; `chunks` are its 64-hex hashes, one for each 4 MiB. */
+  readonly size: number;
+  readonly chunks: string[];
+}
+export interface UploadChunksRequest {
+  readonly intent_id: string;
+  readonly chunks: { sha256: string; bytes: Uint8Array }[];
+}
+export interface UploadCommitRequest {
+  readonly intent_id: string;
+  readonly path: string;
+  readonly expected_etag: string | null;
+  readonly mode?: number;
+}
+export interface IntentRequest {
+  readonly intent_id: string;
+}
+export interface MkdirRequest {
+  readonly path: string;
+  readonly expected_etag: string | null;
+}
+export interface RemoveRequest {
+  readonly path: string;
+  readonly expected_etag: string | null;
+  readonly recursive: boolean;
+}
+export interface RenameRequest {
+  readonly from: string;
+  readonly to: string;
+  readonly expected_etag: string | null;
+  readonly replace: boolean;
+}
+export interface FileHistoryRequest {
+  readonly path: string;
+  readonly before?: number;
+  readonly limit: number;
+}
+export interface VersionRequest {
+  readonly path: string;
+  readonly version: number;
+}
+export interface RestoreRequest extends VersionRequest {
+  readonly expected_etag: string | null;
+}
+export interface ChangesRequest {
+  readonly after: number;
+  readonly limit: number;
+}
+export interface LeaseRequest {
+  readonly lease_id: string;
+  readonly epoch: number;
+}
+export interface SyncCommitRequest extends LeaseRequest {
+  readonly ops: SyncOp[];
+}
+/** The sync agent's upload, begun as its lease's writer (`fileSyncUploadBegin`). */
+export interface SyncUploadBeginRequest extends LeaseRequest {
+  readonly size: number;
+  readonly chunks: string[];
+}
+/** The sync agent's chunk bytes for its own upload (`fileSyncUploadChunks`). */
+export interface SyncUploadChunksRequest extends LeaseRequest {
+  readonly intent_id: string;
+  readonly chunks: { readonly sha256: string; readonly bytes: Uint8Array }[];
+}
+/** The sync agent's own upload given up (`fileSyncUploadAbort`). */
+export interface SyncUploadAbortRequest extends LeaseRequest {
+  readonly intent_id: string;
+}
+/** A lost file compare-and-swap: answered with the entry as it stands. */
+export interface FileConflicted {
+  readonly conflict: Entry | null;
+}
+
+// -- THE DOORS: the `files` rows' handlers (`contract/doors.json`) --------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** A directory's page (`fileList`). */
+function listed(o: OwnerState, { r, readable }: Call):
+    { entries: (Entry & { head?: string })[]; next: string | null } {
+  const listed = o.files.list(r["dir"], r["after"] ?? null, r["limit"]);
+  const entries = listed.entries.filter((entry) => readable?.test(entry.path) ?? true);
+  const chars = r["head_chars"] === undefined ? null
+    : whole(r["head_chars"], "head_chars", 0, Number.MAX_SAFE_INTEGER);
+  // One answer holds the page (`pages.ts`): when entries are left, `next` is the last
+  // one's name, so the next page starts after it.
+  const shown = chars === null ? entries : entries.map((entry) => {
+    if (entry.kind !== "file" || entry.size > INLINE_BYTES) {
+      return entry;
+    }
+    const inline = o.files.open(entry.path).inline;
+    const text = inline === undefined ? null : textOf(inline);
+    return text === null ? entry : { ...entry, head: [...text].slice(0, chars).join("") };
+  });
+  return fitList({ ...listed, entries: shown }, shown,
+                 { entries: [], next: String.fromCharCode(1).repeat(MAX_NAME_BYTES) },
+                 (kept) => ({ entries: kept, next: nameOf(kept.at(-1)!.path) }));
+}
+
+/**
+ * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files, skills, goals and
+ * `agent.json`). The founder's rule (2026-11-03): every agent of the owner has full power by
+ * default to do what any other of its agents can, so an agent (an outside client's call, or
+ * a run) under a full grant, the default, changes them; one under a grant the owner narrowed
+ * (`scoped`) is refused. The owner's own app is a human's path, so its bearer token alone
+ * changes nothing there: it is a widening, taken only in the owner's live session and
+ * receipted when refused, against a leaked app token.
+ */
+function ownersTree(o: OwnerState, binding: Binding, account: Account, action: string,
+                    request: unknown, ...paths: unknown[]): void {
+  if (!paths.some((path) => ownersOnly(storedPath(path)))) {
+    return;
+  }
+  if (account.run !== null) {
+    const stamp = account.run.stamp;
+    if (stamp !== null && !o.grants.full(stamp.client)) {
+      throw new Refusal("refused", AGENTS_OWNER_ONLY);
+    }
+    return;
+  }
+  if (account.origin !== null) {
+    if (account.grant?.mode !== "full") {
+      throw new Refusal("refused", AGENTS_OWNER_ONLY);
+    }
+    return;
+  }
+  try {
+    o.sessions.live(binding.session, clock());
+  } catch (error) {
+    try {
+      o.policy.refusal(action, { request, origin: null }, clock());
+    } catch {
+      console.error("owner-session refusal receipt unavailable");  // refuse regardless
+    }
+    throw error;
+  }
+}
+
+/** A search's page (`fileSearch`). */
+function searched(o: OwnerState, { r }: Call):
+    { results: SearchResult[]; next_cursor: string | null; note?: string } {
+  const query = r["query"];
+  if (typeof query !== "string" || utf8Bytes(query) > SEARCH_QUERY_BYTES) {
+    throw new Refusal("invalid", `a query is text of at most ${SEARCH_QUERY_BYTES} bytes`);
+  }
+  const terms = new Set(words(query));
+  if (terms.size === 0) {
+    throw new Refusal("invalid", "a query has at least one word");
+  }
+  const cursor = r["cursor"] === undefined ? null : storedPath(cursorPath(r["cursor"]));
+  const scanned = o.files.scan(cursor, SEARCH_SCAN);
+  const page = searchPage(scanned.entries, scanned.next !== null, terms, fileUrl);
+  const answer = page.resume === null ? { results: [...page.results], next_cursor: null }
+    : { results: [...page.results], next_cursor: pathCursor(page.resume),
+        note: "more of the files are still to search: search again with next_cursor" };
+  // Only paths of thousands of escaped characters pass one answer: told, never cut.
+  if (jsonBytes(answer) > PAGE_BYTES) {
+    throw new Refusal("result_too_large", RESULT_TOO_LARGE);
+  }
+  return answer;
+}
+
+/**
+ * A path a reader may not see is refused as one that does not exist: a file door's caller
+ * sees every path, the sync agent its lease's readable set (`#syncer`), so no content door
+ * shows a path its change feed would not.
+ */
+function visible(o: OwnerState, call: Call, path: unknown): void {
+  if (typeof path === "string" && call.readable !== null && !call.readable.test(path)) {
+    throw new FileFault("not_found", "no such file");
+  }
+}
+
+/**
+ * The text of `content` from `offset`, at most `max` bytes cut back to a character: its
+ * inline bytes, or the chunks the window spans (at most two reads).
+ */
+async function textWindow(o: OwnerState, content: Content, offset: number, max: number):
+    Promise<{ text: string | null; next: number | null }> {
+  const size = content.entry.size;
+  const want = Math.min(size, offset + max + 4);  // a character's tail past the window
+  let bytes: Uint8Array;
+  if (content.inline !== undefined) {
+    bytes = content.inline.subarray(offset, want);
+  } else {
+    const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
+    let at = 0;
+    for (const chunk of content.chunks ?? []) {
+      const from = Math.max(offset, at);
+      const to = Math.min(want, at + chunk.size);
+      if (from < to) {
+        // Verified (review L7): `FILES` rechecks the whole chunk and answers the range.
+        reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from,
+                     verify: true });
+      }
+      at += chunk.size;
+    }
+    const parts = await o.files.fetch(reads);
+    bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+    let put = 0;
+    for (const part of parts) {
+      bytes.set(part, put);
+      put += part.byteLength;
+    }
+  }
+  const end = windowEnd(bytes, 0, max);
+  if (end === null) {
+    throw new Refusal("invalid", "offset is inside a character: start at a window's next_offset");
+  }
+  return { text: textOf(bytes.subarray(0, end)),
+           next: offset + end < size ? offset + end : null };
+}
+
+/**
+ * A change to the sync's ignore list, in its own unit: a receipt and one notice naming
+ * who changed it (the owner, an agent's run, or an outside client), and, when a line it
+ * adds stops files the owner already keeps from syncing their changes, how many and which.
+ */
+/**
+ * A file change, in its own unit, as the owner's other modules follow it: each agent's ledger
+ * identity follows its `agent.json`; and every agent may edit the sync's ignore list (the
+ * founder's every-agent-full-power rule), but never unseen: each change is a receipt and one
+ * notice for the owner.
+ */
+export function fileChanged(o: OwnerState, path: string, present: boolean, now: number,
+                            change: { writer: string; content_id: string | null; size: number }):
+    void {
+  const agent = AGENT_FILE.exec(path)?.[1];
+  if (agent !== undefined) {
+    if (present) {
+      o.ledger.appear(agent, now);
+    } else {
+      o.ledger.retire(agent, now);
+    }
+  }
+  if (path === SYNC_IGNORE) {
+    syncIgnoreChanged(o, present, now, change);
+  }
+}
+
+function syncIgnoreChanged(o: OwnerState, present: boolean, now: number,
+                   change: { writer: string; content_id: string | null; size: number }): void {
+  const outcome = present ? "changed" : "removed";
+  const who = writerNamed(o, change.writer);
+  o.policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
+  let held = "";
+  if (present && change.content_id !== null) {
+    // Whoever wrote it, its new lines are read (a set's work, the list at most an inline
+    // file), never matched against the owner's files here.
+    const lines = (bytes: Uint8Array | null) => bytes === null ? null
+      : ruleLines(new TextDecoder().decode(bytes).split("\n"));
+    const after = lines(o.files.inlineOf(change.content_id));
+    const before = o.files.contentBefore(SYNC_IGNORE, o.files.lastVersion(SYNC_IGNORE));
+    const was = new Set(before === null ? [] : lines(o.files.inlineOf(before.content_id))
+      ?? []);
+    const defaults = new Set(DEFAULT_IGNORES);
+    if (after === null || after.some((line) => !was.has(line) && !defaults.has(line))) {
+      held = " Its new lines may hold back files you keep from syncing their changes; " +
+        "each sandbox sync reports the files they hold back.";
+    }
+    // Lines past a ceiling are not applied: said here, never in silence.
+    const raw = o.files.inlineOf(change.content_id);
+    const past = raw === null ? [] : unappliedLines(new TextDecoder().decode(raw).split("\n"));
+    const states = past.filter((each) => each.reason === "states");
+    if (states.length > 0) {
+      held += ` ${states.length} line${states.length === 1 ? " is" : "s are"} past the ${
+        AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
+        `may take together, so not applied: the files they name go on syncing (${
+          states.slice(0, 3).map((each) => each.line).join(", ")}${states.length > 3
+          ? ", …" : ""}).`;
+    }
+    if (change.size > LIST_BYTES) {
+      held += ` The list past its ${LIST_BYTES.toLocaleString("en")} bytes is not applied: ` +
+        "the files those lines name go on syncing.";
+    }
+    // The owner's own sandbox, whose mirror is the owner's whole tree, adds what its sync
+    // agent counted (`sync.ts`); an outside client's sees only its part, so its count is
+    // never given, and no count ever takes the sentence away.
+    const synced = o.heldBack;
+    if (synced !== null && /^lease:[0-9]+$/.test(change.writer) && synced.kept > 0) {
+      held += ` In the sync that wrote it, its lines hold back ${synced.kept} file${
+        synced.kept === 1 ? "" : "s"} you keep (${synced.changed} with changes in the ` +
+        "sandbox): your files keep the version they have, and each sync reports them.";
+    }
+  }
+  o.notices.add("sync_ignore_changed", `${SYNC_IGNORE} was ${outcome} by ${who}: what ` +
+                      `the sandbox keeps out of your files follows it.${held}`, now);
+}
+
+/**
+ * Who a file change's writer is, in words the owner reads: the owner; the agents whose
+ * runs hold the owner's sandbox lease it was synced under; or an outside client by name.
+ */
+function writerNamed(o: OwnerState, writer: string): string {
+  const epoch = /^lease:([0-9]+)$/.exec(writer)?.[1];
+  if (epoch !== undefined) {
+    // The agents named at most three, so the receipt stays its size.
+    const agents = o.runs.agentsAt(Number(epoch), 4);
+    return agents.length === 0 ? "a run in your sandbox"
+      : `a run of your agent${agents.length === 1 ? "" : "s"} ${agents.slice(0, 3).join(", ")}${
+        agents.length > 3 ? " and others" : ""}`;
+  }
+  const client = /^client:(.+)$/.exec(writer)?.[1];
+  if (client !== undefined) {
+    const name = o.grants.name(client);
+    return `the outside client ${name !== "" ? `"${name}"` : client.slice(0, 12)}`;
+  }
+  return writer === "owner" ? "you" : writer;
+}
+
+/** The `files` doors' handlers, by door. */
+export const filesDoors = Object.freeze({
+  fileStat(o: OwnerState, { r }: Call<FileRequest>): { entry: Entry | null } {
+    return { entry: o.files.stat(r["path"]) };
+  },
+  async fileList(o: OwnerState, door: Door<FileListRequest>):
+      Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
+    await o.seededFor(door);
+    return o.door(() => listed(o, door.check()));
+  },
+  /** A window of a file's text, its call checked in its units (`fileText`). */
+  async fileText(o: OwnerState, door: Door<FileTextRequest>):
+      Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
+    await o.seededFor(door);
+    const asked = await o.door(() => {
+      const { r } = door.check();
+      const content = o.files.open(r["path"]);
+      const offset = whole(r["offset"], "offset", 0, content.entry.size);
+      const max = whole(r["max_bytes"], "max_bytes", READ_DEFAULT_BYTES, CHUNK_BYTES);
+      if (max < 1) {
+        throw new Refusal("invalid", "max_bytes is at least 1");
+      }
+      return { content, offset, max };
+    });
+    const { content, offset, max } = asked;
+    // One answer holds the window (`pages.ts`): its text cut to what the entry leaves.
+    const room = PAGE_BYTES - jsonBytes({ entry: content.entry, offset, text: "",
+                                          next_offset: content.entry.size }) + 2;
+    if (room < 8) {
+      throw new Refusal("result_too_large", RESULT_TOO_LARGE);
+    }
+    const read = await textWindow(o, content, offset, Math.min(max, room));
+    if (read.text === null) {
+      throw new Refusal("invalid", `${content.entry.path} is not UTF-8 text`);
+    }
+    const part = fitted(read.text, room);
+    const end = offset + part.bytes;
+    return { entry: content.entry, offset, text: part.text,
+             next_offset: end < content.entry.size ? end : null };
+  },
+  async fileSearch(o: OwnerState, door: Door<FileSearchRequest>):
+      Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
+    await o.seededFor(door);
+    return o.door(() => searched(o, door.check()));
+  },
+  /** A file by a search's id, its call checked in its units (`fileFetch`). */
+  async fileFetch(o: OwnerState, door: Door<FileFetchRequest>):
+      Promise<{ id: string; title: string; text: string; url: string;
+                                        metadata: FetchMetadata }> {
+    await o.seededFor(door);
+    const content = await o.door(() => o.files.open(door.check().r["id"]));
+    // One answer holds it (`pages.ts`): its text cut to what its other fields leave, and
+    // `truncated` with `next_offset` for file_read to go on from.
+    const read = await textWindow(o, content, 0, PAGE_BYTES);
+    // A file search found that is not text (a scan, an image) is answered with its metadata
+    // and no text, never refused: every id a search answers is fetchable (review L4).
+    const found = frontmatter(read.text ?? "");
+    const path = content.entry.path;
+    // A frontmatter too wide for one answer beside its path is cut, said so (review L5):
+    // every id a search answers is fetchable, whatever its fields hold.
+    let front = found;
+    let cut = false;
+    const answer = (text: string, next: number | null) => ({
+      id: path, title: titleOf(path, front), text, url: fileUrl(path),
+      metadata: { ...(cut ? { fields_cut: true as const } : { path }),
+                  size: content.entry.size, version: content.entry.version,
+                  modified: new Date(content.entry.mtime_ms).toISOString(),
+                  writer: content.entry.writer, etag: content.entry.etag,
+                  ...(front.type === undefined ? {} : { type: front.type }),
+                  ...(front.description === undefined ? {} : { description: front.description }),
+                  ...(front.tags.length === 0 ? {} : { tags: front.tags }),
+                  ...(read.text === null ? { binary: true as const } : {}),
+                  truncated: read.text !== null && next !== null,
+                  ...(read.text === null || next === null ? {} : { next_offset: next }) },
+    });
+    let room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
+    if (room < 8) {
+      // Its metadata's path is its id's; its frontmatter's fields, a few KiB each at most.
+      cut = true;
+      const { title, description, type } = found;
+      front = { ...(title === undefined ? {} : { title: fitted(title, 1024).text }),
+                ...(description === undefined ? {}
+                  : { description: fitted(description, 4096).text }),
+                ...(type === undefined ? {} : { type: fitted(type, 256).text }),
+                tags: found.tags.filter((_, index) => index < 16)
+                  .map((tag) => fitted(tag, 256).text) };
+      room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
+      if (room < 8) {
+        throw new Refusal("result_too_large", RESULT_TOO_LARGE);
+      }
+    }
+    const part = fitted(read.text ?? "", room);
+    return answer(part.text, read.text === null || part.bytes >= content.entry.size ? null
+      : part.bytes);
+  },
+  /** Text added at the end of a file, its call checked in its units (`fileAppend`). */
+  async fileAppend(o: OwnerState, door: Door<FileAppendRequest>): Promise<{ entry: Entry }> {
+    await o.seededFor(door);
+    const { account, path, added } = await o.door(() => {
+      const { account, r } = door.check();
+      ownersTree(o, door.binding, account, "FILES.append", door.request, r["path"]);
+      if (STRUCTURED.test(storedPath(r["path"]))) {
+        throw new Refusal("invalid",
+                          "a structured file (JSON, TOML or YAML) is never appended to: read " +
+                          "it and change it with file_edit");
+      }
+      const content = r["content"];
+      if (typeof content !== "string" || content === "") {
+        throw new Refusal("invalid", "appended content is text of at least one character");
+      }
+      const added = new TextEncoder().encode(content);
+      if (added.byteLength > CHUNK_BYTES) {
+        throw new Refusal("invalid", "appended text is at most 4 MiB at once");
+      }
+      return { account, path: storedPath(r["path"]), added };
+    });
+    const authorize = () => {
+      ownersTree(o, door.binding, door.check().account, "FILES.append", door.request, path);
+    };
+    try {
+      for (let tries = 0; ; tries += 1) {
+        if (tries === APPEND_TRIES) {
+          throw new Refusal("file_busy",
+                            `file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
+                            "append again");
+        }
+        const read = await o.door((): { done: Entry } | { now: Content | null } => {
+          authorize();
+          const entry = o.files.stat(path);
+          if (entry !== null && entry.kind !== "file") {
+            throw new Refusal("invalid", `${path} is a directory`);
+          }
+          const content = entry === null ? null : o.files.open(path);
+          const before = content === null ? new Uint8Array(0) : content.inline;
+          if (before !== undefined && before.byteLength + added.byteLength <= INLINE_BYTES) {
+            // Small: read and written in this one unit, so nothing lands between.
+            const whole = new Uint8Array(before.byteLength + added.byteLength);
+            whole.set(before, 0);
+            whole.set(added, before.byteLength);
+            return { done: o.files.writeSmall(path, whole, {
+              expected: entry?.etag ?? "", mode: entry?.mode, writer: fileWriter(account) }) };
+          }
+          return { now: content };
+        });
+        if ("done" in read) {
+          return { entry: read.done };
+        }
+        const now = read.now;
+        // The file's last chunk and the text, joined and written, in one step of
+        // `APPEND_UNITS` (`holds.ts`, ADR-037): what it holds is the same whatever the
+        // file's size.
+        const wrote = await slotted(ownerSlots(), APPEND_UNITS, async () => {
+          let bytes = added;
+          let prefix: ChunkRef[] = [];
+          if (now !== null) {
+            let tail: Uint8Array;
+            if (now.inline !== undefined) {
+              tail = now.inline;
+            } else {
+              const chunks = now.chunks ?? [];
+              const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
+                ? chunks.length : chunks.length - 1;
+              prefix = chunks.slice(0, whole);
+              const rest = chunks.slice(whole);
+              tail = rest.length === 0 ? new Uint8Array(0)
+                : (await o.files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
+            }
+            bytes = new Uint8Array(tail.byteLength + added.byteLength);
+            bytes.set(tail, 0);
+            bytes.set(added, tail.byteLength);
+          }
+          return fileConflictedAfter(async () => ({
+            entry: await o.files.write(path, bytes, {
+              expected: now?.entry.etag ?? "",
+              ...(now === null ? {} : { mode: now.entry.mode }), prefix,
+              writer: fileWriter(account), authorize }),
+          }));
+        });
+        if (!("conflict" in wrote)) {
+          return wrote;
+        }
+        // Another write landed between the read and this one: read it again.
+      }
+    } finally {
+      await o.sync();
+    }
+  },
+  /** A whole file written, its call checked in its units (`fileWrite`). */
+  async fileWrite(o: OwnerState, door: Door<FileWriteRequest>):
+      Promise<{ entry: Entry } | FileConflicted> {
+    await o.seededFor(door);
+    const { account, r, content } = await o.door(() => {
+      const { account, r } = door.check();
+      ownersTree(o, door.binding, account, "FILES.write", door.request, r["path"]);
+      const asked = r["expected_etag"];
+      if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
+        throw new Refusal("invalid", UNREAD_WRITE);
+      }
+      const given = r["content"];
+      const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
+      if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
+        throw new Refusal("invalid",
+                          "a written file is bytes or text, at most 4 MiB; larger ones are " +
+                          "uploaded");
+      }
+      return { account, r, content };
+    });
+    try {
+      // `Files.write` writes each step around its `FILES` call as a unit of its own.
+      return await fileConflictedAfter(async () => ({
+        entry: await o.files.write(r["path"], content, {
+          expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
+          authorize: () => door.check() }),
+      }));
+    } finally {
+      await o.sync();
+    }
+  },
+  /** One exact occurrence replaced, its call checked in its units (`fileEdit`). */
+  async fileEdit(o: OwnerState, door: Door<FileEditRequest>):
+      Promise<{ entry: Entry } | FileConflicted> {
+    await o.seededFor(door);
+    const asked = await o.door(() => {
+      const { account, r } = door.check();
+      ownersTree(o, door.binding, account, "FILES.edit", door.request, r["path"]);
+      const [old, replacement, etag] = [r["old_text"], r["new_text"], r["expected_etag"]];
+      if (typeof old !== "string" || old === "" || typeof replacement !== "string") {
+        throw new Refusal("invalid",
+                          "old_text is text of at least one character, and new_text is text");
+      }
+      if (typeof etag !== "string" || etag === "") {
+        throw new Refusal("invalid",
+                          "expected_etag is the file's etag, as file_stat or fetch answers it");
+      }
+      const path = storedPath(r["path"]);
+      const entry = o.files.stat(path);
+      if (entry === null || entry.kind !== "file") {
+        throw new FileFault("not_found", "no such file");
+      }
+      if (entry.etag !== etag) {
+        return { conflict: entry };
+      }
+      if (entry.size > EDIT_BYTES_MAX) {
+        throw new Refusal("invalid",
+                          `file_edit edits a file of at most ${EDIT_BYTES_MAX} bytes, the ` +
+                          "reads and time one call holds; write a larger one by upload");
+      }
+      return { account, path, old, replacement, content: o.files.open(path) };
+    });
+    if (asked.conflict !== undefined) {
+      return { conflict: asked.conflict };
+    }
+    const { account, path, old, replacement, content } = asked;
+    const authorize = () => door.check();
+    const refused = (refusal: EditRefusal): never => {
+      throw new Refusal("invalid", refusal === "ill_formed"
+        ? "old_text and new_text are well-formed text"
+        : refusal === "not_utf8" ? `${path} is not UTF-8 text`
+        : refusal === "absent" ? "old_text is not in the file: read it again and give its " +
+          "exact text"
+        : `old_text occurs ${refusal.times} times: give more of the text around the one to ` +
+          "change");
+    };
+    try {
+      if (content.inline !== undefined) {
+        // A small file, kept inline: edited whole, its bytes at most `INLINE_BYTES`.
+        let text: string;
+        try {
+          text = utf8Decoder("keep").decode(content.inline);
+        } catch {
+          return refused("not_utf8");
+        }
+        const first = text.indexOf(old);
+        if (first < 0) {
+          return refused("absent");
+        }
+        let times = 0;
+        for (let at = first; at >= 0; at = text.indexOf(old, at + 1)) {
+          times += 1;
+        }
+        if (times > 1) {
+          return refused({ times });
+        }
+        const edited = new TextEncoder().encode(
+          text.slice(0, first) + replacement + text.slice(first + old.length));
+        return await fileConflictedAfter(async () => ({
+          entry: await o.files.write(path, edited, {
+            expected: content.entry.etag, mode: content.entry.mode, writer: fileWriter(account),
+            authorize }),
+        }));
+      }
+      // A chunked file, edited chunk by chunk (`edit.ts`, ADR-037): each chunk read in a
+      // reading step, each chunk made and put in a making step, the units taken as its
+      // bytes come and released as they go, never across the begin, the commit or the
+      // other chunks. Its memory does not depend on its size.
+      const chunks = content.chunks ?? [];
+      const pool = ownerSlots();
+      const make = <T>(work: () => Promise<T>) => slotted(pool, EDIT_MAKE_UNITS, work);
+      const plan = await planEdit({
+        size: content.entry.size, chunks,
+        read: async (index) => (await o.files.fetch([{ sha256: chunks[index]!.sha256 }]))[0]!,
+      }, old, replacement, CHUNK_BYTES, (work) => slotted(pool, EDIT_READ_UNITS, work));
+      if ("refused" in plan) {
+        return refused(plan.refused);
+      }
+      return await fileConflictedAfter(async () => ({
+        entry: plan.size <= INLINE_BYTES
+          ? await o.files.write(path, await inlineOf(plan, make), {
+            expected: content.entry.etag, mode: content.entry.mode,
+            writer: fileWriter(account), authorize })
+          : await o.files.writeChunks(path, plan.size, plan.hashes, plan.make, {
+            expected: content.entry.etag, mode: content.entry.mode,
+            writer: fileWriter(account), readable: chunks.map(({ sha256 }) => sha256),
+            authorize, hold: make }),
+      }));
+    } finally {
+      await o.sync();
+    }
+  },
+  fileHistory(o: OwnerState, { r }: Call<FileHistoryRequest>):
+      { changes: Change[]; next: number | null } {
+    // One answer holds the page (`pages.ts`): when versions are left, `next` the last's.
+    const kept = o.files.history(r["path"], r["before"] ?? null, r["limit"]);
+    return fitList(kept, kept.changes, { changes: [], next: Number.MAX_SAFE_INTEGER },
+                   (changes) => ({ changes, next: changes.at(-1)!.version }));
+  },
+  fileUsage(o: OwnerState, { account }: Call<undefined>): Usage {
+    return o.files.usage(fileWriter(account));
+  },
+  fileMkdir(o: OwnerState, { account, r, binding, request }: Call<MkdirRequest>):
+      { entry: Entry } | FileConflicted {
+    ownersTree(o, binding, account, "FILES.mkdir", request, r["path"]);
+    return fileConflicted(() => ({
+      entry: o.files.mkdir(r["path"], { expected: r["expected_etag"],
+                                            writer: fileWriter(account) }),
+    }));
+  },
+  fileRemove(o: OwnerState, { account, r, binding, request }: Call<RemoveRequest>):
+      { removed: number } | FileConflicted {
+    ownersTree(o, binding, account, "FILES.remove", request, r["path"]);
+    heldToRead(account, r["expected_etag"]);
+    return fileConflicted(() => o.files.remove(r["path"], {
+      expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
+      writer: fileWriter(account) }));
+  },
+  fileRename(o: OwnerState, { account, r, binding, request }: Call<RenameRequest>):
+      { entry: Entry } | FileConflicted {
+    ownersTree(o, binding, account, "FILES.rename", request, r["from"], r["to"]);
+    heldToRead(account, r["expected_etag"]);
+    return fileConflicted(() => ({
+      entry: o.files.rename(r["from"], r["to"], {
+        expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
+        writer: fileWriter(account) }),
+    }));
+  },
+  fileRestore(o: OwnerState, { account, r, binding, request }: Call<RestoreRequest>):
+      { entry: Entry } | FileConflicted {
+    ownersTree(o, binding, account, "FILES.restore", request, r["path"]);
+    heldToRead(account, r["expected_etag"]);
+    return fileConflicted(() => ({
+      entry: o.files.restore(r["path"], r["version"], {
+        expected: r["expected_etag"], writer: fileWriter(account) }),
+    }));
+  },
+  storageUsage(o: OwnerState, _call: Call<undefined>): {
+    used_bytes: number; limit_bytes: number | null;
+    breakdown: { files: number; messages: number; collections: number };
+    deleted_content: { kept_bytes: number; kept_up_to_days: number } } {
+    const usage = o.files.usage();
+    const used = usage.stored;
+    // Each kind's bodies, inline or placed (a placed content counted once); files are the
+    // rest, so the parts always sum to what is used.
+    const messages = Math.min(used, o.ledger.storedBytes());
+    const collections = Math.min(used - messages, o.collections.storedBytes());
+    // Deleted files kept for recovery: up to 30 days, within the same figure (the oldest go
+    // first past it), so a lower setting shortens recovery; counted in nothing used.
+    return { used_bytes: used, limit_bytes: usage.limits.max_bytes,
+             breakdown: { files: used - messages - collections, messages, collections },
+             deleted_content: { kept_bytes: o.files.garbageBytes(),
+                                kept_up_to_days: GC_GRACE_S / 86_400 } };
+  },
+  async dataKeyRewrap(o: OwnerState, door: Door<undefined>):
+      Promise<{ rewrapped: boolean; roots: number }> {
+    const days = await o.door(() => {
+      door.check();
+      return o.backups.manifests().map((manifest) => manifest.gen);
+    });
+    return o.files.rewrap(days);
+  },
+  async fileUploadTarget(o: OwnerState, door: Door<IntentRequest>):
+      Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
+                pending: string[] }> {
+    const plan = await o.door(() => o.files.uploadPlan(door.check().r["intent_id"]));
+    // The namespace and its wrapped data key, which only `FILES` opens (slice P, M4).
+    const { ns, key } = await o.files.space();
+    return { namespace: ns, key, ...plan };
+  },
+  fileUploadStored(o: OwnerState, { r }: Call<UploadStoredRequest>): { stored: number } {
+    return o.files.stored(r["intent_id"], r["chunks"]);
+  },
+  fileRead(o: OwnerState, call: Call<FileReadRequest>):
+      { entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] } {
+    const { r } = call;
+    visible(o, call, r["path"]);
+    const content: Content = o.files.open(r["path"]);
+    if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
+      return { entry: content.entry, not_modified: true };
+    }
+    const { content_id: _id, ...shown } = content;
+    return shown;
+  },
+  async fileReadChunks(o: OwnerState, door: Door<FileChunksRequest>):
+      Promise<{ chunks: Uint8Array[] }> {
+    const reads = await o.door(() => {
+      const call = door.check();
+      const { r } = call;
+      visible(o, call, r["path"]);
+      const { chunks = [] } = o.files.openVersion(r["path"], r["version"]);
+      const first = r["first"];
+      const many = r["count"];
+      if (typeof first !== "number" || typeof many !== "number" || !Number.isSafeInteger(first)
+          || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 2
+          || first + many > chunks.length) {
+        throw new Refusal("invalid", "first and count name 1 or 2 of the version's chunks");
+      }
+      return chunks.slice(first, first + many).map(({ sha256 }) => ({ sha256 }));
+    });
+    return { chunks: await o.files.fetch(reads) };
+  },
+  fileUploadBegin(o: OwnerState, { account, r }: Call<UploadBeginRequest>):
+      { intent_id: string; missing: string[]; expires_at: number } {
+    return o.files.begin(r["size"], r["chunks"], fileWriter(account));
+  },
+  async fileUploadChunks(o: OwnerState, door: Door<UploadChunksRequest>):
+      Promise<{ created: number }> {
+    const { r } = await o.door(() => door.check());
+    // `Files.upload` records each chunk stored, once `FILES` took it, in a unit of its own.
+    return o.files.upload(r["intent_id"], r["chunks"]);
+  },
+  fileUploadCommit(o: OwnerState, { account, r, binding }: Call<UploadCommitRequest>):
+      { entry: Entry } | FileConflicted {
+    ownersTree(o, binding, account, "FILES.write", { path: r["path"] }, r["path"]);
+    return fileConflicted(() => ({
+      entry: o.files.commit(r["intent_id"], r["path"], {
+        expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
+    }));
+  },
+  fileUploadAbort(o: OwnerState, { r }: Call<IntentRequest>): { aborted: boolean } {
+    return o.files.abort(r["intent_id"]);
+  },
+  fileRedact(o: OwnerState, { r }: Call<VersionRequest>): { redacted: number } {
+    return o.files.redact(r["path"], r["version"]);
+  },
+  fileHistoryPurge(o: OwnerState, { r }: Call<FileRequest>): { purged: number } {
+    return o.files.purge(r["path"]);
+  },
+  fileChanges(o: OwnerState, { r, readable }: Call<ChangesRequest>):
+      { changes: Change[]; cursor: number; reset: boolean } {
+    const changes = o.files.changes(r["after"], r["limit"]);
+    if (readable === null) {
+      return changes;
+    }
+    // A client's sandbox whose readable set changed since its last read (a new agent's run,
+    // a widened file scope) reads the feed again from its start: `reset`.
+    const moved = readable.scope !== null && o.files.leaseReadable(
+      readable.lease, sha256Hex(readable.scope)
+        .slice(0, 16));
+    const test = readable.test;
+    return { ...changes, reset: changes.reset || moved,
+             changes: changes.changes.filter((change) => test(change.path)) };
+  },
+  fileSyncCommit(o: OwnerState, { r }: Call<SyncCommitRequest>): { outcomes: SyncOutcome[] } {
+    o.heldBack = heldBackOf(r["ops"]);
+    try {
+      return o.files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
+                                      ops: r["ops"] },
+                                    (authority) => o.grants.full(authority));
+    } finally {
+      o.heldBack = null;
+    }
+  },
+  fileSyncUploadBegin(o: OwnerState, { r }: Call<SyncUploadBeginRequest>):
+      { intent_id: string; missing: string[]; expires_at: number } {
+    return o.files.syncBegin(r["lease_id"], r["epoch"], r["size"], r["chunks"]);
+  },
+  async fileSyncUploadChunks(o: OwnerState, door: Door<SyncUploadChunksRequest>):
+      Promise<{ created: number }> {
+    const r = await o.door(() => {
+      const { r: fields } = door.check();
+      if (o.files.intentWriter(fields["intent_id"])
+          !== o.files.syncWriter(fields["lease_id"], fields["epoch"])) {
+        throw new Refusal("sync_fenced", SYNC_FENCED);
+      }
+      return fields;
+    });
+    return o.files.upload(r["intent_id"], r["chunks"]);
+  },
+  fileSyncUploadAbort(o: OwnerState, { r }: Call<SyncUploadAbortRequest>): { aborted: boolean } {
+    const writer = o.files.syncWriter(r["lease_id"], r["epoch"]);
+    let owner: string | null;
+    try {
+      owner = o.files.intentWriter(r["intent_id"]);
+    } catch (error) {
+      if (!(error instanceof Refusal && !error.invalid)) {
+        throw error;  // a malformed id: invalid
+      }
+      owner = null;  // gone already: expired, committed or let go
+    }
+    if (owner !== null && owner !== writer) {
+      throw new Refusal("sync_fenced", SYNC_FENCED);
+    }
+    return owner === null ? { aborted: false } : o.files.abort(r["intent_id"]);
+  },
+});

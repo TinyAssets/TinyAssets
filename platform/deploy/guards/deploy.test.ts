@@ -31,8 +31,10 @@ import { PLATFORM } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { WRANGLER, workerFolders } from "../../ci/workers";
 import { type Domain, openBlob, sealBlob } from "../../contract/src/envelope";
-import { APP_RESOURCE, AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
-         WEB_REDIRECT } from "../../doors/src/config";
+import {
+  AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
+} from "../../doors/src/config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import { outsideOpen, ownerOpen } from "../../doors/src/control";
 import { parseControl } from "../../doors/src/directory";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";

@@ -7,8 +7,10 @@ import { vi } from "vitest";
 
 import { ADMIN_CALLER } from "../../admin/src/caller";
 import { type Row, sqlIn as rowsIn } from "../../ci/workerd";
-import { APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now, PUBLIC_ORIGIN, WEB_CLIENT,
-         WEB_REDIRECT } from "../src/config";
+import {
+  type DoorsEnv, MCP_RESOURCE, now, PUBLIC_ORIGIN, WEB_CLIENT, WEB_REDIRECT,
+} from "../src/config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import { authorizationServer } from "../src/oauth";
 import worker from "./entry";
 import { fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";

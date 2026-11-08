@@ -6,7 +6,7 @@
  * own storage with that bound lowered (`inObject`). Where it went through the router's
  * owner channel, this one goes through the object's RPC door with a binding.
  */
-import type { WrittenRow } from "../src/owner-do";
+import type { WrittenRow } from "../src/collections";
 import { describe, expect, it } from "vitest";
 
 import { Collections, Conflict, LIMITS, type Row } from "../src/collections";

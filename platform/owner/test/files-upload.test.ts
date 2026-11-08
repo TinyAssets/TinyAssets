@@ -260,7 +260,7 @@ describe("an upload", () => {
     });
     expect((await r.stub.fileUsage(r.bind(null))).intents).toBe(MAX_OPEN_INTENTS);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
     // The held-chunk bound reads its counter: one short of it takes one chunk, not two.
@@ -368,11 +368,11 @@ describe("garbage collection", () => {
     });
     // The rows marked as these limits keep them, every marked row due, then every garbage
     // chunk: three passes collect all there is to collect.
-    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, limits, (files) => files.run(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, limits, (files) => files.run(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
-    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, limits, (files) => files.run(Date.now() / 1000));
     expect(await lostContent(r.stub)).toEqual([]);
     expect(await read(r, `${W}/from-temp`)).toEqual(body(4));
     await inFiles(r.stub, limits, async (files) => {
@@ -408,14 +408,14 @@ describe("a chunk", () => {
     expect(revived.begun.missing).toEqual([]);
     expect(await chunk(r, sha)).toMatchObject({ state: "live", refs: 1, gc_after: null });
     await r.stub.fileRemove(r.bind(null), { path: `${W}/b`, expected_etag: null, recursive: false });
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect(await chunk(r, sha)).toMatchObject({ state: "live" });  // the delete keeps 30 days
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage" });
     expect(await inBucket(r, sha)).toBe(true);  // inside its grace
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect(await inBucket(r, sha)).toBe(false);
     const [kept, counted] = await fileCounters(r.stub);
@@ -430,7 +430,7 @@ describe("a chunk", () => {
     const begun = await begin(r, [piece]);
     expect(await chunk(r, sha)).toMatchObject({ state: "uploading", stored: 0, holds: 1 });
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect(await sqlIn(r.stub, "SELECT * FROM file_intents")).toEqual([]);
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage", stored: 0, holds: 0 });
     const again = await begin(r, [piece]);
@@ -477,13 +477,13 @@ describe("a chunk", () => {
     const sha = sha256Hex(piece);
     await begin(r, [piece]);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     const failing: ChunkStore = through({
       deleteChunks: async () => { throw new Error("FILES is down"); },
     });
     // The failure stays in the chunk's row: the pass itself completes.
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000), failing);
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000), failing);
     const deleting = await chunk(r, sha);
     expect(deleting).toMatchObject({ state: "deleting" });
     expect(deleting!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
@@ -492,7 +492,7 @@ describe("a chunk", () => {
     // A delete that outlasts its pass's budget is tried again, as a failed one is.
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     const hung: ChunkStore = { ...failing, deleteChunks: () => new Promise(() => undefined) };
-    await inFiles(r.stub, {}, (files) => files.collect(
+    await inFiles(r.stub, {}, (files) => files.run(
       Date.now() / 1000, Date.now() + DELETE_FLOOR_MS + 20), hung);
     expect((await chunk(r, sha))!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
     // A pass with less than DELETE_FLOOR_MS left, or none, begins no delete: FILES is not
@@ -506,13 +506,13 @@ describe("a chunk", () => {
     expect(DELETE_FLOOR_MS).toBeGreaterThan(500);
     for (const left of [500, -1]) {
       await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
-      await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000,
+      await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000,
                                                          Date.now() + left), recording);
       expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
     }
     expect(asked).toEqual([]);
     await sqlIn(r.stub, "UPDATE file_chunks SET state = 'garbage', gc_after = 1");
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect((await begin(r, [piece])).missing).toEqual([sha]);
   });
@@ -541,7 +541,7 @@ describe("a chunk", () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 9);
     await upload(r, `${W}/a`, [piece]);
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000 + 400 * 86_400));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000 + 400 * 86_400));
     expect(await chunk(r, sha256Hex(piece))).toMatchObject({ state: "live", refs: 1 });
     expect(await inBucket(r, sha256Hex(piece))).toBe(true);
   });
@@ -582,7 +582,7 @@ describe("a chunk between a pass's units", () => {
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
       const commit = state.storage.transaction(() => held);
-      const pass = files.collect(Date.now() / 1000 + 10);
+      const pass = files.run(Date.now() / 1000 + 10);
       const again = gate.write(() => files.begin(piece.byteLength, [sha], "owner"));
       release();
       const begun = await again;
@@ -615,7 +615,7 @@ describe("a chunk between a pass's units", () => {
       const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, storage) => {
         const gate = new WriteGate(storage.storage);
         const files = filesOn(gate.storage, faulty(gate.write, (n) => n === unit), recording);
-        return failure(() => files.collect(Date.now() / 1000 + 10));
+        return failure(() => files.run(Date.now() / 1000 + 10));
       });
       expect([unit, failed.message, deletes.length]).toEqual([unit, STORAGE_FAULT, asked]);
       expect(await chunk(r, sha256Hex(piece))).toMatchObject({ state });
@@ -686,7 +686,7 @@ describe("history retention", () => {
     }
     // Due rows go at the alarm; the newest ten stay whatever their age.
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect((await r.stub.fileHistory(r.bind(null), { path: `${W}/a`, limit: 100 })).changes
       .map((c) => c.version)).toEqual(rows.slice(2).map((row) => row["version"]).reverse());
     const [kept, counted] = await fileCounters(r.stub);

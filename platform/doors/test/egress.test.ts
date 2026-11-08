@@ -17,7 +17,7 @@ import { PLATFORM_CALLER } from "../../owner/src/admission";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
 import type { NetworkPlan } from "../../owner/src/network";
-import type { Binding } from "../../owner/src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import type { Bound } from "../src/binder";
 import { type DoorsEnv } from "../src/config";

@@ -15,25 +15,27 @@
  * builds a binding (`guards/binder.test.ts`). The object checks the owner again against
  * its own name and stored owner, so a bug here reaching the wrong object fails there.
  */
+import { apiKeyOrigin } from "../../contract/src/binding";
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX16, HEX32, HEX64, RUN_ID } from "../../contract/src/ids";
 
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
-import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
+import type { OwnerDO } from "../../owner/src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
 } from "../../contract/src/socket-shape";
 import { principal } from "../../contract/src/text";
 import { ADMIN_CALLER } from "../../admin/src/caller";
 
-import type { Vendor } from "./apps";
+import type { Vendor } from "../../contract/src/apps";
 import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 
 import {
-  APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
-  ownerIssuer,
+  type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE, ownerIssuer,
 } from "./config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
 
@@ -135,19 +137,6 @@ export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): P
   }
   return principal(`${FOREIGN}${(await sha256(issuer)).slice(0, 32)}-${
     encodeURIComponent(principal(subject))}`);
-}
-
-/**
- * The outside identity an API key resolves to: the Python's `api_keys._client` and
- * `_family`, byte for byte, which the object's own `apiKeyOrigin` (`ledger.ts`) also is.
- * The object re-derives it from the key id wherever it matters (`registrant`), and the
- * tests hold the two equal; the ledger module itself is the object's alone (the
- * ledger-boundary guard).
- */
-export function apiKeyOrigin(keyId: string): Origin {
-  const hash = (text: string) => sha256Hex(text);
-  return { client: hash(`tinyassets-api-key-client\0${keyId}`),
-           family: hash(`tinyassets-api-key-family\0${keyId}`) };
 }
 
 /** The 64-hex outside client an OAuth `client_id` is, at our issuer. */

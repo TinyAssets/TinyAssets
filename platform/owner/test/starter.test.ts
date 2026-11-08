@@ -11,10 +11,11 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { agentFile } from "../src/agent-file";
-import { type Entry } from "../src/files";
-import { LEDGER_LIMITS, nativeId } from "../src/ledger";
+import { type Entry, fileUrl } from "../src/files";
+import { LEDGER_LIMITS } from "../src/ledger";
+import { nativeId } from "../../contract/src/binding";
 import { Notices } from "../src/notices";
-import { fileUrl, type OwnerDO, RUN_STARTS_NONE } from "../src/owner-do";
+import { type OwnerDO, RUN_STARTS_NONE } from "../src/owner-do";
 import { SEARCH_SCAN } from "../src/file-search";
 import { contentIdOf } from "../../contract/src/content";
 import {

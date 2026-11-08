@@ -29,7 +29,7 @@ import { utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
-import type { InboundAnswer } from "../../owner/src/owner-do";
+import type { InboundAnswer } from "../../contract/src/binding";
 import { refusalOf } from "../../contract/src/refusal";
 
 import apps from "../shared-apps.json" with { type: "json" };

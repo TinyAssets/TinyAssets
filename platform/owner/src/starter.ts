@@ -10,7 +10,7 @@
  * offered beside it, and its state.
  *
  * **Seeding.** An admitted owner with no reconciled version is seeded by the `starter` lane
- * (`ownerLanes`), at once: so every owner, however it first arrives (the app, or Claude or
+ * (the object's schedule), at once: so every owner, however it first arrives (the app, or Claude or
  * ChatGPT over MCP), has `main`. Each file is written through the files plane as the
  * owner's own write (`writer` `owner`, history op `starter`, so `file_history` shows it), a
  * receipt for each, `agent.json` last: until it lands there is no agent, and a seed that
@@ -47,6 +47,7 @@ import { type Content, FileConflict, type Files } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { ownersOnly } from "./paths";
 import { storedPath, within, WORKSPACE } from "../../contract/src/paths";
+import type { Call, OwnerState } from "./owner-do";
 
 /**
  * The most paths a package may name, its files and the paths it once shipped and dropped
@@ -586,3 +587,18 @@ export class Starter {
     });
   }
 }
+
+// -- THE DOORS: the `starter` rows' handlers (`contract/doors.json`) ------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `starter` doors' handlers, by door. */
+export const starterDoors = Object.freeze({
+  starterReceipts(o: OwnerState, _call: Call<undefined>):
+      { version: number; carried: number; receipts: Receipt[] } {
+    return { version: o.starter.version(), carried: o.starter.carried(),
+           receipts: o.starter.receipts() };
+  },
+});

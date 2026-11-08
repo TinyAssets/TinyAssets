@@ -89,30 +89,43 @@
  * object's (`owner-do.ts`, `sessions.ts`, `policy.ts`), as the Python's router op ran
  * them around the ledger.
  */
+import { apiKeyOrigin, nativeId } from "../../contract/src/binding";
+import { clock } from "./clock";
+import type { Binding, Origin, Source } from "../../contract/src/binding";
 import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX16, HEX64, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
 
-import { AGENT_DIR } from "./authority";
+import { AGENT_DIR, filerOf, may, NOT_GRANTED } from "./authority";
 import {
-  type Adopt, adopted, BODY_BYTES_MAX, inlineWindow, type Placed, type Window,
+  type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, inlineWindow, type Placed, type Window,
 } from "./bodies";
-import { FILERS } from "./collections";
+import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
 import { Refusal, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
-import { bodied, type Cut, fitPage, PAGE_BYTES, whole } from "./pages";
+import {
+  agentsPage, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow, INBOX_PART,
+  PAGE_BYTES, whole,
+} from "./pages";
 import {
   bloomHas, bloomOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
   parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_LEAST_BYTES,
   SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
-import { admittedMethods, kindFor, ringingMethods } from "../../contract/src/wake-records";
+import {
+  admittedMethods, eventKind, kindFor, ringingMethods, wakeKinds,
+} from "../../contract/src/wake-records";
 import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { type Change, CHANGES, type Follows, follows } from "../../contract/src/wake-kinds";
+import type {
+  Account, Call, Door, OwnerState, RegisterRequest,
+} from "./owner-do";
+import type { Heads } from "./pages";
+import type { Events } from "../../contract/src/wake-records";
 
 /**
  * The reader and sender id of the object's owner. An outside agent's id is `agent_` + hex;
@@ -165,10 +178,6 @@ export function mailInput(mail: Pick<Delivery, "sender_id" | "sender_kind" | "se
   return header + body + footer;
 }
 
-/** The ledger id of the owner's agent `agent`: `ta_` and its name's digest, 16 hex. */
-export function nativeId(agent: string): string {
-  return "ta_" + sha256Hex(`tinyassets-native-agent\0${agent}`).slice(0, 16);
-}
 /** New mail to or from an agent whose `agent.json` is gone. */
 export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed; its mail " +
   "is kept, and new mail to or from it is refused";
@@ -324,18 +333,6 @@ export function checkMessage(body: unknown): asserts body is string {
   if (LONE_SURROGATE.test(body)) {
     throw new Refusal("message_body", "a message body is well-formed text");
   }
-}
-
-/** A verified outside client: what the binder resolved the caller's credential to. */
-export interface Origin {
-  readonly client: string;
-  readonly family: string;
-}
-
-/** How the binder verified an origin: an API key (`ref` is its key id) or an MCP client. */
-export interface Source {
-  readonly kind: "api_key" | "mcp";
-  readonly ref: string;
 }
 
 /** A run of one of the owner's own agents, which acts in the ledger as that agent. */
@@ -619,10 +616,6 @@ type StoredWake = {
   created_at: number;
 };
 
-export function clock(): number {
-  return Date.now() / 1000;
-}
-
 function token(bytes: number): string {
   const raw = new Uint8Array(bytes);
   crypto.getRandomValues(raw);
@@ -672,14 +665,6 @@ export function displayName(value: unknown): string {
     return "";
   }
   return Array.from(value.replace(/[^\p{L}\p{N}_ .-]/gu, "").trim()).slice(0, 80).join("");
-}
-
-/** The outside identity an API key resolves to (`api_keys._client`, `_family`). */
-export function apiKeyOrigin(keyId: string): Origin {
-  return {
-    client: sha256Hex("tinyassets-api-key-client\0" + keyId),
-    family: sha256Hex("tinyassets-api-key-family\0" + keyId),
-  };
 }
 
 /** A binder's origin: null (the owner) or exactly a 64-hex client and family. */
@@ -734,18 +719,18 @@ export function outcome(value: unknown): Outcome {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Refusal("invalid", "invalid wake outcome");
   }
-  const o = value as Record<string, unknown>;
-  const keys = Object.keys(o);
+  const given = value as Record<string, unknown>;
+  const keys = Object.keys(given);
   const states = ["sent", "rate_limited", "failed", "unknown", "suppressed"];
-  if (!states.includes(o["state"] as string)
+  if (!states.includes(given["state"] as string)
       || !keys.every((k) => ["state", "status", "retry_after", "reason", "accepted"].includes(k))
-      || ("accepted" in o && (typeof o["accepted"] !== "boolean" || o["state"] !== "rate_limited"))
-      || ("status" in o && !count(o["status"], 100, 599))
-      || ("retry_after" in o && o["retry_after"] !== null && typeof o["retry_after"] !== "number")
-      || ("reason" in o && (typeof o["reason"] !== "string" || !REASON.test(o["reason"])))) {
+      || ("accepted" in given && (typeof given["accepted"] !== "boolean" || given["state"] !== "rate_limited"))
+      || ("status" in given && !count(given["status"], 100, 599))
+      || ("retry_after" in given && given["retry_after"] !== null && typeof given["retry_after"] !== "number")
+      || ("reason" in given && (typeof given["reason"] !== "string" || !REASON.test(given["reason"])))) {
     throw new Refusal("invalid", "invalid wake outcome");
   }
-  return o as unknown as Outcome;
+  return given as unknown as Outcome;
 }
 
 /**
@@ -3104,3 +3089,429 @@ export class Ledger {
     return times.length ? Math.max(Math.min(...times), now) : null;
   }
 }
+
+export interface DisableRequest {
+  readonly agent_id: string;
+  readonly reason: string;
+}
+export interface AgentRequest {
+  readonly agent_id: string;
+}
+export interface WakeLimitsRequest {
+  readonly agent_id: string;
+  /** The owner's hourly cap on the agent's wakes, or null for none (the default). */
+  readonly max_wakes_per_hour: number | null;
+  readonly batch_window_s: number;
+  readonly expected_generation: number;
+}
+/** The owner's apply of a held registration: the card and the digest it was shown. */
+export interface CardApply {
+  readonly card_id: string;
+  readonly digest: string;
+}
+export interface PostRequest {
+  readonly room_id: string;
+  readonly client_message_id: string;
+  readonly body: string;
+  readonly parent_id: string | null;
+}
+/** An agents list's page: after the cursor a `next` an answer gave (`outsideAgents`). */
+export interface AgentsRequest {
+  readonly after?: string;
+}
+export interface ReadRequest {
+  readonly limit: number;
+  readonly max_bytes?: number;
+  readonly pad_bytes?: number;
+  /** The first message's body from this byte: a `body_next_offset` an answer gave. */
+  readonly body_offset?: number;
+  /** With `body_offset`, the message it reads on: refused when the first is another. */
+  readonly message_id?: string;
+}
+/** A mail chain the owner reads, from one of its messages (`mailChain`). */
+export interface ChainRequest {
+  readonly message_id: string;
+  readonly limit: number;
+  readonly after?: number;
+  readonly body_offset?: number;
+  readonly body_message_id?: string;
+}
+export interface AckRequest {
+  readonly through: number;
+}
+/** What changed for a main agent: its unread mail, and its rooms' rows past `after`. */
+export interface InboxDigestRequest {
+  readonly limit: number;
+  readonly after: number;
+  readonly max_bytes?: number;
+  readonly head_chars?: number;
+}
+/**
+ * An agent's client's MCP Events subscription, as the MCP door hands it once it verified
+ * the callback and the gateway sealed it: the id the door derived (from the caller, URL,
+ * event and arguments; never the client's), the event, the arguments (its command center,
+ * and the board or rooms it follows), the sealed blob, and when it lapses (seconds, or null).
+ */
+export interface SubscribeRequest {
+  readonly subscription_id: string;
+  readonly name: string;
+  readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
+                        readonly rooms?: readonly string[] };
+  readonly blob: string;
+  readonly kid: string;
+  readonly version: number;
+  readonly expires_at: number | null;
+}
+/** The caller that holds a subscription ending it: the id the door derived. */
+export interface UnsubscribeRequest {
+  readonly subscription_id: string;
+}
+/**
+ * The owner setting an agent's doorbell: the kind it pasted a token for, the id the door
+ * derived, what it follows, and the blob the gateway sealed the token and URL into.
+ */
+export interface AgentDoorbellRequest {
+  readonly agent_id: string;
+  readonly kind: string;
+  readonly subscription_id: string;
+  readonly board: boolean;
+  readonly rooms: readonly string[];
+  readonly blob: string;
+  readonly kid: string;
+  readonly version: number;
+}
+
+/**
+ * How often a mailbox read reads its placed bodies again when mail that came between its
+ * read of them and its unit put an unread placed body first (ADR-035).
+ */
+export const READ_TRIES = 3;
+
+/**
+ * A read of the archive that the lane's moves and rewrites changed under each of its
+ * `READ_TRIES`: retried soon, never an internal error (reviews N9 and N10).
+ */
+export function archiveMoving(): Refusal {
+  const retry = 1;
+  return new Refusal(STORAGE_BUSY, `${STORAGE_BUSY}: the archive moved this mail under each ` +
+    `of ${READ_TRIES} reads; try again in ${retry} second. ` +
+    JSON.stringify({ retry_after_s: retry }), { retryAfterS: retry });
+}
+
+/** A post's parent, hot at its gate, moved to the archive before its unit (`roomPost`). */
+export class ParentMoved extends Error {
+  override readonly name = "ParentMoved";
+}
+
+// -- THE DOORS: the `ledger` rows' handlers (`contract/doors.json`) -------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The agents a caller sees, a page of them (`outsideAgents`). */
+function agentsListed(o: OwnerState, { account, r }: Call):
+    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ReturnType<OwnerState["grants"]["apps"]>; next?: string } {
+  const own = account.origin === null && account.run === null;
+  let natives = o.ledger.natives(own);
+  const grant = account.grant;
+  if (!own && grant !== null && grant.mode === "scoped") {
+    // Where it acts: a run's stamp's universe, or the command center of a client's one
+    // enabled agent; none (no agent registered yet) covers none of them.
+    const mine = account.origin === null ? [] : o.ledger.agents(account.origin)
+      .filter((agent) => agent.disabled_reason === null);
+    const universe = account.run !== null ? account.run.stamp?.universe ?? null
+      : mine.length === 1 ? mine[0]!.command_center_id : null;
+    natives = natives.filter((native) => may(grant, "converse",
+                                             { universe, agent: native.agent }));
+  }
+  // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
+  // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
+  // app that is not connected yet.
+  const after = r["after"] === undefined ? null : r["after"];
+  if (after !== null && typeof after !== "string") {
+    throw new Refusal("invalid", "after is a next an agents list answered");
+  }
+  return agentsPage({ agents: o.ledger.agents(account.origin), owner_agents: natives,
+                      apps: o.grants.apps() }, after);
+}
+
+/**
+ * A post held at the hot ceiling (`storage_busy`) rings the schedule, so the lane moves.
+ * (When the archive cannot move for the storage figure, the ledger answers the one wall
+ * itself, `storage_full`: `Ledger.#roomForOne`, the same for every poster.)
+ */
+async function busyRings<T>(o: OwnerState, act: () => Promise<T>): Promise<T> {
+  try {
+    return await act();
+  } catch (error) {
+    if (error instanceof Refusal && error.code === "storage_busy") {
+      await o.sync();
+    }
+    throw error;
+  }
+}
+
+/**
+ * A post's caller checked, in each of its units: the first places nothing for a post the
+ * checks refuse, and the second commits only what they still allow.
+ */
+function poster(o: OwnerState, { account, r, binding }: Call):
+    { actor: Actor; authority: MailAuthority | null } {
+  const actor = actorOf(o, account);
+  const authority = mailAuthority(o, binding, account);
+  const to = o.ledger.recipient(actor, r["room_id"]);
+  if (to.native !== null) {
+    mailsAgent(o, account, authority, to.native);
+    o.keepTiers(binding);
+  }
+  return { actor, authority };
+}
+
+/** Who a caller is in the ledger: a run, its agent; else the owner or the outside client. */
+function actorOf(o: OwnerState, account: Account): Actor {
+  return account.run !== null ? { native: account.run.agent } : account.origin;
+}
+
+/**
+ * The authority a caller's mail goes under: none for the owner's own work (the owner's,
+ * or an owner-started run's), else the client's grant at its generation, as the binding
+ * verified it or the run's stamp holds it, and where a scoped grant acts.
+ */
+function mailAuthority(o: OwnerState, binding: Binding, account: Account): MailAuthority | null {
+  if (account.run !== null) {
+    const stamp = account.run.stamp;
+    return stamp === null || account.origin === null ? null
+      : { client: stamp.client, family: account.origin.family, generation: stamp.generation,
+          authenticated_at: stamp.authenticated_at, universe: stamp.universe };
+  }
+  if (account.origin === null || account.grant === null) {
+    return null;
+  }
+  return { client: account.origin.client, family: account.origin.family,
+           generation: account.grant.generation,
+           authenticated_at: binding.authenticated_at ?? null,
+           universe: o.universe(account) };
+}
+
+/**
+ * That a caller may start `agent`'s run by mail: a run holds `converse` among its scopes;
+ * a client's scoped grant (a run's stamp's too) holds `converse` for that agent where it
+ * acts. The owner's own work may.
+ */
+function mailsAgent(o: OwnerState, account: Account, authority: MailAuthority | null,
+                    agent: string): void {
+  if (account.run !== null) {
+    o.scope(account, "converse");
+  }
+  if (authority === null || account.grant?.mode !== "scoped") {
+    return;
+  }
+  if (!may(account.grant, "converse", { universe: authority.universe, agent })) {
+    throw new Refusal("refused", NOT_GRANTED);
+  }
+}
+
+/** The `ledger` doors' handlers, by door. */
+export const ledgerDoors = Object.freeze({
+  /** What changed for an agent, its call checked in each unit (`inboxDigest`). */
+  async inboxDigest(o: OwnerState, door: Door<InboxDigestRequest>):
+      Promise<{ mail: MailPage; rooms: Heads }> {
+    // Its placed bodies (ADR-035), mail and rows, are read from R2 between its units, as a
+    // mailbox read's; the read's unit marks only the mail it returns. One answer holds
+    // both: each part fits half of it (`INBOX_PART`, `pages.ts`), so neither starves.
+    const { mail, rooms, windows, chars } = await o.rereadingPage(() => {
+      const { account, r } = door.check();
+      const chars = headChars(r["head_chars"]);
+      const mail = new Set(o.ledger.placedNext(account.origin, r["limit"], INBOX_PART)
+        .contents);
+      return { contents: [...mail, ...contentsOf(o.collections.changed(
+        account.caller, { prefix: ROOM_PREFIX }, r["after"], r["limit"]).rows)],
+               maxOf: (contentId) => mail.has(contentId) ? INBOX_PART : headWindow(chars) };
+    }, (windows) => {
+      const { account, r } = door.check();
+      const changes = o.collections.changed(account.caller, { prefix: ROOM_PREFIX },
+                                                r["after"], r["limit"]);
+      return {
+        mail: o.ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null, 0, clock(),
+                                windows, 0, INBOX_PART),
+        rooms: changes, windows, chars: headChars(r["head_chars"]),
+      };
+    }, ({ mail: page }) => page.messages.length === 0 && page.more);
+    return { mail, rooms: heads(rooms, chars, windows, INBOX_PART) };
+  },
+  async mailboxRead(o: OwnerState, door: Door<ReadRequest>): Promise<MailPage> {
+    return o.rereadingPage(() => {
+      const { account, r } = door.check();
+      const offset = bodyOffset(r["body_offset"]);
+      const next = o.ledger.placedNext(account.origin, r["limit"]);
+      return { contents: next.contents,
+               offsetOf: (contentId) => contentId === next.first ? offset : 0 };
+    }, (windows) => {
+      const { account, r } = door.check();
+      return o.ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
+                               r["pad_bytes"] ?? 0, clock(), windows,
+                               bodyOffset(r["body_offset"]), PAGE_BYTES, r["message_id"] ?? null);
+    }, (page) => page.messages.length === 0 && page.more);
+  },
+  mailboxAck(o: OwnerState, { account, r }: Call<AckRequest>): { reader: string; through: number } {
+    return o.ledger.ack(account.origin, r["through"]);
+  },
+  /** A post, its call checked in each unit (`roomPost`). */
+  async roomPost(o: OwnerState, door: Door<PostRequest>): Promise<Posted> {
+    // A parent archived (acked, moved to a segment) is read from R2 before the units: its
+    // seq, from its id, in the gate; then its record, outside. One the lane moved after the
+    // gate found it hot is read so in a post again (review N10's Low), never refused as no
+    // parent: archived mail never returns hot, so a second post finds it archived.
+    const gated = await o.door(() => {
+      door.bound();
+      return o.archive.archivedParent(door.request);
+    });
+    for (let tries = 0; ; tries++) {
+      const parent = tries === 0 ? gated : await o.door(() => {
+        door.bound();
+        return o.archive.archivedParent(door.request);
+      });
+      const archived = parent === null ? null : await o.archive.archived(parent.seq, parent.id);
+      // In each unit: the parent the gate found hot is hot still.
+      const kept = () => {
+        if (archived === null && o.archive.archivedParent(door.request) !== null) {
+          throw new ParentMoved();
+        }
+      };
+      try {
+        return await busyRings(o, () => o.placing((): { body: unknown; writer: string }
+                                                            | { done: Posted } => {
+          const call = door.check();
+          const { r, account } = call;
+          const { actor } = poster(o, call);
+          kept();
+          // The room, the sender, the parent, the caps and a resend, before any byte is placed.
+          const resend = o.ledger.prepare(actor, r["room_id"], r["client_message_id"],
+                                              r["body"], r["parent_id"], archived);
+          return resend !== null ? { done: resend }
+            : { body: r["body"], writer: filerOf(account) };
+        }, (placed) => {
+          const call = door.check();
+          const { r, account } = call;
+          const { actor, authority } = poster(o, call);
+          kept();
+          return o.ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
+                                   r["parent_id"], clock(), authority, placed,
+                                   filerOf(account), archived);
+        }, { synced: true }));
+      } catch (error) {
+        if (!(error instanceof ParentMoved) || tries + 1 >= READ_TRIES) {
+          throw error instanceof ParentMoved ? archiveMoving() : error;
+        }
+      }
+    }
+  },
+  async outsideAgents(o: OwnerState, door: Door<AgentsRequest>):
+      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ReturnType<OwnerState["grants"]["apps"]>;
+                next?: string }> {
+    await o.seededFor(door);
+    return o.door(() => agentsListed(o, door.check()));
+  },
+  policyWakeLimits(o: OwnerState, { session: id, r }: Call<WakeLimitsRequest>):
+      { agent: Agent; generation: number } {
+    return o.storage.transactionSync(() => {
+      const agent = o.ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
+                                               r["batch_window_s"]);
+      const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
+                       batch_window_s: agent.batch_window_s };
+      const generation = o.policy.changed(id, r["expected_generation"], "wake_limits",
+                                              limits, agent.agent_id, clock());
+      return { agent, generation };
+    });
+  },
+  registerAgent(o: OwnerState,
+                { account: { origin }, r, binding }: Call<RegisterRequest | CardApply>):
+      Agent {
+    if (origin === null) {
+      return o.storage.transactionSync(() => {
+        const card = o.registrations.take(r["card_id"], r["digest"], clock());
+        return o.ledger.register(card.origin, card.source,
+                                     card.request as unknown as RegisterRequest);
+      });
+    }
+    return o.ledger.register(origin, binding.source, r as unknown as RegisterRequest);
+  },
+  disableAgent(o: OwnerState, { account: { origin }, r }: Call<DisableRequest>): Agent {
+    return o.ledger.disable(r["agent_id"], r["reason"], origin);
+  },
+  agentDoorbell(o: OwnerState, { r }: Call<AgentDoorbellRequest>):
+      { agent_id: string; subscription_id: string } {
+    const stored = o.ledger.subscribe(null, {
+      subscription_id: r["subscription_id"] as string, agent_id: r["agent_id"] as string,
+      kind: r["kind"] as string, board: r["board"] as boolean,
+      rooms: r["rooms"] as readonly string[], blob: r["blob"] as string,
+      kid: r["kid"] as string, version: r["version"] as number, expires_at: null,
+    });
+    return { agent_id: stored.agent_id, subscription_id: r["subscription_id"] as string };
+  },
+  agentDoorbellEnd(o: OwnerState, { r }: Call<UnsubscribeRequest>): { unsubscribed: boolean } {
+    return ({ unsubscribed: o.ledger.unsubscribe(null, r["subscription_id"]) });
+  },
+  deleteAgent(o: OwnerState, { r }: Call<AgentRequest>): { agent_id: string; messages: number } {
+    return o.ledger.remove(r["agent_id"]);
+  },
+  async mailChain(o: OwnerState, door: Door<ChainRequest>):
+      Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
+    const { r } = await o.door(() => door.check());
+    return o.archive.chain(door, r);
+  },
+  wakeEvents(o: OwnerState, { account, held, request: commandCenter }: Call<string | undefined>):
+      { events: Events[] } {
+    const grant = account.grant;
+    if (account.origin === null || account.run !== null || grant === null) {
+      if (commandCenter !== undefined) {
+        throw new Refusal("refused", "only an agent's own client subscribes its doorbell");
+      }
+      return { events: [] };
+    }
+    if (commandCenter === undefined) {
+      const reads = may(grant, "read_graph", "anywhere");
+      return { events: reads ? wakeKinds().flatMap((kind) => kind.push?.events ?? []) : [] };
+    }
+    if (typeof commandCenter !== "string") {
+      throw new Refusal("invalid", "invalid subscription arguments");
+    }
+    held(commandCenter);
+    const agent = o.ledger.subscriber(account.origin, commandCenter);
+    if (agent === undefined) {
+      throw new Refusal("refused", "not this caller's subscribing agent");
+    }
+    return { events: [kindFor(agent.delivery_method)!.push!.events!] };
+  },
+  wakeSubscribe(o: OwnerState, { account, r, held }: Call<SubscribeRequest>):
+      { subscription_id: string; agent_id: string; expires_at: number | null } {
+    if (account.origin === null || account.run !== null) {
+      throw new Refusal("refused", "only an agent's own client subscribes its doorbell");
+    }
+    if (typeof r["name"] !== "string" || eventKind(r["name"]) === null) {
+      throw new Refusal("invalid", "unknown event");
+    }
+    const args = r["arguments"] as Record<string, unknown> | null;
+    const follow = follows(args, ["command_center_id"]);
+    const center = args?.["command_center_id"];
+    if (typeof center !== "string") {
+      throw new Refusal("invalid", "invalid subscription arguments");
+    }
+    held(center);
+    const stored = o.ledger.subscribe(account.origin, {
+      subscription_id: r["subscription_id"] as string, command_center_id: center,
+      board: follow.board, rooms: follow.rooms, blob: r["blob"] as string,
+      kid: r["kid"] as string, version: r["version"] as number,
+      expires_at: r["expires_at"] as number | null,
+    });
+    return { subscription_id: r["subscription_id"] as string, ...stored };
+  },
+  wakeUnsubscribe(o: OwnerState, { account, r }: Call<UnsubscribeRequest>):
+      { unsubscribed: boolean } {
+    if (account.origin === null || account.run !== null) {
+      throw new Refusal("refused", "only the client that holds a subscription ends it");
+    }
+    return { unsubscribed: o.ledger.unsubscribe(account.origin, r["subscription_id"]) };
+  },
+});

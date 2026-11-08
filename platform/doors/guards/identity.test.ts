@@ -1,5 +1,5 @@
 /**
- * The doors' public identity (`src/identity.json`) is written once. Its readers that cannot
+ * The doors' public identity (`contract/identity.json`) is written once. Its readers that cannot
  * read it are held to it here: the contract, whose `ZONE` and `EGRESS_HOST` the runner the
  * sandbox template ships is built from (so they change only with a new template pair), and
  * the owner app's own scripts, browser modules that build its sign-in from their origin.
@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { EGRESS_HOST, ZONE } from "../../contract/src/egress";
-import identity from "../src/identity.json" with { type: "json" };
+import identity from "../../contract/identity.json" with { type: "json" };
 
 /** Whether the route pattern `pattern` (from the origin) takes `path`. */
 function takes(pattern: string, path: string): boolean {

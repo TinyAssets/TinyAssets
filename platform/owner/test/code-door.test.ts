@@ -17,9 +17,10 @@ import { OPEN_GATES } from "../../ci/fixtures";
 import { OUTSIDE_OFF } from "../../doors/src/control";
 
 import { profileNames } from "../../contract/src/doors";
-import type { Origin } from "../src/ledger";
+import type { Origin } from "../../contract/src/binding";
 import { jsonBytes } from "../../contract/src/encoded";
-import { CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, type OwnerDO } from "../src/owner-do";
+import { CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED } from "../src/codemode";
+import type { OwnerDO } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
 import { customTools, validate } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";

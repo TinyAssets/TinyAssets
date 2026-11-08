@@ -250,7 +250,7 @@ describe("a full history", () => {
     // delete (version 4) due before a's (version 2), both writes not yet.
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = CASE version WHEN 4 THEN 1 " +
                           "WHEN 2 THEN 2 ELSE 9000000000 END");
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.run(Date.now() / 1000));
     expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
       .toEqual([{ feed_floor: 4 }]);
     expect(await sqlIn(r.stub, "SELECT version FROM file_history ORDER BY version"))
@@ -334,11 +334,11 @@ describe("a full history", () => {
     // The rows were marked under keep 1; the policy in force keeps 3.
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1");
     await inFiles(r.stub, { keep_versions: 3 }, async (files) => {
-      expect(files.nextAlarm(1000)).toBe(1000);
-      await files.collect(Date.now() / 1000);
-      expect(files.nextAlarm(1000)).toBe(1000);  // 500 paths a pass: one more to go
-      await files.collect(Date.now() / 1000);
-      expect(files.nextAlarm(Date.now() / 1000)).toBe(null);
+      expect(files.next(1000)).toBe(1000);
+      await files.run(Date.now() / 1000);
+      expect(files.next(1000)).toBe(1000);  // 500 paths a pass: one more to go
+      await files.run(Date.now() / 1000);
+      expect(files.next(Date.now() / 1000)).toBe(null);
     });
     expect(await sqlIn(r.stub,
                        "SELECT COUNT(*) AS n FROM file_history WHERE prune_after IS NOT NULL"))
@@ -355,8 +355,8 @@ describe("a full history", () => {
     });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
     await inFiles(r.stub, { keep_versions: 1, retention_days: 2 }, async (files) => {
-      expect(files.nextAlarm(1000)).toBe(1000);
-      await files.collect(1000);
+      expect(files.next(1000)).toBe(1000);
+      await files.run(1000);
     });
     expect(await sqlIn(r.stub, "SELECT prune_after - at AS due FROM file_history " +
                                  "ORDER BY version"))
@@ -387,8 +387,8 @@ describe("a full history", () => {
     });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_recent = 5");
     await inFiles(r.stub, { keep_versions: 1, keep_recent: 2 }, async (files) => {
-      expect(files.nextAlarm(1000)).toBe(1000);
-      await files.collect(1000);
+      expect(files.next(1000)).toBe(1000);
+      await files.run(1000);
     });
     expect(await sqlIn(r.stub, "SELECT op FROM file_history WHERE path = ?", `${W}/a`))
       .toEqual([{ op: "write" }, { op: "write" }]);
@@ -408,13 +408,13 @@ describe("a full history", () => {
     });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1");
     // A first pass under keep 2 stops after 500 paths; keep 1 then comes back in force.
-    await inFiles(r.stub, { keep_versions: 2 }, (files) => files.collect(1000));
+    await inFiles(r.stub, { keep_versions: 2 }, (files) => files.run(1000));
     expect(await sqlIn(r.stub, "SELECT retain_cursor FROM file_space"))
       .toEqual([{ retain_cursor: `${W}/p499` }]);
     await inFiles(r.stub, { keep_versions: 1 }, async (files) => {
-      await files.collect(1000);
-      await files.collect(1000);
-      expect(files.nextAlarm(1000)).not.toBe(1000);
+      await files.run(1000);
+      await files.run(1000);
+      expect(files.next(1000)).not.toBe(1000);
     });
     // Every path's older version is due again, the first 500's included.
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history " +
@@ -448,7 +448,7 @@ describe("a full history", () => {
     expect(before.entries).toBeGreaterThan(600);
     expect(before.history).toBe(2);
     await inFiles(r.stub, { max_entries: 0, max_history: 0, max_inline_bytes: 0, max_bytes: 0 },
-                  (files) => files.collect(Date.now() / 1000));
+                  (files) => files.run(Date.now() / 1000));
     const after = await r.stub.fileUsage(r.bind(null));
     expect([after.entries, after.history, after.intents]).toEqual([0, 0, 0]);
     const [kept, counted] = await fileCounters(r.stub);

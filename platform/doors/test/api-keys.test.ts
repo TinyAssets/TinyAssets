@@ -12,7 +12,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { GRANT_LIMITS } from "../../owner/src/grants";
-import { apiKeyOrigin } from "../../owner/src/ledger";
+import { apiKeyOrigin } from "../../contract/src/binding";
 import {
   MAX_KEYS_PER_OWNER, newKey, parseKey, secretHash,
 } from "../src/api-keys";

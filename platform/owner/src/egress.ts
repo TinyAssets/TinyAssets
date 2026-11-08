@@ -71,6 +71,7 @@
  * finish within the gateway's 5-minute deadline: here a policy write ends it, as it ends
  * the owner's in-flight turns.
  */
+import type { SandboxBinding } from "../../contract/src/binding";
 import { CONNECTION_ID, HEX32, HEX64, randomHex, RUN_ID } from "../../contract/src/ids";
 
 import { apiRules, freeCall, tierMultiplier } from "../../contract/src/api-rules";
@@ -84,6 +85,9 @@ import { costMicros, largestFitting, periods } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
 import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
+import type { ModelRecord } from "../../contract/src/model-record";
+import type { Call, Door, OwnerState } from "./owner-do";
+import { clock } from "./clock";
 
 
 /**
@@ -125,23 +129,6 @@ export interface LiveStream {
   readonly run: string;
 }
 
-/**
- * What the binder knows of the sandbox from its token (`Binding.sandbox`): which token it
- * is, the SHA-256 of its secret, and for the egress token the egress generation E2B's
- * transform set beside it.
- */
-export type SandboxBinding =
-  | { readonly kind: "egress"; readonly token: string; readonly generation: number;
-      /** The SHA-256 of the run's own secret its path carried (`/r/<run>/<secret>/...`). */
-      readonly secret?: string;
-      /** The SHA-256 of the runner's secret (`x-ta-runner`): the runner's own doors. */
-      readonly runner?: string }
-  /**
-   * The sync agent's call: its sync token's hash, and the egress token's E2B's transform
-   * set beside it (slice S review M-5): the sync token alone, taken out of the VM, reaches
-   * nothing, since only a call from inside the sandbox carries its own lease's egress token.
-   */
-  | { readonly kind: "sync"; readonly token: string; readonly egress: string };
 
 export interface EgressRequest {
   /** The run the call's path names (`/r/<run>/c/<connection>/...`). */
@@ -266,12 +253,37 @@ export interface EgressCaps {
   readonly source_monthly_cost: number | null;
 }
 
-/** A connection's model as a sandbox call is priced by it: opaque here but for its bounds. */
-export interface EgressModel {
-  readonly id: string;
-  readonly maxTokens: number;
-  readonly contextWindow: number;
+/**
+ * Egress pricing: a sandbox call's most cost before its model is known, input at its
+ * dearest of uncached, cache-read and cache-write rates, each model's tokens at its rates by
+ * `cost` (pi-ai's `calculateCost`, `usage.ts`'s `priced`, handed in: the sandbox's spend runs
+ * nothing of pi's engine).
+ */
+
+/** A model's cost record with its input at its dearest rate: what a token can cost at most. */
+function dearest(model: ModelRecord): ModelRecord {
+  const top = (rates: { input: number; cacheRead: number; cacheWrite: number }) =>
+    Math.max(rates.input, rates.cacheRead, rates.cacheWrite);
+  return { ...model, cost: { ...model.cost, input: top(model.cost),
+                             ...(model.cost.tiers === undefined ? {}
+                               : { tiers: model.cost.tiers.map((tier) =>
+                                 ({ ...tier, input: top(tier) })) }) } };
 }
+
+/**
+ * The most µ$ a sandbox call of `input` and `output` tokens can cost on any of `models`,
+ * each model's tokens at most its own context window and output cap, at its dearest rates.
+ */
+export function egressPrice(models: readonly ModelRecord[], input: number, output: number,
+                            cost: ModelCost): number {
+  return Math.max(...models.map((model) => cost(dearest(model),
+                                                Math.min(input, model.contextWindow),
+                                                Math.min(output, model.maxTokens))));
+}
+
+/** A model's µ$ for `input` and `output` tokens at its catalog rates. */
+export type ModelCost = (model: ModelRecord, input: number, output: number) => number;
+
 
 /** What `open` reads beside its own rows, each at the open's unit. */
 export interface EgressDeps {
@@ -298,17 +310,13 @@ export interface EgressDeps {
   /** The connection's egress scope, source and models; null as `credential`'s. */
   readonly connection: (connection: string) =>
     { readonly scope: EgressScope; readonly source: string; readonly provider: string;
-      readonly models: readonly EgressModel[] } | null;
+      readonly models: readonly ModelRecord[] } | null;
   /** The caps for a call of `source`. */
   readonly caps: (source: string) => EgressCaps;
   /** The µ$ held in a period (`d:<day>`, `m:<month>`) by `source`, or by every source. */
   readonly spent: (period: string, source: string | null) => number;
-  /**
-   * The most µ$ a call of `input` and `output` tokens on any of `models` can cost (the
-   * catalog's rates, by pi-ai's `calculateCost`, each model's tokens at most its own
-   * context window and output cap): non-decreasing in the output.
-   */
-  readonly price: (models: readonly EgressModel[], input: number, output: number) => number;
+  /** A model's cost at its rates (pi-ai's `calculateCost`, `usage.ts`). */
+  readonly cost: ModelCost;
   /** In the open's unit: the spend counters past their window pruned, as `usage.ts` does. */
   readonly pruned: (now: number) => void;
 }
@@ -620,7 +628,7 @@ export class Egress {
    * tier's `multiplier`, so what it holds bounds what it can cost; the settle gives the
    * difference back. Refused, with the cap that binds, below `MIN_OUTPUT`.
    */
-  #reserve(runId: string, source: string, model: EgressModel, multiplier: number,
+  #reserve(runId: string, source: string, model: ModelRecord, multiplier: number,
            now: number): ({ ok: true } & Charged) | { ok: false; rule: string } {
     const models = [model];
     const input = model.contextWindow;
@@ -651,8 +659,10 @@ export class Egress {
     const floor = Math.min(most, MIN_OUTPUT);
     const byTokens = caps.run_tokens === null ? Number.POSITIVE_INFINITY
       : caps.run_tokens - run.tokens - input;
+    // The call's model is unknown until the gateway reads the body: priced at the most any
+    // of the connection's models charges (`egressPrice`), non-decreasing in the output.
     const price = (output: number) =>
-      Math.ceil(this.#deps.price(models, input, output) * multiplier);
+      Math.ceil(egressPrice(models, input, output, this.#deps.cost) * multiplier);
     const fits = (output: number) => price(output) <= costRoom;
     const output = largestFitting(Math.min(most, byTokens), fits);
     if (output < floor || output < 1) {
@@ -812,3 +822,71 @@ export class Egress {
     }
   }
 }
+
+// -- THE DOORS: the `egress` rows' handlers (`contract/doors.json`) -------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `egress` doors' handlers, by door. */
+export const egressDoors = Object.freeze({
+  /** A sandbox request admitted at open, its call checked in each unit (`egressOpen`). */
+  async egressOpen(o: OwnerState, door: Door<unknown>): Promise<EgressOpened | EgressRefusal> {
+    const { r, live } = await o.door(() => {
+      door.check();
+      const checked = egressRequest(door.request);
+      const lease = o.egress.lease(sandboxBinding(door.binding.sandbox), clock());
+      // Only the live lease's own run connection is ever refreshed for it.
+      const sandbox = sandboxBinding(door.binding.sandbox);
+      return { r: checked, live: lease !== null && sandbox.kind === "egress"
+        && o.runs.grantFor(checked.run, sandbox.secret, lease)?.connection
+          === checked.connection };
+    });
+    // Only a live lease's call may refresh its connection's OAuth credential.
+    if (live) {
+      try {
+        await o.connections.fresh(r.connection);
+      } catch {
+        // A refresh that failed leaves the credential as it was: the open below refuses it
+        // if it has expired, and uses it while it has not.
+      }
+    }
+    return o.door(() => {
+      door.check();
+      return o.egress.open(sandboxBinding(door.binding.sandbox), r, clock());
+    });
+  },
+  egressReserve(o: OwnerState, { binding, request }: Call<unknown>):
+      EgressReserved | EgressRefusal {
+    return o.egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
+                              clock());
+  },
+  egressBeat(o: OwnerState, { binding, request }: Call<{ reservation: string }>):
+      { beat: boolean } {
+    return { beat: o.egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
+                                   clock()) };
+  },
+  egressSettle(o: OwnerState, { binding, request }: Call<Record<string, unknown>>):
+      { settled: boolean } {
+    const { resealed, ...rest } = request ?? {};
+    const settled = o.egress.settle(sandboxBinding(binding.sandbox),
+                                        settleRequest(rest), clock());
+    if (settled.settled && resealed !== undefined) {
+      try {
+        o.connections.resealed(settled.connection, settled.version, resealed, Date.now());
+      } catch (error) {
+        if (!(error instanceof Refusal && error.invalid)) {
+          throw error;
+        }
+        // A malformed reseal is the gateway's bug: the call still settles, and the
+        // gateway reseals again at the next one.
+        console.error("a resealed blob the egress door handed back was malformed");
+      }
+    }
+    return { settled: settled.settled };
+  },
+  egressReceipts(o: OwnerState, _call: Call<undefined>): { receipts: EgressReceipt[] } {
+    return { receipts: o.egress.receipts() };
+  },
+});

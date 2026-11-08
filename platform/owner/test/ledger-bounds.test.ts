@@ -10,11 +10,11 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  checkLimits, clock, LEDGER_LIMITS, type Ledger, type LedgerLimits, type Origin, OWNER,
-} from "../src/ledger";
+import { checkLimits, LEDGER_LIMITS, type Ledger, type LedgerLimits, OWNER } from "../src/ledger";
+import { clock } from "../src/clock";
+import type { Origin } from "../../contract/src/binding";
 import { PLACE_BYTES } from "../../contract/src/limits";
-import { counters, DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
+import { counters, DOT, MCP, MUSE, origin, rig } from "./ledger-support";
 import { failure } from "./support";
 
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",

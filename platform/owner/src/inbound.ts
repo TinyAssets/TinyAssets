@@ -39,7 +39,15 @@ import { HEX32, randomHex } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
-import { type Profile, profile as checkedProfile } from "../../contract/src/inbound-proof";
+import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
+import type {
+  Call, Door, OwnerState,
+} from "./owner-do";
+import type { InboundAnswer } from "../../contract/src/binding";
+import { nativeId } from "../../contract/src/binding";
+import { clock } from "./clock";
+import { codePoints } from "../../contract/src/text";
+import { sha256Hex } from "../../contract/src/digest";
 
 /** The bindings an owner holds at most: a technical ceiling (the 10 GB, guard terms). */
 export const MAX_BINDINGS = 1_000;
@@ -286,3 +294,161 @@ export function ownerProof(row: Row): { profile: Profile; secret: string | null 
 }
 
 export type { Row as InboundRow };
+
+export interface InboundCreateRequest {
+  readonly kind: "capability" | "shared";
+  readonly agent: string;
+  readonly route: string;
+  readonly profile?: unknown;
+  readonly secret?: string;
+}
+export interface InboundSetRequest {
+  readonly binding_id: string;
+  readonly expected_revision: number;
+  readonly enabled?: boolean;
+  readonly agent?: string;
+}
+export interface BindingRequest {
+  readonly binding_id: string;
+}
+/** An inbound event as the binder hands it: its id and time, its raw bytes, its headers. */
+export interface InboundEvent {
+  readonly event_id: string;
+  readonly event_at: number;
+  readonly body: Uint8Array;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+// -- THE DOORS: the `inbound` rows' handlers (`contract/doors.json`) ------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/**
+ * An inbound event checked in its unit (its route's binding at the route's revision,
+ * enabled, as the call bound it): an owner-held proof on the raw bytes, and its mail's
+ * room, key and envelope; or the no-op a tripped breaker answers.
+ */
+function inboundEvent(o: OwnerState, { route, r }: Call, now: number):
+    { done: InboundAnswer }
+    | { row: Row; room: string; cmid: string; envelope: string } {
+  const row = route!;
+  const eventId = r["event_id"];
+  const eventAt = r["event_at"];
+  const body = r["body"];
+  const headers = r["headers"];
+  if (typeof eventId !== "string" || !eventId.trim() || codePoints(eventId) > 256
+      || typeof eventAt !== "number" || !Number.isSafeInteger(eventAt) || eventAt < 0
+      || eventAt > 999_999_999_999 || !(body instanceof Uint8Array)
+      || typeof headers !== "object" || headers === null || Array.isArray(headers)) {
+    throw new Refusal("invalid",
+                      "an inbound event is its id, its time, its bytes and its headers");
+  }
+  if (row.kind === "shared" && row.tripped === 1) {
+    return { done: { state: "no_op", error: "breaker_tripped" } };
+  }
+  const proof = ownerProof(row);
+  if (proof !== null && !proves(proof.profile, headers as Record<string, string>, body,
+                                proof.secret, Math.floor(now))) {
+    throw new Refusal("inbound_proof_invalid", PROOF_INVALID);
+  }
+  // An HMAC with no timestamp signs the body alone, so a captured body could come again
+  // under a new event id: such an event is keyed by its bytes, a replay always deduped.
+  const unstamped = proof?.profile.method === "hmac-sha256"
+    && proof.profile.timestamp_header === undefined;
+  const identity = unstamped
+    ? `body:${sha256Hex(body)}` : `id:${eventId}`;
+  const key = sha256Hex(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${identity}`);
+  const envelope = JSON.stringify({ inbound: {
+    binding: row.binding_id, event_id: eventId, event_at: eventAt,
+    raw_base64: Buffer.from(body).toString("base64") } });
+  return { row, room: `dm:${nativeId(row.agent)}`, cmid: `inb_${key}`, envelope };
+}
+
+/**
+ * An inbound event the agent's mail refused: too much unread mail (`ledger_full`) counts
+ * toward a shared app's breaker (and its trip is the owner's notice); the hot ceiling while
+ * older mail moves out (`storage_busy`) is retried and counts nothing; the rest are the
+ * event's own refusals.
+ */
+function inboundRefused(o: OwnerState, row: Row, error: unknown, now: number): InboundAnswer {
+  const refused = error instanceof Refusal ? error.code : null;
+  // The hot ceiling, clearing by itself or held by a full storage until the owner frees
+  // space (the ledger's wall, marked `ceiling`): the event is sent again, never lost.
+  if (refused === "storage_busy"
+      || (error instanceof Refusal && error.facts?.["ceiling"] === true)) {
+    return { state: "refused", error: "mailbox_full", retry: true };
+  }
+  if (error instanceof Refusal && error.transient) {
+    throw error;  // for the moment only (a full pool): never the event's own refusal
+  }
+  if (refused === "ledger_full") {
+    if (row.kind === "shared" && o.inbound.failed(row, Math.floor(now))) {
+      o.notices.add("inbound", `An inbound app's events to ${row.agent} were paused: ` +
+                        "its mailbox was full. Change the binding to resume.", now);
+    }
+    return { state: "refused", error: "mailbox_full", retry: true };
+  }
+  if (refused === "post_conflict") {
+    return { state: "refused", error: "event_conflict" };
+  }
+  if (refused === "message_body") {
+    return { state: "refused", error: "too_large" };
+  }
+  if (error instanceof Refusal && !error.invalid) {
+    return { state: "refused", error: "agent_unavailable" };
+  }
+  throw error;
+}
+
+/** The `inbound` doors' handlers, by door. */
+export const inboundDoors = Object.freeze({
+  inboundList(o: OwnerState, _call: Call<undefined>): { bindings: InboundBinding[] } {
+    return { bindings: o.inbound.list() };
+  },
+  inboundCreate(o: OwnerState, { request }: Call<InboundCreateRequest>): InboundBinding {
+    return o.inbound.create(created(request), clock());
+  },
+  inboundSet(o: OwnerState, { request }: Call<InboundSetRequest>): InboundBinding {
+    return o.inbound.set(request, clock());
+  },
+  inboundRevoke(o: OwnerState, { request }: Call<BindingRequest>):
+      { binding_id: string; route: string | null } {
+    return o.inbound.revoke(request);
+  },
+  async inboundAccept(o: OwnerState, door: Door<InboundEvent>): Promise<InboundAnswer> {
+    return o.placing((): {
+        body: unknown; writer: string } | { done: InboundAnswer } => {
+      const now = clock();
+      const event = inboundEvent(o, door.check(), now);
+      if ("done" in event) {
+        return event;
+      }
+      try {
+        const resend = o.ledger.prepare(null, event.room, event.cmid, event.envelope, null);
+        if (resend !== null) {
+          return { done: { state: "admitted", receipt: resend.message_id, deduped: true } };
+        }
+      } catch (error) {
+        return { done: inboundRefused(o, event.row, error, now) };
+      }
+      return { body: event.envelope, writer: "owner" };
+    }, (placed) => {
+      const now = clock();
+      const event = inboundEvent(o, door.check(), now);
+      if ("done" in event) {
+        return event.done;
+      }
+      o.keepTiers(door.binding);
+      try {
+        const posted = o.ledger.post(null, event.room, event.cmid, event.envelope, null,
+                                         now, null, placed, "owner");
+        o.inbound.succeeded(event.row);
+        return { state: "admitted", receipt: posted.message_id, deduped: false };
+      } catch (error) {
+        return inboundRefused(o, event.row, error, now);
+      }
+    }, { synced: true });
+  },
+});

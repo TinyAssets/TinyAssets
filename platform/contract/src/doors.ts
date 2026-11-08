@@ -39,6 +39,7 @@ import raw from "../doors.json" with { type: "json" };
 import profiles from "../profiles.json" with { type: "json" };
 
 import { RUN_CAPABILITIES, type RunCapability } from "./capabilities";
+import { Refusal } from "./refusal";
 
 type JsonSchema = Readonly<Record<string, unknown>>;
 
@@ -366,4 +367,23 @@ export function profileNames(name: ProfileName): readonly string[] {
 /** Every tool's name, in the table's order. */
 export function toolNames(): readonly string[] {
   return doorTable().flatMap((row) => row.tool === undefined ? [] : [row.tool.name]);
+}
+
+/**
+ * The request's fields are exactly `required`, plus any of `optional`, and none is
+ * `undefined` unless `undefinedAllowed`: a field sent is a value. Else refused `refusal`.
+ */
+export function fields(request: unknown, required: readonly string[], optional: readonly string[],
+                refusal: string, undefinedAllowed = false): Record<string, unknown> {
+  if (typeof request !== "object" || request === null || Array.isArray(request)) {
+    throw new Refusal("invalid", refusal);
+  }
+  const entries = Object.entries(request);
+  const keys = entries.map(([key]) => key);
+  if (!required.every((key) => keys.includes(key))
+      || !keys.every((key) => required.includes(key) || optional.includes(key))
+      || (!undefinedAllowed && entries.some(([, value]) => value === undefined))) {
+    throw new Refusal("invalid", refusal);
+  }
+  return request as Record<string, unknown>;
 }

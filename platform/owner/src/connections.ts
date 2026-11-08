@@ -76,6 +76,10 @@ import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
 import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
 import { codePoints, isPrintable, SOURCE_ID, utf8Bytes } from "../../contract/src/text";
+import type {
+  Call, Door, OwnerState,
+} from "./owner-do";
+import { clock } from "./clock";
 
 export interface ConnectionLimits {
   readonly maxConnections: number;
@@ -872,7 +876,7 @@ export class Connections {
   // -- the `connections` lane ------------------------------------------------------
 
   /** When the lane next has work: a flow or pending row to sweep, or a revoke due. */
-  nextDue(now: number): number | null {
+  next(now: number): number | null {
     const next = this.#sql.exec<{ at: number | null }>(
       "SELECT MIN(at) AS at FROM (SELECT MIN(expires_at) AS at FROM connection_flows " +
         "UNION ALL SELECT MIN(pending_until) FROM connections WHERE pending_until IS NOT NULL " +
@@ -986,3 +990,71 @@ export class Connections {
     });
   }
 }
+
+/**
+ * A connection to prepare: its source record's id, kind, display name and pi-ai provider,
+ * whether its provider can be asked to revoke what it issues, and, for OAuth, the redirect
+ * URI its flow (begun in the same unit) returns to.
+ */
+export interface ConnectionPrepareRequest {
+  readonly source: string;
+  readonly kind: "api_key" | "oauth2";
+  readonly display_name: string;
+  readonly provider: string;
+  readonly revocable: boolean;
+  readonly redirect_uri?: string;
+}
+/** A prepared connection's sealed blob, its kid, its models and, for OAuth, its expiry. */
+export interface ConnectionCommitRequest {
+  readonly connection: string;
+  readonly version: number;
+  readonly blob: string;
+  readonly kid: string;
+  readonly models: unknown[];
+  readonly expires_at?: number | null;
+  /** The setup check's code, when it failed after the provider issued the credential. */
+  readonly failed?: string;
+  /**
+   * Where the credential may be forwarded (the setup check's `egress`: its sealed base URL
+   * and endpoints); every commit but a failed one carries it.
+   */
+  readonly egress?: unknown;
+}
+export interface ConnectionRequest {
+  readonly connection: string;
+}
+export interface FlowFinishRequest {
+  readonly state: string;
+}
+
+// -- THE DOORS: the `connections` rows' handlers (`contract/doors.json`) --------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `connections` doors' handlers, by door. */
+export const connectionsDoors = Object.freeze({
+  connectionPrepare(o: OwnerState, { session, request }: Call<ConnectionPrepareRequest>): Prepared {
+    return o.connections.prepare(session, request, clock());
+  },
+  connectionCommit(o: OwnerState, { request }: Call<ConnectionCommitRequest>): ConnectionView {
+    return o.connections.commit(request, clock());
+  },
+  async connectionRevoke(o: OwnerState, door: Door<ConnectionRequest>):
+      Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
+    const revoked = await o.synced(() => door.within(() =>
+      o.connections.revoke(door.request, clock())));
+    await o.door(() => o.egress.end("connection",
+                                            (live) => live.connection === revoked.connection));
+    return revoked;
+  },
+  connectionList(o: OwnerState, _call: Call<undefined>): { connections: ConnectionView[] } {
+    return ({ connections: o.connections.list() });
+  },
+  flowFinish(o: OwnerState, { session, request }: Call<FlowFinishRequest>):
+      { connection: string; version: number; verifier: string; redirect_uri: string;
+                source: string } {
+    return o.connections.flowFinish(session, request, clock());
+  },
+});

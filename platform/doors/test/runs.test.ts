@@ -15,7 +15,7 @@ import { Refusal } from "../../contract/src/refusal";
 import {
   EGRESS_ORIGIN, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
-import type { Binding } from "../../owner/src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import type { SandboxStart } from "../../owner/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";

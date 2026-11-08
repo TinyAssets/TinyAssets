@@ -11,9 +11,9 @@ import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import raw from "../apps.json" with { type: "json" };
+import raw from "../../contract/apps.json" with { type: "json" };
 import { appList, checkedApps, connectUrl, refusedRegistrationLine, registrationRefusal,
-         vendorOf } from "../src/apps";
+         vendorOf } from "../../contract/src/apps";
 import { MCP_RESOURCE } from "../src/config";
 import { CLIENT_INSTRUCTIONS } from "../src/instructions";
 import { toolTable } from "../../contract/src/doors";

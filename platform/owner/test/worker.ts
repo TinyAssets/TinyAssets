@@ -7,13 +7,12 @@
  * (`GatedOwnerDO`); and one with no `SANDBOX` at all (`UnboundOwnerDO`), whose every run is
  * refused (`SANDBOX_ABSENT`).
  */
+import type { ChainStep } from "../src/archive";
 import { OPEN_GATES } from "../../ci/fixtures";
 import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
-import {
-  type ChainStep, type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO,
-  type SandboxLeases,
-} from "../src/owner-do";
+import type { SandboxLeases } from "../src/launch";
+import { type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO } from "../src/owner-do";
 import { RecordingErasures } from "./erasure-fake";
 import { RecordingSandbox } from "./sandbox-fake";
 import { PLATFORM_CALLER } from "../src/admission";

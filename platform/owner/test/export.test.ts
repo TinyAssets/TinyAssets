@@ -31,7 +31,8 @@ import {
 import type FilesService from "../../files/src/index";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
-import type { Binding, OwnerDO } from "../src/owner-do";
+import type { OwnerDO } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { MIGRATIONS } from "../src/schema";
 import {
   digest, exportFrom, generate, type Line, type Owner, owner, replay, standing,

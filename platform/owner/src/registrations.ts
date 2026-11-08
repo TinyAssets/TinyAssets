@@ -28,6 +28,11 @@ import { Refusal } from "../../contract/src/refusal";
 import { CARD_REQUEST_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
+import type {
+  Call, OwnerState, RegisterRequest,
+} from "./owner-do";
+import type { Source } from "../../contract/src/binding";
+import { clock } from "./clock";
 
 /** The outside authority a held card was filed under: its client, generation and sign-in. */
 export interface Stamp {
@@ -192,3 +197,30 @@ export class Registrations {
       .toArray().length;
   }
 }
+
+export interface RegistrationCardRequest {
+  readonly card_id: string;
+}
+
+// -- THE DOORS: the `registrations` rows' handlers (`contract/doors.json`) ------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `registrations` doors' handlers, by door. */
+export const registrationsDoors = Object.freeze({
+  registerPropose(o: OwnerState, { account, r, binding }: Call<RegisterRequest>):
+      { card_id: string; digest: string; expires_at: number } {
+    return o.registrations.file(account.origin!, (binding.source as Source).ref, {
+    client: account.origin!.client, generation: account.grant!.generation,
+    authenticated_at: binding.authenticated_at ?? null }, r, clock());
+  },
+  registerProposal(o: OwnerState, { r }: Call<RegistrationCardRequest>): Card {
+    const card = o.registrations.card(r["card_id"], clock());
+    if (card === null) {
+      throw new Refusal("refused", "no pending registration for this card");
+    }
+    return card;
+  },
+});

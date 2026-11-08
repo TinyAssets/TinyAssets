@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { clock } from "../src/ledger";
+import { clock } from "../src/clock";
 import type { OwnerDO } from "../src/owner-do";
 import {
   canonical, DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, Policy,

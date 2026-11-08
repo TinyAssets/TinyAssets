@@ -18,20 +18,20 @@ import { PLATFORM_CALLER } from "../src/admission";
 import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
 import { WriteGate } from "../src/gate";
 import { AUTHORITY_CHANGED } from "../src/authority";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
-import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, Runs, SIGNIN_LAPSED,
+import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SIGNIN_LAPSED,
          UNATTENDED_REFUSED } from "../src/runs";
 import { SANDBOX_ABSENT, type SandboxStart } from "../src/sandbox";
-import { PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
+import { keepTiers, PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
-  ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding, runnerSandbox,
-  sandboxOf, secretOf, startOf, TIERS,
+ ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding, runnerSandbox,
+ secretOf, startOf, TIERS,
 } from "./runs-support";
 import { drainDue, failure, sqlIn } from "./support";
 import type { GatedOwnerDO } from "./worker";
@@ -544,6 +544,27 @@ describe("a conversation's inputs", () => {
   });
 });
 
+describe("a source outside the sandbox's egress scope", () => {
+  it("is neither offered nor started, though the owner's connection is usable", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const keyed = { engine: "claude-code", credential: "api_key", connection, scopes: [] };
+    // Active, with its models (`Connections.usable`), but with no egress scope stored: the
+    // sandbox could never reach its provider (`Connections.egressible`, `RunHost.reachable`).
+    await r.sql("UPDATE connections SET egress = NULL WHERE id = ?", connection);
+    expect(await r.sql("SELECT status FROM connections WHERE id = ?", connection))
+      .toEqual([{ status: "active" }]);
+    // `auto` is not offered it, and an agent that names it is refused: no run, no start.
+    await defineAgent(r.stub, r.bind(), "helper", { engine: "auto", scopes: [] });
+    expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "helper"))).message)
+      .toMatch(/^no_source/);
+    expect((await failure(() => ownerRun(r.stub, r.bind(), keyed))).message)
+      .toMatch(/^no_source/);
+    expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+    expect((await recorder(r.stub)).starts).toEqual([]);
+  });
+});
+
 describe("auto and the owner's sign-ins", () => {
   /** An agent on `auto`, the owner's strongest connected source. */
   const AUTO_AGENT = Object.freeze({ engine: "auto", scopes: [] });
@@ -633,6 +654,14 @@ describe("auto and the owner's sign-ins", () => {
   });
 });
 
+/** A Runs host whose every member is `never`: a test overrides the ones it reaches. */
+function hostOf(never: () => never): RunHost {
+  return { unadmitted: never, tier: never, sandboxBound: never, reachable: never,
+           standing: never, caps: never, spent: never, lease: never, leases: never,
+           openLease: never, releaseLease: never, renewLease: never, leasesLapsed: never,
+           ended: never, answer: never, mailSettled: never, notice: never, stop: never };
+}
+
 describe("the admission unit", () => {
   it("refuses an owner not admitted itself, whatever reached it (the lane's race)",
      async () => {
@@ -643,13 +672,10 @@ describe("the admission unit", () => {
         throw new Error("admission went past the owner's admission");
       };
       const runs = new Runs(gate.storage, {
+        ...hostOf(never),
         unadmitted: () => new Refusal("owner_suspended", "owner_suspended: the owner's " +
                                       "account is suspended (billing)"),
-        sandboxBound: () => true, sources: never, signinOn: never, usable: never, egressible: never,
-        standing: never, tier: never, caps: never, spent: never,
-        lease: { live: never, all: never, open: never, release: never, renew: never,
-                 lapsed: never }, stop: never,
-        ended: never, answer: never, mailSettled: never, leaseEnded: never, capacity: never });
+        sandboxBound: () => true });
       return gate.write(() => runs.admit({
         initiator: "schedule", stamp: null, origin: null, agent: "main",
         file: agentFile(JSON.stringify(SIGNED_IN)), conversation: null, request: null,
@@ -664,7 +690,7 @@ describe("the admission unit", () => {
      "tier has room by the numbers last handed", async () => {
     const r = await gated();
     const run = (n: number) => `run_${String(n).repeat(32)}`;
-    const picked = await r.in((_instance, state) => {
+    const picked = await r.in(async (_instance, state) => {
       const sql = state.storage.sql;
       const row = (id: string, conversation: number, kind: string) => sql.exec(
         "INSERT INTO runs (id, agent, conversation, source, credential, state, initiator, " +
@@ -679,14 +705,16 @@ describe("the admission unit", () => {
       const never = () => {
         throw new Error("a read went past its rows");
       };
-      const runs = (capacity: number | null) => new Runs(new WriteGate(state.storage).storage, {
-        unadmitted: never, sandboxBound: never, sources: never, signinOn: never, usable: never,
-        egressible: never, standing: never, tier: never, caps: never, spent: never,
-        lease: { live: never, all: never, open: never, release: never, renew: never,
-                 lapsed: never }, stop: never,
-        ended: never, answer: never, mailSettled: never, leaseEnded: never,
-        capacity: () => capacity });
-      return [null, 1, 2].map((capacity) => runs(capacity).nextWaiting()?.id ?? null);
+      // The tier's simultaneous runs, by the numbers last kept: none, then 1 and 2.
+      const gate = new WriteGate(state.storage);
+      const runs = new Runs(gate.storage, { ...hostOf(never), tier: () => "free" });
+      const picks: (string | null)[] = [];
+      for (const capacity of [null, 1, 2]) {
+        await gate.write(() => keepTiers(gate.storage, capacity === null ? null
+          : { ...TIERS, free: { ...TIERS.free, runs: capacity } }, Date.now() / 1000));
+        picks.push(runs.nextWaiting()?.id ?? null);
+      }
+      return picks;
     });
     expect(picked).toEqual([null, null, run(3)]);
   });
@@ -855,5 +883,4 @@ describe("the runs lane", () => {
     expect(await r.sql("SELECT id FROM run_schedules")).toEqual([]);
   });
 });
-
 

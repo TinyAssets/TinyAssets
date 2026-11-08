@@ -39,11 +39,12 @@ import {
 // (`scripts/cutover_handles_canary.py` `mcp_side`), and `test/oauth.test.ts` pins that body,
 // so a version that adds one fails there before the canary misreads a side.
 
-import { refusedRegistrationLine, registrationRefusal } from "./apps";
+import { refusedRegistrationLine, registrationRefusal } from "../../contract/src/apps";
 import {
-  ACCESS_TOKEN_TTL_S, APP_RESOURCE, dcrEnabled, type DoorsEnv, ISSUER, MCP_RESOURCE,
-  REFRESH_TOKEN_TTL_S, SCOPES,
+  ACCESS_TOKEN_TTL_S, dcrEnabled, type DoorsEnv, ISSUER, MCP_RESOURCE, REFRESH_TOKEN_TTL_S,
+  SCOPES,
 } from "./config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 
 export const REGISTRATION_ENDPOINT = "/oauth/register";
 

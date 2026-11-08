@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { clock } from "../src/ledger";
+import { clock } from "../src/clock";
 import { SESSION_LIMITS } from "../src/sessions";
 import { MUSE, rig, type Rig, signedIn } from "./ledger-support";
 import { failure } from "./support";

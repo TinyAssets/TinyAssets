@@ -78,6 +78,10 @@ import { KEEP_CEILING } from "./files";
 import { checkDestination } from "./network";
 import { profileNames, toolNames } from "../../contract/src/doors";
 import { codePoints, SOURCE_ID } from "../../contract/src/text";
+import type {
+  Call, Door, OwnerState,
+} from "./owner-do";
+import { clock } from "./clock";
 
 export { EGRESS_IP_LITERAL } from "./network";
 
@@ -598,6 +602,21 @@ export class Policy {
    * else, as a grant's authority generation moves apart from its revision. The sandbox's
    * network is made under it, and egress is admitted only under the current one.
    */
+  /** The tools a custom profile serves: the owner's choice, or every tool (`customTools`). */
+  customTools(): readonly string[] {
+    return customTools(this.read().document);
+  }
+
+  /** Whether code mode is on (`hooks.codemode`, its default on). */
+  codemode(): boolean {
+    return hookSettings(this.read().document).codemode;
+  }
+
+  /** The model policy's settings, its caps among them (`modelSettings`). */
+  models(): ModelSettings {
+    return modelSettings(this.read().document);
+  }
+
   egressGeneration(): number {
     return this.#sql.exec<{ egress_generation: number }>(
       "SELECT egress_generation FROM owner_policy").one().egress_generation;
@@ -837,3 +856,54 @@ export class Policy {
     }, now));
   }
 }
+
+export interface PolicyWriteRequest {
+  readonly expected_generation: number;
+  readonly policy: PolicyDocument;
+  readonly proposal?: { readonly request_id: string; readonly digest: string };
+}
+export interface ProposeRequest {
+  readonly change: Change;
+  readonly request_id?: string;
+}
+export interface CardRequest {
+  readonly request_id: string;
+}
+
+// -- THE DOORS: the `policy` rows' handlers (`contract/doors.json`) -------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `policy` doors' handlers, by door. */
+export const policyDoors = Object.freeze({
+  policyPropose(o: OwnerState, { account, r }: Call<ProposeRequest>):
+      { request_digest: string; generation: number } {
+    return o.policy.propose(r["change"], r["request_id"] ?? null,
+                              account.origin?.client ?? "owner", clock());
+  },
+  policyRead(o: OwnerState, { account: { owner } }: Call<undefined>): Projection {
+    return o.policy.projection(owner);
+  },
+  policyReceipts(o: OwnerState, _call: Call<undefined>): { receipts: Receipt[] } {
+    return { receipts: o.policy.receipts() };
+  },
+  async policyWrite(o: OwnerState, door: Door<PolicyWriteRequest>): Promise<Projection> {
+    const done = await o.synced(() => door.within(({ account: { owner }, session, r }) => {
+      const written = o.policy.write(session, r["expected_generation"], r["policy"],
+                                         r["proposal"] ?? null, clock());
+      return { owner, generation: written.generation, digest: written.digest,
+               policy: written.document };
+    }));
+    await o.door(() => o.egress.end("policy"));
+    return done;
+  },
+  policyProposal(o: OwnerState, { r }: Call<CardRequest>): { change: Change; digest: string } {
+    const held = o.policy.held(r["request_id"], clock());
+    if (held === null) {
+      throw new Refusal("refused", "no pending proposal for this card");
+    }
+    return held;
+  },
+});

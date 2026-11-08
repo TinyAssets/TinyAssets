@@ -4,10 +4,12 @@ import { env } from "cloudflare:workers";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import {
-  apiKeyOrigin, clock, Ledger, LEDGER_LIMITS, type LedgerLimits, type Origin, type Outcome,
-  type Source, type WakeTarget,
+  Ledger, LEDGER_LIMITS, type LedgerLimits, type Outcome, type WakeTarget,
 } from "../src/ledger";
-import type { Binding, OwnerDO } from "../src/owner-do";
+import { apiKeyOrigin } from "../../contract/src/binding";
+import { clock } from "../src/clock";
+import type { Binding, Origin, Source } from "../../contract/src/binding";
+import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";

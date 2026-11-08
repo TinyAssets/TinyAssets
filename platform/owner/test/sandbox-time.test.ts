@@ -44,8 +44,9 @@ const sandboxMs = (sql: SqlStorage, id: string) =>
 function onMeter<R>(act: (meter: SandboxTime, sql: SqlStorage) => R): Promise<R> {
   return gated().then((r) => runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
     const gate = new WriteGate(state.storage);
-    return gate.write(() => act(new SandboxTime(gate.storage, runMeter(gate.storage.sql)),
-                                gate.storage.sql as SqlStorage));
+    const meter = new SandboxTime(gate.storage, runMeter(gate.storage.sql),
+                                  { read: () => null, write: gate.write });
+    return gate.write(() => act(meter, gate.storage.sql as SqlStorage));
   }));
 }
 

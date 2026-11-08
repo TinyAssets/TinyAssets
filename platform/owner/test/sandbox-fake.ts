@@ -24,9 +24,12 @@ export class RecordingSandbox implements SandboxService {
    * answers each start in turn, its last answer from then on.
    */
   answer: Started | "throw" | readonly (Started | "throw")[] = { started: true };
+  /** Run before a start answers, with what it was asked: a test's act while it is out. */
+  beforeAnswer: ((start: SandboxStart) => Promise<void>) | null = null;
 
   async start(_owner: string, start: SandboxStart): Promise<Started> {
     this.starts.push(start);
+    await this.beforeAnswer?.(start);
     const answers = Array.isArray(this.answer) ? this.answer : [this.answer];
     const answer = answers[Math.min(this.starts.length, answers.length) - 1]!;
     if (answer === "throw") {

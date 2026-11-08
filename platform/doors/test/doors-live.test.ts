@@ -17,9 +17,9 @@ import { ADMIN_CALLER } from "../../admin/src/caller";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
 import { ERASING } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
-import { NO_ERASURE } from "../../owner/src/owner-do";
-import { LEDGER_LIMITS, nativeId } from "../../owner/src/ledger";
-import type { Binding } from "../../owner/src/owner-do";
+import { NO_ERASURE } from "../../owner/src/erasure";
+import { LEDGER_LIMITS } from "../../owner/src/ledger";
+import type { Binding } from "../../contract/src/binding";
 import { defineAgent } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
 import { API_BODY_MAX, ERASURE_QUEUE, INBOUND_BODY_MAX, MCP_RESOURCE, now } from "../src/config";
@@ -31,9 +31,8 @@ import { type OwnerDO, refuseOnce } from "./entry";
 import { slotBusy } from "../../contract/src/slots";
 import { FAKE_UPSTREAM, FORGOTTEN } from "./fake-upstream";
 import {
-  appCallback, appPost, call, connect, doorsEnv, legacyTool, NAVIGATE, OPEN, refresh,
-  registerClient,
-  serveFirstPartyDocument, setControl, signInApp, sqlIn, url,
+ appCallback, appPost, call, connect, doorsEnv, NAVIGATE, OPEN, refresh, registerClient,
+ serveFirstPartyDocument, setControl, signInApp, sqlIn, url,
 } from "./support";
 
 const SCOPES = [{ universe: "cc", agent: "main", capability: "read_graph" }];

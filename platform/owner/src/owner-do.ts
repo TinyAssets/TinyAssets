@@ -34,7 +34,11 @@
  * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
- * but its doors (the door table, `contract/doors.json`, lists them). Its timed work is the one
+ * but its doors (the door table, `contract/doors.json`, lists them). The object is their
+ * router and holds their state: each door's method hands its row's runner (`#run`, `#units`:
+ * the bind, the account, the scope and the fields) the handler in the module its row names
+ * (`<module>Doors.<door>`), which the runner hands the object's state (`OwnerState`). Its
+ * runs are launched and delivered by `launch.ts`. Its timed work is the one
  * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
  * object's single physical alarm, beside the erasure's job. The object is a plain Durable
  * Object that holds a Lifecycle, never the SDK's `Agent`, and installs none of Lifecycle's
@@ -93,364 +97,138 @@
  * `wakes` lane's claim). Only the platform, as the reserved `PLATFORM_CALLER`, sets it, at
  * `admissionSet`, the one door that caller reaches.
  */
-import { HEX64, randomHex, SIGNIN_ID } from "../../contract/src/ids";
-import { codePoints, principal, utf8Bytes, utf8Decoder } from "../../contract/src/text";
-import { sha256Hex } from "../../contract/src/digest";
-import { type EditRefusal, type Edited, letGo, planEdit } from "./edit";
-import {
-  APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, MOVE_PASS_UNITS, moveTableUnits, ownerSlots,
-} from "./holds";
-import {
-  isSlotBusy, type Lease as PoolLease, slotBusy, type SlotPool, slotted,
-} from "../../contract/src/slots";
-import {
-  BATCH_BYTES, CHUNK_BYTES, ENGINE_SIGNINS, GC_GRACE_S, INLINE_BYTES, PLACE_BYTES,
-  SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS, SLOT_WAIT_MS,
-} from "../../contract/src/limits";
-import { createHash } from "node:crypto";
+import { principal } from "../../contract/src/text";
 
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import type { Vendor } from "../../doors/src/apps";
-import { APP_RESOURCE } from "../../doors/src/config";
-import { LEASE_LIVED, mintToken, sealRoute } from "../../contract/src/routing-mac";
-import {
-  doorRow, type DoorRow, type ProfileName, profileNames, takesRequest, type Tool, toolsNamed,
-} from "../../contract/src/doors";
+import { doorRow, type DoorRow, fields, type ProfileName } from "../../contract/src/doors";
 import type { RunCapability } from "../../contract/src/capabilities";
-import { bundledSources } from "../../sources/src/catalog";
-import { runEnv } from "../../sources/src/run-env";
-import { CREDENTIAL_KINDS, type CredentialKind, SourceRecordError } from "../../sources/src/schema";
 
 import {
-  admission, type Admission, doorRefusal, type DoorClass, OWNER_ERASED,
-  ownerTier, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED, setAdmission, setTier,
-  tombstoned, workRefusal, writeTombstone,
+  admission, type Admission, admissionDoors, type DoorClass, doorRefusal, OWNER_ERASED, ownerTier,
+  PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned,
+  workRefusal, writeTombstone,
 } from "./admission";
-import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
-import { agentId, AUTHORITY_CHANGED, may, NOT_GRANTED, type Stamped } from "./authority";
-import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay";
-import { type Ask, SIGNIN_REQUIRED, type LiveRun, type MailAnswer,
-         mailConversation, NO_SCHEDULE,
-         type PostedFrame, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
-         scheduleAuthority, } from "./runs";
 import {
-  EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, FRAME_VERSION, PostGate,
-} from "../../contract/src/run-events";
-import {
-  SANDBOX_ABSENT, SANDBOX_WAITING, type SandboxService, type Started, started,
-} from "./sandbox";
+  agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, type Stamped,
+} from "./authority";
+import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
+import { RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
+import { PostGate } from "../../contract/src/run-events";
+import { SANDBOX_ABSENT, type SandboxService } from "./sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
-import { type ApiKey, keyId, keyName, Keys } from "./keys";
+import { type ApiKey, Keys, keysDoors } from "./keys";
+import { bindingId, Inbound, type InboundBinding, inboundDoors, type InboundRow } from "./inbound";
 import {
-  bindingId, created as inboundCreated, Inbound, type InboundBinding, type InboundRow,
-  ownerProof, PROOF_INVALID,
-} from "./inbound";
-import { proves } from "../../contract/src/inbound-proof";
-import {
-  keepTiers, keptTiers, PLATFORM_TIER_ONLY, type TierName, tierNumbers,
+  keepTiers, keptTiers, PLATFORM_TIER_ONLY, tierDoors, type TierName, tierNumbers,
 } from "./tier";
+import { Bodies, type Located, type Placed, type Placing, type Window } from "./bodies";
+import { type Heads, PAGE_BYTES, type Shown, type Wants } from "./pages";
+import { Collections, collectionsDoors, type History, type Page, type Row } from "./collections";
 import {
-  Bodies, bodyOffset, inlineWindow, type Located, type Placed, placedAs,
-  type Placing, type Window, WINDOWS_BYTES,
-} from "./bodies";
-import { fitted, jsonBytes } from "../../contract/src/encoded";
-import {
-  bodied, type Cut, fitList, fitPage, PAGE_BYTES, RESULT_TOO_LARGE, whole as fits,
-} from "./pages";
-import {
-  type Changed, type Changes, checkBody, Collections, Conflict, type History,
-  type HistoryEntry, type Page, type Row,
-} from "./collections";
-import {
-  Connections, type ConnectionView,
-  type GatewayService, type Prepared,
+  Connections, connectionsDoors, type ConnectionView, type GatewayService, type Prepared,
 } from "./connections";
-import type { ModelRecord } from "../../contract/src/model-record";
-import { ERASING, FileFault, Refusal } from "../../contract/src/refusal";
+import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
-  type Change as FileChange, type ChunkRef, type ChunkStore, type Content,
-  type Entry, FileConflict, Files, type Lease, MAX_OPEN_INTENTS,
-  OWNER_AUTHORITY, type SandboxLease, type SyncOp, type SyncOutcome, type Usage, WHOLE_BYTES,
+ type Change as FileChange, type ChunkRef, type ChunkStore, type Entry, fileChanged, Files,
+ filesDoors, OWNER_AUTHORITY, type SandboxLease, SYNC_FENCED, type SyncOutcome, type Usage,
 } from "./files";
-import { type OwnerStorage, type Write, WriteGate } from "./gate";
-import { type Client, type ConnectedApp, type Grant, Grants, type Scope } from "./grants";
+import { type OwnerStorage, WriteGate } from "./gate";
 import {
-  CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
+  type Client, type ConnectedApp, type Grant, Grants, grantsDoors, type Scope,
+} from "./grants";
+import {
+ type CodemodeBounds, codemodeDoors, type CodeRequest, type CodeResult, type HooksService,
 } from "./codemode";
 import {
-  type Actor, type Agent, type ArchivedMail, archivedHead, archivedMail, archivedRecipients,
-  keptRecord, type MailParts,
-  recordHead,
-  type ChainMail,
-  checkMessage, clock,
-  type Delivery, type Fence, Ledger, type LedgerLimits, STORAGE_BUSY,
-  type MailAuthority, type MailPage, RUN_NO_MAILBOX,
-  apiKeyOrigin, MAIL_HEADER_BYTES, mailInput, type NativeAgent, nativeId, type Origin,
-  outsideOrigin, type Posted, registrant, type Source,
+  type Agent, type ChainMail, Ledger, ledgerDoors, type LedgerLimits, type MailPage,
+  type NativeAgent, outsideOrigin, type Posted, READ_TRIES, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
-import { type Notice, Notices } from "./notices";
-import {
-  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_BYTES,
-  MOVE_RECORDS, MoveTable, pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES,
-  type Source as Run,
-} from "./segments";
+import { clock } from "./clock";
+import type { Binding, InboundAnswer, Origin } from "../../contract/src/binding";
+import { type Notice, Notices, noticesDoors } from "./notices";
 import { Erasure } from "./erase";
-import { ERASE_RETRY_MS, erasing, markOutside, outsideDone, PUT_GRACE_MS, wiped } from "./erasure";
 import {
-  type Change, customTools, fileLimits, hookSettings, modelSettings, Policy,
-  type PolicyDocument, type Projection, type Receipt,
+ ERASE_RETRY_MS, erasing, erasureDoors, NO_ERASURE, outsideDone, PUT_GRACE_MS, wiped,
+} from "./erasure";
+import {
+ type Change, fileLimits, modelSettings, Policy, policyDoors, type Projection, type Receipt,
 } from "./policy";
-import { type Card, Registrations } from "./registrations";
-import { type Lane, Schedule } from "./schedule";
-import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
+import { type Card, Registrations, registrationsDoors } from "./registrations";
+import { Schedule } from "./schedule";
+import { ABILITY_TREES, AGENTS_DIR, within } from "../../contract/src/paths";
+import { Launcher, type SandboxLeases } from "./launch";
 import {
-  ABILITY_TREES, AGENTS_DIR, MAX_NAME_BYTES, nameOf, parentOf, storedPath, within,
-} from "../../contract/src/paths";
+ Egress, egressDoors, type EgressOpened, type EgressReceipt, type EgressRefusal,
+ type EgressReserved, sandboxBinding,
+} from "./egress";
+import { exportDoors } from "./export";
+import { type BilledEvent, SandboxTime, sandboxTimeDoors } from "./sandbox-time";
+import { Sessions, sessionsDoors } from "./sessions";
+import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
+import { starterDoors } from "./starter";
+import { priced, Usage as ModelUsage, usageDoors, type UsageReceipt } from "./usage";
 import { migrate } from "./migrate";
+import { Archive, type ArchiveMoveSeen, type ChainStep } from "./archive";
 import { MIGRATIONS } from "./schema";
-import { decodeExportCursor, encodeExportCursor } from "./export";
 import { Backups, MANIFEST_PROTECT_S } from "./backup";
 import { OpenExports } from "./open-exports";
 import { ChangeLog } from "./changelog";
-import { type BilledEvent, billedEvent, METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
-import { Sessions } from "./sessions";
-import {
-  frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
-  windowEnd, words,
-} from "./file-search";
 import { carried, type Receipt as StarterReceipt, Starter, type StarterPackage }
   from "./starter";
-import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
+import { CONTROL_FRESH_MS, ControlGate } from "./control-gate";
 import { storageFull, storageFullRefusal } from "./storage-full";
-import {
-  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
-} from "../../contract/src/sync-ignore";
-import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
-import {
-  Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, type EgressReserved,
-  egressRequest, reserveRequest,
-  type SandboxBinding, sandboxBinding, settleRequest,
-} from "./egress";
-import { EGRESS_ORIGIN, runUrls, sandboxEnv } from "../../contract/src/egress";
-import { type EgressPolicy, networkDocument, type NetworkPlan } from "./network";
-import {
-  pastedCode, SIGNIN_OFF, signinAuthority, type SigninMode, Signins, type SigninView, signinView,
-  switchedOn,
+import { Doorbell, type RingAnswer, type WakeSender } from "./wakes";
+import { type Events } from "../../contract/src/wake-records";
+import type {
+  BoardDigestRequest, ClearRequest, Conflicted, DeleteRequest, GetRequest, HistoryRequest,
+  PullRequest, WriteRequest, WrittenRow,
+} from "./collections";
+import type {
+  AckRequest, AgentDoorbellRequest, AgentRequest, AgentsRequest, CardApply, ChainRequest,
+  DisableRequest, InboxDigestRequest, PostRequest, ReadRequest, SubscribeRequest,
+  UnsubscribeRequest, WakeLimitsRequest,
+} from "./ledger";
+import type { AdmissionRequest } from "./admission";
+import type {
+  BindingRequest, InboundCreateRequest, InboundEvent, InboundSetRequest,
+} from "./inbound";
+import type { CardRequest, PolicyWriteRequest, ProposeRequest } from "./policy";
+import type {
+  ChangesRequest, FetchMetadata, FileAppendRequest, FileChunksRequest, FileConflicted,
+  FileEditRequest, FileFetchRequest, FileHistoryRequest, FileListRequest, FileReadRequest,
+  FileRequest, FileSearchRequest, FileTextRequest, FileWriteRequest, IntentRequest, MkdirRequest,
+  RemoveRequest, RenameRequest, RestoreRequest, SearchResult, SyncCommitRequest,
+  SyncUploadAbortRequest, SyncUploadBeginRequest, SyncUploadChunksRequest, UploadBeginRequest,
+  UploadChunksRequest, UploadCommitRequest, UploadStoredRequest, VersionRequest,
+} from "./files";
+import type { ClientRequest, ForgetRequest } from "./grants";
+import type {
+  ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
+} from "./connections";
+import type { ConversationRequest } from "./relay";
+import type { EraseRequest } from "./erasure";
+import type {
+  EventsRequest, LaunchRequest, RunListed, RunListRequest, RunRequest, RunView, SubmitRequest,
+} from "./runs";
+import type { KeyMintRequest } from "./keys";
+import type { RegistrationCardRequest } from "./registrations";
+import type {
+  SigninCodeRequest, SigninEventsRequest, SigninRequest, SigninRequestById, SigninStartRequest,
 } from "./signins";
-import {
-  CLOSED, Doorbell, type RingAnswer, runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender,
-  WAKES_PER_ALARM,
-} from "./wakes";
-import { eventKind, type Events, kindFor, wakeKinds } from "../../contract/src/wake-records";
-import { follows } from "../../contract/src/wake-kinds";
+import type { TierRequest } from "./tier";
 
-/**
- * Whose object this is, who is asking and through what: set by the binder from a
- * verified credential, the one binding every door takes. `caller` is the owner's own
- * account, or, at the collection doors alone, another owner visiting (origin null).
- * `origin` is the verified outside client the owner's account acts through (an outside
- * agent), or null. The object takes every sender and reader from here, never from a
- * request field.
- */
 /** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
 export const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
 export const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
-
-export interface Binding {
-  readonly owner: string;
-  readonly caller: string;
-  readonly origin: Origin | null;
-  /** How the binder verified `origin`: an MCP client or an API key. Every outside call. */
-  readonly source?: Source;
-  /**
-   * When the credential was signed in, in whole seconds: an outside client's, which a
-   * revoke fences, or the owner's interactive sign-in, which opens a session. Every MCP
-   * call carries it: the grant's original interactive sign-in, which a token refresh never
-   * moves. A revoke, and once any MCP revoke is forgotten the owner-wide fence, refuses an
-   * MCP call without it.
-   */
-  readonly authenticated_at?: number;
-  /** The owner's protected-session cookie, as the browser presented it. */
-  readonly session?: string;
-  /**
-   * The sandbox, as the egress door read its token (`egress.ts`): which token it is (the
-   * egress token or the sync token), the SHA-256 of its secret and, for the egress token,
-   * the egress generation its
-   * network's transform set. Only the egress doors take it; every other door refuses it.
-   */
-  readonly sandbox?: SandboxBinding;
-  /**
-   * A run's call on the egress host (its MCP door, its event door): the run its path named,
-   * beside the egress token's `sandbox`. The object resolves the live lease, the run under
-   * it and its grant, and holds every door to that grant (`#runAccount`).
-   */
-  readonly run?: string;
-  /**
-   * The tier numbers of the platform's control record (`tier.ts`), as the binder read them
-   * for a run door: never a request field, and never the owner's tier, which is the
-   * object's own row.
-   */
-  readonly tiers?: unknown;
-  /**
-   * The served records whose vendor sign-in the platform's control record switches on, as
-   * the binder read it for this call (`signins.ts`, `switches`): never a request field. The
-   * object keeps the last list it was handed for the runs its own lane starts.
-   */
-  readonly signins?: unknown;
-  /**
-   * The first-party grant the owner's token was issued under, and that token's expiry
-   * (whole seconds), from the provider's own unwrap: a socket ticket's binding, and a
-   * sign-out's (`bindOwnerGrant`, `bindSignOut`).
-   */
-  readonly grant?: string;
-  readonly expires_at?: number;
-  /**
-   * An inbound event's route, as the binder read it from the directory (`h:` or `i:`): the
-   * owner's binding it names, at the revision the entry carries. Only `inboundAccept` takes
-   * it; every other door refuses it.
-   */
-  readonly inbound?: { readonly binding: string; readonly revision: number };
-  /**
-   * Which of `apps.json`'s vendors an MCP client is, as its sign-in knew it (the grant's
-   * props, `doors/src/apps.ts`): recorded on its grant's row, never a request field.
-   */
-  readonly vendor?: Vendor | null;
-}
-
-export type { Origin, Source, WakeSender };
-
-/** A message to an agent: a run in a conversation, new or continued (`agentSubmit`). */
-export interface SubmitRequest {
-  readonly message: string;
-  readonly client_send_id: string;
-  readonly agent_id?: string;
-  readonly conversation_id?: string;
-  readonly wait_ms?: number;
-}
-
-/** A launch of an agent: now, at a time, or on a cron (`agentRun`). */
-export interface LaunchRequest {
-  readonly agent: string;
-  readonly input: string;
-  readonly at?: number;
-  readonly cron?: string;
-}
-
-/** A run or a schedule, by its id, exactly one of the two (`agentStatus`, `agentCancel`). */
-export interface RunRequest {
-  readonly run_id?: string;
-  readonly schedule_id?: string;
-}
-
-/** What a run door answers: the run as it stands. */
-export type RunView = RunReceipt;
-
-/** The runner's report (`runEvents`): its new frames, and its end once the CLI exited. */
-export interface EventsRequest {
-  readonly frames: PostedFrame[];
-  readonly end?: { readonly exit_code: number | null };
-}
-
-export interface ConversationRequest {
-  readonly conversation_id: string;
-}
-
-/** The owner's ask to sign in to an engine inside a sandbox (`signinStart`). */
-export interface SigninStartRequest {
-  readonly engine: string;
-  /** `owner` (the default), or one client's id: that client's own sandbox. */
-  readonly authority?: string;
-  /** The owner's choice among the record's `cli.regions`, when it has any. */
-  readonly region?: string;
-  readonly mode?: SigninMode;
-}
-
-export interface SigninRequestById {
-  readonly id: string;
-}
-
-export interface SigninCodeRequest extends SigninRequestById {
-  readonly code: string;
-}
-
-/** A sign-in's runner's post: its frames, and its end. */
-export interface SigninEventsRequest extends SigninRequestById {
-  readonly frames: unknown;
-  readonly end?: unknown;
-}
-
-export interface RunListRequest {
-  readonly before?: number;
-  readonly limit?: number;
-}
-
-/** A past run in the caller's list: its receipt without its result (its own door's). */
-export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
-
-/**
- * The runner's report of the sandbox's engines' sign-ins (`signinReport`): for each engine
- * that signs in with the vendor's own login, whether its record's `status_argv` succeeded,
- * and the models it read the engine offers. Presence only: never a credential.
- */
-export interface SigninRequest {
-  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean;
-                               readonly models?: readonly string[] }[];
-}
-
-export interface TierRequest {
-  readonly tier: TierName;
-}
 
 export interface RegisterRequest {
   readonly command_center_id: string;
   readonly display_name: string;
   readonly delivery_method: string;
   readonly recipe_id: string | null;
-}
-
-export interface DisableRequest {
-  readonly agent_id: string;
-  readonly reason: string;
-}
-
-export interface AgentRequest {
-  readonly agent_id: string;
-}
-
-export interface WakeLimitsRequest {
-  readonly agent_id: string;
-  /** The owner's hourly cap on the agent's wakes, or null for none (the default). */
-  readonly max_wakes_per_hour: number | null;
-  readonly batch_window_s: number;
-  readonly expected_generation: number;
-}
-
-export interface PolicyWriteRequest {
-  readonly expected_generation: number;
-  readonly policy: PolicyDocument;
-  readonly proposal?: { readonly request_id: string; readonly digest: string };
-}
-
-export interface ProposeRequest {
-  readonly change: Change;
-  readonly request_id?: string;
-}
-
-export interface CardRequest {
-  readonly request_id: string;
-}
-
-/** The owner's apply of a held registration: the card and the digest it was shown. */
-export interface CardApply {
-  readonly card_id: string;
-  readonly digest: string;
-}
-
-export interface RegistrationCardRequest {
-  readonly card_id: string;
 }
 
 export interface GrantRequest {
@@ -463,234 +241,6 @@ export interface GrantRequest {
   /** The tool profile (`directory` or `custom`); omitted, the grant keeps its own. */
   readonly profile?: string;
 }
-
-export interface ClientRequest {
-  readonly client: string;
-}
-
-export interface ForgetRequest {
-  readonly clients: string[];
-}
-
-export interface PostRequest {
-  readonly room_id: string;
-  readonly client_message_id: string;
-  readonly body: string;
-  readonly parent_id: string | null;
-}
-
-/** An agents list's page: after the cursor a `next` an answer gave (`outsideAgents`). */
-export interface AgentsRequest {
-  readonly after?: string;
-}
-
-export interface ReadRequest {
-  readonly limit: number;
-  readonly max_bytes?: number;
-  readonly pad_bytes?: number;
-  /** The first message's body from this byte: a `body_next_offset` an answer gave. */
-  readonly body_offset?: number;
-  /** With `body_offset`, the message it reads on: refused when the first is another. */
-  readonly message_id?: string;
-}
-
-/** A mail chain the owner reads, from one of its messages (`mailChain`). */
-export interface ChainRequest {
-  readonly message_id: string;
-  readonly limit: number;
-  readonly after?: number;
-  readonly body_offset?: number;
-  readonly body_message_id?: string;
-}
-
-export interface AckRequest {
-  readonly through: number;
-}
-
-/** What changed for a main agent: its unread mail, and its rooms' rows past `after`. */
-export interface InboxDigestRequest {
-  readonly limit: number;
-  readonly after: number;
-  readonly max_bytes?: number;
-  readonly head_chars?: number;
-}
-
-/** The board's rows changed past `after`. */
-export interface BoardDigestRequest {
-  readonly limit: number;
-  readonly after: number;
-  readonly head_chars?: number;
-}
-
-/**
- * A row as a digest shows it, the head of its body and the body's UTF-8 bytes (`body_bytes`,
- * as a cut body's); or its deletion.
- */
-export type RowHead =
-  | (Omit<Extract<Changed, { deleted: false }>, "body">
-     & { readonly head: string; readonly body_bytes: number })
-  | Extract<Changed, { deleted: true }>;
-
-/** Rows changed past a digest's cursor, and the next cursor; `reset` as `Changes`'. */
-export interface Heads {
-  readonly cursor: number;
-  readonly rows: RowHead[];
-  readonly reset?: true;
-}
-
-/** One code mode script (`codeRun`). */
-export interface CodeRequest {
-  readonly script: string;
-}
-
-/**
- * A script's end, as pi-codemode reports it: its value or its error, its output, how many
- * tool calls ended each way, and which calls of tools that change something landed
- * (`landed`, in order, a run of the same tool and outcome as one entry with its count), so
- * an agent knows what a stopped script did. Its output past what one tool answer holds
- * (`PAGE_BYTES`, `pages.ts`) is cut, said so (`output_cut`); a value past it alone is
- * refused `answer_too_large`, its calls kept (`fittedCode`).
- */
-export type CodeResult =
-  | { readonly ok: true; readonly value: JsonValue; readonly output: CodeOutput[];
-      readonly calls: CodeCalls; readonly landed: Landed[]; readonly output_cut?: OutputCut }
-  | { readonly ok: false; readonly error: { readonly kind: string; readonly message: string };
-      readonly output: CodeOutput[]; readonly calls: CodeCalls; readonly landed: Landed[];
-      readonly output_cut?: OutputCut };
-
-/**
- * A script's output cut to fit one answer (review M6), said so: how many items it had, and
- * how many the answer keeps whole (the next one, a text, cut at a character after them).
- */
-export interface OutputCut {
-  readonly items: number;
-  readonly kept: number;
-}
-
-/** A run of one tool's calls with one outcome, in a script's order. */
-export interface Landed {
-  readonly name: string;
-  readonly status: "ok" | "error" | "cancelled";
-  readonly count: number;
-}
-
-/** A script's value: JSON, as pi-codemode hands it back (an object or array, untyped). */
-export type JsonValue = null | boolean | number | string | object;
-/** One item of a script's output: its text, or an image. */
-export type CodeOutput = { readonly type: "text"; readonly text: string; readonly console?: true }
-  | { readonly type: "image"; readonly data: string; readonly mimeType: string };
-/** A script's tool calls, counted by how each ended. */
-export interface CodeCalls {
-  readonly ok: number;
-  readonly error: number;
-  readonly cancelled: number;
-}
-
-/**
- * An agent's client's MCP Events subscription, as the MCP door hands it once it verified
- * the callback and the gateway sealed it: the id the door derived (from the caller, URL,
- * event and arguments; never the client's), the event, the arguments (its command center,
- * and the board or rooms it follows), the sealed blob, and when it lapses (seconds, or null).
- */
-export interface SubscribeRequest {
-  readonly subscription_id: string;
-  readonly name: string;
-  readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
-                        readonly rooms?: readonly string[] };
-  readonly blob: string;
-  readonly kid: string;
-  readonly version: number;
-  readonly expires_at: number | null;
-}
-
-/** The caller that holds a subscription ending it: the id the door derived. */
-export interface UnsubscribeRequest {
-  readonly subscription_id: string;
-}
-
-/**
- * The owner setting an agent's doorbell: the kind it pasted a token for, the id the door
- * derived, what it follows, and the blob the gateway sealed the token and URL into.
- */
-export interface AgentDoorbellRequest {
-  readonly agent_id: string;
-  readonly kind: string;
-  readonly subscription_id: string;
-  readonly board: boolean;
-  readonly rooms: readonly string[];
-  readonly blob: string;
-  readonly kid: string;
-  readonly version: number;
-}
-
-/** A key's mint (`keyMint`): its id, name and scopes, and an agent's held request. */
-export interface KeyMintRequest {
-  readonly key_id: string;
-  readonly name: string;
-  readonly scopes: unknown;
-  readonly proposal?: { readonly request_id: string; readonly digest: string };
-}
-
-/** An erasure door's refusal when no erasure is under way. */
-export const NO_ERASURE = "no erasure of this owner is under way";
-
-/** What the owner types to erase its account. */
-export const ERASE_CONFIRM = "erase my account";
-
-function erasureConfirmed(r: Record<string, unknown>): void {
-  if (r["confirm"] !== ERASE_CONFIRM) {
-    throw new Refusal("invalid", `an erasure is confirmed by ${JSON.stringify(ERASE_CONFIRM)}`);
-  }
-}
-
-export interface EraseRequest {
-  readonly confirm: string;
-}
-
-export interface InboundCreateRequest {
-  readonly kind: "capability" | "shared";
-  readonly agent: string;
-  readonly route: string;
-  readonly profile?: unknown;
-  readonly secret?: string;
-}
-
-export interface InboundSetRequest {
-  readonly binding_id: string;
-  readonly expected_revision: number;
-  readonly enabled?: boolean;
-  readonly agent?: string;
-}
-
-export interface BindingRequest {
-  readonly binding_id: string;
-}
-
-/** An inbound event as the binder hands it: its id and time, its raw bytes, its headers. */
-export interface InboundEvent {
-  readonly event_id: string;
-  readonly event_at: number;
-  readonly body: Uint8Array;
-  readonly headers: Readonly<Record<string, string>>;
-}
-
-export type InboundAnswer =
-  | { readonly state: "admitted"; readonly receipt: string; readonly deduped: boolean }
-  | { readonly state: "refused"; readonly error: string; readonly retry?: true }
-  | { readonly state: "no_op"; readonly error: string };
-
-export interface UploadStoredRequest {
-  readonly intent_id: string;
-  readonly chunks: readonly string[];
-}
-
-/**
- * The platform's change of the owner's admission (`admission.ts`): its admit at sign-up, or
- * a suspension's reason and whether it holds.
- */
-export type AdmissionRequest =
-  | { readonly admit: true }
-  | { readonly reason: string; readonly suspended: boolean };
 
 /**
  * The object's environment: four service bindings, `FILES`, to the files Worker, which
@@ -726,340 +276,8 @@ export interface OwnerEnv {
   readonly ERASURES?: { send(message: { owner: string }): Promise<void> };
 }
 
-/**
- * A connection to prepare: its source record's id, kind, display name and pi-ai provider,
- * whether its provider can be asked to revoke what it issues, and, for OAuth, the redirect
- * URI its flow (begun in the same unit) returns to.
- */
-export interface ConnectionPrepareRequest {
-  readonly source: string;
-  readonly kind: "api_key" | "oauth2";
-  readonly display_name: string;
-  readonly provider: string;
-  readonly revocable: boolean;
-  readonly redirect_uri?: string;
-}
-
-/** A prepared connection's sealed blob, its kid, its models and, for OAuth, its expiry. */
-export interface ConnectionCommitRequest {
-  readonly connection: string;
-  readonly version: number;
-  readonly blob: string;
-  readonly kid: string;
-  readonly models: unknown[];
-  readonly expires_at?: number | null;
-  /** The setup check's code, when it failed after the provider issued the credential. */
-  readonly failed?: string;
-  /**
-   * Where the credential may be forwarded (the setup check's `egress`: its sealed base URL
-   * and endpoints); every commit but a failed one carries it.
-   */
-  readonly egress?: unknown;
-}
-
-export interface ConnectionRequest {
-  readonly connection: string;
-}
-
-export interface FlowFinishRequest {
-  readonly state: string;
-}
-
-export interface FileRequest {
-  readonly path: string;
-}
-
-export interface FileListRequest {
-  readonly dir: string;
-  readonly after?: string;
-  readonly limit: number;
-  /** At most this many characters of each small file's text (`file-search.ts`). */
-  readonly head_chars?: number;
-}
-
-/** A window of a file's text (`file_read`): from a byte offset, at most `max_bytes`. */
-export interface FileTextRequest {
-  readonly path: string;
-  readonly offset?: number;
-  readonly max_bytes?: number;
-}
-
-/** A search of the owner's files (`search`), from a cursor a search answered. */
-export interface FileSearchRequest {
-  readonly query: string;
-  readonly cursor?: string;
-}
-
-/** A file by the id a search answered (`fetch`): its stored path. */
-export interface FileFetchRequest {
-  readonly id: string;
-}
-
-/** A search's hit, in the shape ChatGPT's deep research and company knowledge read. */
-export interface SearchResult {
-  readonly id: string;
-  readonly title: string;
-  readonly url: string;
-}
-
-/** What `fetch` says of a file beside its text. */
-export interface FetchMetadata {
-  /** Its path, its id's; left out when its fields were cut to fit one answer (`fields_cut`). */
-  readonly path?: string;
-  /** Whether its frontmatter's fields were cut to fit one answer (review L5). */
-  readonly fields_cut?: true;
-  readonly size: number;
-  readonly version: number;
-  /** When it last changed, ISO 8601. */
-  readonly modified: string;
-  readonly writer: string;
-  /** Its etag, which `file_edit` and `file_write` take. */
-  readonly etag: string;
-  readonly type?: string;
-  readonly description?: string;
-  readonly tags?: readonly string[];
-  /** Whether the file is not UTF-8 text: its text is then empty. */
-  readonly binary?: true;
-  /** Whether the text stops short of the file's end: `file_read` reads on from `next_offset`. */
-  readonly truncated: boolean;
-  readonly next_offset?: number;
-}
-
-/** The owner app's page of the folder holding `path`: where a citation of it points. */
-export function fileUrl(path: string): string {
-  return `${APP_RESOURCE}#data/${encodeURIComponent(parentOf(path))}`;
-}
-
-/** A non-negative whole number of a request, or its default. */
-function whole(value: unknown, what: string, fallback: number, high: number): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > high) {
-    throw new Refusal("invalid", `${what} is a whole number from 0 to ${high}`);
-  }
-  return value;
-}
-
-export interface FileReadRequest {
-  readonly path: string;
-  readonly etag?: string;
-}
-
-export interface FileChunksRequest {
-  readonly path: string;
-  readonly version: number;
-  readonly first: number;
-  readonly count: number;
-}
-
-export interface FileWriteRequest {
-  readonly path: string;
-  readonly expected_etag: string | null;
-  /** The file's bytes, or its text, written as UTF-8 (`file_write`, slice BRAIN). */
-  readonly content: Uint8Array | string;
-  readonly mode?: number;
-}
-
-/** Text added at the end of a file, which is made when absent (`file_append`). */
-export interface FileAppendRequest {
-  readonly path: string;
-  readonly content: string;
-}
-
-/** One exact occurrence of `old_text` in a file's text replaced, at its etag (`file_edit`). */
-export interface FileEditRequest {
-  readonly path: string;
-  readonly old_text: string;
-  readonly new_text: string;
-  readonly expected_etag: string;
-}
-
-export interface UploadBeginRequest {
-  /** The file's size; `chunks` are its 64-hex hashes, one for each 4 MiB. */
-  readonly size: number;
-  readonly chunks: string[];
-}
-
-export interface UploadChunksRequest {
-  readonly intent_id: string;
-  readonly chunks: { sha256: string; bytes: Uint8Array }[];
-}
-
-export interface UploadCommitRequest {
-  readonly intent_id: string;
-  readonly path: string;
-  readonly expected_etag: string | null;
-  readonly mode?: number;
-}
-
-export interface IntentRequest {
-  readonly intent_id: string;
-}
-
-export interface MkdirRequest {
-  readonly path: string;
-  readonly expected_etag: string | null;
-}
-
-export interface RemoveRequest {
-  readonly path: string;
-  readonly expected_etag: string | null;
-  readonly recursive: boolean;
-}
-
-export interface RenameRequest {
-  readonly from: string;
-  readonly to: string;
-  readonly expected_etag: string | null;
-  readonly replace: boolean;
-}
-
-export interface FileHistoryRequest {
-  readonly path: string;
-  readonly before?: number;
-  readonly limit: number;
-}
-
-export interface VersionRequest {
-  readonly path: string;
-  readonly version: number;
-}
-
-export interface RestoreRequest extends VersionRequest {
-  readonly expected_etag: string | null;
-}
-
-export interface ChangesRequest {
-  readonly after: number;
-  readonly limit: number;
-}
-
-export interface LeaseRequest {
-  readonly lease_id: string;
-  readonly epoch: number;
-}
-
-export interface NetworkAppliedRequest extends LeaseRequest {
-  readonly generation: number;
-}
-
-/** A lease as the binder keeps the directory by it: with its token's hash. */
-export type HeldLease = Lease & { readonly token: string };
-
-/**
- * One engine run's environment's inputs: the run itself (its base URLs carry it), the CLI
- * record (`engine`), the credential it runs on, and an API-key run's connection. Its
- * environment carries that credential alone (`sandboxEnv`): a run on the vendor's own
- * sign-in gets no key at all.
- */
-export interface SandboxRun {
-  readonly run: string;
-  /** The run's own secret (64 hex), which its URLs carry: only its CLI holds them. */
-  readonly secret: string;
-  readonly engine: string;
-  readonly credential: CredentialKind;
-  /** An API-key run's connection; absent on the vendor's own sign-in. */
-  readonly connection?: string;
-}
-
-/** What the sandbox slice sets up a sandbox from (`network.ts`). */
-export interface SandboxConfig {
-  readonly generation: number;
-  readonly egress: EgressPolicy;
-  /**
-   * The run's whole environment, its allow-list (`runEnv`, `sandboxEnv`): `HOME` and the
-   * record's own variables, each a template the runner fills (`{home}`, `{agent}`), and on
-   * an API key its one connection's key variables. The runner starts from an empty
-   * environment and sets exactly these, keeping only `inherit` of the sandbox's own.
-   */
-  readonly env: Readonly<Record<string, string>>;
-  /** The process basics the run keeps from the sandbox template's environment. */
-  readonly inherit: readonly string[];
-}
-
-export interface SyncCommitRequest extends LeaseRequest {
-  readonly ops: SyncOp[];
-}
-
-/** The sync agent's upload, begun as its lease's writer (`fileSyncUploadBegin`). */
-export interface SyncUploadBeginRequest extends LeaseRequest {
-  readonly size: number;
-  readonly chunks: string[];
-}
-
-/** The sync agent's chunk bytes for its own upload (`fileSyncUploadChunks`). */
-export interface SyncUploadChunksRequest extends LeaseRequest {
-  readonly intent_id: string;
-  readonly chunks: { readonly sha256: string; readonly bytes: Uint8Array }[];
-}
-
-/** The sync agent's own upload given up (`fileSyncUploadAbort`). */
-export interface SyncUploadAbortRequest extends LeaseRequest {
-  readonly intent_id: string;
-}
-
-/** A lost file compare-and-swap: answered with the entry as it stands. */
-export interface FileConflicted {
-  readonly conflict: Entry | null;
-}
-
-export interface WriteRequest {
-  readonly collection: string;
-  readonly row_id: string;
-  readonly body: string;
-  readonly expected_etag: string;
-  readonly private: boolean;
-  readonly history_op?: string;
-}
-
-export interface PullRequest {
-  readonly collection: string;
-  readonly after: number;
-  readonly limit: number;
-}
-
-export interface KeyRequest {
-  readonly collection: string;
-  readonly row_id: string;
-}
-
-/**
- * A row read: its key; with `body_offset`, its body from that byte (a `body_next_offset` an
- * answer gave), and with `etag`, refused when the row changed since that answer.
- */
-export interface GetRequest extends KeyRequest {
-  readonly body_offset?: number;
-  readonly etag?: string;
-}
-
-/**
- * A history read: a row's key, and the revision to read before for older entries; with
- * `body_offset`, the page's newest entry's body from that byte.
- */
-export interface HistoryRequest extends KeyRequest {
-  readonly before_revision?: number;
-  readonly body_offset?: number;
-}
-
-export interface DeleteRequest {
-  readonly collection: string;
-  readonly row_id: string;
-  readonly expected_etag: string;
-}
-
-export interface ClearRequest {
-  readonly collection: string;
-  readonly writer: string | null;
-}
-
-/** A lost compare-and-swap is an answer carrying the row as it stands, not a refusal. */
-export interface Conflicted {
-  readonly conflict: Row | null;
-}
-
 /** What a call is bound to: its owner and caller, its outside client and that client's grant. */
-interface Account {
+export interface Account {
   readonly owner: string;
   readonly caller: string;
   readonly origin: Origin | null;
@@ -1087,7 +305,7 @@ interface Serves {
  * runner or inbound door's binding names (the lease's readable set, the lease, the route's
  * binding), or that the platform's erasure door found the owner already erased.
  */
-interface Bound {
+export interface Bound {
   readonly account: Account;
   readonly readable: Readable | null;
   readonly lease: SandboxLease | null;
@@ -1106,9 +324,11 @@ function bound(owner: string, caller: string): Bound {
  * door's live session, a run door's place (its universe and agent), and, for a door whose
  * handler names the place its capability is held at, that check (`held`).
  */
-interface Call extends Bound {
+export interface Call<R = unknown> extends Bound {
   /** The binding the call came with, as the binder handed it. */
   readonly binding: Binding;
+  /** The request as the binder handed it (`r` is its fields, as the row held them). */
+  readonly request: R;
   readonly r: Record<string, unknown>;
   readonly session: string;
   readonly universe: string | null;
@@ -1117,11 +337,14 @@ interface Call extends Bound {
 }
 
 /** A door whose handler makes its own units: its call, checked again in each. */
-interface Door {
+export interface Door<R = unknown> {
+  /** The binding the call came with, and its request, as the binder handed them. */
+  readonly binding: Binding;
+  readonly request: R;
   /** Every step of the row, in the unit it is called in. */
-  check(): Call;
+  check(): Call<R>;
   /** `act` on the checked call; a session door's refusal receipted. */
-  within<T>(act: (call: Call) => T): T;
+  within<T>(act: (call: Call<R>) => T): T;
   /** The bind and account steps alone. */
   bound(): Account;
   /** Every step but the fields: the caller's authority, whatever it asks. */
@@ -1142,478 +365,14 @@ export const NO_SANDBOX = "no sandbox lease was opened for this owner";
  * What a sync door's caller may read: its lease, the readable set's own name (null for the
  * owner's sandbox, `*` for all of the owner's files), and the test of a path.
  */
-interface Readable {
+export interface Readable {
   readonly lease: string;
   readonly scope: string | null;
   readonly test: (path: string) => boolean;
 }
 
-/** A sync token that is not the live lease's, or names another lease or epoch. */
-export const SYNC_FENCED = "sync_fenced: the sync lease was lost; this sync is fenced";
-
-/**
- * The request's fields are exactly `required`, plus any of `optional`, and none is
- * `undefined` unless `undefinedAllowed`: a field sent is a value. Else refused `refusal`.
- */
-function fields(request: unknown, required: readonly string[], optional: readonly string[],
-                refusal: string, undefinedAllowed = false): Record<string, unknown> {
-  if (typeof request !== "object" || request === null || Array.isArray(request)) {
-    throw new Refusal("invalid", refusal);
-  }
-  const entries = Object.entries(request);
-  const keys = entries.map(([key]) => key);
-  if (!required.every((key) => keys.includes(key))
-      || !keys.every((key) => required.includes(key) || optional.includes(key))
-      || (!undefinedAllowed && entries.some(([, value]) => value === undefined))) {
-    throw new Refusal("invalid", refusal);
-  }
-  return request as Record<string, unknown>;
-}
-
-/** The board (`collections.ts`), and every room's prefix: `room:<app>:<room>`. */
-const BOARD = "board";
-const ROOM_PREFIX = "room:";
-/** Code mode's tool (`doors/src/tools.ts`), and its refusals. */
-const CODE = "code";
-export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode off";
-export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
-const CODE_TIMED_OUT = "the script is past its time";
-/**
- * A script's answer fitted to one tool answer (`pages.ts`, review M6): its value and calls
- * whole, its output's items while they fit and the next text cut at a character, said so
- * (`output_cut`). A value that alone passes one answer is refused `answer_too_large`, its
- * calls and what landed kept, so nothing is lost silently.
- */
-function fittedCode(answer: CodeResult): CodeResult {
-  if (jsonBytes(answer) <= PAGE_BYTES) {
-    return answer;
-  }
-  const cut: OutputCut = { items: answer.output.length, kept: answer.output.length };
-  const bare = { ...answer, output: [], output_cut: cut };
-  if (jsonBytes(bare) > PAGE_BYTES) {
-    return { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
-             output: [], calls: answer.calls, landed: answer.landed };
-  }
-  const output: CodeOutput[] = [];
-  let used = jsonBytes(bare);
-  for (const item of answer.output) {
-    const bytes = jsonBytes(item) + (output.length > 0 ? 1 : 0);
-    if (used + bytes > PAGE_BYTES) {
-      const meta = jsonBytes({ ...item, text: "" }) + (output.length > 0 ? 1 : 0);
-      if (item.type === "text" && used + meta + 8 <= PAGE_BYTES) {
-        output.push({ ...item, text: fitted(item.text, PAGE_BYTES - used - meta + 2).text });
-      }
-      break;
-    }
-    used += bytes;
-    output.push(item);
-  }
-  const kept = output.length > 0 && output.at(-1) !== answer.output[output.length - 1]
-    ? output.length - 1 : output.length;
-  return { ...answer, output, output_cut: { items: answer.output.length, kept } };
-}
-
-/** A script's value past what one tool answer holds (`pages.ts`), refused whole. */
-export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is past the " +
-  `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
-  "it back";
-/** A digest's head of each body, in characters, unless the caller names another. */
-const HEAD_CHARS = 512;
-
-/** A digest's `head_chars`: a whole number of characters, `HEAD_CHARS` when omitted. */
-function headChars(value: unknown): number {
-  if (value === undefined) {
-    return HEAD_CHARS;
-  }
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Refusal("invalid", "head_chars is a whole number of characters");
-  }
-  return value;
-}
-
-/**
- * What a page's unit names to read from R2: the placed bodies' content ids, and, by content
- * id, the most bytes of each window (one answer's when omitted) and the byte it starts at
- * (0 when omitted: the page's first item's `body_offset`).
- */
-interface Wants {
-  readonly contents: readonly string[];
-  readonly maxOf?: (contentId: string) => number;
-  readonly offsetOf?: (contentId: string) => number;
-}
-
-/** What each of an inbox digest's two parts, its mail and its rooms, fits: half an answer. */
-const INBOX_PART = (PAGE_BYTES - 32) / 2;
-
-/** A head's window of a placed body: at most four bytes a character, within one answer. */
-function headWindow(chars: number): number {
-  return Math.min(4 * chars, PAGE_BYTES);
-}
-
-/**
- * Changed rows as a digest shows them, fitted to one answer (`pages.ts`): each body cut to
- * its first `chars` characters, read from its row or its placed body's window; the rows in
- * order while they fit, at least one, the first's head cut further when it does not; the
- * page ends before a placed body not read, and when rows are left the cursor is the last
- * row's change.
- */
-function heads(changes: Changes, chars: number, windows: ReadonlyMap<string, Window>,
-               bytes: number = PAGE_BYTES): Heads {
-  const rows: { row: RowHead }[] = [];
-  for (const row of changes.rows) {
-    if (row.deleted) {
-      rows.push({ row });
-      continue;
-    }
-    const { body, content_id: contentId, ...rest } =
-      row as Extract<Changed, { deleted: false }> & { content_id?: string };
-    const window = contentId === undefined ? inlineWindow(body, 0) : windows.get(contentId);
-    if (window === undefined) {
-      break;
-    }
-    const head = [...window.text.slice(0, 2 * chars)].slice(0, chars).join("");
-    rows.push({ row: { ...rest, head, body_bytes: window.size } });
-  }
-  const reset = changes.reset === true ? { reset: true as const } : {};
-  const fixed = jsonBytes({ ...reset, cursor: changes.cursor, rows: [] });
-  const kept = rows.length === 0 ? [] : fitPage(fixed, rows, ({ row }, room, first) => {
-    const fit = fits(row, room);
-    if (fit !== null || !first || row.deleted) {
-      return fit;
-    }
-    const meta = jsonBytes({ ...row, head: "" });
-    if (room - meta + 2 < 2) {
-      throw new Refusal("result_too_large", RESULT_TOO_LARGE);
-    }
-    return fits({ ...row, head: fitted(row.head, room - meta + 2).text }, room);
-  }, bytes);
-  if (kept.length === 0 && changes.rows.length > 0) {
-    throw new Error("a digest's first row is always read");
-  }
-  return { ...reset,
-           cursor: kept.length === changes.rows.length ? changes.cursor : kept.at(-1)!.change,
-           rows: kept };
-}
-
-/**
- * A row or entry, its body taken from its row or its placed body's window (`body_offset`
- * from `offset`), as a page fits it; null for a placed body not read.
- */
-function windowed<T extends { readonly body: string; readonly content_id?: string }>(
-    row: T, windows: ReadonlyMap<string, Window>, offset = 0):
-    { item: Omit<T, "content_id">; window: Window } | null {
-  const { content_id: contentId, ...item } = row;
-  const window = contentId === undefined ? inlineWindow(row.body, offset)
-    : windows.get(contentId);
-  return window === undefined ? null : { item, window };
-}
-
-/** Rows or entries with their windows, in order, up to the first placed body not read. */
-function windowedAll<T extends { readonly body: string; readonly content_id?: string }>(
-    rows: readonly T[], windows: ReadonlyMap<string, Window>, offset = 0):
-    { item: Omit<T, "content_id">; window: Window }[] {
-  const out: { item: Omit<T, "content_id">; window: Window }[] = [];
-  for (const [index, row] of rows.entries()) {
-    const read = windowed(row, windows, index === 0 ? offset : 0);
-    if (read === null) {
-      break;
-    }
-    out.push(read);
-  }
-  return out;
-}
-
-/**
- * One row as an answer shows it, fitted (`pages.ts`), beside the answer's other fields
- * (`fixed` bytes).
- */
-function fittedRow<T extends { readonly body: string }>(
-    read: { item: T; window: Window } | null, fixed: number): T & Partial<Cut> {
-  if (read === null) {
-    throw new Error("a placed body its row names was not read");
-  }
-  return bodied(read.item, read.window, PAGE_BYTES - fixed, true)!.item;
-}
-
-/**
- * A search's `next_cursor`: the stored path it resumes after, as base64url (review L5), an
- * opaque token at most 5,462 characters with nothing to escape, so a path of escaped
- * characters never makes an answer too wide to go on.
- */
-function pathCursor(path: string): string {
-  return Buffer.from(path, "utf8").toString("base64url");
-}
-
-function cursorPath(cursor: unknown): string {
-  if (typeof cursor !== "string" || !/^[A-Za-z0-9_-]{1,5462}$/.test(cursor)) {
-    throw new Refusal("invalid", "a cursor is a next_cursor a search answered");
-  }
-  return Buffer.from(cursor, "base64url").toString("utf8");
-}
-
-/** The agents list's three lists, in the order a page reads them. */
-const AGENT_LISTS = Object.freeze(["agents", "owner_agents", "apps"] as const);
-
-/** Each list's stable key: an agent's id, an owner agent's id, an app's name. */
-function agentKey(list: (typeof AGENT_LISTS)[number], item: Agent | NativeAgent | ConnectedApp):
-    string {
-  return list === "apps" ? (item as ConnectedApp).name : (item as Agent | NativeAgent).agent_id;
-}
-
-/**
- * The agents a caller sees, fitted to one answer after the cursor `after` (`outsideAgents`,
- * review M3 and its verification): the three lists read as one sequence, each by its stable
- * key, so an agent added or removed between pages is neither skipped nor answered twice;
- * `next`, the last one answered's `<list>:<key>`, when some are left.
- */
-function agentsPage(all: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] },
-                    after: string | null):
-    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
-  const at = after === null ? null : { list: AGENT_LISTS.indexOf(
-    after.slice(0, after.indexOf(":")) as (typeof AGENT_LISTS)[number]),
-                                       key: after.slice(after.indexOf(":") + 1) };
-  if (at !== null && at.list < 0) {
-    throw new Refusal("invalid", "after is a next an agents list answered");
-  }
-  const items = AGENT_LISTS.flatMap((list, index) => [...all[list]]
-    .map((item) => ({ list, item, key: agentKey(list, item) }))
-    .sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
-    .filter((entry) => at === null || index > at.list || (index === at.list && entry.key > at.key)));
-  const empty = { agents: [], owner_agents: [], apps: [] };
-  if (items.length === 0) {
-    return empty;
-  }
-  const kept = fitPage(jsonBytes({ ...empty, next: `owner_agents:${"\u0001".repeat(512)}` }),
-                       items, (entry, room) => fits(entry.item, room));
-  const page: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] } =
-    { agents: [], owner_agents: [], apps: [] };
-  for (const [index, entry] of kept.entries()) {
-    (page[items[index]!.list] as unknown[]).push(entry);
-  }
-  const last = items[kept.length - 1]!;
-  return kept.length === items.length ? page : { ...page, next: `${last.list}:${last.key}` };
-}
-
-/** A run as an answer shows it: its result cut further to fit one, `result_cut` then. */
-function fittedRun<T extends { readonly result: string | null; readonly result_cut: boolean }>(
-    view: T): T {
-  if (view.result === null || jsonBytes(view) <= PAGE_BYTES) {
-    return view;
-  }
-  const meta = jsonBytes({ ...view, result: "", result_cut: true });
-  if (meta + 2 > PAGE_BYTES) {
-    throw new Refusal("result_too_large", RESULT_TOO_LARGE);
-  }
-  return { ...view, result: fitted(view.result, PAGE_BYTES - meta + 2).text, result_cut: true };
-}
-
-
-function conflicted<T>(act: () => T): T | Conflicted {
-  try {
-    return act();
-  } catch (error) {
-    if (error instanceof Conflict) {
-      return { conflict: error.current };
-    }
-    throw error;
-  }
-}
-
-/** Files an append never changes: text put after their end breaks what they mean. */
-const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
-/**
- * The tries a large append makes before it is refused `file_busy` (a small one is one unit
- * and never retries). A try is lost only when another write to the same file commits while
- * this one's chunks are out at `FILES`. Another chunked write holds one of the owner's open
- * uploads while its chunks are out, and the owner has at most `MAX_OPEN_INTENTS` open, this
- * one's among them, so those in flight when it starts can beat it at most
- * `MAX_OPEN_INTENTS - 1` times before every one has landed: `MAX_OPEN_INTENTS` tries outlast
- * them. A small whole write holds no upload; one landing in each of that many windows in a
- * row is a flood, refused loudly rather than retried without end. Measured (review rvbr):
- * 80 and then 300 concurrent appends to one small file all landed, none refused.
- */
-export const APPEND_TRIES = MAX_OPEN_INTENTS;
-/**
- * An outside agent's or a run's remove, rename or restore with no etag: it never removes,
- * moves or overwrites an entry it did not read (review R2-L3, as `UNREAD_WRITE`).
- */
-export const UNREAD_CHANGE = "expected_etag is the entry's current etag, or \"\" where there " +
-  "is none: read it first (file_stat, fetch or file_read)";
-
-/** A change by an outside client or a run names the etag it read; the owner's app need not. */
-function heldToRead(account: Account, asked: unknown): void {
-  if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
-    throw new Refusal("invalid", UNREAD_CHANGE);
-  }
-}
-
-/** An outside agent's or a run's whole write with no etag: it never replaces a file unread. */
-export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
-  "only when absent: read the file first (fetch, file_read or file_stat)";
-
-
-function fileConflicted<T>(act: () => T): T | FileConflicted {
-  try {
-    return act();
-  } catch (error) {
-    if (error instanceof FileConflict) {
-      return { conflict: error.current };
-    }
-    throw error;
-  }
-}
-
-async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileConflicted> {
-  try {
-    return await act();
-  } catch (error) {
-    if (error instanceof FileConflict) {
-      return { conflict: error.current };
-    }
-    throw error;
-  }
-}
-
-/**
- * How often a mailbox read reads its placed bodies again when mail that came between its
- * read of them and its unit put an unread placed body first (ADR-035).
- */
-const READ_TRIES = 3;
-
-/**
- * A read of the archive that the lane's moves and rewrites changed under each of its
- * `READ_TRIES`: retried soon, never an internal error (reviews N9 and N10).
- */
-function archiveMoving(): Refusal {
-  const retry = 1;
-  return new Refusal(STORAGE_BUSY, `${STORAGE_BUSY}: the archive moved this mail under each ` +
-    `of ${READ_TRIES} reads; try again in ${retry} second. ` +
-    JSON.stringify({ retry_after_s: retry }), { retryAfterS: retry });
-}
-
-/** A post's parent, hot at its gate, moved to the archive before its unit (`roomPost`). */
-class ParentMoved extends Error {
-  override readonly name = "ParentMoved";
-}
-
-/** The placed contents a read's rows name (ADR-035). */
-function contentsOf(rows: readonly object[]): string[] {
-  return rows.flatMap((row) => {
-    const id = (row as { readonly content_id?: string }).content_id;
-    return id === undefined ? [] : [id];
-  });
-}
-
-/**
- * What a writing door's answer shows of placed bodies (ADR-035): the content ids it names,
- * located in its unit, and the answer with their windows read in.
- */
-interface Shown<T> {
-  readonly contents: (value: T) => readonly string[];
-  readonly fill: (value: T, windows: ReadonlyMap<string, Window>) => T;
-}
-
-/**
- * The most bytes one `file_edit` edits (ADR-037's ruling 2): no longer `WHOLE_BYTES`, since a
- * chunk-wise edit's memory does not depend on the file, but the time one call takes, its
- * tightest bound. The workerd memory leg times the worst edit (the first chunk's, longer, so
- * every chunk is read, remade and put) on the real path, with the files Worker's own hashing
- * left out: about 17 ms a chunk of wall time, at least the CPU it spent (2026-11-04, its log
- * in `limits-audit.md`); a request has 30 s of CPU, and two thirds are left for a slower
- * host, so 500 chunks (about 9 s). The leg fails if the measured time passes 30 s at this
- * figure. Its subrequests, about five a chunk, are 2,500 at most. Production's wall time a
- * chunk (R2's round trips) is owed live; an edit commits whole or not at all.
- */
-export const EDIT_BYTES_MAX = 500 * CHUNK_BYTES;
-
-/**
- * An edit's output small enough to keep inline (at most `INLINE_BYTES`, under one chunk):
- * its one chunk made, in a making step (`hold`).
- */
-function inlineOf(plan: Edited, hold: <T>(work: () => Promise<T>) => Promise<T>):
-    Promise<Uint8Array> {
-  if (plan.sizes.length !== 1) {
-    throw new Error("an inline edit's output is one chunk");
-  }
-  return hold(() => plan.make(0));
-}
-
-/** A written row as its write answers it: everything but its body, and the body's bytes. */
-export type WrittenRow = Omit<Row, "body" | "content_id"> & { readonly body_bytes: number };
-
-function writtenRow(row: Row): WrittenRow {
-  const { body, content_id: _placed, ...rest } = row;
-  return { ...rest, body_bytes: utf8Bytes(body) };
-}
-
-/** A conflict's current row, read back as `get` shows it: fitted to one answer. */
-function conflictShown<T extends object>(): Shown<T> {
-  return {
-    contents: (value) => "conflict" in value && value.conflict !== null
-      ? contentsOf([value.conflict as Row]) : [],
-    fill: (value, windows) => "conflict" in value && value.conflict !== null
-      ? { ...value, conflict: fittedRow(windowed(value.conflict as Row, windows),
-                                        jsonBytes({ ...value, conflict: null }) - 4) } : value,
-  };
-}
-
-/**
- * Whose files scope a door's rows count in (ADR-035): the owner's, an outside client's
- * (`client:<id>`), or a visiting owner's own, `client:` and its principal's hash, so a
- * visitor is held to the owner's `client_share` as a client is.
- */
-function filerOf(account: Account): string {
-  if (account.origin !== null) {
-    return `client:${account.origin.client}`;
-  }
-  return account.caller === account.owner ? "owner"
-    : `client:${sha256Hex(`visitor\n${account.caller}`)}`;
-}
-
-/** Who a file change is by, in its history: the owner, or the outside client it came through. */
-function fileWriter(account: Account): string {
-  return account.origin === null ? "owner" : `client:${account.origin.client}`;
-}
-
-function flag(value: unknown, what: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new Refusal("invalid", `${what} is true or false`);
-  }
-  return value;
-}
-
-/** The agent a scoped client acts as when its call names none. */
-export const MAIN_AGENT = "main";
-/**
- * The bytes a mail's run's input takes in the waiting inputs' queue: none, since its row
- * keeps only the mail's reference (ADR-035); the queue's rows bound it.
- */
-const MAIL_INPUT_BYTES = 0;
 /** How many times a placed body begins again past a chunk the sweep is deleting. */
 const PLACE_TRIES = 5;
-/** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
-const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
-/**
- * What a sync commit's write of the sync-ignore list says of the files it holds back, as its
- * sync agent counted them (`sync.ts`): the kept files its lines name, and those with changes.
- */
-function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
-  const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
-    ? value as number : null;
-  for (const op of Array.isArray(ops) ? ops as unknown[] : []) {
-    const fields = (typeof op === "object" && op !== null ? op : {}) as Record<string, unknown>;
-    const held = fields["held_back"] as Record<string, unknown> | undefined;
-    if (fields["path"] === SYNC_IGNORE && fields["op"] === "write" && typeof held === "object"
-        && held !== null) {
-      const kept = count(held["kept"]);
-      const changed = count(held["changed"]);
-      if (kept !== null && changed !== null && changed <= kept) {
-        return { kept, changed };
-      }
-    }
-  }
-  return null;
-}
 
 /**
  * A run's own MCP door never converses: work between agents is mail (ADR-034 decision 11).
@@ -1622,396 +381,6 @@ function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
  */
 export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail, never " +
   "converse";
-/** The agent's file changed between its read and the admission: the caller tries again. */
-export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was admitted";
-/**
- * The longest a run door waits for its run to settle before it answers the run as it
- * stands, in ms: a call's own bound (a convention; the run itself has no deadline).
- */
-export const RUN_WAIT_MS = 60_000;
-
-
-/** A run's input: well-formed text, at least a character; its size is the door's bound. */
-function runText(value: unknown, what: string): string {
-  if (typeof value !== "string" || value.length === 0 || /\p{Cs}/u.test(value)) {
-    throw new Refusal("invalid", `${what} is well-formed text`);
-  }
-  return value;
-}
-
-function waitOf(value: unknown): number {
-  if (value === undefined) {
-    return 0;
-  }
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0
-      || value > RUN_WAIT_MS) {
-    throw new Refusal("invalid", `wait_ms is 0 to ${RUN_WAIT_MS}`);
-  }
-  return value;
-}
-
-const SEND_ID = /^[A-Za-z0-9_-]{1,128}$/;
-
-/** A request's retry key: the caller and its send id, hashed, so a retry is the same run. */
-function requestKey(client: string | null, sendId: unknown): string {
-  if (typeof sendId !== "string" || !SEND_ID.test(sendId)) {
-    throw new Refusal("invalid", "client_send_id is 1 to 128 letters, digits, - and _");
-  }
-  return sha256Hex(`${client ?? "owner"}\0${sendId}`);
-}
-
-/** The engine, its reports in one batch at most `ENGINE_SIGNINS`, each engine once. */
-function signinRequest(r: Record<string, unknown>):
-    { engine: string; signed_in: boolean; models: string[] }[] {
-  const signins = r["signins"];
-  if (!Array.isArray(signins) || signins.length === 0 || signins.length > ENGINE_SIGNINS) {
-    throw new Refusal("invalid", `a sign-in report names 1 to ${ENGINE_SIGNINS} engines`);
-  }
-  const sources = bundledSources();
-  const seen = new Set<string>();
-  return signins.map((entry) => {
-    const f = fields(entry, ["engine", "signed_in"], ["models"], "invalid sign-in report");
-    const engine = f["engine"];
-    const cli = typeof engine === "string" ? sources.get(engine)?.cli : undefined;
-    if (typeof engine !== "string" || cli === undefined || seen.has(engine)
-        || !cli.credential.includes("vendor_login_in_sandbox")) {
-      throw new Refusal("invalid", "a sign-in report names engines that sign in, each once");
-    }
-    seen.add(engine);
-    if (typeof f["signed_in"] !== "boolean") {
-      throw new Refusal("invalid", "signed_in is true or false");
-    }
-    const models = f["models"] ?? [];
-    if (!Array.isArray(models) || models.some((model) => typeof model !== "string"
-                                               || !/^[!-~]+$/.test(model))
-        || JSON.stringify(models).length > SIGNIN_MODELS_CHARS) {
-      throw new Refusal("invalid",
-                        `models are model ids, at most ${SIGNIN_MODELS_CHARS} characters ` +
-                        "as JSON");
-    }
-    return { engine, signed_in: f["signed_in"], models: models as string[] };
-  });
-}
-
-/** The runner's report, exactly: frames numbered from 1 and rising, and an optional end. */
-function eventsRequest(r: Record<string, unknown>): {
-  frames: PostedFrame[]; end: { exit_code: number | null } | null } {
-  const frames = r["frames"];
-  if (!Array.isArray(frames)) {
-    throw new Refusal("invalid", "invalid run events");
-  }
-  if (!eventsBounded(r)) {
-    throw new Refusal("invalid", `a post is at most ${EVENT_FRAMES_MAX} frames, each at most ` +
-                      `${FRAME_UNITS_MAX} units of JSON`);
-  }
-  let last = 0;
-  for (const frame of frames) {
-    const f = fields(frame, ["seq", "at", "event"], [], "invalid run events");
-    if (typeof f["seq"] !== "number" || !Number.isSafeInteger(f["seq"]) || f["seq"] <= last
-        || typeof f["at"] !== "number" || !Number.isFinite(f["at"])) {
-      throw new Refusal("invalid", "a frame's seq rises from 1, and its at is a time");
-    }
-    last = f["seq"];
-  }
-  let end: { exit_code: number | null } | null = null;
-  if (r["end"] !== undefined) {
-    const e = fields(r["end"], ["exit_code"], [], "invalid run events");
-    const code = e["exit_code"];
-    if (code !== null && (typeof code !== "number" || !Number.isSafeInteger(code))) {
-      throw new Refusal("invalid", "an end's exit_code is a whole number, or null");
-    }
-    end = { exit_code: code as number | null };
-  }
-  return { frames: frames as PostedFrame[], end };
-}
-
-/** An archived record read whole in one read when no larger (a chain page's own share). */
-const ARCHIVED_WHOLE_BYTES = 64 * 1024;
-/** The bytes first read of a larger record for its first two lines (more when they pass it). */
-const ARCHIVED_HEAD_BYTES = 16 * 1024;
-
-/** The `archive` lane's failed passes in a row at which the owner is told, once. */
-const ARCHIVE_FAILS_TOLD = 3;
-/** How long a failed `archive` pass holds its lane. */
-const ARCHIVE_RETRY_S = 60;
-/**
- * How long a pass refused `busy` holds its lane (review round 11, Lows A and B): the pool's
- * own wait (`SLOT_WAIT_MS`), the term a full queue of larger holds turns over within (the
- * memory leg checks it), so the units held when it was refused have been given back.
- */
-const ARCHIVE_BUSY_RETRY_S = SLOT_WAIT_MS / 1000;
-/**
- * What the owner is told when a busy pool keeps the archive from moving while the hot set
- * stands at its ceiling: once a blocked spell (since the last segment the lane placed).
- */
-const ARCHIVE_BUSY_TOLD = "New mail is held at its ceiling because this server is too busy " +
-  `to move older mail out just now; nothing is lost, and the archive tries again every ${
-    ARCHIVE_BUSY_RETRY_S} seconds.`;
-
-/**
- * An archive move's reads of stored contents (review N5): each chunk read whole through
- * `FILES` (which rechecks its hash), the last one kept for the next range in it; and each
- * content the move's table gives a hash for (a placed body, its message's) checked as its
- * chunks are first read, in order, in the move's first pass (`bodiesChecked`), one hash at a
- * time, so a move of many placed bodies holds none but the one being read.
- */
-class MoveReader {
-  readonly #files: Files;
-  readonly #table: MoveTable;
-  /** Each content's next chunk to hash; its count once checked. */
-  readonly #next: Uint32Array;
-  #hashing: { ref: number; hash: ReturnType<typeof createHash> } | null = null;
-  #checking = true;
-  #last: { sha256: string; bytes: Uint8Array } | null = null;
-
-  constructor(files: Files, table: MoveTable) {
-    this.#files = files;
-    this.#table = table;
-    this.#next = new Uint32Array(Math.max(1, table.contents));
-  }
-
-  readonly read = async (content: Stored, index: number): Promise<Uint8Array> => {
-    const sha256 = content.chunks[index];
-    if (sha256 === undefined) {
-      throw new Error("a move's range runs past its content");
-    }
-    let bytes = this.#last?.sha256 === sha256 ? this.#last.bytes : undefined;
-    if (bytes === undefined) {
-      // The chunk kept is let go before the next arrives: its pieces are taken (`makeChunk`
-      // and `lineAt` copy what they keep), so it never outlives its use (`letGo`).
-      this.letGo();
-      bytes = (await this.#files.fetch([{ sha256 }]))[0];
-      if (bytes === undefined) {
-        throw new Error("a move's chunk was not read");
-      }
-      this.#last = { sha256, bytes };
-    }
-    const ref = Number(content.id);
-    if (this.#checking && this.#table.expected(ref) !== null && this.#next[ref] === index) {
-      if (this.#hashing?.ref !== ref) {
-        this.#hashing = { ref, hash: createHash("sha256") };
-      }
-      this.#hashing.hash.update(bytes);
-      this.#next[ref]!++;
-      if (index + 1 === content.chunks.length) {
-        if (this.#hashing.hash.digest("hex") !== this.#table.expected(ref)) {
-          throw new Error("an archived body is not the body its message holds");
-        }
-        this.#hashing = null;
-      }
-    }
-    return bytes;
-  };
-
-  /** The chunk kept for the next range let go, its buffer detached (`edit.ts`'s `letGo`). */
-  letGo(): void {
-    if (this.#last !== null) {
-      letGo(this.#last.bytes);
-      this.#last = null;
-    }
-  }
-
-  /** After the first pass: every content with a hash read whole and checked, or loudly not. */
-  bodiesChecked(): void {
-    for (let ref = 0; ref < this.#table.contents; ref++) {
-      if (this.#table.expected(ref) !== null
-          && this.#next[ref] !== this.#table.contentOf(ref).chunks.length) {
-        throw new Error("an archived body is not the body its message holds");
-      }
-    }
-    this.#checking = false;
-  }
-}
-
-/**
- * `lease` grown to `total` units now, or refused `busy` (everything it holds given back):
- * inside the alarm a pass never waits on the pool, since the object's other lanes would wait
- * with it (round 11, Low B). A call that does not fit at once leaves its queue at the next
- * turn of the event loop; the lane holds and tries again (`ARCHIVE_BUSY_RETRY_S`).
- */
-async function now(lease: PoolLease, total: number): Promise<void> {
-  const turn = new AbortController();
-  const timer = setTimeout(() => turn.abort(slotBusy()), 0);
-  try {
-    await lease.grow(total, turn.signal);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * An archive move's or rewrite's holds on the isolate's pool (ADR-037), one lease in the
- * larger class (`SlotPool.lease`, the pool's one admission rule), each growth taken now or
- * refused `busy` (`now`: inside the alarm it never waits). Its table's units
- * (`moveTableUnits`), taken before its records arrive and held to its end, since the table's
- * bytes are in hand throughout; grown as a rewrite takes in a neighbour; and each pass's
- * `MOVE_PASS_UNITS` beside them, grown before the pass's first chunk arrives and given back
- * (`Lease.shrink`) once its last is gone: its waits each bring or send its bytes (a chunk
- * read, a chunk put, a unit reading hot records' lines), never a begin or a commit. Refused
- * `busy`, the pass ends with nothing changed: the lane holds and tries again
- * (`ARCHIVE_BUSY_RETRY_S`), not counted as a failure (`#archivePass`).
- */
-class MoveHold {
-  readonly #pool: SlotPool;
-  readonly #lease: PoolLease;
-  /** The units its records hold; a pass's are grown past them and given back. */
-  #table: number;
-
-  private constructor(pool: SlotPool, lease: PoolLease, table: number) {
-    this.#pool = pool;
-    this.#lease = lease;
-    this.#table = table;
-  }
-
-  /** The units for a table of `records` records: a lease in the larger class. */
-  static async take(pool: SlotPool, records: number): Promise<MoveHold> {
-    const lease = pool.lease("", true);
-    const table = moveTableUnits(records);
-    await now(lease, table);
-    return new MoveHold(pool, lease, table);
-  }
-
-  /** The units held for the table. */
-  get units(): number {
-    return this.#table;
-  }
-
-  /** The table grown to hold `records` records: its units grown first. */
-  async table(records: number): Promise<void> {
-    const table = moveTableUnits(records);
-    if (table > this.#table) {
-      await now(this.#lease, table);
-      this.#table = table;
-    }
-  }
-
-  /** One pass, holding its own units beside the table's; `letGo` drops what it kept. */
-  async pass<T>(act: () => Promise<T>, letGo: () => void): Promise<T> {
-    await now(this.#lease, this.#table + MOVE_PASS_UNITS);
-    try {
-      const done = await act();
-      letGo();
-      if (this.#pool.observe !== null) {
-        await this.#pool.observe(this.#lease.units);
-      }
-      return done;
-    } finally {
-      letGo();
-      this.#lease.shrink(this.#table);
-    }
-  }
-
-  release(): void {
-    this.#lease.release();
-  }
-}
-
-/** The owner's notice that the archive keeps failing: its last error as it said it, if any. */
-function archiveFailing(said: string | null): string {
-  return `Older mail could not be moved out (${said ?? "the last tries stopped before they " +
-    "could say why"}), so new mail may wait at the hot ceiling; the archive tries again ` +
-    "every minute.";
-}
-
-/** What the object's lanes run over: its stores, its in-process callers and the passes. */
-export interface LaneDeps {
-  readonly ledger: Ledger;
-  readonly files: {
-    nextAlarm(now: number): number | null;
-    collect(now: number, until: number): Promise<void>;
-  };
-  readonly connections: {
-    nextDue(now: number): number | null;
-    run(now: number, until: number): Promise<void>;
-  };
-  /** The `runs` lane: its rows' next time (`Runs.next`), and the object's pass over them. */
-  readonly runs: {
-    next(now: number): number | null;
-    run(now: number, until: number): Promise<void>;
-  };
-  /** The `manifest` lane: the nightly manifest (`backup.ts`). */
-  readonly manifest: {
-    next(now: number): number | null;
-    run(now: number, until: number): Promise<void>;
-  };
-  /** The `sandbox` lane: the sandbox Worker's log read into the meter (`sandbox-time.ts`). */
-  readonly sandbox: {
-    next(now: number): number | null;
-    run(now: number, until: number): Promise<void>;
-  };
-  /** The `archive` lane: one move or one rewrite a pass (`segments.ts`). */
-  readonly archive: {
-    next(now: number): number | null;
-    run(now: number, until: number): Promise<unknown>;
-  };
-  /** The starter package (`starter.ts`): seeded, then kept current, as its rows say. */
-  readonly starter: {
-    next(now: number): number | null;
-    run(now: number): Promise<void>;
-  };
-  /** The doorbell (`wakes.ts`), or null for none: read at each use, never kept. */
-  readonly sender: () => WakeSender | null;
-  /** Whether the owner is admitted (`require_work`): read at each use. */
-  readonly admitted: () => boolean;
-  readonly clock: () => number;
-  /** The object's write gate, which every lane write goes through a row at a time. */
-  readonly write: Write;
-  readonly runWakes: typeof runWakes;
-}
-
-/**
- * The lanes of the object's one schedule (`schedule.ts`). Each lane's pass is handed the
- * pass's wall-clock end (`until`) and passes it on, so no lane can outrun its hung
- * timeout; the passes write through the object's gate. The doorbell and the admission are
- * read when a lane looks or runs, so one the object gains later is never missed.
- * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
- */
-export function ownerLanes(deps: LaneDeps):
-    Readonly<Record<"wakes" | "files" | "connections" | "runs" | "manifest" | "sandbox"
-                    | "archive" | "starter", Lane>> {
-  return {
-    // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell, and
-    // only while the owner is admitted (`require_work`): a suspended owner's wait.
-    wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null
-                                                       && deps.admitted()),
-             // The kill switch closed: nothing claimed, and the job held a retry out.
-             run: async (_now, until) => {
-               const done = await deps.runWakes(deps.ledger, deps.sender(), deps.clock,
-                                                deps.write, WAKES_PER_ALARM, WAKE_SEND_MS, until);
-               return done === CLOSED ? { hold: deps.clock() + WAKE_RETRY_S } : done;
-             } },
-    files: { next: (now) => deps.files.nextAlarm(now),
-             run: (now, until) => deps.files.collect(now, until) },
-    // Connection housekeeping: expired flows, unclaimed pending rows, provider revokes.
-    connections: { next: (now) => deps.connections.nextDue(now),
-                   run: (now, until) => deps.connections.run(now, until) },
-    // Runs: a schedule due, or a live run's lease expiry; never a poll for work.
-    runs: { next: (now) => deps.runs.next(now),
-            run: (now, until) => deps.runs.run(now, until) },
-    // The nightly manifest: once a night, at the owner's own hour; never a poll.
-    manifest: { next: (now) => deps.manifest.next(now),
-                run: (now, until) => deps.manifest.run(now, until) },
-    // Sandbox time: a settled run not yet metered, or an open span's next look.
-    sandbox: { next: (now) => deps.sandbox.next(now),
-               run: (now, until) => deps.sandbox.run(now, until) },
-    // The archive (slice STORE item 2): acked mail moved to segments from half the hot
-    // ceiling, and a deleted agent's mail rewritten out of them; never a poll.
-    archive: { next: (now) => deps.archive.next(now),
-               run: (now, until) => deps.archive.run(now, until) },
-    // The starter package: an admitted owner's seed, then each newer version once.
-    starter: { next: (now) => deps.starter.next(now), run: (now) => deps.starter.run(now) },
-  };
-}
-
-/** An archive move as a test sees it between its passes: its kind, what it replaces, holds. */
-export interface ArchiveMoveSeen {
-  readonly stream: "mail" | "rewrite";
-  readonly replaced: number;
-  readonly records: number;
-}
-
-/** Where a test may hold a chain read (`Internals.chainStep`). */
-export type ChainStep = "fenced" | "hot";
 
 /** What a test reaches past the doors: the erasure's internal path and its retry interval. */
 export interface Internals {
@@ -2051,52 +420,99 @@ export interface Internals {
   readonly starter?: StarterPackage | null;
 }
 
-/** A model's cost record with its input at its dearest rate: what a token can cost at most. */
-function dearest(model: ModelRecord): ModelRecord {
-  const top = (rates: { input: number; cacheRead: number; cacheWrite: number }) =>
-    Math.max(rates.input, rates.cacheRead, rates.cacheWrite);
-  return { ...model, cost: { ...model.cost, input: top(model.cost),
-                             ...(model.cost.tiers === undefined ? {}
-                               : { tiers: model.cost.tiers.map((tier) =>
-                                 ({ ...tier, input: top(tier) })) }) } };
-}
-
 /**
- * The most µ$ a sandbox call of `input` and `output` tokens can cost on any of `models`,
- * each model's tokens at most its own context window and output cap, at its dearest rates.
+ * The object's state, as its modules are handed it: its doors' handlers, each in the module
+ * its row names (`contract/doors.json`), and the run launcher (`launch.ts`). Its stores; its
+ * gate's units; and what only the object reads or decides: the owner's admission and tier
+ * (`admission.ts`, which only the object imports), and the scope a caller is held to where
+ * it acts, as the runner holds it. Only the object makes it (`#stateOf`), so a module
+ * reaches these through the object's runner.
  */
-export function egressPrice(models: readonly ModelRecord[], input: number, output: number):
-    number {
-  return Math.max(...models.map((model) => priced(dearest(model),
-                                                  Math.min(input, model.contextWindow),
-                                                  Math.min(output, model.maxTokens))));
-}
-
-/**
- * The sandbox leases, one an authority (the owner's own work's, each outside client's),
- * owner-internal (G4): no door reaches them. A run's admission opens its authority's, or
- * joins the live one (`runs.ts`): there is no other way to open one, so no path skips
- * admission. What is left here is what slice S's sandbox Worker reports and the tests take
- * through `Internals.sandbox`. Each call is one unit of the write gate, and refused unless
- * the owner is admitted for its class, as a door's binding check refuses.
- */
-export interface SandboxLeases {
-  /** Renew it (the runner's heartbeat; each event batch renews it too). */
-  renew(request: { lease_id: string; epoch: number }): Promise<Lease>;
-  /**
-   * Give it back: both tokens refused from this unit on, its streams ended, and every run
-   * still live under it settled `unknown` (its runner is gone with it).
-   */
-  close(request: { lease_id: string; epoch: number }): Promise<{ released: boolean }>;
-  /** The network applied under egress `generation` (8b's `updateNetwork` returned). */
-  networkApplied(request: { lease_id: string; epoch: number; generation: number }):
-    Promise<Lease>;
-  /** The network document for the current egress policy, with the egress token. */
-  network(egressToken: string): Promise<NetworkPlan>;
-  /** Whether a live lease's network is older than the egress policy: 8b re-applies it. */
-  stale(leaseId: string): Promise<boolean>;
-  /** The owner's egress policy, its generation, and `run`'s environment. */
-  config(run: SandboxRun): Promise<SandboxConfig>;
+export interface OwnerState {
+  readonly env: OwnerEnv;
+  readonly storage: OwnerStorage;
+  /** The owner this object is named by; refused when it has none. */
+  owner(): string;
+  readonly collections: Collections;
+  readonly policy: Policy;
+  readonly grants: Grants;
+  readonly sessions: Sessions;
+  readonly ledger: Ledger;
+  readonly files: Files;
+  readonly backups: Backups;
+  readonly openExports: OpenExports;
+  readonly sandboxTime: SandboxTime;
+  readonly bodies: Bodies;
+  readonly registrations: Registrations;
+  readonly notices: Notices;
+  readonly starter: Starter;
+  readonly connections: Connections;
+  readonly usage: ModelUsage;
+  readonly egress: Egress;
+  readonly runs: Runs;
+  readonly launcher: Launcher;
+  readonly relay: Relay;
+  readonly signins: Signins;
+  readonly tickets: Tickets;
+  readonly keys: Keys;
+  readonly inbound: Inbound;
+  readonly archive: Archive;
+  readonly erasure: Erasure;
+  /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
+  readonly posts: PostGate;
+  /** Code mode's bounds: production's, unless a test passed smaller. */
+  readonly codemode: CodemodeBounds;
+  /** The held-back count a sync commit in progress carries for the sync-ignore list. */
+  heldBack: { kept: number; changed: number } | null;
+  /** A synchronous body as one unit of the write gate. */
+  door<T>(act: () => T): Promise<T>;
+  /** A unit that marks nothing changed (`gate.ts`). */
+  quiet<T>(act: () => T): Promise<T>;
+  /** A unit, then the one schedule synced from the rows it changed. */
+  synced<T>(act: () => T): Promise<T>;
+  /** A changing file door's unit, then the schedule synced whatever came of it. */
+  filing<T>(act: () => T): Promise<T>;
+  /** A write door with a body: placed in R2 past `PLACE_BYTES` (`#placing`). */
+  placing<T>(prepare: () => { body: unknown; writer: string } | { done: T },
+             act: (placed: Placed | null) => T,
+             options?: { synced?: boolean; shown?: Shown<T> }): Promise<T>;
+  /** A read whose unit marks what it returns, its placed bodies read between (`#rereading`). */
+  rereading<T, B>(locate: () => readonly string[], read: (bodies: B) => T,
+                  again: (value: T) => boolean,
+                  fetch: (located: Located) => Promise<B>): Promise<T>;
+  /** `rereading` for a page: its bodies' windows. */
+  rereadingPage<T>(locate: () => Wants, read: (windows: ReadonlyMap<string, Window>) => T,
+                   again: (value: T) => boolean): Promise<T>;
+  /** A read door's unit, then its rows' placed bodies' windows read from R2. */
+  reading<T, U = T>(unit: () => { value: T } & Wants,
+                    fill: (value: T, windows: ReadonlyMap<string, Window>) => U,
+                    synced?: boolean): Promise<U>;
+  /** A door's caller checked in a unit, then a new owner's starter seed awaited. */
+  seededFor(door: Door): Promise<void>;
+  /** The one schedule synced from the rows units changed. */
+  sync(): Promise<void>;
+  /** The platform's gates as this object reads them (`control-gate.ts`). */
+  control(): ControlGate;
+  /** The owner's own admission for `door`, as a binding check reads it, for internal calls. */
+  admitted(door: DoorClass): void;
+  /** The owner's `require_work` refusal, or null while it is admitted. */
+  unadmitted(): Refusal | null;
+  /** The owner's own tier. */
+  tier(): TierName;
+  /** The platform's setting of the owner's tier (`admission.ts`). */
+  setTier(request: unknown): { tier: TierName };
+  /** Whether the owner is erased or being erased: its doors with no binding do nothing. */
+  gone(): boolean;
+  /** The tier numbers a door's binding handed, kept for the runs the lane starts. */
+  keepTiers(binding: Binding): void;
+  /** `capability` held where `account` acts, as the runner's scope step holds it. */
+  scope(account: Account, capability: RunCapability, center?: unknown, agent?: string): void;
+  /** Where a scoped client acts: the command center its one enabled agent is registered in. */
+  universe(account: Account): string | null;
+  /** The account `binding` binds to at `door`'s row, as the runner binds it there. */
+  accountAt(door: string, binding: Binding): Account;
+  /** `door`'s own public method called with `args`, as any call of it is (code mode). */
+  invoke(door: string, args: readonly unknown[]): Promise<unknown>;
 }
 
 export class OwnerDO extends DurableObject<OwnerEnv> {
@@ -2130,8 +546,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #egress: Egress;
   /** The owner's runs: admission, grants, conversations, schedules (`runs.ts`). */
   readonly #runs: Runs;
-  /** The held-back count a sync commit in progress carries for the sync-ignore list. */
-  #heldBack: { kept: number; changed: number } | null = null;
+  /** Runs launched and delivered, and their sandbox's leases (`launch.ts`). */
+  readonly #launcher: Launcher;
+  /** The object's state, as its modules are handed it (`OwnerState`). */
+  readonly #state: OwnerState;
   /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
   /** The vendor's own sign-ins in progress inside a sandbox (`signins.ts`). */
@@ -2143,13 +561,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #inbound: Inbound;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly #posts = new PostGate();
-  /**
-   * A long reply's body placed before an events unit (`runEvents`), set only for that
-   * synchronous unit, for its settle to post by reference (`#answer`).
-   */
-  #replyPlaced: Placed | null = null;
-  /** Who waits on a run's settle, on this instance only: a door's bounded wait. */
-  readonly #waiters = new Map<string, Set<() => void>>();
   /** Code mode's bounds: production's, unless a test passed smaller. */
   readonly #codemode: CodemodeBounds;
   /** How long a script's read of the control record serves its calls. */
@@ -2160,15 +571,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sandbox: SandboxLeases;
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
-  /** A test's step between an archive move's passes (`Internals.archiveBetweenPasses`). */
-  readonly #betweenPasses: ((storage: OwnerStorage, move: ArchiveMoveSeen) => void) | null;
-  /** A test's steps in a chain read (`Internals.chainStep`). */
-  readonly #chainStep: ((step: ChainStep) => Promise<void>) | null;
+  /** The archive: its moves and rewrites, and reads of archived mail (`archive.ts`). */
+  readonly #archive: Archive;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
    * lane: every wake kind's request from its record, after the kill switch (`CONTROL`).
    */
-  readonly #sender: WakeSender;
+  readonly #sender: Doorbell;
   /**
    * Whether this object's database is an erased owner's tombstone, as the object found it
    * starting (`admission.ts`): it then migrates nothing, starts no Lifecycle, and every door
@@ -2190,6 +599,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const storage = this.#gate.storage;
     const write = this.#gate.write;
     this.#storage = storage;
+    this.#state = this.#stateOf(env, storage);
     this.#tombstone = tombstoned(storage.sql);
     const admitted = () => workRefusal(admission(storage)) === null;
     this.#policy = new Policy(storage);
@@ -2204,22 +614,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         stored, needed, held, limit, ownerTier(storage), keptTiers(storage))),
       // Mail is never let go at the figure (ADR-036): the owner deletes what it chooses.
       (filer) => this.#collections.reclaim(filer),
-      // Each agent's ledger identity follows its `agent.json`, in the file change's own unit.
-      (path, present, now, change) => {
-        const agent = AGENT_FILE.exec(path)?.[1];
-        if (agent !== undefined) {
-          if (present) {
-            this.#ledger.appear(agent, now);
-          } else {
-            this.#ledger.retire(agent, now);
-          }
-        }
-        // Every agent may edit the sync's ignore list (the founder's every-agent-full-power
-        // rule), but never unseen: each change is a receipt and one notice for the owner.
-        if (path === SYNC_IGNORE) {
-          this.#syncIgnoreChanged(present, now, change);
-        }
-      },
+      // What a file change says to the owner's other modules, in its own unit.
+      (path, present, now, change) => fileChanged(this.#state, path, present, now, change),
       // Garbage the newest finished generation names is never collected early, while it is
       // a recovery point (finished within MANIFEST_PROTECT_S).
       () => {
@@ -2271,6 +667,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       touched: (rooms, after) => this.#collections.touched(rooms, after),
       notice: (type, detail) => write(() => this.#notices.add(type, detail, clock())),
       // The kill switch: the control record, read once a pass, as the doors read it.
+      admitted,
       gate: async () => await this.#control().refusal("outside", owner()) === null,
       // The secret is the gateway's alone: it opens the blob and makes the send.
       ring: (subscription, version, blob, previous, request): Promise<RingAnswer> =>
@@ -2312,11 +709,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                  source_monthly_cost: own?.monthly_cost ?? null };
       },
       spent: (period, source) => this.#usage.spent(period, source),
-      // The call's model is unknown until the gateway reads the body: priced at the most
-      // any of the connection's models charges, input at its dearest of uncached,
-      // cache-read and cache-write rates, by pi-ai's `calculateCost` (`priced`).
-      price: (models, input, output) => egressPrice(models as readonly ModelRecord[], input,
-                                                    output),
+      cost: priced,
       pruned: (now) => this.#usage.spendPruned(now),
     });
     this.#usage = new ModelUsage(storage, () => {
@@ -2327,91 +720,41 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#signins = new Signins(storage);
     this.#keys = new Keys(storage);
     this.#inbound = new Inbound(storage);
-    this.#runs = new Runs(storage, {
-      unadmitted: () => workRefusal(admission(storage)),
-      sandboxBound: () => env.SANDBOX !== undefined,
-      sources: () => bundledSources(),
-      // Each source's vendor sign-in behind its own switch, as the binder last handed them.
-      signinOn: (engine) => switchedOn(storage, undefined, clock()).has(engine),
-      usable: () => this.#connections.usable(),
-      egressible: () => this.#connections.egressible(),
-      standing: (stamp) => this.#grants.standing(stamp.client, stamp.generation,
-                                                 stamp.authenticated_at),
-      tier: () => ownerTier(storage),
-      // The lane's: the tier's simultaneous runs, by the numbers the binder last handed.
-      capacity: () => {
-        try {
-          return tierNumbers(storage, undefined, clock())[ownerTier(storage)].runs;
-        } catch (error) {
-          if (error instanceof Refusal && !error.invalid) {
-            return null;  // none handed yet: no waiting run starts
-          }
-          throw error;
-        }
+    this.#launcher = new Launcher(this.#state);
+    this.#runs = this.#launcher.runs;
+    this.#sandboxTime = new SandboxTime(storage, this.#runs.meter(), {
+      read: (after) => {
+        const owner = ctx.id.name;
+        return env.SANDBOX === undefined || owner === undefined ? null
+          : env.SANDBOX.meter(owner, { after });
       },
-      caps: () => modelSettings(this.#policy.read().document),
-      spent: (period, source) => this.#usage.spent(period, source),
-      lease: {
-        live: (now, authority) => this.#files.sandboxLease(now, authority),
-        all: (now) => this.#files.liveLeases(now),
-        open: (now, authority) => this.#openLease(owner, now, authority),
-        // A lease a sign-in holds stays: its sandbox is in use with no run (slice SIGNIN).
-        release: (leaseId, epoch) => !this.#signins.holds(leaseId)
-          && this.#files.leaseRelease(leaseId, epoch).released,
-        renew: (leaseId, epoch) => {
-          this.#files.leaseRenew(leaseId, epoch);
-        },
-        lapsed: (now) => {
-          // Each lapsed lease's sandbox paused, as a given-back one's is (slice S).
-          for (const leaseId of this.#files.leasesLapsed(now)) {
-            queueMicrotask(() => void this.#sandboxRelease(leaseId));
-          }
-        },
-      },
-      stop: (runs) => this.#cancelInSandbox(runs),
-      notice: (type, detail) => this.#notices.add(type, detail, clock()),
-      answer: (answer) => this.#answer(answer),
-      mailSettled: (mail, agent) => this.#ledger.settled(mail, agent),
-      ended: (run) => {
-        this.#egress.end("run", (live) => live.run === run);
-        this.#relay.settled(run);
-        this.#wake(run);
-      },
-      leaseEnded: (leaseId) => {
-        this.#egress.end("lease", (live) => live.lease === leaseId);
-        // Once the unit is over, its sandbox paused: no run lives in it (slice S).
-        queueMicrotask(() => void this.#sandboxRelease(leaseId));
-      },
+      write,
     });
-    this.#sandboxTime = new SandboxTime(storage, this.#runs.meter());
     this.#relay = new Relay({
       admit: (binding, conversation, ticket) =>
         this.#door(() => this.#socketAdmit(binding, conversation, ticket)),
       check: (state) => this.#door(() => this.#socketCheck(state)),
       // A sign-in's socket gets its own tail on attach, as a conversation's gets its runs'.
-      live: (conversation) => this.#door(() => this.#signinOwned(conversation) ? [conversation]
+      live: (conversation) => this.#door(() => signinOwned(this.#state, conversation) ? [conversation]
         : this.#runs.liveIn(conversation)),
       now: clock,
     });
-    // The lanes of the one schedule. There is no global tick; each owner's object
-    // schedules only itself.
-    this.#schedule = new Schedule(ownerLanes({
-      ledger: this.#ledger, files: this.#files, connections: this.#connections,
-      // Mail no run has taken is the lane's work now, while the owner is admitted; held mail
-      // only once the inputs' queue has room for it.
-      runs: { next: (now) => admitted() && this.#ledger.mailDue(
-                this.#runs.queueRoom(MAIL_INPUT_BYTES)) ? now : this.#runs.next(now, admitted()),
-              run: (now, until) => this.#runsPass(now, until) },
-      manifest: { next: (now) => this.#backups.next(now),
-                  run: (now, until) => this.#backups.run(now, until) },
-      sandbox: { next: (now) => this.#sandboxTime.next(now),
-                 run: (now, until) => this.#meterPass(until) },
-      archive: { next: (now) => this.#ledger.archiveDue()
-                   || this.#ledger.purgedAgents().length > 0
-                   || this.#ledger.archiveCompactPending() ? now : null,
-                 run: () => this.#archivePass() },
-      starter: this.#starter, sender: () => this.#sender, admitted, clock, write, runWakes,
-    }), clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
+    this.#archive = new Archive({
+      storage, door: (act) => this.#door(act), ledger: this.#ledger, files: this.#files,
+      bodies: this.#bodies, notices: this.#notices,
+      rereadingPage: (locate, read, again) => this.#rereadingPage(locate, read, again),
+      betweenPasses: internals.archiveBetweenPasses ?? null,
+      chainStep: internals.chainStep ?? null,
+    });
+    // The lanes of the one schedule, each its module's own (`Lane`): its key is its job's
+    // durable id. Each pass is handed its wall-clock end (`until`) and passes it on, so no
+    // lane outruns its hung timeout; the passes write through the object's gate. There is no
+    // global tick; each owner's object schedules only itself.
+    this.#schedule = new Schedule({
+      wakes: this.#sender, files: this.#files, connections: this.#connections,
+      runs: this.#launcher, manifest: this.#backups, sandbox: this.#sandboxTime,
+      archive: this.#archive, starter: this.#starter,
+    }, clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
       storage, write, clock, lifecycle,
@@ -2419,7 +762,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       ended: () => {
         this.#egress.drop();
         this.#relay.closeAll("erased");
-        this.#cancelInSandbox(this.#runs.liveRuns());
+        this.#launcher.stop(this.#runs.liveRuns());
       },
       // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
       // state of them deleted (slice S review H-6).
@@ -2462,11 +805,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
     internals.erasure?.(this.#erasure);
-    this.#sandbox = this.#sandboxLeases();
+    this.#sandbox = this.#launcher.sandboxLeases();
     internals.sandbox?.(this.#sandbox);
     this.#codemode = internals.codemode ?? {};
-    this.#betweenPasses = internals.archiveBetweenPasses ?? null;
-    this.#chainStep = internals.chainStep ?? null;
     this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
@@ -2493,6 +834,83 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // The schedule as stored, for this code's lanes and sender: a deploy that adds a
       // doorbell gives the wakes held while there was none their job.
       await this.#schedule.sync();
+    });
+  }
+
+  /**
+   * The object's state as its modules are handed it: each store read when a module asks
+   * (so the state is made before them, and none is read unmade), the gate's units, and the
+   * reads only the object makes.
+   */
+  #stateOf(env: OwnerEnv, storage: OwnerStorage): OwnerState {
+    const object = this;
+    return Object.seal({
+      env, storage,
+      owner: () => object.#ownerName(),
+      get collections() { return object.#collections; },
+      get policy() { return object.#policy; },
+      get grants() { return object.#grants; },
+      get sessions() { return object.#sessions; },
+      get ledger() { return object.#ledger; },
+      get files() { return object.#files; },
+      get backups() { return object.#backups; },
+      get openExports() { return object.#exports; },
+      get sandboxTime() { return object.#sandboxTime; },
+      get bodies() { return object.#bodies; },
+      get registrations() { return object.#registrations; },
+      get notices() { return object.#notices; },
+      get starter() { return object.#starter; },
+      get connections() { return object.#connections; },
+      get usage() { return object.#usage; },
+      get egress() { return object.#egress; },
+      get runs() { return object.#runs; },
+      get launcher() { return object.#launcher; },
+      get relay() { return object.#relay; },
+      get signins() { return object.#signins; },
+      get tickets() { return object.#tickets; },
+      get keys() { return object.#keys; },
+      get inbound() { return object.#inbound; },
+      get archive() { return object.#archive; },
+      get erasure() { return object.#erasure; },
+      get posts() { return object.#posts; },
+      get codemode() { return object.#codemode; },
+      heldBack: null,
+      door: <T>(act: () => T) => object.#door(act),
+      quiet: <T>(act: () => T) => object.#quiet(act),
+      synced: <T>(act: () => T) => object.#synced(act),
+      filing: <T>(act: () => T) => object.#filing(act),
+      placing: <T>(prepare: () => { body: unknown; writer: string } | { done: T },
+                   act: (placed: Placed | null) => T,
+                   options?: { synced?: boolean; shown?: Shown<T> }) =>
+        object.#placing(prepare, act, options),
+      rereading: <T, B>(locate: () => readonly string[], read: (bodies: B) => T,
+                        again: (value: T) => boolean,
+                        fetch: (located: Located) => Promise<B>) =>
+        object.#rereading(locate, read, again, fetch),
+      rereadingPage: <T>(locate: () => Wants,
+                         read: (windows: ReadonlyMap<string, Window>) => T,
+                         again: (value: T) => boolean) =>
+        object.#rereadingPage(locate, read, again),
+      reading: <T, U = T>(unit: () => { value: T } & Wants,
+                          fill: (value: T, windows: ReadonlyMap<string, Window>) => U,
+                          synced?: boolean) => object.#reading(unit, fill, synced),
+      seededFor: (door: Door) => object.#seededFor(door),
+      sync: () => object.#schedule.sync(),
+      control: () => object.#control(),
+      admitted: (door: DoorClass) => object.#admitted(door),
+      unadmitted: () => workRefusal(admission(storage)),
+      tier: () => ownerTier(storage),
+      setTier: (request: unknown) => setTier(storage, request),
+      gone: () => object.#tombstone || object.#erasure.erased || erasing(storage),
+      keepTiers: (binding: Binding) => object.#keepTiers(binding),
+      scope: (account: Account, capability: RunCapability, center?: unknown, agent?: string) =>
+        object.#scope(account, capability, center, agent),
+      universe: (account: Account) => object.#universe(account),
+      accountAt: (door: string, binding: Binding) =>
+        object.#within(doorRow(door), binding, undefined, ({ account }) => account),
+      invoke: (door: string, args: readonly unknown[]) =>
+        Reflect.apply((object as unknown as Record<string, unknown>)[door] as
+          (...args: unknown[]) => Promise<unknown>, object, args),
     });
   }
 
@@ -2634,7 +1052,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                      grant.stamp.authenticated_at);
       } catch (error) {
         if (error instanceof Refusal && !error.invalid) {
-          this.#cancelInSandbox(this.#runs.endClient(grant.stamp.client, clock()));
+          this.#launcher.stop(this.#runs.endClient(grant.stamp.client, clock()));
           throw new Refusal("authority_changed", AUTHORITY_CHANGED);
         }
         throw error;
@@ -2661,10 +1079,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // row alone.
 
   /** A door whose handler runs in one unit of its row's gate, checked in that unit. */
-  #run<T>(name: string, binding: Binding, request: unknown, act: (call: Call) => T):
-      Promise<T> {
+  #run<R, T>(name: string, binding: Binding, request: R,
+             act: (o: OwnerState, call: Call<R>) => T): Promise<T> {
     const row = doorRow(name);
-    const unit = () => this.#within(row, binding, request, act);
+    const unit = () => this.#within(row, binding, request, (call) => act(this.#state, call));
     switch (row.gate) {
       case "door":
         return this.#door(unit);
@@ -2681,13 +1099,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /** A door whose handler makes its own units, each checking the call again. */
-  #units<T>(name: string, binding: Binding, request: unknown,
-            act: (door: Door) => Promise<T>): Promise<T> {
+  #units<R, T>(name: string, binding: Binding, request: R,
+               act: (o: OwnerState, door: Door<R>) => Promise<T>): Promise<T> {
     const row = doorRow(name);
     if (row.gate !== "units") {
       throw new Error(`${name} runs in one unit of its gate`);
     }
-    return act({
+    return act(this.#state, {
+      binding, request,
       check: () => this.#within(row, binding, request, (call) => call),
       within: (inner) => this.#within(row, binding, request, inner),
       bound: () => this.#bound(row, binding, request).account,
@@ -2706,7 +1125,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * refusal after its account is bound leaves a refusal receipt of what was asked (the
    * row's stand-in for it, where it names one), written once the refused change rolled back.
    */
-  #within<T>(row: DoorRow, binding: Binding, request: unknown, act: (call: Call) => T): T {
+  #within<R, T>(row: DoorRow, binding: Binding, request: R, act: (call: Call<R>) => T): T {
     if (row.caller !== "session") {
       return act(this.#checked(row, binding, request, this.#bound(row, binding, request), ""));
     }
@@ -2823,8 +1242,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /** The guard, scope and fields steps of a bound call, in the row's order. */
-  #checked(row: DoorRow, binding: Binding, request: unknown, held: Bound, session: string):
-      Call {
+  #checked<R>(row: DoorRow, binding: Binding, request: R, held: Bound, session: string):
+      Call<R> {
     const { account } = held;
     let r: Record<string, unknown>;
     let place: { universe: string | null; agent: string };
@@ -2839,7 +1258,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       place = this.#scoped(row, account, null);
       r = this.#fields(row, request, account);
     }
-    return { ...held, binding, r, session, universe: place.universe, agent: place.agent,
+    return { ...held, binding, request, r, session, universe: place.universe, agent: place.agent,
              held: (where) => this.#scope(account, row.capability!, where) };
   }
 
@@ -2952,28 +1371,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A verified interactive sign-in opens a session; its cookie is returned once. */
   sessionOpen(binding: Binding): Promise<{ session: string; expires_at: number }> {
-    return this.#run("sessionOpen", binding, undefined, () => {
-      return this.#sessions.open(binding.authenticated_at, clock());
-    });
+    return this.#run("sessionOpen", binding, undefined, sessionsDoors.sessionOpen);
   }
 
   sessionExtend(binding: Binding): Promise<{ expires_at: number }> {
-    // Quiet: a renewal changes nothing an export reads, so an export open across it stands.
-    return this.#run("sessionExtend", binding, undefined, () => {
-      return this.#sessions.extend(binding.session, clock());
-    });
+    return this.#run("sessionExtend", binding, undefined, sessionsDoors.sessionExtend);
   }
 
   /** One session signed out, and the connection flows it began cancelled with it. */
   sessionClose(binding: Binding): Promise<{ closed: number }> {
-    return this.#run("sessionClose", binding, undefined, () => {
-      const id = this.#sessions.id(binding.session);
-      const closed = this.#sessions.close(binding.session);
-      if (id !== null) {
-        this.#connections.cancelFlows(id);
-      }
-      return closed;
-    });
+    return this.#run("sessionClose", binding, undefined, sessionsDoors.sessionClose);
   }
 
   /**
@@ -2981,46 +1388,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * connection flow cancelled in the same unit, so a late callback finds none.
    */
   sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
-    return this.#units("sessionCloseAll", binding, undefined, async (door) => {
-      const closed = await this.#synced(() => door.within(() => {
-        this.#connections.cancelFlows(null);
-        return this.#sessions.closeAll();
-      }));
-      this.#relay.closeAll("signedOut");  // account revocation: every device's sockets
-      return closed;
-    });
+    return this.#units("sessionCloseAll", binding, undefined, sessionsDoors.sessionCloseAll);
   }
 
   // -- SANDBOX TIME: the sandbox Worker's log, metered (`sandbox-time.ts`) -----------
-
-  /**
-   * The `sandbox` lane's pass: the sandbox Worker's log read after the cursor, a batch at a
-   * time until the pass's end, each applied in a unit. Without a sandox bound there is no
-   * log, and runs that never started are metered at none. A read that fails backs the lane
-   * off in its row; the pass completes.
-   */
-  async #meterPass(until: number): Promise<void> {
-    const sandbox = this.env.SANDBOX;
-    const owner = this.ctx.id.name;
-    do {
-      const { after } = this.#sandboxTime.cursor();
-      let read: { events: ReturnType<typeof meterRead>["events"]; next: number };
-      const readAt = Date.now();
-      try {
-        read = sandbox === undefined || owner === undefined ? { events: [], next: after }
-          : meterRead(await sandbox.meter(owner, { after }), after);
-      } catch {
-        console.error("the sandbox meter's read failed; it is tried again later");
-        await this.#gate.write(() => this.#sandboxTime.failed(clock()));
-        return;
-      }
-      await this.#gate.write(() => this.#storage.transactionSync(
-        () => this.#sandboxTime.apply(read.events, read.next, readAt)));
-      if (read.events.length < METER_BATCH) {
-        return;
-      }
-    } while (Date.now() < until);
-  }
 
   /**
    * One execution E2B billed, from its signed lifecycle event, which the doors verified and
@@ -3030,26 +1401,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * counts nothing.
    */
   async sandboxBilled(event: BilledEvent): Promise<{ counted: boolean }> {
-    return this.#units("sandboxBilled", undefined as unknown as Binding, event, async () => {
-      if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
-        return { counted: false };
-      }
-      const checked = billedEvent(event);
-      return this.#door(() => ({ counted: this.#sandboxTime.billed(checked, Date.now()) }));
-    });
+    return this.#units("sandboxBilled", undefined as unknown as Binding, event, sandboxTimeDoors.sandboxBilled);
   }
 
   /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
   sandboxDays(binding: Binding, request: { days?: number }): Promise<{
       days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
               gb_seconds: number; unverified_executions: number }[] }> {
-    return this.#run("sandboxDays", binding, request, () => {
-      const days = request?.days ?? 31;
-      if (typeof days !== "number" || !Number.isSafeInteger(days) || days < 1 || days > 400) {
-        throw new Refusal("invalid", "days is 1 to 400");
-      }
-      return { days: this.#sandboxTime.days(days) };
-    });
+    return this.#run("sandboxDays", binding, request, sandboxTimeDoors.sandboxDays);
   }
 
   // -- STORAGE: the tier's one storage number, used and left -------------------
@@ -3066,20 +1425,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       used_bytes: number; limit_bytes: number | null;
       breakdown: { files: number; messages: number; collections: number };
       deleted_content: { kept_bytes: number; kept_up_to_days: number } }> {
-    return this.#run("storageUsage", binding, undefined, () => {
-      const usage = this.#files.usage();
-      const used = usage.stored;
-      // Each kind's bodies, inline or placed (a placed content counted once); files are the
-      // rest, so the parts always sum to what is used.
-      const messages = Math.min(used, this.#ledger.storedBytes());
-      const collections = Math.min(used - messages, this.#collections.storedBytes());
-      // Deleted files kept for recovery: up to 30 days, within the same figure (the oldest go
-      // first past it), so a lower setting shortens recovery; counted in nothing used.
-      return { used_bytes: used, limit_bytes: usage.limits.max_bytes,
-               breakdown: { files: used - messages - collections, messages, collections },
-               deleted_content: { kept_bytes: this.#files.garbageBytes(),
-                                  kept_up_to_days: GC_GRACE_S / 86_400 } };
-    });
+    return this.#run("storageUsage", binding, undefined, filesDoors.storageUsage);
   }
 
   // -- OWNER_EXPORT: everything the owner holds (`export.ts`) --------------------
@@ -3097,50 +1443,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async ownerExport(binding: Binding,
                     request: { cursor?: string | null; export_id?: string }):
       Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
-    return this.#units("ownerExport", binding, request, (door) => this.#exported(door, request));
-  }
-
-  /** The export's next object, its call checked in its first unit. */
-  async #exported(door: Door, request: { cursor?: string | null; export_id?: string }):
-      Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
-    const asked = await this.#quiet(() => {
-      door.check();
-      const now = clock();
-      const first = request.cursor === null || request.cursor === undefined;
-      const open = first ? this.#exports.open(now, this.#backups.forExport(now))
-        : this.#exports.named(request.export_id, now);
-      const at = first ? { gen: open.gen, index: 0 } : decodeExportCursor(request.cursor);
-      if (at.gen !== open.gen) {
-        throw new Refusal("invalid", "an export cursor is one a page handed out");
-      }
-      return { open, index: at.index, first };
-    });
-    const { open, index } = asked;
-    if (asked.first) {
-      await this.#schedule.sync();  // a generation begun or joined goes on at once
-    }
-    const { ns, key } = await this.#files.space();
-    const root = this.#backups.finished(open.gen)
-      ? await this.env.FILES.getManifestRoot(ns, open.gen) : null;
-    const object = this.#backups.object(open.gen, index, root);
-    const answer = (lines: string[], next: string | null, pending = false) =>
-      ({ export_id: open.export_id, lines, next, pending });
-    if (object === null) {
-      throw new Refusal("invalid", "this export is not open: begin it again");
-    }
-    if (object.kind === "pending") {
-      return answer([], encodeExportCursor(open.gen, index), true);
-    }
-    if (object.kind === "end") {
-      return answer([object.line], null);
-    }
-    const bytes = object.kind === "part"
-      ? await this.env.FILES.getManifestPart(ns, root?.key ?? key, open.gen, object.part,
-                                             object.sha256)
-      : await this.env.FILES.getManifestSegment(ns, root?.key ?? key, open.gen, object.a,
-                                                object.b, object.sha256);
-    return answer(new TextDecoder().decode(bytes).trimEnd().split("\n"),
-                  encodeExportCursor(open.gen, index + 1));
+    return this.#units("ownerExport", binding, request, exportDoors.ownerExport);
   }
 
   /**
@@ -3151,28 +1454,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async exportChunks(binding: Binding, request: { export_id: string; sha256s: string[] }):
       Promise<{ chunks: { sha256: string; data: string }[] }> {
-    return this.#units("exportChunks", binding, request, async (door) => {
-      const wanted = await this.#door(() => {
-        door.check();
-        if (!Array.isArray(request.sha256s) || request.sha256s.length < 1
-            || request.sha256s.length > 2) {
-          throw new Refusal("invalid",
-                            "an export's chunks are its export_id and one or two sha256s");
-        }
-        this.#exports.named(request.export_id, clock());
-        return this.#files.storedChunks(request.sha256s);
-      });
-      const bytes = await this.#files.fetch(wanted.map((sha256) => ({ sha256 })));
-      return { chunks: wanted.map((sha256, at) => ({
-        sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
-    });
+    return this.#units("exportChunks", binding, request, exportDoors.exportChunks);
   }
 
   /** An export ended: its id names it no longer. */
   exportEnd(binding: Binding, request: { export_id: string }): Promise<{ ended: boolean }> {
-    return this.#run("exportEnd", binding, request, () => {
-      return { ended: this.#exports.end(request?.export_id) };
-    });
+    return this.#run("exportEnd", binding, request, exportDoors.exportEnd);
   }
 
   /**
@@ -3182,27 +1469,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is.
    */
   async dataKeyRewrap(binding: Binding): Promise<{ rewrapped: boolean; roots: number }> {
-    return this.#units("dataKeyRewrap", binding, undefined, async (door) => {
-      const days = await this.#door(() => {
-        door.check();
-        return this.#backups.manifests().map((manifest) => manifest.gen);
-      });
-      return this.#files.rewrap(days);
-    });
+    return this.#units("dataKeyRewrap", binding, undefined, filesDoors.dataKeyRewrap);
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------
 
   policyRead(binding: Binding): Promise<Projection> {
-    return this.#run("policyRead", binding, undefined, ({ account: { owner } }) => {
-      return this.#policy.projection(owner);
-    });
+    return this.#run("policyRead", binding, undefined, policyDoors.policyRead);
   }
 
   policyReceipts(binding: Binding): Promise<{ receipts: Receipt[] }> {
-    return this.#run("policyReceipts", binding, undefined, () => {
-      return { receipts: this.#policy.receipts() };
-    });
+    return this.#run("policyReceipts", binding, undefined, policyDoors.policyReceipts);
   }
 
   /**
@@ -3213,16 +1490,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * generation.
    */
   async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
-    return this.#units("policyWrite", binding, request, async (door) => {
-      const done = await this.#synced(() => door.within(({ account: { owner }, session, r }) => {
-        const written = this.#policy.write(session, r["expected_generation"], r["policy"],
-                                           r["proposal"] ?? null, clock());
-        return { owner, generation: written.generation, digest: written.digest,
-                 policy: written.document };
-      }));
-      await this.#door(() => this.#egress.end("policy"));
-      return done;
-    });
+    return this.#units("policyWrite", binding, request, policyDoors.policyWrite);
   }
 
   /**
@@ -3231,22 +1499,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   policyPropose(binding: Binding, request: ProposeRequest):
       Promise<{ request_digest: string; generation: number }> {
-    return this.#run("policyPropose", binding, request, ({ account, r }) => {
-      return this.#policy.propose(r["change"], r["request_id"] ?? null,
-                                  account.origin?.client ?? "owner", clock());
-    });
+    return this.#run("policyPropose", binding, request, policyDoors.policyPropose);
   }
 
   /** The pending card the owner is shown, and the digest its apply must name. */
   policyProposal(binding: Binding, request: CardRequest):
       Promise<{ change: Change; digest: string }> {
-    return this.#run("policyProposal", binding, request, ({ r }) => {
-      const held = this.#policy.held(r["request_id"], clock());
-      if (held === null) {
-        throw new Refusal("refused", "no pending proposal for this card");
-      }
-      return held;
-    });
+    return this.#run("policyProposal", binding, request, policyDoors.policyProposal);
   }
 
   /**
@@ -3256,24 +1515,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   policyWakeLimits(binding: Binding, request: WakeLimitsRequest):
       Promise<{ agent: Agent; generation: number }> {
-    return this.#run("policyWakeLimits", binding, request, ({ session: id, r }) =>
-      this.#storage.transactionSync(() => {
-        const agent = this.#ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
-                                                 r["batch_window_s"]);
-        const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
-                         batch_window_s: agent.batch_window_s };
-        const generation = this.#policy.changed(id, r["expected_generation"], "wake_limits",
-                                                limits, agent.agent_id, clock());
-        return { agent, generation };
-      }));
+    return this.#run("policyWakeLimits", binding, request, ledgerDoors.policyWakeLimits);
   }
 
   // -- OUTSIDE_CLIENTS: grants (P0-3) ---------------------------------------------
 
   grantList(binding: Binding): Promise<{ clients: Client[] }> {
-    return this.#run("grantList", binding, undefined, () => {
-      return { clients: this.#grants.list() };
-    });
+    return this.#run("grantList", binding, undefined, grantsDoors.grantList);
   }
 
   /**
@@ -3285,19 +1533,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   grantSet(binding: Binding, request: GrantRequest): Promise<
       { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
         revision: number }> {
-    return this.#run("grantSet", binding, request, ({ session: id, r }) => {
-      return this.#storage.transactionSync(() => {
-        const { moved, ...set } = this.#grants.set(id, r as unknown as GrantRequest, clock());
-        if (moved) {
-          this.#endClient(set.client);
-        }
-        if (set.mode === "revoked") {
-          this.#keys.revoked(set.client, Math.floor(clock()));
-          this.#evictRevoked();
-        }
-        return set;
-      });
-    });
+    return this.#run("grantSet", binding, request, grantsDoors.grantSet);
   }
 
   /**
@@ -3306,15 +1542,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   grantRevoke(binding: Binding, request: ClientRequest):
       Promise<{ client: string; revoked: boolean; generation: number; revision: number }> {
-    return this.#run("grantRevoke", binding, request, ({ r }) => {
-      return this.#storage.transactionSync(() => {
-        const revoked = this.#grants.revoke(r["client"], clock());
-        this.#endClient(revoked.client);
-        this.#keys.revoked(revoked.client, Math.floor(clock()));
-        this.#evictRevoked();
-        return revoked;
-      });
-    });
+    return this.#run("grantRevoke", binding, request, grantsDoors.grantRevoke);
   }
 
   /**
@@ -3324,15 +1552,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   grantForget(binding: Binding, request: ClientRequest):
       Promise<{ client: string; forgotten: boolean }> {
-    return this.#run("grantForget", binding, request, ({ r }) => {
-      return this.#storage.transactionSync(() => {
-        const forgot = this.#grants.forgetKey(r["client"], clock());
-        if (forgot.forgotten) {
-          this.#keys.forgotten(forgot.client);
-        }
-        return forgot;
-      });
-    });
+    return this.#run("grantForget", binding, request, grantsDoors.grantForget);
   }
 
   /**
@@ -3342,14 +1562,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   grantForgetRevoked(binding: Binding, request: ForgetRequest):
       Promise<{ forgotten: string[]; mcp_fence: number }> {
-    return this.#run("grantForgetRevoked", binding, request, ({ session: id, r }) =>
-      this.#storage.transactionSync(() => {
-        const forgot = this.#grants.forgetRevoked(id, r["clients"], clock());
-        for (const client of forgot.forgotten) {
-          this.#keys.forgotten(client);
-        }
-        return forgot;
-      }));
+    return this.#run("grantForgetRevoked", binding, request, grantsDoors.grantForgetRevoked);
   }
 
   // -- THE KEY STORE: the owner's API keys (slice L; `keys.ts`) ------------------------
@@ -3363,29 +1576,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   keyMint(binding: Binding, request: KeyMintRequest): Promise<ApiKey & { scopes: Scope[];
       revision: number }> {
-    return this.#run("keyMint", binding, request, ({ session: id, r }) => {
-      const key = keyId(r["key_id"]);
-      const name = keyName(r["name"]);
-      const now = Math.floor(clock());  // whole seconds: the directory entry's mint time
-      return this.#storage.transactionSync(() => {
-        const row = this.#keys.add(key, apiKeyOrigin(key).client, name, now);
-        const set = this.#grants.set(id, {
-          client: apiKeyOrigin(key).client, source: "api_key", mode: "scoped",
-          scopes: r["scopes"] as Scope[], expected_revision: 0, name,
-        } as unknown as GrantRequest, now);
-        if (r["proposal"] !== undefined) {
-          this.#policy.applyKeyRequest(r["proposal"], set.scopes, now);
-        }
-        return { ...row, scopes: set.scopes, revision: set.revision };
-      });
-    });
+    return this.#run("keyMint", binding, request, keysDoors.keyMint);
   }
 
   /** The owner's API keys, live and revoked: what its key list shows, and its erasure ends. */
   keyList(binding: Binding): Promise<{ keys: ApiKey[] }> {
-    return this.#run("keyList", binding, undefined, () => {
-      return { keys: this.#keys.list() };
-    });
+    return this.#run("keyList", binding, undefined, keysDoors.keyList);
   }
 
   // -- ERASURE: the owner's own erasure (slice L; `erase.ts`, `erasure.ts`) ------------
@@ -3398,17 +1594,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * none of them resting on this request finishing.
    */
   async ownerErase(binding: Binding, request: EraseRequest): Promise<{ erasing: true }> {
-    return this.#units("ownerErase", binding, request, async (door) => {
-      const confirmed = await this.#door(() => door.within(({ r }) => {
-        erasureConfirmed(r);
-        return true;
-      }));
-      if (!confirmed) {
-        throw new Error("an erasure's widening returned without confirming it");
-      }
-      await this.#erasure.begin();
-      return { erasing: true as const };
-    });
+    return this.#units("ownerErase", binding, request, erasureDoors.ownerErase);
   }
 
   /**
@@ -3418,29 +1604,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * owner is wiped (its outside record confirmed before the wipe).
    */
   erasureOutside(binding: Binding): Promise<{ keys: string[]; routes: string[] } | null> {
-    return this.#run("erasureOutside", binding, undefined, ({ erased }) =>
-      erased ? null : { keys: this.#keys.ids(), routes: this.#inbound.routes() });
+    return this.#run("erasureOutside", binding, undefined, erasureDoors.erasureOutside);
   }
 
   /** The doors' confirmation that the outside record is done: the wipe may go on. */
   erasureOutsideDone(binding: Binding): Promise<{ confirmed: true }> {
-    return this.#run("erasureOutsideDone", binding, undefined, ({ erased }) => {
-      if (erased) {
-        return { confirmed: true } as const;
-      }
-      markOutside(this.#storage);
-      this.#erasure.resume();
-      return { confirmed: true };
-    });
+    return this.#run("erasureOutsideDone", binding, undefined, erasureDoors.erasureOutsideDone);
   }
 
   // -- INBOUND: the owner's event sources (slice L; `inbound.ts`) ----------------------
 
   /** The owner's inbound bindings, never a secret. */
   inboundList(binding: Binding): Promise<{ bindings: InboundBinding[] }> {
-    return this.#run("inboundList", binding, undefined, () => {
-      return { bindings: this.#inbound.list() };
-    });
+    return this.#run("inboundList", binding, undefined, inboundDoors.inboundList);
   }
 
   /**
@@ -3449,21 +1625,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * app's installation, which only its install flow (owed) may name.
    */
   inboundCreate(binding: Binding, request: InboundCreateRequest): Promise<InboundBinding> {
-    return this.#run("inboundCreate", binding, request, () =>
-      this.#inbound.create(inboundCreated(request), clock()));
+    return this.#run("inboundCreate", binding, request, inboundDoors.inboundCreate);
   }
 
   /** The owner's change of a binding, in its session, against its revision. */
   inboundSet(binding: Binding, request: InboundSetRequest): Promise<InboundBinding> {
-    return this.#run("inboundSet", binding, request, () => this.#inbound.set(request, clock()));
+    return this.#run("inboundSet", binding, request, inboundDoors.inboundSet);
   }
 
   /** A binding withdrawn, a narrowing the owner's account makes without a session. */
   inboundRevoke(binding: Binding, request: BindingRequest):
       Promise<{ binding_id: string; route: string | null }> {
-    return this.#run("inboundRevoke", binding, request, () => {
-      return this.#inbound.revoke(request);
-    });
+    return this.#run("inboundRevoke", binding, request, inboundDoors.inboundRevoke);
   }
 
   /**
@@ -3475,115 +1648,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * events are a no-op until the owner changes the binding.
    */
   inboundAccept(binding: Binding, request: InboundEvent): Promise<InboundAnswer> {
-    return this.#units("inboundAccept", binding, request, (door) => this.#placing((): {
-        body: unknown; writer: string } | { done: InboundAnswer } => {
-      const now = clock();
-      const event = this.#inboundEvent(door.check(), now);
-      if ("done" in event) {
-        return event;
-      }
-      try {
-        const resend = this.#ledger.prepare(null, event.room, event.cmid, event.envelope, null);
-        if (resend !== null) {
-          return { done: { state: "admitted", receipt: resend.message_id, deduped: true } };
-        }
-      } catch (error) {
-        return { done: this.#inboundRefused(event.row, error, now) };
-      }
-      return { body: event.envelope, writer: "owner" };
-    }, (placed) => {
-      const now = clock();
-      const event = this.#inboundEvent(door.check(), now);
-      if ("done" in event) {
-        return event.done;
-      }
-      this.#keepTiers(binding);
-      try {
-        const posted = this.#ledger.post(null, event.room, event.cmid, event.envelope, null,
-                                         now, null, placed, "owner");
-        this.#inbound.succeeded(event.row);
-        return { state: "admitted", receipt: posted.message_id, deduped: false };
-      } catch (error) {
-        return this.#inboundRefused(event.row, error, now);
-      }
-    }, { synced: true }));
-  }
-
-  /**
-   * An inbound event checked in its unit (its route's binding at the route's revision,
-   * enabled, as the call bound it): an owner-held proof on the raw bytes, and its mail's
-   * room, key and envelope; or the no-op a tripped breaker answers.
-   */
-  #inboundEvent({ route, r }: Call, now: number):
-      { done: InboundAnswer }
-      | { row: InboundRow; room: string; cmid: string; envelope: string } {
-    const row = route!;
-    const eventId = r["event_id"];
-    const eventAt = r["event_at"];
-    const body = r["body"];
-    const headers = r["headers"];
-    if (typeof eventId !== "string" || !eventId.trim() || codePoints(eventId) > 256
-        || typeof eventAt !== "number" || !Number.isSafeInteger(eventAt) || eventAt < 0
-        || eventAt > 999_999_999_999 || !(body instanceof Uint8Array)
-        || typeof headers !== "object" || headers === null || Array.isArray(headers)) {
-      throw new Refusal("invalid",
-                        "an inbound event is its id, its time, its bytes and its headers");
-    }
-    if (row.kind === "shared" && row.tripped === 1) {
-      return { done: { state: "no_op", error: "breaker_tripped" } };
-    }
-    const proof = ownerProof(row);
-    if (proof !== null && !proves(proof.profile, headers as Record<string, string>, body,
-                                  proof.secret, Math.floor(now))) {
-      throw new Refusal("inbound_proof_invalid", PROOF_INVALID);
-    }
-    // An HMAC with no timestamp signs the body alone, so a captured body could come again
-    // under a new event id: such an event is keyed by its bytes, a replay always deduped.
-    const unstamped = proof?.profile.method === "hmac-sha256"
-      && proof.profile.timestamp_header === undefined;
-    const identity = unstamped
-      ? `body:${sha256Hex(body)}` : `id:${eventId}`;
-    const key = sha256Hex(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${identity}`);
-    const envelope = JSON.stringify({ inbound: {
-      binding: row.binding_id, event_id: eventId, event_at: eventAt,
-      raw_base64: Buffer.from(body).toString("base64") } });
-    return { row, room: `dm:${nativeId(row.agent)}`, cmid: `inb_${key}`, envelope };
-  }
-
-  /**
-   * An inbound event the agent's mail refused: too much unread mail (`ledger_full`) counts
-   * toward a shared app's breaker (and its trip is the owner's notice); the hot ceiling while
-   * older mail moves out (`storage_busy`) is retried and counts nothing; the rest are the
-   * event's own refusals.
-   */
-  #inboundRefused(row: InboundRow, error: unknown, now: number): InboundAnswer {
-    const refused = error instanceof Refusal ? error.code : null;
-    // The hot ceiling, clearing by itself or held by a full storage until the owner frees
-    // space (the ledger's wall, marked `ceiling`): the event is sent again, never lost.
-    if (refused === "storage_busy"
-        || (error instanceof Refusal && error.facts?.["ceiling"] === true)) {
-      return { state: "refused", error: "mailbox_full", retry: true };
-    }
-    if (error instanceof Refusal && error.transient) {
-      throw error;  // for the moment only (a full pool): never the event's own refusal
-    }
-    if (refused === "ledger_full") {
-      if (row.kind === "shared" && this.#inbound.failed(row, Math.floor(now))) {
-        this.#notices.add("inbound", `An inbound app's events to ${row.agent} were paused: ` +
-                          "its mailbox was full. Change the binding to resume.", now);
-      }
-      return { state: "refused", error: "mailbox_full", retry: true };
-    }
-    if (refused === "post_conflict") {
-      return { state: "refused", error: "event_conflict" };
-    }
-    if (refused === "message_body") {
-      return { state: "refused", error: "too_large" };
-    }
-    if (error instanceof Refusal && !error.invalid) {
-      return { state: "refused", error: "agent_unavailable" };
-    }
-    throw error;
+    return this.#units("inboundAccept", binding, request, inboundDoors.inboundAccept);
   }
 
   // -- THE FILE DOOR'S BYTES: the binder streams chunks to FILES (slice L; tasks 6.1) ----
@@ -3597,12 +1662,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileUploadTarget(binding: Binding, request: IntentRequest):
       Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
                 pending: string[] }> {
-    return this.#units("fileUploadTarget", binding, request, async (door) => {
-      const plan = await this.#door(() => this.#files.uploadPlan(door.check().r["intent_id"]));
-      // The namespace and its wrapped data key, which only `FILES` opens (slice P, M4).
-      const { ns, key } = await this.#files.space();
-      return { namespace: ns, key, ...plan };
-    });
+    return this.#units("fileUploadTarget", binding, request, filesDoors.fileUploadTarget);
   }
 
   /**
@@ -3610,26 +1670,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * its hash): recorded as `fileUploadChunks` records its own puts.
    */
   fileUploadStored(binding: Binding, request: UploadStoredRequest): Promise<{ stored: number }> {
-    return this.#run("fileUploadStored", binding, request, ({ r }) =>
-      this.#files.stored(r["intent_id"], r["chunks"]));
-  }
-
-  /** In the revoke's transaction: revoked rows past their bound forgotten, keys with them. */
-  #evictRevoked(): void {
-    for (const client of this.#grants.evictRevoked(clock())) {
-      this.#keys.forgotten(client);
-    }
-  }
-
-  /**
-   * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
-   * callbacks and its held registrations, in the caller's transaction.
-   */
-  #endClient(client: string): void {
-    this.#ledger.suppressClient(client, clock());
-    this.#registrations.endClient(client);
-    // And its runs (ADR-034 decision 6): their grants gone in this unit, their CLIs stopped.
-    this.#cancelInSandbox(this.#runs.endClient(client, clock()));
+    return this.#run("fileUploadStored", binding, request, filesDoors.fileUploadStored);
   }
 
   // -- OUTSIDE_AGENTS ---------------------------------------------------------
@@ -3646,37 +1687,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async outsideAgents(binding: Binding, request: AgentsRequest = {}):
       Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
                 next?: string }> {
-    return this.#units("outsideAgents", binding, request, async (door) => {
-      await this.#seededFor(door);
-      return this.#door(() => this.#agentsListed(door.check()));
-    });
-  }
-
-  /** The agents a caller sees, a page of them (`outsideAgents`). */
-  #agentsListed({ account, r }: Call):
-      { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
-    const own = account.origin === null && account.run === null;
-    let natives = this.#ledger.natives(own);
-    const grant = account.grant;
-    if (!own && grant !== null && grant.mode === "scoped") {
-      // Where it acts: a run's stamp's universe, or the command center of a client's one
-      // enabled agent; none (no agent registered yet) covers none of them.
-      const mine = account.origin === null ? [] : this.#ledger.agents(account.origin)
-        .filter((agent) => agent.disabled_reason === null);
-      const universe = account.run !== null ? account.run.stamp?.universe ?? null
-        : mine.length === 1 ? mine[0]!.command_center_id : null;
-      natives = natives.filter((native) => may(grant, "converse",
-                                               { universe, agent: native.agent }));
-    }
-    // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
-    // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
-    // app that is not connected yet.
-    const after = r["after"] === undefined ? null : r["after"];
-    if (after !== null && typeof after !== "string") {
-      throw new Refusal("invalid", "after is a next an agents list answered");
-    }
-    return agentsPage({ agents: this.#ledger.agents(account.origin), owner_agents: natives,
-                        apps: this.#grants.apps() }, after);
+    return this.#units("outsideAgents", binding, request, ledgerDoors.outsideAgents);
   }
 
   /**
@@ -3688,16 +1699,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * together with the owner's session.
    */
   registerAgent(binding: Binding, request: RegisterRequest | CardApply): Promise<Agent> {
-    return this.#run("registerAgent", binding, request, ({ account: { origin }, r }) => {
-      if (origin === null) {
-        return this.#storage.transactionSync(() => {
-          const card = this.#registrations.take(r["card_id"], r["digest"], clock());
-          return this.#ledger.register(card.origin, card.source,
-                                       card.request as unknown as RegisterRequest);
-        });
-      }
-      return this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
-    });
+    return this.#run("registerAgent", binding, request, ledgerDoors.registerAgent);
   }
 
   /**
@@ -3707,22 +1709,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   registerPropose(binding: Binding, request: RegisterRequest):
       Promise<{ card_id: string; digest: string; expires_at: number }> {
-    return this.#run("registerPropose", binding, request, ({ account, r }) => {
-      return this.#registrations.file(account.origin!, (binding.source as Source).ref, {
-        client: account.origin!.client, generation: account.grant!.generation,
-        authenticated_at: binding.authenticated_at ?? null }, r, clock());
-    });
+    return this.#run("registerPropose", binding, request, registrationsDoors.registerPropose);
   }
 
   /** The pending registration card the owner is shown, and the digest its apply names. */
   registerProposal(binding: Binding, request: RegistrationCardRequest): Promise<Card> {
-    return this.#run("registerProposal", binding, request, ({ r }) => {
-      const card = this.#registrations.card(r["card_id"], clock());
-      if (card === null) {
-        throw new Refusal("refused", "no pending registration for this card");
-      }
-      return card;
-    });
+    return this.#run("registerProposal", binding, request, registrationsDoors.registerProposal);
   }
 
   /**
@@ -3730,8 +1722,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * holds no owner session, and its call never carries one.
    */
   disableAgent(binding: Binding, request: DisableRequest): Promise<Agent> {
-    return this.#run("disableAgent", binding, request, ({ account: { origin }, r }) =>
-      this.#ledger.disable(r["agent_id"], r["reason"], origin));
+    return this.#run("disableAgent", binding, request, ledgerDoors.disableAgent);
   }
 
   /**
@@ -3744,29 +1735,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   agentDoorbell(binding: Binding, request: AgentDoorbellRequest):
       Promise<{ agent_id: string; subscription_id: string }> {
-    return this.#run("agentDoorbell", binding, request, ({ r }) => {
-      const stored = this.#ledger.subscribe(null, {
-        subscription_id: r["subscription_id"] as string, agent_id: r["agent_id"] as string,
-        kind: r["kind"] as string, board: r["board"] as boolean,
-        rooms: r["rooms"] as readonly string[], blob: r["blob"] as string,
-        kid: r["kid"] as string, version: r["version"] as number, expires_at: null,
-      });
-      return { agent_id: stored.agent_id, subscription_id: r["subscription_id"] as string };
-    });
+    return this.#run("agentDoorbell", binding, request, ledgerDoors.agentDoorbell);
   }
 
   /** Only the owner itself, in its session, ends a doorbell it pasted, by its id. */
   agentDoorbellEnd(binding: Binding, request: UnsubscribeRequest):
       Promise<{ unsubscribed: boolean }> {
-    return this.#run("agentDoorbellEnd", binding, request, ({ r }) =>
-      ({ unsubscribed: this.#ledger.unsubscribe(null, r["subscription_id"]) }));
+    return this.#run("agentDoorbellEnd", binding, request, ledgerDoors.agentDoorbellEnd);
   }
 
   /** Only the owner itself, in its session, deletes an agent. */
   deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
-    return this.#run("deleteAgent", binding, request, ({ r }) =>
-      this.#ledger.remove(r["agent_id"]));
+    return this.#run("deleteAgent", binding, request, ledgerDoors.deleteAgent);
   }
 
   // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
@@ -3780,132 +1761,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * `converse` call would.
    */
   roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
-    return this.#units("roomPost", binding, request, (door) => this.#posted(door, request));
-  }
-
-  /** A post, its call checked in each unit (`roomPost`). */
-  async #posted(door: Door, request: PostRequest): Promise<Posted> {
-    // A parent archived (acked, moved to a segment) is read from R2 before the units: its
-    // seq, from its id, in the gate; then its record, outside. One the lane moved after the
-    // gate found it hot is read so in a post again (review N10's Low), never refused as no
-    // parent: archived mail never returns hot, so a second post finds it archived.
-    const gated = await this.#door(() => {
-      door.bound();
-      return this.#archivedParent(request);
-    });
-    for (let tries = 0; ; tries++) {
-      const parent = tries === 0 ? gated : await this.#door(() => {
-        door.bound();
-        return this.#archivedParent(request);
-      });
-      const archived = parent === null ? null : await this.#archived(parent.seq, parent.id);
-      // In each unit: the parent the gate found hot is hot still.
-      const kept = () => {
-        if (archived === null && this.#archivedParent(request) !== null) {
-          throw new ParentMoved();
-        }
-      };
-      try {
-        return await this.#busyRings(() => this.#placing((): { body: unknown; writer: string }
-                                                            | { done: Posted } => {
-          const call = door.check();
-          const { r, account } = call;
-          const { actor } = this.#poster(call);
-          kept();
-          // The room, the sender, the parent, the caps and a resend, before any byte is placed.
-          const resend = this.#ledger.prepare(actor, r["room_id"], r["client_message_id"],
-                                              r["body"], r["parent_id"], archived);
-          return resend !== null ? { done: resend }
-            : { body: r["body"], writer: filerOf(account) };
-        }, (placed) => {
-          const call = door.check();
-          const { r, account } = call;
-          const { actor, authority } = this.#poster(call);
-          kept();
-          return this.#ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
-                                   r["parent_id"], clock(), authority, placed,
-                                   filerOf(account), archived);
-        }, { synced: true }));
-      } catch (error) {
-        if (!(error instanceof ParentMoved) || tries + 1 >= READ_TRIES) {
-          throw error instanceof ParentMoved ? archiveMoving() : error;
-        }
-      }
-    }
-  }
-
-  /**
-   * A post held at the hot ceiling (`storage_busy`) rings the schedule, so the lane moves.
-   * (When the archive cannot move for the storage figure, the ledger answers the one wall
-   * itself, `storage_full`: `Ledger.#roomForOne`, the same for every poster.)
-   */
-  async #busyRings<T>(act: () => Promise<T>): Promise<T> {
-    try {
-      return await act();
-    } catch (error) {
-      if (error instanceof Refusal && error.code === "storage_busy") {
-        await this.#schedule.sync();
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * A post's caller checked, in each of its units: the first places nothing for a post the
-   * checks refuse, and the second commits only what they still allow.
-   */
-  #poster({ account, r, binding }: Call): { actor: Actor; authority: MailAuthority | null } {
-    const actor = this.#actor(account);
-    const authority = this.#mailAuthority(binding, account);
-    const to = this.#ledger.recipient(actor, r["room_id"]);
-    if (to.native !== null) {
-      this.#mailsAgent(account, authority, to.native);
-      this.#keepTiers(binding);
-    }
-    return { actor, authority };
-  }
-
-  /** Who a caller is in the ledger: a run, its agent; else the owner or the outside client. */
-  #actor(account: Account): Actor {
-    return account.run !== null ? { native: account.run.agent } : account.origin;
-  }
-
-  /**
-   * The authority a caller's mail goes under: none for the owner's own work (the owner's,
-   * or an owner-started run's), else the client's grant at its generation, as the binding
-   * verified it or the run's stamp holds it, and where a scoped grant acts.
-   */
-  #mailAuthority(binding: Binding, account: Account): MailAuthority | null {
-    if (account.run !== null) {
-      const stamp = account.run.stamp;
-      return stamp === null || account.origin === null ? null
-        : { client: stamp.client, family: account.origin.family, generation: stamp.generation,
-            authenticated_at: stamp.authenticated_at, universe: stamp.universe };
-    }
-    if (account.origin === null || account.grant === null) {
-      return null;
-    }
-    return { client: account.origin.client, family: account.origin.family,
-             generation: account.grant.generation,
-             authenticated_at: binding.authenticated_at ?? null,
-             universe: this.#universe(account) };
-  }
-
-  /**
-   * That a caller may start `agent`'s run by mail: a run holds `converse` among its scopes;
-   * a client's scoped grant (a run's stamp's too) holds `converse` for that agent where it
-   * acts. The owner's own work may.
-   */
-  #mailsAgent(account: Account, authority: MailAuthority | null, agent: string): void {
-    if (account.run !== null) {
-      this.#scope(account, "converse");
-    }
-    if (authority === null || account.grant?.mode !== "scoped") {
-      return;
-    }
-    if (!may(account.grant, "converse", { universe: authority.universe, agent })) {
-      throw new Refusal("refused", NOT_GRANTED);
-    }
+    return this.#units("roomPost", binding, request, ledgerDoors.roomPost);
   }
 
   /**
@@ -3933,14 +1789,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
   connectionPrepare(binding: Binding, request: ConnectionPrepareRequest): Promise<Prepared> {
-    return this.#run("connectionPrepare", binding, request, ({ session }) =>
-      this.#connections.prepare(session, request, clock()));
+    return this.#run("connectionPrepare", binding, request, connectionsDoors.connectionPrepare);
   }
 
   /** The sealed blob the gateway returned, and the models its setup check listed. */
   connectionCommit(binding: Binding, request: ConnectionCommitRequest): Promise<ConnectionView> {
-    return this.#run("connectionCommit", binding, request, () =>
-      this.#connections.commit(request, clock()));
+    return this.#run("connectionCommit", binding, request, connectionsDoors.connectionCommit);
   }
 
   /**
@@ -3949,43 +1803,31 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async connectionRevoke(binding: Binding, request: ConnectionRequest):
       Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
-    return this.#units("connectionRevoke", binding, request, async (door) => {
-      const revoked = await this.#synced(() => door.within(() =>
-        this.#connections.revoke(request, clock())));
-      await this.#door(() => this.#egress.end("connection",
-                                              (live) => live.connection === revoked.connection));
-      return revoked;
-    });
+    return this.#units("connectionRevoke", binding, request, connectionsDoors.connectionRevoke);
   }
 
   /** Every connection, newest first, never its blob. */
   connectionList(binding: Binding): Promise<{ connections: ConnectionView[] }> {
-    return this.#run("connectionList", binding, undefined, () =>
-      ({ connections: this.#connections.list() }));
+    return this.#run("connectionList", binding, undefined, connectionsDoors.connectionList);
   }
 
   /** The callback's state, in the session that began the flow: its verifier, used up. */
   flowFinish(binding: Binding, request: FlowFinishRequest):
       Promise<{ connection: string; version: number; verifier: string; redirect_uri: string;
                 source: string }> {
-    return this.#run("flowFinish", binding, request, ({ session }) =>
-      this.#connections.flowFinish(session, request, clock()));
+    return this.#run("flowFinish", binding, request, connectionsDoors.flowFinish);
   }
 
   /** The owner's newest model-call receipts: what each call reserved, and what it cost. */
   usageReceipts(binding: Binding): Promise<{ receipts: UsageReceipt[] }> {
-    return this.#run("usageReceipts", binding, undefined, () => {
-      return { receipts: this.#usage.receipts(clock()) };
-    });
+    return this.#run("usageReceipts", binding, undefined, usageDoors.usageReceipts);
   }
 
   // -- NOTICES: what the owner's work reported to the owner -------------------------
 
   /** The owner's notices, newest first (`notices.ts`). */
   noticeList(binding: Binding): Promise<{ notices: Notice[] }> {
-    return this.#run("noticeList", binding, undefined, () => {
-      return { notices: this.#notices.list() };
-    });
+    return this.#run("noticeList", binding, undefined, noticesDoors.noticeList);
   }
 
   /**
@@ -3995,10 +1837,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   starterReceipts(binding: Binding):
       Promise<{ version: number; carried: number; receipts: StarterReceipt[] }> {
-    return this.#run("starterReceipts", binding, undefined, () => {
-      return { version: this.#starter.version(), carried: this.#starter.carried(),
-               receipts: this.#starter.receipts() };
-    });
+    return this.#run("starterReceipts", binding, undefined, starterDoors.starterReceipts);
   }
 
   // -- ADMISSION: the platform's word on the owner's account -------------------------
@@ -4012,23 +1851,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * gives the `wakes` lane its job back.
    */
   async admissionSet(binding: Binding, request: AdmissionRequest): Promise<Admission> {
-    return this.#units("admissionSet", binding, request, async (door) => {
-      const set = await this.#synced(() => {
-        door.check();
-        return setAdmission(this.#storage, request);
-      });
-      if (set.state === "suspended") {
-        // The prompt stop: its streams, and its runs' CLIs (each settles from its runner).
-        await this.#door(() => {
-          this.#egress.end("admission");
-          this.#cancelInSandbox(this.#runs.endAll(clock()));
-        });
-      }
-      if (doorRefusal(set, "read") !== null) {
-        this.#relay.closeAll("suspended");  // reads refused: an abuse suspension
-      }
-      return set;
-    });
+    return this.#units("admissionSet", binding, request, admissionDoors.admissionSet);
   }
 
   /**
@@ -4038,23 +1861,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the bodies picks up.
    */
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
-    return this.#units("mailboxRead", binding, request, (door) => this.#rereadingPage(() => {
-      const { account, r } = door.check();
-      const offset = bodyOffset(r["body_offset"]);
-      const next = this.#ledger.placedNext(account.origin, r["limit"]);
-      return { contents: next.contents,
-               offsetOf: (contentId) => contentId === next.first ? offset : 0 };
-    }, (windows) => {
-      const { account, r } = door.check();
-      return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
-                               r["pad_bytes"] ?? 0, clock(), windows,
-                               bodyOffset(r["body_offset"]), PAGE_BYTES, r["message_id"] ?? null);
-    }, (page) => page.messages.length === 0 && page.more));
+    return this.#units("mailboxRead", binding, request, ledgerDoors.mailboxRead);
   }
 
   mailboxAck(binding: Binding, request: AckRequest): Promise<{ reader: string; through: number }> {
-    return this.#run("mailboxAck", binding, request, ({ account, r }) =>
-      this.#ledger.ack(account.origin, r["through"]));
+    return this.#run("mailboxAck", binding, request, ledgerDoors.mailboxAck);
   }
 
   // -- DIGESTS and CODE MODE: a main agent's few calls (slice M) -------------------
@@ -4069,45 +1880,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   inboxDigest(binding: Binding, request: InboxDigestRequest):
       Promise<{ mail: MailPage; rooms: Heads }> {
-    return this.#units("inboxDigest", binding, request, (door) => this.#inbox(door));
-  }
-
-  /** What changed for an agent, its call checked in each unit (`inboxDigest`). */
-  async #inbox(door: Door): Promise<{ mail: MailPage; rooms: Heads }> {
-    // Its placed bodies (ADR-035), mail and rows, are read from R2 between its units, as a
-    // mailbox read's; the read's unit marks only the mail it returns. One answer holds
-    // both: each part fits half of it (`INBOX_PART`, `pages.ts`), so neither starves.
-    const { mail, rooms, windows, chars } = await this.#rereadingPage(() => {
-      const { account, r } = door.check();
-      const chars = headChars(r["head_chars"]);
-      const mail = new Set(this.#ledger.placedNext(account.origin, r["limit"], INBOX_PART)
-        .contents);
-      return { contents: [...mail, ...contentsOf(this.#collections.changed(
-        account.caller, { prefix: ROOM_PREFIX }, r["after"], r["limit"]).rows)],
-               maxOf: (contentId) => mail.has(contentId) ? INBOX_PART : headWindow(chars) };
-    }, (windows) => {
-      const { account, r } = door.check();
-      const changes = this.#collections.changed(account.caller, { prefix: ROOM_PREFIX },
-                                                r["after"], r["limit"]);
-      return {
-        mail: this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null, 0, clock(),
-                                windows, 0, INBOX_PART),
-        rooms: changes, windows, chars: headChars(r["head_chars"]),
-      };
-    }, ({ mail: page }) => page.messages.length === 0 && page.more);
-    return { mail, rooms: heads(rooms, chars, windows, INBOX_PART) };
+    return this.#units("inboxDigest", binding, request, ledgerDoors.inboxDigest);
   }
 
   /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
   boardDigest(binding: Binding, request: BoardDigestRequest): Promise<Heads> {
-    return this.#units("boardDigest", binding, request, (door) => this.#reading(() => {
-      const { account: { caller }, r } = door.check();
-      const chars = headChars(r["head_chars"]);
-      const changes = this.#collections.changed(caller, { collection: BOARD }, r["after"],
-                                                r["limit"]);
-      return { value: { changes, chars }, contents: contentsOf(changes.rows),
-               maxOf: () => headWindow(chars) };
-    }, ({ changes, chars }, windows) => heads(changes, chars, windows)));
+    return this.#units("boardDigest", binding, request, collectionsDoors.boardDigest);
   }
 
   /**
@@ -4116,17 +1894,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * owner's own, `custom`. `code` only while the owner's policy turns code mode on.
    */
   toolProfile(binding: Binding): Promise<{ profile: ProfileName; tools: readonly string[] }> {
-    return this.#run("toolProfile", binding, undefined, ({ account }) =>
-      this.#profile(account));
-  }
-
-  #profile(account: Account): { profile: ProfileName; tools: readonly string[] } {
-    const { document } = this.#policy.read();
-    const profile: ProfileName = account.run !== null ? "run"
-      : account.grant?.profile ?? "custom";
-    const names = profile === "custom" ? customTools(document) : profileNames(profile);
-    return { profile, tools: hookSettings(document).codemode ? names
-                                                             : names.filter((n) => n !== CODE) };
+    return this.#run("toolProfile", binding, undefined, codemodeDoors.toolProfile);
   }
 
   /**
@@ -4143,117 +1911,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * logged here in full.
    */
   async codeRun(binding: Binding, request: CodeRequest): Promise<CodeResult> {
-    return this.#units("codeRun", binding, request, (door) => this.#coded(door, binding));
-  }
-
-  /** A script's run (`codeRun`), its call checked in its first unit. */
-  async #coded(door: Door, binding: Binding): Promise<CodeResult> {
-    const { owner, script, tools, gate } = await this.#door(() => {
-      const { account, r } = door.check();
-      if (typeof r["script"] !== "string" || r["script"].trim() === "") {
-        throw new Refusal("invalid", "a script is text");
-      }
-      if (!hookSettings(this.#policy.read().document).codemode) {
-        throw new Refusal("code_mode_off", CODE_MODE_OFF);
-      }
-      const { tools: names } = this.#profile(account);
-      if (!names.includes(CODE)) {
-        throw new Refusal("tool_not_served", CODE_NOT_SERVED);
-      }
-      // The gate its door read: every `/mcp` and `/api` binding carries the client's origin,
-      // the owner's own MCP clients' too, so they take the outside gate; a run (the egress
-      // door) and the owner's app (no origin) the maintenance gate.
-      const gate: Gate = account.origin !== null && account.run === null ? "outside" : "owner";
-      return { owner: account.owner, script: r["script"],
-               tools: toolsNamed(names.filter((name) => name !== CODE)), gate };
-    });
-    const control = this.#control();
-    const closed = await control.refusal(gate, owner);
-    if (closed !== null) {
-      throw new Refusal("refused", closed);
-    }
-    // The wall bound, held here too: pi-codemode's own deadline is a timer, which a script
-    // calling tools back to back starved in workerd, so each call checks the clock, which
-    // moves with every call's I/O, and ends the execution past it.
-    const timeoutMs = this.#codemode.timeoutMs ?? CODEMODE_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
-    const late = new AbortController();
-    const sandbox = codemodeSandbox({
-      ...this.#codemode,
-      service: () => this.env.HOOKS,
-      owner: () => owner,
-      tools: tools.map((tool) => ({ name: tool.name, description: tool.description,
-                                    inputSchema: tool.input,
-                                    execute: (args: unknown) => {
-                                      if (Date.now() >= deadline) {
-                                        late.abort();
-                                        throw new Error(CODE_TIMED_OUT);
-                                      }
-                                      return this.#scripted(binding, tool, args,
-                                                            () => control.refusal(gate, owner));
-                                    } })),
-    });
-    try {
-      const result = await sandbox.execute(script, { signal: late.signal });
-      const calls = { ok: 0, error: 0, cancelled: 0 };
-      const landed: Landed[] = [];
-      const changes = new Set(tools.filter((tool) => !tool.readOnlyHint)
-        .map((tool) => tool.name));
-      for (const call of result.calls) {
-        calls[call.status] += 1;
-        const last = landed.at(-1);
-        if (!changes.has(call.name)) {
-          continue;
-        }
-        if (last?.name === call.name && last.status === call.status) {
-          landed[landed.length - 1] = { ...last, count: last.count + 1 };
-        } else {
-          landed.push({ name: call.name, status: call.status, count: 1 });
-        }
-      }
-      const error = late.signal.aborted && !result.ok
-        ? { kind: "timeout", message: `Execution timed out after ${timeoutMs} ms` }
-        : result.ok ? null : { kind: result.error.kind, message: result.error.message };
-      const answer: CodeResult = error === null
-        ? { ok: true, value: (result as { value: JsonValue }).value, output: result.output,
-            calls, landed }
-        : { ok: false, error, output: result.output, calls, landed };
-      return fittedCode(answer);
-    } finally {
-      await sandbox.close();
-    }
-  }
-
-  /** One tool call of a script: rechecked as `codeRun` says, then the tool's own door. */
-  async #scripted(binding: Binding, tool: Tool, args: unknown,
-                  gate: () => Promise<string | null>): Promise<unknown> {
-    try {
-      const closed = await gate();
-      if (closed !== null) {
-        throw new Refusal("refused", closed);
-      }
-      await this.#door(() => {
-        const { tools } = this.#profile(this.#within(doorRow("toolProfile"), binding, undefined,
-                                                     ({ account }) => account));
-        if (!hookSettings(this.#policy.read().document).codemode) {
-          throw new Refusal("code_mode_off", CODE_MODE_OFF);
-        }
-        if (!tools.includes(CODE) || !tools.includes(tool.name)) {
-          throw new Refusal("tool_not_served", CODE_NOT_SERVED);
-        }
-      });
-      // The tool's own door, by its row: admitted again, as any call of it is.
-      const row = doorRow(tool.door);
-      const door = (this as unknown as Record<string, unknown>)[row.door] as
-        (...args: unknown[]) => Promise<unknown>;
-      return await Reflect.apply(door, this, takesRequest(row) ? [binding, args] : [binding]);
-    } catch (error) {
-      if (!(error instanceof Refusal)) {
-        console.error(`code mode's ${tool.name} call failed`, error);
-        throw new Error("internal error");
-      }
-      throw new Error(error.message);
-    }
+    return this.#units("codeRun", binding, request, codemodeDoors.codeRun);
   }
 
   /**
@@ -4262,633 +1920,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   mailChain(binding: Binding, request: ChainRequest):
       Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
-    return this.#units("mailChain", binding, request, (door) => this.#chain(door));
-  }
-
-  /** The owner's read of a mail chain, its call checked in each unit (`mailChain`). */
-  async #chain(door: Door): Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
-    const { r } = await this.#door(() => door.check());
-    const after = r["after"] ?? 0;
-    if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
-      throw new Refusal("invalid", "a chain read's after is a seq");
-    }
-    const offset = bodyOffset(r["body_offset"]);
-    // Its root: the hot message's, or the archived one's, read from its segment.
-    const start = await this.#door(() => this.#ledger.chainStart(r["message_id"]));
-    let root: string;
-    let rootSeq: number;
-    let room: string;
-    if ("archived" in start) {
-      const found = await this.#archived(start.archived, r["message_id"] as string);
-      if (found === null) {
-        throw new Refusal("refused", "no such message held");
-      }
-      root = found.message.chain_root;
-      room = found.message.room_id;
-      rootSeq = await this.#door(() => this.#ledger.seqOf(root)) ?? 0;
-    } else {
-      ({ root, root_seq: rootSeq, room } = start);
-    }
-    const most = typeof r["limit"] === "number" ? r["limit"] : 1;
-    for (let tries = 0; tries < READ_TRIES; tries++) {
-      const read = await this.#chainPage(door, r, { root, rootSeq, room }, after, offset,
-                                         most);
-      if (read !== null) {
-        return { root, messages: read.messages, more: read.more };
-      }
-    }
-    throw archiveMoving();
-  }
-
-  /**
-   * One read of a chain's page (`mailChain`), or null when the archive changed under it.
-   * Its archived messages past `after`, as a page reads placed bodies (`pages.ts`, PR 1):
-   * the next segments' chain maps, then each record by range, its body only as the window
-   * a page may show (from `body_offset` when it is the page's first message), the windows
-   * stopping at `WINDOWS_BYTES` past the first; the first left unread is the frontier, so
-   * the page stops below it and the next goes on from there. Each fence's content and chunks
-   * are located in the fences' own unit, with the archive's mark (review N10); a segment
-   * replaced after it (a merge, a compaction, a purge's rewrite) is read from its chunks in
-   * their grace, and a read that fails all the same (a chunk collected early, past the figure)
-   * is a changed archive, read again, when the mark moved (`#segmentsRead`). Its hot rows are
-   * read in a later unit, which first checks that no segment made since may hold the chain's
-   * room past `after`: a move between them took mail out of the hot rows into a segment the
-   * read never saw (review N9), so the read is null, and `mailChain` reads again from the
-   * fences. Another room's moves never count. The page stays the one bounded page
-   * `ledger.chain` fits; only the reads are repeated, at most `READ_TRIES`.
-   */
-  async #chainPage(door: Door, r: Record<string, unknown>,
-                   chain: { root: string; rootSeq: number; room: string }, after: number,
-                   offset: number, most: number):
-      Promise<{ messages: ChainMail[]; more: boolean } | null> {
-    const { root, rootSeq, room } = chain;
-    const { fenced, firstHot, seen, located } = await this.#door(() => {
-      const fences = this.#ledger.chainFences(rootSeq, after);
-      return { fenced: fences, firstHot: this.#ledger.chainNext(root, after),
-               seen: this.#ledger.archiveMark(),
-               located: this.#bodies.locate(fences.fences.map((fence) => fence.content_id)) };
-    });
-    await this.#chainStep?.("fenced");
-    let frontier = fenced.frontier;
-    const mail: ArchivedMail[] = [];
-    const read = await this.#segmentsRead(seen.mark, async () => {
-      let held = 0;
-      read: for (const fence of fenced.fences) {
-        const chunks = located.get(fence.content_id)!.chunks;
-        const trailer = await this.#trailer(fence, chunks);
-        for (const [key, at, length] of trailer.chains[root] ?? []) {
-          if (key <= after) {
-            continue;
-          }
-          if (mail.length >= most || (mail.length > 0 && held >= WINDOWS_BYTES)) {
-            frontier = key;
-            break read;
-          }
-          const first = mail.length === 0 && (firstHot === null || key < firstHot);
-          const found = await this.#archivedRecord(chunks, at, length, first ? offset : 0);
-          held += found.body === null ? 0 : found.body.end - found.body.offset;
-          mail.push(found);
-        }
-      }
-      return true;
-    });
-    if (read === null) {
-      return null;
-    }
-    await this.#chainStep?.("hot");
-    // Its hot messages' placed bodies (ADR-035) are read from R2 between its units, and the
-    // page, hot and archived together, fits one answer.
-    const archived = { root, mail, frontier };
-    const page = (windows: ReadonlyMap<string, Window>) => this.#ledger.chain(
-      r["message_id"], after, r["limit"], windows, offset, r["body_message_id"] ?? null,
-      archived);
-    return this.#rereadingPage(() => {
-      door.check();
-      const read = page(new Map());
-      return { contents: read.placed,
-               offsetOf: (contentId) => contentId === read.first ? offset : 0 };
-    }, (windows) => {
-      door.check();
-      return this.#ledger.movedSince(seen.newest, room, after) ? null : page(windows);
-    }, (read) => read !== null && read.messages.length === 0 && read.placed.length > 0);
-  }
-
-  // -- THE ARCHIVE (slice STORE item 2, `segments.ts`) --------------------------------------
-
-  /**
-   * Segments' reads from R2, outside any unit, after the unit that took their fences, their
-   * located chunks and the archive's `mark`: the reads' value, or null when they failed
-   * because the archive changed since (the mark moved), for the caller to read again. A
-   * segment replaced since (a merge, a compaction, a purge's rewrite) is let go as garbage
-   * in its grace (`GC_GRACE_S`, 30 days), so its chunks still read for far longer than one
-   * read, and their hashes still check; but past the owner's figure the oldest garbage is
-   * collected early (`files.ts`), and a just-replaced segment's chunks, the newest, could
-   * still go, so a failed read is retried when the mark moved. With the mark unchanged, the
-   * failure is no change of the archive's, and stands, loudly.
-   */
-  async #segmentsRead<T>(mark: string, read: () => Promise<T>): Promise<T | null> {
-    try {
-      return await read();
-    } catch (error) {
-      if (await this.#door(() => this.#ledger.archiveMark().mark !== mark)) {
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * A byte range of a segment's content, read from R2 outside any unit by the verified
-   * ranges it spans (`FILES` reads each whole chunk, rechecks its hash and answers the range).
-   */
-  async #segmentBytes(chunks: readonly string[], offset: number, length: number):
-      Promise<Uint8Array> {
-    return joined(await this.#files.fetch(chunkReads(chunks, offset, length)));
-  }
-
-  /** A segment's trailer, read alone by its fence's range. */
-  async #trailer(fence: Fence, chunks: readonly string[]):
-      Promise<ReturnType<typeof parseTrailer>> {
-    return parseTrailer(utf8Decoder("keep").decode(
-      await this.#segmentBytes(chunks, fence.trailer_offset, fence.trailer_bytes)));
-  }
-
-  /**
-   * An archived record read by range, never its body whole (PR 1): a small one in one read;
-   * a larger one its head (its message's row and its body's), its recipients' lines, and
-   * its body's window from `offset` (at most `PAGE_BYTES`, cut back to a character), or no
-   * body at all (`offset` null: a reply's parent needs only its row).
-   */
-  async #archivedRecord(chunks: readonly string[], at: number, length: number,
-                        offset: number | null): Promise<ArchivedMail> {
-    if (length <= ARCHIVED_WHOLE_BYTES) {
-      return archivedMail(await this.#segmentBytes(chunks, at, length), offset);
-    }
-    let head = null;
-    for (let read = ARCHIVED_HEAD_BYTES; head === null; read *= 4) {
-      head = archivedHead(await this.#segmentBytes(chunks, at, Math.min(length, read)));
-      if (head === null && read >= length) {
-        throw new Error("an archived mail record lacks its message or its body");
-      }
-    }
-    const bodyAt = at + head.bodyAt;
-    const tail = bodyAt + head.bodyBytes + 1;
-    const recipients = archivedRecipients(await this.#segmentBytes(chunks, tail,
-                                                                   at + length - tail));
-    return { message: head.message, recipients, body: offset === null ? null
-      : await this.#bodies.windowAt(chunks, bodyAt, head.bodyBytes, offset, PAGE_BYTES) };
-  }
-
-  /**
-   * An archived message by the seq its id carries, from its segment; null when none. Its
-   * fences' contents are located with them and the archive's mark, and a read that failed
-   * because the archive changed is read again (`#segmentsRead`, review N10), at most
-   * `READ_TRIES`, then refused `storage_busy`.
-   */
-  async #archived(seq: number, messageId: string): Promise<ArchivedMail | null> {
-    for (let tries = 0; tries < READ_TRIES; tries++) {
-      const { fences, seen, located } = await this.#door(() => {
-        const fences = this.#ledger.archiveFences(seq);
-        return { fences, seen: this.#ledger.archiveMark(),
-                 located: this.#bodies.locate(fences.map((fence) => fence.content_id)) };
-      });
-      const found = await this.#segmentsRead(seen.mark, async () => {
-        for (const fence of fences) {
-          const chunks = located.get(fence.content_id)!.chunks;
-          const placement = (await this.#trailer(fence, chunks)).keys
-            .find(([key]) => key === seq);
-          if (placement !== undefined) {
-            return { mail: await this.#archivedRecord(chunks, placement[1], placement[2], null) };
-          }
-        }
-        return { mail: null };
-      });
-      if (found === null) {
-        continue;
-      }
-      if (found.mail === null) {
-        return null;
-      }
-      const mail = found.mail;
-      const purged = await this.#door(() => this.#ledger.purgedAgents());
-      return mail.message.message_id === messageId
-        && !roomMembers(mail.message.room_id).some((member) => purged.includes(member))
-        ? mail : null;
-    }
-    throw archiveMoving();
-  }
-
-  /** In a unit: a post's parent's seq, when it is archived (not hot, and the object's). */
-  #archivedParent(request: PostRequest): { id: string; seq: number } | null {
-    const parentId = (request as { parent_id?: unknown } | null)?.parent_id;
-    if (typeof parentId !== "string") {
-      return null;
-    }
-    try {
-      const start = this.#ledger.chainStart(parentId);
-      return "archived" in start ? { id: parentId, seq: start.archived } : null;
-    } catch {
-      return null;  // not one the object gave: the post refuses it as no parent
-    }
-  }
-
-  /**
-   * One pass of the `archive` lane: a deleted agent's mail rewritten out of a segment, or
-   * else one move of acked mail (a straggler's merge, or the tail's new segment). A move
-   * that would leave the storage figure higher than it found it is refused for the figure
-   * (`archive_full`): the archive is then blocked, and a post at the hot ceiling is the one
-   * wall, `storage_full`, until the owner frees space (review M1). A failure outside (the
-   * storage service down) holds the lane a while. Each pass is counted in storage as it
-   * begins and cleared as it ends (review N3), so a pass killed with its isolate (for memory,
-   * say) still counts: at `ARCHIVE_FAILS_TOLD` in a row the owner is told once, with the last
-   * error as it said it, or that the passes stopped before they could say.
-   */
-  async #archivePass(): Promise<unknown> {
-    let begun: { fails: number; error: string | null } | null = null;
-    try {
-      // Blocked and still full: nothing to try until the owner frees space.
-      begun = await this.#door(() => {
-        const { stored, figure } = this.#files.storedNow();
-        return this.#ledger.archiveBlocked() && figure !== null && stored >= figure ? null
-          : this.#ledger.archiveBegin();
-      });
-      if (begun === null) {
-        return { hold: clock() + ARCHIVE_RETRY_S };
-      }
-      if (begun.fails === ARCHIVE_FAILS_TOLD && begun.error === null) {
-        // The third failed pass never reached its catch: it went with its isolate.
-        await this.#door(() => this.#notices.add("storage_busy_long", archiveFailing(null),
-                                                 clock()));
-      }
-      // A purge's rewrite first, so a deleted agent's mail leaves R2 promptly; the order is
-      // not needed for correctness (a merge into a segment that still holds it keeps it,
-      // and its bloom names the agent, so the purge rewrites that segment in turn). A
-      // rewrite that fails never holds the move behind it (review N7): the move runs, and
-      // the rewrite's failure is the pass's, counted and told at three.
-      // Each holds its own units of the isolate's pool (`MoveHold`), released as it ends.
-      let rewrote = false;
-      let failed: unknown = null;
-      try {
-        rewrote = await this.#archiveRewrite();
-      } catch (error) {
-        if (error instanceof Refusal && error.code === "archive_changed") {
-          rewrote = true;
-        } else {
-          failed = error;
-        }
-      }
-      // The move runs whenever mail is due (the hot set past half), a rewrite or not, so a
-      // long purge never holds new mail at `storage_busy` (review N8); the rewrite's table
-      // and units are let go before it, so the pass holds one move's at a time.
-      if (!rewrote || await this.#door(() => this.#ledger.archiveDue())) {
-        await this.#archiveMove();
-      }
-      if (failed !== null) {
-        throw failed;
-      }
-      await this.#door(() => this.#ledger.archiveEnded());
-      return undefined;
-    } catch (error) {
-      if (error instanceof Refusal && error.code === "archive_changed") {
-        await this.#door(() => this.#ledger.archiveEnded());
-        return undefined;  // the batch moved under it: the next pass picks again
-      }
-      if (error instanceof Refusal && (error.code === "archive_full"
-                                       || error.code === "storage_full")) {
-        const first = await this.#door(() => {
-          const was = this.#ledger.archiveBlocked();
-          this.#ledger.blockArchive();
-          this.#ledger.archiveEnded();  // its own cause, told in its own words
-          return !was;
-        });
-        if (first) {
-          await this.#door(() => this.#notices.add("storage_busy_long",
-            "Older mail could not be moved out because your storage is full, so new mail is " +
-              "refused until you free some space or upgrade.", clock()));
-        }
-        return { hold: clock() + ARCHIVE_RETRY_S };
-      }
-      if (isSlotBusy(error)) {
-        // The isolate's pool full (`busy`, `MoveHold`): contention, not storage (round 11,
-        // Low A). Not a failed pass, never logged: the lane tries again once the pool's own
-        // wait has turned its queue over. The owner is told only when it puts storage at risk,
-        // the hot set at its ceiling (the next post refused `storage_busy`) with the moves
-        // blocked: once a blocked spell, since the last segment the lane placed.
-        await this.#door(() => {
-          if (begun !== null) {
-            this.#ledger.archiveBusy(begun);
-          }
-          if (this.#ledger.atHotCeiling()) {
-            const since = this.#ledger.lastPlaced();
-            if (!this.#notices.list().some((notice) => notice.type === "storage_busy_long"
-                && notice.detail === ARCHIVE_BUSY_TOLD && notice.at >= since)) {
-              this.#notices.add("storage_busy_long", ARCHIVE_BUSY_TOLD, clock());
-            }
-          }
-        });
-        return { hold: clock() + ARCHIVE_BUSY_RETRY_S };
-      }
-      console.error("the archive lane's pass failed", error);
-      if (begun !== null) {
-        // What failed, as it said it, never a cause it did not give (review N1).
-        const said = (error instanceof Error ? error.message.split("\n")[0]! : String(error))
-          .slice(0, 200);
-        const fails = begun.fails + 1;
-        await this.#door(() => {
-          this.#ledger.archiveFailed(said);
-          if (fails === ARCHIVE_FAILS_TOLD) {
-            this.#notices.add("storage_busy_long", archiveFailing(said), clock());
-          }
-        });
-      }
-      return { hold: clock() + ARCHIVE_RETRY_S };
-    }
-  }
-
-  /**
-   * One move: a straggler's merge (acked mail whose keys fall in a segment, rewritten into
-   * it, so no two segments overlap) or the tail's new segment, in the move's two units.
-   * Planned from lengths alone, then streamed (`#placePieces`): nothing is read whole.
-   */
-  async #archiveMove(): Promise<void> {
-    const pick = await this.#door(() => this.#ledger.archivePick());
-    if (pick === null) {
-      return;
-    }
-    // Its table's units before its records arrive: the batch's, and its segment's.
-    const hold = await MoveHold.take(ownerSlots(), pick.seqs.length + (pick.into?.records ?? 0));
-    try {
-      const table = new MoveTable();
-      const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, table,
-        (contentId, bytes, sha256) => table.addContent(
-          bytes, this.#bodies.locate([contentId]).get(contentId)!.chunks, sha256)));
-      if (batch === null) {
-        return;
-      }
-      const reader = new MoveReader(this.#files, table);
-      if (pick.into !== null) {
-        const into = pick.into;
-        await hold.pass(() => this.#scanSegment(into, table, reader), () => reader.letGo());
-      }
-      const all = Array.from({ length: table.count }, (_, n) => n);
-      await this.#placePieces(table, all, pick.into === null ? [] : [pick.into], pick.seqs,
-                              batch.digest, "mail", reader, hold);
-    } finally {
-      hold.release();
-    }
-  }
-
-  /**
-   * One rewrite pass: the next segment a deleted agent's mail may be in, without that mail;
-   * one left under `SEGMENT_LEAST_BYTES` takes in its neighbours by key (never by id), so
-   * ranges stay disjoint. Each segment is scanned with the purge's filter: only what is kept
-   * enters the move's table, the rest streams past (review N7).
-   *
-   * Bounded, compacting across passes: a pass takes in a neighbour only while what it keeps
-   * and the neighbour's records stay within `MOVE_RECORDS` and the neighbours it scans
-   * within `MOVE_BYTES` (a merge's work), and stops there. A pass stopped so, still under the
-   * least, places what it kept as one small segment: the next pass, finding a segment under
-   * the least that is not the only one (`purgeNext`, derived from the fences alone, so a
-   * restore keeps it), takes it back as its target and goes on taking in its neighbours,
-   * and so on until it holds the least or stands alone. Each pass leaves the archive whole and disjoint, only less compacted
-   * until the last; the first neighbour always fits (a small segment's records are under
-   * the least's worth and a piece's at most 49,933), so every pass makes progress. False
-   * when no rewrite waits.
-   */
-  async #archiveRewrite(): Promise<boolean> {
-    const target = await this.#door(() => this.#ledger.purgeNext());
-    if (target === null) {
-      return false;
-    }
-    const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
-    const keep = (room: string) => !roomMembers(room).some((member) => purged.has(member));
-    // Its table's units before its records arrive, grown as it takes in each neighbour.
-    const hold = await MoveHold.take(ownerSlots(), target.fence.records);
-    try {
-      return await this.#rewriteHeld(target, keep, hold);
-    } finally {
-      hold.release();
-    }
-  }
-
-  /** `#archiveRewrite` holding its table's units (`hold`, for the target's records). */
-  async #rewriteHeld(target: { fence: Fence; compact: boolean },
-                     keep: (room: string) => boolean, hold: MoveHold): Promise<boolean> {
-    const table = new MoveTable();
-    const scan = (fence: Fence) => {
-      const reader = new MoveReader(this.#files, table);
-      return hold.pass(() => this.#scanSegment(fence, table, reader, keep),
-                       () => reader.letGo());
-    };
-    const first = await scan(target.fence);
-    if (first.kept === first.all && !target.compact) {
-      await this.#door(() => this.#ledger.purgeSkip(target.fence.segment));
-      return true;
-    }
-    const replaced = [target.fence];
-    let size = 0;
-    for (let n = 0; n < table.count; n++) {
-      size += table.length(n);
-    }
-    let scanned = 0;
-    // Left small, it takes in its neighbours by key (a neighbour a purge also thinned may
-    // not be enough alone), within the pass's bound, until it holds the least or none is
-    // left: never by id.
-    while (size < SEGMENT_LEAST_BYTES) {
-      const span = { ...target.fence,
-                     first_key: Math.min(...replaced.map((fence) => fence.first_key)),
-                     last_key: Math.max(...replaced.map((fence) => fence.last_key)) };
-      const beside = await this.#door(() => this.#ledger.fenceBeside(span));
-      if (beside === null) {
-        break;
-      }
-      if (table.count + beside.records > MOVE_RECORDS || scanned + beside.bytes > MOVE_BYTES) {
-        break;  // the pass's bound: the next pass goes on from what this one places
-      }
-      replaced.push(beside);
-      scanned += beside.bytes;
-      // What it keeps so far and all the neighbour's: within `MOVE_RECORDS` (checked above).
-      await hold.table(table.count + beside.records);
-      const from = table.count;
-      await scan(beside);
-      for (let n = from; n < table.count; n++) {
-        size += table.length(n);
-      }
-    }
-    if (target.compact && replaced.length === 1) {
-      return false;  // a small segment with no neighbour to take in stands alone, as it may
-    }
-    const all = Array.from({ length: table.count }, (_, n) => n);
-    await this.#placePieces(table, all, replaced, [], "0".repeat(64), "rewrite",
-                            new MoveReader(this.#files, table), hold);
-    return true;
-  }
-
-  /**
-   * A segment's records appended to a move's table as ranges of its content, never held
-   * (review N5): its trailer read, then each record's first line alone (its room, its chain,
-   * its time), the chunks read whole one at a time, in order. Only the records `keep` takes
-   * (by room) enter the table (review N7: a purge's dropped mail streams past). Its records
-   * read, and those kept.
-   */
-  async #scanSegment(fence: Fence, table: MoveTable, reader: MoveReader | null,
-                     keep: (room: string) => boolean = () => true):
-      Promise<{ all: number; kept: number }> {
-    const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
-    const ref = table.addContent(fence.bytes, located.get(fence.content_id)!.chunks, null);
-    const content = table.contentOf(ref);
-    const read = (reader ?? new MoveReader(this.#files, table)).read;
-    const trailer = parseTrailer(utf8Decoder("keep")
-      .decode(await lineAt(content, fence.trailer_offset, fence.trailer_bytes, read)));
-    let kept = 0;
-    for (const [key, offset, length] of trailer.keys) {
-      const head = recordHead(await lineAt(content, offset, length, read));
-      if (keep(head.room)) {
-        keptRecord(table, key, offset, length, ref, head);
-        kept++;
-      }
-    }
-    return { all: trailer.keys.length, kept };
-  }
-
-  /**
-   * A move's records (`indices` into its table) placed as one or two segments (`pack`),
-   * replacing `replaced` and the hot batch `seqs` in its second unit (ADR-035's order: the
-   * bytes to R2 first, held by uploads that may pass the storage figure, then named in one
-   * unit, which may not leave the stored figure above both the figure and where the move
-   * found it: `archive_full`). Streamed (review N5, the memory research's §2 A): each piece
-   * planned from its records' lengths; pass 1 makes each chunk from the source ranges it
-   * covers, hashes it and drops it (and checks each placed body against its message's hash),
-   * for `Files.begin`; pass 2 makes each again and sends it, one a call. The sources do not
-   * change between the passes (contents are named by their hashes; the batch's rows are
-   * checked at the commit by their digest), and a chunk that did differ is refused by R2's
-   * check of its hash: loudly.
-   */
-  async #placePieces(table: MoveTable, indices: readonly number[], replaced: readonly Fence[],
-                     seqs: readonly number[], digest: string, stream: "mail" | "rewrite",
-                     reader: MoveReader, hold: MoveHold): Promise<void> {
-    const ordered = [...indices].sort((a, b) => table.key(a) - table.key(b));
-    const plans = ordered.length === 0 ? []
-      : pack(ordered, SEGMENT_LEAST_BYTES, (n) => table.length(n)).map((part) => {
-        const piece = table.piece(Uint32Array.from(part));
-        return { plan: planSegment("mail", piece), indices: piece.indices };
-      });
-    const hashes: string[][] = [];
-    await hold.pass(async () => {
-      for (const { plan, indices: at } of plans) {
-        const sources = (from: number, to: number) =>
-          this.#moveSources(table, at.subarray(from, to));
-        const each: string[] = [];
-        for (let n = 0; n < plan.chunks; n++) {
-          const made = await makeChunk(plan, n, sources, reader.read);
-          each.push(sha256Hex(made));
-          letGo(made);
-        }
-        hashes.push(each);
-      }
-    }, () => reader.letGo());
-    reader.bodiesChecked();
-    if (this.#betweenPasses !== null) {
-      const between = this.#betweenPasses;
-      await this.#door(() => between(this.#storage, { stream, replaced: replaced.length,
-                                                     records: table.count }));
-    }
-    const pieces = plans.map(({ plan, indices: at }) => {
-      const members = new Set<string>();
-      let firstAt = Number.MAX_SAFE_INTEGER;
-      let lastAt = 0;
-      for (const n of at) {
-        for (const member of roomMembers(table.room(n))) {
-          members.add(member);
-        }
-        firstAt = Math.min(firstAt, table.at(n));
-        lastAt = Math.max(lastAt, table.at(n));
-      }
-      return { plan, at, fence: {
-        first_key: plan.first, last_key: plan.last, first_at: firstAt, last_at: lastAt,
-        records: plan.records.count, bytes: plan.size,
-        trailer_offset: plan.trailer_offset, trailer_bytes: plan.trailer_bytes,
-        members: Ledger.members(members) } };
-    });
-    const begun = await this.#door(() => {
-      const before = this.#files.storedNow().stored;
-      const started = pieces.map((piece, n) => this.#files.begin(
-        piece.plan.size, hashes[n]!, "owner", [], true, null, true));
-      this.#ledger.moveBegun(stream, started[0]?.intent_id ?? "0".repeat(32), digest, clock(),
-                             before);
-      return { started, before };
-    });
-    try {
-      await hold.pass(async () => {
-        for (const [n, piece] of pieces.entries()) {
-          const sources = (from: number, to: number) =>
-            this.#moveSources(table, piece.at.subarray(from, to));
-          const wanted = new Set(begun.started[n]!.missing);
-          for (const [k, sha256] of hashes[n]!.entries()) {
-            if (wanted.delete(sha256)) {
-              const made = await makeChunk(piece.plan, k, sources, reader.read);
-              await this.#files.upload(begun.started[n]!.intent_id, [{ sha256, bytes: made }]);
-              letGo(made);
-            }
-          }
-        }
-      }, () => reader.letGo());
-      await this.#door(() => {
-        const named: { content_id: string; fence: (typeof pieces)[number]["fence"] }[] = [];
-        const adopt = (n: number): void => {
-          if (n === pieces.length) {
-            this.#ledger.archiveCommit(seqs, digest, replaced, named, clock());
-            const { stored, figure } = this.#files.storedNow();
-            if (figure !== null && stored > Math.max(figure, begun.before)) {
-              throw new Refusal("archive_full",
-                                "archive_full: the move would leave the storage figure higher " +
-                                "than it found it");
-            }
-            this.#ledger.moveEnded(stream);
-            return;
-          }
-          this.#files.adopt(begun.started[n]!.intent_id, "owner", (contentId) => {
-            named.push({ content_id: contentId, fence: pieces[n]!.fence });
-            adopt(n + 1);
-          });
-        };
-        adopt(0);
-      });
-    } finally {
-      await this.#door(() => {
-        for (const started of begun.started) {
-          this.#files.abort(started.intent_id);
-        }
-        this.#ledger.moveEnded(stream, begun.started[0]?.intent_id ?? "0".repeat(32));
-      });
-    }
-  }
-
-  /**
-   * The sources of a group of a move's records (`at`, their indices in its table), in their
-   * order: a kept one's range of its segment; a hot one's lines, read again in a unit,
-   * around its body (inline, or its placed content's whole range).
-   */
-  async #moveSources(table: MoveTable, at: Uint32Array): Promise<(readonly Run[])[]> {
-    const hot: number[] = [];
-    for (const n of at) {
-      if (table.kind(n) !== MoveTable.KEPT) {
-        hot.push(table.key(n));
-      }
-    }
-    const parts = hot.length === 0 ? new Map<number, MailParts>()
-      : await this.#door(() => this.#ledger.archiveParts(hot));
-    return Array.from(at, (n): Run[] => {
-      if (table.kind(n) === MoveTable.KEPT) {
-        return [{ content: table.content(n), offset: table.offset(n), length: table.length(n) }];
-      }
-      const own = parts.get(table.key(n))!;
-      if (table.kind(n) === MoveTable.INLINE) {
-        return [own.head, own.inline!, own.tail];
-      }
-      const content = table.content(n);
-      return [own.head, { content, offset: 0, length: content.size }, own.tail];
-    });
+    return this.#units("mailChain", binding, request, ledgerDoors.mailChain);
   }
 
   /**
@@ -4899,28 +1931,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * caller with none is refused.
    */
   wakeEvents(binding: Binding, commandCenter?: string): Promise<{ events: Events[] }> {
-    return this.#run("wakeEvents", binding, commandCenter, ({ account, held }) => {
-      const grant = account.grant;
-      if (account.origin === null || account.run !== null || grant === null) {
-        if (commandCenter !== undefined) {
-          throw new Refusal("refused", "only an agent's own client subscribes its doorbell");
-        }
-        return { events: [] };
-      }
-      if (commandCenter === undefined) {
-        const reads = may(grant, "read_graph", "anywhere");
-        return { events: reads ? wakeKinds().flatMap((kind) => kind.push?.events ?? []) : [] };
-      }
-      if (typeof commandCenter !== "string") {
-        throw new Refusal("invalid", "invalid subscription arguments");
-      }
-      held(commandCenter);
-      const agent = this.#ledger.subscriber(account.origin, commandCenter);
-      if (agent === undefined) {
-        throw new Refusal("refused", "not this caller's subscribing agent");
-      }
-      return { events: [kindFor(agent.delivery_method)!.push!.events!] };
-    });
+    return this.#run("wakeEvents", binding, commandCenter, ledgerDoors.wakeEvents);
   }
 
   /**
@@ -4932,28 +1943,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   wakeSubscribe(binding: Binding, request: SubscribeRequest):
       Promise<{ subscription_id: string; agent_id: string; expires_at: number | null }> {
-    return this.#run("wakeSubscribe", binding, request, ({ account, r, held }) => {
-      if (account.origin === null || account.run !== null) {
-        throw new Refusal("refused", "only an agent's own client subscribes its doorbell");
-      }
-      if (typeof r["name"] !== "string" || eventKind(r["name"]) === null) {
-        throw new Refusal("invalid", "unknown event");
-      }
-      const args = r["arguments"] as Record<string, unknown> | null;
-      const follow = follows(args, ["command_center_id"]);
-      const center = args?.["command_center_id"];
-      if (typeof center !== "string") {
-        throw new Refusal("invalid", "invalid subscription arguments");
-      }
-      held(center);
-      const stored = this.#ledger.subscribe(account.origin, {
-        subscription_id: r["subscription_id"] as string, command_center_id: center,
-        board: follow.board, rooms: follow.rooms, blob: r["blob"] as string,
-        kid: r["kid"] as string, version: r["version"] as number,
-        expires_at: r["expires_at"] as number | null,
-      });
-      return { subscription_id: r["subscription_id"] as string, ...stored };
-    });
+    return this.#run("wakeSubscribe", binding, request, ledgerDoors.wakeSubscribe);
   }
 
   /**
@@ -4962,12 +1952,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   wakeUnsubscribe(binding: Binding, request: UnsubscribeRequest):
       Promise<{ unsubscribed: boolean }> {
-    return this.#run("wakeUnsubscribe", binding, request, ({ account, r }) => {
-      if (account.origin === null || account.run !== null) {
-        throw new Refusal("refused", "only the client that holds a subscription ends it");
-      }
-      return { unsubscribed: this.#ledger.unsubscribe(account.origin, r["subscription_id"]) };
-    });
+    return this.#run("wakeUnsubscribe", binding, request, ledgerDoors.wakeUnsubscribe);
   }
 
   /** The platform's gates as this object reads them (`control-gate.ts`), from `CONTROL`. */
@@ -5232,59 +2217,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { value: read.value, located: this.#bodies.locate(read.contents), wants: read };
     });
     if (synced) {
-      await this.#schedule.sync();  // a delete that rang an agent's doorbell (`#ring`)
+      await this.#schedule.sync();  // a delete that rang an agent's doorbell (`ring`, `collections.ts`)
     }
     return fill(value, located.size === 0 ? new Map()
       : await this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES), wants.offsetOf));
   }
 
   /**
-   * Ring the agents that follow `collection` for a change past `after` (slice W): only for
-   * the owner's own act (an outside client's write, or a run's, rings no agent, so no two
-   * agents wake each other without end, as slice ID's mail rings only the agent it
-   * addresses), only for the board or a room, only for a change anyone may see, and only
-   * agents with a live subscription following it whose grant reads their command center.
-   * Each wake says what changed and the cursor before it, so its digest is just the change.
-   */
-  #ring(account: Account, collection: string, after: number): void {
-    const change = collection === BOARD ? "board"
-      : collection.startsWith(ROOM_PREFIX) ? "rooms" : null;
-    if (account.origin !== null || account.run !== null || change === null
-        || !this.#collections.touched([collection], after)) {
-      return;
-    }
-    const agents = this.#ledger.followers(collection, change === "board", clock())
-      .filter((agent) => this.#grants.reads(agent.client, {
-        universe: agent.command_center_id, agent: MAIN_AGENT, capability: "read_graph" }));
-    if (agents.length) {
-      this.#ledger.changed(change, after, agents.map((agent) => agent.agent_id));
-    }
-  }
-
-  /**
-   * A row written by compare-and-swap; the owner's own board or room write rings (`#ring`).
+   * A row written by compare-and-swap; the owner's own board or room write rings (`ring`, `collections.ts`).
    * Answered without its body (review H3): its etag, revision, seq and `body_bytes`, so a
    * body past one answer is never echoed back.
    */
   collectionWrite(binding: Binding, request: WriteRequest):
       Promise<{ row: WrittenRow } | Conflicted> {
-    return this.#units("collectionWrite", binding, request, (door) => this.#placing(() => {
-      const { account, r } = door.check();
-      return { body: checkBody(r["body"]), writer: filerOf(account) };
-    }, (placed) => {
-      const { account, r } = door.check();
-      const collection = r["collection"] as string;
-      const before = this.#collections.clock();
-      const written = conflicted(() => ({
-        row: writtenRow(this.#collections.write(account.owner, account.caller, collection,
-                                                r["row_id"] as string, r["body"],
-                                                r["expected_etag"], r["private"],
-                                                "history_op" in r ? r["history_op"] : "write",
-                                                placed, filerOf(account))),
-      }));
-      this.#ring(account, collection, before);
-      return written;
-    }, { shown: conflictShown(), synced: true }));
+    return this.#units("collectionWrite", binding, request, collectionsDoors.collectionWrite);
   }
 
   /**
@@ -5293,18 +2239,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * `collection_get`'s `body_offset`.
    */
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
-    return this.#units("collectionPull", binding, request, (door) => this.#reading(() => {
-      const { account: { caller }, r } = door.check();
-      const page = this.#collections.pull(caller, r["collection"] as string, r["after"],
-                                          r["limit"]);
-      return { value: page, contents: contentsOf(page.rows) };
-    }, (page, windows) => {
-      const rows = page.rows.length === 0 ? [] : fitPage(
-        jsonBytes({ cursor: page.cursor, rows: [] }), windowedAll(page.rows, windows),
-        ({ item, window }, room, first) => bodied(item, window, room, first));
-      return { cursor: rows.length === page.rows.length ? page.cursor : rows.at(-1)!.seq,
-               rows: rows as Row[] };
-    }));
+    return this.#units("collectionPull", binding, request, collectionsDoors.collectionPull);
   }
 
   /**
@@ -5312,23 +2247,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * `etag`, refused when the row is no longer the one that answer read.
    */
   collectionGet(binding: Binding, request: GetRequest): Promise<{ row: Row | null }> {
-    return this.#units("collectionGet", binding, request, (door) => this.#reading(() => {
-      const { account: { caller }, r } = door.check();
-      const offset = bodyOffset(r["body_offset"]);
-      // A read on names the revision it reads (review L3), so two are never spliced.
-      if (offset > 0 && r["etag"] === undefined) {
-        throw new Refusal("invalid", "body_offset reads on a row's body: name its etag");
-      }
-      const got = this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
-      if (r["etag"] !== undefined && got.row?.etag !== r["etag"]) {
-        throw new Refusal("row_changed",
-                          "row_changed: the row is no longer the one at that etag: read it " +
-                          "again from its start");
-      }
-      return { value: { got, offset }, contents: contentsOf(got.row === null ? [] : [got.row]),
-               offsetOf: () => offset };
-    }, ({ got, offset }, windows) => ({ row: got.row === null ? null
-      : fittedRow(windowed(got.row, windows, offset), jsonBytes({ row: null }) - 4) as Row })));
+    return this.#units("collectionGet", binding, request, collectionsDoors.collectionGet);
   }
 
   /**
@@ -5337,121 +2256,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * entry's body from that byte.
    */
   collectionHistory(binding: Binding, request: HistoryRequest): Promise<History> {
-    return this.#units("collectionHistory", binding, request, (door) => this.#reading(() => {
-      const { account: { caller }, r } = door.check();
-      const offset = bodyOffset(r["body_offset"]);
-      const kept = this.#collections.history(caller, r["collection"] as string,
-                                             r["row_id"] as string, r["before_revision"] ?? null);
-      const newest = kept.entries.at(-1)?.content_id;
-      return { value: { kept, offset }, contents: contentsOf(kept.entries),
-               offsetOf: (contentId) => contentId === newest ? offset : 0 };
-    }, ({ kept, offset }, windows) => {
-      const fitted = kept.entries.length === 0 ? [] : fitPage(
-        jsonBytes({ entries: [], more: true, before_revision: kept.before_revision }),
-        windowedAll([...kept.entries].reverse(), windows, offset),
-        ({ item, window }, room, first) => bodied(item, window, room, first));
-      const entries = (fitted as HistoryEntry[]).reverse();
-      return entries.length === kept.entries.length ? { ...kept, entries }
-        : { entries, more: true, before_revision: entries[0]!.revision };
-    }));
+    return this.#units("collectionHistory", binding, request, collectionsDoors.collectionHistory);
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest):
       Promise<{ deleted: number } | Conflicted> {
-    return this.#units("collectionDelete", binding, request, (door) => this.#reading(() => {
-      const { account, r } = door.check();
-      const before = this.#collections.clock();
-      const value = conflicted(() => this.#collections.delete(
-        account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
-      ));
-      this.#ring(account, r["collection"] as string, before);
-      return { value, contents: conflictShown<typeof value>().contents(value) };
-    }, conflictShown<{ deleted: number } | Conflicted>().fill, true));
+    return this.#units("collectionDelete", binding, request, collectionsDoors.collectionDelete);
   }
 
   collectionClear(binding: Binding, request: ClearRequest): Promise<{ deleted: number }> {
-    return this.#run("collectionClear", binding, request, ({ account, r }) => {
-      const before = this.#collections.clock();
-      const cleared = this.#collections.clear(account.caller, r["collection"] as string,
-                                              r["writer"]);
-      this.#ring(account, r["collection"] as string, before);
-      return cleared;
-    });
-  }
-
-  /**
-   * A change to the sync's ignore list, in its own unit: a receipt and one notice naming
-   * who changed it (the owner, an agent's run, or an outside client), and, when a line it
-   * adds stops files the owner already keeps from syncing their changes, how many and which.
-   */
-  #syncIgnoreChanged(present: boolean, now: number,
-                     change: { writer: string; content_id: string | null; size: number }): void {
-    const outcome = present ? "changed" : "removed";
-    const who = this.#writerNamed(change.writer);
-    this.#policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
-    let held = "";
-    if (present && change.content_id !== null) {
-      // Whoever wrote it, its new lines are read (a set's work, the list at most an inline
-      // file), never matched against the owner's files here.
-      const lines = (bytes: Uint8Array | null) => bytes === null ? null
-        : ruleLines(new TextDecoder().decode(bytes).split("\n"));
-      const after = lines(this.#files.inlineOf(change.content_id));
-      const before = this.#files.contentBefore(SYNC_IGNORE, this.#files.lastVersion(SYNC_IGNORE));
-      const was = new Set(before === null ? [] : lines(this.#files.inlineOf(before.content_id))
-        ?? []);
-      const defaults = new Set(DEFAULT_IGNORES);
-      if (after === null || after.some((line) => !was.has(line) && !defaults.has(line))) {
-        held = " Its new lines may hold back files you keep from syncing their changes; " +
-          "each sandbox sync reports the files they hold back.";
-      }
-      // Lines past a ceiling are not applied: said here, never in silence.
-      const raw = this.#files.inlineOf(change.content_id);
-      const past = raw === null ? [] : unappliedLines(new TextDecoder().decode(raw).split("\n"));
-      const states = past.filter((each) => each.reason === "states");
-      if (states.length > 0) {
-        held += ` ${states.length} line${states.length === 1 ? " is" : "s are"} past the ${
-          AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
-          `may take together, so not applied: the files they name go on syncing (${
-            states.slice(0, 3).map((each) => each.line).join(", ")}${states.length > 3
-            ? ", …" : ""}).`;
-      }
-      if (change.size > LIST_BYTES) {
-        held += ` The list past its ${LIST_BYTES.toLocaleString("en")} bytes is not applied: ` +
-          "the files those lines name go on syncing.";
-      }
-      // The owner's own sandbox, whose mirror is the owner's whole tree, adds what its sync
-      // agent counted (`sync.ts`); an outside client's sees only its part, so its count is
-      // never given, and no count ever takes the sentence away.
-      const synced = this.#heldBack;
-      if (synced !== null && /^lease:[0-9]+$/.test(change.writer) && synced.kept > 0) {
-        held += ` In the sync that wrote it, its lines hold back ${synced.kept} file${
-          synced.kept === 1 ? "" : "s"} you keep (${synced.changed} with changes in the ` +
-          "sandbox): your files keep the version they have, and each sync reports them.";
-      }
-    }
-    this.#notices.add("sync_ignore_changed", `${SYNC_IGNORE} was ${outcome} by ${who}: what ` +
-                        `the sandbox keeps out of your files follows it.${held}`, now);
-  }
-
-  /**
-   * Who a file change's writer is, in words the owner reads: the owner; the agents whose
-   * runs hold the owner's sandbox lease it was synced under; or an outside client by name.
-   */
-  #writerNamed(writer: string): string {
-    const epoch = /^lease:([0-9]+)$/.exec(writer)?.[1];
-    if (epoch !== undefined) {
-      // The agents named at most three, so the receipt stays its size.
-      const agents = this.#runs.agentsAt(Number(epoch), 4);
-      return agents.length === 0 ? "a run in your sandbox"
-        : `a run of your agent${agents.length === 1 ? "" : "s"} ${agents.slice(0, 3).join(", ")}${
-          agents.length > 3 ? " and others" : ""}`;
-    }
-    const client = /^client:(.+)$/.exec(writer)?.[1];
-    if (client !== undefined) {
-      const name = this.#grants.name(client);
-      return `the outside client ${name !== "" ? `"${name}"` : client.slice(0, 12)}`;
-    }
-    return writer === "owner" ? "you" : writer;
+    return this.#run("collectionClear", binding, request, collectionsDoors.collectionClear);
   }
 
   // -- FILES: the owner's file tree (plan §6) --------------------------------------
@@ -5460,45 +2274,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // larger files from the binder to `FILES` itself. Another RPC may run in the object
   // whenever one awaits `FILES`, so a door that crosses to it writes its account first,
   // in a unit, and its later steps through units of their own (`Files`).
-
-  /**
-   * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files, skills, goals and
-   * `agent.json`). The founder's rule (2026-11-03): every agent of the owner has full power by
-   * default to do what any other of its agents can, so an agent (an outside client's call, or
-   * a run) under a full grant, the default, changes them; one under a grant the owner narrowed
-   * (`scoped`) is refused. The owner's own app is a human's path, so its bearer token alone
-   * changes nothing there: it is a widening, taken only in the owner's live session and
-   * receipted when refused, against a leaked app token.
-   */
-  #ownersTree(binding: Binding, account: Account, action: string, request: unknown,
-              ...paths: unknown[]): void {
-    if (!paths.some((path) => ownersOnly(storedPath(path)))) {
-      return;
-    }
-    if (account.run !== null) {
-      const stamp = account.run.stamp;
-      if (stamp !== null && !this.#grants.full(stamp.client)) {
-        throw new Refusal("refused", AGENTS_OWNER_ONLY);
-      }
-      return;
-    }
-    if (account.origin !== null) {
-      if (account.grant?.mode !== "full") {
-        throw new Refusal("refused", AGENTS_OWNER_ONLY);
-      }
-      return;
-    }
-    try {
-      this.#sessions.live(binding.session, clock());
-    } catch (error) {
-      try {
-        this.#policy.refusal(action, { request, origin: null }, clock());
-      } catch {
-        console.error("owner-session refusal receipt unavailable");  // refuse regardless
-      }
-      throw error;
-    }
-  }
 
   /** A changing file door: its unit, then the one schedule synced whatever came of it. */
   async #filing<T>(act: () => T): Promise<T> {
@@ -5510,20 +2285,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   fileStat(binding: Binding, request: FileRequest): Promise<{ entry: Entry | null }> {
-    return this.#run("fileStat", binding, request, ({ r }) => {
-      return { entry: this.#files.stat(r["path"]) };
-    });
-  }
-
-  /**
-   * A path a reader may not see is refused as one that does not exist: a file door's caller
-   * sees every path, the sync agent its lease's readable set (`#syncer`), so no content door
-   * shows a path its change feed would not.
-   */
-  #visible(call: Call, path: unknown): void {
-    if (typeof path === "string" && call.readable !== null && !call.readable.test(path)) {
-      throw new FileFault("not_found", "no such file");
-    }
+    return this.#run("fileStat", binding, request, filesDoors.fileStat);
   }
 
   /**
@@ -5532,32 +2294,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileList(binding: Binding, request: FileListRequest):
       Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
-    return this.#units("fileList", binding, request, async (door) => {
-      await this.#seededFor(door);
-      return this.#door(() => this.#listed(door.check()));
-    });
-  }
-
-  /** A directory's page (`fileList`). */
-  #listed({ r, readable }: Call):
-      { entries: (Entry & { head?: string })[]; next: string | null } {
-    const listed = this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
-    const entries = listed.entries.filter((entry) => readable?.test(entry.path) ?? true);
-    const chars = r["head_chars"] === undefined ? null
-      : whole(r["head_chars"], "head_chars", 0, Number.MAX_SAFE_INTEGER);
-    // One answer holds the page (`pages.ts`): when entries are left, `next` is the last
-    // one's name, so the next page starts after it.
-    const shown = chars === null ? entries : entries.map((entry) => {
-      if (entry.kind !== "file" || entry.size > INLINE_BYTES) {
-        return entry;
-      }
-      const inline = this.#files.open(entry.path).inline;
-      const text = inline === undefined ? null : textOf(inline);
-      return text === null ? entry : { ...entry, head: [...text].slice(0, chars).join("") };
-    });
-    return fitList({ ...listed, entries: shown }, shown,
-                   { entries: [], next: String.fromCharCode(1).repeat(MAX_NAME_BYTES) },
-                   (kept) => ({ entries: kept, next: nameOf(kept.at(-1)!.path) }));
+    return this.#units("fileList", binding, request, filesDoors.fileList);
   }
 
   /**
@@ -5568,78 +2305,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileText(binding: Binding, request: FileTextRequest):
       Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
-    return this.#units("fileText", binding, request, (door) => this.#text(door));
-  }
-
-  /** A window of a file's text, its call checked in its units (`fileText`). */
-  async #text(door: Door):
-      Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
-    await this.#seededFor(door);
-    const asked = await this.#door(() => {
-      const { r } = door.check();
-      const content = this.#files.open(r["path"]);
-      const offset = whole(r["offset"], "offset", 0, content.entry.size);
-      const max = whole(r["max_bytes"], "max_bytes", READ_DEFAULT_BYTES, CHUNK_BYTES);
-      if (max < 1) {
-        throw new Refusal("invalid", "max_bytes is at least 1");
-      }
-      return { content, offset, max };
-    });
-    const { content, offset, max } = asked;
-    // One answer holds the window (`pages.ts`): its text cut to what the entry leaves.
-    const room = PAGE_BYTES - jsonBytes({ entry: content.entry, offset, text: "",
-                                          next_offset: content.entry.size }) + 2;
-    if (room < 8) {
-      throw new Refusal("result_too_large", RESULT_TOO_LARGE);
-    }
-    const read = await this.#window(content, offset, Math.min(max, room));
-    if (read.text === null) {
-      throw new Refusal("invalid", `${content.entry.path} is not UTF-8 text`);
-    }
-    const part = fitted(read.text, room);
-    const end = offset + part.bytes;
-    return { entry: content.entry, offset, text: part.text,
-             next_offset: end < content.entry.size ? end : null };
-  }
-
-  /**
-   * The text of `content` from `offset`, at most `max` bytes cut back to a character: its
-   * inline bytes, or the chunks the window spans (at most two reads).
-   */
-  async #window(content: Content, offset: number, max: number):
-      Promise<{ text: string | null; next: number | null }> {
-    const size = content.entry.size;
-    const want = Math.min(size, offset + max + 4);  // a character's tail past the window
-    let bytes: Uint8Array;
-    if (content.inline !== undefined) {
-      bytes = content.inline.subarray(offset, want);
-    } else {
-      const reads: { sha256: string; offset: number; length: number; verify: true }[] = [];
-      let at = 0;
-      for (const chunk of content.chunks ?? []) {
-        const from = Math.max(offset, at);
-        const to = Math.min(want, at + chunk.size);
-        if (from < to) {
-          // Verified (review L7): `FILES` rechecks the whole chunk and answers the range.
-          reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from,
-                       verify: true });
-        }
-        at += chunk.size;
-      }
-      const parts = await this.#files.fetch(reads);
-      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-      let put = 0;
-      for (const part of parts) {
-        bytes.set(part, put);
-        put += part.byteLength;
-      }
-    }
-    const end = windowEnd(bytes, 0, max);
-    if (end === null) {
-      throw new Refusal("invalid", "offset is inside a character: start at a window's next_offset");
-    }
-    return { text: textOf(bytes.subarray(0, end)),
-             next: offset + end < size ? offset + end : null };
+    return this.#units("fileText", binding, request, filesDoors.fileText);
   }
 
   /**
@@ -5652,34 +2318,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileSearch(binding: Binding, request: FileSearchRequest):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
-    return this.#units("fileSearch", binding, request, async (door) => {
-      await this.#seededFor(door);
-      return this.#door(() => this.#searched(door.check()));
-    });
-  }
-
-  /** A search's page (`fileSearch`). */
-  #searched({ r }: Call):
-      { results: SearchResult[]; next_cursor: string | null; note?: string } {
-    const query = r["query"];
-    if (typeof query !== "string" || utf8Bytes(query) > SEARCH_QUERY_BYTES) {
-      throw new Refusal("invalid", `a query is text of at most ${SEARCH_QUERY_BYTES} bytes`);
-    }
-    const terms = new Set(words(query));
-    if (terms.size === 0) {
-      throw new Refusal("invalid", "a query has at least one word");
-    }
-    const cursor = r["cursor"] === undefined ? null : storedPath(cursorPath(r["cursor"]));
-    const scanned = this.#files.scan(cursor, SEARCH_SCAN);
-    const page = searchPage(scanned.entries, scanned.next !== null, terms, fileUrl);
-    const answer = page.resume === null ? { results: [...page.results], next_cursor: null }
-      : { results: [...page.results], next_cursor: pathCursor(page.resume),
-          note: "more of the files are still to search: search again with next_cursor" };
-    // Only paths of thousands of escaped characters pass one answer: told, never cut.
-    if (jsonBytes(answer) > PAGE_BYTES) {
-      throw new Refusal("result_too_large", RESULT_TOO_LARGE);
-    }
-    return answer;
+    return this.#units("fileSearch", binding, request, filesDoors.fileSearch);
   }
 
   /**
@@ -5690,57 +2329,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileFetch(binding: Binding, request: FileFetchRequest):
       Promise<{ id: string; title: string; text: string; url: string;
                 metadata: FetchMetadata }> {
-    return this.#units("fileFetch", binding, request, (door) => this.#fetched(door));
-  }
-
-  /** A file by a search's id, its call checked in its units (`fileFetch`). */
-  async #fetched(door: Door): Promise<{ id: string; title: string; text: string; url: string;
-                                        metadata: FetchMetadata }> {
-    await this.#seededFor(door);
-    const content = await this.#door(() => this.#files.open(door.check().r["id"]));
-    // One answer holds it (`pages.ts`): its text cut to what its other fields leave, and
-    // `truncated` with `next_offset` for file_read to go on from.
-    const read = await this.#window(content, 0, PAGE_BYTES);
-    // A file search found that is not text (a scan, an image) is answered with its metadata
-    // and no text, never refused: every id a search answers is fetchable (review L4).
-    const found = frontmatter(read.text ?? "");
-    const path = content.entry.path;
-    // A frontmatter too wide for one answer beside its path is cut, said so (review L5):
-    // every id a search answers is fetchable, whatever its fields hold.
-    let front = found;
-    let cut = false;
-    const answer = (text: string, next: number | null) => ({
-      id: path, title: titleOf(path, front), text, url: fileUrl(path),
-      metadata: { ...(cut ? { fields_cut: true as const } : { path }),
-                  size: content.entry.size, version: content.entry.version,
-                  modified: new Date(content.entry.mtime_ms).toISOString(),
-                  writer: content.entry.writer, etag: content.entry.etag,
-                  ...(front.type === undefined ? {} : { type: front.type }),
-                  ...(front.description === undefined ? {} : { description: front.description }),
-                  ...(front.tags.length === 0 ? {} : { tags: front.tags }),
-                  ...(read.text === null ? { binary: true as const } : {}),
-                  truncated: read.text !== null && next !== null,
-                  ...(read.text === null || next === null ? {} : { next_offset: next }) },
-    });
-    let room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
-    if (room < 8) {
-      // Its metadata's path is its id's; its frontmatter's fields, a few KiB each at most.
-      cut = true;
-      const { title, description, type } = found;
-      front = { ...(title === undefined ? {} : { title: fitted(title, 1024).text }),
-                ...(description === undefined ? {}
-                  : { description: fitted(description, 4096).text }),
-                ...(type === undefined ? {} : { type: fitted(type, 256).text }),
-                tags: found.tags.filter((_, index) => index < 16)
-                  .map((tag) => fitted(tag, 256).text) };
-      room = PAGE_BYTES - jsonBytes(answer("", content.entry.size)) + 2;
-      if (room < 8) {
-        throw new Refusal("result_too_large", RESULT_TOO_LARGE);
-      }
-    }
-    const part = fitted(read.text ?? "", room);
-    return answer(part.text, read.text === null || part.bytes >= content.entry.size ? null
-      : part.bytes);
+    return this.#units("fileFetch", binding, request, filesDoors.fileFetch);
   }
 
   /**
@@ -5749,38 +2338,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileRead(binding: Binding, request: FileReadRequest):
       Promise<{ entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] }> {
-    return this.#run("fileRead", binding, request, (call) => {
-      const { r } = call;
-      this.#visible(call, r["path"]);
-      const content: Content = this.#files.open(r["path"]);
-      if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
-        return { entry: content.entry, not_modified: true };
-      }
-      const { content_id: _id, ...shown } = content;
-      return shown;
-    });
+    return this.#run("fileRead", binding, request, filesDoors.fileRead);
   }
 
   /** One or two of a kept version's chunks, from `first`, so a read pins its version. */
   async fileReadChunks(binding: Binding, request: FileChunksRequest):
       Promise<{ chunks: Uint8Array[] }> {
-    return this.#units("fileReadChunks", binding, request, async (door) => {
-      const reads = await this.#door(() => {
-        const call = door.check();
-        const { r } = call;
-        this.#visible(call, r["path"]);
-        const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
-        const first = r["first"];
-        const many = r["count"];
-        if (typeof first !== "number" || typeof many !== "number" || !Number.isSafeInteger(first)
-            || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 2
-            || first + many > chunks.length) {
-          throw new Refusal("invalid", "first and count name 1 or 2 of the version's chunks");
-        }
-        return chunks.slice(first, first + many).map(({ sha256 }) => ({ sha256 }));
-      });
-      return { chunks: await this.#files.fetch(reads) };
-    });
+    return this.#units("fileReadChunks", binding, request, filesDoors.fileReadChunks);
   }
 
   /**
@@ -5792,40 +2356,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileWrite(binding: Binding, request: FileWriteRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#units("fileWrite", binding, request, (door) => this.#written(door, binding,
-                                                                               request));
-  }
-
-  /** A whole file written, its call checked in its units (`fileWrite`). */
-  async #written(door: Door, binding: Binding, request: FileWriteRequest):
-      Promise<{ entry: Entry } | FileConflicted> {
-    await this.#seededFor(door);
-    const { account, r, content } = await this.#door(() => {
-      const { account, r } = door.check();
-      this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
-      const asked = r["expected_etag"];
-      if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
-        throw new Refusal("invalid", UNREAD_WRITE);
-      }
-      const given = r["content"];
-      const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
-      if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
-        throw new Refusal("invalid",
-                          "a written file is bytes or text, at most 4 MiB; larger ones are " +
-                          "uploaded");
-      }
-      return { account, r, content };
-    });
-    try {
-      // `Files.write` writes each step around its `FILES` call as a unit of its own.
-      return await fileConflictedAfter(async () => ({
-        entry: await this.#files.write(r["path"], content, {
-          expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
-          authorize: () => door.check() }),
-      }));
-    } finally {
-      await this.#schedule.sync();
-    }
+    return this.#units("fileWrite", binding, request, filesDoors.fileWrite);
   }
 
   /**
@@ -5846,102 +2377,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * it is refused `file_busy`.
    */
   async fileAppend(binding: Binding, request: FileAppendRequest): Promise<{ entry: Entry }> {
-    return this.#units("fileAppend", binding, request, (door) => this.#appended(door, binding,
-                                                                                 request));
-  }
-
-  /** Text added at the end of a file, its call checked in its units (`fileAppend`). */
-  async #appended(door: Door, binding: Binding, request: FileAppendRequest):
-      Promise<{ entry: Entry }> {
-    await this.#seededFor(door);
-    const { account, path, added } = await this.#door(() => {
-      const { account, r } = door.check();
-      this.#ownersTree(binding, account, "FILES.append", request, r["path"]);
-      if (STRUCTURED.test(storedPath(r["path"]))) {
-        throw new Refusal("invalid",
-                          "a structured file (JSON, TOML or YAML) is never appended to: read " +
-                          "it and change it with file_edit");
-      }
-      const content = r["content"];
-      if (typeof content !== "string" || content === "") {
-        throw new Refusal("invalid", "appended content is text of at least one character");
-      }
-      const added = new TextEncoder().encode(content);
-      if (added.byteLength > CHUNK_BYTES) {
-        throw new Refusal("invalid", "appended text is at most 4 MiB at once");
-      }
-      return { account, path: storedPath(r["path"]), added };
-    });
-    const authorize = () => {
-      this.#ownersTree(binding, door.check().account, "FILES.append", request, path);
-    };
-    try {
-      for (let tries = 0; ; tries += 1) {
-        if (tries === APPEND_TRIES) {
-          throw new Refusal("file_busy",
-                            `file_busy: ${path} changed under each of ${APPEND_TRIES} tries: ` +
-                            "append again");
-        }
-        const read = await this.#door((): { done: Entry } | { now: Content | null } => {
-          authorize();
-          const entry = this.#files.stat(path);
-          if (entry !== null && entry.kind !== "file") {
-            throw new Refusal("invalid", `${path} is a directory`);
-          }
-          const content = entry === null ? null : this.#files.open(path);
-          const before = content === null ? new Uint8Array(0) : content.inline;
-          if (before !== undefined && before.byteLength + added.byteLength <= INLINE_BYTES) {
-            // Small: read and written in this one unit, so nothing lands between.
-            const whole = new Uint8Array(before.byteLength + added.byteLength);
-            whole.set(before, 0);
-            whole.set(added, before.byteLength);
-            return { done: this.#files.writeSmall(path, whole, {
-              expected: entry?.etag ?? "", mode: entry?.mode, writer: fileWriter(account) }) };
-          }
-          return { now: content };
-        });
-        if ("done" in read) {
-          return { entry: read.done };
-        }
-        const now = read.now;
-        // The file's last chunk and the text, joined and written, in one step of
-        // `APPEND_UNITS` (`holds.ts`, ADR-037): what it holds is the same whatever the
-        // file's size.
-        const wrote = await slotted(ownerSlots(), APPEND_UNITS, async () => {
-          let bytes = added;
-          let prefix: ChunkRef[] = [];
-          if (now !== null) {
-            let tail: Uint8Array;
-            if (now.inline !== undefined) {
-              tail = now.inline;
-            } else {
-              const chunks = now.chunks ?? [];
-              const whole = chunks.length > 0 && chunks.at(-1)!.size === CHUNK_BYTES
-                ? chunks.length : chunks.length - 1;
-              prefix = chunks.slice(0, whole);
-              const rest = chunks.slice(whole);
-              tail = rest.length === 0 ? new Uint8Array(0)
-                : (await this.#files.fetch(rest.map(({ sha256 }) => ({ sha256 }))))[0]!;
-            }
-            bytes = new Uint8Array(tail.byteLength + added.byteLength);
-            bytes.set(tail, 0);
-            bytes.set(added, tail.byteLength);
-          }
-          return fileConflictedAfter(async () => ({
-            entry: await this.#files.write(path, bytes, {
-              expected: now?.entry.etag ?? "",
-              ...(now === null ? {} : { mode: now.entry.mode }), prefix,
-              writer: fileWriter(account), authorize }),
-          }));
-        });
-        if (!("conflict" in wrote)) {
-          return wrote;
-        }
-        // Another write landed between the read and this one: read it again.
-      }
-    } finally {
-      await this.#schedule.sync();
-    }
+    return this.#units("fileAppend", binding, request, filesDoors.fileAppend);
   }
 
   /**
@@ -5954,110 +2390,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileEdit(binding: Binding, request: FileEditRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#units("fileEdit", binding, request, (door) => this.#edited(door, binding,
-                                                                             request));
-  }
-
-  /** One exact occurrence replaced, its call checked in its units (`fileEdit`). */
-  async #edited(door: Door, binding: Binding, request: FileEditRequest):
-      Promise<{ entry: Entry } | FileConflicted> {
-    await this.#seededFor(door);
-    const asked = await this.#door(() => {
-      const { account, r } = door.check();
-      this.#ownersTree(binding, account, "FILES.edit", request, r["path"]);
-      const [old, replacement, etag] = [r["old_text"], r["new_text"], r["expected_etag"]];
-      if (typeof old !== "string" || old === "" || typeof replacement !== "string") {
-        throw new Refusal("invalid",
-                          "old_text is text of at least one character, and new_text is text");
-      }
-      if (typeof etag !== "string" || etag === "") {
-        throw new Refusal("invalid",
-                          "expected_etag is the file's etag, as file_stat or fetch answers it");
-      }
-      const path = storedPath(r["path"]);
-      const entry = this.#files.stat(path);
-      if (entry === null || entry.kind !== "file") {
-        throw new FileFault("not_found", "no such file");
-      }
-      if (entry.etag !== etag) {
-        return { conflict: entry };
-      }
-      if (entry.size > EDIT_BYTES_MAX) {
-        throw new Refusal("invalid",
-                          `file_edit edits a file of at most ${EDIT_BYTES_MAX} bytes, the ` +
-                          "reads and time one call holds; write a larger one by upload");
-      }
-      return { account, path, old, replacement, content: this.#files.open(path) };
-    });
-    if (asked.conflict !== undefined) {
-      return { conflict: asked.conflict };
-    }
-    const { account, path, old, replacement, content } = asked;
-    const authorize = () => door.check();
-    const refused = (refusal: EditRefusal): never => {
-      throw new Refusal("invalid", refusal === "ill_formed"
-        ? "old_text and new_text are well-formed text"
-        : refusal === "not_utf8" ? `${path} is not UTF-8 text`
-        : refusal === "absent" ? "old_text is not in the file: read it again and give its " +
-          "exact text"
-        : `old_text occurs ${refusal.times} times: give more of the text around the one to ` +
-          "change");
-    };
-    try {
-      if (content.inline !== undefined) {
-        // A small file, kept inline: edited whole, its bytes at most `INLINE_BYTES`.
-        let text: string;
-        try {
-          text = utf8Decoder("keep").decode(content.inline);
-        } catch {
-          return refused("not_utf8");
-        }
-        const first = text.indexOf(old);
-        if (first < 0) {
-          return refused("absent");
-        }
-        let times = 0;
-        for (let at = first; at >= 0; at = text.indexOf(old, at + 1)) {
-          times += 1;
-        }
-        if (times > 1) {
-          return refused({ times });
-        }
-        const edited = new TextEncoder().encode(
-          text.slice(0, first) + replacement + text.slice(first + old.length));
-        return await fileConflictedAfter(async () => ({
-          entry: await this.#files.write(path, edited, {
-            expected: content.entry.etag, mode: content.entry.mode, writer: fileWriter(account),
-            authorize }),
-        }));
-      }
-      // A chunked file, edited chunk by chunk (`edit.ts`, ADR-037): each chunk read in a
-      // reading step, each chunk made and put in a making step, the units taken as its
-      // bytes come and released as they go, never across the begin, the commit or the
-      // other chunks. Its memory does not depend on its size.
-      const chunks = content.chunks ?? [];
-      const pool = ownerSlots();
-      const make = <T>(work: () => Promise<T>) => slotted(pool, EDIT_MAKE_UNITS, work);
-      const plan = await planEdit({
-        size: content.entry.size, chunks,
-        read: async (index) => (await this.#files.fetch([{ sha256: chunks[index]!.sha256 }]))[0]!,
-      }, old, replacement, CHUNK_BYTES, (work) => slotted(pool, EDIT_READ_UNITS, work));
-      if ("refused" in plan) {
-        return refused(plan.refused);
-      }
-      return await fileConflictedAfter(async () => ({
-        entry: plan.size <= INLINE_BYTES
-          ? await this.#files.write(path, await inlineOf(plan, make), {
-            expected: content.entry.etag, mode: content.entry.mode,
-            writer: fileWriter(account), authorize })
-          : await this.#files.writeChunks(path, plan.size, plan.hashes, plan.make, {
-            expected: content.entry.etag, mode: content.entry.mode,
-            writer: fileWriter(account), readable: chunks.map(({ sha256 }) => sha256),
-            authorize, hold: make }),
-      }));
-    } finally {
-      await this.#schedule.sync();
-    }
+    return this.#units("fileEdit", binding, request, filesDoors.fileEdit);
   }
 
   /**
@@ -6069,7 +2402,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async #seededFor(door: Door): Promise<void> {
     await this.#door(() => door.authorized());
-    await this.#seeded();
+    await this.#launcher.seeded();
   }
 
   /**
@@ -6078,101 +2411,53 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileUploadBegin(binding: Binding, request: UploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
-    return this.#run("fileUploadBegin", binding, request, ({ account, r }) => {
-      return this.#files.begin(r["size"], r["chunks"], fileWriter(account));
-    });
+    return this.#run("fileUploadBegin", binding, request, filesDoors.fileUploadBegin);
   }
 
   /** Send an upload's chunk bytes, at most two chunks a call; R2 checks each hash. */
   async fileUploadChunks(binding: Binding, request: UploadChunksRequest):
       Promise<{ created: number }> {
-    return this.#units("fileUploadChunks", binding, request, async (door) => {
-      const { r } = await this.#door(() => door.check());
-      // `Files.upload` records each chunk stored, once `FILES` took it, in a unit of its own.
-      return this.#files.upload(r["intent_id"], r["chunks"]);
-    });
+    return this.#units("fileUploadChunks", binding, request, filesDoors.fileUploadChunks);
   }
 
   /** Commit an upload whose chunks are all stored as the file it declared. */
   fileUploadCommit(binding: Binding, request: UploadCommitRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#run("fileUploadCommit", binding, request, ({ account, r }) => {
-      this.#ownersTree(binding, account, "FILES.write", { path: r["path"] }, r["path"]);
-      return fileConflicted(() => ({
-        entry: this.#files.commit(r["intent_id"], r["path"], {
-          expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
-      }));
-    });
+    return this.#run("fileUploadCommit", binding, request, filesDoors.fileUploadCommit);
   }
 
   fileUploadAbort(binding: Binding, request: IntentRequest): Promise<{ aborted: boolean }> {
-    return this.#run("fileUploadAbort", binding, request, ({ r }) => {
-      return this.#files.abort(r["intent_id"]);
-    });
+    return this.#run("fileUploadAbort", binding, request, filesDoors.fileUploadAbort);
   }
 
   fileMkdir(binding: Binding, request: MkdirRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#run("fileMkdir", binding, request, ({ account, r }) => {
-      this.#ownersTree(binding, account, "FILES.mkdir", request, r["path"]);
-      return fileConflicted(() => ({
-        entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
-                                              writer: fileWriter(account) }),
-      }));
-    });
+    return this.#run("fileMkdir", binding, request, filesDoors.fileMkdir);
   }
 
   fileRemove(binding: Binding, request: RemoveRequest):
       Promise<{ removed: number } | FileConflicted> {
-    return this.#run("fileRemove", binding, request, ({ account, r }) => {
-      this.#ownersTree(binding, account, "FILES.remove", request, r["path"]);
-      heldToRead(account, r["expected_etag"]);
-      return fileConflicted(() => this.#files.remove(r["path"], {
-        expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
-        writer: fileWriter(account) }));
-    });
+    return this.#run("fileRemove", binding, request, filesDoors.fileRemove);
   }
 
   fileRename(binding: Binding, request: RenameRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#run("fileRename", binding, request, ({ account, r }) => {
-      this.#ownersTree(binding, account, "FILES.rename", request, r["from"], r["to"]);
-      heldToRead(account, r["expected_etag"]);
-      return fileConflicted(() => ({
-        entry: this.#files.rename(r["from"], r["to"], {
-          expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
-          writer: fileWriter(account) }),
-      }));
-    });
+    return this.#run("fileRename", binding, request, filesDoors.fileRename);
   }
 
   fileHistory(binding: Binding, request: FileHistoryRequest):
       Promise<{ changes: FileChange[]; next: number | null }> {
-    return this.#run("fileHistory", binding, request, ({ r }) => {
-      // One answer holds the page (`pages.ts`): when versions are left, `next` the last's.
-      const kept = this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
-      return fitList(kept, kept.changes, { changes: [], next: Number.MAX_SAFE_INTEGER },
-                     (changes) => ({ changes, next: changes.at(-1)!.version }));
-    });
+    return this.#run("fileHistory", binding, request, filesDoors.fileHistory);
   }
 
   fileRestore(binding: Binding, request: RestoreRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#run("fileRestore", binding, request, ({ account, r }) => {
-      this.#ownersTree(binding, account, "FILES.restore", request, r["path"]);
-      heldToRead(account, r["expected_etag"]);
-      return fileConflicted(() => ({
-        entry: this.#files.restore(r["path"], r["version"], {
-          expected: r["expected_etag"], writer: fileWriter(account) }),
-      }));
-    });
+    return this.#run("fileRestore", binding, request, filesDoors.fileRestore);
   }
 
   /** Drop a kept version's content: the owner's own act, never an outside client's. */
   fileRedact(binding: Binding, request: VersionRequest): Promise<{ redacted: number }> {
-    return this.#run("fileRedact", binding, request, ({ r }) => {
-      return this.#files.redact(r["path"], r["version"]);
-    });
+    return this.#run("fileRedact", binding, request, filesDoors.fileRedact);
   }
 
   /**
@@ -6180,32 +2465,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * outside client's, and never refused for a quota.
    */
   fileHistoryPurge(binding: Binding, request: FileRequest): Promise<{ purged: number }> {
-    return this.#run("fileHistoryPurge", binding, request, ({ r }) => {
-      return this.#files.purge(r["path"]);
-    });
+    return this.#run("fileHistoryPurge", binding, request, filesDoors.fileHistoryPurge);
   }
 
   fileChanges(binding: Binding, request: ChangesRequest):
       Promise<{ changes: FileChange[]; cursor: number; reset: boolean }> {
-    return this.#run("fileChanges", binding, request, ({ r, readable }) => {
-      const changes = this.#files.changes(r["after"], r["limit"]);
-      if (readable === null) {
-        return changes;
-      }
-      // A client's sandbox whose readable set changed since its last read (a new agent's run,
-      // a widened file scope) reads the feed again from its start: `reset`.
-      const moved = readable.scope !== null && this.#files.leaseReadable(
-        readable.lease, sha256Hex(readable.scope)
-          .slice(0, 16));
-      const test = readable.test;
-      return { ...changes, reset: changes.reset || moved,
-               changes: changes.changes.filter((change) => test(change.path)) };
-    });
+    return this.#run("fileChanges", binding, request, filesDoors.fileChanges);
   }
 
   fileUsage(binding: Binding): Promise<Usage> {
-    return this.#run("fileUsage", binding, undefined, ({ account }) =>
-      this.#files.usage(fileWriter(account)));
+    return this.#run("fileUsage", binding, undefined, filesDoors.fileUsage);
   }
 
   // -- RUNS: the run doors (slice R, `runs.ts`; ADR-034 decision 4) -------------------------
@@ -6213,7 +2482,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // A run door starts, reads or cancels a run. Starting one is two units around the agent's
   // file read: the first checks the call and reads what it asks; then `agent.json` is read
   // (its bytes may cross to `FILES`); then one unit binds the call again and admits the run
-  // whole (`#launch`), so nothing between the two can widen what the admission saw. A run's
+  // whole (`Launcher.launch`), so nothing between the two can widen what the admission saw. A run's
   // own MCP door never converses (`RUN_STARTS_NONE`): work between agents is mail. It may
   // launch and schedule its owner's agents, and read and cancel runs and schedules, as its
   // initiator: an owner-started or scheduled run as the owner, a client's run as that client,
@@ -6226,29 +2495,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * then answers the run as it stands; its status is `agentStatus`'s.
    */
   agentSubmit(binding: Binding, request: SubmitRequest): Promise<RunView> {
-    return this.#units("agentSubmit", binding, request, (door) => this.#submitted(door, binding));
-  }
-
-  /** A message to an agent, its call checked in its units (`agentSubmit`). */
-  async #submitted(door: Door, binding: Binding): Promise<RunView> {
-    const asked = await this.#door(() => {
-      const { account, r, agent } = door.check();
-      const client = account.origin?.client ?? null;
-      return { agent, client, prompt: runText(r["message"], "a message"),
-               waitMs: waitOf(r["wait_ms"]),
-               conversation: (r["conversation_id"] ?? null) as string | null,
-               request: requestKey(client, r["client_send_id"]) };
-    });
-    await this.#seeded();
-    const read = await this.#readAgent(asked.agent);
-    const run = await this.#launch(read, () => {
-      const { account, universe } = door.check();
-      return { ...this.#initiated(binding, account, universe, asked.agent),
-               agent: asked.agent, conversation: asked.conversation, request: asked.request,
-               tiers: tierNumbers(this.#storage, binding.tiers, clock()), unattended: false,
-               prompt: asked.prompt, mail: null };
-    });
-    return fittedRun(await this.#settledWithin(run, asked.waitMs, asked.client));
+    return this.#units("agentSubmit", binding, request, runsDoors.agentSubmit);
   }
 
   /**
@@ -6258,60 +2505,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * (ADR-033 decision 3). An agent answers mail by being mailed itself (`roomPost`).
    */
   agentRun(binding: Binding, request: LaunchRequest): Promise<RunView | RunSchedule> {
-    return this.#units("agentRun", binding, request, (door) => this.#launched(door, binding));
-  }
-
-  /** A launch of an agent, its call checked in its units (`agentRun`). */
-  async #launched(door: Door, binding: Binding): Promise<RunView | RunSchedule> {
-    const asked = await this.#synced(() => {
-      const { account, r, agent, universe } = door.check();
-      const input = runText(r["input"], "an input");
-      const client = account.origin?.client ?? null;
-      const at = r["at"] ?? null;
-      const cron = r["cron"] ?? null;
-      if (at !== null && (typeof at !== "number" || !Number.isFinite(at))) {
-        throw new Refusal("invalid", "at is a time in seconds since the epoch");
-      }
-      if (cron !== null && typeof cron !== "string") {
-        throw new Refusal("invalid", "cron is a cron expression");
-      }
-      if (at === null && cron === null) {
-        return { now: true as const, agent, input, client };
-      }
-      if (binding.tiers !== undefined) {
-        tierNumbers(this.#storage, binding.tiers, clock());  // kept for the lane's runs
-      }
-      const { stamp, origin } = this.#initiated(binding, account, universe, agent);
-      return { now: false as const, schedule: this.#runs.schedule({
-        agent, input, at: at as number | null, cron: cron as string | null, stamp, origin },
-                                                                  clock()) };
-    });
-    if (!asked.now) {
-      return asked.schedule;
-    }
-    await this.#seeded();
-    const read = await this.#readAgent(asked.agent);
-    const run = await this.#launch(read, () => {
-      const { account, universe } = door.check();
-      // A run's own launch has no person at it: unattended, as a schedule's run is.
-      return { ...this.#initiated(binding, account, universe, asked.agent),
-               agent: asked.agent, conversation: null, request: null,
-               tiers: tierNumbers(this.#storage, binding.tiers, clock()),
-               unattended: account.run !== null, prompt: asked.input, mail: null };
-    });
-    return fittedRun(await this.#settledWithin(run, 0, asked.client));
+    return this.#units("agentRun", binding, request, runsDoors.agentRun);
   }
 
   /** A run of the caller's, from its receipt; or a schedule of the caller's. */
   agentStatus(binding: Binding, request: RunRequest): Promise<RunView | RunSchedule> {
-    return this.#run("agentStatus", binding, request, ({ account, r }) => {
-      const client = account.origin?.client ?? null;
-      if (("run_id" in r) === ("schedule_id" in r)) {
-        throw new Refusal("invalid", "a status names a run_id or a schedule_id");
-      }
-      return "run_id" in r ? fittedRun(this.#runs.receipt(r["run_id"], client))
-        : this.#runs.scheduleView(r["schedule_id"], client);
-    });
+    return this.#run("agentStatus", binding, request, runsDoors.agentStatus);
   }
 
   /**
@@ -6321,31 +2520,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async agentCancel(binding: Binding, request: RunRequest):
       Promise<RunView | { schedule_id: string; cancelled: true }> {
-    return this.#units("agentCancel", binding, request, async (door) => {
-      const found = await this.#synced(() => {
-        const { account, r } = door.check();
-        const client = account.origin?.client ?? null;
-        if (("run_id" in r) === ("schedule_id" in r)) {
-          throw new Refusal("invalid", "a cancel names a run_id or a schedule_id");
-        }
-        if ("schedule_id" in r) {
-          return { schedule: this.#runs.unschedule(r["schedule_id"], client).schedule_id };
-        }
-        const run = this.#runs.receipt(r["run_id"], client).run_id;
-        if (this.env.SANDBOX === undefined && this.#runs.grant(run) !== null) {
-          throw new Refusal("sandbox_absent",
-                            SANDBOX_ABSENT);  // no CLI could be stopped: refused, loudly
-        }
-        return { run, client, live: this.#runs.cancel(run, clock()) };
-      });
-      if ("schedule" in found) {
-        return { schedule_id: found.schedule, cancelled: true };
-      }
-      if (found.live !== null) {
-        await this.#sandboxCancel(found.live);
-      }
-      return this.#door(() => fittedRun(this.#runs.receipt(found.run, found.client)));
-    });
+    return this.#units("agentCancel", binding, request, runsDoors.agentCancel);
   }
 
   /**
@@ -6357,165 +2532,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   runEvents(binding: Binding, request: EventsRequest):
       Promise<{ accepted: number; settled: string | null }> {
-    return this.#units("runEvents", binding, request, (door) => this.#evented(door, binding,
-                                                                               request));
+    return this.#units("runEvents", binding, request, runsDoors.runEvents);
   }
-
-  /** A runner's report, its call checked in each unit (`runEvents`). */
-  async #evented(door: Door, binding: Binding, request: EventsRequest):
-      Promise<{ accepted: number; settled: string | null }> {
-    // A reply this batch's settle would post, past `PLACE_BYTES`, is placed in R2 first, in
-    // the gate's own first unit (ADR-035): the settle's unit then posts it by reference, so a
-    // crash between leaves only an orphan upload for the sweep, never a lost reply.
-    const placing = await this.#door(() => {
-      // At most `EVENTS_IN_FLIGHT` posts held at once, whatever the tier: one more is
-      // refused before anything is written, and its runner posts it again.
-      this.#posts.enter();
-      try {
-        const call = door.check();
-        const lease = call.lease!;
-        const r = eventsRequest(call.r);
-        const reply = this.#runs.answering(binding.run as string, lease, r.frames, r.end);
-        return reply === null || utf8Bytes(reply.result) <= PLACE_BYTES ? null
-          : { placing: this.#beginReply(reply) };
-      } catch (error) {
-        this.#posts.leave();
-        throw error;
-      }
-    });
-    let placed: Placed | null = null;
-    try {
-      placed = placing?.placing == null ? null : await this.#bodies.send(placing.placing);
-      const done = await this.#door(() => {
-        const call = door.check();
-        const lease = call.lease!;
-        const r = eventsRequest(call.r);
-        // Another batch landed between the units (a runner's retry): the reply this settle
-        // would post is not the one placed, so the batch is posted again, never dropped. A
-        // reply whose writer's files refused it (no placing) settles with a notice instead.
-        const reply = this.#runs.answering(binding.run as string, lease, r.frames, r.end);
-        if (reply !== null && utf8Bytes(reply.result) > PLACE_BYTES
-            && !placedAs(placed, reply.result)
-            && !(placing !== null && placing.placing === null)) {
-          throw new Refusal("events_raced", EVENTS_RACED);
-        }
-        this.#replyPlaced = placed;
-        try {
-          return this.#runs.events(binding.run as string, lease, r.frames, r.end, clock());
-        } finally {
-          this.#replyPlaced = null;
-        }
-      });
-      this.#relay.relay(done.conversation, done.frames);
-      if (done.settled !== null) {
-        this.#relay.settled(binding.run as string);
-        await this.#schedule.sync();
-      }
-      return { accepted: done.frames.length, settled: done.settled };
-    } finally {
-      await this.#bodies.release(placed);
-      this.#posts.leave();
-    }
-  }
-
-  /**
-   * In a unit: a long reply's upload begun as its writer's (the run's client's, or the
-   * owner's), or null when its body stays in its row or its writer's files refuse it; that
-   * settle then leaves the owner a notice (`#answer`).
-   */
-  #beginReply(answer: MailAnswer): Placing | null {
-    try {
-      return this.#bodies.begin(answer.result,
-                                answer.stamp === null ? "owner" : `client:${answer.stamp.client}`);
-    } catch (error) {
-      if (!(error instanceof Refusal) || error.transient) {
-        throw error;  // a transient refusal fails the batch, posted again: the reply is kept
-      }
-      return null;
-    }
-  }
-
-  /**
-   * In the settle's unit, before the run settles: a mail's run's result posted as its
-   * agent's reply to that mail, in its thread, under the run's authority (its run id the
-   * post's own id, so it is posted once), when the mail is one a result answers: a person's
-   * or an outside client's, never another agent's (`Ledger.answer`), so a reply never wakes
-   * an agent and starts no run (no `converse` to check). A reply the ledger does not post,
-   * for any reason (the other side gone, its mailbox full, a broken invariant), leaves the
-   * owner a notice, and the settle stands.
-   */
-  #answer(answer: MailAnswer): void {
-    const authority: MailAuthority | null = answer.stamp === null || answer.origin === null
-      ? null : { client: answer.stamp.client, family: answer.origin.family,
-                 generation: answer.stamp.generation,
-                 authenticated_at: answer.stamp.authenticated_at,
-                 universe: answer.stamp.universe };
-    // Past the placement threshold its body was placed before this unit (`runEvents`).
-    this.#reply(answer, authority,
-                utf8Bytes(answer.result) > PLACE_BYTES ? this.#replyPlaced : null);
-  }
-
-  /**
-   * A mail's reply posted in this unit, or a scheduled run's result in the owner's room with
-   * its agent (`dm:<agent's id>`, `dm:main`'s for main; the run's id its post's own, so it is
-   * posted once), its body
-   * placed or not; a refusal a notice.
-   */
-  #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
-    try {
-      // The reply is the owner's agents' content: held to the tier's storage too.
-      this.#files.held("owner", () => {
-        if (answer.mail === null) {
-          this.#ledger.post({ native: answer.agent }, `dm:${nativeId(answer.agent)}`,
-                            answer.run, answer.result, null, clock(), authority, placed,
-                            authority === null ? "owner" : `client:${authority.client}`);
-        } else {
-          this.#ledger.answer({ native: answer.agent }, answer.mail, answer.run,
-                              answer.result, clock(), authority, placed);
-        }
-      });
-    } catch (error) {
-      if (error instanceof Refusal && error.transient) {
-        // For the moment only (the hot mail ceiling, `storage_busy`): the settle's unit
-        // fails with it, so the run stays live and its runner posts the batch again after
-        // its Retry-After; the reply is posted then, never dropped.
-        throw error;
-      }
-      if (!(error instanceof Refusal)) {
-        console.error("a mail's reply failed in the ledger; the run's settle stands");
-      }
-      this.#notices.add("mail_reply_refused", `${answer.agent}: ${
-        error instanceof Error ? error.message : "the ledger failed"}`, clock());
-    }
-  }
-
 
   // -- THE VENDOR'S OWN SIGN-IN, inside a sandbox (slice SIGNIN; `signins.ts`) -----------
-
-  /** Whether `id` is a live sign-in's: an app socket may watch it (the owner's own). A read. */
-  #signinOwned(id: unknown): boolean {
-    if (typeof id !== "string" || !SIGNIN_ID.test(id)) {
-      return false;
-    }
-    try {
-      this.#signins.get(id);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /** In a unit: a lease no run and no sign-in holds now given back, as a settle gives it. */
-  #leaseFreed(leaseId: string, epoch: number): void {
-    if (this.#runs.liveRuns().some((run) => run.lease_id === leaseId)
-        || this.#signins.holds(leaseId)) {
-      return;
-    }
-    if (this.#files.leaseRelease(leaseId, epoch).released) {
-      this.#egress.end("lease", (live) => live.lease === leaseId);
-      queueMicrotask(() => void this.#sandboxRelease(leaseId));
-    }
-  }
 
   /**
    * Begin the vendor's own sign-in to `engine` (`mode: "in"`), or its sign-out (`"out"`),
@@ -6529,77 +2549,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   signinStart(binding: Binding, request: SigninStartRequest):
       Promise<SigninView | { started: false; code: string }> {
-    return this.#units("signinStart", binding, request, (door) => this.#signinBegun(door,
-                                                                                   binding));
-  }
-
-  /** A vendor sign-in begun, its call checked in its first unit (`signinStart`). */
-  async #signinBegun(door: Door, binding: Binding):
-      Promise<SigninView | { started: false; code: string }> {
-    const begun = await this.#door(() => {
-      const { r } = door.check();
-      const rec = typeof r["engine"] === "string" ? bundledSources().get(r["engine"]) : undefined;
-      const cli = rec?.cli;
-      if (rec === undefined || cli === undefined || rec.unwired !== undefined
-          || cli.login === undefined || !cli.credential.includes("vendor_login_in_sandbox")) {
-        throw new Refusal("invalid",
-                          "a sign-in names an engine that signs in with the vendor's own login");
-      }
-      const mode = (r["mode"] ?? "in") as SigninMode;
-      if (mode !== "in" && mode !== "out") {
-        throw new Refusal("invalid", "a sign-in's mode is in or out");
-      }
-      // A sign-in sits behind its source's switch; a sign-out never does, so a login is
-      // always removable (review H1).
-      if (mode === "in" && !switchedOn(this.#storage, binding.signins, clock()).has(rec.id)) {
-        throw new Refusal("signin_off", SIGNIN_OFF);
-      }
-      const regions = cli.regions === undefined ? [] : Object.keys(cli.regions);
-      const region = r["region"] ?? null;
-      if (mode === "in" ? (regions.length === 0 ? region !== null
-                                                : !regions.includes(region as string))
-          : region !== null) {
-        throw new Refusal("invalid", regions.length === 0 ? "this sign-in takes no region"
-          : `this sign-in takes the owner's choice of region: ${regions.join(", ")}`);
-      }
-      const authority = signinAuthority(r["authority"]);
-      if (authority !== OWNER_AUTHORITY && !this.#grants.live(authority)) {
-        throw new Refusal("refused",
-                          "no such client: a client's own sandbox is signed in for a client " +
-                          "the owner has connected");
-      }
-      const now = clock();
-      this.#signins.lost(now, new Set(this.#files.liveLeases(now).map((each) => each.lease_id)));
-      const live = this.#files.sandboxLease(now, authority);
-      const opened = live === null ? this.#openLease(this.#ownerName, now, authority) : null;
-      const lease = live ?? opened!.lease;
-      const row = this.#signins.begin(authority, rec.id, mode, region as string | null,
-                                      { lease_id: lease.lease_id, epoch: lease.epoch }, now);
-      return { row, opened, region: region as string | null,
-               lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
-    });
-    let answer: Started | null = null;
-    try {
-      answer = started(await this.env.SANDBOX!.signin(this.#ownerName(), {
-        id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
-        authority: begun.row.authority, lease: begun.lease,
-        tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
-        route: sealRoute(this.env.ROUTING_MAC_KEY, { owner: this.#ownerName(),
-                                                     authority: begun.row.authority }),
-        urls: { events: `${EGRESS_ORIGIN}/signin/${begun.row.id}/events`,
-                signin: runUrls(`run_${"0".repeat(32)}`, "0".repeat(64)).signin } }));
-    } catch {
-      console.error("a sign-in's start had no answer");
-      answer = null;
-    }
-    if (answer?.started === true) {
-      return signinView(begun.row);
-    }
-    await this.#door(() => {
-      this.#signins.end(begun.row.id);
-      this.#leaseFreed(begun.lease.lease_id, begun.lease.epoch);
-    });
-    return { started: false, code: answer === null ? "start_lost" : answer.code };
+    return this.#units("signinStart", binding, request, signinsDoors.signinStart);
   }
 
   /**
@@ -6611,41 +2561,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   signinEvents(binding: Binding, request: SigninEventsRequest):
       Promise<{ accepted: number; ended: boolean }> {
-    return this.#units("signinEvents", binding, request, (door) => this.#signinFramed(door,
-                                                                                     request));
-  }
-
-  /** A sign-in's frames, its call checked in its unit (`signinEvents`). */
-  async #signinFramed(door: Door, request: SigninEventsRequest):
-      Promise<{ accepted: number; ended: boolean }> {
-    const { row, ended, stopped, events, frames } = await this.#door(() => {
-      const lease = door.check().lease!;
-      const r = eventsRequest({ frames: request.frames, ...(request.end === undefined ? {}
-        : { end: request.end }) });
-      const now = clock();
-      const done = this.#signins.frames(request.id, lease, r.frames.map((frame) => frame.event),
-                                        r.end !== null, now);
-      this.#files.leaseRenew(lease.lease_id, lease.epoch);
-      if (done.ended) {
-        this.#leaseFreed(lease.lease_id, lease.epoch);
-      }
-      return { ...done, frames: r.frames };
-    });
-    // Only what the trusted side kept: each frame's own, checked event.
-    const last = frames.at(-1);
-    this.#relay.relay(row.id, events.map((event, i) => ({
-      v: FRAME_VERSION, run: row.id, seq: (last?.seq ?? 0) - events.length + i + 1,
-      at: last?.at ?? clock(), kind: "event" as const, event })));
-    if (ended) {
-      this.#relay.settled(row.id);  // its tail goes with it
-    }
-    if (stopped) {
-      // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
-      await this.env.SANDBOX?.signinCancel(this.#ownerName(), { authority: row.authority,
-                                                                id: row.id })
-        .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
-    }
-    return { accepted: frames.length, ended };
+    return this.#units("signinEvents", binding, request, signinsDoors.signinEvents);
   }
 
   /**
@@ -6654,36 +2570,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   signinCode(binding: Binding, request: SigninCodeRequest):
       Promise<{ delivered: boolean }> {
-    return this.#units("signinCode", binding, request, async (door) => {
-      const { row, code } = await this.#door(() => {
-        const { r } = door.check();
-        const code = pastedCode(r["code"]);
-        const row = this.#signins.wantsCode(r["id"], clock());
-        if (!switchedOn(this.#storage, binding.signins, clock()).has(row.engine)) {
-          throw new Refusal("signin_off", SIGNIN_OFF);
-        }
-        return { row, code };
-      });
-      const sandbox = this.env.SANDBOX;
-      if (sandbox === undefined) {
-        throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
-      }
-      return sandbox.signinInput(this.#ownerName(), { authority: row.authority, id: row.id,
-                                                      code });
-    });
+    return this.#units("signinCode", binding, request, signinsDoors.signinCode);
   }
 
   /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
   signinCancel(binding: Binding, request: SigninRequestById):
       Promise<{ cancelled: boolean }> {
-    return this.#units("signinCancel", binding, request, async (door) => {
-      const row = await this.#door(() => this.#signins.get(door.check().r["id"]));
-      const sandbox = this.env.SANDBOX;
-      if (sandbox === undefined) {
-        throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
-      }
-      return sandbox.signinCancel(this.#ownerName(), { authority: row.authority, id: row.id });
-    });
+    return this.#units("signinCancel", binding, request, signinsDoors.signinCancel);
   }
 
   /**
@@ -6692,11 +2585,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   signinList(binding: Binding): Promise<{ signins: SigninView[];
                                            engines: ReturnType<Runs["signins"]> }> {
-    return this.#run("signinList", binding, undefined, () => {
-      const now = clock();
-      this.#signins.lost(now, new Set(this.#files.liveLeases(now).map((each) => each.lease_id)));
-      return { signins: this.#signins.list().map(signinView), engines: this.#runs.signins() };
-    });
+    return this.#run("signinList", binding, undefined, signinsDoors.signinList);
   }
 
   /**
@@ -6706,9 +2595,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   runList(binding: Binding, request: RunListRequest):
       Promise<{ runs: RunListed[]; next: number | null }> {
-    return this.#run("runList", binding, request, ({ account, r }) => {
-      return this.#runs.list(account.origin?.client ?? null, r["before"], r["limit"]);
-    });
+    return this.#run("runList", binding, request, runsDoors.runList);
   }
 
   /**
@@ -6720,44 +2607,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async signinReport(binding: Binding, request: SigninRequest):
       Promise<{ recorded: number; lapsed: string[] }> {
-    return this.#run("signinReport", binding, request, ({ lease: held, r }) => {
-      const lease = held!;
-      const reports = signinRequest(r);
-      const lapsed: string[] = [];
-      if (lease.authority !== OWNER_AUTHORITY) {
-        // An outside client's sandbox's own sign-ins, kept on its lease: a login is never
-        // copied between sandboxes, so none of the owner's own reaches it.
-        const now = new Set(lease.signins);
-        for (const report of reports) {
-          if (report.signed_in) {
-            now.add(report.engine);
-          } else {
-            now.delete(report.engine);
-          }
-        }
-        const joined = [...now].sort().join(",");
-        if (joined.length > SIGNIN_LIST_CHARS) {
-          throw new Refusal("invalid",
-                            `a sandbox's signed-in engines are at most ${SIGNIN_LIST_CHARS} ` +
-                            "characters joined");
-        }
-        const before = this.#files.leaseSignins(lease.lease_id, [...now]);
-        for (const engine of before.filter((each) => !now.has(each))) {
-          lapsed.push(engine);
-          this.#notices.add("signin_lapsed",
-                            `${engine}: sign in again inside ${lease.authority}'s sandbox`, clock());
-        }
-        return { recorded: reports.length, lapsed };
-      }
-      for (const report of reports) {
-        if (this.#runs.reportSignin(report.engine, report.signed_in, report.models, clock())
-              .lapsed) {
-          lapsed.push(report.engine);
-          this.#notices.add("signin_lapsed", `${report.engine}: sign in again`, clock());
-        }
-      }
-      return { recorded: reports.length, lapsed };
-    });
+    return this.#run("signinReport", binding, request, signinsDoors.signinReport);
   }
 
   /**
@@ -6803,205 +2653,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * Who starts a run: the owner, or a client, with its stamp and origin. A run's own launch
-   * is its initiator's: the owner's for an owner-started or scheduled run, else the stamp
-   * its client's run holds, for the agent it launches.
-   */
-  #initiated(binding: Binding, account: Account, universe: string | null, agent: string):
-      { initiator: "owner" | "client"; stamp: Stamped | null; origin: Origin | null } {
-    if (account.run !== null) {
-      const stamp = account.run.stamp;
-      return stamp === null || account.origin === null
-        ? { initiator: "owner", stamp: null, origin: null }
-        : { initiator: "client", origin: account.origin, stamp: { ...stamp, universe, agent } };
-    }
-    if (account.origin === null || account.grant === null) {
-      return { initiator: "owner", stamp: null, origin: null };
-    }
-    return { initiator: "client", origin: account.origin,
-             stamp: { client: account.origin.client, generation: account.grant.generation,
-                      authenticated_at: binding.authenticated_at ?? null, universe, agent } };
-  }
-
-  /**
-   * A new owner's starter seed, awaited before a door reads an agent: its first `converse`
-   * finds `main` however soon it comes (review L3), the lane's pass joined if it runs.
-   */
-  async #seeded(): Promise<void> {
-    if (this.#starter.version() === 0) {
-      await this.#starter.seeded(clock());
-      await this.#schedule.sync();
-    }
-  }
-
-  /** An agent's `agent.json`, read whole, and the etag it was read at. */
-  async #readAgent(agent: string): Promise<{ file: AgentFile; etag: string }> {
-    const path = agentFilePath(agent);
-    const content = await this.#door(() => {
-      const entry = this.#files.stat(path);
-      if (entry === null || entry.kind !== "file") {
-        throw new Refusal("agent_undefined", AGENT_UNDEFINED);
-      }
-      return this.#files.open(path);
-    });
-    let bytes = content.inline;
-    if (bytes === undefined) {
-      const parts = await this.#files.fetch((content.chunks ?? []).map(({ sha256 }) =>
-        ({ sha256 })));
-      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-      let at = 0;
-      for (const part of parts) {
-        bytes.set(part, at);
-        at += part.byteLength;
-      }
-    }
-    let text: string;
-    try {
-      text = utf8Decoder("strip").decode(bytes);
-    } catch {
-      throw new Refusal("agent_file_invalid", `${path} is not UTF-8 text`);
-    }
-    return { file: agentFile(text), etag: content.entry.etag };
-  }
-
-  /**
-   * Admit a run in one unit (`ask`, which binds the call again, and the agent's file still
-   * at the etag it was read at), then start it through the sandbox and record what came of
-   * it: `running`, `failed` with the sandbox's code, or `unknown` when its answer never came
-   * (the run is then cancelled too, in case it did start). Its id: a run that waits for
-   * its conversation's live run is written `waiting` and starts from the lane, its turn
-   * come (`waiting`, the run the lane starts).
-   */
-  async #launch(read: { file: AgentFile; etag: string }, ask: () => Omit<Ask, "file">,
-                waiting: string | null = null, taken: () => void = () => {}): Promise<string> {
-    const { admitted, agent, unattended } = await this.#door(() => {
-      const made = ask();
-      if (this.#files.stat(agentFilePath(made.agent))?.etag !== read.etag) {
-        throw new Refusal("agent_changed", AGENT_CHANGED);
-      }
-      const done = { agent: made.agent, unattended: made.unattended,
-                     admitted: this.#runs.admit({ ...made, file: read.file }, clock(), (chosen) =>
-                       this.#runConfig({ run: chosen.run, secret: chosen.secret,
-                                         engine: chosen.engine, credential: chosen.credential,
-                                         ...(chosen.connection === null ? {}
-                                           : { connection: chosen.connection }) }), waiting) };
-      taken();  // the input it was asked on is its own now (a mail's, taken)
-      return done;
-    });
-    if (admitted.existing) {
-      return admitted.run;
-    }
-    const sandbox = this.env.SANDBOX;
-    let answer: { started: true } | { started: false; code: string } | null = null;
-    try {
-      if (sandbox === undefined) {
-        throw new Error(SANDBOX_ABSENT);  // admission refused this already
-      }
-      answer = started(await sandbox.start(this.#ownerName(), {
-        run: admitted.run, agent, conversation: admitted.conversation,
-        engine: admitted.engine, credential: admitted.credential, model: admitted.model,
-        session_id: admitted.session_id, prompt: admitted.prompt, unattended,
-        authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
-        network: admitted.network, config: admitted.config,
-        route: sealRoute(this.env.ROUTING_MAC_KEY, { owner: this.#ownerName(),
-                                                     authority: admitted.authority }),
-        urls: runUrls(admitted.run, admitted.secret) }));
-    } catch {
-      console.error("a run's start had no answer; it is settled unknown");
-      answer = null;
-    }
-    await this.#door(() => {
-      if (answer === null) {
-        this.#runs.settle(admitted.run, "unknown", "start_lost", null, clock());
-      } else if (answer.started) {
-        this.#runs.started(admitted.run, clock());
-      } else if (answer.code === SANDBOX_WAITING) {
-        // E2B runs as many sandboxes as its plan allows: the run waits, never refused, and
-        // the lane starts it again when the platform's line rings the owner (`sandboxRung`).
-        // The founder's alert reads E2B's own count (owed: `sandbox-probe.md`); this line is
-        // the Worker log's record of it.
-        if (this.#runs.waitForSandbox(admitted.run, admitted.prompt)) {
-          console.warn(`${SANDBOX_WAITING}: a run waits for a sandbox to free`);
-        }
-      } else {
-        this.#runs.settle(admitted.run, "failed", answer.code, null, clock());
-        if (answer.code === SIGNIN_REQUIRED) {
-          // No login inside that sandbox: the owner signs in there, never copies one.
-          this.#notices.add(SIGNIN_REQUIRED, `${agent}: sign in to ${admitted.engine} inside ${
-            admitted.authority === OWNER_AUTHORITY ? "your own" : `${admitted.authority}'s`
-          } sandbox, through the vendor's own flow`, clock());
-        }
-      }
-    });
-    if (answer === null) {
-      await this.#sandboxCancel({ run: admitted.run, lease_id: admitted.lease.lease_id });
-    }
-    await this.#schedule.sync();
-    return admitted.run;
-  }
-
-  /** The run as it stands once settled, or once `waitMs` passed; the caller's own. */
-  async #settledWithin(run: string, waitMs: number, client: string | null): Promise<RunView> {
-    const live = await this.#door(() => this.#runs.receipt(run, client).settled_at === null);
-    if (live && waitMs > 0) {
-      await new Promise<void>((resolve) => {
-        const waiting = this.#waiters.get(run) ?? new Set<() => void>();
-        const done = () => {
-          clearTimeout(timer);
-          waiting.delete(done);
-          if (waiting.size === 0 && this.#waiters.get(run) === waiting) {
-            this.#waiters.delete(run);
-          }
-          resolve();
-        };
-        const timer = setTimeout(done, waitMs);
-        waiting.add(done);
-        this.#waiters.set(run, waiting);
-      });
-    }
-    return this.#door(() => this.#runs.receipt(run, client));
-  }
-
-  /** A run settled: whoever waits on it on this instance goes on. */
-  #wake(run: string): void {
-    for (const done of [...(this.#waiters.get(run) ?? [])]) {
-      queueMicrotask(done);
-    }
-  }
-
-  /** Stop a run's CLI through the sandbox; a failure is logged, the run settles regardless. */
-  async #sandboxCancel(run: Pick<LiveRun, "run" | "lease_id">): Promise<void> {
-    const sandbox = this.env.SANDBOX;
-    if (sandbox === undefined) {
-      console.error(`${SANDBOX_ABSENT}: run ${run.run}'s CLI could not be stopped`);
-      return;
-    }
-    try {
-      await sandbox.cancel(this.#ownerName(), { run: run.run, lease_id: run.lease_id });
-    } catch {
-      console.error("a run's cancel did not reach the sandbox");
-    }
-  }
-
-  /**
-   * A lease that ended, its sandbox paused through the sandbox Worker (zero idle tail). A
-   * release that does not reach it is logged: the sandbox Worker reaps a sandbox idle for a
-   * lease's TTL on its own (by then a lease no run renews has lapsed), and keeps asking E2B
-   * for a pause that did not land.
-   */
-  async #sandboxRelease(leaseId: string): Promise<void> {
-    const sandbox = this.env.SANDBOX;
-    if (sandbox === undefined) {
-      return;  // no sandbox bound, so no lease was opened under one
-    }
-    try {
-      await sandbox.release(this.#ownerName(), { lease_id: leaseId });
-    } catch {
-      console.error("a lease's release did not reach the sandbox; its idle reap pauses it");
-    }
-  }
-
-  /**
    * The platform's line rang this owner (slice S; `sandbox/src/slots.ts`, through the doors
    * Worker's ring consumer): a sandbox freed, so each run waiting for one starts again
    * through its whole admission, oldest first. It takes no binding: it carries nothing,
@@ -7010,221 +2661,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * An erased or erasing owner does nothing (its erasure takes it out of the line).
    */
   sandboxRung(): Promise<{ waiting: number }> {
-    return this.#units("sandboxRung", undefined as unknown as Binding, undefined, async () => {
-      if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
-        return { waiting: 0 };
-      }
-      const waiting = await this.#door(() => this.#runs.sandboxRung());
-      if (waiting === 0) {
-        await this.env.SANDBOX?.unwait(this.#ownerName());
-      }
-      await this.#schedule.sync();
-      return { waiting };
-    });
-  }
-
-  /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
-  #cancelInSandbox(grants: readonly LiveRun[]): void {
-    for (const grant of grants) {
-      queueMicrotask(() => void this.#sandboxCancel(grant));
-    }
-  }
-
-  /**
-   * The switched-on sign-ins, read by the lane itself from the control record the object
-   * binds (`CONTROL`), and kept (review N1): so a source switched off stops powering the
-   * lane's runs (a schedule's, a mail's, a waiting one's) at its next pass, though the owner
-   * makes no door call (`ControlGate.signins`, fail-closed).
-   */
-  async #laneSignins(): Promise<void> {
-    const on = await this.#control().signins();
-    await this.#door(() => switchedOn(this.#storage, on, clock()));
-  }
-
-  /**
-   * The `runs` lane's pass: runs whose runner was lost settled `unknown`; then each waiting
-   * run whose turn came started, oldest first, through the same admission as a door's (one
-   * its turn refuses settles `failed`, the refusal in the owner's notices); then each mail
-   * to one of the owner's agents that no run took, oldest first, starting that agent's run
-   * (`#deliver`); then each due schedule claimed, once, and run the same way; a refusal kept
-   * on its row and in the owner's notices, never thrown.
-   */
-  async #runsPass(_now: number, until: number): Promise<void> {
-    await this.#laneSignins();
-    await this.#door(() => this.#runs.lost(clock()));
-    while (clock() < until) {
-      const waiting = await this.#door(() => {
-        const next = workRefusal(admission(this.#storage)) !== null ? null
-          : this.#runs.nextWaiting();
-        return next === null ? null : { run: next.id, ask: this.#runs.waitingAsk(next.id)! };
-      });
-      if (waiting === null) {
-        break;
-      }
-      try {
-        const read = await this.#readAgent(waiting.ask.agent);
-        const prompt = waiting.ask.mail === null ? waiting.ask.prompt
-          : await this.#mailPrompt(waiting.ask.mail.message, waiting.ask.agent);
-        await this.#launch(read, () => ({
-          ...waiting.ask, prompt, tiers: tierNumbers(this.#storage, undefined, clock()) }),
-                           waiting.run);
-      } catch (error) {
-        if (!(error instanceof Refusal) || error.transient) {
-          throw error;  // a transient refusal fails the pass, and the run waits on
-        }
-        if (error.code === "conversation_busy" || error.code === "tier_runs") {
-          break;  // not its turn after all: it keeps waiting, and the lane comes back
-        }
-        const reason = error.message;
-        await this.#door(() => {
-          if (this.#runs.refuseWaiting(waiting.run, error, clock())) {
-            this.#notices.add("run_refused", `${waiting.ask.agent}: ${reason}`, clock());
-          }
-        });
-      }
-    }
-    while (clock() < until) {
-      // A placed body (ADR-035) is read from R2 between the lane's units, as a door's.
-      const next = (bodies: ReadonlyMap<string, string>) => {
-        if (workRefusal(admission(this.#storage)) !== null) {
-          return null;
-        }
-        if (this.#runs.queueRoom(MAIL_INPUT_BYTES)) {
-          this.#ledger.release();  // the inputs' queue has room for any held mail again
-        }
-        return this.#ledger.nextMail(bodies);
-      };
-      const mail = await this.#rereading(() => {
-        const found = next(new Map());
-        return found?.content_id == null ? [] : [found.content_id];
-      }, next, (found) => found?.content_id != null, (located) => this.#bodies.fetch(located));
-      if (mail === null) {
-        break;
-      }
-      await this.#deliver(mail);
-    }
-    // A due schedule is claimed in its run's admission unit, once the run is admitted, so
-    // it fires once: a run admitted claims it; a terminal refusal claims it with the refusal
-    // kept; a transient refusal claims nothing, and it stays due for the lane's next pass.
-    // (A unit keeps what it wrote before a throw, `gate.ts`: so the claim is the admission's
-    // last write, never its first.)
-    while (clock() < until) {
-      const row = await this.#door(() => workRefusal(admission(this.#storage)) !== null
-        ? null : this.#runs.due(clock()));
-      if (row === null) {
-        return;
-      }
-      let gone = false;
-      try {
-        const read = await this.#readAgent(row.agent);
-        const run = await this.#launch(read, () => {
-          if (!this.#runs.stands(row)) {
-            gone = true;
-            throw new Refusal("no_schedule", NO_SCHEDULE);
-          }
-          return {
-            initiator: "schedule", ...scheduleAuthority(row), agent: row.agent,
-            conversation: null, request: null,
-            tiers: tierNumbers(this.#storage, undefined, clock()), unattended: true,
-            prompt: row.input, mail: null };
-        }, null, () => this.#runs.claim(row, clock()));
-        await this.#door(() => this.#runs.ran(row.id, run, null));
-      } catch (error) {
-        if (!(error instanceof Refusal) || error.transient) {
-          throw error;  // a transient refusal fails the pass: unclaimed, the schedule stays due
-        }
-        if (gone) {
-          continue;  // cancelled, or claimed, since it was read: nothing of it fires now
-        }
-        const reason = error.message;
-        await this.#door(() => {
-          if (this.#runs.claim(row, clock())) {
-            this.#runs.ran(row.id, null, reason);
-            this.#notices.add("run_refused", `${row.agent}: ${reason}`, clock());
-          }
-        });
-      }
-    }
-  }
-
-  /**
-   * A waiting mail run's input, read again from its mail as it starts: the row kept only the
-   * mail's reference, and a placed body (ADR-035) is read from R2 between the lane's units.
-   * A mail no longer held, or whose body is not its own, refuses the run.
-   */
-  async #mailPrompt(messageId: string, agent: string): Promise<string> {
-    const mail = await this.#rereading(() => {
-      const found = this.#ledger.mailFor(messageId, nativeId(agent));
-      return found?.content_id == null ? [] : [found.content_id];
-    }, (bodies: ReadonlyMap<string, string>) =>
-      this.#ledger.mailFor(messageId, nativeId(agent), bodies),
-    (found) => found?.content_id != null, (located) => this.#bodies.fetch(located));
-    if (mail === null) {
-      throw new Refusal("mail_missing",
-                        "mail_missing: the mail this run answers is no longer held");
-    }
-    if (mail.body === null) {
-      throw new Refusal(mail.integrity === "tampered" ? "mail_tampered" : "mail_missing",
-                        `mail_${mail.integrity}: the mail's body is ${mail.integrity}`);
-    }
-    return mailInput(mail, mail.body);
-  }
-
-  /**
-   * One mail to one of the owner's agents started as that agent's run, attended only when a
-   * person sent it: its input the mail's envelope and body (`mailInput`), all the run needs
-   * to answer by a deliberate post; its conversation its thread's under the mail's authority
-   * (made with
-   * the run when the thread has none), its authority the mail's (a client's stamp at its
-   * generation, acting as this agent: held to the intersection of the agent's scopes and
-   * the client's grant there, and refused once that grant moved), its retry key the mail and
-   * agent. The mail is taken in the admission's own unit, waiting runs and runs past the
-   * tier included. A run that must wait while the inputs' queue is full leaves the mail
-   * held, until the queue has room; any other refusal fails the mail, with a notice.
-   */
-  async #deliver(mail: Delivery): Promise<void> {
-    const authority = mail.authority;
-    const origin = authority === null ? null
-      : { client: authority.client, family: authority.family };
-    const stamp: Stamped | null = authority === null ? null
-      : { client: authority.client, generation: authority.generation,
-          authenticated_at: authority.authenticated_at, universe: authority.universe,
-          agent: mail.agent };
-    try {
-      if (mail.body === null) {
-        throw new Refusal(mail.integrity === "tampered" ? "mail_tampered" : "mail_missing",
-                          `mail_${mail.integrity}: the mail's body is ${mail.integrity}`);
-      }
-      const prompt = mailInput(mail, mail.body);
-      const read = await this.#readAgent(mail.agent);
-      const conversation = mailConversation(mail.agent, mail.thread, origin?.client ?? null);
-      await this.#launch(read, () => ({
-        initiator: "mail", stamp, origin, agent: mail.agent,
-        conversation: this.#runs.kept(conversation, mail.agent, origin?.client ?? null)
-          ? conversation : null,
-        request: sha256Hex(`mail\0${mail.message_id}\0${mail.agent_id}`),
-        tiers: tierNumbers(this.#storage, undefined, clock()), unattended: !mail.attended,
-        prompt, mail: { message: mail.message_id, conversation } }), null,
-                         () => this.#ledger.taken(mail.message_id, mail.agent_id, clock()));
-    } catch (error) {
-      if (!(error instanceof Refusal) || error.transient) {
-        throw error;  // a transient refusal fails the pass, and the mail is delivered again
-      }
-      if (error.code === "agent_changed") {
-        return;  // read again on the next turn of the pass
-      }
-      const reason = error.message;
-      await this.#door(() => {
-        if (error.code === "run_inputs_full") {
-          this.#ledger.hold(mail.message_id, mail.agent_id, clock());
-          return;
-        }
-        // Its fixed code, as a protocol shows one; a quiet one's own words.
-        this.#ledger.undeliverable(mail.message_id, mail.agent_id,
-                                   error.named ? error.code : reason, clock());
-        this.#notices.add("mail_refused", `${mail.agent}: ${reason}`, clock());
-      });
-    }
+    return this.#units("sandboxRung", undefined as unknown as Binding, undefined, runsDoors.sandboxRung);
   }
 
   // -- SOCKETS: the owner app's live view of its runs (A6, salvaged; `relay.ts`) ----------
@@ -7238,26 +2675,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   socketTicket(binding: Binding, request: ConversationRequest):
       Promise<{ ticket: string; conversation_id: string; expires_at: number }> {
-    return this.#run("socketTicket", binding, request, ({ r }) => {
-      const conversation = r["conversation_id"];
-      if (!this.#runs.owns(conversation, null) && !this.#signinOwned(conversation)) {
-        throw new Refusal("ticket_refused", TICKET_REFUSED);
-      }
-      const grant = binding.grant;
-      const tokenExpires = binding.expires_at;
-      if (typeof grant !== "string" || typeof tokenExpires !== "number") {
-        throw new Refusal("invalid", "a socket ticket is bound to its token's grant and expiry");
-      }
-      const now = clock();
-      const expires = Tickets.expiry(now, tokenExpires);
-      if (expires <= now) {
-        throw new Refusal("ticket_refused", TICKET_REFUSED);
-      }
-      const minted = mintToken(this.env.ROUTING_MAC_KEY, "socket", this.#ownerName(), expires);
-      return { ticket: minted.token, conversation_id: conversation as string,
-               expires_at: this.#tickets.mint(minted.hash, conversation as string, grant,
-                                              tokenExpires, now) };
-    });
+    return this.#run("socketTicket", binding, request, relayDoors.socketTicket);
   }
 
   /**
@@ -7266,19 +2684,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * device's left open. The doors tell it before they revoke the grant.
    */
   socketsEnd(binding: Binding): Promise<{ grant: string; ended: true }> {
-    return this.#units("socketsEnd", binding, undefined, async (door) => {
-      const grant = await this.#door(() => {
-        door.check();
-        const held = binding.grant;
-        if (typeof held !== "string" || held === "" || held.length > 128) {
-          throw new Refusal("invalid", "a grant id");
-        }
-        this.#tickets.endGrant(held);
-        return held;
-      });
-      this.#relay.endGrant(grant);
-      return { grant, ended: true as const };
-    });
+    return this.#units("socketsEnd", binding, undefined, relayDoors.socketsEnd);
   }
 
   /**
@@ -7295,7 +2701,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       throw new Refusal("invalid", "an app socket carries no session");
     }
     const ticket = this.#tickets.consume(hash, conversation, clock());
-    if (!this.#runs.owns(conversation, null) && !this.#signinOwned(conversation)) {
+    if (!this.#runs.owns(conversation, null) && !signinOwned(this.#state, conversation)) {
       throw new Refusal("ticket_refused", TICKET_REFUSED);
     }
     return { v: 1, owner: account.owner, conversation, grant: ticket.grant,
@@ -7325,7 +2731,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * this door's.
    */
   tierSet(binding: Binding, request: TierRequest): Promise<{ tier: TierName }> {
-    return this.#run("tierSet", binding, request, () => setTier(this.#storage, request));
+    return this.#run("tierSet", binding, request, tierDoors.tierSet);
   }
 
   /**
@@ -7333,9 +2739,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * sets. The numbers are the control record's, which the doors read and show beside it.
    */
   tierRead(binding: Binding): Promise<{ tier: TierName }> {
-    return this.#run("tierRead", binding, undefined, () => {
-      return { tier: ownerTier(this.#storage) };
-    });
+    return this.#run("tierRead", binding, undefined, tierDoors.tierRead);
   }
 
   // -- THE SANDBOX: its one lease, its network and its egress (tasks 4 G4) -----------
@@ -7362,153 +2766,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * One run's whole environment (slice E's `runEnv`, G4's `sandboxEnv`), from its record,
-   * its credential and an API-key run's connection, with the owner's egress policy and its
-   * generation: refused (`invalid`) when the record does not run on that credential.
-   */
-  #runConfig(run: SandboxRun): SandboxConfig {
-    if (typeof run !== "object" || run === null || typeof run.engine !== "string"
-        || typeof run.run !== "string" || !CREDENTIAL_KINDS.includes(run.credential)
-        || (run.credential === "api_key") !== (typeof run.connection === "string")) {
-      throw new Refusal("invalid",
-                        "a sandbox run names itself, its engine, its credential and, on an " +
-                        "API key, its connection");
-    }
-    let engine;
-    try {
-      engine = runEnv(bundledSources(), run.engine, run.credential);
-    } catch (error) {
-      throw error instanceof SourceRecordError ? new Refusal("run_config_invalid", error.message) : error;
-    }
-    if (typeof run.secret !== "string" || !HEX64.test(run.secret)) {
-      throw new Refusal("invalid", "a sandbox run carries its own secret, 64 hex");
-    }
-    const keyed = sandboxEnv(this.#connections.egressible(),
-                             () => randomHex(16),
-                             { ...engine, run: run.run, secret: run.secret,
-                               connection: run.connection ?? null });
-    // The record's own variables are never shaped like a key's, so the two never meet.
-    const shared = Object.keys(keyed).find((name) => Object.hasOwn(engine.env, name));
-    if (shared !== undefined) {
-      throw new Error(`a run's record and its key both set ${shared}`);
-    }
-    const { document } = this.#policy.read();
-    return { generation: this.#policy.egressGeneration(), egress: document.egress,
-             env: Object.freeze({ ...engine.env, ...keyed }), inherit: engine.inherit };
-  }
-
-  /**
-   * In a unit, as a run's admission finds no live lease of its authority: that sandbox's
-   * lease taken, its egress and sync tokens minted (they live while the lease is renewed,
-   * by its heartbeat, with no deadline of their own, `LEASE_LIVED`, so no run meets a fixed
-   * one) and the runner's own secret, and the owner's network made with the egress token in
-   * its transform. A lease that lapsed is replaced: its streams and tokens end with it.
-   */
-  #openLease(owner: () => string, now: number, authority: string) {
-    const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), LEASE_LIVED);
-    const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), LEASE_LIVED);
-    const runner = randomHex(32);
-    const lease = this.#files.leaseAcquire(authority, "sandbox", {
-      egress: egress.hash, sync: sync.hash, runner: sha256Hex(runner) });
-    const live = new Set(this.#files.liveLeases(now).map((each) => each.lease_id));
-    this.#egress.end("lease", (stream) => !live.has(stream.lease));
-    const { document } = this.#policy.read();
-    return { lease, tokens: { egress_token: egress.token, sync_token: sync.token,
-                              runner_token: runner },
-             network: networkDocument(document.egress, this.#policy.egressGeneration(),
-                                      egress.token) };
-  }
-
-  #sandboxLeases(): SandboxLeases {
-    const leases: SandboxLeases = {
-      renew: (request) => this.#door(() => {
-        this.#admitted("work");
-        return this.#files.leaseRenew(request.lease_id, request.epoch);
-      }),
-      close: (request) => this.#door(() => {
-        this.#admitted("reduce");
-        const { released } = this.#files.leaseRelease(request.lease_id, request.epoch);
-        if (released) {
-          this.#egress.end("lease", (live) => live.lease === request.lease_id);
-        }
-        // Its runs go with it: their runner is gone, so each is settled `unknown`.
-        for (const run of this.#runs.liveRuns()) {
-          if (run.lease_id === request.lease_id && run.epoch === request.epoch) {
-            this.#runs.settle(run.run, "unknown", "lease_closed", null, clock());
-          }
-        }
-        return { released };
-      }),
-      networkApplied: (request) => this.#door(() => {
-        this.#admitted("work");
-        const generation = this.#policy.egressGeneration();
-        if (request.generation !== generation) {
-          throw new Refusal("egress_policy_stale",
-                            "egress_policy_stale: the network was made under another egress " +
-                            "generation");
-        }
-        const lease = this.#files.networkApplied(request.lease_id, request.epoch, generation);
-        if (this.#policy.read().document.egress.mode === "ask") {
-          this.#policy.refusal("sandbox_network", { mode: "ask", generation }, clock(),
-                               "egress.ask");
-        }
-        return lease;
-      }),
-      network: (egressToken) => this.#door(() => {
-        this.#admitted("read");
-        const { document } = this.#policy.read();
-        return networkDocument(document.egress, this.#policy.egressGeneration(), egressToken);
-      }),
-      stale: (leaseId) => this.#door(() => {
-        const lease = this.#files.liveLeases(clock()).find((each) => each.lease_id === leaseId);
-        return lease !== undefined
-          && lease.network_generation !== this.#policy.egressGeneration();
-      }),
-      config: (run) => this.#door(() => {
-        this.#admitted("read");
-        return this.#runConfig(run);
-      }),
-    };
-    return Object.freeze(leases);
-  }
-
-
-  /**
    * One sandbox request, admitted at open (`Egress.open`): its blob, version, generation,
    * reservation and end signal, or its refusal's fixed code and receipt. An OAuth
    * credential about to expire is refreshed first, as a model call's is.
    */
   egressOpen(binding: Binding, request: unknown): Promise<EgressOpened | EgressRefusal> {
-    return this.#units("egressOpen", binding, request, (door) => this.#egressOpened(door, binding,
-                                                                                   request));
-  }
-
-  /** A sandbox request admitted at open, its call checked in each unit (`egressOpen`). */
-  async #egressOpened(door: Door, binding: Binding, request: unknown):
-      Promise<EgressOpened | EgressRefusal> {
-    const { r, live } = await this.#door(() => {
-      door.check();
-      const checked = egressRequest(request);
-      const lease = this.#egress.lease(sandboxBinding(binding.sandbox), clock());
-      // Only the live lease's own run connection is ever refreshed for it.
-      const sandbox = sandboxBinding(binding.sandbox);
-      return { r: checked, live: lease !== null && sandbox.kind === "egress"
-        && this.#runs.grantFor(checked.run, sandbox.secret, lease)?.connection
-          === checked.connection };
-    });
-    // Only a live lease's call may refresh its connection's OAuth credential.
-    if (live) {
-      try {
-        await this.#connections.fresh(r.connection);
-      } catch {
-        // A refresh that failed leaves the credential as it was: the open below refuses it
-        // if it has expired, and uses it while it has not.
-      }
-    }
-    return this.#door(() => {
-      door.check();
-      return this.#egress.open(sandboxBinding(binding.sandbox), r, clock());
-    });
+    return this.#units("egressOpen", binding, request, egressDoors.egressOpen);
   }
 
   /**
@@ -7517,10 +2780,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * its refusal's fixed code and receipt. Held to the egress binding that opened the call.
    */
   egressReserve(binding: Binding, request: unknown): Promise<EgressReserved | EgressRefusal> {
-    return this.#run("egressReserve", binding, request, () => {
-      return this.#egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
-                                  clock());
-    });
+    return this.#run("egressReserve", binding, request, egressDoors.egressReserve);
   }
 
   /**
@@ -7533,53 +2793,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * token opened is still its door's, so it is not settled lost.
    */
   egressBeat(binding: Binding, request: { reservation: string }): Promise<{ beat: boolean }> {
-    return this.#run("egressBeat", binding, request, () => {
-      return { beat: this.#egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
-                                       clock()) };
-    });
+    return this.#run("egressBeat", binding, request, egressDoors.egressBeat);
   }
 
   egressSettle(binding: Binding, request: Record<string, unknown>):
       Promise<{ settled: boolean }> {
-    return this.#run("egressSettle", binding, request, () => {
-      const { resealed, ...rest } = request ?? {};
-      const settled = this.#egress.settle(sandboxBinding(binding.sandbox),
-                                          settleRequest(rest), clock());
-      if (settled.settled && resealed !== undefined) {
-        try {
-          this.#connections.resealed(settled.connection, settled.version, resealed, Date.now());
-        } catch (error) {
-          if (!(error instanceof Refusal && error.invalid)) {
-            throw error;
-          }
-          // A malformed reseal is the gateway's bug: the call still settles, and the
-          // gateway reseals again at the next one.
-          console.error("a resealed blob the egress door handed back was malformed");
-        }
-      }
-      return { settled: settled.settled };
-    });
+    return this.#run("egressSettle", binding, request, egressDoors.egressSettle);
   }
 
   /** The owner's newest egress receipts: what the sandbox asked, and how each ended. */
   egressReceipts(binding: Binding): Promise<{ receipts: EgressReceipt[] }> {
-    return this.#run("egressReceipts", binding, undefined, () => {
-      return { receipts: this.#egress.receipts() };
-    });
+    return this.#run("egressReceipts", binding, undefined, egressDoors.egressReceipts);
   }
 
   fileSyncCommit(binding: Binding, request: SyncCommitRequest):
       Promise<{ outcomes: SyncOutcome[] }> {
-    return this.#run("fileSyncCommit", binding, request, ({ r }) => {
-      this.#heldBack = heldBackOf(r["ops"]);
-      try {
-        return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
-                                        ops: r["ops"] },
-                                      (authority) => this.#grants.full(authority));
-      } finally {
-        this.#heldBack = null;
-      }
-    });
+    return this.#run("fileSyncCommit", binding, request, filesDoors.fileSyncCommit);
   }
 
   /**
@@ -7589,25 +2818,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileSyncUploadBegin(binding: Binding, request: SyncUploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
-    return this.#run("fileSyncUploadBegin", binding, request, ({ r }) => {
-      return this.#files.syncBegin(r["lease_id"], r["epoch"], r["size"], r["chunks"]);
-    });
+    return this.#run("fileSyncUploadBegin", binding, request, filesDoors.fileSyncUploadBegin);
   }
 
   /** The sync agent's chunk bytes for its own upload, at most two chunks a call. */
   async fileSyncUploadChunks(binding: Binding, request: SyncUploadChunksRequest):
       Promise<{ created: number }> {
-    return this.#units("fileSyncUploadChunks", binding, request, async (door) => {
-      const r = await this.#door(() => {
-        const { r: fields } = door.check();
-        if (this.#files.intentWriter(fields["intent_id"])
-            !== this.#files.syncWriter(fields["lease_id"], fields["epoch"])) {
-          throw new Refusal("sync_fenced", SYNC_FENCED);
-        }
-        return fields;
-      });
-      return this.#files.upload(r["intent_id"], r["chunks"]);
-    });
+    return this.#units("fileSyncUploadChunks", binding, request, filesDoors.fileSyncUploadChunks);
   }
 
   /**
@@ -7617,21 +2834,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileSyncUploadAbort(binding: Binding, request: SyncUploadAbortRequest):
       Promise<{ aborted: boolean }> {
-    return this.#run("fileSyncUploadAbort", binding, request, ({ r }) => {
-      const writer = this.#files.syncWriter(r["lease_id"], r["epoch"]);
-      let owner: string | null;
-      try {
-        owner = this.#files.intentWriter(r["intent_id"]);
-      } catch (error) {
-        if (!(error instanceof Refusal && !error.invalid)) {
-          throw error;  // a malformed id: invalid
-        }
-        owner = null;  // gone already: expired, committed or let go
-      }
-      if (owner !== null && owner !== writer) {
-        throw new Refusal("sync_fenced", SYNC_FENCED);
-      }
-      return owner === null ? { aborted: false } : this.#files.abort(r["intent_id"]);
-    });
+    return this.#run("fileSyncUploadAbort", binding, request, filesDoors.fileSyncUploadAbort);
   }
 }

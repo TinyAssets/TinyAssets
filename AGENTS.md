@@ -39,7 +39,7 @@ cutover.
 10. Ship-time attribution — `tinyassets/attribution/`.
 11. Doors: `tinyassets.io/mcp`, `/api` (keyed), `/hooks/inbound`. Until the
     cutover's `routes` run, the old proxy serves them (`mcp.` internal); after
-    it, the doors Worker does (`platform/doors/src/identity.json` `routes`), and
+    it, the doors Worker does (`platform/contract/identity.json` `routes`), and
     `egress.tinyassets.io` is the sandbox's door. After DNS, route or
     connector edits, run the handles canary.
 13. Prove a path is pushed or in history before destroying it; never switch

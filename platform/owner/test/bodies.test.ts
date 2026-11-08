@@ -20,7 +20,8 @@ import { GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits
 import { WriteGate } from "../src/gate";
 import { GRANT_LIMITS, scopes } from "../src/grants";
 import { MAX_BODY_BYTES } from "../src/ledger";
-import type { Binding, OwnerDO } from "../src/owner-do";
+import type { OwnerDO } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { TIER_UNREAD } from "../src/tier";
 import { MUSE, rig } from "./ledger-support";
 import { at, readOn } from "./pages-support";
@@ -163,10 +164,10 @@ describe("the placement rule", () => {
         .toEqual([{ state: "uploading", stored: 1, holds: 1, refs: 0 }]);
       // Housekeeping lets the upload go at its expiry, and deletes the chunk past its grace.
       const now = Date.now() / 1000;
-      await files.collect(now + 1);
+      await files.run(now + 1);
       expect(sql.exec("SELECT state FROM file_chunks").toArray())
         .toEqual([{ state: "uploading" }]);  // not before the upload's expiry
-      await files.collect(now + PLACE_TTL_S + GC_GRACE_S + 60);
+      await files.run(now + PLACE_TTL_S + GC_GRACE_S + 60);
       expect(sql.exec("SELECT COUNT(*) AS n FROM file_intents").toArray()).toEqual([{ n: 0 }]);
       expect(sql.exec("SELECT COUNT(*) AS n FROM file_chunks").toArray()).toEqual([{ n: 0 }]);
       expect(await inR2(ns, LARGE)).toMatch(/^missing: /);

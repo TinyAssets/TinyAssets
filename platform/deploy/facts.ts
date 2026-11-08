@@ -2,7 +2,7 @@
  * The platform's deploy facts, each read from the one place it is written: the six Workers'
  * `wrangler.jsonc` (names, bindings, required secrets, buckets, queues, and so the deploy
  * order), `platform.json` (what no config can say, each entry with its reason),
- * `doors/shared-apps.json` (the shared apps' signing secrets) and `doors/src/identity.json`
+ * `doors/shared-apps.json` (the shared apps' signing secrets) and `contract/identity.json`
  * (the doors' public identity). The deploy kit, its workflow's guard, the environment guard
  * and the founder's setup read them here or from those files; none holds a list of its own.
  *
@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/workers.ts";
-import identity from "../doors/src/identity.json" with { type: "json" };
+import identity from "../contract/identity.json" with { type: "json" };
 import sharedApps from "../doors/shared-apps.json" with { type: "json" };
 import platform from "./platform.json" with { type: "json" };
 

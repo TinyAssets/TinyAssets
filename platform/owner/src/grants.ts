@@ -87,12 +87,16 @@ import { HEX64 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
-import { appList, connectUrl, type Vendor } from "../../doors/src/apps";
+import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
 import { may } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { canonical, plain, type Policy, policyDigest } from "./policy";
 import { codePoints, utf8Bytes } from "../../contract/src/text";
+import type {
+  Call, GrantRequest, OwnerState,
+} from "./owner-do";
+import { clock } from "./clock";
 
 export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
@@ -613,3 +617,85 @@ export class Grants {
     });
   }
 }
+
+export interface ClientRequest {
+  readonly client: string;
+}
+export interface ForgetRequest {
+  readonly clients: string[];
+}
+
+// -- THE DOORS: the `grants` rows' handlers (`contract/doors.json`) -------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/**
+ * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
+ * callbacks and its held registrations, in the caller's transaction.
+ */
+function endClient(o: OwnerState, client: string): void {
+  o.ledger.suppressClient(client, clock());
+  o.registrations.endClient(client);
+  // And its runs (ADR-034 decision 6): their grants gone in this unit, their CLIs stopped.
+  o.launcher.stop(o.runs.endClient(client, clock()));
+}
+
+/** In the revoke's transaction: revoked rows past their bound forgotten, keys with them. */
+function evictRevoked(o: OwnerState): void {
+  for (const client of o.grants.evictRevoked(clock())) {
+    o.keys.forgotten(client);
+  }
+}
+
+/** The `grants` doors' handlers, by door. */
+export const grantsDoors = Object.freeze({
+  grantList(o: OwnerState, _call: Call<undefined>): { clients: Client[] } {
+    return { clients: o.grants.list() };
+  },
+  grantSet(o: OwnerState, { session: id, r }: Call<GrantRequest>):
+      { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
+        revision: number } {
+    return o.storage.transactionSync(() => {
+      const { moved, ...set } = o.grants.set(id, r as unknown as GrantRequest, clock());
+      if (moved) {
+        endClient(o, set.client);
+      }
+      if (set.mode === "revoked") {
+        o.keys.revoked(set.client, Math.floor(clock()));
+        evictRevoked(o);
+      }
+      return set;
+    });
+  },
+  grantRevoke(o: OwnerState, { r }: Call<ClientRequest>):
+      { client: string; revoked: boolean; generation: number; revision: number } {
+    return o.storage.transactionSync(() => {
+      const revoked = o.grants.revoke(r["client"], clock());
+      endClient(o, revoked.client);
+      o.keys.revoked(revoked.client, Math.floor(clock()));
+      evictRevoked(o);
+      return revoked;
+    });
+  },
+  grantForget(o: OwnerState, { r }: Call<ClientRequest>): { client: string; forgotten: boolean } {
+    return o.storage.transactionSync(() => {
+      const forgot = o.grants.forgetKey(r["client"], clock());
+      if (forgot.forgotten) {
+        o.keys.forgotten(forgot.client);
+      }
+      return forgot;
+    });
+  },
+  grantForgetRevoked(o: OwnerState, { session: id, r }: Call<ForgetRequest>):
+      { forgotten: string[]; mcp_fence: number } {
+    return o.storage.transactionSync(() => {
+      const forgot = o.grants.forgetRevoked(id, r["clients"], clock());
+      for (const client of forgot.forgotten) {
+        o.keys.forgotten(client);
+      }
+      return forgot;
+    });
+  },
+});

@@ -17,21 +17,25 @@ import { PLATFORM_CALLER } from "../src/admission";
 import type { ModelRecord } from "../../contract/src/model-record";
 import { EGRESS_BEAT_S } from "../../contract/src/egress";
 import {
-  EGRESS_LIMITS, type EgressMetering, type EgressOpened, type EgressRefusal, LOST_AFTER_S,
+  EGRESS_LIMITS, type EgressMetering, type EgressOpened, type EgressRefusal, egressPrice,
+  LOST_AFTER_S,
 } from "../src/egress";
 import { EGRESS_DEADLINE_S, SPEND_KEPT } from "../../contract/src/limits";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { apiRules } from "../../contract/src/api-rules";
-import { egressPrice, NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
+import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY } from "../src/owner-do";
+import { SYNC_FENCED } from "../src/files";
 import { priced } from "../src/usage";
 import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
 import { failure, TIERS } from "./support";
-import type { SandboxRun } from "../src/owner-do";
+import type { SandboxRun } from "../src/launch";
 import type { NetworkPlan } from "../src/network";
-import { hashed, ownerRun, secretOf } from "./runs-support";
+import { defineAgent, hashed, ownerRun, recorder, runnerSandbox, secretOf } from "./runs-support";
+import type { SandboxSignin, SandboxStart } from "../src/sandbox";
+import { SANDBOX_WAITING } from "../src/sandbox";
 import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
 import type { FauxOwnerDO } from "./worker";
@@ -682,7 +686,7 @@ async function pricedModels(r: Gated, connection: string) {
                                     connection)) as [{ models: string }];
   return (JSON.parse(models) as ModelRecord[]).filter((model) => model.cost.output > 0)
     .map((model) => ({ model, holds: egressPrice([model], model.contextWindow,
-                                                 model.maxTokens) }))
+                                                 model.maxTokens, priced) }))
     .sort((a, b) => a.holds - b.holds);
 }
 
@@ -901,7 +905,7 @@ describe("the spend caps", () => {
                    maxTokens: 50_000 } as ModelRecord;
     // The wide model's million input tokens at 2, its thousand output at 10; the dear one's
     // hundred thousand at 3 and its 50,000 at 20: the dearer of the two.
-    expect(egressPrice([wide, dear], 1_000_000, 50_000))
+    expect(egressPrice([wide, dear], 1_000_000, 50_000, priced))
       .toBe(Math.max(1_000_000 * 2 + 1_000 * 10, 100_000 * 3 + 50_000 * 20));
   });
 
@@ -1142,6 +1146,89 @@ describe("a change that ends egress", () => {
     expect((await rows(r)).at(-1)).toMatchObject({ ended: "run" });
     expect(await r.stub.agentStatus(r.bind(), { run_id: last.run }))
       .toMatchObject({ state: "unknown", code: "lost" });
+  });
+});
+
+describe("a lease given back (untangle A2, review F5)", () => {
+  it("ends its streams when a sign-in that held it ends (leaseFreed)", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await capped(r, ROOMY);
+    await defineAgent(r.stub, r.bind(), "main", { ...onKey(connection), scopes: [] });
+    // A sign-in holds the owner's lease first, so the run joins it.
+    const { id } = await r.stub.signinStart(r.bind(), { engine: "claude-code" }) as { id: string };
+    const signin = (await recorder(r.stub)).signins.at(-1)! as SandboxSignin;
+    const sl = signin as unknown as SandboxStart;
+    const opened = await r.in(async (instance) => {
+      let call: EgressOpened | EgressRefusal | null = null;
+      instance.recorder.answer = { started: false, code: SANDBOX_WAITING };
+      instance.recorder.beforeAnswer = async (start) => {
+        await instance.sandbox.networkApplied({ lease_id: sl.lease.lease_id,
+                                                epoch: sl.lease.epoch,
+                                                generation: sl.network!.generation });
+        call = await instance.egressOpen({
+          owner: r.name, caller: r.name, origin: null, sandbox: {
+            kind: "egress", token: hashOf("egress", sl.tokens!.egress_token),
+            generation: sl.network!.generation, secret: hashed(secretOf(start)) } },
+          { run: start.run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
+      };
+      return { instance, wait: () => call };
+    });
+    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+                                         { message: "go", client_send_id: "q-2" });
+    expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+    const call = opened.wait() as EgressOpened | EgressRefusal | null;
+    expect(call).toMatchObject({ ok: true });
+    // The sign-in still holds the lease: the run's wait gave nothing back, the stream is live.
+    expect((await rows(r)).at(-1)).toMatchObject({ state: "open", ended: null });
+    // The sign-in ends: its lease is given back, and the stream under it with it.
+    await r.stub.signinEvents(runnerSandbox(r, sl), { id, frames: [
+      { seq: 1, at: Date.now() / 1000, event: { type: "ta.signin", state: "cancelled" } }],
+      end: { exit_code: 1 } });
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    expect((await rows(r)).at(-1)).toMatchObject({ ended: "lease" });
+  });
+
+  it("ends its streams: a start the sandbox has no room for gives its lease back", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await capped(r, ROOMY);
+    await defineAgent(r.stub, r.bind(), "main", { ...onKey(connection), scopes: [] });
+    // While the start is out (the run queued, its lease and grant live), the run's process
+    // opens a model call on its lease; then the sandbox answers it has no room.
+    const opened = await r.in(async (instance) => {
+      let call: EgressOpened | EgressRefusal | null = null;
+      // The end signal read where it was opened, in the start's own call: read from the
+      // test's, a stream of another request's reads as over though it is not.
+      let closed: Promise<boolean> = Promise.resolve(false);
+      instance.recorder.answer = { started: false, code: SANDBOX_WAITING };
+      instance.recorder.beforeAnswer = async (start) => {
+        await instance.sandbox.networkApplied({ lease_id: start.lease.lease_id,
+                                                epoch: start.lease.epoch,
+                                                generation: start.network!.generation });
+        call = await instance.egressOpen({
+          owner: r.name, caller: r.name, origin: null, sandbox: {
+            kind: "egress", token: hashOf("egress", start.tokens!.egress_token),
+            generation: start.network!.generation, secret: hashed(secretOf(start)) } },
+          { run: start.run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
+        if (call.ok) {
+          const read = call.ended.getReader().read().then(({ done }) => done, () => false);
+          const late = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000));
+          closed = Promise.race([read, late]);
+        }
+      };
+      return { instance, wait: () => call, closed: () => closed };
+    });
+    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+                                         { message: "go", client_send_id: "q-1" });
+    expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+    const call = opened.wait() as EgressOpened | EgressRefusal | null;
+    expect(call).toMatchObject({ ok: true });
+    // Its run never started, so no run's end ended the stream: the lease's did, its signal
+    // closed as the start's answer gave the lease back.
+    expect(await opened.closed()).toBe(true);
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    expect((await rows(r)).at(-1)).toMatchObject({ ended: "lease" });
   });
 });
 

@@ -14,7 +14,7 @@ import type { EgressScope, Source } from "../../contract/src/egress-scope";
 import { seal } from "../../gateway/src/keyring";
 
 import type { ModelRecord } from "../../contract/src/model-record";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { signedIn } from "./ledger-support";
 import { EVERY_SIGNIN, TIERS } from "./support";
 import type { GatedOwnerDO } from "./worker";

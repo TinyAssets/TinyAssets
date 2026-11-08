@@ -116,7 +116,7 @@ describe("a rename across the roots", () => {
     expect(kept).toEqual(counted);
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
     await inFiles(r.stub, {}, async (files) => {
-      await files.collect(Date.now() / 1000);
+      await files.run(Date.now() / 1000);
       expect(await bytesAt(files, `${at}/s`)).toEqual(small);
       expect(await bytesAt(files, `${at}/b`)).toEqual(big);
     });
@@ -293,7 +293,7 @@ describe("the change feed", () => {
     // With no retention, the delete's record is due as soon as it is written.
     await inFiles(r.stub, { retention_days: 0 }, async (files) => {
       files.remove(`${W}/gone`, { expected: null, writer: "owner" });
-      await files.collect(Date.now() / 1000 + 1);
+      await files.run(Date.now() / 1000 + 1);
     });
     const page = await r.stub.fileChanges(r.bind(null), { after: cursor, limit: 10 });
     expect(page.reset).toBe(true);

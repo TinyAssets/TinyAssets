@@ -9,7 +9,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { changedSql } from "../src/collections";
-import type { Binding, OwnerDO, RowHead } from "../src/owner-do";
+import type { OwnerDO } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
+import type { RowHead } from "../src/pages";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure, inObject, ownerObject } from "./support";
 

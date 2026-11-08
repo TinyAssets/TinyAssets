@@ -12,23 +12,24 @@ import { socketRequest } from "../../doors/src/binder";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
 import { AGENT_DISABLED } from "../src/agent-file";
-import { AGENT_CHANGED, type Binding } from "../src/owner-do";
+import { AGENT_CHANGED } from "../src/launch";
+import type { Binding } from "../../contract/src/binding";
 import { Files } from "../src/files";
-import { RUNS_KEPT } from "../src/runs";
+import { NO_CONVERSATION, RUN_ENDED, RUNS_KEPT, SIGNIN_REQUIRED } from "../src/runs";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import {
   EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,
 } from "../../contract/src/run-events";
-import { NO_CONVERSATION, RUN_ENDED, SIGNIN_REQUIRED } from "../src/runs";
 import { SANDBOX_ABSENT } from "../src/sandbox";
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated } from "./gateway-support";
-import { MCP, MUSE, signedIn } from "./ledger-support";
+import { ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
 import {
   ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding, runnerSandbox,
   sandboxOf, secretOf, startOf, syncOf, TIERS,
 } from "./runs-support";
-import { drainDue, failure, sqlIn } from "./support";
+import { drainDue, failure, laneAt, sqlIn } from "./support";
+import { nativeId } from "../../contract/src/binding";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
@@ -742,6 +743,28 @@ describe("the tier numbers (review L-1)", () => {
     expect(job!["time"]).toBeGreaterThan(Date.now() + 30_000);
   });
 
+  it("start a waiting run within the room of the owner's own tier, the paid tier's too",
+     async () => {
+    const r = await gated();
+    const tiers = { free: { runs: 2, storage_bytes: 1 }, paid: { runs: 3, storage_bytes: 1 } };
+    const owner = r.bind({ tiers });
+    await r.stub.tierSet({ owner: r.name, caller: PLATFORM_CALLER, origin: null },
+                         { tier: "paid" });
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const a = await r.stub.agentSubmit(owner, { message: "a1", client_send_id: "a-1" });
+    await r.stub.agentSubmit(owner, { message: "b1", client_send_id: "b-1" });
+    const waiting = await r.stub.agentSubmit(owner, {
+      message: "a2", client_send_id: "a-2", conversation_id: a.conversation_id });
+    expect(waiting.state).toBe("waiting");
+    await r.stub.runEvents(runnerBinding(r, await startOf(r.stub, a.run_id)),
+                           { frames: [], end: { exit_code: 0 } });
+    // Another run takes a slot: two live, past the free tier's room but not the paid tier's.
+    await r.stub.agentSubmit(owner, { message: "c1", client_send_id: "c-1" });
+    await drainDue(r.stub);
+    expect(await r.stub.agentStatus(r.bind(), { run_id: waiting.run_id }))
+      .toMatchObject({ state: "running" });
+  });
+
   it("settle a waiting run refused at its turn with the refusal's own code, its words its error",
      async () => {
     const r = await gated();
@@ -758,6 +781,52 @@ describe("the tier numbers (review L-1)", () => {
     const refused = await r.stub.agentStatus(r.bind(), { run_id: waiting.run_id });
     expect(refused).toMatchObject({ state: "failed", code: "agent_file_invalid",
                                     error: expect.stringMatching(/^agent\.json holds only /) });
+  });
+});
+
+describe("a run door's wait (untangle A2, review F5)", () => {
+  it("is woken by its run's settle, never left to its wait's end", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const began = Date.now();
+    const asked = r.stub.agentSubmit(r.bind({ tiers: TIERS }), {
+      message: "go", client_send_id: "w-1", wait_ms: 30_000 });
+    let starts: readonly { run: string }[] = [];
+    while (starts.length === 0 && Date.now() - began < 10_000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      starts = (await recorder(r.stub)).starts;
+    }
+    const start = await startOf(r.stub, starts[0]!.run);
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    expect(await asked).toMatchObject({ run_id: start.run, state: "succeeded" });
+    expect(Date.now() - began).toBeLessThan(15_000);
+  });
+});
+
+describe("the runs lane (untangle A2, review F5)", () => {
+  it("has no work for mail while the owner is suspended, and has it again once lifted",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const platform = { owner: r.name, caller: PLATFORM_CALLER, origin: null };
+    await r.stub.admissionSet(platform, { reason: "billing", suspended: true });
+    // Mail to `main` no run has taken, made in the ledger as a post makes it: the owner's
+    // own post is work, which a suspension refuses.
+    const due = await r.in((_instance, state) => {
+      const ledger = ledgerOn(state.storage);
+      ledger.post(null, `dm:${nativeId("main")}`, "m-1", "hello", null);
+      return ledger.mailDue(true);
+    });
+    expect(due).toBe(true);
+    // The schedule set again (the platform's door syncs it): no job for the mail while
+    // suspended, so the lane never spins on mail it may not deliver.
+    await r.stub.admissionSet(platform, { reason: "billing", suspended: true });
+    expect(await laneAt(r.stub, "runs")).toBeNull();
+    // Lifted: the mail is work again, and the lane delivers it as `main`'s run.
+    await r.stub.admissionSet(platform, { reason: "billing", suspended: false });
+    expect(await laneAt(r.stub, "runs")).not.toBeNull();
+    await drainDue(r.stub);
+    expect((await recorder(r.stub)).starts).toHaveLength(1);
   });
 });
 

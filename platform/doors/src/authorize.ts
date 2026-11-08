@@ -43,12 +43,13 @@ import {
 import {
   type AppProps, bindPlatform, bindSignIn, type McpProps, mcpOrigin, ownerOf,
 } from "./binder";
-import { type Vendor, vendorOf } from "./apps";
+import { type Vendor, vendorOf } from "../../contract/src/apps";
 import { boundedText, TOO_LARGE } from "./body";
 import {
-  APP_RESOURCE, AUTHORIZE_BODY_MAX, CLOCK_MARGIN_S, type DoorsEnv, FIRST_PARTY_CLIENTS,
-  MCP_RESOURCE, now, PUBLIC_HOST, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
+  AUTHORIZE_BODY_MAX, CLOCK_MARGIN_S, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE, now,
+  PUBLIC_HOST, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
 } from "./config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import { outsideOpen, ownerOpen } from "./control";
 import { putOwner, readControl, readOwner } from "./directory";
 import { refusalOf } from "../../contract/src/refusal";

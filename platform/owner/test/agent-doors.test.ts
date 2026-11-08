@@ -7,8 +7,8 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { type Origin } from "../src/ledger";
-import { type Binding, OwnerDO } from "../src/owner-do";
+import type { Binding, Origin } from "../../contract/src/binding";
+import { OwnerDO } from "../src/owner-do";
 import { AGENTS_DIR, GOALS_DIR, OWNER_TREES, within } from "../../contract/src/paths";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";

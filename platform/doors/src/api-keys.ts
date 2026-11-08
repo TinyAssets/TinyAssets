@@ -33,7 +33,8 @@
 import { HEX16 } from "../../contract/src/ids";
 import { MAX_KEYS } from "../../contract/src/limits";
 
-import { apiKeyOrigin, bindApiKey, type Bound } from "./binder";
+import { bindApiKey, type Bound } from "./binder";
+import { apiKeyOrigin } from "../../contract/src/binding";
 import type { DoorsEnv } from "./config";
 import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
 

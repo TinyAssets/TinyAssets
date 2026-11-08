@@ -32,6 +32,9 @@
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { TIER_STORAGE_MAX } from "./segments";
+import type {
+  Call, OwnerState,
+} from "./owner-do";
 
 export const TIER_NAMES = Object.freeze(["free", "paid"] as const);
 export type TierName = (typeof TIER_NAMES)[number];
@@ -156,3 +159,23 @@ export function keptTiers(storage: OwnerStorage): Tiers | null {
     .toArray()[0];
   return kept === undefined ? null : parseTiers(JSON.parse(kept.tiers));
 }
+
+export interface TierRequest {
+  readonly tier: TierName;
+}
+
+// -- THE DOORS: the `tier` rows' handlers (`contract/doors.json`) ---------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `tier` doors' handlers, by door. */
+export const tierDoors = Object.freeze({
+  tierSet(o: OwnerState, { request }: Call<TierRequest>): { tier: TierName } {
+    return o.setTier(request);
+  },
+  tierRead(o: OwnerState, _call: Call<undefined>): { tier: TierName } {
+    return { tier: o.tier() };
+  },
+});
