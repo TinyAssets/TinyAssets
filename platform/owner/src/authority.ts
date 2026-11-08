@@ -19,19 +19,17 @@
  * The runs slice (R) mints a run's grant from this, and checks it at every call the run
  * makes (ADR-034 decision 6).
  */
+import type { RunCapability } from "../../contract/src/capabilities";
 import { HEX64 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { codePoints, isPrintable } from "../../contract/src/text";
 
-/** The capabilities of a scoped grant that work needs (`grants.ts`'s `CAPABILITIES`). */
-export type ToolCapability = "read_files" | "write_files" | "propose_policy" | "converse"
-  | "run_graph";
 
 /** The need of what only the owner itself may do, whatever grant a client holds. */
 export const OWNER_ONLY = "owner";
 
 /** What an operation needs: each of these capabilities (none: only a standing authority), or the owner itself. */
-export type Need = readonly ToolCapability[] | typeof OWNER_ONLY;
+export type Need = readonly RunCapability[] | typeof OWNER_ONLY;
 
 /** The fixed reasons work is refused with: the receipts see only these. */
 export const AUTHORITY_CHANGED = "outside client authority no longer stands";
@@ -113,10 +111,50 @@ export function stamped(value: unknown): Stamped | null {
            universe: universe as string | null, agent };
 }
 
-/** A standing grant, as a check reads it: its mode, and whether it holds a triple. */
+/** A capability where work acts: a scoped grant's triple. */
+export interface Triple {
+  readonly universe: string;
+  readonly agent: string;
+  readonly capability: string;
+}
+
+/** A grant, as a check reads it: its mode, and a scoped grant's triples. */
 export interface StandingGrant {
   readonly mode: string;
-  holds(scope: { universe: string; agent: string; capability: string }): boolean;
+  readonly scopes: readonly Triple[];
+}
+
+/** What holds capabilities: a grant, or a run's own scopes (its grant's, at admission). */
+export type Holder = StandingGrant | { readonly run: readonly string[] };
+
+/**
+ * Where work acts: a universe (the command center; null, none: a scoped grant holds nothing
+ * there) and the agent it acts as; or anywhere, for what a grant holds somewhere.
+ */
+export type Where = { readonly universe: string | null; readonly agent: string } | "anywhere";
+
+/**
+ * Whether `holder` holds `capability` where its work acts: the one rule of who may do what,
+ * at every door and every check. No holder (`null`) is the owner's own work, which holds
+ * everything; a run holds its own scopes, wherever it acts; a full grant every capability,
+ * a scoped one only the triples it names (anywhere: any of them), and a revoked one none.
+ */
+export function may(holder: Holder | null, capability: string, where: Where): boolean {
+  if (holder === null) {
+    return true;
+  }
+  if ("run" in holder) {
+    return holder.run.includes(capability);
+  }
+  if (holder.mode === "full") {
+    return true;
+  }
+  if (holder.mode !== "scoped") {
+    return false;
+  }
+  return holder.scopes.some((held) => held.capability === capability && (where === "anywhere"
+    || (where.universe !== null && held.universe === where.universe
+        && held.agent === where.agent)));
 }
 
 /** What a check reads of the object's grants: `Grants.standing`, with `holds`. */
@@ -179,8 +217,7 @@ export class Authority {
       return;
     }
     if (need === undefined || stamp.universe === null
-        || !need.every((capability) => grant.holds({ universe: stamp.universe!,
-                                                     agent: stamp.agent, capability }))) {
+        || !need.every((capability) => may(grant, capability, stamp))) {
       throw new Refusal("not_granted", NOT_GRANTED);
     }
   }

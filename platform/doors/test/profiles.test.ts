@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { apiKeyOrigin } from "../../owner/src/ledger";
 import type { Binding } from "../../owner/src/owner-do";
 import { mcpOrigin } from "../src/binder";
-import { profileNames } from "../src/tools";
+import { profileNames } from "../../contract/src/doors";
 import {
   appPost, call, connect, legacyPost, OPEN, registerClient, serveFirstPartyDocument,
   setControl, signInApp, type Tokens, url,

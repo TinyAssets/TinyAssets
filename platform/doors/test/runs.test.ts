@@ -20,7 +20,7 @@ import type { SandboxStart } from "../../owner/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { RUN_INSTRUCTIONS } from "../src/mcp";
-import { profileNames } from "../src/tools";
+import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { SESSION_REFUSED } from "../../owner/src/runs";
 import { type OwnerDO, refuseOnce } from "./entry";

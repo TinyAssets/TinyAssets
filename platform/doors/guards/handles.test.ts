@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { REPO } from "../../ci/paths";
 import { ISSUER } from "../src/config";
-import { DEFAULT_PROFILE, profileNames, toolNames } from "../src/tools";
+import { DEFAULT_PROFILE, profileNames, toolNames } from "../../contract/src/doors";
 
 interface Side {
   readonly authorization_server: string;

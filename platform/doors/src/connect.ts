@@ -13,8 +13,8 @@
  * Every connect route is on the owner surface (`app.ts`): the owner's first-party token
  * (an outside credential is refused before any object call), a POST of exactly
  * `application/json` within `APP_BODY_MAX`, the maintenance gate, and the session
- * cookie, which the object checks on every door (`#widening`). Each body is a closed set
- * of fields, checked with everything else that can be checked here before the object is
+ * cookie, which the object checks at every session door (its row's caller). Each body is a
+ * closed set of fields, checked with everything else that can be checked here before the object is
  * reached: the owner comes from the token alone, and the connection and its version from
  * the object alone.
  *

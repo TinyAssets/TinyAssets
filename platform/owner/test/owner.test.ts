@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { LIMITS } from "../src/collections";
 import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { doorTable } from "../../contract/src/doors";
 import { OwnerDO } from "../src/owner-do";
 import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../src/migrate";
 import { MIGRATIONS } from "../src/schema";
@@ -16,44 +17,6 @@ function version(state: DurableObjectState): number {
 }
 
 const PULL = { collection: "board", after: 0, limit: 1 };
-
-/**
- * Every public method of the class is an RPC any binding can call, so this list is the
- * object's whole surface: its collection, ledger, policy, file, notice, model-connection and
- * model-spend doors. `alarm` is the
- * runtime's, handed to Lifecycle, and refused over RPC. Claiming, marking and settling a
- * wake have no door: only the `wakes` lane runs them, in process, with the doorbell's
- * sender. The list only grows by a door (ADR-034 took the agent's doors out until the runs
- * slice brings them back as run doors).
- */
-const RPC_METHODS = Object.freeze([
-  "admissionSet", "agentCancel", "agentDoorbell", "agentDoorbellEnd", "agentRun", "agentStatus", "agentSubmit",
-  "boardDigest",
-  "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
-  "collectionPull",
-  "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
-  "connectionRevoke", "dataKeyRewrap", "deleteAgent", "disableAgent", "egressBeat", "egressOpen",
-  "egressReceipts", "egressReserve", "egressSettle", "erasureOutside", "erasureOutsideDone", "exportChunks",
-  "exportEnd", "fileAppend", "fileChanges", "fileEdit", "fileFetch", "fileHistory",
-  "fileHistoryPurge", "fileList",
-  "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
-  "fileRestore", "fileSearch", "fileStat", "fileSyncCommit", "fileSyncUploadAbort",
-  "fileSyncUploadBegin", "fileSyncUploadChunks", "fileText",
-  "fileUploadAbort", "fileUploadBegin",
-  "fileUploadChunks", "fileUploadCommit", "fileUploadStored", "fileUploadTarget",
-  "fileUsage", "fileWrite",
-  "flowFinish", "grantForget",
-  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboundAccept", "inboundCreate",
-  "inboundList", "inboundRevoke", "inboundSet", "inboxDigest", "keyList", "keyMint", "mailChain",
-  "mailboxAck", "mailboxRead", "noticeList", "outsideAgents", "ownerErase", "ownerExport",
-  "policyProposal", "policyPropose",
-  "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
-  "registerProposal", "registerPropose", "roomPost", "runEvents", "runList", "sandboxBilled",
-  "sandboxDays", "sandboxRung", "sessionClose", "sessionCloseAll", "sessionExtend", "sessionOpen",
-  "signinCancel", "signinCode", "signinEvents", "signinList", "signinReport", "signinStart",
-  "socketTicket", "socketsEnd", "starterReceipts", "storageUsage", "tierRead", "tierSet",
-  "toolProfile", "usageReceipts", "wakeEvents", "wakeSubscribe", "wakeUnsubscribe",
-]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */
 const RESERVED = Object.freeze(["alarm", "fetch", "webSocketClose", "webSocketError",
@@ -297,10 +260,14 @@ describe("the object's stored owner", () => {
 });
 
 describe("the object's RPC surface", () => {
+  // Every public method of the class is an RPC any binding can call, so the door table
+  // (`contract/doors.json`) is the object's whole surface. `alarm` is the runtime's, handed to
+  // Lifecycle, and refused over RPC. Claiming, marking and settling a wake have no door: only
+  // the `wakes` lane runs them, in process, with the doorbell's sender.
   it("is exactly its doors: nothing claims, marks or settles a wake", async () => {
     const methods = Object.getOwnPropertyNames(OwnerDO.prototype)
       .filter((method) => method !== "constructor" && !RESERVED.includes(method)).sort();
-    expect(methods).toEqual(RPC_METHODS);
+    expect(methods).toEqual(doorTable().map((row) => row.door).sort());
     expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
     const { stub, name } = ownerObject();
     const call = (method: string) => {

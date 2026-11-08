@@ -17,7 +17,7 @@ import {
   MAX_KEYS_PER_OWNER, newKey, parseKey, secretHash,
 } from "../src/api-keys";
 import { type DoorsEnv, now } from "../src/config";
-import { DEFAULT_PROFILE, profileNames } from "../src/tools";
+import { DEFAULT_PROFILE, profileNames } from "../../contract/src/doors";
 import {
   appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient,
   serveFirstPartyDocument, setControl, signInApp, sqlIn, TIERS, url,

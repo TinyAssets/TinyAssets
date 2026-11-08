@@ -15,7 +15,7 @@ import {
 } from "../src/authority";
 import { Refusal } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
-import { Grants, holds } from "../src/grants";
+import { Grants } from "../src/grants";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { MUSE, rig, signedIn } from "./ledger-support";
@@ -29,8 +29,8 @@ const CLIENT = Object.freeze({ by: "client" as const, stamp: STAMP });
 function under(mode: string, held: readonly string[] = [],
                admission: () => Refusal | null = () => null): Authority {
   return new Authority({
-    grants: { standing: () => ({ mode, holds: (scope) => scope.universe === "alpha"
-                                   && scope.agent === "main" && held.includes(scope.capability) }) },
+    grants: { standing: () => ({ mode, scopes: held.map((capability) =>
+      ({ universe: "alpha", agent: "main", capability })) }) },
     admission,
   });
 }
@@ -139,10 +139,8 @@ describe("the authority over the owner's own grants", () => {
       runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
         const storage = new WriteGate(state.storage).storage;
         const grants = new Grants(storage, new Policy(storage));
-        const authority = new Authority({ grants: { standing: (client, at, signed) => {
-          const grant = grants.standing(client, at, signed);
-          return { mode: grant.mode, holds: (scope) => holds(grant, scope) };
-        } } });
+        const authority = new Authority({ grants: {
+          standing: (client, at, signed) => grants.standing(client, at, signed) } });
         return authority.refusal({ by: "client", stamp }, need)?.message ?? "runs";
       });
     expect(await check(["read_files"])).toBe("runs");

@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { OPEN_GATES } from "../../ci/fixtures";
 import { OUTSIDE_OFF } from "../../doors/src/control";
 
-import { profileNames } from "../../doors/src/tools";
+import { profileNames } from "../../contract/src/doors";
 import type { Origin } from "../src/ledger";
 import { jsonBytes } from "../../contract/src/encoded";
 import { CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, type OwnerDO } from "../src/owner-do";

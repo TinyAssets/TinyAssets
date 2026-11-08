@@ -464,7 +464,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "owner_set INTEGER NOT NULL DEFAULT 0 CHECK (owner_set IN (0, 1)), " +
       "agents INTEGER NOT NULL DEFAULT 0 CHECK (agents >= 0), " +
       "held INTEGER NOT NULL DEFAULT 0 CHECK (held >= 0), " +
-      // The tool profile it is served (slice M, `doors/profiles.json`).
+      // The tool profile it is served (slice M, `contract/profiles.json`).
       "profile TEXT NOT NULL DEFAULT 'custom' CHECK (profile IN ('directory', 'custom')), " +
       // A grant's revision apart from its authority (part 9): the owner's concurrency token,
       // moved by every set and revoke and named by the owner's set; `generation` moves only

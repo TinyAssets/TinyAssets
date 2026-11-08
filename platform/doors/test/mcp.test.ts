@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { mcpOrigin } from "../src/binder";
 import { now } from "../src/config";
-import { profileNames, toolTable } from "../src/tools";
+import { profileNames, toolTable } from "../../contract/src/doors";
 import {
   call, connect, legacyPost, legacyTool, OPEN, reached, registerClient, rpcBody, setControl,
   sqlIn, type Tokens, url,

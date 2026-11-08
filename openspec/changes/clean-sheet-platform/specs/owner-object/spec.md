@@ -384,7 +384,7 @@ An MCP client's grant row SHALL keep the vendor its sign-in named (`vendor`, an 
 - **THEN** `agents_list.apps` shows Claude connected and verified, Muse and the others not connected, each with its connect_url
 
 ### Requirement: A grant names its tool profile
-Each outside client's grant SHALL name its tool profile (`doors/profiles.json`): `custom` until the owner names `directory` in its session; a free row SHALL name `custom`. The object SHALL answer a caller's tools (`toolProfile`): a run's, the `run` profile; a client's, its grant's, where `custom` is the owner's policy's `tools.custom` (distinct names of the MCP door's tools), or every tool when the policy names none; `code` only while the owner's policy has `hooks.codemode` on, its default. Code mode SHALL be no capability: the profile and the switch are the owner's choice of it.
+Each outside client's grant SHALL name its tool profile (`contract/profiles.json`): `custom` until the owner names `directory` in its session; a free row SHALL name `custom`. The object SHALL answer a caller's tools (`toolProfile`): a run's, the `run` profile; a client's, its grant's, where `custom` is the owner's policy's `tools.custom` (distinct names of the MCP door's tools), or every tool when the policy names none; `code` only while the owner's policy has `hooks.codemode` on, its default. Code mode SHALL be no capability: the profile and the switch are the owner's choice of it.
 
 #### Scenario: A new client
 - **WHEN** an MCP client's first verified call records its grant
@@ -1131,7 +1131,7 @@ A room SHALL be a pair's: `dm:<a>` the owner and `a`, `dm:<a>+<b>` two agents (`
 - **THEN** no further run starts, and the owner reads the question in the chain
 
 ### Requirement: A run reads no mailbox
-A run SHALL read and ack no ledger mailbox (`run_no_mailbox`, at `mailboxRead`, `mailboxAck` and `inboxDigest`), and its MCP profile (`run`, `doors/profiles.json`) SHALL hold no mailbox tool, `inbox_digest` among them: its mail is its input, and its agent's mailbox holds every authority's mail. An agent's `queued` and `held_cap` rows SHALL be the `runs` lane's alone.
+A run SHALL read and ack no ledger mailbox (`run_no_mailbox`, at `mailboxRead`, `mailboxAck` and `inboxDigest`), and its MCP profile (`run`, `contract/profiles.json`) SHALL hold no mailbox tool, `inbox_digest` among them: its mail is its input, and its agent's mailbox holds every authority's mail. An agent's `queued` and `held_cap` rows SHALL be the `runs` lane's alone.
 
 #### Scenario: A client's run
 - **WHEN** a client's mail starts an agent's run while the owner's mail to that agent waits

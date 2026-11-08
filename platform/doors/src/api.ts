@@ -21,7 +21,7 @@ import { withTiers } from "./binder";
 import { mediaType } from "./session";
 import { profiled } from "./mcp";
 import { refusalResponse } from "./refused";
-import { callDoor } from "./tools";
+import { callDoor, toolDoor } from "./tools";
 
 const TOOL_PATH = /^\/api\/tools\/([a-z_]{1,64})$/;
 
@@ -61,7 +61,7 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
     return args;
   }
   try {
-    return answerJson(tool.name, await callDoor(held.stub, held.binding, tool, args));
+    return answerJson(tool.name, await callDoor(held.stub, held.binding, toolDoor(tool), args));
   } catch (error) {
     const refused = refusalOf(error);
     if (refused === null) {

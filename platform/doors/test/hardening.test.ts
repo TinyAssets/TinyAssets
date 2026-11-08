@@ -17,7 +17,7 @@ import {
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
 import { revokeClient } from "../src/revoke";
-import { profileNames } from "../src/tools";
+import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar, legacyPost,

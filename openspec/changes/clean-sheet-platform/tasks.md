@@ -1587,7 +1587,7 @@ R, S, M and W.
   and `/api` binding carries the client's origin), so its scripts take the outside gate in
   the object as at the door; only the owner's app (origin none) and a run take the
   maintenance gate, as their doors do. The details below are as built:
-  - **Profiles, data** (`doors/profiles.json`): `custom` (the owner's own choice: policy
+  - **Profiles, data** (`contract/profiles.json`): `custom` (the owner's own choice: policy
     `tools.custom`, else every tool), which every grant on `/mcp` and every API key names,
     since each is a custom connector (`outside_clients.profile`, a free row `custom`);
     `directory` (every tool but `code`, by OpenAI's plugin guidelines, "Tool independence
@@ -2530,7 +2530,7 @@ R, S, M and W.
        hold the old platform's handle set (`read_graph`, `write_graph`, `run_graph`,
        `read_page`, `write_page`, `converse`, `get_status`) and call `get_status` or
        `read_graph target=status`. The new door serves the tool table
-       (`platform/doors/profiles.json`) and neither of those. Their handle set becomes the
+       (`platform/contract/profiles.json`) and neither of those. Their handle set becomes the
        custom profile's, and their status call one the new table has (`agents_list`, whose
        `apps` and `owner_agents` also prove the seed ran).
      - `scripts/last_activity_canary.py` reads `daemon.last_activity_at` from `get_status`;

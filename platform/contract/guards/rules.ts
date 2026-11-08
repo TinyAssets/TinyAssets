@@ -5,7 +5,7 @@
  * The contract is the vocabulary every Worker speaks (ids and grammars, limits, the egress
  * wire, slots, wake records, run events, the source grammar), so it depends on nothing that
  * depends on it: it imports nothing but its own sources, its wake kinds' file and the plain
- * standard modules the Workers runtime and Node both have (`node:crypto`). It is pure: no
+ * standard modules the Workers runtime and Node both have (`node:crypto`), and its data files. It is pure: no
  * binding, no storage, no network and no state of its own (the module-state guard walks it
  * as every Worker's source, `owner/guards/module-state.test.ts`), so no name of the runtime's
  * I/O appears in it.
@@ -21,13 +21,14 @@ import { join } from "node:path";
 import type { ImportRules } from "../../ci/kit/imports";
 import { PLATFORM } from "../../ci/paths";
 
-/** The contract's one data file. */
+/** The contract's data files: the wake kinds, the owner's doors and the tool profiles. */
 const WAKE_KINDS = "contract/wake-kinds.json";
+const DATA = Object.freeze([WAKE_KINDS, "contract/doors.json", "contract/profiles.json"]);
 
 export const IMPORTS: ImportRules = Object.freeze({
   worker: "contract",
   called: "the contract",
-  outside: Object.freeze([WAKE_KINDS]),
+  outside: DATA,
   bare: Object.freeze({ "node:crypto": null }),
   banned: Object.freeze([{
     pattern: /^(?:fetch|process|node:process|globalThis|caches|storage|WebSocket|DurableObject|WorkerEntrypoint|getByName)$/,
@@ -44,7 +45,7 @@ function filesOf(dir: string, extension: string, strip: boolean): string[] {
 export const SOURCES_IMPORTS: ImportRules = Object.freeze({
   worker: "sources",
   called: "the source records",
-  outside: Object.freeze([...filesOf("contract/src", ".ts", true), WAKE_KINDS,
+  outside: Object.freeze([...filesOf("contract/src", ".ts", true), ...DATA,
                           ...filesOf("sources", ".json", false)]),
   bare: IMPORTS.bare,
   banned: IMPORTS.banned,

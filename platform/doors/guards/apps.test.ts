@@ -16,7 +16,7 @@ import { appList, checkedApps, connectUrl, refusedRegistrationLine, registration
          vendorOf } from "../src/apps";
 import { MCP_RESOURCE } from "../src/config";
 import { CLIENT_INSTRUCTIONS } from "../src/instructions";
-import { toolTable } from "../src/tools";
+import { toolTable } from "../../contract/src/doors";
 
 const PLUGINS = join(PLATFORM, "plugins");
 /**
