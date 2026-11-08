@@ -22,6 +22,11 @@ sys.path.insert(0, str(_REPO / "scripts"))
 import cutover_handles_canary as canary  # noqa: E402
 import mcp_public_canary as public  # noqa: E402
 
+pytestmark = pytest.mark.verifies(
+    "live-mcp-connector-surface:Public Canary And Canonical Review Surface",
+    "clean-sheet-platform:Each caller is served exactly its own tool profile",
+)
+
 URL = "https://tinyassets.io/mcp"
 METADATA = "https://tinyassets.io/.well-known/oauth-protected-resource/mcp"
 KEY = "ta_key_0123456789abcdef_" + "s" * 43
