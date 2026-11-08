@@ -10,10 +10,10 @@ name: Platform deploy (manual, founder-approved)
 #            with the E2B key alone: the sandbox's template and the runner
 #            this commit ships checked together on throwaway sandboxes,
 #            unless E2B already holds their pair's tag (`--mode pair`).
-#   apply  - needs the plan and the pair (none for probe and h2, which deploy
-#            nothing), in the main-only `production` environment: the mode
-#            with `--yes`, which stops a deploy unless the pair's tag is at
-#            E2B. The founder's dispatch is the approval: a
+#   apply  - needs the plan and the pair (none for probe, h2 and handback,
+#            which deploy nothing), in the main-only `production` environment:
+#            the mode with `--yes`, which stops a deploy unless the pair's tag
+#            is at E2B. The founder's dispatch is the approval: a
 #            required reviewer on `production` would hold every scheduled job
 #            there too (platform/deploy/checklist.md).
 #
@@ -25,17 +25,21 @@ name: Platform deploy (manual, founder-approved)
 # makes the same in memory) and rotated with `keyring-add`, then stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
-# probe, routes and h2 here; pair is its own job.
+# probe, routes, h2 and handback here; pair is its own job. `routes` keeps a
+# record of what it changes (the zone's routes, the egress custom domain, E2B's
+# lifecycle webhook) before any change, and its job summary names the record's
+# id (the run's); `handback` takes that id as `record` and puts each back as the
+# record has it (the cutover's rollback).
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | probe | routes | h2'
+        description: 'plan | dark | probe | routes | h2 | handback'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, probe, routes, h2]
+        options: [plan, dark, probe, routes, h2, handback]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -43,6 +47,11 @@ on:
         type: string
       migrate:
         description: 'Workers with a pending Durable Object migration to deploy whole'
+        required: false
+        default: ''
+        type: string
+      record:
+        description: 'handback: the route record to hand back (the routes run id its summary names)'
         required: false
         default: ''
         type: string
@@ -66,6 +75,7 @@ jobs:
       MODE: ${{ inputs.mode }}
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}
+      RECORD: ${{ inputs.record }}
     steps:
       - uses: actions/checkout@v4
 
@@ -83,6 +93,7 @@ jobs:
           args=(--mode "${MODE}" --public)
           if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
           if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
+          if [ -n "${RECORD}" ]; then args+=(--record "${RECORD}"); fi
           node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"
 
   # The pair check, in a job of its own before apply: the pinned E2B template and the
@@ -125,7 +136,7 @@ jobs:
       always() && github.ref == 'refs/heads/main' && inputs.mode != 'plan'
       && needs.plan.result == 'success'
       && (needs.pair.result == 'success'
-          || ((inputs.mode == 'h2' || inputs.mode == 'probe')
+          || ((inputs.mode == 'h2' || inputs.mode == 'probe' || inputs.mode == 'handback')
               && needs.pair.result == 'skipped'))
     environment: production
     runs-on: ubuntu-latest
@@ -149,6 +160,7 @@ jobs:
       MODE: ${{ inputs.mode }}
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}
+      RECORD: ${{ inputs.record }}
     steps:
       - uses: actions/checkout@v4
 
@@ -166,4 +178,5 @@ jobs:
           args=(--mode "${MODE}" --yes)
           if [ -n "${ROTATE}" ]; then args+=(--rotate "${ROTATE}"); fi
           if [ -n "${MIGRATE}" ]; then args+=(--migrate "${MIGRATE}"); fi
+          if [ -n "${RECORD}" ]; then args+=(--record "${RECORD}"); fi
           node --experimental-strip-types platform/deploy/deploy.ts "${args[@]}"

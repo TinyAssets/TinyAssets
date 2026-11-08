@@ -146,8 +146,9 @@ test, cutover.
   writes a closed control record when there is none; registers the WorkOS redirect URI;
   then runs the handles canary. Mode `routes` adds the routes above and the
   `egress.tinyassets.io` custom domain (the cutover's: they take the paths from
-  `tinyassets-mcp-proxy`). Owed: the founder's run; the handles canary's tool set for the
-  new door before mode `routes`.
+  `tinyassets-mcp-proxy`), keeping a route record first, which mode `handback` puts back
+  (§9 slice 6). Owed: the founder's run; the handles canary's tool set for the new door
+  before mode `routes`.
 - [x] `/hooks/inbound`: the capability-URL and shared-app (Slack HMAC) shapes in the
   binder, the directory's `h:` and `i:` entries, the 1 MiB cap and the `control.inbound`
   gate, and a new owner door `inboundAccept` (config, revision, dedupe, owner-held
@@ -2332,7 +2333,30 @@ R, S, M and W.
     step after them (`tierSet`, `admissionSet`, `o:`). It never admits an owner the old stack
     never admitted (no `owner_admission` row: `owner.json` says `absent`, and the census and
     the builder refuse and count one); one found is the founder's to rule on.
-  - [ ] 6. The deploy kit's route handback.
+  - [x] 6. The deploy kit's route handback (`platform/deploy/deploy.ts`). Before any
+    change, mode `routes` keeps a route record in the control namespace. It holds the
+    before-state of each outward change `routes` makes beyond `dark`'s: the zone's routes and
+    the handover's changes, the egress custom domain's Worker, and E2B's lifecycle webhook,
+    held and enabled or not. It also holds the zone, the run id and the time, and no secret.
+    Its job summary names the id (the run's). A record it cannot keep stops it before any
+    change, and a re-run attempt keeps its first attempt's. So does an egress host that is
+    another Worker's or holds an address record, which wrangler's deploy would replace. That
+    listing takes DNS Read or DNS Write, and the handback's cleanup takes DNS Write. The
+    token is recorded with DNS Edit, and a run has shown it reading DNS, so nothing new is
+    owed (the checklist says how to check). Mode
+    `handback --record <id>` first holds the zone to the record and stops, naming it, on any
+    route changed since `routes`. Then it undoes `routes` in reverse: the hook disabled, the
+    custom domain detached (each unless the record has it so before), then the zone's routes
+    as the record has them, and last the DNS record the attach made, deleted if the detach
+    left it. An attach `routes` never recorded leaves the host held to no address record at
+    read-back. The routes go back as the record has them, only what the handover changed,
+    one change at a time, no path the record served ever unserved. It then reads each back and holds it to the record, and changes
+    nothing once converged. `dark`'s own changes stay: they serve no one without the
+    three. A missing or bad record stops it with nothing changed. Tested against the
+    fake world, killed after every route change and rerun (`deploy/guards/deploy.test.ts`).
+    Its plan job reads the record and the zone and changes nothing, so it can run any time
+    after `routes`. That read-only run is its rehearsal: an applied handback can only follow
+    an applied `routes`, so its first applied run is the window's own.
   - [ ] 7. A dark rehearsal under `rehearsal-` names, measured, verified and wiped (the founder
     approved it on real data, 2026-11-07).
   - [ ] 8. The starter's onboarding skill reads `/workspace/imported/` and offers to merge; it
@@ -2359,6 +2383,28 @@ R, S, M and W.
   stopped, not destroyed, through a hold of 14 days after the cutover, and the founder is
   told before it and the final backup are destroyed (the founder, 2026-11-07). S36 reads
   converged.
+  The route switch, in this order (the handback, slice 6 above):
+  1. **Record.** Mode `routes` keeps its route record before any change. Its job summary
+     names the record's id, which is the run's.
+  2. **`routes`.** The same run hands the doors' routes over.
+  3. **Verify.** First the handback's plan job (`handback --record <id>`, read-only) shows
+     what a handback would change. Then the handles canary and every imported owner's
+     check.
+  4. **The handback, if verify fails,** at any point before the hold ends, in this order:
+     - `handback --record <id>`. Before any change, it holds the zone to the record and
+       stops, naming any route changed since `routes`. Then it disables the lifecycle webhook
+       and detaches the egress domain, each as the record has it before. It puts the zone's
+       routes back as recorded, so the doors' patterns go back to `tinyassets-mcp-proxy`,
+       then deletes the DNS record the attach made if the detach left it, then reads each
+       back.
+     - The old stack restarts on its untouched volumes.
+     - The canary (Fact 11), now that the old stack serves the routes again: a dispatch of
+       **Uptime canary** (`uptime-canary.yml`), which holds the canary's `production` secret,
+       since no machine does. The handback doesn't run it itself, since it would fail before
+       the restart.
+
+     Writes made on the new platform since `routes` are lost unless they are exported
+     (decide at verify).
   Owed before slice L's deploy kit runs mode `routes`, each with this change since each moves
   production routing (slice L's final check, recorded, not yet fixed):
   - **R1, the old proxy's own deploy.** `deploy-worker.yml` deploys `tinyassets-mcp-proxy`
