@@ -68,6 +68,7 @@ import { MIGRATIONS } from "../src/schema";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "../../ci/paths";
+import { RUNS_CEILING } from "../../contract/src/control";
 
 const SRC = join(PLATFORM, "owner", "src");
 
@@ -179,7 +180,6 @@ const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxR
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 /** The runs' bounds (slice R): live runs, settled receipts kept, and their rows' widths. */
-const RUNS_CEILING = constant("tier", "RUNS_CEILING");
 const RUNS_KEPT = constant("runs", "RUNS_KEPT");
 const EXPORTS_OPEN = constant("export", "EXPORTS_OPEN");
 const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");

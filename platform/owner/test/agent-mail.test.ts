@@ -26,6 +26,7 @@ import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding,
          TIERS } from "./runs-support";
 import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { OWNER_WAITERS, ownerSlots } from "../src/holds";
+import { writeControl } from "../../ci/fixtures";
 import { drainDue, failure } from "./support";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */
@@ -547,9 +548,9 @@ describe("attendance (review H2)", () => {
      "agent's mail does not", async () => {
     const r = await gated();
     // Codex's sign-in switched on in the control record, which the lane reads itself.
-    await env.CONTROL.put("c:control", JSON.stringify({
-      outside: "on", ordinary: "all", canary: [], inbound: false, signins: { codex: true } }));
-    onTestFinished(() => env.CONTROL.delete("c:control"));
+    await writeControl(env.CONTROL, {
+      outside: "on", ordinary: "all", canary: [], inbound: false, signins: { codex: true } });
+    onTestFinished(() => writeControl(env.CONTROL, null));
     await defineAgent(r.stub, r.bind(), "coder", { engine: "codex",
                                                    credential: "vendor_login_in_sandbox",
                                                    scopes: [] });

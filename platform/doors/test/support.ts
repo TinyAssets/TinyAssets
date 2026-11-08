@@ -6,6 +6,7 @@ import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
 import { ADMIN_CALLER } from "../../admin/src/caller";
+import { writeControl } from "../../ci/fixtures";
 import { type Row, sqlIn as rowsIn } from "../../ci/workerd";
 import {
   type DoorsEnv, MCP_RESOURCE, now, PUBLIC_ORIGIN, WEB_CLIENT, WEB_REDIRECT,
@@ -17,7 +18,7 @@ import { fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
 
 export const ORIGIN = PUBLIC_ORIGIN;
 export const doorsEnv = env as unknown as DoorsEnv;
-export { OPEN, TIERS } from "../../ci/fixtures";
+export { DARK, OPEN, TIERS } from "../../ci/fixtures";
 export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
 
 /** One request through the doors, its waitUntil work finished. */
@@ -44,11 +45,7 @@ export function url(path: string): string {
 
 /** The control record, as the founder's admin path writes it; null removes it. */
 export async function setControl(value: unknown): Promise<void> {
-  if (value === null) {
-    await env.CONTROL.delete("c:control");
-  } else {
-    await env.CONTROL.put("c:control", JSON.stringify(value));
-  }
+  await writeControl(env.CONTROL, value);
 }
 
 /** A browser's cookies, by name, kept from each response's `Set-Cookie`. */

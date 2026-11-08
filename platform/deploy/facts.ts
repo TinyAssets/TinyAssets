@@ -151,5 +151,3 @@ export const FIRST_PARTY = Object.freeze({
 });
 /** The URL E2B's lifecycle webhook is sent to: the doors' hook. */
 export const E2B_HOOK_URL = `${ORIGIN}${identity.hook}`;
-/** The control record's key in the `CONTROL` namespace. */
-export const CONTROL_KEY = identity.control_key;

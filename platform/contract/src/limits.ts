@@ -109,8 +109,8 @@ export const SIGNIN_PASTE_MAX = 4095;
 // to every place the SQL spells it (`owner/guards/frozen-bounds.test.ts`), so one changed
 // without the other fails. Each is a technical ceiling of the owner's database, its 10 GB of
 // which the owner-bound guard holds the worst case under half (`limits-audit.md`). Three
-// frozen numbers live elsewhere: `RUNS_CEILING`, in `owner/src/tier.ts`, which the sandbox
-// template's tag reads from that file; `SEGMENT_LEAST_BYTES`, in `owner/src/segments.ts`,
+// frozen numbers live elsewhere: `RUNS_CEILING`, in `control.ts`, the control record's bound
+// on a tier; `SEGMENT_LEAST_BYTES`, in `owner/src/segments.ts`,
 // which the segments' own seal derives; and `SHARE_BYTES`, the manifest's share charge.
 
 /** An outside client's sealed credential blob (`connections.ts`), in characters. */

@@ -39,9 +39,8 @@ import { boundedBytes } from "./body";
 import {
   type DoorsEnv, INBOUND_BODY_MAX, INBOUND_PATH, namedSecret, now, PUBLIC_ORIGIN,
 } from "./config";
-import { type Control, deleteRoute, putRoute, readControl, readRoute } from "./directory";
-import { bundledSources } from "../../sources/src/catalog";
-import { signinsOn } from "../../sources/src/signin";
+import { inboundGate, ordinaryAdmits, readControl } from "../../contract/src/control";
+import { deleteRoute, putRoute, readRoute } from "./directory";
 import { shownCode } from "./refused";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -219,18 +218,14 @@ function delivered(shared: boolean, accepted: InboundAnswer): Response {
     : answer(accepted.error === "too_large" ? 413 : 409, accepted);
 }
 
-function gateOpen(control: Control, owner: string): boolean {
-  return control.ordinary === "all"
-    || (control.ordinary === "canary" && control.canary.includes(owner));
-}
-
 /** `POST /hooks/inbound/<token>`. */
 export async function serveInbound(request: Request, env: DoorsEnv): Promise<Response> {
   const read = await readControl(env.CONTROL);
-  if (read.kind === "malformed" || read.kind === "unreadable") {
+  const gate = inboundGate(read);
+  if (gate === "unavailable") {
     return answer(503, { error: "unavailable" }, true);
   }
-  if (read.kind === "missing" || !read.control.inbound) {
+  if (gate === "off") {
     return answer(404, { error: "not_found" });
   }
   const token = new URL(request.url).pathname.slice(INBOUND_PATH.length);
@@ -258,12 +253,11 @@ export async function serveInbound(request: Request, env: DoorsEnv): Promise<Res
   if (entry === null) {
     return routed.shared ? answer(200, { state: "no_op" }) : answer(404, { error: "not_found" });
   }
-  if (!gateOpen(read.control, entry.o)) {
+  if (!ordinaryAdmits(gate, entry.o)) {
     return answer(503, { error: "maintenance" }, true);
   }
   // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
-  const { binding, stub } = withTiers(bindInbound(env, entry), {
-    tiers: read.control.tiers, signins: signinsOn(bundledSources(), read.control.signins) });
+  const { binding, stub } = withTiers(bindInbound(env, entry), read);
   try {
     return delivered(routed.shared, await stub.inboundAccept(binding, {
       event_id: routed.eventId, event_at: routed.eventAt, body, headers }));

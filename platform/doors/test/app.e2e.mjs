@@ -26,7 +26,7 @@ import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { chromium } from "playwright";
 import { unstable_getMiniflareWorkerOptions } from "wrangler";
 
-import { keyring as newKeyring, OPEN } from "../../ci/fixtures.ts";
+import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts";
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, bundled, fake, workerConfig } from "../../ci/workers.ts";
 
@@ -118,7 +118,7 @@ async function doors() {
   }));
   await mf.ready;
   const control = await mf.getKVNamespace("CONTROL", "tinyassets-doors");
-  await control.put("c:control", JSON.stringify(OPEN));
+  await writeControl(control, JSON.stringify(OPEN));
 }
 
 before(async () => {
@@ -378,7 +378,7 @@ test("the agent form offers a subscription signed in inside the sandbox, beside 
   assert.match(await page.locator("section", { hasText: "New agent" }).innerText(),
                /switched off for [^.]*Kimi/);
   const control = await mf.getKVNamespace("CONTROL", "tinyassets-doors");
-  await control.put("c:control", JSON.stringify({ ...OPEN, signins: { kimi: true } }));
+  await writeControl(control, JSON.stringify({ ...OPEN, signins: { kimi: true } }));
   try {
     await page.goto(`${ORIGIN}/app#home`);
     await page.goto(`${ORIGIN}/app#agents`);
@@ -388,7 +388,7 @@ test("the agent form offers a subscription signed in inside the sandbox, beside 
                      ["Whichever the engine has",
                       "Your subscription, signed in inside your sandbox"]);
   } finally {
-    await control.put("c:control", JSON.stringify(OPEN));
+    await writeControl(control, JSON.stringify(OPEN));
   }
 });
 

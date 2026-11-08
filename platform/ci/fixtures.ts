@@ -1,10 +1,12 @@
 /**
  * Test fixtures more than one workspace uses, in Node and in workerd alike: the founder's
  * tier numbers and the control records the tests write, keyrings, and the model sources the
- * gateway's fake upstream answers for. Its one runtime import is the sealed envelope, by its
- * file name: it imports nothing, so Node's type stripping runs both (`doors/test/app.e2e.mjs`
- * and the owner's memory leg import this file so).
+ * gateway's fake upstream answers for. Its runtime imports are the sealed envelope and the
+ * control record's module, by their file names, which import only by file name too, so
+ * Node's type stripping runs both (`doors/test/app.e2e.mjs` and the owner's memory leg
+ * import this file so).
  */
+import { CONTROL_KEY } from "../contract/src/control.ts";
 import type { Source } from "../contract/src/egress-scope";
 import { base64, fromBase64, KEY_BYTES, ringText } from "../contract/src/envelope.ts";
 
@@ -20,6 +22,27 @@ export const OPEN_GATES = Object.freeze({ outside: "on", ordinary: "all", canary
 
 /** The control record with every door open, and the founder's tiers. */
 export const OPEN = Object.freeze({ ...OPEN_GATES, tiers: TIERS });
+
+/**
+ * The control record a first deploy writes when there is none (`deploy/deploy.ts`'s
+ * `DARK_CONTROL`, which its guard holds equal): every outside door closed, no canary owner,
+ * and the founder's tiers.
+ */
+export const DARK = Object.freeze({ outside: "off", ordinary: "canary", canary: [],
+                                    inbound: false, tiers: TIERS });
+
+/**
+ * The control record written to its namespace (`store`), as the founder writes it: a string
+ * as it is (a value that is no JSON), anything else as JSON; null removes it.
+ */
+export async function writeControl(store: Pick<KVNamespace, "put" | "delete">,
+                                   record: unknown): Promise<void> {
+  if (record === null) {
+    await store.delete(CONTROL_KEY);
+  } else {
+    await store.put(CONTROL_KEY, typeof record === "string" ? record : JSON.stringify(record));
+  }
+}
 
 /** A fresh random 32-byte key, base64, as a keyring holds it. */
 export function ringKey(): string {

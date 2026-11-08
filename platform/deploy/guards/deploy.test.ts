@@ -26,7 +26,7 @@ import { basename, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { keyring as ringSecret } from "../../ci/fixtures";
+import { DARK, keyring as ringSecret } from "../../ci/fixtures";
 import { PLATFORM } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { WRANGLER, workerFolders } from "../../ci/workers";
@@ -35,8 +35,7 @@ import {
   AUTHORIZE_PATH, E2B_HOOK_PATH, PUBLIC_ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
 } from "../../doors/src/config";
 import { APP_RESOURCE } from "../../contract/src/identity";
-import { outsideOpen, ownerOpen } from "../../doors/src/control";
-import { parseControl } from "../../doors/src/directory";
+import { CONTROL_KEY, outsideOpen, ownerOpen, parseControl } from "../../contract/src/control";
 import { oidcUpstream, upstreamConfig } from "../../doors/src/oidc";
 import { E2b } from "../../sandbox/src/e2b";
 import { type CfAnswer, cfApi, Cloudflare, handback, handover, type Route } from "../cloudflare";
@@ -49,7 +48,7 @@ import {
   shippedRunner, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
 import {
-  boundBy, CALLBACK, CONFIGS, CONTROL_KEY, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES,
+  boundBy, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES,
   NAMESPACES, OPTIONAL, PROBE_ROUTES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
 } from "../facts";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
@@ -536,6 +535,8 @@ describe("the deploy kit's facts", () => {
     expect(control).toMatchObject({ outside: "off", ordinary: "canary", canary: [],
                                     inbound: false });
     expect(control?.tiers).not.toBeNull();
+    // The tests' dark record is this one, the founder's tier numbers with it.
+    expect(DARK_CONTROL).toEqual(DARK);
   });
 });
 
@@ -1652,12 +1653,12 @@ describe("the parts of a run", () => {
     const path = "/accounts/a/storage/kv/namespaces/n/values/c%3Acontrol";
     const cf = (answer: CfAnswer) => new Cloudflare(api({ [path]: answer }));
     expect(await cf({ status: 200, body: { ordinary: "none" } } as CfAnswer)
-      .value("a", "n", "c:control")).toEqual({ ordinary: "none" });
+      .value("a", "n", CONTROL_KEY)).toEqual({ ordinary: "none" });
     expect(await cf({ status: 404, body: { success: false, errors: [{ code: 10009 }] } })
-      .value("a", "n", "c:control")).toBeUndefined();
+      .value("a", "n", CONTROL_KEY)).toBeUndefined();
     for (const answer of [{ status: 500, body: {} }, { status: 404, body: {} },
                           { status: 401, body: { errors: [{ code: 10000 }] } }] as CfAnswer[]) {
-      await expect(cf(answer).value("a", "n", "c:control")).rejects.toThrow(/failed/);
+      await expect(cf(answer).value("a", "n", CONTROL_KEY)).rejects.toThrow(/failed/);
     }
   });
 

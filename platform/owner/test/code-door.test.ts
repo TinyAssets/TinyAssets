@@ -13,8 +13,8 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { OPEN_GATES } from "../../ci/fixtures";
-import { OUTSIDE_OFF } from "../../doors/src/control";
+import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import { OUTSIDE_OFF } from "../../contract/src/control";
 
 import { profileNames } from "../../contract/src/doors";
 import type { Origin } from "../../contract/src/binding";
@@ -51,7 +51,7 @@ const lines = (...script: string[]): string => script.join("\n");
 const OPEN = OPEN_GATES;
 
 beforeEach(async () => {
-  await env.CONTROL.put("c:control", JSON.stringify(OPEN));
+  await writeControl(env.CONTROL, OPEN);
 });
 
 describe("the code door", () => {

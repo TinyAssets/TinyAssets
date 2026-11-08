@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { PLATFORM } from "../../ci/paths";
+import { RUNS_CEILING } from "../../contract/src/control";
 import {
   EVENT_FRAMES_MAX, EVENTS_BODY_MAX, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX,
 } from "../../contract/src/run-events";
@@ -47,7 +48,7 @@ export const MEMORY: Readonly<Record<"tailUnits" | "frameMax" | "eventsBody" | "
   postsHeld: EVENTS_IN_FLIGHT,
   ownerSockets: constant("relay", "OWNER_SOCKETS"),
   signedOut: constant("relay", "SIGNED_OUT_KEPT"),
-  liveRuns: constant("tier", "RUNS_CEILING"),
+  liveRuns: RUNS_CEILING,
 });
 
 /** Each term's worst case, in bytes. */

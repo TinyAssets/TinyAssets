@@ -2,9 +2,8 @@
  * The owner directory (research §3): one KV namespace, `DIRECTORY`, a routing hint only.
  *
  * It maps a credential's id to its owner. It holds no owner content: hashes, owner ids,
- * opaque ids and times. The `c:control` record of platform gates lives in a namespace of its
- * own (`CONTROL`), which the owner Worker binds too, so the owner's object reads the gates
- * at code mode's calls (`owner/src/control-gate.ts`) and never this directory. Every security
+ * opaque ids and times. The platform's control record lives in a namespace of its own
+ * (`CONTROL`, `contract/src/control.ts`), never this directory. Every security
  * decision is made again in the owner's object, which is strongly consistent and on the
  * path, so KV's lag of up to 60 s can only route a dead credential to a refusal:
  * - a key's revoke lands in the object (`grantRevoke`) before its entry is deleted;
@@ -16,25 +15,18 @@
  * resolves an erased owner's name again and the platform never admits it again: slice L);
  * `h:` (an inbound capability URL's token, by its SHA-256) and `i:` (a shared app's
  * installation), each routing to its owner's inbound binding at a revision
- * (`/hooks/inbound`, slice L). `readControl` reads `c:control` from `CONTROL` (its gates,
- * and since slice R the tier numbers, `tiers`, which the founder edits there with no
- * deploy). Owed: `a:` published app slugs (S6). A sandbox's tokens have no entry: each names its owner itself
+ * (`/hooks/inbound`, slice L). Owed: `a:` published app slugs (S6). A sandbox's tokens have
+ * no entry: each names its owner itself
  * (G4, `routing-mac.ts`, its MAC verified at the door), and the owner's object checks it.
  * Nothing here, or anywhere, maps a session cookie or its hash to an owner (the binder
  * guard).
  */
 import { HEX16, HEX32, HEX64 } from "../../contract/src/ids";
 import { principal } from "../../contract/src/text";
-import { parseTiers, type Tiers } from "../../owner/src/tier";
 
 import type { DoorsEnv } from "./config";
-import identity from "../../contract/identity.json" with { type: "json" };
 
 const KEY_ID = HEX16;
-/** The control record's key (`identity.json`), read as text: this module holds no object. */
-const CONTROL = `${identity.control_key}`;
-/** Canary owners the maintenance gate admits; far past a real canary. */
-const MAX_CANARY = 100;
 
 /** `k:<key_id>`: the key's owner, the SHA-256 of its secret, and its mint time. */
 export interface KeyEntry {
@@ -115,86 +107,6 @@ export async function deleteRoute(env: DoorsEnv, route: string): Promise<void> {
   await env.DIRECTORY.delete(routeName(route));
 }
 
-/**
- * The platform gates (research §7): `outside` is the outside kill switch (the Python's
- * `TINYASSETS_OUTSIDE_DENY` and durable switch), `ordinary` the maintenance gate (all
- * owners, the canary owners only, or none), `inbound` the hooks gate (`/hooks/inbound`
- * serves nothing unless it is on, `inbound.ts`).
- */
-export interface Control {
-  readonly outside: "on" | "off";
-  readonly ordinary: "all" | "canary" | "none";
-  readonly canary: readonly string[];
-  readonly inbound: boolean;
-  /**
-   * The tier numbers (ADR-034 decision 8; `owner/src/tier.ts`): each tier's simultaneous
-   * runs and storage, which the founder edits here with no deploy, and the binder hands
-   * the run doors. Null when the record holds none: every run is then refused.
-   */
-  readonly tiers: Tiers | null;
-  /**
-   * The sandbox's platform numbers (slice S; the founder's rule of 2026-11-03), which the
-   * founder edits here with no deploy and the sandbox Worker reads at each start: null
-   * when the record holds none, and the sandbox Worker then starts nothing.
-   */
-  readonly sandbox: SandboxCeilings | null;
-  /**
-   * How many days an agent's sandbox scratch may go unused before it is deleted
-   * (`scratch_retention_days`; `sandbox/runner/scratch.ts`): a chosen retention, refusing
-   * nothing, which the sandbox Worker hands each run's runner. Null when the record names
-   * none: then only the disk's own pressure lets scratch go.
-   */
-  readonly scratch_retention_days: number | null;
-  /**
-   * Each source's vendor sign-in, on or off (slice SIGNIN), which the founder edits here with
-   * no deploy: a source the record does not name takes its record's verdict on the vendor's
-   * terms for hosted use (`cli.login.hosted_use`: on when `allowed`). Null when the record
-   * names none.
-   */
-  readonly signins: Readonly<Record<string, boolean>> | null;
-}
-
-/**
- * The sandbox's numbers, as data (`sandbox/src/control.ts`): how long one sandbox may run
- * before it is paused and resumed (`sandbox_runtime_ceiling_s`: Hobby's 1 hour, Pro's 24),
- * and how many sandboxes the E2B team may run at once (`sandbox_concurrency_ceiling`: Hobby
- * 20, Pro 100 and more with add-ons), both the vendor plan's own ceilings, which raising
- * needs the plan raised first, or E2B refuses; and how long before the runtime ceiling a
- * renewal looks for a moment its CLIs are quiet (`sandbox_renewal_window_s`), the founder's
- * choice of how long a turn may run on before a renewal cuts into it. Each is a positive
- * whole number, the window shorter than the ceiling; the record bounds nothing else.
- */
-export interface SandboxCeilings {
-  readonly runtime_ceiling_s: number;
-  readonly concurrency_ceiling: number;
-  readonly renewal_window_s: number;
-}
-
-const SANDBOX_KEYS: readonly string[] = Object.freeze([
-  "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling", "sandbox_renewal_window_s"]);
-
-function positive(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
-}
-
-/** The three numbers checked, or a throw. */
-export function sandboxCeilings(runtime: unknown, concurrency: unknown,
-                                window: unknown): SandboxCeilings {
-  if (!positive(runtime) || !positive(concurrency) || !positive(window) || window >= runtime) {
-    throw new Error("the sandbox numbers are positive whole numbers, the renewal window " +
-                    "shorter than the runtime ceiling");
-  }
-  return Object.freeze({ runtime_ceiling_s: runtime, concurrency_ceiling: concurrency,
-                         renewal_window_s: window });
-}
-
-/** The record's keys: the gates always; the tiers, and the sandbox's numbers, optional. */
-const CONTROL_KEYS: readonly string[] = Object.freeze(["canary", "inbound", "ordinary",
-                                                       "outside"]);
-const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
-  "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling",
-  "sandbox_renewal_window_s", "scratch_retention_days", "signins"]);
-
 function keyName(keyId: string): string {
   if (!KEY_ID.test(keyId)) {
     throw new Error("a key id is 16 hex");
@@ -226,78 +138,4 @@ export async function putKey(env: DoorsEnv, keyId: string, entry: KeyEntry): Pro
 
 export async function deleteKey(env: DoorsEnv, keyId: string): Promise<void> {
   await env.DIRECTORY.delete(keyName(keyId));
-}
-
-/** The record parsed exactly, or null when it is anything else. */
-export function parseControl(value: unknown): Control | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const keys = Object.keys(value);
-  if (!CONTROL_KEYS.every((key) => keys.includes(key))
-      || !keys.every((key) => CONTROL_KEYS.includes(key) || CONTROL_OPTIONAL.includes(key))) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const { outside, ordinary, canary, inbound, tiers, signins } = record;
-  if (signins !== undefined && (typeof signins !== "object" || signins === null
-                                || Array.isArray(signins)
-                                || !Object.entries(signins).every(([id, on]) =>
-                                  /^[a-z0-9][a-z0-9-]{0,63}$/.test(id) && typeof on === "boolean"))) {
-    return null;
-  }
-  const sandbox = SANDBOX_KEYS.map((key) => record[key]);
-  const retention = record["scratch_retention_days"];
-  if ((retention !== undefined && !positive(retention))
-      || (outside !== "on" && outside !== "off")
-      || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
-      || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY
-      || !(sandbox.every((value) => value === undefined)
-           || sandbox.every((value) => value !== undefined))) {
-    return null;
-  }
-  try {
-    // A record whose tiers or sandbox numbers are there but malformed is malformed whole:
-    // never a guess.
-    return { outside, ordinary, inbound, canary: Object.freeze(canary.map(principal)),
-             tiers: tiers === undefined ? null : parseTiers(tiers),
-             signins: signins === undefined ? null
-               : Object.freeze({ ...(signins as Record<string, boolean>) }),
-             sandbox: sandbox[0] === undefined ? null
-               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]),
-             scratch_retention_days: retention === undefined ? null : retention as number };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The `control` record as read: there and well formed, missing, malformed (an operator's
- * bad write), or unreadable (an outage, or a value that is not JSON). The gates tell them
- * apart (`control.ts`); the last two are reported.
- */
-export type ControlRead =
-  | { readonly kind: "read"; readonly control: Control }
-  | { readonly kind: "missing" }
-  | { readonly kind: "malformed" }
-  | { readonly kind: "unreadable" };
-
-/** The record in its own namespace (`CONTROL`: the doors' and the owner Worker's). */
-export async function readControl(store: KVNamespace): Promise<ControlRead> {
-  let value: unknown;
-  try {
-    value = await store.get(CONTROL, { type: "json" });
-  } catch (error) {
-    console.error("the control record is unreadable", error);
-    return { kind: "unreadable" };
-  }
-  if (value === null) {
-    return { kind: "missing" };
-  }
-  const control = parseControl(value);
-  if (control === null) {
-    console.error("the control record is malformed");
-    return { kind: "malformed" };
-  }
-  return { kind: "read", control };
 }

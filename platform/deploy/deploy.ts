@@ -83,6 +83,7 @@ import { fileURLToPath } from "node:url";
 import { WRANGLER } from "../ci/workers.ts";
 // The envelope and the E2B client import nothing, so Node's type stripping runs them here by
 // their own names.
+import { CONTROL_KEY } from "../contract/src/control.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import { E2b } from "../sandbox/src/e2b.ts";
 import {
@@ -90,7 +91,7 @@ import {
   handover, type Kept, type Moved, narrower, type Route, type RouteStep, unlike,
 } from "./cloudflare.ts";
 import {
-  AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, CONTROL_KEY, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
+  AUTHORIZE, BUCKETS, CALLBACK, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN,
   FIRST_PARTY, KEYRINGS, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, ROUTES,
   SECRET_INPUTS, SECRETS, SHARED, WORKERS, ZONE,
 } from "./facts.ts";
