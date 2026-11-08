@@ -604,7 +604,7 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   if (gated instanceof Response) {
     return gated;
   }
-  const owner = withTiers(unread, gated);
+  const owner = withTiers(unread, gated, sources);
   try {
     if (route.body === "empty" && !shaped(parsed, [])) {
       return failure(400, NO_FIELDS);

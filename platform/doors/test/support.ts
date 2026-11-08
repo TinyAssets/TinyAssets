@@ -12,20 +12,26 @@ import {
   type DoorsEnv, MCP_RESOURCE, now, PUBLIC_ORIGIN, WEB_CLIENT, WEB_REDIRECT,
 } from "../src/config";
 import { APP_RESOURCE } from "../../contract/src/identity";
+import { serve } from "../src/doors";
 import { authorizationServer } from "../src/oauth";
+import type { Sources } from "../../sources/src/schema";
 import worker from "./entry";
-import { fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
+import { FAKE_UPSTREAM, fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
 
 export const ORIGIN = PUBLIC_ORIGIN;
 export const doorsEnv = env as unknown as DoorsEnv;
 export { DARK, OPEN, TIERS } from "../../ci/fixtures";
 export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
 
-/** One request through the doors, its waitUntil work finished. */
-export async function call(request: Request, environment: DoorsEnv = doorsEnv):
-    Promise<Response> {
+/**
+ * One request through the doors, its waitUntil work finished: serving the test entry's
+ * catalog, or `sources` in its place.
+ */
+export async function call(request: Request, environment: DoorsEnv = doorsEnv,
+                           sources?: Sources): Promise<Response> {
   const ctx = createExecutionContext();
-  const response = await worker.fetch(request, environment, ctx);
+  const response = sources === undefined ? await worker.fetch(request, environment, ctx)
+    : await serve(request, environment, ctx, FAKE_UPSTREAM, sources);
   await waitOnExecutionContext(ctx);
   return response;
 }
@@ -255,9 +261,13 @@ export async function signInApp(who: SignInAs):
   return { jar, access_token, session: jar.cookies.get("__Host-ta-owner")! };
 }
 
-/** A same-origin JSON POST from the owner's app, with its token and cookie. */
+/**
+ * A same-origin JSON POST from the owner's app, with its token and cookie, to the doors
+ * serving the test entry's catalog or `sources`.
+ */
 export function appPost(path: string, token: string, session: string | null, body: unknown,
-                        headers: Record<string, string> = {}): Promise<Response> {
+                        headers: Record<string, string> = {}, sources?: Sources):
+    Promise<Response> {
   return call(new Request(url(`/app/api/${path}`), {
     method: "POST",
     headers: {
@@ -266,7 +276,7 @@ export function appPost(path: string, token: string, session: string | null, bod
       ...(session === null ? {} : { Cookie: `__Host-ta-owner=${session}` }), ...headers,
     },
     body: JSON.stringify(body),
-  }));
+  }), doorsEnv, sources);
 }
 
 /** A JSON-RPC response from `/mcp`, whether the server answered as JSON or as SSE. */

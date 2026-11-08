@@ -42,6 +42,7 @@ import {
 import { inboundGate, ordinaryAdmits, readControl } from "../../contract/src/control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { shownCode } from "./refused";
+import type { Sources } from "../../sources/src/schema";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
 const STAMP = /^[0-9]{1,12}$/;
@@ -219,7 +220,8 @@ function delivered(shared: boolean, accepted: InboundAnswer): Response {
 }
 
 /** `POST /hooks/inbound/<token>`. */
-export async function serveInbound(request: Request, env: DoorsEnv): Promise<Response> {
+export async function serveInbound(request: Request, env: DoorsEnv, sources: Sources):
+    Promise<Response> {
   const read = await readControl(env.CONTROL);
   const gate = inboundGate(read);
   if (gate === "unavailable") {
@@ -257,7 +259,7 @@ export async function serveInbound(request: Request, env: DoorsEnv): Promise<Res
     return answer(503, { error: "maintenance" }, true);
   }
   // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
-  const { binding, stub } = withTiers(bindInbound(env, entry), read);
+  const { binding, stub } = withTiers(bindInbound(env, entry), read, sources);
   try {
     return delivered(routed.shared, await stub.inboundAccept(binding, {
       event_id: routed.eventId, event_at: routed.eventAt, body, headers }));

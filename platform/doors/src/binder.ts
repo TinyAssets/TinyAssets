@@ -37,7 +37,7 @@ import {
 } from "./config";
 import { APP_RESOURCE } from "../../contract/src/identity";
 import { type ControlRead, tiersOf } from "../../contract/src/control";
-import { bundledSources } from "../../sources/src/catalog";
+import type { Sources } from "../../sources/src/schema";
 import { signinsRead } from "../../sources/src/signin";
 import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
@@ -295,12 +295,13 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
  * it to gate the call (`control.ts`): its tier numbers (`tiersOf`; null for none, and the
  * object then forgets the numbers it kept and refuses, `tier.ts`), which the run doors'
  * admission reads, and the served records whose vendor sign-in is switched on
- * (`signinsRead`), which the object's sign-in doors and its runs' admission hold to. No
+ * (`signinsRead`, of the catalog the doors serve, the `sources` route's own), which the object's sign-in doors and its runs' admission hold to. No
  * request names either.
  */
-export function withTiers({ binding, stub }: Bound, read: ControlRead): Bound {
+export function withTiers({ binding, stub }: Bound, read: ControlRead, sources: Sources):
+    Bound {
   return { binding: { ...binding, tiers: tiersOf(read),
-                      signins: signinsRead(bundledSources(), read) }, stub };
+                      signins: signinsRead(sources, read) }, stub };
 }
 
 /**

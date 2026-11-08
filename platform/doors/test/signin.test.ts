@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
 import type { SandboxSignin } from "../../owner/src/sandbox";
+import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import type { OwnerDO } from "./entry";
 import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } from "./support";
 
@@ -107,6 +108,38 @@ describe("the sign-in routes and door", () => {
                                  { engine: "claude-code" });
     expect(claude.status).toBe(403);
     expect(await claude.text()).toMatch(/signin_off/);
+  });
+
+  it("read each switch off the catalog the doors serve, in the list and in the binding (D5)",
+     async () => {
+    // A served catalog unlike the bundled one: Codex's sign-in allowed by its verdict, and
+    // one more record that signs in, off by its own until the record switches it on.
+    const codex = (records: readonly unknown[], id: string, verdict: string) => {
+      const record = structuredClone(records.find((each) =>
+        (each as { id: string }).id === "codex")) as {
+          id: string; cli: { login: { hosted_use: { verdict: string } } } };
+      record.id = id;
+      record.cli.login.hosted_use.verdict = verdict;
+      return record;
+    };
+    const bundled = bundledRecords();
+    const served = catalogOf([
+      ...bundled.map((each) => (each as { id: string }).id === "codex"
+        ? codex(bundled, "codex", "allowed") : each),
+      codex(bundled, "test_login", "unclear")]);
+    const { app } = await signedIn();
+    const listedOn = async () => {
+      const listed = await (await appPost("sources", app.access_token, null, {}, {}, served))
+        .json() as { sources: { id: string; signin: { enabled: boolean } | null }[] };
+      return new Map(listed.sources.map((source) => [source.id, source.signin?.enabled]));
+    };
+    const first = await listedOn();
+    expect([first.get("codex"), first.get("test_login")]).toEqual([true, false]);
+    // The binding the object holds a sign-in to carries the same switch.
+    expect((await appPost("signin/start", app.access_token, null, { engine: "codex" }, {},
+                          served)).status).toBe(200);
+    await setControl({ ...OPEN, signins: { test_login: true } });
+    expect((await listedOn()).get("test_login")).toBe(true);
   });
 
   it("always let a source switched off be signed out, so its login can be removed (review H1)",

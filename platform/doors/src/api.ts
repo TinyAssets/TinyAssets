@@ -22,6 +22,7 @@ import { mediaType } from "./session";
 import { profiled } from "./mcp";
 import { refusalResponse } from "./refused";
 import { callDoor, toolDoor } from "./tools";
+import type { Sources } from "../../sources/src/schema";
 
 const TOOL_PATH = /^\/api\/tools\/([a-z_]{1,64})$/;
 
@@ -29,7 +30,8 @@ function failure(status: number, message: string, headers: HeadersInit = {}): Re
   return Response.json({ error: message }, { status, headers });
 }
 
-export async function serveApi(request: Request, env: DoorsEnv): Promise<Response> {
+export async function serveApi(request: Request, env: DoorsEnv, sources: Sources):
+    Promise<Response> {
   const token = bearer(request);
   const bound = token === null ? null : await verifyKey(env, token);
   if (bound === null) {
@@ -40,7 +42,7 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
   if (gated instanceof Response) {
     return gated;
   }
-  const held = withTiers(bound, gated);
+  const held = withTiers(bound, gated, sources);
   const tools = await profiled(held);
   if (tools instanceof Response) {
     return tools;
