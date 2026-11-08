@@ -1331,14 +1331,25 @@ function reported(unchanged: string): Step {
   });
 }
 
-/** Fact 11: after a deploy or a route change, the handles canary (it reads its own token). */
-const canary = step("canary", (run) => {
-  const ran = run.io.spawn("python3", [join(REPO, "scripts", "mcp_public_canary.py"),
-                                       "--assert-handles"], { stdio: "inherit", cwd: REPO });
-  if (ran.status !== 0) {
-    throw new Error(`the handles canary failed (exit ${ran.status})`);
-  }
-});
+/**
+ * Fact 11: after a deploy or a route change, the handles canary across the cutover
+ * (`scripts/cutover_handles_canary.py`, each side's handle set its data), reading its own
+ * keys. `auto` holds whichever side serves `/mcp` (the old stack's before `routes`, the
+ * doors' after). `routes` asks for `new --unkeyed`: the doors must answer `/mcp` and its
+ * resource document, and the old stack must not, while their handle set is owed after
+ * verify, since no probe owner's key can be minted before the doors serve `/app/api`, and
+ * the dark control record admits no one.
+ */
+function canary(side: "auto" | "new --unkeyed"): Step {
+  return step("canary", (run) => {
+    const ran = run.io.spawn("python3", [join(REPO, "scripts", "cutover_handles_canary.py"),
+                                         "--side", ...side.split(" ")],
+                             { stdio: "inherit", cwd: REPO });
+    if (ran.status !== 0) {
+      throw new Error(`the handles canary (side ${side}) failed (exit ${ran.status})`);
+    }
+  });
+}
 
 const h2Next = step("h2 next", (run) => {
   run.io.log("H2's probes wait for a routed door and a probe owner's key: run with --mode h2 " +
@@ -1649,8 +1660,8 @@ const handedBack = step("handback verified", async (run, work) => {
  */
 const canaryAfter = step("canary after", (run) => {
   run.io.log("The handles canary (Fact 11) waits for the old stack: restart it on its " +
-             "untouched volumes, then dispatch the Uptime canary workflow (uptime-canary.yml), " +
-             "which runs the public canary with its token in production.");
+             "untouched volumes, then dispatch the Handles canary workflow " +
+             "(handles-canary.yml) with side old, which holds the old stack's handle set.");
 });
 
 // --- The modes --------------------------------------------------------------------------
@@ -1676,7 +1687,7 @@ const CHECKS: readonly Step[] = [...READS, redirect, authorize];
 const STORAGE: readonly Step[] = [namespaces, buckets, queues, listings];
 const DEPLOY: readonly Step[] = [staged, secrets, workers, control, hookLater];
 const DARK: readonly Step[] = [...CHECKS, ...STORAGE, ...DEPLOY, hook(false, ""),
-                               reported("\nNothing was changed."), canary, h2Next];
+                               reported("\nNothing was changed."), canary("auto"), h2Next];
 
 export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   plan: { steps: DARK, plans: true, applies: false, options: true },
@@ -1684,7 +1695,8 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   probe: {
     steps: [probeInputs, zone, doorsDeployed, gatesClosed, callbackListed, probePlan,
             probeAuthorize, probeHandOver,
-            reported("\nNothing was changed. The apply job prints the sign-in link."), canary,
+            reported("\nNothing was changed. The apply job prints the sign-in link."),
+            canary("auto"),
             signInLink],
     plans: true, applies: true, options: false,
   },
@@ -1692,7 +1704,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   routes: {
     steps: [...READS, routePlan, recorded, redirect, authorize, ...STORAGE, ...DEPLOY, handOver,
             customDomain, hook(true, ", after the routes"), reported("\nNothing was changed."),
-            canary, h2Next],
+            canary("new --unkeyed"), h2Next],
     plans: true, applies: true, options: true,
   },
   h2: { steps: [h2], plans: false, applies: true, options: true },
