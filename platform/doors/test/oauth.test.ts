@@ -55,6 +55,8 @@ describe("authorization server metadata", () => {
     expect(challenge.status).toBe(401);
     expect(challenge.headers.get("WWW-Authenticate")).toContain(
       "resource_metadata=\"https://tinyassets.io/.well-known/oauth-protected-resource/mcp\"");
+    // A Bearer challenge, as the handles canary's new side holds it.
+    expect(challenge.headers.get("WWW-Authenticate")).toMatch(/^Bearer /);
   });
 });
 

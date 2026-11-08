@@ -147,8 +147,10 @@ test, cutover.
   then runs the handles canary. Mode `routes` adds the routes above and the
   `egress.tinyassets.io` custom domain (the cutover's: they take the paths from
   `tinyassets-mcp-proxy`), keeping a route record first, which mode `handback` puts back
-  (§9 slice 6). Owed: the founder's run; the handles canary's tool set for the new door
-  before mode `routes`.
+  (§9 slice 6). Owed: the founder's run. The handles canary's set for the new door is the
+  doors' own (`scripts/canary_handles.json`'s `new`, held to their tool table): the kit's
+  `routes` runs it (`scripts/cutover_handles_canary.py --side new`), and `handles-canary.yml`
+  runs either side by hand, read-only.
 - [x] `/hooks/inbound`: the capability-URL and shared-app (Slack HMAC) shapes in the
   binder, the directory's `h:` and `i:` entries, the 1 MiB cap and the `control.inbound`
   gate, and a new owner door `inboundAccept` (config, revision, dedupe, owner-held
@@ -2388,8 +2390,9 @@ R, S, M and W.
      names the record's id, which is the run's.
   2. **`routes`.** The same run hands the doors' routes over.
   3. **Verify.** First the handback's plan job (`handback --record <id>`, read-only) shows
-     what a handback would change. Then the handles canary and every imported owner's
-     check.
+     what a handback would change. Then the handles canary for the new side (the
+     `routes` run's own, or a dispatch of `handles-canary.yml` with `side` `new`; it needs
+     `TA_PROBE_KEY`, the probe owner's API key), and every imported owner's check.
   4. **The handback, if verify fails,** at any point before the hold ends, in this order:
      - `handback --record <id>`. Before any change, it holds the zone to the record and
        stops, naming any route changed since `routes`. Then it disables the lifecycle webhook
@@ -2398,10 +2401,10 @@ R, S, M and W.
        then deletes the DNS record the attach made if the detach left it, then reads each
        back.
      - The old stack restarts on its untouched volumes.
-     - The canary (Fact 11), now that the old stack serves the routes again: a dispatch of
-       **Uptime canary** (`uptime-canary.yml`), which holds the canary's `production` secret,
-       since no machine does. The handback doesn't run it itself, since it would fail before
-       the restart.
+     - The handles canary (Fact 11) for the old side, now that the old stack serves the
+       routes again: a dispatch of `handles-canary.yml` with `side` `old`, the old stack's
+       own `--assert-handles` check, in `production` with its token. The handback doesn't run
+       it itself, since it would fail before the restart.
 
      Writes made on the new platform since `routes` are lost unless they are exported
      (decide at verify).

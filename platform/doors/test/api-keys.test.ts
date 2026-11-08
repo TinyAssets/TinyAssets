@@ -17,6 +17,7 @@ import {
   MAX_KEYS_PER_OWNER, newKey, parseKey, secretHash,
 } from "../src/api-keys";
 import { type DoorsEnv, now } from "../src/config";
+import { DEFAULT_PROFILE, profileNames } from "../src/tools";
 import {
   appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient,
   serveFirstPartyDocument, setControl, signInApp, sqlIn, url,
@@ -339,6 +340,21 @@ describe("a key's use", () => {
     const { key } = await mint(o);
     expect((await api(key, "bash", {})).status).toBe(404);
     expect((await api(key, "ta", {})).status).toBe(404);
+  });
+
+  it("answers a GET 405 for each tool the key's profile serves and 404 for any other, " +
+     "which the handles canary reads its new side by", async () => {
+    // scripts/cutover_handles_canary.py: one read-only GET a name, never a tool's call.
+    const o = await signedIn();
+    const { key } = await mint(o);
+    const get = (tool: string) => call(new Request(url(`/api/tools/${tool}`), {
+      headers: { Authorization: `Bearer ${key}` } }));
+    for (const tool of profileNames(DEFAULT_PROFILE)) {
+      expect([tool, (await get(tool)).status]).toEqual([tool, 405]);
+    }
+    for (const tool of ["read_graph", "write_page", "get_status", "no_such_tool"]) {
+      expect([tool, (await get(tool)).status]).toEqual([tool, 404]);
+    }
   });
 });
 

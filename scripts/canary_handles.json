@@ -1,0 +1,24 @@
+{
+  "about": "The handle set each side of the cutover serves on tinyassets.io/mcp, and the authorization server its protected-resource document names, by which scripts/cutover_handles_canary.py tells the sides apart. Fact 11's handles canary holds whichever side it is asked for.",
+  "old": {
+    "why": "The old stack's live surface (PR-178 and the 2026-07-24 canonical convergence), as recorded: scripts/mcp_public_canary.py --assert-handles holds tools/list to exactly these. It leaves with the old stack.",
+    "authorization_server": "https://unassuming-environment-16.authkit.app",
+    "handles": [
+      "read_graph", "write_graph", "run_graph", "read_page", "write_page", "converse",
+      "get_status"
+    ]
+  },
+  "new": {
+    "why": "The doors' tools for a custom connector: platform/doors/profiles.json's custom profile, what every MCP grant and API key is served until the owner narrows it, which is the doors' whole tool table (platform/doors/src/tools.ts). platform/doors/guards/handles.test.ts holds this list to both.",
+    "authorization_server": "https://tinyassets.io",
+    "handles": [
+      "inbox_digest", "board_digest", "mailbox_read", "mailbox_ack", "room_post",
+      "agents_list", "agent_register", "policy_propose", "collection_get",
+      "collection_list", "collection_history", "collection_write", "collection_delete",
+      "collection_clear", "file_stat", "file_list", "file_read", "search", "fetch",
+      "file_append", "file_write", "file_edit", "file_history", "file_usage", "file_mkdir",
+      "file_remove", "file_rename", "file_restore", "converse", "run_graph", "run_status",
+      "run_cancel", "code"
+    ]
+  }
+}

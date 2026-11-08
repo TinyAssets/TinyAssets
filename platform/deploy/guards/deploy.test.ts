@@ -602,7 +602,7 @@ describe("a dark run", () => {
       "wrangler r2 bucket create tinyassets-files", "wrangler queues create tinyassets-sandbox-ring",
       "wrangler queues create tinyassets-erasure", "wrangler secret put ROUTING_MAC_KEY",
       "wrangler deploy --config files/", "wrangler deploy --config doors/", "cf PUT /accounts",
-      "e2b POST /events/webhooks", "log Changed:", "python3 mcp_public_canary.py",
+      "e2b POST /events/webhooks", "log Changed:", "python3 cutover_handles_canary.py --side auto",
       "log H2's probes wait"]);
     const first = w.events.findIndex((event) =>
       /^(wrangler [a-z ]*create|wrangler secret|cf PUT)/.test(event));
@@ -747,7 +747,7 @@ describe("a routes run", () => {
                      "cf PUT /zones/z/workers/routes/r1", "cf POST /zones/z/workers/routes",
                      "cf DELETE /zones/z/workers/routes/r4", "wrangler triggers deploy",
                      "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Changed:",
-                     "python3 mcp_public_canary.py", "log H2's probes wait"]);
+                     "python3 cutover_handles_canary.py --side new", "log H2's probes wait"]);
     // The routes are read once, before any change; the doors' last version is deployed before
     // a route moves; the hook is enabled only after the last route and the custom domain.
     expect(w.events.filter((event) => event === "cf GET /zones/z/workers/routes")).toHaveLength(1);
@@ -972,7 +972,8 @@ describe("a handback run", () => {
     expect([reads[0]! < disabled!, reads[1]! > changes.at(-1)!]).toEqual([true, true]);
     // The canary waits for the old stack's restart, and the run says where it runs.
     order(ran, ["log Changed:", "log The handles canary (Fact 11) waits for the old stack"]);
-    expect(w.logs.at(-1)).toContain("dispatch the Uptime canary workflow (uptime-canary.yml)");
+    expect(w.logs.at(-1)).toContain(
+      "dispatch the Handles canary workflow (handles-canary.yml) with side old");
     expect(ran.some((event) => event.startsWith("python3"))).toBe(false);
     // Every path the record served is served after each change.
     const served = PROBES.filter((path) => servedBy(before as Route[], path) !== undefined);
@@ -1389,6 +1390,8 @@ describe("a probe run", () => {
     expect(w.logs.at(-1)!.startsWith(
       `\nSign in once, in a browser, at:\n${PUBLIC_ORIGIN}${AUTHORIZE_PATH}?`)).toBe(true);
     expect(w.logs.at(-1)).toContain(PROBE_SIGNS);
+    // The old stack still serves /mcp: the canary holds whichever side answers.
+    expect(w.events).toContain("python3 cutover_handles_canary.py --side auto");
   });
 
   it("stops unless a dark run came first, every gate closed and the callback listed",

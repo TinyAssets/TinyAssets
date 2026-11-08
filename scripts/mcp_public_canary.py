@@ -276,15 +276,10 @@ _INIT_PAYLOAD = {
 # dual-registered but hidden from tools/list, so they must NOT appear here.
 # `converse` is the relay handle (chatbot -> universe intelligence); the handle
 # shape is provisional pending host ratification of the design-note open-Q.
-CANONICAL_HANDLES = frozenset({
-    "read_graph",
-    "write_graph",
-    "run_graph",
-    "read_page",
-    "write_page",
-    "converse",
-    "get_status",
-})
+# The set is data, the old side's of `canary_handles.json`, beside the doors'
+# (scripts/cutover_handles_canary.py holds either side across the cutover).
+CANONICAL_HANDLES = frozenset(json.loads(
+    (_SCRIPTS / "canary_handles.json").read_text(encoding="utf-8"))["old"]["handles"])
 _ALLOWED_ADVERTISED = CANONICAL_HANDLES
 
 
