@@ -2351,7 +2351,19 @@ R, S, M and W.
   - [ ] 5. `importCheck` and `importDiscard`, the job's verify and wipe steps, and the admit
     step after them (`tierSet`, `admissionSet`, `o:`). It never admits an owner the old stack
     never admitted (no `owner_admission` row: `owner.json` says `absent`, and the census and
-    the builder refuse and count one); one found is the founder's to rule on.
+    the builder refuse and count one); one found is the founder's to rule on. It also owes:
+    - a file's mtime kept, since an admitted owner can't be imported again;
+    - a policy the validator refuses found by the census, archived as a file, with the default
+      kept;
+    - `importCheck` as the record of what failed, because terminal drops are acked and never
+      reach the dead-letter queue;
+    - a reader for the dead-letter queue;
+    - the admit only after the owner's queue is drained and `importCheck` shows no
+      differences, so no chunk is still in flight;
+    - a test that two copies of one owner's import converge, which is what a kill between the
+      continuation and the ack leaves running;
+    - the consumer's hold enforced, or `IMPORT_HOLD_BYTES` gone, with an import case in the
+      memory leg (`rvimport34_report.md`).
   - [x] 6. The deploy kit's route handback (`platform/deploy/deploy.ts`). Before any
     change, mode `routes` keeps a route record in the control namespace. It holds the
     before-state of each outward change `routes` makes beyond `dark`'s: the zone's routes and

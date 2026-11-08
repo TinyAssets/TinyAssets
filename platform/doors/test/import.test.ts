@@ -338,6 +338,38 @@ describe("the import consumer's gates, each before anything is written", () => {
     await dropped(owner, w, pages);
   });
 
+  it("drops a bundle whose staged chunk or inline file is not its hash, writing no byte of it",
+     async () => {
+    // A chunk's bytes swapped in the bucket: dropped before FILES takes it.
+    const owner = fresh();
+    const chunked = await staged(owner);
+    const chunk = [...bundleFiles().keys()].find((name) => name.startsWith("chunks/"))!;
+    await doorsEnv.IMPORT_STAGING.put(`${chunked.prefix}/${chunk}`, new Uint8Array(64).fill(7));
+    const w = world();
+    const delivered = batch(chunked);
+    await importQueue(delivered.batch, w.env);
+    expect([delivered.acked, delivered.retried]).toEqual([[0], []]);
+    expect(w.puts).not.toContain(chunk.slice("chunks/".length));
+    // An inline file's bytes swapped: dropped, the file never made.
+    const other = fresh();
+    const inlined = await staged(other);
+    const name = [...bundleFiles().keys()].find((each) => each.startsWith("inline/"))!;
+    // Same length, one byte changed: only the content id tells them apart.
+    const swapped = bundleFiles().get(name)!.slice();
+    swapped[0] = swapped[0]! ^ 1;
+    await doorsEnv.IMPORT_STAGING.put(`${inlined.prefix}/${name}`, swapped);
+    const again = batch(inlined);
+    await importQueue(again.batch, world().env);
+    expect([again.acked, again.retried]).toEqual([[0], []]);
+    const entries = paged<Entry>(bundleFiles(), "manifest", "entries")
+      .filter((entry) => entry.content_id === name.slice("inline/".length));
+    expect(entries.length).toBeGreaterThan(0);
+    await admitOwner(other);
+    for (const entry of entries) {
+      expect((await stubOf(other).fileStat(own(other), { path: entry.path })).entry).toBeNull();
+    }
+  });
+
   it("drops an owner the directory holds a record of, admitted or erased", async () => {
     for (const s of ["admitted", "erased"] as const) {
       const owner = fresh();
