@@ -68,8 +68,8 @@ function webClient(): Response {
   }, { headers: { "Cache-Control": "public, max-age=3600" } });
 }
 
-async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext):
-    Promise<Response> {
+async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
+                       sources: Sources): Promise<Response> {
   const origin = request.headers.get("Origin");
   if (origin !== null && !MCP_ORIGINS.includes(origin)) {
     return new Response("origin not allowed", { status: 403 });
@@ -77,7 +77,7 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext):
   return mcpResource(async (req, environment, token) => {
     const bound = await bindMcp(environment, token);
     const read = await outsideRead(environment, bound.binding.owner);
-    return read instanceof Response ? read : serveMcp(req, withTiers(bound, read),
+    return read instanceof Response ? read : serveMcp(req, withTiers(bound, read, sources),
                                                       environment);
   }).fetch(request, env, ctx);
 }
@@ -118,16 +118,16 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   }
   const path = url.pathname;
   if (path === MCP_PATH || path.startsWith(`${MCP_PATH}/`)) {
-    return mcpDoor(withoutCookie(request), env, ctx);
+    return mcpDoor(withoutCookie(request), env, ctx, sources);
   }
   if (path.startsWith("/api/")) {
-    return serveApi(withoutCookie(request), env);
+    return serveApi(withoutCookie(request), env, sources);
   }
   if (path === E2B_HOOK_PATH) {
     return e2bLifecycle(withoutCookie(request), env);
   }
   if (path.startsWith(INBOUND_PATH)) {
-    return serveInbound(withoutCookie(request), env);
+    return serveInbound(withoutCookie(request), env, sources);
   }
   if (path.startsWith("/hooks/")) {
     return notFound();
