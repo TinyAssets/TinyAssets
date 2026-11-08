@@ -30,7 +30,7 @@ import {
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
 import { failure, TIERS } from "./support";
-import type { SandboxRun } from "../src/owner-do";
+import type { SandboxRun } from "../src/launch";
 import type { NetworkPlan } from "../src/network";
 import { hashed, ownerRun, secretOf } from "./runs-support";
 import { bundledSources } from "../../sources/src/catalog";

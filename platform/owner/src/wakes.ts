@@ -30,7 +30,7 @@ import type { Write } from "./gate";
 import {
   type Ledger, type LiveCallback, type Outcome, outcome, WAKE_LEASE_S, type WakeTarget,
 } from "./ledger";
-import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
+import { inTime, type Lane, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
 import {
   type Change, type DoorbellRequest, doorbellRequest, type WakeContent,
 } from "../../contract/src/wake-kinds";
@@ -172,6 +172,8 @@ export interface DoorbellDeps {
   readonly notice: (type: string, detail: string) => Promise<void>;
   readonly write: Write;
   readonly clock: () => number;
+  /** Whether the owner is admitted (`require_work`): read at each use. */
+  readonly admitted: () => boolean;
   /** The kill switch: whether the control record lets this owner's outside work go now. */
   readonly gate: () => Promise<boolean>;
   readonly ring: Ring;
@@ -228,11 +230,29 @@ type Answered = { readonly status: number; readonly retry_after: number | null }
  * subscription (the MCP Events spec), and a status the record names `token_dead` leaves the
  * owner one notice that its pasted token no longer works, until it is pasted again.
  */
-export class Doorbell implements WakeSender {
+export class Doorbell implements WakeSender, Lane {
   readonly #deps: DoorbellDeps;
 
   constructor(deps: DoorbellDeps) {
     this.#deps = deps;
+  }
+
+  /**
+   * The `wakes` lane's next work: lapsed claims, then due wakes and revokes; open rows count
+   * only while the owner is admitted (`require_work`): a suspended owner's wait.
+   */
+  next(now: number): number | null {
+    return this.#deps.ledger.nextDue(now, this.#deps.admitted());
+  }
+
+  /**
+   * The `wakes` lane's pass, rung by this doorbell, handed the pass's end; the kill switch
+   * closed claims nothing, and holds the job a retry out.
+   */
+  async run(_now: number, until: number): Promise<unknown> {
+    const done = await runWakes(this.#deps.ledger, this, this.#deps.clock, this.#deps.write,
+                                WAKES_PER_ALARM, WAKE_SEND_MS, until);
+    return done === CLOSED ? { hold: this.#deps.clock() + WAKE_RETRY_S } : done;
   }
 
   async open(): Promise<boolean> {

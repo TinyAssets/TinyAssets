@@ -562,7 +562,7 @@ describe("the manifest's queries", () => {
     await inFiles(r.stub, { keep_versions: 1, retention_days: 0 }, async (files) => {
       await files.write(`${W}/z/c.bin`, new Uint8Array(INLINE_BYTES * 2).fill(5),
                         { expected: null, writer: "t" });
-      await files.collect(Date.now() / 1000 + 10);
+      await files.run(Date.now() / 1000 + 10);
     });
     const [after, recount] = await fileCounters(r.stub);
     expect(after).toEqual(recount);

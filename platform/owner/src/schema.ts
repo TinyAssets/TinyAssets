@@ -599,7 +599,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // upload holds becomes garbage, deleted by housekeeping after `GC_GRACE_S` (30 days, the
     // object's point-in-time recovery; SQLite's clock: the schedule compares it with the
     // object's, and a 30-day grace does not mind which), or sooner, oldest first, once the
-    // garbage passes the tier's storage (`garbage_bytes`, files.ts `collect`). So content any entry or kept row names is never garbage. A history
+    // garbage passes the tier's storage (`garbage_bytes`, files.ts `run`). So content any entry or kept row names is never garbage. A history
     // row never changes but for its prune time, its `released` mark and a redaction of
     // its content.
     "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
@@ -627,7 +627,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "manifest_bytes INTEGER NOT NULL DEFAULT 0 CHECK (manifest_bytes >= 0), " +
       "body_bytes INTEGER NOT NULL DEFAULT 0 CHECK (body_bytes >= 0), " +
       // The bytes of garbage chunks in their grace: counted in no owner's storage, and held to
-      // the owner's storage figure by early collection (files.ts `collect`).
+      // the owner's storage figure by early collection (files.ts `run`).
       "garbage_bytes INTEGER NOT NULL DEFAULT 0 CHECK (garbage_bytes >= 0))",
     // The manifest starts charged its two share rows (part 7).
     "INSERT INTO file_space VALUES (1, NULL, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 20, 30, NULL, 480, 0, 0)",

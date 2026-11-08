@@ -6,9 +6,10 @@
  * import the ledger stores, and only those stores named their files. Here, only the
  * object and its alarm's wake runner import the ledger module, and only the ledger and
  * the schema name its tables, so no other module can read or write mail around the
- * ledger's rules. That list only shrinks, but for the object's own archive lane and its reads
- * of archived mail, moved out of the object to their module (`archive.ts`, untangle A2) and
- * reaching the ledger only through its methods, as the object does. The owner export
+ * ledger's rules. That list only shrinks, but for the object's own lanes moved out of the
+ * object to their modules (untangle A2), each reaching the ledger only through its methods,
+ * as the object does: the archive lane and its reads of archived mail (`archive.ts`), and
+ * the runs lane, its mail delivered as runs and their replies posted (`launch.ts`). The owner export
  * (`export.ts`, slice P) names
  * them too, only to read them for the owner (its source holds no SQL but `SELECT`, held by
  * the policy-boundary guard's read-only check).
@@ -19,7 +20,7 @@ import { workerSources } from "../../ci/kit/sources";
 
 const LEDGER = "owner/src/ledger.ts";
 const IMPORTERS = new Set(["owner/src/owner-do.ts", "owner/src/wakes.ts",
-                           "owner/src/archive.ts"]);
+                           "owner/src/archive.ts", "owner/src/launch.ts"]);
 const NAMERS = new Set([LEDGER, "owner/src/schema.ts", "owner/src/export.ts"]);
 const TABLES = Object.freeze(["outside_agents", "native_agents", "ledger_messages",
   "ledger_recipients",

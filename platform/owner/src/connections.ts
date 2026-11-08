@@ -872,7 +872,7 @@ export class Connections {
   // -- the `connections` lane ------------------------------------------------------
 
   /** When the lane next has work: a flow or pending row to sweep, or a revoke due. */
-  nextDue(now: number): number | null {
+  next(now: number): number | null {
     const next = this.#sql.exec<{ at: number | null }>(
       "SELECT MIN(at) AS at FROM (SELECT MIN(expires_at) AS at FROM connection_flows " +
         "UNION ALL SELECT MIN(pending_until) FROM connections WHERE pending_until IS NOT NULL " +

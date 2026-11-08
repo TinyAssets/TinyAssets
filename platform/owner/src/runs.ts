@@ -54,9 +54,9 @@
  * the same admission, its input the mail, its conversation the mail thread's (one a thread,
  * agent and authority, its id that triple's digest: `mailConversation`), its authority the
  * mail's, attended only when a person sent it, and its result the agent's reply in that
- * thread when a person or client sent it (`RunDeps.answer`, before the settle). Such a run
+ * thread when a person or client sent it (`RunHost.answer`, before the settle). Such a run
  * never refuses for the tier: past the tier's simultaneous runs it waits, as an input to a
- * busy conversation does. Its mail stays held until it settles (`RunDeps.mailSettled`).
+ * busy conversation does. Its mail stays held until it settles (`RunHost.mailSettled`).
  *
  * **The `runs` lane** (`lane`): a schedule's due time, a waiting run's turn, mail no run has
  * taken, or a live run's lease expiry while runs are live, never a poll: with none the lane
@@ -65,7 +65,8 @@
 import { CONVERSATION_ID, randomHex, RUN_ID, SCHEDULE_ID } from "../../contract/src/ids";
 import { sha256Hex } from "../../contract/src/digest";
 
-import type { CredentialKind, Sources } from "../../sources/src/schema";
+import { bundledSources } from "../../sources/src/catalog";
+import type { CredentialKind } from "../../sources/src/schema";
 import {
   type EngineEvents, type Frame, FRAME_VERSION, readEvent,
 } from "../../contract/src/run-events";
@@ -86,8 +87,8 @@ import { periods } from "./money";
 import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
 import type { RunMeter } from "./sandbox-time";
-import { SIGNIN_OFF } from "./signins";
-import { TIER_RUNS, type TierName, type Tiers } from "./tier";
+import { SIGNIN_OFF, switchedOn } from "./signins";
+import { TIER_RUNS, type TierName, tierNumbers, type Tiers } from "./tier";
 import { utf8Bytes } from "../../contract/src/text";
 
 /**
@@ -166,62 +167,62 @@ export interface OpenedTokens {
   readonly runner_token: string;
 }
 
-export interface RunDeps {
+/**
+ * What Runs reaches past its own rows: one narrow interface, which the run launcher serves
+ * (`launch.ts`, `Launcher`). Runs reads the rest itself, from the storage it is handed: the
+ * tier's numbers as last kept (`tier.ts`), the switched-on sign-ins (`signins.ts`) and the
+ * served source records (`bundledSources`). The owner's admission and tier are the
+ * admission module's, which only the object reads (the policy-boundary guard), so the
+ * launcher hands them on from the object's state; the connections, the grants, the model
+ * policy's caps and the spend are their modules', each read in the unit it is asked in.
+ */
+export interface RunHost {
   /** The owner's `require_work` refusal, or null while it is admitted. */
-  readonly unadmitted: () => Refusal | null;
-  readonly sandboxBound: () => boolean;
-  readonly sources: () => Sources;
-  /**
-   * Whether `engine`'s vendor sign-in is switched on (the control record, as the binder last
-   * handed it): a run never uses a switched-off source's vendor login.
-   */
-  readonly signinOn: (engine: string) => boolean;
-  /** The owner's active connections and their models. */
-  readonly usable: () => readonly UsableSource[];
-  /** The connections the sandbox may reach (a stored egress scope). */
-  readonly egressible: () => readonly { readonly connection: string }[];
+  unadmitted(): Refusal | null;
+  /** The owner's own tier (`admission.ts`). */
+  tier(): TierName;
+  /** Whether a sandbox is bound to start runs in. */
+  sandboxBound(): boolean;
+  /** The owner's active connections the sandbox may reach (a stored egress scope), with their models. */
+  reachable(): readonly UsableSource[];
   /** A client's grant, standing at its stamp's generation; refused otherwise. */
-  readonly standing: (stamp: Stamped) => StandingGrant;
-  readonly tier: () => TierName;
-  readonly caps: () => SpendCaps;
-  readonly spent: (period: string, source: string | null) => number;
-  readonly lease: {
-    /** `authority`'s live lease (the owner's own work's, or one outside client's). */
-    live(now: number, authority: string): LiveLease | null;
-    /** Every live lease. */
-    all(now: number): readonly LiveLease[];
-    /** In the unit: `authority`'s new lease, its tokens minted; refused while one is held. */
-    open(now: number, authority: string): { readonly lease: LiveLease;
-                                            readonly tokens: OpenedTokens;
-                                            readonly network: NetworkPlan };
-    release(leaseId: string, epoch: number): boolean;
-    renew(leaseId: string, epoch: number): void;
-    /** In the unit: every lapsed lease's row gone, once its runs were settled. */
-    lapsed(now: number): void;
-  };
-  /** In the unit, once a run settled: its streams ended (`egress.ts`). */
-  readonly ended: (run: string) => void;
+  standing(stamp: Stamped): StandingGrant;
+  /** The owner's own spending caps, as the model policy leaves them. */
+  caps(): SpendCaps;
+  /** What the owner spent in `period`, on `source` or (null) on every source. */
+  spent(period: string, source: string | null): number;
+  /** `authority`'s live lease (the owner's own work's, or one outside client's). */
+  lease(now: number, authority: string): LiveLease | null;
+  /** Every live lease. */
+  leases(now: number): readonly LiveLease[];
+  /** In the unit: `authority`'s new lease, its tokens minted; refused while one is held. */
+  openLease(now: number, authority: string): { readonly lease: LiveLease;
+                                               readonly tokens: OpenedTokens;
+                                               readonly network: NetworkPlan };
+  /**
+   * In the unit, once no live run holds it: the lease given back, unless a sign-in holds it,
+   * and then every stream under it ended and its sandbox paused once the unit is over.
+   */
+  releaseLease(leaseId: string, epoch: number): void;
+  renewLease(leaseId: string, epoch: number): void;
+  /** In the unit: every lapsed lease's row gone, once its runs were settled. */
+  leasesLapsed(now: number): void;
+  /** In the unit, once a run settled: its streams ended (`egress.ts`), its waiters woken. */
+  ended(run: string): void;
   /**
    * In the unit, before a mail's run that succeeded with a result settles: its agent's
    * reply to that mail (`ledger.ts` decides whether the mail is one a result answers).
    */
-  readonly answer: (answer: MailAnswer) => void;
+  answer(answer: MailAnswer): void;
   /** In the unit, once a mail's run settled, however: its mail no longer held for it. */
-  readonly mailSettled: (mail: string, agent: string) => void;
+  mailSettled(mail: string, agent: string): void;
   /**
    * In the unit: what a run's sandbox said the owner must hear (its sync's files whose names
    * are not UTF-8, `ta.sync_unnamed`), as the owner's notice.
    */
-  readonly notice?: (type: string, detail: string) => void;
-  /** In the unit, once the lease was given back: every stream under it ended. */
-  readonly leaseEnded: (leaseId: string) => void;
+  notice(type: string, detail: string): void;
   /** In the unit: a run settled lost or revoked, whose CLI the sandbox stops, once over. */
-  readonly stop: (runs: readonly LiveRun[]) => void;
-  /**
-   * The owner's tier's simultaneous runs, as the numbers last handed say, or null when none
-   * were: whether a waiting run may start (the lane's).
-   */
-  readonly capacity: () => number | null;
+  stop(runs: readonly LiveRun[]): void;
 }
 
 /** An engine's sign-in, as the runner last reported it: presence only, never a credential. */
@@ -579,11 +580,36 @@ function scheduleOf(row: ScheduleRow): RunSchedule {
 
 export class Runs {
   readonly #storage: OwnerStorage;
-  readonly #deps: RunDeps;
+  readonly #host: RunHost;
 
-  constructor(storage: OwnerStorage, deps: RunDeps) {
+  constructor(storage: OwnerStorage, host: RunHost) {
     this.#storage = storage;
-    this.#deps = deps;
+    this.#host = host;
+  }
+
+  /**
+   * The owner's tier's simultaneous runs, by the numbers last kept (`tierNumbers`, which
+   * reads no time when none are handed), or null when none were: whether a waiting run may
+   * start (the lane's).
+   */
+  #capacity(): number | null {
+    try {
+      return tierNumbers(this.#storage, undefined, 0)[this.#host.tier()].runs;
+    } catch (error) {
+      if (error instanceof Refusal && !error.invalid) {
+        return null;  // none handed yet: no waiting run starts
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Whether `engine`'s vendor sign-in is switched on (the control record, as the binder last
+   * handed it, kept: `switchedOn` reads no time when none is handed): a run never uses a
+   * switched-off source's vendor login.
+   */
+  #signinOn(engine: string): boolean {
+    return switchedOn(this.#storage, undefined, 0).has(engine);
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -616,11 +642,11 @@ export class Runs {
    */
   admit(ask: Ask, now: number, prepare: (chosen: Chosen) => RunConfig,
         waiting: string | null = null): Admitted | Retried {
-    const unadmitted = this.#deps.unadmitted();
+    const unadmitted = this.#host.unadmitted();
     if (unadmitted !== null) {
       throw unadmitted;
     }
-    if (!this.#deps.sandboxBound()) {
+    if (!this.#host.sandboxBound()) {
       throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
     }
     if (!ask.file.enabled) {
@@ -648,7 +674,7 @@ export class Runs {
       }
       return this.#wait(ask, conversation.id, now);
     }
-    const tier = this.#deps.tier();
+    const tier = this.#host.tier();
     if (this.live() >= ask.tiers[tier].runs) {
       if (ask.mail !== null && waiting === null) {
         // Mail never refuses for the tier: its run waits its turn, in its thread's
@@ -672,8 +698,8 @@ export class Runs {
                              connection: chosen.connection, secret });
     // Written from here: nothing above refused.
     const authority = authorityOf(ask.origin);
-    const live = this.#deps.lease.live(now, authority);
-    const opened = live === null ? this.#deps.lease.open(now, authority) : null;
+    const live = this.#host.lease(now, authority);
+    const opened = live === null ? this.#host.openLease(now, authority) : null;
     const lease = opened?.lease ?? live!;
     let conversationId: string;
     let session: string | null = null;
@@ -765,7 +791,7 @@ export class Runs {
    * platform's line rings the owner (`sandbox_wait`). A read; null for none.
    */
   nextWaiting(): RunRow | null {
-    const room = this.#deps.capacity();
+    const room = this.#capacity();
     if (room === null || this.live() >= room) {
       return null;
     }
@@ -804,9 +830,7 @@ export class Runs {
     if (row.lease_id !== null && this.#sql.exec(
       `SELECT 1 FROM runs WHERE ${LIVE} AND lease_id = ? AND epoch = ?`, row.lease_id,
       row.epoch).toArray().length === 0) {
-      if (this.#deps.lease.release(row.lease_id, row.epoch!)) {
-        this.#deps.leaseEnded(row.lease_id);
-      }
+      this.#host.releaseLease(row.lease_id, row.epoch!);
     }
     return true;
   }
@@ -898,7 +922,7 @@ export class Runs {
     const stamp = ask.stamp;
     let grant: StandingGrant;
     try {
-      grant = this.#deps.standing(stamp);
+      grant = this.#host.standing(stamp);
     } catch (error) {
       if (error instanceof Refusal && !error.invalid) {
         throw new Refusal("authority_changed", AUTHORITY_CHANGED);
@@ -964,14 +988,13 @@ export class Runs {
   choose(file: AgentFile, unattended: boolean, authority = OWNER_AUTHORITY, now = 0):
       { engine: string; credential: CredentialKind; connection: string | null;
         source: string | null; model: string | null } {
-    const sources = this.#deps.sources();
-    const reachable = new Set(this.#deps.egressible().map((entry) => entry.connection));
-    const keys = this.#deps.usable().filter((entry) => reachable.has(entry.connection));
+    const sources = bundledSources();
+    const keys = this.#host.reachable();
     const candidates = ranked(keys);
     // Each engine its sandbox's runner reported a sign-in for: presence alone.
     const client = authority !== OWNER_AUTHORITY;
     const signins = new Map<string, SignIn>(client
-      ? (this.#deps.lease.live(now, authority)?.signins ?? []).map((engine) =>
+      ? (this.#host.lease(now, authority)?.signins ?? []).map((engine) =>
         [engine, { engine, signed_in: true, models: [], checked_at: now, changed_at: 0 }])
       : this.signins().map((signin) => [signin.engine, signin]));
     const lapsed = (engine: string) => new Refusal("signin_lapsed", `${SIGNIN_LAPSED} (${engine})`);
@@ -1007,7 +1030,7 @@ export class Runs {
           // Never a silent fall back to a key. A switched-off source's login is never used,
           // even where it is signed in (review H1). A sign-in not known signed out is
           // admitted: the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
-          if (!this.#deps.signinOn(file.engine)) {
+          if (!this.#signinOn(file.engine)) {
             throw new Refusal("signin_off", `${SIGNIN_OFF} (${file.engine})`);
           }
           if (!client && signins.get(file.engine)?.signed_in === false) {
@@ -1033,7 +1056,7 @@ export class Runs {
         // A switched-off source's plan is no candidate (review H1).
         if (record?.cli === undefined || record.unwired !== undefined
             || !record.cli.credential.includes("vendor_login_in_sandbox")
-            || !this.#deps.signinOn(signin.engine)) {
+            || !this.#signinOn(signin.engine)) {
           continue;
         }
         const provider = providerOf(record.cli.api_key_env, signin.engine);
@@ -1075,7 +1098,7 @@ export class Runs {
 
   /** The owner's own spending caps, for an API-key run on `source`: off unless set. */
   #limits(source: string, now: number): void {
-    const caps = this.#deps.caps();
+    const caps = this.#host.caps();
     const { day, month } = periods(now);
     const own = caps.sources[source];
     const checks: [string, number | null | undefined, string, string | null][] = [
@@ -1085,7 +1108,7 @@ export class Runs {
       ["source_monthly_cost", own?.monthly_cost, `m:${month}`, source],
     ];
     for (const [rule, cap, period, by] of checks) {
-      if (cap !== null && cap !== undefined && this.#deps.spent(period, by) >= cap) {
+      if (cap !== null && cap !== undefined && this.#host.spent(period, by) >= cap) {
         throw new Refusal("owner_limit", `${OWNER_LIMIT}: ${rule} is spent`);
       }
     }
@@ -1207,19 +1230,17 @@ export class Runs {
     }
     const lease = settled[0]!;
     if (lease.mail !== null) {
-      this.#deps.mailSettled(lease.mail, lease.agent);
+      this.#host.mailSettled(lease.mail, lease.agent);
     }
     this.#sql.exec("DELETE FROM run_inputs WHERE run = ?", runId);
     this.#sql.exec("DELETE FROM run_grants WHERE run = ?", runId);
     this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now,
                    lease.conversation);
-    this.#deps.ended(runId);
+    this.#host.ended(runId);
     if (lease.lease_id !== null && this.#sql.exec(
       `SELECT 1 FROM runs WHERE ${LIVE} AND lease_id = ? AND epoch = ?`, lease.lease_id,
       lease.epoch).toArray().length === 0) {
-      if (this.#deps.lease.release(lease.lease_id, lease.epoch!)) {
-        this.#deps.leaseEnded(lease.lease_id);
-      }
+      this.#host.releaseLease(lease.lease_id, lease.epoch!);
     }
     this.#prune();
     return true;
@@ -1230,17 +1251,17 @@ export class Runs {
    * batch is the runner's heartbeat); each new frame (`seq` past the last) read by the run's
    * record, its session id, result and error kept; the frames to relay, and the settle the
    * runner's `end` brings. A mail's run that succeeded with a result answers it before it
-   * settles, while its mail is still held (`RunDeps.answer`).
+   * settles, while its mail is still held (`RunHost.answer`).
    */
   /**
    * A read, before an events batch's unit: the reply its settle would post
-   * (`RunDeps.answer`), or null, so the door can place a long one in R2 first (ADR-035).
+   * (`RunHost.answer`), or null, so the door can place a long one in R2 first (ADR-035).
    */
   answering(runId: string, lease: LiveLease, frames: readonly PostedFrame[],
             end: { readonly exit_code: number | null } | null): MailAnswer | null {
     const row = end !== null && this.liveUnder(runId, lease) ? this.#run(runId) : undefined;
     const events = row === undefined ? undefined
-      : this.#deps.sources().get(row.source)?.cli?.engine.events;
+      : bundledSources().get(row.source)?.cli?.engine.events;
     if (row === undefined || end === null || events === undefined) {
       return null;
     }
@@ -1277,8 +1298,8 @@ export class Runs {
     if (row === undefined) {
       throw new Refusal("run_ended", RUN_ENDED);
     }
-    this.#deps.lease.renew(lease.lease_id, lease.epoch);
-    const events = this.#deps.sources().get(row.source)?.cli?.engine.events;
+    this.#host.renewLease(lease.lease_id, lease.epoch);
+    const events = bundledSources().get(row.source)?.cli?.engine.events;
     if (events === undefined) {
       throw new Error(`run ${runId}'s engine ${row.source} has no record`);
     }
@@ -1286,7 +1307,7 @@ export class Runs {
     for (const frame of frames) {
       const notice = frame.seq > row.last_seq ? unnamedNotice(frame.event) : null;
       if (notice !== null) {
-        this.#deps.notice?.("sync_unnamed", `${row.agent}: ${notice}`);
+        this.#host.notice("sync_unnamed", `${row.agent}: ${notice}`);
       }
     }
     // The batch is this run's own heartbeat, as it renews the lease.
@@ -1304,7 +1325,7 @@ export class Runs {
       settled = failed ? "failed" : "succeeded";
       const answer = this.#answerOf(row, failed, result);
       if (answer !== null) {
-        this.#deps.answer(answer);
+        this.#host.answer(answer);
       }
       this.settle(runId, settled, row.cancel_requested === 1 ? "cancelled"
         : end.exit_code !== 0 ? "exit" : error !== null ? "engine_error" : null,
@@ -1334,7 +1355,7 @@ export class Runs {
     }
     if (this.#sql.exec("DELETE FROM run_grants WHERE run = ? RETURNING run", runId).toArray()
           .length === 1) {
-      this.#deps.ended(runId);
+      this.#host.ended(runId);
     }
     return { run: live.run, lease_id: live.lease_id, epoch: live.epoch };
   }
@@ -1441,7 +1462,7 @@ export class Runs {
    * whose grant is gone is still found. The ones to stop in the sandbox.
    */
   lost(now: number): LiveRun[] {
-    const leases = new Set(this.#deps.lease.all(now)
+    const leases = new Set(this.#host.leases(now)
       .map((lease) => `${lease.lease_id}/${lease.epoch}`));
     const lost = this.#sql.exec<LiveRun & { beat_at: number }>(
       `SELECT id AS run, lease_id, epoch, beat_at FROM runs WHERE ${LIVE} ORDER BY seq`)
@@ -1450,10 +1471,10 @@ export class Runs {
     for (const row of lost) {
       this.settle(row.run, "unknown", "lost", null, now);
     }
-    this.#deps.lease.lapsed(now);
+    this.#host.leasesLapsed(now);
     const stopped = lost.map(({ run, lease_id, epoch }) => ({ run, lease_id, epoch }));
     if (stopped.length > 0) {
-      this.#deps.stop(stopped);
+      this.#host.stop(stopped);
     }
     return stopped;
   }
@@ -1526,7 +1547,7 @@ export class Runs {
       times.push(now);  // a waiting run's turn has come
     }
     // A live run is looked at again when its lease or its own heartbeat would lapse.
-    const leases = new Map(this.#deps.lease.all(now)
+    const leases = new Map(this.#host.leases(now)
       .map((lease) => [`${lease.lease_id}/${lease.epoch}`, lease.expires_at]));
     for (const row of this.#sql.exec<{ lease_id: string; epoch: number; beat_at: number }>(
       `SELECT lease_id, epoch, beat_at FROM runs WHERE ${LIVE}`).toArray()) {

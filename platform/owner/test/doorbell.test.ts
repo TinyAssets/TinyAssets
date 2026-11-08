@@ -416,7 +416,8 @@ describe("a revoke is never outlived", () => {
       let sent = 0;
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
-        notice: async () => undefined, write, clock: () => t, gate: async () => true,
+        notice: async () => undefined, write, clock: () => t, admitted: () => true,
+        gate: async () => true,
         ring: async () => {
           sent++;
           return { state: "answered", status: 202, retry_after: null };
@@ -585,7 +586,8 @@ describe("a send's answer", () => {
       const asked: string[] = [];
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
-        notice: async () => undefined, write, clock: () => t, gate: async () => true,
+        notice: async () => undefined, write, clock: () => t, admitted: () => true,
+        gate: async () => true,
         ring: async (id) => {
           asked.push(id);
           return { state: "answered", status: answers[id]!,
@@ -650,7 +652,8 @@ describe("a send's answer", () => {
       let sent = 0;
       const doorbell = new Doorbell({
         ledger, live: () => true, reads: () => true, touched: () => false,
-        notice: async () => undefined, write, clock: () => t, gate: async () => true,
+        notice: async () => undefined, write, clock: () => t, admitted: () => true,
+        gate: async () => true,
         ring: () => {
           sent++;
           return new Promise<RingAnswer>(() => undefined);
@@ -719,7 +722,8 @@ it("answers closed from the pass itself when the switch is closed, fails or neve
     const write = new WriteGate(state.storage).write;
     const doorbell = (gate: () => Promise<boolean>) => new Doorbell({
       ledger, live: () => true, reads: () => true, touched: () => false,
-      notice: async () => undefined, write, clock: () => t, gate,
+      notice: async () => undefined, write, clock: () => t, admitted: () => true,
+      gate,
       ring: async () => ({ state: "answered", status: 202, retry_after: null }) });
     return [await runWakes(ledger, doorbell(async () => false), () => t, write),
             await runWakes(ledger, doorbell(async () => { throw new Error("KV down"); }),

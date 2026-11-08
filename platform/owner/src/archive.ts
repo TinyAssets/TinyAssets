@@ -531,6 +531,16 @@ export class Archive {
   }
 
   /**
+   * When the `archive` lane next has work: acked mail to move to segments from half the hot
+   * ceiling, a deleted agent's mail to rewrite out of them, or a compaction pending; at once,
+   * or none: never a poll.
+   */
+  next(now: number): number | null {
+    return this.#ledger.archiveDue() || this.#ledger.purgedAgents().length > 0
+      || this.#ledger.archiveCompactPending() ? now : null;
+  }
+
+  /**
    * One pass of the `archive` lane: a deleted agent's mail rewritten out of a segment, or
    * else one move of acked mail (a straggler's merge, or the tail's new segment). A move
    * that would leave the storage figure higher than it found it is refused for the figure
@@ -541,7 +551,7 @@ export class Archive {
    * say) still counts: at `ARCHIVE_FAILS_TOLD` in a row the owner is told once, with the last
    * error as it said it, or that the passes stopped before they could say.
    */
-  async pass(): Promise<unknown> {
+  async run(): Promise<unknown> {
     let begun: { fails: number; error: string | null } | null = null;
     try {
       // Blocked and still full: nothing to try until the owner frees space.

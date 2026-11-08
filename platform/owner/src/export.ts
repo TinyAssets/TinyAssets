@@ -60,7 +60,7 @@
  * object's point-in-time recovery): every chunk its generation names was live during it, and
  * a chunk no content holds stays in the bucket for that grace. The one exception is the
  * owner's own churn: garbage past the owner's storage figure is collected early, oldest
- * first (`files.ts` `collect`), and a chunk gone that way is refused by name (`CHUNK_GONE`).
+ * first (`files.ts` `run`), and a chunk gone that way is refused by name (`CHUNK_GONE`).
  *
  * **What it never holds** (ADR-018: credentials are never exported), each table kept out
  * with its reason in {@link NOT_EXPORTED}: sealed credentials and connect flows, session

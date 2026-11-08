@@ -37,7 +37,7 @@
  */
 import { createHash } from "node:crypto";
 
-import type { OwnerStorage } from "./gate";
+import type { OwnerStorage, Write } from "./gate";
 
 /**
  * The runs' side of the meter, which only `runs.ts` reads and writes (the policy-boundary
@@ -157,13 +157,49 @@ function dayOf(at: number): string {
   return new Date(at).toISOString().slice(0, 10).replaceAll("-", "");
 }
 
+/** Where the `sandbox` lane reads the sandbox Worker's log, and the gate it writes through. */
+export interface MeterSource {
+  /** The owner's log after `after`, as the sandbox Worker answers; null with none bound. */
+  read(after: number): Promise<unknown> | null;
+  readonly write: Write;
+}
+
 export class SandboxTime {
   readonly #storage: OwnerStorage;
   readonly #runs: RunMeter;
+  readonly #source: MeterSource;
 
-  constructor(storage: OwnerStorage, runs: RunMeter) {
+  constructor(storage: OwnerStorage, runs: RunMeter, source: MeterSource) {
     this.#storage = storage;
     this.#runs = runs;
+    this.#source = source;
+  }
+
+  /**
+   * The `sandbox` lane's pass: the sandbox Worker's log read after the cursor, a batch at a
+   * time until the pass's end, each applied in a unit. Without a sandox bound there is no
+   * log, and runs that never started are metered at none. A read that fails backs the lane
+   * off in its row; the pass completes.
+   */
+  async run(_now: number, until: number): Promise<void> {
+    do {
+      const { after } = this.cursor();
+      let read: { events: ReturnType<typeof meterRead>["events"]; next: number };
+      const readAt = Date.now();
+      try {
+        const answer = this.#source.read(after);
+        read = answer === null ? { events: [], next: after } : meterRead(await answer, after);
+      } catch {
+        console.error("the sandbox meter's read failed; it is tried again later");
+        await this.#source.write(() => this.failed(Date.now() / 1000));
+        return;
+      }
+      await this.#source.write(() => this.#storage.transactionSync(
+        () => this.apply(read.events, read.next, readAt)));
+      if (read.events.length < METER_BATCH) {
+        return;
+      }
+    } while (Date.now() < until);
   }
 
   get #sql(): OwnerStorage["sql"] {

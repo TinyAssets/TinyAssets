@@ -598,6 +598,11 @@ export class Policy {
    * else, as a grant's authority generation moves apart from its revision. The sandbox's
    * network is made under it, and egress is admitted only under the current one.
    */
+  /** The model policy's settings, its caps among them (`modelSettings`). */
+  models(): ModelSettings {
+    return modelSettings(this.read().document);
+  }
+
   egressGeneration(): number {
     return this.#sql.exec<{ egress_generation: number }>(
       "SELECT egress_generation FROM owner_policy").one().egress_generation;

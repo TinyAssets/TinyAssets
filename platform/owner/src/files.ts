@@ -2416,9 +2416,9 @@ export class Files {
    * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
    * change still to apply, or garbage past the owner's storage figure that it may collect
    * early. Garbage waiting on a failed delete's retry is due at that retry, never at once,
-   * and garbage the newest manifest names is never collected early.
+   * and garbage the newest manifest names is never collected early. The `files` lane's.
    */
-  nextAlarm(now: number): number | null {
+  next(now: number): number | null {
     if (this.#reretaining(this.#space(), this.#limits())
         || (this.#garbageOver() > 0 && this.#earlyCollectable(now))) {
       return now;
@@ -2443,9 +2443,10 @@ export class Files {
    * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
    * lane's contract: an outside call's failure is its rows', a throw is a bug). No delete
    * is begun with less than `DELETE_FLOOR_MS` left before `until`. Each step that writes
-   * is a unit of the gate of its own, between the calls, never the whole pass.
+   * is a unit of the gate of its own, between the calls, never the whole pass. The `files`
+   * lane's pass.
    */
-  async collect(now: number, until: number = Infinity): Promise<void> {
+  async run(now: number, until: number = Infinity): Promise<void> {
     const sql = this.#sql;
     await this.#write(() => this.#change(null, () => {
       this.#reretain();

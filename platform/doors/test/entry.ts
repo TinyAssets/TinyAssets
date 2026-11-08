@@ -10,7 +10,8 @@ import { serve } from "../src/doors";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
-import { type OwnerEnv, OwnerDO as RealOwnerDO, type SandboxLeases } from "../../owner/src/owner-do";
+import type { SandboxLeases } from "../../owner/src/launch";
+import { type OwnerEnv, OwnerDO as RealOwnerDO } from "../../owner/src/owner-do";
 import type { Refusal } from "../../contract/src/refusal";
 import { RecordingErasures } from "../../owner/test/erasure-fake";
 import { RecordingSandbox } from "../../owner/test/sandbox-fake";
