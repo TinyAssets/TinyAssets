@@ -10,6 +10,8 @@ and changes nothing. handles-canary.yml runs it by hand, read-only, in productio
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,11 +37,23 @@ OLD = set(RECORD["old"]["handles"])
 NEW = set(RECORD["new"]["handles"])
 
 
+def test_the_old_canary_runs_with_only_the_images_two_files(tmp_path):
+    # The daemon image copies mcp_public_canary.py and _canary_common.py alone (Dockerfile),
+    # and its healthcheck runs the first: it must import and run with nothing beside it.
+    for name in ("mcp_public_canary.py", "_canary_common.py"):
+        (tmp_path / name).write_bytes((_REPO / "scripts" / name).read_bytes())
+    for argv in (["-c", "import sys; sys.path.insert(0, sys.argv[1]); "
+                  "import mcp_public_canary as c; print(len(c.CANONICAL_HANDLES))", str(tmp_path)],
+                 ["mcp_public_canary.py", "--help"]):
+        ran = subprocess.run([sys.executable, "-I", *argv], cwd=tmp_path, capture_output=True,
+                             text=True, env={"PATH": os.environ.get("PATH", "")}, timeout=60)
+        assert (argv[0], ran.returncode, ran.stderr) == (argv[0], 0, "")
+    assert ran.stdout.startswith("usage:")
+
+
 def test_the_old_side_is_the_old_canarys_own_record():
-    # Two sources: the old canary's own literal (it never reads the JSON, since the daemon
-    # image ships that script alone) and the JSON, so dropping a handle from either fails.
-    assert "canary_handles.json" not in (_REPO / "scripts" / "mcp_public_canary.py").read_text(
-        encoding="utf-8")
+    # Two sources: the old canary's own literal and the JSON, so dropping a handle from
+    # either fails.
     assert public.CANONICAL_HANDLES == frozenset(OLD)
     assert [RECORD["old"]["authorization_server"]] == list(public.EXPECTED_AUTHORIZATION_SERVERS)
     assert RECORD["new"]["authorization_server"] == "https://tinyassets.io"

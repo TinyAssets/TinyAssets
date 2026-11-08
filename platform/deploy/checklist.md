@@ -327,8 +327,15 @@ It never counts as "absent".
        stack doesn't. It says the handle set is owed. It can't check the set itself: no
        probe owner's key exists until the doors serve `/app/api`, and the dark control
        record admits no one.
-    2. **Open the control record for the probe owner**, as a canary owner (`ordinary:
-       "canary"`, its id in `canary`).
+    2. **Open the control record for the probe owner, both gates:** `outside: "on"`,
+       `ordinary: "canary"` and `canary: ["<the probe owner's WorkOS user id>"]`. The keyed
+       `/api` passes only with `outside` on (the doors' `outsideOpen`), so with it off,
+       step 4 gets a `503`. With `ordinary` still `canary`, this admits no one but the probe
+       owner, inside or out.
+       - Read the probe owner's WorkOS user id (`user_…`) from WorkOS before its first
+         sign-in. The doors name an owner by that id as it stands.
+       - Its first sign-in is then admitted automatically: the gate admits the listed id,
+         and the doors admit a new owner at sign-up.
     3. **Create the probe owner** (tester B, signing in through the doors), then mint its
        API key in the owner app and store it as the `production` secret `TA_PROBE_KEY`.
        H2's probes use it too.

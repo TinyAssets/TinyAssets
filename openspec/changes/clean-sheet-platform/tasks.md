@@ -2393,7 +2393,11 @@ R, S, M and W.
      what a handback would change. The `routes` run's own canary has run the new side's
      unkeyed checks (`--side new --unkeyed`: the doors answer `/mcp` and its resource
      document), and owes the handle set. So, in this order:
-     - open the control record for the probe owner, as a canary owner;
+     - open the control record for the probe owner, both gates: `outside: "on"`,
+       `ordinary: "canary"` and `canary: ["<the probe owner's WorkOS user id>"]`. The keyed
+       `/api` passes only with `outside` on; with `ordinary` still `canary` this admits no
+       one else. The founder reads that id from WorkOS before the probe owner's first
+       sign-in, which the gate then admits automatically, as sign-up admits an owner;
      - create the probe owner (tester B) through the doors, mint its API key in the owner
        app, and store it as the `production` secret `TA_PROBE_KEY`;
      - dispatch `handles-canary.yml` with `side` `new`, verify's handle-set check;
