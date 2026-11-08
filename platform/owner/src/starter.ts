@@ -10,7 +10,7 @@
  * offered beside it, and its state.
  *
  * **Seeding.** An admitted owner with no reconciled version is seeded by the `starter` lane
- * (`ownerLanes`), at once: so every owner, however it first arrives (the app, or Claude or
+ * (the object's schedule), at once: so every owner, however it first arrives (the app, or Claude or
  * ChatGPT over MCP), has `main`. Each file is written through the files plane as the
  * owner's own write (`writer` `owner`, history op `starter`, so `file_history` shows it), a
  * receipt for each, `agent.json` last: until it lands there is no agent, and a seed that

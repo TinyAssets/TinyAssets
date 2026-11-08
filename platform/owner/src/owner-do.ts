@@ -34,7 +34,11 @@
  * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
- * but its doors (the door table, `contract/doors.json`, lists them). Its timed work is the one
+ * but its doors (the door table, `contract/doors.json`, lists them). The object is their
+ * router and holds their state: each door's method hands its row's runner (`#run`, `#units`:
+ * the bind, the account, the scope and the fields) the handler in the module its row names
+ * (`<module>Doors.<door>`), which the runner hands the object's state (`OwnerState`). Its
+ * runs are launched and delivered by `launch.ts`. Its timed work is the one
  * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
  * object's single physical alarm, beside the erasure's job. The object is a plain Durable
  * Object that holds a Lifecycle, never the SDK's `Agent`, and installs none of Lifecycle's
@@ -140,7 +144,7 @@ import {
 } from "./codemode";
 import {
   type Agent, type ChainMail, Ledger, ledgerDoors, type LedgerLimits, type MailPage,
-  type NativeAgent, outsideOrigin, type Posted, registrant, RUN_NO_MAILBOX,
+  type NativeAgent, outsideOrigin, type Posted, READ_TRIES, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
 import type { Binding, InboundAnswer, Origin } from "../../contract/src/binding";
@@ -167,7 +171,7 @@ import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from 
 import { starterDoors } from "./starter";
 import { priced, Usage as ModelUsage, usageDoors, type UsageReceipt } from "./usage";
 import { migrate } from "./migrate";
-import { Archive, type ArchiveMoveSeen, type ChainStep, READ_TRIES } from "./archive";
+import { Archive, type ArchiveMoveSeen, type ChainStep } from "./archive";
 import { MIGRATIONS } from "./schema";
 import { Backups, MANIFEST_PROTECT_S } from "./backup";
 import { OpenExports } from "./open-exports";
@@ -2216,14 +2220,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { value: read.value, located: this.#bodies.locate(read.contents), wants: read };
     });
     if (synced) {
-      await this.#schedule.sync();  // a delete that rang an agent's doorbell (`#ring`)
+      await this.#schedule.sync();  // a delete that rang an agent's doorbell (`ring`, `collections.ts`)
     }
     return fill(value, located.size === 0 ? new Map()
       : await this.#bodies.windows(located, wants.maxOf ?? (() => PAGE_BYTES), wants.offsetOf));
   }
 
   /**
-   * A row written by compare-and-swap; the owner's own board or room write rings (`#ring`).
+   * A row written by compare-and-swap; the owner's own board or room write rings (`ring`, `collections.ts`).
    * Answered without its body (review H3): its etag, revision, seq and `body_bytes`, so a
    * body past one answer is never echoed back.
    */
@@ -2481,7 +2485,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // A run door starts, reads or cancels a run. Starting one is two units around the agent's
   // file read: the first checks the call and reads what it asks; then `agent.json` is read
   // (its bytes may cross to `FILES`); then one unit binds the call again and admits the run
-  // whole (`#launch`), so nothing between the two can widen what the admission saw. A run's
+  // whole (`Launcher.launch`), so nothing between the two can widen what the admission saw. A run's
   // own MCP door never converses (`RUN_STARTS_NONE`): work between agents is mail. It may
   // launch and schedule its owner's agents, and read and cancel runs and schedules, as its
   // initiator: an owner-started or scheduled run as the owner, a client's run as that client,

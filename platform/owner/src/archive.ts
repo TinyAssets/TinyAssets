@@ -22,8 +22,8 @@ import { Refusal } from "../../contract/src/refusal";
 import type { Files } from "./files";
 import type { OwnerStorage } from "./gate";
 import {
-  type ArchivedMail, archivedHead, archivedMail, archivedRecipients, keptRecord, type MailParts,
-  recordHead, type ChainMail, type Fence, Ledger, STORAGE_BUSY,
+ archivedHead, type ArchivedMail, archivedMail, archivedRecipients, archiveMoving,
+ type ChainMail, type Fence, keptRecord, Ledger, type MailParts, READ_TRIES, recordHead,
 } from "./ledger";
 import { clock } from "./clock";
 import type { Notices } from "./notices";
@@ -32,28 +32,6 @@ import {
   MoveTable, pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES,
   type Source as Run,
 } from "./segments";
-
-/**
- * How often a mailbox read reads its placed bodies again when mail that came between its
- * read of them and its unit put an unread placed body first (ADR-035).
- */
-export const READ_TRIES = 3;
-
-/**
- * A read of the archive that the lane's moves and rewrites changed under each of its
- * `READ_TRIES`: retried soon, never an internal error (reviews N9 and N10).
- */
-export function archiveMoving(): Refusal {
-  const retry = 1;
-  return new Refusal(STORAGE_BUSY, `${STORAGE_BUSY}: the archive moved this mail under each ` +
-    `of ${READ_TRIES} reads; try again in ${retry} second. ` +
-    JSON.stringify({ retry_after_s: retry }), { retryAfterS: retry });
-}
-
-/** A post's parent, hot at its gate, moved to the archive before its unit (`roomPost`). */
-export class ParentMoved extends Error {
-  override readonly name = "ParentMoved";
-}
 
 /** An archived record read whole in one read when no larger (a chain page's own share). */
 const ARCHIVED_WHOLE_BYTES = 64 * 1024;

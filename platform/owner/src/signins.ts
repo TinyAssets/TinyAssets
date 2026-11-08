@@ -37,7 +37,7 @@ import {
 
 import { Refusal } from "../../contract/src/refusal";
 import {
-  ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS, SIGNIN_PASTE_MAX,
+ ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
 } from "../../contract/src/limits";
 import { OWNER_AUTHORITY } from "./files";
 import type { OwnerStorage } from "./gate";
@@ -51,8 +51,8 @@ import { SANDBOX_ABSENT, started } from "./sandbox";
 import type { Started } from "./sandbox";
 import { clock } from "./clock";
 import { sealRoute } from "../../contract/src/routing-mac";
-import { eventsRequest, Runs } from "./runs";
-import { fields } from "../../contract/src/doors";
+import type { Runs } from "./runs";
+import { eventsRequest, signinRequest } from "./reports";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */
 
@@ -357,39 +357,6 @@ export function signinAuthority(value: unknown): string {
     throw new Refusal("invalid", "a sign-in's sandbox is the owner's own, or one client's id");
   }
   return value;
-}
-
-/** The engine, its reports in one batch at most `ENGINE_SIGNINS`, each engine once. */
-export function signinRequest(r: Record<string, unknown>):
-    { engine: string; signed_in: boolean; models: string[] }[] {
-  const signins = r["signins"];
-  if (!Array.isArray(signins) || signins.length === 0 || signins.length > ENGINE_SIGNINS) {
-    throw new Refusal("invalid", `a sign-in report names 1 to ${ENGINE_SIGNINS} engines`);
-  }
-  const sources = bundledSources();
-  const seen = new Set<string>();
-  return signins.map((entry) => {
-    const f = fields(entry, ["engine", "signed_in"], ["models"], "invalid sign-in report");
-    const engine = f["engine"];
-    const cli = typeof engine === "string" ? sources.get(engine)?.cli : undefined;
-    if (typeof engine !== "string" || cli === undefined || seen.has(engine)
-        || !cli.credential.includes("vendor_login_in_sandbox")) {
-      throw new Refusal("invalid", "a sign-in report names engines that sign in, each once");
-    }
-    seen.add(engine);
-    if (typeof f["signed_in"] !== "boolean") {
-      throw new Refusal("invalid", "signed_in is true or false");
-    }
-    const models = f["models"] ?? [];
-    if (!Array.isArray(models) || models.some((model) => typeof model !== "string"
-                                               || !/^[!-~]+$/.test(model))
-        || JSON.stringify(models).length > SIGNIN_MODELS_CHARS) {
-      throw new Refusal("invalid",
-                        `models are model ids, at most ${SIGNIN_MODELS_CHARS} characters ` +
-                        "as JSON");
-    }
-    return { engine, signed_in: f["signed_in"], models: models as string[] };
-  });
 }
 
 /** The owner's ask to sign in to an engine inside a sandbox (`signinStart`). */

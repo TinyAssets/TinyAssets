@@ -1,8 +1,9 @@
 /**
  * Runs in the owner's object (ADR-034 decision 4; `engines-replan.md` §2): the unit of work
  * is a run, one engine invocation, a provider's CLI in the owner's sandbox. This module
- * keeps the runs' rows (migration 12) and decides on them; the object (`owner-do.ts`) reads
- * the agent's file, calls the sandbox and relays the events around its units.
+ * keeps the runs' rows (migration 12) and decides on them; the run launcher (`launch.ts`)
+ * reads the agent's file and calls the sandbox around its units, and the run doors' handlers
+ * (`runsDoors`, below) relay the events.
  *
  * **Admit, in one gate unit** (`admit`), each refusal a fixed code:
  * 1. the owner is admitted for work (`owner_suspended`, `owner_erased`), and a sandbox is
@@ -68,8 +69,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { bundledSources } from "../../sources/src/catalog";
 import type { CredentialKind } from "../../sources/src/schema";
 import {
-  type EngineEvents, EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, type Frame, FRAME_UNITS_MAX,
-  FRAME_VERSION, readEvent,
+ type EngineEvents, EVENTS_RACED, type Frame, FRAME_VERSION, readEvent,
 } from "../../contract/src/run-events";
 
 import { AGENT_DISABLED, type AgentFile, AUTO } from "./agent-file";
@@ -99,7 +99,7 @@ import type { Placed } from "./bodies";
 import { clock } from "./clock";
 import { fittedRun } from "./pages";
 import { placedAs } from "./bodies";
-import { fields } from "../../contract/src/doors";
+import { eventsRequest } from "./reports";
 
 /**
  * Settled runs kept as receipts, the newest first: an older run's status is gone, never
@@ -860,7 +860,6 @@ export class Runs {
     return this.#sql.exec("UPDATE runs SET sandbox_wait = 0 WHERE sandbox_wait = 1 " +
                             "RETURNING id").toArray().length;
   }
-
 
   /**
    * A waiting run's admission as it was asked, its input kept: the lane admits it again
@@ -1658,38 +1657,6 @@ export function requestKey(client: string | null, sendId: unknown): string {
     throw new Refusal("invalid", "client_send_id is 1 to 128 letters, digits, - and _");
   }
   return sha256Hex(`${client ?? "owner"}\0${sendId}`);
-}
-
-/** The runner's report, exactly: frames numbered from 1 and rising, and an optional end. */
-export function eventsRequest(r: Record<string, unknown>): {
-  frames: PostedFrame[]; end: { exit_code: number | null } | null } {
-  const frames = r["frames"];
-  if (!Array.isArray(frames)) {
-    throw new Refusal("invalid", "invalid run events");
-  }
-  if (!eventsBounded(r)) {
-    throw new Refusal("invalid", `a post is at most ${EVENT_FRAMES_MAX} frames, each at most ` +
-                      `${FRAME_UNITS_MAX} units of JSON`);
-  }
-  let last = 0;
-  for (const frame of frames) {
-    const f = fields(frame, ["seq", "at", "event"], [], "invalid run events");
-    if (typeof f["seq"] !== "number" || !Number.isSafeInteger(f["seq"]) || f["seq"] <= last
-        || typeof f["at"] !== "number" || !Number.isFinite(f["at"])) {
-      throw new Refusal("invalid", "a frame's seq rises from 1, and its at is a time");
-    }
-    last = f["seq"];
-  }
-  let end: { exit_code: number | null } | null = null;
-  if (r["end"] !== undefined) {
-    const e = fields(r["end"], ["exit_code"], [], "invalid run events");
-    const code = e["exit_code"];
-    if (code !== null && (typeof code !== "number" || !Number.isSafeInteger(code))) {
-      throw new Refusal("invalid", "an end's exit_code is a whole number, or null");
-    }
-    end = { exit_code: code as number | null };
-  }
-  return { frames: frames as PostedFrame[], end };
 }
 
 /** A message to an agent: a run in a conversation, new or continued (`agentSubmit`). */
