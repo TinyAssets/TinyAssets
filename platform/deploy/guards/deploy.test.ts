@@ -48,8 +48,8 @@ import {
   shippedRunner, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
 import {
-  boundBy, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES,
-  NAMESPACES, OPTIONAL, PROBE_ROUTES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
+  boundBy, BUCKETS, CALLBACK, CONFIGS, DOORS, EGRESS_DOMAIN, KEYRINGS, MADE, NAMES,
+  NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, ZONE,
 } from "../facts";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
 import platform from "../platform.json" with { type: "json" };
@@ -142,6 +142,8 @@ interface WorldOptions {
   readonly refusingRoute?: string;
   /** DNS deletes the API refuses (403): a token without DNS Edit. */
   readonly refusingDns?: boolean;
+  /** The R2 buckets and queues the account lists, in place of none (fresh) or all (held). */
+  readonly listed?: { readonly buckets: readonly string[]; readonly queues: readonly string[] };
 }
 
 /** The world's clock. */
@@ -368,10 +370,12 @@ function world(options: WorldOptions = {}) {
           }
         }
       }
+      const buckets = options.listed?.buckets ?? (held ? BUCKETS : []);
+      const queues = options.listed?.queues ?? (held ? QUEUES : []);
       const stdout = args[1] === "bucket" && args[2] === "list"
-        ? (held ? "name:  tinyassets-files\n" : "")
+        ? buckets.map((bucket) => `name:  ${bucket}\n`).join("")
         : args[0] === "queues" && args[1] === "list"
-          ? (held ? QUEUES_LISTED : "") : args[1] === "upload"
+          ? queues.map((queue, n) => `│ q${n + 1} │ ${queue} │\n`).join("") : args[1] === "upload"
             ? "Worker Version ID: 0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n" : "";
       return { status: 0, stdout, stderr: "" };
     }
@@ -414,7 +418,6 @@ function world(options: WorldOptions = {}) {
 }
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
-const QUEUES_LISTED = "│ q1 │ tinyassets-sandbox-ring │\n│ q2 │ tinyassets-erasure │\n";
 
 /** Each Worker's checked-in migration locks, as its guard reports them. */
 function locks(worker: string): Record<string, string[]> {
@@ -720,6 +723,35 @@ describe("a dark run", () => {
     const w = world({ lock: { "owner/migrations.json": ["a".repeat(64)] } });
     await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(/PIN_MIGRATIONS/);
     expect(w.events.filter((event) => !event.startsWith("guard"))).toEqual([]);
+  });
+
+  it("makes the import window's queue, dead-letter queue and bucket, each only when its " +
+     "listing lacks it, in a fresh, a held and a partial account", async () => {
+    const WINDOW = ["r2 bucket create tinyassets-import-staging",
+                    "queues create tinyassets-import", "queues create tinyassets-import-dlq"];
+    const made = (w: ReturnType<typeof world>) => w.events
+      .filter((event) => /^wrangler (r2 bucket|queues) create /.test(event))
+      .map((event) => event.slice("wrangler ".length));
+    expect(BUCKETS).toEqual(["tinyassets-files", "tinyassets-import-staging"]);
+    expect(QUEUES).toEqual(["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
+                            "tinyassets-import-dlq"]);
+    const fresh = world();
+    await runMode(fresh, "dark", ["--yes"]);
+    expect(made(fresh)).toEqual(expect.arrayContaining(WINDOW));
+    expect(made(fresh).filter((each) => each.includes("tinyassets-import"))).toEqual(WINDOW);
+    const held = world({ held: true });
+    await runMode(held, "dark", ["--yes"]);
+    expect(made(held)).toEqual([]);
+    // The queue made but not its dead-letter queue nor the bucket: only those two are made.
+    const partial = world({ held: true, listed: {
+      buckets: ["tinyassets-files"],
+      queues: ["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import"] } });
+    const work = await runMode(partial, "dark", ["--yes"]);
+    expect(made(partial)).toEqual(["r2 bucket create tinyassets-import-staging",
+                                   "queues create tinyassets-import-dlq"]);
+    expect(work.plan).toEqual(expect.arrayContaining([
+      "create the R2 bucket tinyassets-import-staging", "create the queue tinyassets-import-dlq"]));
+    expect(work.plan).not.toContain("create the queue tinyassets-import");
   });
 
   it("stops on a failed wrangler listing, never reading it as absent", async () => {
@@ -2314,8 +2346,11 @@ const DARK_FRESH = [
   ...Object.entries(NAMESPACES).map(([binding, title]) =>
     `create the KV namespace ${title} (${binding})`),
   "create the R2 bucket tinyassets-files",
+  "create the R2 bucket tinyassets-import-staging",
   "create the queue tinyassets-sandbox-ring",
   "create the queue tinyassets-erasure",
+  "create the queue tinyassets-import",
+  "create the queue tinyassets-import-dlq",
   "the Cloudflare token listed the account's KV namespaces, R2 buckets and queues",
   ...Object.entries(SECRETS).flatMap(([worker, names]) =>
     names.map((name) => `set the secret ${name} on ${NAMES[worker]}`)),

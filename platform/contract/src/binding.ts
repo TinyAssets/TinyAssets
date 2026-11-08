@@ -109,6 +109,13 @@ export interface Binding {
    */
   readonly inbound?: { readonly binding: string; readonly revision: number };
   /**
+   * The cutover's import (`doors/src/import.ts`): the SHA-256 of the bundle whose message the
+   * doors verified under their `IMPORT_KEY`, beside the platform's reserved caller. Only the
+   * import doors take it (`owner/src/import.ts`), and they take nothing else; deleted at the
+   * cutover with them.
+   */
+  readonly import?: { readonly bundle: string };
+  /**
    * Which of `apps.json`'s vendors an MCP client is, as its sign-in knew it (the grant's
    * props, `apps.ts`): recorded on its grant's row, never a request field.
    */

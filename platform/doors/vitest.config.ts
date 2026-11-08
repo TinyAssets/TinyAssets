@@ -32,7 +32,10 @@ export default defineConfig({
       // config's one secret, is the owner Worker's too: here both are this Worker. The
       // gateway, hooks and files Workers are each bundled from their own config, as a
       // deploy bundles them.
+      // The import consumer's tests take a bundle the slice-2 builder made in Node
+      // (`test/import-setup.ts`), deleted at the cutover with the importer.
       project("doors", "workerd", {
+        test: { globalSetup: ["./test/import-setup.ts"] },
         plugins: [
           cloudflareTest(once(() => ({
             main: "./test/entry.ts",

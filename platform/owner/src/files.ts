@@ -1449,6 +1449,23 @@ export class Files {
   }
 
   /**
+   * A read: the open uploads, and the live one of `writer` that is a file of `size` bytes
+   * made of exactly `chunks`, if any. The cutover's import resumes that upload rather than
+   * begin another (`import.ts`), so a delivery killed mid-file leaves no second intent.
+   */
+  openUploads(size: number, chunks: readonly string[], writer: string):
+      { open: number; same: string | null } {
+    const now = Date.now() / 1000;
+    const open = this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM file_intents WHERE expires_at > ?", now).one().n;
+    const same = this.#sql.exec<{ intent_id: string }>(
+      "SELECT intent_id FROM file_intents WHERE writer = ? AND size = ? AND chunks = ? " +
+        "AND expires_at > ? AND lease IS NULL ORDER BY expires_at DESC LIMIT 1",
+      writer, size, chunks.join(""), now).toArray()[0];
+    return { open, same: same?.intent_id ?? null };
+  }
+
+  /**
    * Whether `scope` holds a chunk's bytes for its own: through its contents (its
    * references but its open uploads'), or as the garbage it let go last. An open upload
    * holds a chunk without showing its bytes, so it is no proof.

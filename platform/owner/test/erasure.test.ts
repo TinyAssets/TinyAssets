@@ -24,6 +24,7 @@ import { Grants } from "../src/grants";
 import { Ledger } from "../src/ledger";
 import { clock } from "../src/clock";
 import { OwnerDO } from "../src/owner-do";
+import { doorTable } from "../../contract/src/doors";
 import { Policy } from "../src/policy";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { alarmOf, failure, sqlIn, TIERS } from "./support";
@@ -52,10 +53,13 @@ async function rig() {
 type Rig = Awaited<ReturnType<typeof rig>>;
 
 /** Every door of the object's, but the platform's. */
+/** The cutover's import doors: the platform's, refusing an owner's binding before its state. */
+const IMPORT_DOORS = doorTable().filter((row) => row.class === "import").map((row) => row.door);
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
   .filter((door) => !["constructor", "alarm", "admissionSet", "tierSet", "fetch",
                       "webSocketMessage", "webSocketClose", "webSocketError",
-                      "sandboxRung", "sandboxBilled", "dataKeyRewrap", "erasureOutside", "erasureOutsideDone"].includes(door));
+                      "sandboxRung", "sandboxBilled", "dataKeyRewrap", "erasureOutside", "erasureOutsideDone",
+                      ...IMPORT_DOORS].includes(door));
 const call = (r: Rig, door: string, binding: Binding) =>
   (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(
     binding, {});

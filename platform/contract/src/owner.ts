@@ -168,6 +168,19 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
               readonly pending: readonly string[] }>;
   fileUploadStored(binding: Binding, request: DoorRequest): Promise<object>;
 
+  // The cutover's import consumer (`import.ts`), at its import binding (`bindImport`).
+  importNotice(binding: Binding, request: DoorRequest): Promise<object>;
+  importRows(binding: Binding, request: DoorRequest): Promise<object>;
+  importFiles(binding: Binding, request: DoorRequest): Promise<object>;
+  importFileBegin(binding: Binding, request: DoorRequest):
+    Promise<{ readonly skipped: true }
+            | { readonly skipped: false; readonly intent_id: string; readonly namespace: string;
+                readonly key: string;
+                readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
+                readonly pending: readonly string[] }>;
+  importFileStored(binding: Binding, request: DoorRequest): Promise<object>;
+  importFileCommit(binding: Binding, request: DoorRequest): Promise<object>;
+
   // The egress host (`egress.ts`): a model call, a run's events, a sign-in's, and sync.
   egressOpen(binding: Binding, request: DoorRequest): Promise<EgressOpened | EgressRefusal>;
   egressReserve(binding: Binding, request: DoorRequest): Promise<EgressReserved | EgressRefusal>;

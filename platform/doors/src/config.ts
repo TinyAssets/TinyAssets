@@ -17,6 +17,7 @@ import identity from "../../contract/identity.json" with { type: "json" };
 import type { ChunkUpload } from "../../contract/src/files";
 import type { ConnectService, EgressService } from "../../contract/src/gateway";
 import type { OwnerDoors } from "../../contract/src/owner";
+import type { ImportMessage } from "../../contract/src/import-message";
 
 // Each fact of the identity is read as text (a template), so this module holds strings
 // alone, never the shared file object (`owner/guards/module-state.test.ts`).
@@ -175,6 +176,14 @@ export interface DoorsEnv {
    * binder streaming an upload.
    */
   readonly FILES: ChunkUpload;
+  /**
+   * The cutover's import window (`import.ts`), deleted at the cutover: the staging bucket the
+   * importer's job writes each owner's bundle to, which the import consumer alone reads, and
+   * the import queue's producer, by which that consumer sends its own continuation. The
+   * window's `IMPORT_KEY` is an optional secret (`namedSecret`), set only for the window.
+   */
+  readonly IMPORT_STAGING: R2Bucket;
+  readonly IMPORTS: Queue<ImportMessage>;
 }
 
 /**

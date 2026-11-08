@@ -95,8 +95,10 @@
  * The owner's admission (`admission.ts`) is checked in the same binding check: a suspended
  * owner's every door refuses, and so do the lanes with `require_work` semantics (the
  * `wakes` lane's claim). Only the platform, as the reserved `PLATFORM_CALLER`, sets it, at
- * `admissionSet`, the one door that caller reaches.
+ * `admissionSet`, the one door that caller reaches but its tier, erasure and key doors, and,
+ * with an import binding while the owner is `pending`, the cutover's import doors (`import.ts`).
  */
+import { HEX64 } from "../../contract/src/ids";
 import { principal } from "../../contract/src/text";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -106,9 +108,9 @@ import { doorRow, type DoorRow, fields, type ProfileName } from "../../contract/
 import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
-  admission, type Admission, admissionDoors, type DoorClass, doorRefusal, OWNER_ERASED, ownerTier,
-  PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned,
-  workRefusal, writeTombstone,
+  admission, type Admission, admissionDoors, type DoorClass, doorRefusal, IMPORT_DOORS_ONLY,
+  IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, ownerTier, PLATFORM_ONLY,
+  PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import {
   agentId, AUTHORITY_CHANGED, MAIN_AGENT, may, NOT_GRANTED, type Stamped,
@@ -153,6 +155,11 @@ import {
   type Binding, type InboundAnswer, type Origin, PLATFORM_CALLER,
 } from "../../contract/src/binding";
 import { type Notice, Notices, noticesDoors } from "./notices";
+import {
+  type Imported, importDoors, type ImportFileBeginRequest, type ImportFileCommitRequest,
+  type ImportFilesRequest, type ImportFileStoredRequest, type ImportNoticeRequest,
+  type ImportRowsRequest, type ImportUpload,
+} from "./import";
 import { Erasure } from "./erase";
 import {
  ERASE_RETRY_MS, erasing, erasureDoors, NO_ERASURE, outsideDone, PUT_GRACE_MS, wiped,
@@ -1242,6 +1249,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         }
         return bound(owner, caller);
       }
+      case "import": {
+        // The platform's import, while the owner is pending (`import.ts`): the tier numbers it
+        // carries kept, as an account door keeps them, for the files plane's quota.
+        const { owner, caller } = this.#bind(binding, "import");
+        keepTiers(this.#storage, binding.tiers, clock());
+        return bound(owner, caller);
+      }
       case "none":
         return bound("", "");
     }
@@ -1618,6 +1632,39 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return this.#run("erasureOutsideDone", binding, undefined, erasureDoors.erasureOutsideDone);
   }
 
+  // -- THE CUTOVER'S IMPORT: the platform's, into a pending owner (`import.ts`) ------------
+
+  /** The owner's old policy, then its collections' rows, each skipped when it is there. */
+  importRows(binding: Binding, request: ImportRowsRequest): Promise<Imported> {
+    return this.#units("importRows", binding, request, importDoors.importRows);
+  }
+
+  /** Folders and inline files of the imported tree, each skipped when it is there. */
+  importFiles(binding: Binding, request: ImportFilesRequest): Promise<Imported> {
+    return this.#run("importFiles", binding, request, importDoors.importFiles);
+  }
+
+  /** A chunked file's upload, begun or resumed, for the doors to put its bytes to `FILES`. */
+  importFileBegin(binding: Binding, request: ImportFileBeginRequest): Promise<ImportUpload> {
+    return this.#units("importFileBegin", binding, request, importDoors.importFileBegin);
+  }
+
+  /** The doors' word that `FILES` took these of an import upload's chunks. */
+  importFileStored(binding: Binding, request: ImportFileStoredRequest):
+      Promise<{ stored: number }> {
+    return this.#run("importFileStored", binding, request, importDoors.importFileStored);
+  }
+
+  /** An import upload committed as its path, or skipped when the file is there. */
+  importFileCommit(binding: Binding, request: ImportFileCommitRequest): Promise<Imported> {
+    return this.#run("importFileCommit", binding, request, importDoors.importFileCommit);
+  }
+
+  /** The owner's one notice that its old files are in the imported tree. */
+  importNotice(binding: Binding, request: ImportNoticeRequest): Promise<{ added: boolean }> {
+    return this.#run("importNotice", binding, request, importDoors.importNotice);
+  }
+
   // -- INBOUND: the owner's event sources (slice L; `inbound.ts`) ----------------------
 
   /** The owner's inbound bindings, never a secret. */
@@ -1965,13 +2012,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * false: the platform's own door, which sets it. The platform's reserved caller reaches
    * no other door, and no owner is named so.
    */
-  #bind(binding: Binding, door: DoorClass | "admission",
+  #bind(binding: Binding, door: DoorClass | "admission" | "import",
         sandbox: "none" | "egress" | "sync" | "run" | "inbound" | "erasure" = "none"):
       { owner: string; caller: string } {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refusal("owner_erased", OWNER_ERASED);
     }
     const inbound = typeof binding === "object" && binding !== null && "inbound" in binding;
+    // The cutover's import binding reaches the import doors alone, and they take no other.
+    const importing = typeof binding === "object" && binding !== null && "import" in binding;
     const inboundDoor = sandbox === "inbound";
     // The erasure's own platform doors are the one way in while the owner is marked, and
     // only for the platform's reserved caller.
@@ -1987,9 +2036,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     if (typeof binding !== "object" || binding === null) {
       throw new Refusal("invalid", "invalid owner principal");
     }
+    if (importing !== (door === "import")) {
+      throw new Refusal("refused", importing ? IMPORT_DOORS_ONLY : IMPORT_PLATFORM_ONLY);
+    }
     const owner = principal(binding.owner);
     const caller = principal(binding.caller);
-    if (owner === PLATFORM_CALLER || (door !== "admission" && caller === PLATFORM_CALLER)) {
+    // The import's binding exactly as the binder makes it (`bindImport`): the platform's
+    // reserved caller, no outside client, the bundle's digest and the control record's tiers.
+    if (door === "import" && (caller !== PLATFORM_CALLER || binding.origin !== null
+        || Object.keys(binding).sort().join() !== "caller,import,origin,owner,tiers"
+        || typeof binding.import !== "object" || binding.import === null
+        || Object.keys(binding.import).join() !== "bundle"
+        || typeof binding.import.bundle !== "string" || !HEX64.test(binding.import.bundle))) {
+      throw new Refusal("refused", IMPORT_PLATFORM_ONLY);
+    }
+    if (owner === PLATFORM_CALLER
+        || (door !== "admission" && door !== "import" && caller === PLATFORM_CALLER)) {
       throw new Refusal("refused", PLATFORM_RESERVED);
     }
     // The object's own name first: an object for another owner, or for none, says so
@@ -2001,7 +2063,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     if (named !== owner) {
       throw new Refusal("refused", "this object belongs to another owner");
     }
-    if (door !== "admission") {
+    if (door === "import") {
+      // Only an owner the platform has not admitted yet is imported into: never a live one.
+      if (admission(this.#storage).state !== "pending") {
+        throw new Refusal("refused", IMPORT_PENDING_ONLY);
+      }
+    } else if (door !== "admission") {
       const refusal = doorRefusal(admission(this.#storage), door);
       if (refusal !== null) {
         throw refusal;
