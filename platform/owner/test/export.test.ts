@@ -14,7 +14,8 @@ import {
   CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, MANIFEST_PARTS, PART_ENTRY, SEGMENT_ENTRY,
   SLOT_WAIT_MS,
 } from "../../contract/src/limits";
-import { PLATFORM_CALLER, PLATFORM_ONLY } from "../src/admission";
+import { PLATFORM_ONLY } from "../src/admission";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
   GENERATION_SIZES, MANIFEST_BUSY_RETRY_S, MANIFEST_CEILING, MANIFEST_CONTINUE_S,
   MANIFEST_LINE, spread,
@@ -32,7 +33,6 @@ import type FilesService from "../../files/src/index";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
-import type { Binding } from "../../contract/src/binding";
 import { MIGRATIONS } from "../src/schema";
 import {
   digest, exportFrom, generate, type Line, type Owner, owner, replay, standing,

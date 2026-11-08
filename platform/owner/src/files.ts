@@ -107,6 +107,7 @@ import type {
 } from "./owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { Edited, EditRefusal } from "./edit";
+import type { ChunkStore } from "../../contract/src/files";
 import { fitList, PAGE_BYTES, RESULT_TOO_LARGE } from "./pages";
 import {
   frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
@@ -201,45 +202,6 @@ export function isClient(writer: string | null): writer is string {
  */
 export function scopesOf(writer: string): readonly string[] {
   return isClient(writer) ? [CLIENTS, writer] : [OWNER_SCOPE];
-}
-
-/**
- * What the files Worker does for the object; the `FILES` binding. `key` is always this
- * owner's wrapped data key, which only the files Worker can open.
- */
-export interface ChunkStore {
-  mintKey(ns: string): Promise<{ key: string }>;
-  putChunks(ns: string, key: string, chunks: { sha256: string; bytes: Uint8Array }[]):
-    Promise<{ created: number }>;
-  getChunks(ns: string, key: string,
-            reads: { sha256: string; offset?: number; length?: number }[]):
-    Promise<Uint8Array[]>;
-  deleteChunks(ns: string, key: string, sha256s: string[]): Promise<{ deleted: number }>;
-  /** The wrapped key wrapped again under the ring's active kid (a rotation's sweep). */
-  rewrapKey(ns: string, key: string): Promise<{ key: string }>;
-  /** A generation root's wrapped key wrapped again in place; null when there is no root. */
-  rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string } | null>;
-  /** Every object under the namespace's prefix deleted: the erasure's alone. */
-  deleteNamespace(ns: string): Promise<{ deleted: number }>;
-  putManifestPart(ns: string, key: string, gen: string, part: number, bytes: Uint8Array):
-    Promise<{ sha256: string; size: number }>;
-  putManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
-                     bytes: Uint8Array): Promise<{ sha256: string; size: number }>;
-  putManifestRoot(ns: string, key: string, gen: string,
-                  parts: readonly { sha256: string; size: number }[],
-                  segments: readonly { a: number; b: number; sha256: string; size: number }[],
-                  span: { s: number; e: number }): Promise<void>;
-  /** A generation's root, its lists opened; null for none. */
-  getManifestRoot(ns: string, gen: string): Promise<{
-    parts: readonly { sha256: string; size: number }[];
-    segments: readonly { a: number; b: number; sha256: string; size: number }[];
-    s: number; e: number; key: string } | null>;
-  getManifestPart(ns: string, key: string, gen: string, part: number, sha256: string):
-    Promise<Uint8Array>;
-  getManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
-                     sha256: string): Promise<Uint8Array>;
-  deleteManifest(ns: string, gen: string, parts: number,
-                 segments: readonly { a: number; b: number }[]): Promise<void>;
 }
 
 /** The owner's place in the bucket: its namespace and its wrapped data key. */

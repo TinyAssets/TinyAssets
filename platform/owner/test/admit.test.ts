@@ -7,13 +7,13 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { OWNER_UNADMITTED, PLATFORM_CALLER } from "../src/admission";
+import { OWNER_UNADMITTED } from "../src/admission";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { BREAKER_FAILURES, Inbound } from "../src/inbound";
 import { profile, proves } from "../../contract/src/inbound-proof";
 import { Keys, TOO_MANY_KEYS } from "../src/keys";
 import { MAX_KEYS } from "../../contract/src/limits";
 import { GRANT_LIMITS } from "../src/grants";
-import type { Binding } from "../../contract/src/binding";
 import { failure, inGate } from "./support";
 
 function pending(): { stub: DurableObjectStub; owner: string } {

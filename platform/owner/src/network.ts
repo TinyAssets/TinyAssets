@@ -56,6 +56,7 @@ import {
   DNS_SERVERS as RESOLVERS, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { Refusal } from "../../contract/src/refusal";
+import type { NetworkPlan, NetworkRule, Unexpressed } from "../../contract/src/sandbox";
 
 /**
  * The egress host and the pinned resolver as `sandbox/template/build.py` reads them: by their
@@ -126,43 +127,6 @@ export const BOUNDARY_NOTE = "An egress allowlist keeps the sandbox's tools to t
 export const ALL_TRAFFIC = "0.0.0.0/0";
 /** The ports E2B matches a name on: HTTP's `Host` and TLS's SNI. */
 const NAMED_PORTS: readonly number[] = Object.freeze([80, 443]);
-
-export type EgressMode = "open" | "allowlist" | "ask";
-
-/** E2B's `SandboxNetworkRule`, its static transform. */
-export interface NetworkRule {
-  readonly transform: { readonly headers: Readonly<Record<string, string>> };
-}
-
-/** E2B's network configuration, as `Sandbox.create({ network })` and `updateNetwork` take it. */
-export interface NetworkDocument {
-  readonly allowOut: readonly string[];
-  readonly denyOut: readonly string[];
-  readonly dnsServers: readonly string[];
-  readonly rules: Readonly<Record<string, readonly NetworkRule[]>>;
-}
-
-/** A destination the document could not express, and why. */
-export interface Unexpressed {
-  readonly host: string;
-  readonly port: number;
-  readonly reason: "port";
-}
-
-/** What the sandbox slice sends, and what the object receipts when it is applied. */
-export interface NetworkPlan {
-  readonly network: NetworkDocument;
-  readonly mode: EgressMode;
-  /** The policy generation the document was made under. */
-  readonly generation: number;
-  /** Destinations refused because E2B cannot filter them by name. */
-  readonly unexpressed: readonly Unexpressed[];
-  /** `ask` mode: what is not listed is refused, with a refusal receipt at each apply. */
-  readonly receipt: boolean;
-  /** Whether the network is a data boundary: never, in v1 (`BOUNDARY_NOTE`). */
-  readonly boundary: false;
-  readonly note: string;
-}
 
 /** The owner policy's egress table, as `policy.ts` validates it. */
 export interface EgressPolicy {

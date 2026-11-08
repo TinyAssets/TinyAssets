@@ -18,7 +18,7 @@ import { SLOT_WAIT_MS } from "../../contract/src/limits";
 import { SlotPool } from "../../contract/src/slots";
 import { ChangeLog } from "../src/changelog";
 import { exported } from "../src/export";
-import type { ChunkStore, Files } from "../src/files";
+import type { Files } from "../src/files";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
@@ -26,6 +26,7 @@ import { MIGRATIONS } from "../src/schema";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { drainDue, filesOn, TIERS } from "./support";
 import type { FauxOwnerDO } from "./worker";
+import type { ChunkStore } from "../../contract/src/files";
 
 export type Line = Record<string, unknown> & { t: string };
 

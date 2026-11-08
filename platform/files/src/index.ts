@@ -70,6 +70,9 @@ import {
   manifestKey, manifestObjectKey, manifestPart, manifestPrefix, namespace, segmentKey, segmentSpan,
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
+import type {
+  ChunkGet, ChunkPut, ChunkStore, ChunkUpload, ManifestObject, ManifestRoot, ManifestSegment,
+} from "../../contract/src/files";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
 
@@ -79,36 +82,6 @@ export interface FilesEnv {
   readonly FILES_KEYRING?: KeyringSecret;
   /** How the data key encrypts (`cipher.ts`): `ssec` (the default) or `aes-gcm`. */
   readonly FILES_CIPHER?: string;
-}
-
-/** One object of a generation: its SHA-256 and size. */
-export interface ManifestObject {
-  readonly sha256: string;
-  readonly size: number;
-}
-
-/** A log segment of a generation: the seqs after `a` through `b`, its hash and size. */
-export interface ManifestSegment extends ManifestObject {
-  readonly a: number;
-  readonly b: number;
-}
-
-/**
- * A generation's root, as a recovery reads it (`getManifestRoot`, its list opened): its base
- * parts and its log segments in order, the log's span `s` (its first seq) to `e` (its end,
- * the moment the generation is the owner as it stood), and when it was written.
- */
-export interface ManifestRoot {
-  readonly format: "tinyassets-manifest";
-  readonly version: 2;
-  readonly gen: string;
-  /** The owner's wrapped data key, which the parts and segments are under. */
-  readonly key: string;
-  readonly parts: readonly ManifestObject[];
-  readonly segments: readonly ManifestSegment[];
-  readonly s: number;
-  readonly e: number;
-  readonly at: number;
 }
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
@@ -135,23 +108,6 @@ function storedRoot(text: string, gen: string): StoredRoot {
     throw new Error("a manifest root is out of shape");
   }
   return root as StoredRoot;
-}
-
-/** One chunk to store: its hash and its bytes. */
-export interface ChunkPut {
-  readonly sha256: string;
-  readonly bytes: Uint8Array;
-}
-
-/**
- * One chunk to read: whole, or `length` bytes from `offset`; with `verify`, a range read
- * from the whole chunk, its hash rechecked here, and only the range answered (review L7).
- */
-export interface ChunkGet {
-  readonly sha256: string;
-  readonly offset?: number;
-  readonly length?: number;
-  readonly verify?: boolean;
 }
 
 function rootBytes(text: string): Uint8Array {
@@ -195,7 +151,7 @@ function range(read: ChunkGet): { range?: { offset: number; length: number }; bu
   return { range: { offset, length }, budget: length };
 }
 
-export default class FilesService extends WorkerEntrypoint<FilesEnv> {
+export default class FilesService extends WorkerEntrypoint<FilesEnv> implements ChunkStore {
   /** A new data key for the namespace `ns`, wrapped: what its owner's object keeps. */
   async mintKey(ns: string): Promise<{ key: string }> {
     return { key: await mint(this.env.FILES_KEYRING, ns) };
@@ -557,7 +513,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
  * chunks and read nothing: no chunk, no generation, no key call. It serves `putChunks`
  * alone, as `FilesService` does it.
  */
-export class FilesUpload extends WorkerEntrypoint<FilesEnv> {
+export class FilesUpload extends WorkerEntrypoint<FilesEnv> implements ChunkUpload {
   /** Store chunks under their hashes, each verified by R2 (`FilesService.putChunks`). */
   async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
     return new FilesService(this.ctx, this.env).putChunks(ns, key, chunks);

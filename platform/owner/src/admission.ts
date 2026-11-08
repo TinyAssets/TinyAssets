@@ -29,8 +29,8 @@
  *   `OWNER_ERASED`, so nothing ever makes owner state there again.
  *
  * Only the platform sets admission (`admissionSet`), as the reserved caller
- * `PLATFORM_CALLER`, which no owner may be named and which reaches no other door; a guard
- * keeps the name out of every source but this one's constant and `platform/admin`
+ * `PLATFORM_CALLER` (`contract/src/binding.ts`), which no owner may be named and which
+ * reaches no other door; a guard keeps the name out of every source but that constant
  * (`admission-caller.test.ts`). A suspension adds a reason, a resumption takes one away,
  * and an erased owner is never set again.
  */
@@ -46,8 +46,6 @@ import type {
 } from "./owner-do";
 import { clock } from "./clock";
 
-/** The reserved caller only the platform's admin path sends: `admissionSet`'s alone. */
-export const PLATFORM_CALLER = "platform";
 /** Why the platform suspends an owner. */
 export const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]);
 

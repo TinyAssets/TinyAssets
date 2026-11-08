@@ -29,26 +29,11 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { sandboxHookOwner } from "./binder";
 import type { DoorsEnv } from "./config";
+import type { BilledEvent } from "../../contract/src/owner";
 import { openRoute } from "../../contract/src/routing-mac";
 
 /** A lifecycle event's most bytes: a few hundred in practice, the metadata's included. */
 export const HOOK_BODY_MAX = 64 * 1024;
-
-/** A billed execution, as the owner's object keeps it (`SandboxTime.billed`). */
-export interface Billed {
-  /** The event's id, the execution's, the sandbox's; and the event's signed time, ms. */
-  readonly id: string;
-  readonly execution_id: string;
-  readonly sandbox_id: string;
-  readonly at: number;
-  readonly authority: string;
-  readonly kind: "paused" | "killed";
-  /** When the execution started, and how long E2B billed it, in ms. */
-  readonly started_at: number;
-  readonly execution_ms: number;
-  readonly vcpu: number;
-  readonly memory_mb: number;
-}
 
 /** Whether `signature` is E2B's over `body` under `secret`, compared in constant time. */
 export function signed(secret: string, body: string, signature: string | null): boolean {
@@ -79,7 +64,7 @@ function count(value: unknown, most: number): number | null {
  * for a type that carries no billing, or null for one out of shape.
  */
 export function lifecycleEvent(body: string):
-    (Omit<Billed, "authority"> & { route: unknown }) | "ignored" | null {
+    (Omit<BilledEvent, "authority"> & { route: unknown }) | "ignored" | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);

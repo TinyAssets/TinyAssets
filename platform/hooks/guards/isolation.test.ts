@@ -36,8 +36,8 @@ isolationTests(IMPORTS, {
 });
 
 describe("hooks isolation guards", () => {
-  it("reach only the hooks Worker's own two sources", () => {
+  it("reach only the hooks Worker's own two sources and its contract", () => {
     expect([...closure("hooks").keys()].sort())
-      .toEqual(["hooks/src/codemode.ts", "hooks/src/index.ts"]);
+      .toEqual(["contract/src/hooks.ts", "hooks/src/codemode.ts", "hooks/src/index.ts"]);
   });
 });

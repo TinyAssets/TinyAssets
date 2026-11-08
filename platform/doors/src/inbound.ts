@@ -290,17 +290,17 @@ export const HOOK_ROUTES: Readonly<Record<string, (env: DoorsEnv, bound: Bound,
     const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
     const route = `h:${sha256(token)}`;
     const made = await stub.inboundCreate(binding, { ...request, kind: "capability",
-                                                     route } as never);
+                                                     route });
     await putRoute(env, made.route, { o: binding.owner, b: made.binding_id, r: made.revision });
     return { ...made, url: `${PUBLIC_ORIGIN}${INBOUND_PATH}${token}` };
   },
   "hooks/set": async (env, { binding, stub }, request) => {
-    const set = await stub.inboundSet(binding, request as never);
+    const set = await stub.inboundSet(binding, request);
     await putRoute(env, set.route, { o: binding.owner, b: set.binding_id, r: set.revision });
     return set;
   },
   "hooks/revoke": async (env, { binding, stub }, request) => {
-    const gone = await stub.inboundRevoke(binding, request as never);
+    const gone = await stub.inboundRevoke(binding, request);
     if (gone.route !== null) {
       await deleteRoute(env, gone.route);
     }

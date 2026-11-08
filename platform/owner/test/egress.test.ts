@@ -13,15 +13,16 @@ import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { verifyToken } from "../../contract/src/routing-mac";
-import { PLATFORM_CALLER } from "../src/admission";
+import type { Metering } from "../../contract/src/gateway";
 import type { ModelRecord } from "../../contract/src/model-record";
+import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
 import { EGRESS_BEAT_S } from "../../contract/src/egress";
 import {
-  EGRESS_LIMITS, type EgressMetering, type EgressOpened, type EgressRefusal, egressPrice,
+  EGRESS_LIMITS, egressPrice,
   LOST_AFTER_S,
 } from "../src/egress";
 import { EGRESS_DEADLINE_S, SPEND_KEPT } from "../../contract/src/limits";
-import type { Binding } from "../../contract/src/binding";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { apiRules } from "../../contract/src/api-rules";
 import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY } from "../src/owner-do";
 import { SYNC_FENCED } from "../src/files";
@@ -32,9 +33,8 @@ import {
 import { signedIn } from "./ledger-support";
 import { failure, TIERS } from "./support";
 import type { SandboxRun } from "../src/launch";
-import type { NetworkPlan } from "../src/network";
 import { defineAgent, hashed, ownerRun, recorder, runnerSandbox, secretOf } from "./runs-support";
-import type { SandboxSignin, SandboxStart } from "../src/sandbox";
+import type { NetworkPlan, SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 import { SANDBOX_WAITING } from "../src/sandbox";
 import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
@@ -158,7 +158,7 @@ function reserving(reservation: string, extra: Record<string, unknown> = {}) {
 }
 
 /** An admitted call, and a model call's metering once reserved (null for a free call). */
-type Admitted = EgressOpened & { readonly metering: EgressMetering | null };
+type Admitted = EgressOpened & { readonly metering: Metering | null };
 
 /** A call opened and, for a model call, reserved, as the door and the gateway do. */
 async function admitted(r: Gated, lease: Leased, connection: string,

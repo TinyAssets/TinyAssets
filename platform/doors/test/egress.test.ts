@@ -13,13 +13,10 @@
 import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { PLATFORM_CALLER } from "../../owner/src/admission";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
-import type { NetworkPlan } from "../../owner/src/network";
-import type { Binding } from "../../contract/src/binding";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
-import type { Bound } from "../src/binder";
 import { type DoorsEnv } from "../src/config";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
@@ -29,6 +26,7 @@ import {
   appPost, call, doorsEnv, OPEN, reached, serveFirstPartyDocument, setControl, signInApp, sqlIn,
   url,
 } from "./support";
+import type { NetworkPlan } from "../../contract/src/sandbox";
 
 const COMPLETIONS = "/openai/v1/chat/completions";
 
@@ -39,7 +37,7 @@ interface Sandbox {
   readonly app: string;
   readonly connection: string;
   readonly model: string;
-  readonly bound: Bound;
+  readonly bound: Held;
   readonly opened: Opened;
   readonly key: string;
   /** The run the sandbox's calls name: the one the run door admitted. */
@@ -65,7 +63,13 @@ function send(request: Request, environment: DoorsEnv = doorsEnv): Promise<Respo
   return worker.fetch(request, environment, createExecutionContext());
 }
 
-function ownerBound(owner: string): Bound {
+/** An owner's object as the test reaches it: its own stub, every door of it. */
+interface Held {
+  readonly binding: Binding;
+  readonly stub: ReturnType<typeof env.OWNER.getByName>;
+}
+
+function ownerBound(owner: string): Held {
   return { binding: { owner, caller: owner, origin: null }, stub: env.OWNER.getByName(owner) };
 }
 
@@ -412,11 +416,11 @@ describe("the egress door", () => {
     const getByName = doorsEnv.OWNER.getByName.bind(doorsEnv.OWNER);
     vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation((name: string) => {
       const real = getByName(name);
-      return { egressOpen: (binding: Binding, request: unknown) => {
+      return { egressOpen: (binding: Binding, request: object) => {
                  asked.open.push(request);
                  return real.egressOpen(binding, request);
                },
-               egressReserve: (binding: Binding, request: unknown) => {
+               egressReserve: (binding: Binding, request: object) => {
                  asked.reserve.push(request);
                  return real.egressReserve(binding, request);
                },

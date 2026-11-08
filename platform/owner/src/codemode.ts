@@ -34,6 +34,7 @@ import type { Binding } from "../../contract/src/binding";
 import type { Gate } from "./control-gate";
 import type { ProfileName } from "../../contract/src/doors";
 import { Refusal } from "../../contract/src/refusal";
+import type { HooksService } from "../../contract/src/hooks";
 
 /** The tools a script calls, as pi-codemode's sandbox takes them. */
 export type CodemodeTools = NonNullable<
@@ -42,11 +43,8 @@ export type CodemodeTools = NonNullable<
 /** How long one script may run, in ms; a script past it ends with pi-codemode's `timeout`. */
 export const CODEMODE_TIMEOUT_MS = 300_000;
 
-/** What the hooks Worker serves the owner (`hooks/src/index.ts`): code mode's VMs. */
-export interface HooksService {
-  codemodeExecute(name: string, request: CodemodeRemoteRequest,
-                  exchange: CodemodeRemoteExchange): Promise<void>;
-}
+/** What the hooks Worker serves the owner (`contract/src/hooks.ts`): code mode's VMs. */
+export type CodemodeService = HooksService<CodemodeRemoteRequest, CodemodeRemoteExchange>;
 
 /**
  * A script's bounds: its wall time (`CODEMODE_TIMEOUT_MS` unless a test passes less) and
@@ -60,7 +58,7 @@ export interface CodemodeBounds {
 
 /** What code mode's sandbox reaches: the hooks Worker, the owner it runs for, its tools. */
 export interface CodemodeParts extends CodemodeBounds {
-  readonly service: () => HooksService | undefined;
+  readonly service: () => CodemodeService | undefined;
   readonly owner: () => string;
   readonly tools: CodemodeTools;
 }
@@ -190,7 +188,7 @@ export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is pa
 /** What a script runs with: its bounds, the hooks Worker, its owner, and its tools. */
 export interface ScriptParts {
   readonly bounds: CodemodeBounds;
-  readonly service: () => HooksService | undefined;
+  readonly service: () => CodemodeService | undefined;
   readonly owner: string;
   readonly script: string;
   /** The caller's tools, each called through its own door (`call`), rechecked there. */

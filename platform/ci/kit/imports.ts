@@ -12,14 +12,21 @@
  * relative imports, however deep, is checked as the Worker's own source is. A job (`job`, a
  * workspace run in Node rather than deployed) is held the same way from its own folder.
  *
+ * No Worker imports another Worker's `src` (`decisions.md` A1): whatever a workspace's rules
+ * list, an import that lands in another Worker's source is refused (`workerOf`), and a
+ * Worker's rules may name only the contract's modules and the source records'
+ * (`outsideProblems`), which `ci/guards/isolation.test.ts` holds for every Worker.
+ *
  * Tripwires for our own code (a split spelling such as `env["GATEWAY_" + "KEYRING"]` is not
  * seen), not proof against deliberate evasion.
  */
-import { posix } from "node:path";
+import { existsSync } from "node:fs";
+import { join, posix } from "node:path";
 
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import { PLATFORM } from "../paths.ts";
 import { parse, reporter, scriptsIn, workerSources } from "./sources.ts";
 
 export interface BannedName {
@@ -57,6 +64,41 @@ export function resolved(path: string, specifier: string): string {
     .replace(/\.(?:[cm]?[jt]s|tsx|jsx)$/, "");
 }
 
+/**
+ * The Worker whose own source `path` (from `platform/`, with or without its extension) is:
+ * `<folder>/src/...` of a folder that holds a Worker's config. Null for any other module: the
+ * contract's, the source records', a job's, a test's.
+ */
+export function workerOf(path: string): string | null {
+  const folder = /^([^/]+)\/src\//.exec(path)?.[1];
+  return folder !== undefined && existsSync(join(PLATFORM, folder, "wrangler.jsonc")) ? folder
+    : null;
+}
+
+/** The modules outside a Worker's own source its rules may name: the contract's, the records'. */
+const SHARED = /^(?:contract|sources)\//;
+
+/**
+ * Each module `rules`' list of modules outside its source names that no Worker may reach:
+ * another Worker's source, or, for a Worker, anything but the contract and the source records.
+ */
+export function outsideProblems(rules: ImportRules): string[] {
+  return (rules.outside ?? []).flatMap((at) => {
+    const other = workerOf(at);
+    if (other !== null && other !== rules.worker) {
+      return [`${rules.worker} may reach ${at}, the ${other} Worker's source`];
+    }
+    return rules.job === undefined && !SHARED.test(at)
+      ? [`${rules.worker} may reach ${at}, neither the contract nor the source records`] : [];
+  });
+}
+
+/** Each source of a closure (`reached`, paths from `platform/`) in another Worker's `src`. */
+export function foreignReach(worker: string, reached: Iterable<string>): string[] {
+  return [...reached].filter((path) => ![null, worker].includes(workerOf(path)))
+    .map((path) => `${worker} reaches ${path}, the ${workerOf(path)} Worker's source`);
+}
+
 /** Whether the source at `path` (from `platform/`) is one of the workspace's own. */
 export function owns(rules: ImportRules, path: string): boolean {
   return rules.job === undefined ? path.startsWith(`${rules.worker}/src/`)
@@ -71,7 +113,14 @@ export function importProblem(rules: ImportRules, path: string, specifier: strin
   }
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
     const at = resolved(path, specifier);
-    return owns(rules, at) || (rules.outside ?? []).includes(at)
+    if (owns(rules, at)) {
+      return null;
+    }
+    const other = workerOf(at);
+    if (other !== null) {
+      return `imports ${specifier} (${at}), the ${other} Worker's source`;
+    }
+    return (rules.outside ?? []).includes(at)
       ? null : `imports ${specifier} (${at}), outside ${rules.called}`;
   }
   if ((rules.packages ?? []).some((name) => specifier === name || specifier.startsWith(`${name}/`))) {

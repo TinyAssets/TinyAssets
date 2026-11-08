@@ -10,10 +10,9 @@ import { describe, expect, it } from "vitest";
 
 import { socketRequest } from "../../doors/src/binder";
 import { verifyToken } from "../../contract/src/routing-mac";
-import { PLATFORM_CALLER } from "../src/admission";
+import { type Binding, nativeId, PLATFORM_CALLER } from "../../contract/src/binding";
 import { AGENT_DISABLED } from "../src/agent-file";
 import { AGENT_CHANGED } from "../src/launch";
-import type { Binding } from "../../contract/src/binding";
 import { Files } from "../src/files";
 import { NO_CONVERSATION, RUN_ENDED, RUNS_KEPT, SIGNIN_REQUIRED } from "../src/runs";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
@@ -29,7 +28,6 @@ import {
   sandboxOf, secretOf, startOf, syncOf, TIERS,
 } from "./runs-support";
 import { drainDue, failure, laneAt, sqlIn } from "./support";
-import { nativeId } from "../../contract/src/binding";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });

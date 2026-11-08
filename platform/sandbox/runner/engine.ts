@@ -18,9 +18,10 @@
  * - Files: the record's own templates, the credential's, and the MCP template, each filled
  *   (a `.json` file's values JSON-escaped), several templates of one JSON file merged.
  */
-import type { CliSpec, CredentialKind, SourceRecord } from "../../sources/src/schema";
+import type { CliSpec, SourceRecord } from "../../sources/src/schema";
 import { envStem, MCP_DOOR } from "../../contract/src/egress";
 import { forbids } from "../../contract/src/text";
+import type { CredentialKind } from "../../contract/src/sandbox";
 
 /** A start as the sandbox Worker hands it to the runner: no lease secrets in it. */
 export interface StartDoc {

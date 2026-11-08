@@ -9,14 +9,13 @@
  * it as `{error: {code, message}}` with the code's status.
  */
 import {
-  GATEWAY_CODES, type GatewayCode, Refusal, REFUSALS, refusalOf,
+  type GatewayCode, isGatewayCode, Refusal, REFUSALS, refusalOf,
 } from "../../contract/src/refusal";
 
 /** The gateway code of a refusal, or `fallback` for anything else (whose text is never shown). */
 export function codeOf(error: unknown, fallback: GatewayCode): GatewayCode {
   const code = refusalOf(error)?.code;
-  return code !== undefined && (GATEWAY_CODES as readonly string[]).includes(code)
-    ? code as GatewayCode : fallback;
+  return isGatewayCode(code) ? code : fallback;
 }
 
 /** Runs an RPC method, letting only a fixed code out of it. */

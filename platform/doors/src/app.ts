@@ -244,7 +244,7 @@ const grantSet: Route = async ({ owner: { binding, stub }, body: request }) => {
   if (request["mode"] === "revoked") {
     return failure(400, "a revoke goes by grants/revoke, which also ends the client's tokens");
   }
-  return json(200, await stub.grantSet(binding, request as never));
+  return json(200, await stub.grantSet(binding, request));
 };
 
 /** `files/read` `{path}`: one file as UTF-8 text, or why it is not shown as text. */
@@ -409,7 +409,7 @@ async function socketTicket({ env, token, presented, body: request }: Served):
     return failure(401, "sign in required");
   }
   const { binding, stub } = bindOwnerGrant(env, token, unwrapped.grantId);
-  return json(200, await stub.socketTicket(binding, request as never));
+  return json(200, await stub.socketTicket(binding, request));
 }
 
 /**
@@ -455,7 +455,7 @@ async function registering({ env, owner, body, token }: Served): Promise<Respons
   const { key_id: id, ...register } = body;
   const { keyId, entry } = await registeringEntry(env, owner.binding.owner, id);
   const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, owner.binding.session);
-  return json(200, await stub.registerAgent(binding, register as never));
+  return json(200, await stub.registerAgent(binding, register));
 }
 
 /** A route that answers a binder module's sequence's value as JSON. */

@@ -4,7 +4,8 @@
  */
 import { forbids } from "../../contract/src/text";
 
-import { type ApiKeyEnv, type CredentialKind, SourceRecordError, type Sources } from "./schema";
+import { type ApiKeyEnv, SourceRecordError, type Sources } from "./schema";
+import type { CredentialKind } from "../../contract/src/sandbox";
 
 /**
  * The process basics a run keeps from the sandbox template's own environment, beside

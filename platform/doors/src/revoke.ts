@@ -26,7 +26,7 @@ import { type DoorsEnv, MCP_RESOURCE } from "./config";
 import { deleteKey } from "./directory";
 import { authorizationServer } from "./oauth";
 
-export interface Revoked {
+export interface ClientRevoked {
   readonly client: string;
   readonly revoked: boolean;
   readonly generation: number;
@@ -106,7 +106,7 @@ export async function providerRevoke(env: DoorsEnv, owner: string, client: strin
  * `keys/revoke` deletes it.
  */
 export async function revokeClient(env: DoorsEnv, { binding, stub }: Bound, client: unknown,
-                                   pageSize: number = GRANT_PAGE): Promise<Revoked> {
+                                   pageSize: number = GRANT_PAGE): Promise<ClientRevoked> {
   const done = await stub.grantRevoke(binding, { client: client as string });
   const { keys } = await stub.keyList(binding);
   const key = keys.find((row) => apiKeyOrigin(row.key_id).client === done.client);

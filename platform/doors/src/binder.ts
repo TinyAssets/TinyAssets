@@ -15,19 +15,17 @@
  * builds a binding (`guards/binder.test.ts`). The object checks the owner again against
  * its own name and stored owner, so a bug here reaching the wrong object fails there.
  */
-import { apiKeyOrigin } from "../../contract/src/binding";
+import { apiKeyOrigin, type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX16, HEX32, HEX64, RUN_ID } from "../../contract/src/ids";
 
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
-import type { OwnerDO } from "../../owner/src/owner-do";
-import type { Binding } from "../../contract/src/binding";
+import type { OwnerDoors } from "../../contract/src/owner";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
 } from "../../contract/src/socket-shape";
 import { principal } from "../../contract/src/text";
-import { ADMIN_CALLER } from "../../admin/src/caller";
 
 import type { Vendor } from "../../contract/src/apps";
 import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
@@ -70,7 +68,7 @@ export interface AppProps {
 
 export interface Bound {
   readonly binding: Binding;
-  readonly stub: DurableObjectStub<OwnerDO>;
+  readonly stub: DurableObjectStub<OwnerDoors>;
 }
 
 async function sha256(text: string): Promise<string> {
@@ -252,7 +250,7 @@ export function bindSync(env: DoorsEnv, owner: string, tokenHash: string,
  * `ring.ts`): that owner's object, to start its runs waiting for a sandbox again. It
  * carries no binding: the ring grants nothing.
  */
-export function ringOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDO> {
+export function ringOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDoors> {
   return env.OWNER.getByName(principal(owner));
 }
 
@@ -261,7 +259,7 @@ export function ringOwner(env: DoorsEnv, owner: string): DurableObjectStub<Owner
  * and the doors opened: that owner's object, whose one door here (`sandboxBilled`) records
  * the sandbox time E2B billed. It carries no binding: the event grants nothing.
  */
-export function sandboxHookOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDO> {
+export function sandboxHookOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDoors> {
   return env.OWNER.getByName(principal(owner));
 }
 
@@ -399,13 +397,13 @@ export function bindKeyRegistration(env: DoorsEnv, token: ValidatedAccessToken<u
 
 /**
  * The platform's own binding for `owner`, for its explicit admit at sign-up alone
- * (`authorize.ts`): the reserved admin caller (`admin/src/caller.ts`), which the owner's
- * object takes at `admissionSet` and refuses at every other door. Only a verified sign-in
+ * (`authorize.ts`): the reserved caller (`PLATFORM_CALLER`, the contract's), which the
+ * owner's object takes at `admissionSet` and refuses at every other door. Only a verified sign-in
  * whose owner the directory has no record of reaches it.
  */
 export function bindPlatform(env: DoorsEnv, signedIn: Bound): Bound {
   const owner = principal(signedIn.binding.owner);
-  return bound(env, { owner, caller: ADMIN_CALLER, origin: null });
+  return bound(env, { owner, caller: PLATFORM_CALLER, origin: null });
 }
 
 /**
@@ -415,7 +413,7 @@ export function bindPlatform(env: DoorsEnv, signedIn: Bound): Bound {
  */
 export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
   const named = principal(owner);
-  return bound(env, { owner: named, caller: ADMIN_CALLER, origin: null });
+  return bound(env, { owner: named, caller: PLATFORM_CALLER, origin: null });
 }
 
 /**

@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
-import { PLATFORM_CALLER } from "../src/admission";
+import { PLATFORM_CALLER } from "../../contract/src/binding";
 import {
   heldOnly, shownBytes, STORAGE_FULL, storageFull, type StorageFull, storageFullRefusal,
   UPLOADS_OPEN,

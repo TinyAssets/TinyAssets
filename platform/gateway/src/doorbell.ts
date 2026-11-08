@@ -35,7 +35,10 @@ import {
   AUTH_HEADER, callbackSecret, callbackUrl, kindNamed, type Push,
 } from "../../contract/src/wake-records";
 import { Refusal } from "../../contract/src/refusal";
-import { binding, type KeyringEnv, openValue, type Resealed, sealValue, type Sealed } from "./keyring";
+import type {
+  DoorbellVerified, Resealed, RingAnswer, RingRequest, Sealed,
+} from "../../contract/src/gateway";
+import { binding, type KeyringEnv, openValue, sealValue } from "./keyring";
 
 /** What a doorbell blob holds: where it goes, how it is sent, and its secret. */
 export interface DoorbellSecret {
@@ -46,30 +49,6 @@ export interface DoorbellSecret {
   readonly secret: string;
   readonly sealed_at: number;
 }
-
-/** A pasted or subscribed callback: its wake kind's record id, its URL and its secret. */
-export interface DoorbellInput {
-  readonly record: string;
-  readonly url: string;
-  readonly secret: string;
-}
-
-/** One wake as the object built it: its headers (no auth), its body and its event id. */
-export interface RingRequest {
-  readonly headers: Readonly<Record<string, string>>;
-  readonly body: string;
-  readonly event_id: string;
-}
-
-export type RingAnswer =
-  | { readonly state: "answered"; readonly status: number; readonly retry_after: string | null;
-      readonly resealed?: Resealed }
-  | { readonly state: "refused" }
-  | { readonly state: "unknown" };
-
-export type Verified =
-  | { readonly verified: true; readonly sealed: Sealed }
-  | { readonly verified: false; readonly reason: string };
 
 /** How a request leaves: the runtime's fetch, or a test's recording one. */
 export type Send = (request: Request) => Promise<Response>;
@@ -203,7 +182,7 @@ function same(a: string, b: string): boolean {
 export async function verifyDoorbell(env: KeyringEnv, owner: string, subscription: string,
                                      version: number, input: unknown,
                                      send: Send = (request) => fetch(request)):
-    Promise<Verified> {
+    Promise<DoorbellVerified> {
   const plain = plaintext(input);
   const events = pushOf(plain.record).events;
   if (events === null || plain.auth !== "standard_webhooks") {

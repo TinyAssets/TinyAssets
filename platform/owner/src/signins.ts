@@ -48,11 +48,11 @@ import type {
 import { EGRESS_ORIGIN, runUrls } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
 import { SANDBOX_ABSENT, started } from "./sandbox";
-import type { Started } from "./sandbox";
 import { clock } from "./clock";
 import { sealRoute } from "../../contract/src/routing-mac";
 import type { Runs } from "./runs";
 import { eventsRequest, signinRequest } from "./reports";
+import type { Started } from "../../contract/src/sandbox";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */
 

@@ -1,7 +1,7 @@
 /**
  * The sandbox Worker (`tinyassets-sandbox`; ADR-034 decision 4.2, `engines-replan.md` §2.1
  * step 3): the only holder of the E2B API key, and what stands behind the owner object's
- * `SANDBOX` interface (`owner/src/sandbox.ts`). Not deployed: no workflow deploys
+ * `SANDBOX` interface (`contract/src/sandbox.ts`). Not deployed: no workflow deploys
  * platform/.
  *
  * The owner Worker binds its default entrypoint as `SANDBOX`, and nothing else reaches it:
@@ -20,9 +20,8 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { principal } from "../../contract/src/text";
 import type {
-  SandboxService, SandboxSignin, SandboxStart, Started,
-} from "../../owner/src/sandbox";
-import type { MeterEvent } from "../../owner/src/sandbox-time";
+  MeterEvent, SandboxService, SandboxSignin, SandboxStart, Started,
+} from "../../contract/src/sandbox";
 
 import type { SandboxControl, SandboxEnv } from "./control";
 import { SLOTS } from "./slots";

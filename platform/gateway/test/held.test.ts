@@ -14,7 +14,6 @@ import { Refusal } from "../../contract/src/refusal";
 import { aliased, apiRules } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
-import { type Reserve } from "../src/forward";
 import {
   GATEWAY_POOL_SLOTS, gatewaySlots, Hold, heldDeadlineMs, readHeld, Tokens,
 } from "../src/held";
@@ -22,6 +21,7 @@ import Gateway, { EgressGateway } from "../src/index";
 import { learnMeter, meteredRecord } from "../src/meter";
 import { SlotPool } from "../../contract/src/slots";
 import { GOOGLE, OPENAI } from "./support";
+import type { Reserve } from "../../contract/src/gateway";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
 

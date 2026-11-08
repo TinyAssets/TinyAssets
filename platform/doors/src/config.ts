@@ -14,33 +14,9 @@
  * ships is built from that file, so it changes only with a new template pair.
  */
 import identity from "../../contract/identity.json" with { type: "json" };
-import type { Source } from "../../contract/src/egress-scope";
-import type { ChunkPut } from "../../files/src/index";
-import type { Verified } from "../../gateway/src/forward";
-import type { Sealed } from "../../gateway/src/keyring";
-import type { Exchanged } from "../../gateway/src/oauth";
-import type { OwnerDO } from "../../owner/src/owner-do";
-
-/**
- * The gateway as the egress door binds it (`EGRESS`, its `EgressGateway` entrypoint): one
- * sandbox model call forwarded, metered, under the sealed endpoints of the blob the owner's
- * object handed out for it, its body streamed; a model call's reservation made through
- * `reserve` (the door's callback, a stub over RPC) once the gateway's one parse read the
- * body's model and tier, null for a free call; its metered outcome comes as one JSON line on
- * `outcome`, and closing `stop` aborts it. Every refusal is a fixed-code answer; the
- * provider's own answers pass through.
- */
-export interface EgressService {
-  forward(owner: string, connection: string, version: number, blob: string, request: Request,
-          reserve: ((call: { readonly model: string; readonly tier: string | null }) =>
-            Promise<{ readonly metering: { readonly max_output_tokens: number;
-                                           readonly input_bytes: number;
-                                           readonly model: string;
-                                           readonly tier: string | null } }
-                    | { readonly refused: string }>) | null,
-          stop: ReadableStream<Uint8Array>):
-    Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }>;
-}
+import type { ChunkUpload } from "../../contract/src/files";
+import type { ConnectService, EgressService } from "../../contract/src/gateway";
+import type { OwnerDoors } from "../../contract/src/owner";
 
 // Each fact of the identity is read as text (a template), so this module holds strings
 // alone, never the shared file object (`owner/guards/module-state.test.ts`).
@@ -134,40 +110,22 @@ export const INBOUND_BODY_MAX = API_BODY_MAX;
  */
 export const ERASURE_QUEUE = "tinyassets-erasure";
 
-/** The files Worker's chunk entrypoint, as the file door's bytes reach it (`file-bytes.ts`). */
-export interface FilesService {
-  putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }>;
-}
-
 /**
- * The gateway as the doors bind it: its `ConnectGateway` entrypoint, which serves only
- * the connect steps (no model call, no egress forwarding, no keyring). Its answers are
- * the gateway's own types; every failure is one of its fixed codes.
+ * What `wrangler.jsonc` binds, exactly (the config guard). The Workers it binds are typed by
+ * their contracts (`contract/src/owner.ts`, `gateway.ts`, `files.ts`).
  */
-export interface ConnectService {
-  seal(owner: string, connection: string, version: number, key: string, record: Source):
-    Promise<Sealed>;
-  exchange(owner: string, connection: string, version: number,
-           grant: { code: string; verifier: string; redirect_uri: string }, record: Source):
-    Promise<Exchanged>;
-  verify(owner: string, connection: string, version: number, blob: string): Promise<Verified>;
-  /** A wake token the owner pasted, sealed for its subscription (slice W). */
-  sealDoorbell(owner: string, subscription: string, version: number,
-               input: { record: string; url: string; secret: string }): Promise<Sealed>;
-  /** An MCP Events callback, verified by a signed challenge, then sealed (slice W). */
-  verifyDoorbell(owner: string, subscription: string, version: number,
-                 input: { record: string; url: string; secret: string }):
-    Promise<{ readonly verified: true; readonly sealed: Sealed }
-            | { readonly verified: false; readonly reason: string }>;
-}
-
-/** What `wrangler.jsonc` binds, exactly (the config guard). */
 export interface DoorsEnv {
   /** The owner Worker's namespace, by `script_name`; reached only in `binder.ts`. */
-  readonly OWNER: DurableObjectNamespace<OwnerDO>;
-  /** The gateway's connect entrypoint; reached only in `connect.ts`. */
+  readonly OWNER: DurableObjectNamespace<OwnerDoors>;
+  /**
+   * The gateway's connect entrypoint (`ConnectGateway`): the connect steps alone, no model
+   * call, no egress forwarding, no keyring; reached only in `connect.ts`.
+   */
   readonly GATEWAY: ConnectService;
-  /** The gateway's egress entrypoint, which serves only `forward`; reached only in `egress.ts`. */
+  /**
+   * The gateway's egress entrypoint (`EgressGateway`), which serves only `forward`; reached
+   * only in `egress.ts`.
+   */
   readonly EGRESS: EgressService;
   /**
    * The routing key sandbox tokens are MAC'd under (`routing-mac.ts`), a Worker secret the
@@ -212,8 +170,11 @@ export interface DoorsEnv {
    * environment's secret store; absent until then, and every sign-in fails loudly.
    */
   readonly WORKOS_API_KEY?: string;
-  /** The files Worker: only `file-bytes.ts` reaches it, the binder streaming an upload. */
-  readonly FILES: FilesService;
+  /**
+   * The files Worker's upload entrypoint (`FilesUpload`): only `file-bytes.ts` reaches it, the
+   * binder streaming an upload.
+   */
+  readonly FILES: ChunkUpload;
 }
 
 /**

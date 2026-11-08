@@ -574,7 +574,7 @@ describe("L7: the provider revoke reads every page", () => {
     }
     await admitOwner(alice);
     const bound = { binding: { owner: alice, caller: alice, origin: null },
-                    stub: env.OWNER.getByName(alice) };
+                    stub: doorsEnv.OWNER.getByName(alice) };
     // The provider's grant listing, observed: each page holds the one grant asked for.
     const real = env.OAUTH_KV;
     const limits: unknown[] = [];

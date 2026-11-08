@@ -37,14 +37,13 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { TIERS } from "../../ci/fixtures";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
-import { PLATFORM_CALLER } from "../src/admission";
+import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
 import { Backups } from "../src/backup";
 import { Bodies, type Located } from "../src/bodies";
 import { ChangeLog } from "../src/changelog";
 import { Grants } from "../src/grants";
 import { Ledger, LEDGER_LIMITS, type LedgerLimits } from "../src/ledger";
-import type { Binding, Origin } from "../../contract/src/binding";
-import { type ChunkStore, EDIT_BYTES_MAX, Files } from "../src/files";
+import { EDIT_BYTES_MAX, Files } from "../src/files";
 import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
 import { Refusal } from "../../contract/src/refusal";
@@ -58,6 +57,7 @@ import {
   MIN_RECORD_BYTES, MOVE_RECORDS, MoveTable, pack, planSegment, SEGMENT_LEAST_BYTES,
 } from "../src/segments";
 import { UNIT_BYTES } from "../../contract/src/slots";
+import type { ChunkStore } from "../../contract/src/files";
 
 declare function gc(): void;
 

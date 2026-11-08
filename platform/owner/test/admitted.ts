@@ -12,7 +12,7 @@
  */
 import { env } from "cloudflare:workers";
 
-import { PLATFORM_CALLER } from "../src/admission";
+import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { NAMESPACES } from "./namespaces";
 
 type Admitting = { admissionSet(binding: unknown, request: unknown): Promise<unknown> };

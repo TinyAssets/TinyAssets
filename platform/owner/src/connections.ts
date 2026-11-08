@@ -68,7 +68,8 @@ import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
-import { GATEWAY_CODES, Refusal, refusalOf } from "../../contract/src/refusal";
+import type { GatewayService, Refreshed } from "../../contract/src/gateway";
+import { isGatewayCode, Refusal, refusalOf } from "../../contract/src/refusal";
 import {
   CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODELS_JSON_MAX, REDIRECT_URI_MAX,
 } from "../../contract/src/limits";
@@ -121,35 +122,6 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   revokeMs: (LANE_HUNG_S - LANE_PASS_S) * 1000,
   revokesPerPass: 8,
 });
-
-/** A sealed blob the gateway hands back at the next version (a reseal or a refresh). */
-export interface Resealed {
-  readonly blob: string;
-  readonly kid: string;
-  readonly version: number;
-}
-
-/** The gateway as the object binds it (`GATEWAY`, the `tinyassets-gateway` Worker). */
-export interface GatewayService {
-  refresh(owner: string, connection: string, version: number, blob: string):
-    Promise<Resealed & { readonly expires_at: number | null }>;
-  revokeAtProvider(owner: string, connection: string, version: number, blob: string):
-    Promise<{ readonly revoked: boolean }>;
-  /**
-   * One wake sent with a doorbell subscription's sealed secret (slice W): the gateway opens
-   * the blob (and the replaced one's, inside its rotation window) and makes the send.
-   */
-  ringDoorbell(owner: string, subscription: string, version: number, blob: string,
-               previous: { readonly version: number; readonly blob: string } | null,
-               request: { readonly headers: Readonly<Record<string, string>>;
-                          readonly body: string; readonly event_id: string }):
-    Promise<
-      | { readonly state: "answered"; readonly status: number;
-          readonly retry_after: string | null;
-          readonly resealed?: { readonly blob: string; readonly kid: string;
-                                readonly version: number } }
-      | { readonly state: "refused" } | { readonly state: "unknown" }>;
-}
 
 /** What the owner is shown of a connection: never its blob. */
 export interface ConnectionView {
@@ -449,7 +421,7 @@ export class Connections {
     const failed = r["failed"];
     if (failed !== undefined) {
       // A setup check's failure: one of the gateway's fixed codes.
-      if (typeof failed !== "string" || !(GATEWAY_CODES as readonly string[]).includes(failed)
+      if (!isGatewayCode(failed)
           || checked.length > 0
           || row.kind !== "oauth2") {
         throw new Refusal("invalid",
@@ -767,14 +739,13 @@ export class Connections {
   }
 
   async #refresh(id: string, holder: string, from: Credential): Promise<void> {
-    let refreshed: Resealed & { readonly expires_at: number | null };
+    let refreshed: Refreshed;
     try {
       refreshed = await this.#service().refresh(this.#owner(), id, from.version, from.blob);
     } catch (error) {
       // The gateway's fixed code, as its refusal carries it; anything else is `internal`.
       const refused = refusalOf(error)?.code;
-      const code = refused !== undefined && (GATEWAY_CODES as readonly string[]).includes(refused)
-        ? refused : "internal";
+      const code = isGatewayCode(refused) ? refused : "internal";
       await this.#write(() => this.#unlease(id, holder, code));
       throw new Refusal("credential_refresh_failed", `credential_refresh_failed: ${code}`);
     }
@@ -806,7 +777,7 @@ export class Connections {
    * and the lease with them.
    */
   #refreshed(id: string, holder: string, version: number,
-             refreshed: Resealed & { readonly expires_at: number | null }, now: number):
+             refreshed: Refreshed, now: number):
       "kept" | "dropped" | "malformed" {
     const expires = refreshed.expires_at;
     const ok = object(refreshed) && refreshed.version === version + 1

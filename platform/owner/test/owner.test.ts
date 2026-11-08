@@ -7,7 +7,7 @@ import { LIMITS } from "../src/collections";
 import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { doorTable } from "../../contract/src/doors";
 import { OwnerDO } from "../src/owner-do";
-import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../src/migrate";
+import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
 import { failure, ownerObject } from "./support";
 

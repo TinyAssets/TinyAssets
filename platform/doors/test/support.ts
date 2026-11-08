@@ -5,7 +5,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
-import { ADMIN_CALLER } from "../../admin/src/caller";
+import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { writeControl } from "../../ci/fixtures";
 import { type Row, sqlIn as rowsIn } from "../../ci/workerd";
 import {
@@ -35,7 +35,7 @@ export async function call(request: Request, environment: DoorsEnv = doorsEnv):
  * (`authorize.ts`), for a test that reaches an owner's object without signing it in.
  */
 export async function admitOwner(owner: string): Promise<void> {
-  await env.OWNER.getByName(owner).admissionSet({ owner, caller: ADMIN_CALLER, origin: null },
+  await env.OWNER.getByName(owner).admissionSet({ owner, caller: PLATFORM_CALLER, origin: null },
                                                 { admit: true });
 }
 

@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { exported } from "../src/export";
-import { type Migration, migrationDigest as digest } from "../src/migrate";
+import { type Migration, migrationDigest as digest } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
 import { holdLocks, type Lock, lockProblems, pinned } from "./lock";
 import { workerSources } from "../../ci/kit/sources";

@@ -67,7 +67,6 @@ import { CONVERSATION_ID, randomHex, RUN_ID, SCHEDULE_ID } from "../../contract/
 import { sha256Hex } from "../../contract/src/digest";
 
 import { bundledSources } from "../../sources/src/catalog";
-import type { CredentialKind } from "../../sources/src/schema";
 import {
  type EngineEvents, EVENTS_RACED, type Frame, FRAME_VERSION, readEvent,
 } from "../../contract/src/run-events";
@@ -85,8 +84,7 @@ import { nextOccurrence, parseCron } from "./cron";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { periods } from "./money";
-import type { NetworkPlan } from "./network";
-import { type RunConfig, SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
+import { SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
 import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF, switchedOn } from "./signins";
 import { TIER_RUNS, tierNumbers } from "./tier";
@@ -101,6 +99,7 @@ import { clock } from "./clock";
 import { fittedRun } from "./pages";
 import { placedAs } from "./bodies";
 import { eventsRequest } from "./reports";
+import type { CredentialKind, NetworkPlan, RunConfig } from "../../contract/src/sandbox";
 
 /**
  * Settled runs kept as receipts, the newest first: an older run's status is gone, never

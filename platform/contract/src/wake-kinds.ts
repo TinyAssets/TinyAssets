@@ -7,6 +7,7 @@ import { sha256Hex } from "./digest";
 import { Refusal } from "./refusal";
 import { codePoints, isPrintable } from "./text";
 import { ARGUMENTS_CHARS } from "./limits";
+import type { RingRequest } from "./gateway";
 import type { WakeKind } from "./wake-records";
 
 /** What a wake says changed: mail to the agent, a room's rows, or the board's. */
@@ -103,22 +104,14 @@ function filled(value: unknown, values: Readonly<Record<string, unknown>>): unkn
 }
 
 /**
- * The part of one wake's request the object builds, from its record: its headers (never
- * the auth, which the gateway adds from the sealed secret) and its body bytes. `eventId` is
- * the wake's own id, kept across a retry; `at` is the change's own time, in seconds.
- */
-export interface DoorbellRequest {
-  readonly headers: Readonly<Record<string, string>>;
-  readonly body: string;
-  readonly event_id: string;
-}
-
-/**
- * Build one wake's request from its record. Refused (`invalid`) before any byte when the
- * kind pushes nothing or the body is past its record's cited size.
+ * Build one wake's request from its record (`RingRequest`: its headers, never the auth,
+ * which the gateway adds from the sealed secret, and its body bytes). `eventId` is the
+ * wake's own id, kept across a retry; `at` is the change's own time, in seconds. Refused
+ * (`invalid`) before any byte when the kind pushes nothing or the body is past its record's
+ * cited size.
  */
 export function doorbellRequest(kind: WakeKind, subscriptionIdValue: string, wake: WakeContent,
-                                eventId: string, at: number): DoorbellRequest {
+                                eventId: string, at: number): RingRequest {
   const p = kind.push;
   if (p === null) {
     throw new Refusal("invalid", "this kind has no push");

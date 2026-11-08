@@ -19,6 +19,8 @@ import type {
   CodemodeRemoteExchange, CodemodeRemoteRequest,
 } from "@earendil-works/pi-codemode/portable";
 
+import type { HooksService } from "../../contract/src/hooks";
+
 import type { CodemodeSandbox } from "./codemode";
 
 export { CodemodeSandbox } from "./codemode";
@@ -34,7 +36,8 @@ function named(value: unknown): value is string {
   return typeof value === "string" && value !== "" && value.length <= NAME_MAX;
 }
 
-export class Hooks extends WorkerEntrypoint<HooksEnv> {
+export class Hooks extends WorkerEntrypoint<HooksEnv>
+    implements HooksService<CodemodeRemoteRequest, CodemodeRemoteExchange> {
   /**
    * One code mode execution, named by the owner: the VM runs in that sandbox object and
    * every tool call goes back through `exchange`. Resolves once the VM has stopped.

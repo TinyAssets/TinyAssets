@@ -29,7 +29,7 @@ import { PLACE_BYTES } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
-import { CREDENTIAL_KINDS, type CredentialKind, SourceRecordError } from "../../sources/src/schema";
+import { CREDENTIAL_KINDS, SourceRecordError } from "../../sources/src/schema";
 
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
 import type { Stamped, StandingGrant } from "./authority";
@@ -38,7 +38,7 @@ import { OWNER_AUTHORITY, type Lease } from "./files";
 import { type Delivery, type MailAuthority, mailInput } from "./ledger";
 import { nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
-import { type EgressPolicy, networkDocument, type NetworkPlan } from "./network";
+import { type EgressPolicy, networkDocument } from "./network";
 import type { OwnerState } from "./owner-do";
 import {
   type Ask, type LiveLease, type LiveRun, type MailAnswer, mailConversation, NO_SCHEDULE,
@@ -49,6 +49,7 @@ import { SANDBOX_ABSENT, SANDBOX_WAITING, started } from "./sandbox";
 import { switchedOn } from "./signins";
 import { tierNumbers } from "./tier";
 import type { TierName } from "../../contract/src/control";
+import type { CredentialKind, NetworkPlan } from "../../contract/src/sandbox";
 
 /** The agent's file changed between its read and the admission: the caller tries again. */
 export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was admitted";
