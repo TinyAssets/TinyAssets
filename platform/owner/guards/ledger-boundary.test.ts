@@ -18,7 +18,9 @@
  * object hands them (`OwnerState`), not by an import (review F3). The modules that name the
  * state's ledger are held the same way (`REACHERS`): the ledger's own doors, the doors
  * whose rows act on mail too (a collection's, a file's, a grant's, an inbound hook's), and
- * the runs lane. That list only shrinks too.
+ * the runs lane. That list only shrinks too. The policy-boundary guard holds the state to
+ * be used only as `o.<member>` (or handed to a parameter named `o`), so no alias or
+ * destructuring reaches the ledger past this list.
  */
 import { describe, expect, it } from "vitest";
 

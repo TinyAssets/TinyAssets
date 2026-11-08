@@ -27,7 +27,12 @@
  * a door's handler (`<module>Doors`) whose row's caller is one the member allows: the
  * owner's session, or the platform's reserved line. Every other member of those stores the
  * state's holders name is a read, a narrowing or a proposal (`OTHERS`), and a new one fails
- * until it is put in one list or the other.
+ * until it is put in one list or the other. So that every reach of the state is one of
+ * these namings, the state is used only as `o.<member>` (the launcher's `this.#o.<member>`)
+ * or handed on to a parameter named `o`, and a parameter, field or variable of the state's
+ * types is named `o`, and `o` names nothing else: a destructuring, an alias, an element
+ * access or a helper's parameter of another name each fail. The object itself (`owner-do.ts`), which builds the state and
+ * holds every store, is held only to the namings.
  */
 import { posix } from "node:path";
 
@@ -86,7 +91,10 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
 const STORES: ReadonlySet<string> = new Set(["grants", "sessions", "policy", "registrations",
                                              "keys"]);
 /** What names the state: a handler's `o`, the launcher's `this.#o`, the runner's parts. */
-const ROOTS = /^(?:o|state|this\.#o|this\.#state|this\.#parts)$/;
+const ROOTS = /^(?:o|this\.#o|this\.#parts)$/;
+/** The state's own types: a parameter, field or variable of one is named `o` (`#o`). */
+const STATE_TYPES = /\b(?:OwnerState|LaunchState)\b/;
+const STATE_NAMES: ReadonlySet<string> = new Set(["o", "#o"]);
 const SIGNED: readonly CallerKind[] = Object.freeze(["session", "reserved"]);
 const OWNED: readonly CallerKind[] = Object.freeze(["owner", "session", "reserved"]);
 /** The state's widening members, and the row callers whose doors' handlers may name each. */
@@ -132,14 +140,102 @@ function handlerOf(node: ts.Node, file: ts.SourceFile): string | null {
 }
 
 /**
- * Each naming of the state's policy stores in `source` that the rule above refuses, as
- * `file:line: what`: a widening member outside a door's handler, or in one whose row's
- * caller it does not allow; a member in neither list; a store named whole, not a member.
+ * Each named function's parameter names across `files`: a module's function by
+ * `fn:<file>:<name>` and `fn:<name>` (one a module imports), a method or a member's function
+ * by `member:<name>` (a private one's `#name`).
  */
-export function widenings(fileName: string, source: string): string[] {
-  const file = parse(fileName, source);
+function parameterNames(files: readonly ts.SourceFile[]): Map<string, string[][]> {
+  const found = new Map<string, string[][]>();
+  for (const file of files) {
+    const visit = (node: ts.Node): void => {
+      const add = (keys: readonly string[], fn: ts.SignatureDeclarationBase): void => {
+        for (const key of keys) {
+          found.set(key, [...(found.get(key) ?? []),
+                          fn.parameters.map((parameter) => parameter.name.getText(file))]);
+        }
+      };
+      const functionOf = (value: ts.Expression | undefined) => value !== undefined
+        && (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) ? value : undefined;
+      if (ts.isFunctionDeclaration(node) && node.name) {
+        add([`fn:${file.fileName}:${node.name.text}`, `fn:${node.name.text}`], node);
+      } else if (ts.isVariableDeclaration(node) && functionOf(node.initializer)) {
+        const name = node.name.getText(file);
+        add([`fn:${file.fileName}:${name}`, `fn:${name}`], functionOf(node.initializer)!);
+      } else if (ts.isMethodDeclaration(node)) {
+        add([`member:${node.name.getText(file)}`], node);
+      } else if ((ts.isPropertyDeclaration(node) || ts.isPropertyAssignment(node))
+                 && functionOf(node.initializer)) {
+        add([`member:${node.name.getText(file)}`], functionOf(node.initializer)!);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  return found;
+}
+
+/**
+ * The keys a call's callee may be declared by: a function of the module's own, else one
+ * imported (`f`); a member (`x.f`, `this.#f`).
+ */
+function calleeKeys(callee: ts.Expression, file: ts.SourceFile): readonly string[] {
+  return ts.isIdentifier(callee) ? [`fn:${file.fileName}:${callee.text}`, `fn:${callee.text}`]
+    : ts.isPropertyAccessExpression(callee) ? [`member:${callee.name.getText(file)}`] : [];
+}
+
+/** Whether `node`, an identifier, declares or names a property rather than reading a value. */
+function declares(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  return ((ts.isParameter(parent) || ts.isVariableDeclaration(parent)
+           || ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)
+           || ts.isMethodDeclaration(parent) || ts.isPropertySignature(parent)
+           || ts.isFunctionDeclaration(parent)) && parent.name === node)
+    || (ts.isBindingElement(parent) && (parent.name === node || parent.propertyName === node))
+    || (ts.isPropertyAccessExpression(parent) && parent.name === node)
+    || ts.isQualifiedName(parent) || ts.isTypeReferenceNode(parent);
+}
+
+/**
+ * Each reach of the state's policy stores in `sources` that the rules above refuse, as
+ * `file:line: what`: a widening member outside a door's handler, or in one whose row's
+ * caller it does not allow; a member in neither list; a store named whole, not a member;
+ * the state used other than by a member or handed to a parameter named `o`; a parameter,
+ * field or variable of the state's types under another name.
+ */
+export function widenings(sources: ReadonlyMap<string, string>): string[] {
+  const files = [...sources].map(([path, source]) => parse(path, source));
+  const parameters = parameterNames(files);
+  return files.flatMap((file) => reaches(file, parameters));
+}
+
+function reaches(file: ts.SourceFile, parameters: ReadonlyMap<string, string[][]>): string[] {
   const problems: string[] = [];
   const report = reporter(file, problems);
+  const whole = file.fileName !== OWNER_DO;
+  /** Whether the call handing the state as its `index`th argument hands it to an `o`. */
+  const handedToO = (call: ts.CallExpression, index: number): boolean => {
+    const key = calleeKeys(call.expression, file).find((each) => parameters.has(each));
+    const declared = (key === undefined ? [] : parameters.get(key)!)
+      .filter((names) => index < names.length);
+    return declared.length > 0 && declared.every((names) => names[index] === "o");
+  };
+  const used = (node: ts.Expression): void => {
+    const parent = node.parent;
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+      return;
+    }
+    if (ts.isCallExpression(parent) && parent.arguments.includes(node)
+        && handedToO(parent, parent.arguments.indexOf(node))) {
+      return;
+    }
+    // The launcher's constructor keeps the state it is handed: `this.#o = o`.
+    if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && parent.left.getText(file) === "this.#o" && parent.right.getText(file) === "o") {
+      return;
+    }
+    report(node, `${node.getText(file)} is used other than by a member, or handed to a ` +
+                 "parameter not named o");
+  };
   const held = (node: ts.Node, member: string): void => {
     const callers = WIDENS[member];
     if (callers === undefined) {
@@ -156,6 +252,20 @@ export function widenings(fileName: string, source: string): string[] {
     }
   };
   const visit = (node: ts.Node): void => {
+    if (whole && ts.isIdentifier(node) && node.text === "o" && !declares(node)) {
+      used(node);
+    }
+    if (whole && ts.isPropertyAccessExpression(node)
+        && node.expression.kind === ts.SyntaxKind.ThisKeyword
+        && node.name.getText(file) === "#o") {
+      used(node);
+    }
+    if (whole && (ts.isParameter(node) || ts.isPropertyDeclaration(node)
+                  || ts.isVariableDeclaration(node))
+        && node.type !== undefined && STATE_TYPES.test(node.type.getText(file))
+        && !STATE_NAMES.has(node.name.getText(file))) {
+      report(node, `${node.name.getText(file)} holds the state under a name not o`);
+    }
     if (ts.isPropertyAccessExpression(node) && ROOTS.test(node.expression.getText(file))) {
       const name = node.name.text;
       if (STORES.has(name)) {
@@ -261,9 +371,8 @@ describe("policy-boundary guard", () => {
   });
 
   it("names each widening of the state only in a door its row's caller may widen", () => {
-    const found = [...workerSources()].filter(([path]) => path.startsWith("owner/src/"))
-      .flatMap(([path, source]) => widenings(path, source));
-    expect(found).toEqual([]);
+    const owner = new Map([...workerSources()].filter(([path]) => path.startsWith("owner/src/")));
+    expect(widenings(owner)).toEqual([]);
   });
 
   it.each([
@@ -281,14 +390,39 @@ describe("policy-boundary guard", () => {
      "sessions.grow is neither a widening nor a read"],
     ["a store named whole", "const g = this.#o.grants;",
      "this.#o.grants is named whole, not by a member"],
+    ["a store destructured from the state",
+     "const xDoors = Object.freeze({ agentSubmit(o: S) { const { grants } = o; " +
+       "grants.set(1, 2, 3); } });",
+     "o is used other than by a member, or handed to a parameter not named o"],
+    ["the state aliased",
+     "const xDoors = Object.freeze({ agentSubmit(o: S) { const s = o; " +
+       "s.grants.set(1, 2, 3); } });",
+     "o is used other than by a member, or handed to a parameter not named o"],
+    ["the launcher's state aliased", "class L { f() { const s = this.#o; } }",
+     "this.#o is used other than by a member, or handed to a parameter not named o"],
+    ["a store read by element access",
+     "const xDoors = Object.freeze({ agentSubmit(o: S) { o[\"grants\"].set(1, 2, 3); } });",
+     "o is used other than by a member, or handed to a parameter not named o"],
+    ["the state in a parameter of another name",
+     "function widen(st: OwnerState) { st.grants.set(1, 2, 3); }",
+     "st holds the state under a name not o"],
+    ["the launcher's state in a field of another name",
+     "class L { readonly #s: LaunchState; }", "#s holds the state under a name not o"],
+    ["the state handed to a parameter of another name",
+     "function widen(st) { st.grants.set(1, 2, 3); } " +
+       "const xDoors = Object.freeze({ agentSubmit(o: S) { widen(o); } });",
+     "o is used other than by a member, or handed to a parameter not named o"],
+    ["the state handed to a callee declared nowhere",
+     "const xDoors = Object.freeze({ agentSubmit(o: S) { elsewhere(o); } });",
+     "o is used other than by a member, or handed to a parameter not named o"],
   ])("sees %s", (_what, source, problem) => {
-    expect(widenings("probe.ts", source)).toEqual([`probe.ts:1: ${problem}`]);
+    expect(widenings(new Map([["probe.ts", source]]))).toEqual([`probe.ts:1: ${problem}`]);
   });
 
-  it("lets the owner's session set a grant, and anyone read one", () => {
-    expect(widenings("probe.ts", "const xDoors = Object.freeze({ grantSet(o: S) { " +
-      "o.grants.set(1, 2, 3); }, agentSubmit(o: S) { o.grants.standing(1); } });"))
-      .toEqual([]);
+  it("lets the owner's session set a grant, anyone read one, and a helper take the state", () => {
+    expect(widenings(new Map([["probe.ts", "const xDoors = Object.freeze({ grantSet(o: S) { " +
+      "o.grants.set(1, 2, 3); }, agentSubmit(o: S) { o.grants.standing(1); read(o, 1); } }); " +
+      "function read(o: OwnerState, n: number) { o.grants.standing(n); }"]]))).toEqual([]);
   });
 
   it("leaves the plain word alone", () => {

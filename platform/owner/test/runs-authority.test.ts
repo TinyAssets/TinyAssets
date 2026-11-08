@@ -822,6 +822,11 @@ describe("the runs lane (untangle A2, review F5)", () => {
     // suspended, so the lane never spins on mail it may not deliver.
     await r.stub.admissionSet(platform, { reason: "billing", suspended: true });
     expect(await laneAt(r.stub, "runs")).toBeNull();
+    // Lifted: the mail is work again, and the lane delivers it as `main`'s run.
+    await r.stub.admissionSet(platform, { reason: "billing", suspended: false });
+    expect(await laneAt(r.stub, "runs")).not.toBeNull();
+    await drainDue(r.stub);
+    expect((await recorder(r.stub)).starts).toHaveLength(1);
   });
 });
 

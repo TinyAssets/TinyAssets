@@ -719,18 +719,18 @@ export function outcome(value: unknown): Outcome {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Refusal("invalid", "invalid wake outcome");
   }
-  const o = value as Record<string, unknown>;
-  const keys = Object.keys(o);
+  const given = value as Record<string, unknown>;
+  const keys = Object.keys(given);
   const states = ["sent", "rate_limited", "failed", "unknown", "suppressed"];
-  if (!states.includes(o["state"] as string)
+  if (!states.includes(given["state"] as string)
       || !keys.every((k) => ["state", "status", "retry_after", "reason", "accepted"].includes(k))
-      || ("accepted" in o && (typeof o["accepted"] !== "boolean" || o["state"] !== "rate_limited"))
-      || ("status" in o && !count(o["status"], 100, 599))
-      || ("retry_after" in o && o["retry_after"] !== null && typeof o["retry_after"] !== "number")
-      || ("reason" in o && (typeof o["reason"] !== "string" || !REASON.test(o["reason"])))) {
+      || ("accepted" in given && (typeof given["accepted"] !== "boolean" || given["state"] !== "rate_limited"))
+      || ("status" in given && !count(given["status"], 100, 599))
+      || ("retry_after" in given && given["retry_after"] !== null && typeof given["retry_after"] !== "number")
+      || ("reason" in given && (typeof given["reason"] !== "string" || !REASON.test(given["reason"])))) {
     throw new Refusal("invalid", "invalid wake outcome");
   }
-  return o as unknown as Outcome;
+  return given as unknown as Outcome;
 }
 
 /**
