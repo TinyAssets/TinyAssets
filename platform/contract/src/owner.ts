@@ -77,16 +77,15 @@ export interface EgressRefusal {
   readonly receipt: string | null;
 }
 
-declare const PARSED: unique symbol;
-
 /**
  * A request body the doors parsed (`doors/src/body.ts`, `jsonObject`, its one maker) and
  * hand a door as it came, or with fields of their own decoded in: the object's runner checks
  * its fields against the door's row as it does any request's. Only the doors that take one
  * name it, beside their fields (`Handed`), so a request the doors build is still held to its
- * fields.
+ * fields. Its mark is a type's alone (no body holds it), named so no field could be it.
  */
-export type JsonBody = Readonly<Record<string, unknown>> & { readonly [PARSED]: true };
+export type JsonBody =
+  Readonly<Record<string, unknown>> & { readonly "parsed by jsonObject": true };
 
 /** A door's request, by its row's fields (`requests.ts`, written from the table). */
 type Asked<Door extends keyof DoorRequests> = DoorRequests[Door];

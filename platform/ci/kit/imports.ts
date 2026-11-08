@@ -211,7 +211,8 @@ function onDisk(path: string): string | undefined {
 /**
  * Every source `worker`'s own reach by relative specifiers (`relativeImports`), however
  * deep, with its own: what its bundle holds of ours, and any module outside a Worker's `src/`
- * on the way. A data file (`.json`) is checked by its import's path alone.
+ * on the way. A data file (`.json`) is checked by its import's path alone, and one in a
+ * Worker's `src/` is in the closure, so another Worker's is seen.
  */
 export function closure(worker: string,
                         all: ReadonlyMap<string, string> = workerSources()): Map<string, string> {
@@ -230,6 +231,9 @@ export function reach(rules: ImportRules): Map<string, string> {
   return walk(all, [...all.keys()].filter((path) => owns(rules, path)));
 }
 
+/** The extensions a script is imported without (`resolved` drops them), as a bundler tries. */
+const SCRIPTS = Object.freeze([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
+
 function walk(all: ReadonlyMap<string, string>, queue: string[]): Map<string, string> {
   const reached = new Map<string, string>();
   while (queue.length) {
@@ -241,7 +245,11 @@ function walk(all: ReadonlyMap<string, string>, queue: string[]): Map<string, st
     reached.set(path, source);
     for (const specifier of relativeImports(path, source)) {
       const at = resolved(path, specifier);
-      queue.push(...[`${at}.ts`, `${at}/index.ts`]
+      if (/\.[^/.]+$/.test(at) && workerOf(at) !== null
+          && (all.has(at) || existsSync(join(PLATFORM, at)))) {
+        reached.set(at, "");  // a Worker's data file (`.json`): reached, never read as a script
+      }
+      queue.push(...[...SCRIPTS.map((extension) => `${at}${extension}`), `${at}/index.ts`]
         .filter((next) => all.has(next) || onDisk(next) !== undefined));
     }
   }
