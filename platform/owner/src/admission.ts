@@ -58,6 +58,11 @@ export const OWNER_UNADMITTED = "owner_unadmitted: the platform has not admitted
 export const NEVER_ADMITTED = "an owner the platform never admitted is not suspended";
 export const PLATFORM_ONLY = "only the platform sets an owner's admission";
 export const PLATFORM_RESERVED = "the platform caller reaches no owner door but admission";
+/** The import doors' refusals (`import.ts`): their caller, their binding, the owner's state. */
+export const IMPORT_PLATFORM_ONLY =
+  "only the platform imports, with an import binding";
+export const IMPORT_DOORS_ONLY = "an import binding reaches the import doors alone";
+export const IMPORT_PENDING_ONLY = "only a pending owner is imported into";
 
 /** The owner's admission as its row holds it. */
 export interface Admission {
@@ -88,9 +93,10 @@ export function workRefusal(state: Admission): Refusal | null {
  * What a door does, which decides what a suspension leaves it: `work` spends or grows
  * (a message, a launch, a write that adds), `read` only reads (and signs in), `reduce` only
  * lowers risk or storage (a cancel, a revoke, a delete or purge). Every door's row names its
- * class (`contract/doors.json`); the platform's own doors' rows name `admission`, read by none.
+ * class (`contract/doors.json`); the platform's own doors' rows name `admission`, read by none,
+ * and the cutover's import doors `import`, taken only while the owner is `pending` (`#bind`).
  */
-export type DoorClass = Exclude<TableClass, "admission">;
+export type DoorClass = Exclude<TableClass, "admission" | "import">;
 
 /**
  * Why a door of class `door` is refused under `state`, or null. A `billing` suspension

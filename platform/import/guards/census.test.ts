@@ -15,12 +15,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
+import { IMPORTED } from "../../contract/src/paths";
 import { DEFAULT_IGNORES, ignoredBy } from "../../contract/src/sync-ignore";
 import { buildBundles } from "../bundle";
 import { census } from "../census";
 import { ERASURE_SOURCES } from "../erasure";
 import { TAR_MEMBER_MAX } from "../tar";
-import { IMPORTED, newTree, walkUser } from "../survey";
+import { newTree, walkUser } from "../survey";
 import {
   ALICE, BAD_NAME, BOB, deletionJob, DORA, ERASED, ERASING, type Fixture, fixture, FOUNDER, keyOf,
   makeStore, NEWBIE, NEWBIE_UID, sha, sparse, TIERS, unmergedStore,

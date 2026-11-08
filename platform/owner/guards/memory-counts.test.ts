@@ -22,6 +22,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import * as holds from "../src/holds";
+import { IMPORT_BATCH_BYTES } from "../../contract/src/import-message";
+import { CHUNK_BYTES } from "../../contract/src/limits";
 import { MOVE_RECORDS } from "../src/segments";
 import { UNIT_BYTES } from "../../contract/src/slots";
 import { ISOLATE_BYTES, memoryTerms } from "./relay-memory";
@@ -130,6 +132,18 @@ describe("an owner isolate's counts", () => {
     expect((holds.OWNER_WAITERS + 1) * largest).toBeGreaterThan(pool);
     // The one-unit waiters, capped apart, so larger waiters never refuse a small read.
     expect(holds.OWNER_SMALL_WAITERS).toBeGreaterThan(0);
+  });
+
+  it("holds the import window's paths within the same counts: its calls' arguments, and " +
+     "the doors' one chunk in flight", () => {
+    // A waiting import call holds its own request, at most `IMPORT_BATCH_BYTES` of rows or
+    // inline bytes (`import.ts`): within the largest a waiter is capped by.
+    const largest = Math.max(doorBytes("config.ts", "API_BODY_MAX"),
+                             doorBytes("mcp.ts", "MCP_BODY_MAX"));
+    expect(IMPORT_BATCH_BYTES).toBeLessThanOrEqual(largest);
+    // A chunked file's bytes never reach the object; the doors' consumer holds one chunk at a
+    // time, the file door's own one-chunk hold (`file-bytes.ts`).
+    expect(doorBytes("import.ts", "IMPORT_HOLD_BYTES")).toBe(CHUNK_BYTES);
   });
 
   it("sees a pool that would pass the isolate", () => {

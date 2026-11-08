@@ -77,6 +77,21 @@ async function exactly(request: Request, size: number): Promise<Uint8Array | nul
   return at === size ? out : null;
 }
 
+/**
+ * The cutover import's bytes (`import.ts`), on this door's path: one chunk the staging bucket
+ * holds, checked against its declared SHA-256 and size, put to `FILES` under the owner's
+ * namespace and wrapped key (`importFileBegin`'s), never through the owner's object.
+ */
+export async function putImportChunk(env: DoorsEnv, target: { namespace: string; key: string },
+                                     chunk: { sha256: string; size: number },
+                                     bytes: Uint8Array): Promise<void> {
+  if (chunk.size > CHUNK_BYTES || bytes.byteLength !== chunk.size
+      || createHash("sha256").update(bytes).digest("hex") !== chunk.sha256) {
+    throw new Error("an import chunk's bytes are not the chunk its upload declared");
+  }
+  await env.FILES.putChunks(target.namespace, target.key, [{ sha256: chunk.sha256, bytes }]);
+}
+
 /** `PUT files/upload/<intent_id>/<index>`: one chunk's bytes, put to `FILES` by the binder. */
 export async function streamUpload(request: Request, env: DoorsEnv, { binding, stub }: Bound,
                                    path: string): Promise<Response> {

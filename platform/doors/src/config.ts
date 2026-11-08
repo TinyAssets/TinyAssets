@@ -19,6 +19,7 @@ import type { ChunkPut } from "../../files/src/index";
 import type { Verified } from "../../gateway/src/forward";
 import type { Sealed } from "../../gateway/src/keyring";
 import type { Exchanged } from "../../gateway/src/oauth";
+import type { ImportMessage } from "../../contract/src/import-message";
 import type { OwnerDO } from "../../owner/src/owner-do";
 
 /**
@@ -214,6 +215,14 @@ export interface DoorsEnv {
   readonly WORKOS_API_KEY?: string;
   /** The files Worker: only `file-bytes.ts` reaches it, the binder streaming an upload. */
   readonly FILES: FilesService;
+  /**
+   * The cutover's import window (`import.ts`), deleted at the cutover: the staging bucket the
+   * importer's job writes each owner's bundle to, which the import consumer alone reads, and
+   * the import queue's producer, by which that consumer sends its own continuation. The
+   * window's `IMPORT_KEY` is an optional secret (`namedSecret`), set only for the window.
+   */
+  readonly IMPORT_STAGING: R2Bucket;
+  readonly IMPORTS: Queue<ImportMessage>;
 }
 
 /**

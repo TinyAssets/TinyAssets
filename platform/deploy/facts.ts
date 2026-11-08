@@ -83,10 +83,18 @@ function named(field: (config: Config) => readonly string[]): readonly string[] 
 export const BUCKETS = named((config) =>
   ((config["r2_buckets"] ?? []) as { bucket_name: string }[]).map((bucket) => bucket.bucket_name));
 
-/** The queues the Workers send to, which the kit makes: their producers' (a consumer only reads). */
-export const QUEUES = named((config) =>
-  ((config["queues"] as { producers?: { queue: string }[] } | undefined)?.producers ?? [])
-    .map((producer) => producer.queue));
+/**
+ * The queues the kit makes: the ones the Workers send to (their producers'; a consumer only
+ * reads), then each consumer's dead-letter queue, where the queue itself sends what its
+ * consumer gives up on (the import window's, `doors/wrangler.jsonc`).
+ */
+export const QUEUES = named((config) => {
+  const queues = config["queues"] as { producers?: { queue: string }[];
+                                       consumers?: { dead_letter_queue?: string }[] } | undefined;
+  return [...(queues?.producers ?? []).map((producer) => producer.queue),
+          ...(queues?.consumers ?? []).flatMap((consumer) =>
+            consumer.dead_letter_queue === undefined ? [] : [consumer.dead_letter_queue])];
+});
 
 /** A Worker's required secrets: its config's `secrets.required`. */
 function required(worker: string): readonly string[] {

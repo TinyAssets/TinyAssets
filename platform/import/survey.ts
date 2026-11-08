@@ -14,7 +14,7 @@ import { lstatSync, readdirSync, readlinkSync, type Stats } from "node:fs";
 import { join } from "node:path";
 
 import { sha256Hex } from "../contract/src/digest";
-import { storedPath, WORKSPACE } from "../contract/src/paths";
+import { IMPORTED, storedPath, WORKSPACE } from "../contract/src/paths";
 import { DEFAULT_IGNORES, ignoredBy, type Matcher } from "../contract/src/sync-ignore";
 
 import {
@@ -28,8 +28,6 @@ import {
   SESSIONS, SHARED, SIDECAR, type StoreRule, tableUse, type Use,
 } from "./rules";
 
-/** Where the owner's imported tree goes. */
-export const IMPORTED = `${WORKSPACE}/imported`;
 /** Where the archived stores go, in that tree and in each center's. */
 export const RECORDS = ".records";
 

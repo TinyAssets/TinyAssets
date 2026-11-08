@@ -6,8 +6,9 @@
  *
  * 1. **bind**: the object's own owner, its admission for the door's `class` (`work`, `read`
  *    or `reduce`, which decides what a suspension leaves it, `admission.ts`; `admission`,
- *    the platform's own doors, read none), and the sandbox or inbound binding its `caller`
- *    kind takes;
+ *    the platform's own doors, read none; `import`, the cutover's import doors, are taken
+ *    only while the owner is `pending`), and the sandbox, inbound or import binding its
+ *    `caller` kind takes;
  * 2. **account**: who calls (`caller`), then the row's `guard`, if any;
  * 3. **scope**: `capability`, held where the caller acts (`scope`: the caller's own place,
  *    the agent its request names, or a place the door's handler reads from the request);
@@ -43,8 +44,11 @@ import { Refusal } from "./refusal";
 
 type JsonSchema = Readonly<Record<string, unknown>>;
 
-/** What a suspension leaves a door (`admission.ts`); the platform's own doors read none. */
-export const DOOR_CLASSES = Object.freeze(["work", "read", "reduce", "admission"] as const);
+/**
+ * What a suspension leaves a door (`admission.ts`); the platform's own doors read none; the
+ * cutover's import doors are taken only while the owner is `pending` (`owner/src/import.ts`).
+ */
+export const DOOR_CLASSES = Object.freeze(["work", "read", "reduce", "admission", "import"] as const);
 export type DoorClass = (typeof DOOR_CLASSES)[number];
 
 /**
@@ -60,6 +64,9 @@ export type DoorClass = (typeof DOOR_CLASSES)[number];
  * - `reserved`: the platform's reserved caller, with no outside client and no session
  *   (`action`: its act, `admission` or `tier`);
  * - `erasure`: the platform's reserved caller, at an erasure under way;
+ * - `import`: the platform's reserved caller with an import binding (the doors' import
+ *   consumer, `doors/src/import.ts`), while the owner is `pending`: the `import` class's doors
+ *   alone, deleted at the cutover;
  * - `egress`; `runner`, with its runner's secret (`closed`: its refusal once the lease is
  *   gone); `run`, with the run its path names;
  * - `sync`: the sync agent's token, at its live lease (the request's, when it names one);
@@ -70,8 +77,8 @@ export type DoorClass = (typeof DOOR_CLASSES)[number];
  *   alone (`UNBOUND_DOORS`), so every other door binds.
  */
 export const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "session",
-  "reserved", "erasure", "egress", "runner", "run", "sync", "reader", "changes", "lease",
-  "inbound", "none"] as const);
+  "reserved", "erasure", "import", "egress", "runner", "run", "sync", "reader", "changes",
+  "lease", "inbound", "none"] as const);
 export type CallerKind = (typeof CALLER_KINDS)[number];
 
 /** The doors that take no binding: the sandbox line's ring and E2B's billed events. */
@@ -91,9 +98,9 @@ export type Gate = (typeof GATES)[number];
 
 /** The owner modules whose state the doors' handlers read and write. */
 export const HANDLERS = Object.freeze(["admission", "codemode", "collections", "connections",
-  "egress", "erasure", "export", "files", "grants", "inbound", "keys", "ledger", "notices",
-  "policy", "registrations", "relay", "runs", "sandbox-time", "sessions", "signins", "starter",
-  "tier", "usage"] as const);
+  "egress", "erasure", "export", "files", "grants", "import", "inbound", "keys", "ledger",
+  "notices", "policy", "registrations", "relay", "runs", "sandbox-time", "sessions", "signins",
+  "starter", "tier", "usage"] as const);
 export type Handler = (typeof HANDLERS)[number];
 
 /** A door's request: its fields, each a JSON Schema, and the words its refusal is given. */
@@ -231,6 +238,9 @@ export function doorProblems(rows: unknown): string[] {
     }
     if ((row["class"] === "admission") !== one(["reserved", "erasure"], row["caller"])) {
       say("only the platform's doors read no admission");
+    }
+    if ((row["class"] === "import") !== (row["caller"] === "import")) {
+      say("only the import's doors take the import class, and they take no other");
     }
     if (!("capability" in row) || (row["capability"] !== null
                                    && !one(RUN_CAPABILITIES, row["capability"]))) {

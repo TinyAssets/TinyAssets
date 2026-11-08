@@ -8,7 +8,7 @@
  * (`owner/src/control-gate.ts`).
  */
 import {
-  type ControlRead, MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen, readControl,
+  type ControlRead, MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen, readControl, tiersOf,
 } from "../../contract/src/control";
 
 import type { DoorsEnv } from "./config";
@@ -29,6 +29,15 @@ export async function ownerRead(env: DoorsEnv, owner: string): Promise<Response 
 export async function ownerGate(env: DoorsEnv, owner: string): Promise<Response | null> {
   const read = await ownerRead(env, owner);
   return read instanceof Response ? read : null;
+}
+
+/**
+ * The record's tier numbers for the cutover's import (`import.ts`), read as every account
+ * door's binding reads them (`tiersOf`); null for none, so the files plane's quota refuses
+ * rather than guesses (`tier.ts`). The import passes no gate: it runs dark, before `routes`.
+ */
+export async function importTiers(env: DoorsEnv): Promise<unknown> {
+  return tiersOf(await readControl(env.CONTROL));
 }
 
 function refusal(message: string): Response {

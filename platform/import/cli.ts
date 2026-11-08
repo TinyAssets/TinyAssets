@@ -8,7 +8,11 @@
  *   per-owner table to `<file>` (0600); exit 0 when the backup is ready to import, 3 when not;
  * - `bundle <work> --tiers <control.json> --exclude <list> --out <dir> --private <dir>`
  *   (or `--dry-run`, which writes nothing): the bundles, the digests and billing ids in 0600
- *   files of the private folder, and counts alone on stdout.
+ *   files of the private folder, and counts alone on stdout;
+ * - `stage <out> --run <id>` (or `--dry-run`, which sends nothing and needs no credential):
+ *   every bundle checked whole, uploaded to the staging bucket and its message put on the
+ *   import queue (`stage.ts`), the window's credentials read from the environment the
+ *   operator runs it in (`STAGE_INPUTS`), never from a file; counts and ordinals on stdout.
  *
  * The images are read only through mounts the kernel says are read-only XFS
  * (`/proc/self/mountinfo`), so a live or writable volume is never read. stdout holds counts
@@ -21,7 +25,41 @@ import { resolve } from "node:path";
 import { layout, loopBacking, manifestOf, mountArgs, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
 import { census, type Tiers } from "./census";
+import { type Fetcher, type Inputs, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
+
+/** The environment variables a staging run takes its credentials from, by input. */
+export const STAGE_INPUTS = Object.freeze({
+  account: "CLOUDFLARE_ACCOUNT_ID", accessKeyId: "R2_ACCESS_KEY_ID",
+  secretAccessKey: "R2_SECRET_ACCESS_KEY", apiToken: "CLOUDFLARE_API_TOKEN",
+  importKey: "IMPORT_KEY",
+} as const);
+
+/** A staging run's credentials from `env`, each required, none printed. */
+export function stageInputs(env: Readonly<Record<string, string | undefined>>): Inputs {
+  const missing = Object.values(STAGE_INPUTS).filter((name) => (env[name] ?? "") === "");
+  if (missing.length > 0) {
+    throw new Error(`a staging run takes ${missing.join(", ")} from its environment`);
+  }
+  return Object.fromEntries(Object.entries(STAGE_INPUTS)
+    .map(([input, name]) => [input, env[name]!])) as unknown as Inputs;
+}
+
+/** `stage <out> --run <id> [--dry-run]`: its exit code once every bundle is sent. */
+export async function stageMain(argv: readonly string[],
+                                env: Readonly<Record<string, string | undefined>>,
+                                print: (line: string) => void, fetcher: Fetcher = NETWORK):
+    Promise<number> {
+  const [, given] = argv;
+  if (given === undefined) {
+    throw new Error("usage: stage <out> --run <id> [--dry-run]");
+  }
+  const dry = argv.includes("--dry-run");
+  const summary = await stage(resolve(given), required(argv, "--run"),
+                              dry ? null : stageInputs(env), fetcher, print);
+  print(JSON.stringify(summary, null, 2));
+  return 0;
+}
 
 function option(argv: readonly string[], name: string): string | null {
   const at = argv.indexOf(name);
@@ -114,7 +152,7 @@ export function main(argv: readonly string[], mountinfo: () => string,
                      backing: Backing = loopBacking): number {
   const [command, given] = argv;
   if (given === undefined) {
-    throw new Error("usage: <mount|unmount|census|bundle> <work> [options]");
+    throw new Error("usage: <mount|unmount|census|bundle|stage> <work> [options]");
   }
   const work = resolve(given);
   if (command === "mount") {
@@ -154,11 +192,21 @@ export function main(argv: readonly string[], mountinfo: () => string,
 }
 
 if (process.argv[1] !== undefined && /import\.mjs$|cli\.ts$/.test(process.argv[1])) {
-  try {
-    process.exitCode = main(process.argv.slice(2),
-                            () => readFileSync("/proc/self/mountinfo", "utf8"));
-  } catch (error) {
+  const refuse = (error: unknown) => {
     process.stderr.write(`refused: ${(error as Error).message}\n`);
     process.exitCode = 2;
+  };
+  if (process.argv[2] === "stage") {
+    stageMain(process.argv.slice(2), process.env,
+              (line) => process.stdout.write(`${line}\n`)).then((code) => {
+      process.exitCode = code;
+    }, refuse);
+  } else {
+    try {
+      process.exitCode = main(process.argv.slice(2),
+                              () => readFileSync("/proc/self/mountinfo", "utf8"));
+    } catch (error) {
+      refuse(error);
+    }
   }
 }
