@@ -65,12 +65,16 @@ export type DoorClass = (typeof DOOR_CLASSES)[number];
  * - `reader`, `changes`: a file reader's account, or the sync agent's;
  * - `lease`: the owner itself (`action`), or the sync agent at its lease;
  * - `inbound`: an inbound event's route, at its binding's revision;
- * - `none`: no binding at all (the sandbox line's ring, and billed events).
+ * - `none`: no binding at all (the sandbox line's ring, and billed events): those two doors
+ *   alone (`UNBOUND_DOORS`), so every other door binds.
  */
 export const CALLER_KINDS = Object.freeze(["account", "visitors", "owner", "session",
   "reserved", "erasure", "egress", "runner", "run", "sync", "reader", "changes", "lease",
   "inbound", "none"] as const);
 export type CallerKind = (typeof CALLER_KINDS)[number];
+
+/** The doors that take no binding: the sandbox line's ring and E2B's billed events. */
+export const UNBOUND_DOORS: readonly string[] = Object.freeze(["sandboxBilled", "sandboxRung"]);
 
 /**
  * A check of the caller after its account: a run reads no mailbox (`no_mailbox`); a visitor
@@ -221,6 +225,9 @@ export function doorProblems(rows: unknown): string[] {
     if (row["caller"] === "none" ? row["class"] !== null : !one(DOOR_CLASSES, row["class"])) {
       say("no door class");
     }
+    if ((row["caller"] === "none") !== UNBOUND_DOORS.includes(row["door"] as string)) {
+      say("only the sandbox line's ring and billed events take no binding");
+    }
     if ((row["class"] === "admission") !== one(["reserved", "erasure"], row["caller"])) {
       say("only the platform's doors read no admission");
     }
@@ -271,13 +278,25 @@ export function doorProblems(rows: unknown): string[] {
   return problems;
 }
 
+/** `value` and everything in it frozen, so no module can change a row for the isolate. */
+function frozen<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    for (const each of Object.values(value)) {
+      frozen(each);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
 /**
  * The table: the tools first, in the order `tools/list` serves them, then every other door.
- * The data file as it is (the module keeps no state); `doorProblems` holds it whole, and so
- * does each row read by name.
+ * The data file as it is (the module keeps no state), frozen whole at its first read, so no
+ * module can change a row for the isolate; `doorProblems` holds it whole, and so does each
+ * row read by name.
  */
 export function doorTable(): readonly DoorRow[] {
-  return raw.doors as unknown as readonly DoorRow[];
+  return frozen(raw.doors as unknown as readonly DoorRow[]);
 }
 
 /** The row of the door named `name`, held whole; an unknown or broken one is a bug. */

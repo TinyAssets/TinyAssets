@@ -35,6 +35,11 @@ describe("the door table", () => {
     expect(doorProblems(raw.doors)).toEqual([]);
     expect(doorTable().length).toBe(raw.doors.length);
     expect(doorTable().length).toBeGreaterThan(100);
+    // Frozen whole: no module can change a row for the isolate.
+    const fileStat = doorRow("fileStat");
+    expect([Object.isFrozen(doorTable()), Object.isFrozen(fileStat),
+            Object.isFrozen(fileStat.tool), Object.isFrozen(fileStat.args)])
+      .toEqual([true, true, true, true]);
   });
 
   it.each([
@@ -63,6 +68,8 @@ describe("the door table", () => {
     ["a tool named twice", changed("fileUsage", { tool: { ...(row("fileStat")["tool"] as object) } })],
     ["a door named twice", [...raw.doors, row("fileStat")]],
     ["a key of no step", changed("fileStat", { owner: "alice" })],
+    ["a door that binds nothing", changed("keyList", { caller: "none", class: null })],
+    ["an unbound door that binds", changed("sandboxRung", { caller: "account", class: "work" })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);
   });

@@ -2258,13 +2258,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   #checked(row: DoorRow, binding: Binding, request: unknown, held: Bound, session: string):
       Call {
     const { account } = held;
-    this.#guard(row, binding, account);
     let r: Record<string, unknown>;
     let place: { universe: string | null; agent: string };
+    // A row that checks its fields first checks them before its guard too (a run's malformed
+    // mailbox read is `invalid`, as on main); every other row, its guard, scope, then fields.
     if (row.fieldsFirst === true) {
       r = this.#fields(row, request, account);
+      this.#guard(row, binding, account);
       place = this.#scoped(row, account, r);
     } else {
+      this.#guard(row, binding, account);
       place = this.#scoped(row, account, null);
       r = this.#fields(row, request, account);
     }
