@@ -10,10 +10,23 @@ import type { Binding, OwnerDO } from "../../owner/src/owner-do";
 import { doorRow, takesRequest } from "../../contract/src/doors";
 
 /**
+ * A door's name: one of the object's public methods but the runtime's own (`fetch`, `alarm`
+ * and the hibernating sockets'), which are exactly the door table's rows (the owner's
+ * door-methods guard), so a name written in code that is no door fails to compile.
+ */
+export type DoorName = Exclude<keyof OwnerDO & string, "fetch" | "alarm" | "webSocketMessage"
+  | "webSocketClose" | "webSocketError">;
+
+/** A tool's door, as its row names it: a row the table holds, checked as it is read. */
+export function toolDoor(tool: { readonly door: string }): DoorName {
+  return doorRow(tool.door).door as DoorName;
+}
+
+/**
  * Call the door named `door` on the bound object. The arguments go as the door's request,
  * which the object checks field by field; a door that takes none gets none.
  */
-export function callDoor(stub: DurableObjectStub<OwnerDO>, binding: Binding, door: string,
+export function callDoor(stub: DurableObjectStub<OwnerDO>, binding: Binding, door: DoorName,
                          request: unknown): Promise<unknown> {
   // An RPC stub's method is called as itself: `call` and `apply` would be RPC names.
   const method = (stub as unknown as Record<string, unknown>)[doorRow(door).door] as
