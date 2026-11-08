@@ -149,8 +149,8 @@ test, cutover.
   `tinyassets-mcp-proxy`), keeping a route record first, which mode `handback` puts back
   (§9 slice 6). Owed: the founder's run. The handles canary's set for the new door is the
   doors' own (`scripts/canary_handles.json`'s `new`, held to their tool table): the kit's
-  `routes` runs it (`scripts/cutover_handles_canary.py --side new`), and `handles-canary.yml`
-  runs either side by hand, read-only.
+  `routes` runs its unkeyed checks (`scripts/cutover_handles_canary.py --side new
+  --unkeyed`), and `handles-canary.yml` runs either side by hand, read-only.
 - [x] `/hooks/inbound`: the capability-URL and shared-app (Slack HMAC) shapes in the
   binder, the directory's `h:` and `i:` entries, the 1 MiB cap and the `control.inbound`
   gate, and a new owner door `inboundAccept` (config, revision, dedupe, owner-held
@@ -2390,9 +2390,14 @@ R, S, M and W.
      names the record's id, which is the run's.
   2. **`routes`.** The same run hands the doors' routes over.
   3. **Verify.** First the handback's plan job (`handback --record <id>`, read-only) shows
-     what a handback would change. Then the handles canary for the new side (the
-     `routes` run's own, or a dispatch of `handles-canary.yml` with `side` `new`; it needs
-     `TA_PROBE_KEY`, the probe owner's API key), and every imported owner's check.
+     what a handback would change. The `routes` run's own canary has run the new side's
+     unkeyed checks (`--side new --unkeyed`: the doors answer `/mcp` and its resource
+     document), and owes the handle set. So, in this order:
+     - open the control record for the probe owner, as a canary owner;
+     - create the probe owner (tester B) through the doors, mint its API key in the owner
+       app, and store it as the `production` secret `TA_PROBE_KEY`;
+     - dispatch `handles-canary.yml` with `side` `new`, verify's handle-set check;
+     - then every imported owner's check.
   4. **The handback, if verify fails,** at any point before the hold ends, in this order:
      - `handback --record <id>`. Before any change, it holds the zone to the record and
        stops, naming any route changed since `routes`. Then it disables the lifecycle webhook

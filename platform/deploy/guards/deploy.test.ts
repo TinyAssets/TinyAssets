@@ -747,7 +747,8 @@ describe("a routes run", () => {
                      "cf PUT /zones/z/workers/routes/r1", "cf POST /zones/z/workers/routes",
                      "cf DELETE /zones/z/workers/routes/r4", "wrangler triggers deploy",
                      "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Changed:",
-                     "python3 cutover_handles_canary.py --side new", "log H2's probes wait"]);
+                     "python3 cutover_handles_canary.py --side new --unkeyed",
+                     "log H2's probes wait"]);
     // The routes are read once, before any change; the doors' last version is deployed before
     // a route moves; the hook is enabled only after the last route and the custom domain.
     expect(w.events.filter((event) => event === "cf GET /zones/z/workers/routes")).toHaveLength(1);

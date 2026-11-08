@@ -239,30 +239,8 @@ It never counts as "absent".
   It then adds the egress custom domain (`egress` in `identity.json`; `wrangler triggers
   deploy`),
   enables E2B's lifecycle webhook now that the doors serve its path, and runs the handles
-  canary for the new side (`--side new`, below). Every connector then signs in again once.
-
-- **The handles canary across the cutover** (Fact 11): the workflow **Handles canary
-  (manual, read-only)** (`handles-canary.yml`), dispatched with `side`. It changes nothing.
-  Each side's handle set is data (`scripts/canary_handles.json`); the doors' is held to
-  their tool table by a guard.
-  - **Which side answers.** It reads which side serves `tinyassets.io/mcp` from the public
-    resource document: AuthKit for the old stack, `https://tinyassets.io` for the doors.
-    `auto` holds that side. `old` or `new` holds the side asked for, and fails if the other
-    one answers.
-  - **The old side** is the old stack's own check, `mcp_public_canary.py
-    --assert-handles`, with `TINYASSETS_WIKI_CANARY_TOKEN`.
-  - **The new side** checks three things:
-    - an anonymous `initialize` is challenged, naming the doors' resource document;
-    - that document names the doors' issuer;
-    - the doors' handle set, one read-only `GET /api/tools/<name>` a name with
-      `TA_PROBE_KEY`, the probe owner's API key: each doors tool is served (`405`), and each
-      old-only handle is not (`404`).
-
-    Without `TA_PROBE_KEY` it fails, since an unchecked set is not a pass. The probe owner's
-    key is H2's too. The control record must admit the probe owner (a canary owner), or
-    the doors refuse it (`503`), and the run says so.
-  - **When:** after `routes`, side `new` (the `routes` apply job runs it too); after
-    `handback` and the old stack's restart, side `old`.
+  canary's unkeyed checks for the new side (`--side new --unkeyed`, below). Every
+  connector then signs in again once.
 
   Before any change, `routes` keeps a **route record** in `tinyassets-control`. It holds
   the before-state of everything `routes` changes that `dark` does not:
@@ -321,6 +299,41 @@ It never counts as "absent".
 
   It leaves what `dark` made: storage, secrets, the Workers, the control record and the
   WorkOS redirect URI. They serve no one without the routes, the domain and the hook.
+- **The handles canary across the cutover** (Fact 11): the workflow **Handles canary
+  (manual, read-only)** (`handles-canary.yml`), dispatched with `side`. It changes nothing.
+  Each side's handle set is data (`scripts/canary_handles.json`): the doors' is held to
+  their tool table by a guard, and the old stack's to its own canary's list.
+  - **Which side answers.** It reads the side twice: `/mcp`'s own anonymous answer (the old
+    daemon's 401 carries a body, the doors' none) and the public resource document's
+    authorization server (AuthKit, or `https://tinyassets.io`). If they disagree, a
+    `routes` or `handback` stopped partway: it says so (exit 10). Run that again to the end
+    first. `auto` holds the side both name. `old` or `new` holds the side asked for, and
+    fails if the other answers.
+  - **The old side** is the old stack's own check, `mcp_public_canary.py
+    --assert-handles`, with `TINYASSETS_WIKI_CANARY_TOKEN`.
+  - **The new side** checks three things:
+    - an anonymous `initialize` is challenged, naming the doors' resource document;
+    - that document names the doors' issuer;
+    - the doors' handle set, one read-only `GET /api/tools/<name>` a name with
+      `TA_PROBE_KEY`, the probe owner's API key: each doors tool is served (`405`), and each
+      old-only handle is not (`404`).
+
+    Without `TA_PROBE_KEY` it fails, since an unchecked set is not a pass. A closed gate
+    (`503`) is named too. The set assumes the probe owner keeps the default policy (every
+    tool, and code mode on): a narrowed one reads as drift.
+  - **After `routes`, side `new`, in this order:**
+    1. **The `routes` run's own canary.** It runs the new side's unkeyed checks alone
+       (`--side new --unkeyed`): the doors answer `/mcp` and its document, and the old
+       stack doesn't. It says the handle set is owed. It can't check the set itself: no
+       probe owner's key exists until the doors serve `/app/api`, and the dark control
+       record admits no one.
+    2. **Open the control record for the probe owner**, as a canary owner (`ordinary:
+       "canary"`, its id in `canary`).
+    3. **Create the probe owner** (tester B, signing in through the doors), then mint its
+       API key in the owner app and store it as the `production` secret `TA_PROBE_KEY`.
+       H2's probes use it too.
+    4. **Dispatch Handles canary with `side` `new`.** That is verify's handle-set check.
+  - **After `handback` and the old stack's restart, side `old`.**
 - **Optional: a WAF rate-limiting rule of your own.** The platform sets no number on any
   caller. If you ever want a per-IP backstop at the edge, make one zone rule in the
   dashboard (Free allows one, Pro two), with your own number. It is your setting, recorded

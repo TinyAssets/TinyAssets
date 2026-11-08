@@ -16,7 +16,8 @@ import { FAKE_UPSTREAM } from "./fake-upstream";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar,
   legacyPost, legacyTool, NAVIGATE, OPEN, pkce, refresh, registerClient,
-  serveFirstPartyDocument, setControl, signInApp, sqlIn, type ToolResult, upstreamReturns, url,
+  serveFirstPartyDocument, setControl, signInApp, sqlIn, TIERS, type ToolResult, upstreamReturns,
+  url,
 } from "./support";
 
 function owner(): string {
@@ -57,6 +58,25 @@ describe("authorization server metadata", () => {
       "resource_metadata=\"https://tinyassets.io/.well-known/oauth-protected-resource/mcp\"");
     // A Bearer challenge, as the handles canary's new side holds it.
     expect(challenge.headers.get("WWW-Authenticate")).toMatch(/^Bearer /);
+  });
+
+  it("challenges an anonymous /mcp with no body, and serves its document, behind a closed " +
+     "control record", async () => {
+    // scripts/cutover_handles_canary.py tells the sides apart by this empty body (the old
+    // daemon's carries `authentication_required`), and the deploy kit's routes runs it
+    // while the dark control record admits no one.
+    await setControl({ outside: "off", ordinary: "canary", canary: [], inbound: false,
+                       tiers: TIERS });
+    const challenge = await call(new Request(url("/mcp"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) }));
+    expect(challenge.status).toBe(401);
+    expect(await challenge.text()).toBe("");
+    expect(challenge.headers.get("WWW-Authenticate")).toContain(
+      "resource_metadata=\"https://tinyassets.io/.well-known/oauth-protected-resource/mcp\"");
+    const meta = await call(new Request(url("/.well-known/oauth-protected-resource/mcp")));
+    expect(await meta.json()).toMatchObject({ resource: MCP_RESOURCE,
+                                              authorization_servers: ["https://tinyassets.io"] });
   });
 });
 

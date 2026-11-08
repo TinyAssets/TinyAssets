@@ -1334,14 +1334,17 @@ function reported(unchanged: string): Step {
 /**
  * Fact 11: after a deploy or a route change, the handles canary across the cutover
  * (`scripts/cutover_handles_canary.py`, each side's handle set its data), reading its own
- * keys: `auto` holds whichever side serves `/mcp` (the old stack's before `routes`, the
- * doors' after); `new` holds the doors', and fails if the old stack still answers, which
- * `routes` asks for.
+ * keys. `auto` holds whichever side serves `/mcp` (the old stack's before `routes`, the
+ * doors' after). `routes` asks for `new --unkeyed`: the doors must answer `/mcp` and its
+ * resource document, and the old stack must not, while their handle set is owed after
+ * verify, since no probe owner's key can be minted before the doors serve `/app/api`, and
+ * the dark control record admits no one.
  */
-function canary(side: "auto" | "new"): Step {
+function canary(side: "auto" | "new --unkeyed"): Step {
   return step("canary", (run) => {
     const ran = run.io.spawn("python3", [join(REPO, "scripts", "cutover_handles_canary.py"),
-                                         "--side", side], { stdio: "inherit", cwd: REPO });
+                                         "--side", ...side.split(" ")],
+                             { stdio: "inherit", cwd: REPO });
     if (ran.status !== 0) {
       throw new Error(`the handles canary (side ${side}) failed (exit ${ran.status})`);
     }
@@ -1701,7 +1704,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   routes: {
     steps: [...READS, routePlan, recorded, redirect, authorize, ...STORAGE, ...DEPLOY, handOver,
             customDomain, hook(true, ", after the routes"), reported("\nNothing was changed."),
-            canary("new"), h2Next],
+            canary("new --unkeyed"), h2Next],
     plans: true, applies: true, options: true,
   },
   h2: { steps: [h2], plans: false, applies: true, options: true },

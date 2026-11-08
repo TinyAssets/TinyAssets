@@ -1,7 +1,7 @@
 {
   "about": "The handle set each side of the cutover serves on tinyassets.io/mcp, and the authorization server its protected-resource document names, by which scripts/cutover_handles_canary.py tells the sides apart. Fact 11's handles canary holds whichever side it is asked for.",
   "old": {
-    "why": "The old stack's live surface (PR-178 and the 2026-07-24 canonical convergence), as recorded: scripts/mcp_public_canary.py --assert-handles holds tools/list to exactly these. It leaves with the old stack.",
+    "why": "The old stack's live surface (PR-178 and the 2026-07-24 canonical convergence), as recorded: scripts/mcp_public_canary.py --assert-handles holds tools/list to exactly its own literal CANONICAL_HANDLES, which tests/test_cutover_handles_canary.py holds this list to. It leaves with the old stack.",
     "authorization_server": "https://unassuming-environment-16.authkit.app",
     "handles": [
       "read_graph", "write_graph", "run_graph", "read_page", "write_page", "converse",

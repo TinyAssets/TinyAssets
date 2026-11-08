@@ -36,6 +36,10 @@ NEW = set(RECORD["new"]["handles"])
 
 
 def test_the_old_side_is_the_old_canarys_own_record():
+    # Two sources: the old canary's own literal (it never reads the JSON, since the daemon
+    # image ships that script alone) and the JSON, so dropping a handle from either fails.
+    assert "canary_handles.json" not in (_REPO / "scripts" / "mcp_public_canary.py").read_text(
+        encoding="utf-8")
     assert public.CANONICAL_HANDLES == frozenset(OLD)
     assert [RECORD["old"]["authorization_server"]] == list(public.EXPECTED_AUTHORIZATION_SERVERS)
     assert RECORD["new"]["authorization_server"] == "https://tinyassets.io"
@@ -43,20 +47,28 @@ def test_the_old_side_is_the_old_canarys_own_record():
     assert len(NEW) == len(RECORD["new"]["handles"])
 
 
-class Doors:
-    """A fake of whichever side answers: its resource document, its challenge and its API."""
+#: Each side's anonymous 401 body: the old daemon's, and the doors' empty one.
+BODIES = {"old": json.dumps({"error": "authentication_required",
+                             "error_description": "Sign in to use TinyAssets."}).encode(),
+          "new": b""}
 
-    def __init__(self, monkeypatch, side="new", served=NEW, refuse=None):
+
+class Doors:
+    """A fake of whichever side answers: its resource document, its challenge and its API.
+    ``answers`` is the side ``/mcp`` itself answers as, the document's by default."""
+
+    def __init__(self, monkeypatch, side="new", served=NEW, refuse=None, answers=None):
         self.gets: list[tuple[str, str]] = []
         server = RECORD[side]["authorization_server"]
         document = {"resource": URL, "authorization_servers": [server]}
         monkeypatch.setattr(public, "_get_json", lambda url, timeout: (
             document if url == METADATA else pytest.fail(f"unexpected document {url}")))
+        body = BODIES[answers or side]
 
         def post(url, payload, timeout, session_id=None, accepted_http_statuses=frozenset(),
                  bearer=None):
             assert bearer is None and payload["method"] == "initialize"
-            return 401, {"www-authenticate": f'Bearer resource_metadata="{METADATA}"'}, b"{}"
+            return 401, {"www-authenticate": f'Bearer resource_metadata="{METADATA}"'}, body
 
         monkeypatch.setattr(public, "_post", post)
 
@@ -77,6 +89,7 @@ def test_auto_takes_the_side_the_resource_document_names(monkeypatch):
 
 
 def test_neither_sides_server_stops_it(monkeypatch, capsys):
+    Doors(monkeypatch)
     monkeypatch.setattr(public, "_get_json", lambda url, timeout: {
         "resource": URL, "authorization_servers": ["https://elsewhere.test"]})
     assert canary.run("auto", URL, 1.0, False) == 9
@@ -128,9 +141,41 @@ def test_the_new_side_needs_the_doors_challenge(monkeypatch, capsys):
     monkeypatch.setenv(canary.PROBE_KEY_ENV, KEY)
     Doors(monkeypatch)
     monkeypatch.setattr(public, "_post", lambda *a, **k: (401, {
-        "www-authenticate": 'Bearer resource_metadata="https://elsewhere.test/x"'}, b"{}"))
+        "www-authenticate": 'Bearer resource_metadata="https://elsewhere.test/x"'}, b""))
     assert canary.run("new", URL, 1.0, False) == 6
     assert "did not challenge" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("answers, document", [("new", "old"), ("old", "new")])
+def test_a_split_mid_handover_is_its_own_failure(monkeypatch, capsys, answers, document):
+    # /mcp moved, its resource document not yet (or the reverse, a handback partway).
+    Doors(monkeypatch, side=document, answers=answers)
+    for side in ("auto", "old", "new"):
+        assert canary.run(side, URL, 1.0, False) == 10
+    assert (f"split: {URL} answers as the {answers} side, but the resource document is the "
+            f"{document} side's") in capsys.readouterr().err
+
+
+def test_an_anonymous_401_neither_side_sends_stops_it(monkeypatch, capsys):
+    Doors(monkeypatch)
+    monkeypatch.setattr(public, "_post", lambda *a, **k: (401, {}, b'{"error": "other"}'))
+    assert canary.run("auto", URL, 1.0, False) == 9
+    assert "anonymous 401 is neither side's" in capsys.readouterr().err
+
+
+def test_unkeyed_routes_passes_with_no_key_and_a_closed_record(monkeypatch, capsys):
+    # What the deploy kit's routes runs: no probe key can exist yet, and the dark control
+    # record refuses every /api call (503), so only the unkeyed checks run, and pass.
+    monkeypatch.delenv(canary.PROBE_KEY_ENV, raising=False)
+    doors = Doors(monkeypatch, refuse=503)
+    assert canary.main(["--side", "new", "--unkeyed"]) == 0
+    assert doors.gets == []
+    assert "Its handle set is owed after verify" in capsys.readouterr().out
+    # It still holds the side and the challenge: the old stack answering fails it.
+    Doors(monkeypatch, side="old")
+    assert canary.main(["--side", "new", "--unkeyed"]) == 8
+    with pytest.raises(SystemExit):
+        canary.main(["--side", "old", "--unkeyed"])
 
 
 def test_an_explicit_side_must_be_the_one_serving(monkeypatch, capsys):

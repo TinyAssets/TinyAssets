@@ -1,6 +1,7 @@
 """The handles canary across the cutover (Fact 11): which side serves ``/mcp``, and its handles.
 
-    python scripts/cutover_handles_canary.py --side auto|old|new [--url URL] [--verbose]
+    python scripts/cutover_handles_canary.py --side auto|old|new [--unkeyed] [--url URL]
+        [--verbose]
 
 Each side's handle set is data (``canary_handles.json``):
 
@@ -23,16 +24,24 @@ Each side's handle set is data (``canary_handles.json``):
      ``405``, and every old-only handle and an unknown name ``404``.
 
   With no ``TA_PROBE_KEY`` the handle set is unchecked, and the run fails (exit 7):
-  a skip is not a pass.
+  a skip is not a pass. ``--unkeyed`` runs checks 1 and 2 alone and says the handle set
+  is owed: the deploy kit's ``routes`` asks for it, since no probe owner's key can be
+  minted until the doors serve ``/app/api``, and the dark control record admits no one.
 
-``auto`` takes the side whose authorization server the public resource document names;
-an explicit side must be the one that answers (exit 8 otherwise). Nothing is ever
-changed, and no credential is printed.
+The side is read twice, read-only: ``/mcp``'s own anonymous answer (the old daemon's 401
+carries its ``authentication_required`` body; the doors' carries none) and the
+authorization server the public resource document names. Both must agree: a ``routes``
+or a handback stopped partway leaves ``/mcp`` with one side and the document with the
+other, which is its own failure (exit 10), never read as either side. ``auto`` takes the
+side both name; an explicit side must be it (exit 8 otherwise). Nothing is ever changed,
+and no credential is printed.
 
 Exit codes: 0 healthy; 2 unreachable; 4 handle drift; 6 an authentication boundary or a
 gate refused the probe; 7 the new side's handle set unchecked (no ``TA_PROBE_KEY``); 8
-the side asked for is not the one serving; 9 neither side's authorization server is
-named. The old side keeps ``mcp_public_canary.py``'s own codes.
+the side asked for is not the one serving; 9 neither side's answer or authorization
+server is recognized (a drifted resource document is 9 here, where ``mcp_public_canary.py
+--assert-handles`` alone exits 6); 10 a split: ``/mcp`` and the resource document answer
+as different sides. The old side keeps ``mcp_public_canary.py``'s own codes.
 """
 
 from __future__ import annotations
@@ -78,7 +87,7 @@ def resource_document(url: str, timeout: float) -> dict[str, Any]:
     return public._get_json(advertised, timeout)
 
 
-def serving_side(url: str, timeout: float) -> str:
+def document_side(url: str, timeout: float) -> str:
     """The side whose authorization server the public resource document names."""
     servers = resource_document(url, timeout).get("authorization_servers")
     record = handles()
@@ -87,6 +96,36 @@ def serving_side(url: str, timeout: float) -> str:
             return side
     raise CanaryError(9, f"{url}'s resource document names {servers!r}, neither side's "
                          "authorization server")
+
+
+def mcp_side(url: str, timeout: float) -> str:
+    """The side ``/mcp`` itself answers as, anonymously: the old daemon's 401 carries its
+    ``authentication_required`` body, the doors' 401 none."""
+    status, _headers, body = public._post(url, public._INIT_PAYLOAD, timeout,
+                                          accepted_http_statuses=frozenset({401}),
+                                          bearer=None)
+    if status != 401:
+        raise CanaryError(9, f"{url} answered an anonymous initialize with HTTP {status}, "
+                             "neither side's 401")
+    if not body.strip():
+        return "new"
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    if public._anonymous_challenge_body(payload):
+        return "old"
+    raise CanaryError(9, f"{url}'s anonymous 401 is neither side's")
+
+
+def serving_side(url: str, timeout: float) -> str:
+    """The side serving ``url``: ``/mcp``'s own answer and the resource document agreeing."""
+    answers, document = mcp_side(url, timeout), document_side(url, timeout)
+    if answers != document:
+        raise CanaryError(10, f"split: {url} answers as the {answers} side, but the resource "
+                              f"document is the {document} side's. A routes or handback run "
+                              "stopped partway: run it again to the end, then the canary")
+    return answers
 
 
 def _get_status(url: str, key: str, timeout: float) -> int:
@@ -150,8 +189,9 @@ def assert_new_handles(url: str, key: str, timeout: float) -> None:
         raise CanaryError(4, f"handle drift on {_origin(url)}: missing={missing} extra={extra}")
 
 
-def run(side: str, url: str, timeout: float, verbose: bool) -> int:
-    """The canary for ``side`` (``auto``: the one serving). Its exit code."""
+def run(side: str, url: str, timeout: float, verbose: bool, unkeyed: bool = False) -> int:
+    """The canary for ``side`` (``auto``: the one serving). Its exit code. ``unkeyed``: the
+    new side's unkeyed checks alone, its handle set owed."""
     try:
         serving = serving_side(url, timeout)
         if side != "auto" and side != serving:
@@ -165,6 +205,12 @@ def run(side: str, url: str, timeout: float, verbose: bool) -> int:
             except SystemExit as exit_:
                 return exit_.code if isinstance(exit_.code, int) else 1
         assert_new_challenge(url, timeout)
+        if unkeyed:
+            print("[handles-canary] the new side serves: anonymous initialize challenged, the "
+                  "doors' resource document. Its handle set is owed after verify: dispatch "
+                  "handles-canary.yml with side new once the probe owner's key is stored as "
+                  f"{PROBE_KEY_ENV} and the control record admits that owner.")
+            return 0
         key = os.environ.get(PROBE_KEY_ENV, "").strip()
         if not key:
             raise CanaryError(7, f"the new side's handle set is unchecked: {PROBE_KEY_ENV} (a "
@@ -184,11 +230,15 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="The handles canary across the cutover.")
     parser.add_argument("--side", choices=("auto", *SIDES), default="auto",
                         help="the side to hold; auto: the one the resource document names")
+    parser.add_argument("--unkeyed", action="store_true",
+                        help="the new side's unkeyed checks alone, its handle set owed")
     parser.add_argument("--url", default=public.DEFAULT_URL)
     parser.add_argument("--timeout", type=float, default=public.DEFAULT_TIMEOUT)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
-    return run(args.side, args.url, args.timeout, args.verbose)
+    if args.unkeyed and args.side != "new":
+        parser.error("--unkeyed is the new side's")
+    return run(args.side, args.url, args.timeout, args.verbose, args.unkeyed)
 
 
 if __name__ == "__main__":
