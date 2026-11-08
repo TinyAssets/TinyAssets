@@ -1,0 +1,272 @@
+/**
+ * The import job's side of the queue (`import_research.md` §3, slice 4): each owner's bundle
+ * (`bundle.ts`) uploaded to the staging bucket over R2's S3 API, then one message for each
+ * owner, MAC'd under the window's `IMPORT_KEY` (`contract/src/import-message.ts`), put on the
+ * import queue over the Queues HTTP API, for the doors' consumer (`doors/src/import.ts`). A
+ * dry run reads and checks every bundle the same way and prints what it would send, sending
+ * nothing and needing no credential. Deleted at the cutover with the rest of the job.
+ *
+ * - The bundles are the out folder's (`<out>/<key>/`), each checked whole before anything is
+ *   sent: its index (`bundle.json`) names every part by its SHA-256, each part is there with
+ *   its bytes, its key is its folder's, and nothing else is in it. A bundle that fails stops
+ *   the run before any upload.
+ * - Each goes to `<run>/<key>/` in the bucket, its index last, then its message; a run sent
+ *   again puts the same bytes at the same names and the same message, which the consumer
+ *   takes idempotently, so a job killed anywhere is run again whole.
+ * - The credentials are the run's inputs (`Inputs`), as the operator hands them for the
+ *   window (the R2 token's access key pair, the API token, the account, the key), never read
+ *   from a file here; nothing prints them, nor any owner's name or key: the run prints counts
+ *   and each bundle's ordinal alone (the job's output discipline, `cli.ts`).
+ */
+import { createHash, createHmac } from "node:crypto";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { HEX16 } from "../contract/src/ids";
+import { IMPORT_QUEUE, importMac, type ImportMessage, RUN } from "../contract/src/import-message";
+
+import { FORMAT } from "./bundle";
+
+/** The staging bucket, as the doors bind it (`IMPORT_STAGING`). */
+export const STAGING_BUCKET = "tinyassets-import-staging";
+/** Cloudflare's API, and R2's S3 endpoint for an account. */
+const API = "https://api.cloudflare.com/client/v4";
+const r2Host = (account: string) => `${account}.r2.cloudflarestorage.com`;
+const ACCOUNT = /^[0-9a-f]{32}$/;
+/** A part's name in a bundle (`bundle.ts`). */
+const PART = /^(?:bundle\.json|owner\.json|(?:manifest|rows)\/(?:0|[1-9][0-9]{0,8})\.json|inline\/[0-9a-f]{64}|chunks\/[0-9a-f]{64})$/;
+
+/** The window's credentials, as the operator hands them to the run. */
+export interface Inputs {
+  /** The Cloudflare account, 32 hex. */
+  readonly account: string;
+  /** An R2 API token's S3 access key pair, with write to the staging bucket. */
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  /** An API token that may send to the account's queues. */
+  readonly apiToken: string;
+  /** The window's `IMPORT_KEY`, the doors' Worker secret. */
+  readonly importKey: string;
+}
+
+/** How the job reaches the network: `fetch` (`NETWORK`), or a test's fake. */
+export type Fetcher = (request: Request) => Promise<Response>;
+export const NETWORK: Fetcher = (request) => fetch(request);
+
+/** One bundle, checked: its folder, key, owner, digest and parts, the index last. */
+export interface Staged {
+  readonly dir: string;
+  readonly key: string;
+  readonly owner: string;
+  readonly bundle: string;
+  readonly parts: readonly string[];
+  readonly bytes: number;
+}
+
+/** What a run sent, or would send: counts alone. */
+export interface StageSummary {
+  readonly dry_run: boolean;
+  readonly bundles: number;
+  readonly objects: number;
+  readonly bytes: number;
+  readonly messages: number;
+}
+
+const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
+const plain = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Every file under `dir`, as names relative to it; a link or anything but a file refused. */
+function filesIn(dir: string, at = ""): string[] {
+  return readdirSync(join(dir, at)).sort().flatMap((name) => {
+    const rel = at === "" ? name : `${at}/${name}`;
+    const stat = lstatSync(join(dir, rel));
+    if (stat.isDirectory()) {
+      return filesIn(dir, rel);
+    }
+    if (!stat.isFile()) {
+      throw new Error("a bundle holds a link or a special file: refused");
+    }
+    return [rel];
+  });
+}
+
+/** The bundle at `dir`, checked whole: refused loudly unless it is exactly what its index names. */
+export function checkedBundle(dir: string, key: string): Staged {
+  if (!HEX16.test(key)) {
+    throw new Error("a bundle's folder is its owner's key (16 hex)");
+  }
+  const files = filesIn(dir);
+  const index = readFileSync(join(dir, "bundle.json"));
+  const parsed: unknown = JSON.parse(index.toString("utf8"));
+  if (!plain(parsed) || parsed["format"] !== FORMAT || parsed["key"] !== key
+      || typeof parsed["owner"] !== "string" || !plain(parsed["parts"])) {
+    throw new Error("a bundle's index is out of shape, or not its folder's");
+  }
+  const parts = parsed["parts"] as Record<string, unknown>;
+  let bytes = index.byteLength;
+  for (const [name, want] of Object.entries(parts)) {
+    if (!PART.test(name) || typeof want !== "string" || name === "bundle.json"
+        || sha256(readFileSync(join(dir, name))) !== want) {
+      throw new Error("a bundle's part is missing, or not what its index names");
+    }
+  }
+  for (const name of files) {
+    if (!PART.test(name)) {
+      throw new Error("a bundle holds a file no bundle has");
+    }
+    const content = readFileSync(join(dir, name));
+    if (name.startsWith("chunks/") && sha256(content) !== name.slice("chunks/".length)) {
+      throw new Error("a bundle's chunk is not its hash");
+    }
+    if (name !== "bundle.json") {
+      bytes += content.byteLength;
+    }
+  }
+  return { dir, key, owner: parsed["owner"], bundle: sha256(index),
+           parts: [...files.filter((name) => name !== "bundle.json"), "bundle.json"], bytes };
+}
+
+/** Every bundle in the out folder, each checked whole, before anything is sent. */
+export function bundlesIn(out: string): Staged[] {
+  return readdirSync(out).sort().map((key) => checkedBundle(join(out, key), key));
+}
+
+/** RFC 3986's encoding of one path segment, as S3's canonical URI takes it. */
+function segment(text: string): string {
+  return encodeURIComponent(text).replace(/[!'()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+const hmac = (key: string | Buffer, data: string) => createHmac("sha256", key).update(data).digest();
+
+/**
+ * AWS Signature Version 4 over a request's method, path, query, headers (each lowercased and
+ * trimmed, every one signed) and payload hash: its `Authorization` header (R2's S3 API takes
+ * it with region `auto`). `amzDate` is the request's `x-amz-date`.
+ */
+export function sigV4(request: { method: string; path: string; query: string;
+                                 headers: Readonly<Record<string, string>>; payload: string;
+                                 region: string; service: string; amzDate: string;
+                                 accessKeyId: string; secretAccessKey: string }): string {
+  const names = Object.keys(request.headers).map((name) => name.toLowerCase()).sort();
+  const value = (name: string) => Object.entries(request.headers)
+    .find(([each]) => each.toLowerCase() === name)![1].trim().replace(/\s+/g, " ");
+  const signed = names.join(";");
+  const canonical = [request.method, request.path, request.query,
+                     ...names.map((name) => `${name}:${value(name)}`), "", signed,
+                     request.payload].join("\n");
+  const day = request.amzDate.slice(0, 8);
+  const scope = `${day}/${request.region}/${request.service}/aws4_request`;
+  const toSign = ["AWS4-HMAC-SHA256", request.amzDate, scope, sha256(canonical)].join("\n");
+  let key = hmac(`AWS4${request.secretAccessKey}`, day);
+  for (const part of [request.region, request.service, "aws4_request"]) {
+    key = hmac(key, part);
+  }
+  return `AWS4-HMAC-SHA256 Credential=${request.accessKeyId}/${scope}, ` +
+    `SignedHeaders=${signed}, Signature=${createHmac("sha256", key).update(toSign).digest("hex")}`;
+}
+
+/** An object's PUT to the staging bucket over R2's S3 API, signed (SigV4) at `now`. */
+export function putObject(inputs: Inputs, name: string, body: Uint8Array, now: Date): Request {
+  const host = r2Host(inputs.account);
+  const path = `/${STAGING_BUCKET}/${name.split("/").map(segment).join("/")}`;
+  const amzDate = now.toISOString().replace(/[-:]/g, "").replace(/\.[0-9]{3}/, "");
+  const payload = sha256(body);
+  const headers = { host, "x-amz-content-sha256": payload, "x-amz-date": amzDate };
+  const authorization = sigV4({ method: "PUT", path, query: "", headers, payload,
+                                region: "auto", service: "s3", amzDate,
+                                accessKeyId: inputs.accessKeyId,
+                                secretAccessKey: inputs.secretAccessKey });
+  const { host: _host, ...sent } = headers;
+  return new Request(`https://${host}${path}`, { method: "PUT", body,
+    headers: { ...sent, authorization, "content-type": "application/octet-stream" } });
+}
+
+/** The import queue's id in the account, by its name, from the Queues API's listing. */
+export async function queueId(inputs: Inputs, fetcher: Fetcher): Promise<string> {
+  const answer = await fetcher(new Request(
+    `${API}/accounts/${inputs.account}/queues?per_page=100`,
+    { headers: { authorization: `Bearer ${inputs.apiToken}` } }));
+  const body = await answer.json() as { success?: boolean;
+                                        result?: { queue_id?: string; queue_name?: string }[] };
+  const found = answer.ok && body.success === true
+    ? (body.result ?? []).filter((queue) => queue.queue_name === IMPORT_QUEUE) : [];
+  if (found.length !== 1 || typeof found[0]!.queue_id !== "string") {
+    throw new Error(`the account lists no queue ${IMPORT_QUEUE} (${answer.status}): ` +
+                    "nothing is sent; run the deploy kit's dark mode first");
+  }
+  return found[0]!.queue_id;
+}
+
+/** One message's push onto the queue over the Queues HTTP API, as JSON. */
+export function pushMessage(inputs: Inputs, queue: string, message: ImportMessage): Request {
+  return new Request(`${API}/accounts/${inputs.account}/queues/${queue}/messages`, {
+    method: "POST", body: JSON.stringify({ body: message, content_type: "json" }),
+    headers: { authorization: `Bearer ${inputs.apiToken}`, "content-type": "application/json" } });
+}
+
+/** A bundle's message, MAC'd under the window's key. */
+export function messageOf(staged: Staged, run: string, importKey: string): ImportMessage {
+  return { owner: staged.owner, bundle: staged.bundle, prefix: `${run}/${staged.key}`,
+           mac: importMac(importKey, staged.owner, staged.bundle) };
+}
+
+/** What a run would send, a line a bundle by its ordinal, then the totals: no name, no key. */
+export function plannedLines(bundles: readonly Staged[], run: string): string[] {
+  return [
+    ...bundles.map((staged, n) => `bundle ${n + 1} of ${bundles.length}: ${staged.parts.length} ` +
+      `objects, ${staged.bytes} bytes to ${STAGING_BUCKET}/${run}/<key>/, its index last; ` +
+      `then 1 message to ${IMPORT_QUEUE}`),
+    `in all: ${bundles.reduce((sum, staged) => sum + staged.parts.length, 0)} objects, ` +
+    `${bundles.reduce((sum, staged) => sum + staged.bytes, 0)} bytes, ${bundles.length} messages`,
+  ];
+}
+
+/**
+ * The run: every bundle in `out` checked whole, then (unless `inputs` is null, a dry run)
+ * each uploaded under `<run>/<key>/`, its index last, then its message sent; refused loudly at
+ * the first answer that is not a success, with nothing more sent.
+ */
+export async function stage(out: string, run: string, inputs: Inputs | null, fetcher: Fetcher,
+                            print: (line: string) => void, now: () => Date = () => new Date()):
+    Promise<StageSummary> {
+  if (!RUN.test(run)) {
+    throw new Error("a run's id is lowercase letters, digits and dashes, at most 64");
+  }
+  const bundles = bundlesIn(out);
+  const totals = { bundles: bundles.length, objects: 0, bytes: 0, messages: 0 };
+  for (const staged of bundles) {
+    totals.objects += staged.parts.length;
+    totals.bytes += staged.bytes;
+    totals.messages += 1;
+  }
+  if (inputs === null) {
+    plannedLines(bundles, run).forEach((line) => print(line));
+    return { dry_run: true, ...totals };
+  }
+  if (!ACCOUNT.test(inputs.account)) {
+    throw new Error("the account is 32 hex");
+  }
+  const queue = await queueId(inputs, fetcher);
+  for (const [n, staged] of bundles.entries()) {
+    for (const name of staged.parts) {
+      const answer = await fetcher(putObject(inputs, `${run}/${staged.key}/${name}`,
+                                             readFileSync(join(staged.dir, name)), now()));
+      if (!answer.ok) {
+        throw new Error(`bundle ${n + 1}'s upload was refused (${answer.status}): ` +
+                        "nothing more is sent");
+      }
+    }
+    const answer = await fetcher(pushMessage(inputs, queue, messageOf(staged, run,
+                                                                      inputs.importKey)));
+    const body = await answer.json().catch(() => null) as { success?: boolean } | null;
+    if (!answer.ok || body?.success !== true) {
+      throw new Error(`bundle ${n + 1}'s message was refused (${answer.status}): ` +
+                      "nothing more is sent");
+    }
+    print(`bundle ${n + 1} of ${bundles.length}: ${staged.parts.length} objects uploaded, ` +
+          "its message sent");
+  }
+  return { dry_run: false, ...totals };
+}

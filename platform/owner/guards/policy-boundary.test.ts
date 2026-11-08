@@ -25,7 +25,8 @@
  * object hands them (`OwnerState`), so the import lists alone no longer hold who widens
  * (untangle A2, review F3). A widening member of the state (`WIDENS`) is named only inside
  * a door's handler (`<module>Doors`) whose row's caller is one the member allows: the
- * owner's session, or the platform's reserved line. Every other member of those stores the
+ * owner's session, or the platform's reserved line (its import line, for the cutover's
+ * import of the owner's old policy). Every other member of those stores the
  * state's holders name is a read, a narrowing or a proposal (`OTHERS`), and a new one fails
  * until it is put in one list or the other. So that every reach of the state is one of
  * these namings, the state is used only as `o.<member>` (the launcher's `this.#o.<member>`)
@@ -109,6 +110,9 @@ const WIDENS: Readonly<Record<string, readonly CallerKind[]>> = Object.freeze({
   "sessions.open": OWNED,
   "sessions.extend": OWNED,
   setTier: Object.freeze(["reserved"] as const),
+  // The cutover's import of the owner's old policy: the platform's import doors alone, while
+  // the owner is pending (`import.ts`), deleted with them.
+  "policy.imported": Object.freeze(["import"] as const),
 });
 /**
  * The rest the state's holders name: reads; narrowings (a revoke, a forget, an eviction, a
@@ -385,6 +389,12 @@ describe("policy-boundary guard", () => {
     ["the tier set in the owner's session door",
      "const xDoors = Object.freeze({ grantSet(o: S) { o.setTier(1); } });",
      "setTier is named in grantSet, whose caller is session"],
+    ["the import's policy set in the owner's session door",
+     "const xDoors = Object.freeze({ policyWrite(o: S) { o.policy.imported(1, 2); } });",
+     "policy.imported is named in policyWrite, whose caller is session"],
+    ["the policy written by the import",
+     "const xDoors = Object.freeze({ importRows(o: S) { o.policy.write(1, 2, 3, 4, 5); } });",
+     "policy.write is named in importRows, whose caller is import"],
     ["a member in neither list",
      "const xDoors = Object.freeze({ grantSet(o: S) { o.sessions.grow(); } });",
      "sessions.grow is neither a widening nor a read"],

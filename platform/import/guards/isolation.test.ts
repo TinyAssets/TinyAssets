@@ -37,6 +37,8 @@ isolationTests(IMPORTS, {
      "import starter from '../starter/starter.json' with { type: 'json' };"],
     ["child processes in its entry alone", "import/cli.ts",
      "import { spawnSync } from 'node:child_process';"],
+    ["the network in its staging step alone", "import/stage.ts",
+     "export const f = (r: Request) => fetch(r);"],
   ],
 });
 

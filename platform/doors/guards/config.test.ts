@@ -16,6 +16,9 @@
  *   `putChunks`, what the file door's bytes call (slice L), and nothing that reads a chunk,
  *   a generation or a key (review M5-1: the doors carry an owner's wrapped key); only
  *   `src/file-bytes.ts` names it.
+ * - The cutover's import window (`IMPORT_WINDOW`, `rules.ts`): the staging bucket, the import
+ *   queue's producer and its consumer with its dead-letter queue, exactly, and named by
+ *   the contract's queue name (`IMPORT_QUEUE`), which the job sends to; deleted at the cutover.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -29,9 +32,10 @@ import { PLATFORM } from "../../ci/paths";
 import { type Config, platformConfigs } from "../../ci/kit/sources";
 import { readWrangler } from "../../ci/workers";
 
+import { IMPORT_QUEUE } from "../../contract/src/import-message";
 import { ERASURE_QUEUE } from "../src/config";
 
-import { CONFIG } from "./rules";
+import { CONFIG, IMPORT_WINDOW } from "./rules";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** The sandbox tokens' routing key (`routing-mac.ts`), the owner's one secret too. */
@@ -50,7 +54,8 @@ const EGRESS = Object.freeze({ binding: "EGRESS", service: "tinyassets-gateway",
 const EGRESS_METHODS: readonly string[] = Object.freeze(["forward"]);
 const VARS = Object.fromEntries(Object.entries(CONFIG.vars!).map(([name, values]) =>
   [name, values![0]!]));
-const QUEUES = CONFIG.exact!["queues"] as { consumers: object[] };
+const QUEUES = CONFIG.exact!["queues"] as { producers: object[]; consumers: object[] };
+const RING_AND_ERASURE = QUEUES.consumers.filter((consumer) => consumer !== IMPORT_WINDOW.consumer);
 const ASSETS = CONFIG.exact!["assets"] as Config;
 const FLAGS = (CONFIG.flags as { exactly: readonly string[] }).exactly;
 
@@ -152,7 +157,7 @@ const gatewaySource = readFileSync(join(PLATFORM, "gateway", "src", "index.ts"),
 const FILES_SOURCE = readFileSync(join(PLATFORM, "files", "src", "index.ts"), "utf8");
 
 configTests(CONFIG, {
-  refused: ["routes", "route", "env", "migrations", "r2_buckets", "ratelimits", "d1_databases",
+  refused: ["routes", "route", "env", "migrations", "ratelimits", "d1_databases",
             "worker_loaders", "unsafe", "tail_consumers", "dispatch_namespaces"],
   problems: (probe) => doorsConfigProblems(probe, platform, gatewaySource),
   probes: [
@@ -192,15 +197,33 @@ configTests(CONFIG, {
     ["the assets' own not-found page", { assets: { ...ASSETS,
                                                    not_found_handling: "single-page-application" } }],
     ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
+    ["the files Worker's bucket as the staging bucket", { r2_buckets: [
+      { ...IMPORT_WINDOW.bucket, bucket_name: "tinyassets-files" }] }],
+    ["a second bucket", { r2_buckets: [IMPORT_WINDOW.bucket,
+                                       { binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
+    ["no staging bucket", { r2_buckets: [] }],
     ["no ring consumer", { queues: undefined }],
-    ["a queue producer", { queues: { ...QUEUES, producers: [{ binding: "OUT",
+    ["a queue producer", { queues: { ...QUEUES, producers: [IMPORT_WINDOW.producer,
+                                                            { binding: "OUT",
                                                               queue: "tinyassets-x" }] } }],
+    ["the import producer to another queue", { queues: { ...QUEUES, producers: [
+      { ...IMPORT_WINDOW.producer, queue: "tinyassets-erasure" }] } }],
+    ["no import producer", { queues: { consumers: QUEUES.consumers } }],
+    ["no import consumer", { queues: { ...QUEUES, consumers: RING_AND_ERASURE } }],
+    ["the import consumer without its dead-letter queue", { queues: { ...QUEUES, consumers: [
+      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, dead_letter_queue: undefined }] } }],
+    ["the import consumer taking batches", { queues: { ...QUEUES, consumers: [
+      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, max_batch_size: 10 }] } }],
+    ["the import consumer at more owners at once", { queues: { ...QUEUES, consumers: [
+      ...RING_AND_ERASURE, { ...IMPORT_WINDOW.consumer, max_concurrency: 16 }] } }],
     ["another queue's consumer", { queues: { consumers: [{ queue: "tinyassets-x" }] } }],
     ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
     ["a rate limit", { ratelimits: [{ name: "KEY_RL", namespace_id: "1",
                                       simple: { limit: 120, period: 60 } }] }],
     ["an upstream before the deploy", { vars: { ...VARS, UPSTREAM: "{}" } }],
     ["no WORKOS_API_KEY", { secrets: { required: ["ROUTING_MAC_KEY"] } }],
+    ["the import window's key required, so every deploy would set it", { secrets: {
+      required: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET", "IMPORT_KEY"] } }],
     ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],
     ["ctx.exports", { compatibility_flags: [...FLAGS, "enable_ctx_exports"] }],
     ["DCR on", { vars: { ...VARS, DCR_ENABLED: "true" } }],
@@ -306,9 +329,25 @@ function produced(worker: string, binding: string): string | undefined {
   return queues?.producers?.find((producer) => producer.binding === binding)?.queue;
 }
 
-describe("the doors' two queue consumers", () => {
-  it("take erasures by the name the owner sends them under, and every other batch from the " +
-     "sandbox's ring", () => {
+describe("the doors' three queue consumers", () => {
+  it("take the import window's by the name the job sends to, and is its one producer", () => {
+    expect(IMPORT_WINDOW.consumer.queue).toBe(IMPORT_QUEUE);
+    expect(IMPORT_WINDOW.producer.queue).toBe(IMPORT_QUEUE);
+    expect((config["queues"] as { producers: object[] }).producers)
+      .toEqual([IMPORT_WINDOW.producer]);
+    expect(config["r2_buckets"]).toEqual([IMPORT_WINDOW.bucket]);
+    // No other Worker binds the window's bucket or sends to its queue.
+    for (const [name, other] of platform) {
+      if (name === "tinyassets-doors") {
+        continue;
+      }
+      expect(JSON.stringify(other)).not.toContain(IMPORT_WINDOW.bucket.bucket_name);
+      expect(JSON.stringify(other)).not.toContain(IMPORT_QUEUE);
+    }
+  });
+
+  it("take erasures by the name the owner sends them under, imports by theirs, and every " +
+     "other batch from the sandbox's ring", () => {
     // The doors' queue handler takes a batch named ERASURE_QUEUE as erasures and any other as
     // rings (`src/index.ts`): a name that drifted from the owner's producer would hand every
     // erasure to the ring handler, so the name is held to the owner's config here.
@@ -317,7 +356,8 @@ describe("the doors' two queue consumers", () => {
     expect(erasures).toBeDefined();
     expect(ERASURE_QUEUE).toBe(erasures);
     expect(rings).not.toBe(erasures);
+    expect(rings).not.toBe(IMPORT_QUEUE);
     expect((config["queues"] as { consumers: { queue: string }[] }).consumers
-      .map((consumer) => consumer.queue).sort()).toEqual([erasures, rings].sort());
+      .map((consumer) => consumer.queue).sort()).toEqual([erasures, rings, IMPORT_QUEUE].sort());
   });
 });

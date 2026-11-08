@@ -25,11 +25,11 @@ import { chunkedId, inlineId } from "../contract/src/content";
 import { sha256Hex } from "../contract/src/digest";
 import { CHUNK_BYTES, INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
-import { ancestors, WORKSPACE } from "../contract/src/paths";
+import { ancestors, IMPORTED, WORKSPACE } from "../contract/src/paths";
 import starterJson from "../starter/starter.json" with { type: "json" };
 
 import { layout, openFile, openStore, quoted, storeUri } from "./backup";
-import { type Archived, type Copy, IMPORTED, type Owner, type Problem, type Refusal } from "./survey";
+import { type Archived, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
 
 /** The files the import itself writes into an owner's tree beside what it carries. */

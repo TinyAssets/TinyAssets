@@ -16,7 +16,9 @@
  * - Only `connect.ts` reaches the gateway (`GATEWAY`), so a pasted key or an OAuth code
  *   has one path, to the gateway's connect entrypoint; only `egress.ts` reaches its egress
  *   entrypoint (`EGRESS`), so a blob the owner's object handed out is forwarded on one path;
- *   only `file-bytes.ts` reaches the files Worker (`FILES`), the file door's bytes.
+ *   only `file-bytes.ts` reaches the files Worker (`FILES`), the file door's bytes (an
+ *   upload's, and the cutover import's); and only `import.ts` reaches the import window's
+ *   bucket and queue (`IMPORT_STAGING`, `IMPORTS`).
  * - Consent is never remembered: no source names `remember` or `isConsentRemembered`.
  *
  * A tripwire for our own code, read from the syntax tree, not proof against deliberate
@@ -41,6 +43,8 @@ const DIRECTORY = "doors/src/directory.ts";
 const CONNECT = "doors/src/connect.ts";
 const EGRESS = "doors/src/egress.ts";
 const FILE_BYTES = "doors/src/file-bytes.ts";
+const IMPORT = "doors/src/import.ts";
+const IMPORT_WINDOW = new Set(["IMPORT_STAGING", "IMPORTS"]);
 const OBJECT_IDS = new Set(["idFromName", "idFromString", "newUniqueId"]);
 const REMEMBERING = new Set(["remember", "isConsentRemembered"]);
 
@@ -87,6 +91,10 @@ export function binderProblems(fileName: string, source: string): string[] {
     if (doors && ts.isIdentifier(node) && node.text === "FILES" && fileName !== FILE_BYTES
         && fileName !== "doors/src/config.ts") {
       report(node, "reaches the files Worker outside file-bytes.ts");
+    }
+    if (doors && ts.isIdentifier(node) && IMPORT_WINDOW.has(node.text) && fileName !== IMPORT
+        && fileName !== "doors/src/config.ts") {
+      report(node, `reaches the import window's ${node.text} outside import.ts`);
     }
     if (doors && ts.isIdentifier(node) && node.text === "EGRESS" && fileName !== EGRESS
         && fileName !== "doors/src/config.ts") {
@@ -135,6 +143,9 @@ describe("binder guard", () => {
     ["doors/src/binder.ts", "export const f = ({ GATEWAY }: any) => GATEWAY;"],
     ["doors/src/connect.ts", "export const f = (env: any) => env.EGRESS.forward('a', 'c', 1, 'b', r);"],
     ["doors/src/sandbox.ts", "export const f = ({ EGRESS }: any) => EGRESS;"],
+    ["doors/src/ring.ts", "export const f = (env: any) => env.IMPORT_STAGING.get('k');"],
+    ["doors/src/erase.ts", "export const f = (env: any) => env.IMPORTS.send({});"],
+    ["doors/src/import.ts", "export const f = (env: any) => env.FILES.putChunks('n', 'k', []);"],
     [HOOKS_ENTRY, "export const f = (env: any) => env.OWNER.getByName('bob');"],
     [HOOKS_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
     [HOOKS_ENTRY, "class H { env: any; f(n: string) { return this.env.RUNNER.getByName(n); } }"],

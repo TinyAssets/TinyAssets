@@ -22,9 +22,13 @@
  * - `ASSETS`: the owner app's files (`app/`), Workers Static Assets, the Worker first on every
  *   request, so only `src/pages.ts`'s named pages and files are served, each with its
  *   headers; no HTML handling or not-found page of the assets' own.
- * - One queue role: the consumer of the sandbox line's ring queue (slice S, `src/ring.ts`),
- *   which turns `{owner}` into that owner's `sandboxRung` and nothing else, and of the
- *   erasure queue. No producer: the doors put nothing on a queue.
+ * - The consumer of the sandbox line's ring queue (slice S, `src/ring.ts`), which turns
+ *   `{owner}` into that owner's `sandboxRung` and nothing else, and of the erasure queue.
+ * - The cutover's import window (`src/import.ts`), deleted at the cutover with
+ *   `platform/import/` and named here as its bindings alone (`IMPORT_WINDOW`): the import
+ *   queue's consumer (one message a batch, four owners at once, its dead-letter queue), its
+ *   producer (`IMPORTS`, the consumer's own continuation, the doors' one producer), and the
+ *   staging bucket (`IMPORT_STAGING`), the doors' one bucket.
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - Flags: `nodejs_compat` (the owner's shared code), `disable_ctx_exports` (no way to the
@@ -37,6 +41,17 @@
  */
 import type { ConfigRules } from "../../ci/kit/config";
 
+/**
+ * The import window's bindings (`src/import.ts`), each named once here: deleted at the
+ * cutover with `platform/import/`, as tasks.md §9's deletion list names them.
+ */
+export const IMPORT_WINDOW = Object.freeze({
+  bucket: Object.freeze({ binding: "IMPORT_STAGING", bucket_name: "tinyassets-import-staging" }),
+  producer: Object.freeze({ binding: "IMPORTS", queue: "tinyassets-import" }),
+  consumer: Object.freeze({ queue: "tinyassets-import", max_batch_size: 1, max_concurrency: 4,
+                            dead_letter_queue: "tinyassets-import-dlq" }),
+});
+
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "doors",
   env: Object.freeze(["src/config.ts#DoorsEnv"]),
@@ -44,7 +59,7 @@ export const CONFIG: ConfigRules = Object.freeze({
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",
                        "workers_dev", "preview_urls", "vars", "durable_objects", "services",
-                       "kv_namespaces", "secrets", "queues", "assets"]),
+                       "kv_namespaces", "secrets", "queues", "assets", "r2_buckets"]),
   flags: Object.freeze({ exactly: Object.freeze(["nodejs_compat", "disable_ctx_exports",
                                                  "global_fetch_strictly_public",
                                                  "enable_request_signal"]) }),
@@ -52,9 +67,13 @@ export const CONFIG: ConfigRules = Object.freeze({
   vars: Object.freeze({ DCR_ENABLED: ["false"], OWNER_ISSUER: ["not-configured"],
                         FOREIGN_ISSUERS: ["[]"], UPSTREAM: ["not-configured"] }),
   kv: Object.freeze(["OAUTH_KV", "DIRECTORY", "CONTROL"]),
+  buckets: Object.freeze([IMPORT_WINDOW.bucket.binding]),
   exact: Object.freeze({
     assets: { directory: "./app", binding: "ASSETS", run_worker_first: true,
               html_handling: "none", not_found_handling: "none" },
-    queues: { consumers: [{ queue: "tinyassets-sandbox-ring" }, { queue: "tinyassets-erasure" }] },
+    r2_buckets: [IMPORT_WINDOW.bucket],
+    queues: { producers: [IMPORT_WINDOW.producer],
+              consumers: [{ queue: "tinyassets-sandbox-ring" }, { queue: "tinyassets-erasure" },
+                          IMPORT_WINDOW.consumer] },
   }),
 });
