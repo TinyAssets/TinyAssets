@@ -19,7 +19,7 @@
  *    each read and checked before the slice's first write; every inline file is its content
  *    id and every chunk its hash, each checked as it is read, before it is written;
  * 6. the owner's object is `pending`: its import doors refuse anything else
- *    (`import_refused`, terminal), so a live owner's object takes nothing.
+ *    (a terminal `refused`), so a live owner's object takes nothing.
  *
  * Then, in the bundle's order, each step through the owner's import doors: the rows page by
  * page (`importRows`); each manifest page's folders and inline files in batches of the

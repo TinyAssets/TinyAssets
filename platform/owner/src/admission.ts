@@ -59,9 +59,9 @@ export const PLATFORM_ONLY = "only the platform sets an owner's admission";
 export const PLATFORM_RESERVED = "the platform caller reaches no owner door but admission";
 /** The import doors' refusals (`import.ts`): their caller, their binding, the owner's state. */
 export const IMPORT_PLATFORM_ONLY =
-  "import_refused: only the platform imports, with an import binding";
-export const IMPORT_DOORS_ONLY = "import_refused: an import binding reaches the import doors alone";
-export const IMPORT_PENDING_ONLY = "import_refused: only a pending owner is imported into";
+  "only the platform imports, with an import binding";
+export const IMPORT_DOORS_ONLY = "an import binding reaches the import doors alone";
+export const IMPORT_PENDING_ONLY = "only a pending owner is imported into";
 
 /** The owner's admission as its row holds it. */
 export interface Admission {

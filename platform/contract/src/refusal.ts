@@ -72,10 +72,6 @@ export const REFUSALS = Object.freeze({
   file_busy: Object.freeze({ status: 409 }),
   file_quota: REFUSED,
   file_share: REFUSED,
-  // The cutover's import doors (`owner/src/import.ts`): a caller, binding or owner state they
-  // never take; and a path or row that already holds something other than the import's.
-  import_refused: REFUSED,
-  import_conflict: REFUSED,
   inbound_proof_invalid: REFUSED,
   install_proof_required: REFUSED,
   ledger_agents_full: REFUSED,

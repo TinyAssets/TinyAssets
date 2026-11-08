@@ -734,7 +734,7 @@ export class Policy {
    * The cutover's import of the owner's old policy (`import.ts`), checked by the validator as
    * any write is, and receipted as one: set (true) only while the stored policy is the
    * default; nothing (false) once it is this document already; any other policy refused
-   * loudly (`import_conflict`). Deleted at the cutover with the import doors.
+   * loudly (`conflict`). Deleted at the cutover with the import doors.
    */
   imported(document: unknown, now: number): boolean {
     validate(document, this.#limits);
@@ -743,8 +743,8 @@ export class Policy {
       return false;
     }
     if (row.digest !== DEFAULT_POLICY_DIGEST) {
-      throw new Refusal("import_conflict",
-                        "import_conflict: the owner's policy is neither the default nor the " +
+      throw new Refusal("conflict",
+                        "conflict: the owner's policy is neither the default nor the " +
                         "imported one");
     }
     this.write("import", row.generation, document, null, now);

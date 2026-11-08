@@ -7,7 +7,7 @@
  *
  * The doors are the `import` class's (`contract/doors.json`): the object takes them only
  * from the platform's reserved caller with an import binding, and only while the owner is
- * `pending`; every other caller and state is refused `import_refused`, and the import
+ * `pending`; every other caller and state is refused (`refused`, terminal), and the import
  * binding reaches no other door (`owner-do.ts`, `#bind`). They write only the imported tree
  * (`IMPORTED`), the owner's policy, its collections and one notice, each through the
  * object's own write path, so the schema's triggers, the charges, the counters, the quotas
@@ -29,7 +29,7 @@
  *
  * The import keeps no state of its own (no table, no migration). Each step is idempotent
  * from the owner's state: a file already at its path with the same content id, size and
- * mode is skipped and any other there refused loudly (`import_conflict`); a row equal by key
+ * mode is skipped and any other there refused loudly (`conflict`); a row equal by key
  * and body is skipped, any other refused; the policy is set only while it is the default,
  * and skipped once it is the imported one; the notice is added once; an upload of the same
  * file still open is resumed, never begun again. So a delivery killed at any step converges
@@ -55,8 +55,8 @@ export const IMPORT_WRITER = OWNER_FILER;
 export const IMPORT_OP = "import";
 export const IMPORT_NOTICE = "imported";
 
-const NOT_IMPORTED = "import_refused: the import writes the imported tree alone";
-const TOO_MANY_UPLOADS = `import_refused: at most ${IMPORT_INTENTS} import uploads are open`;
+const NOT_IMPORTED = "the import writes the imported tree alone";
+const TOO_MANY_UPLOADS = `at most ${IMPORT_INTENTS} import uploads are open`;
 
 /** A row the import carries (`import/build.ts`'s `Row`). */
 export type ImportRow =
@@ -121,7 +121,7 @@ function invalid(what: string): Refusal {
 }
 
 function conflict(what: string): Refusal {
-  return new Refusal("import_conflict", `import_conflict: ${what}`);
+  return new Refusal("conflict", `conflict: ${what}`);
 }
 
 const plain = (value: unknown): value is Record<string, unknown> =>
@@ -132,7 +132,7 @@ const keys = (value: Record<string, unknown>) => Object.keys(value).sort().join(
 function importPath(value: unknown): string {
   const path = storedPath(value);
   if (!within(path, IMPORTED)) {
-    throw new Refusal("import_refused", NOT_IMPORTED);
+    throw new Refusal("refused", NOT_IMPORTED);
   }
   return path;
 }
@@ -218,7 +218,7 @@ function chunkedOf(r: Record<string, unknown>): ImportFileBeginRequest {
 /**
  * In a unit: whether `want` is at `path` already (true), or nothing is (false); anything
  * else there is refused loudly, since on a pending owner only an earlier import of other
- * bytes can have put it there (`import_conflict`; the fix is a discard and a run again).
+ * bytes can have put it there (`conflict`; the fix is a discard and a run again).
  */
 function there(o: OwnerState, path: string,
                want: "dir" | { content_id: string; size: number; mode: number }): boolean {
@@ -331,7 +331,7 @@ export const importDoors = Object.freeze({
       }
       const { open, same } = o.files.openUploads(file.size, file.chunks, IMPORT_WRITER);
       if (same === null && open >= IMPORT_INTENTS) {
-        throw new Refusal("import_refused", TOO_MANY_UPLOADS);
+        throw new Refusal("refused", TOO_MANY_UPLOADS);
       }
       const intentId = same ?? o.files.begin(file.size, file.chunks, IMPORT_WRITER).intent_id;
       return { intent_id: intentId, ...o.files.uploadPlan(intentId) };

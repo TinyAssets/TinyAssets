@@ -2336,11 +2336,11 @@ R, S, M and W.
     private backup, a folder never inside the out folder nor holding it; a dry run.
   - [x] 3. The owner object's platform-only import doors (`owner/src/import.ts`, the `import`
     class: the platform's caller with an import binding, `pending` only, every other caller
-    and state refused `import_refused`; no new migration): `importRows` (the policy over the
+    and state refused, terminally; no new migration): `importRows` (the policy over the
     default, collection rows by their own write path), `importFiles` (folders and inline
     files), `importFileBegin`/`Stored`/`Commit` (a chunked file by the upload door's steps, its
     bytes never through the object) and `importNotice`, each idempotent from the owner's state
-    (another file or row at a key refused `import_conflict`), within the contract's bounds.
+    (another file or row at a key refused `conflict`), within the contract's bounds.
   - [x] 4. The doors' `tinyassets-import` consumer (`doors/src/import.ts`): `IMPORT_KEY`
     present, the message's MAC, no `o:` record, the bundle's index and every page held to
     their digests, all before any write; bounded slices with their own continuation, one

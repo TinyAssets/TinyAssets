@@ -2040,7 +2040,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       throw new Refusal("invalid", "invalid owner principal");
     }
     if (importing !== (door === "import")) {
-      throw new Refusal("import_refused", importing ? IMPORT_DOORS_ONLY : IMPORT_PLATFORM_ONLY);
+      throw new Refusal("refused", importing ? IMPORT_DOORS_ONLY : IMPORT_PLATFORM_ONLY);
     }
     const owner = principal(binding.owner);
     const caller = principal(binding.caller);
@@ -2051,7 +2051,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         || typeof binding.import !== "object" || binding.import === null
         || Object.keys(binding.import).join() !== "bundle"
         || typeof binding.import.bundle !== "string" || !HEX64.test(binding.import.bundle))) {
-      throw new Refusal("import_refused", IMPORT_PLATFORM_ONLY);
+      throw new Refusal("refused", IMPORT_PLATFORM_ONLY);
     }
     if (owner === PLATFORM_CALLER
         || (door !== "admission" && door !== "import" && caller === PLATFORM_CALLER)) {
@@ -2069,7 +2069,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (door === "import") {
       // Only an owner the platform has not admitted yet is imported into: never a live one.
       if (admission(this.#storage).state !== "pending") {
-        throw new Refusal("import_refused", IMPORT_PENDING_ONLY);
+        throw new Refusal("refused", IMPORT_PENDING_ONLY);
       }
     } else if (door !== "admission") {
       const refusal = doorRefusal(admission(this.#storage), door);

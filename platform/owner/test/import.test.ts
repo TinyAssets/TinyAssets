@@ -1,7 +1,7 @@
 /**
  * The cutover's import doors (`src/import.ts`, slice 3), on the real object: taken only from
  * the platform's reserved caller with an import binding and only while the owner is
- * `pending`, every other caller and state refused `import_refused`; each step through the
+ * `pending`, every other caller and state refused (terminal); each step through the
  * object's own write path, idempotent from the owner's state (a run again skips, another file
  * or row at a key is refused loudly, the policy set only over the default); the bounds of a
  * call and of the open uploads; the tier numbers the binding carries; and a chunked file's
@@ -95,7 +95,7 @@ describe("the import doors' caller and state", () => {
     const { stub, owner } = pending();
     const refused = async (call: () => Promise<unknown>, message: string) => {
       const error = await failure(call);
-      expect([error.code, error.message]).toEqual(["import_refused", message]);
+      expect([error.code, error.message]).toEqual(["refused", message]);
     };
     const request = { detail: "x" };
     // The owner itself, an outside client, the platform with no import binding, a binding
@@ -143,7 +143,7 @@ describe("the import's rows", () => {
     expect(policyDigest(other)).toBe(DEFAULT_POLICY_DIGEST);
     const changed = { ...POLICY, egress: { mode: "allowlist", destinations: [] } };
     expect((await failure(() => stub.importRows(importing(owner), {
-      rows: [{ kind: "policy", document: changed }] }))).code).toBe("import_conflict");
+      rows: [{ kind: "policy", document: changed }] }))).code).toBe("conflict");
     // A document the validator refuses is refused, never stored.
     expect((await failure(() => stub.importRows(importing(owner), {
       rows: [{ kind: "policy", document: { egress: 1 } }] }))).code).toBe("invalid");
@@ -167,7 +167,7 @@ describe("the import's rows", () => {
     for (const row of [{ ...rows[0]!, body: '{"t":"other"}' }, { ...rows[1]!, private: 1 as const },
                        { ...rows[1]!, body: `${large} ` }]) {
       expect((await failure(() => stub.importRows(importing(owner), { rows: [row] }))).code)
-        .toBe("import_conflict");
+        .toBe("conflict");
     }
     // The placed body's content in R2, its row naming it, its history the import's.
     const placed = await runInDurableObject(stub, (_i: unknown, state: DurableObjectState) =>
@@ -198,7 +198,7 @@ describe("the import's files", () => {
                          { kind: "dir" as const, path: `${I}/novel/a.md` },
                          inline(`${I}/novel`, "a file where a folder is")]) {
       expect((await failure(() => stub.importFiles(importing(owner), { entries: [entry] }))).code)
-        .toBe("import_conflict");
+        .toBe("conflict");
     }
     await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
     const read = await stub.fileRead(own(owner), { path: `${I}/novel/run.sh` });
@@ -211,7 +211,7 @@ describe("the import's files", () => {
     for (const path of ["/workspace/agents/main/AGENTS.md", "/workspace/notes.md", "/.ta/tmp/x"]) {
       expect((await failure(() => stub.importFiles(importing(owner),
                                                    { entries: [inline(path, "x")] }))).code)
-        .toBe("import_refused");
+        .toBe("refused");
     }
     const lying = { ...inline(`${I}/a.md`, "alpha"), content_id: inlineId(bytesOf("beta")) };
     expect((await failure(() => stub.importFiles(importing(owner), { entries: [lying] }))).code)
@@ -230,7 +230,7 @@ describe("the import's files", () => {
     other[0] = other[0]! ^ 1;
     expect((await failure(() => stub.importFileBegin(importing(owner),
                                                      chunked(`${I}/big.bin`, other).request))).code)
-      .toBe("import_conflict");
+      .toBe("conflict");
     await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
     const read = await stub.fileRead(own(owner), { path: `${I}/big.bin` });
     expect(read.chunks!.map((chunk) => chunk.sha256)).toEqual(cut(bytes).map((p) => p.sha256));
@@ -256,7 +256,7 @@ describe("the import's files", () => {
     past[0] = 200;
     expect((await failure(() => stub.importFileBegin(importing(owner),
                                                      chunked(`${I}/past.bin`, past).request))).code)
-      .toBe("import_refused");
+      .toBe("refused");
     // A commit of a chunk never stored is the files plane's refusal.
     expect((await failure(() => stub.importFileCommit(importing(owner), {
       intent_id: a.skipped ? "" : a.intent_id, path: first.path, mode: 0,
