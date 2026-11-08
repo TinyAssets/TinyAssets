@@ -519,6 +519,13 @@ describe("a run and the mailbox (review H1)", () => {
     // Nor its digest, whose mail part is a mailbox read (slice M on ID).
     expect((await failure(() => r.stub.inboxDigest(asRun, { limit: 10, after: 0 }))).message)
       .toBe(RUN_NO_MAILBOX);
+    // A malformed request is refused for its fields first, then for the run, as each of these
+    // doors' row orders it (`fieldsFirst`): fields, then the guard, then the scope.
+    const malformed = { nope: 1 } as never;
+    expect([(await failure(() => r.stub.mailboxRead(asRun, malformed))).message,
+            (await failure(() => r.stub.mailboxAck(asRun, malformed))).message,
+            (await failure(() => r.stub.inboxDigest(asRun, malformed))).message])
+      .toEqual(Array(3).fill("invalid ledger request"));
     // An owner run reads none either: every run's mail is its input.
     await drainDue(r.stub);
     const ownersRun = await newest(r);

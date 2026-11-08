@@ -112,7 +112,7 @@ import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } fro
 import type { Sources } from "../../sources/src/schema";
 import { refusalResponse } from "./refused";
 import { toolTable } from "../../contract/src/doors";
-import { callDoor } from "./tools";
+import { callDoor, type DoorName, toolDoor } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../contract/src/capabilities";
@@ -186,7 +186,7 @@ type Route = (served: Served) => Promise<Response>;
  * an upload's bytes.
  */
 type OwnerRoute =
-  | { readonly door: string; readonly body?: "empty" }
+  | { readonly door: DoorName; readonly body?: "empty" }
   | { readonly serve: Route; readonly body?: "empty" }
   | { readonly stage: "socket" | "bytes" };
 
@@ -303,7 +303,7 @@ const ownerTool: Route = async ({ owner: { binding, stub }, body: request, rest:
   if (tool === undefined) {
     return failure(404, "no such tool");
   }
-  return answerJson(tool.name, await callDoor(stub, binding, tool.door, request));
+  return answerJson(tool.name, await callDoor(stub, binding, toolDoor(tool), request));
 };
 
 /**
