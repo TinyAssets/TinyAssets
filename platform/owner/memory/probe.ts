@@ -564,6 +564,19 @@ class ArchiveObject extends OwnerDO {
     this.#ledger().remove(agent);
   }
 
+  /**
+   * Whether the `archive` lane is idle: no pass under way (each pass marks itself in
+   * `archive_fails` as it begins and clears it as it ends) and the lane's `next` none, so no
+   * pass is due either: what a case waits for before the next case's setup drops the store.
+   */
+  legIdle(): boolean {
+    const ledger = this.#ledger();
+    const { fails } = this.#state.storage.sql.exec<{ fails: number }>(
+      "SELECT archive_fails AS fails FROM ledger_usage").one();
+    return fails === 0 && !(ledger.archiveDue() || ledger.purgedAgents().length > 0
+                            || ledger.archiveCompactPending());
+  }
+
   /** The archive as it stands: its segments and records, purges waiting, the lane's failures. */
   legArchived(): { segments: number; records: number; purges: number; fails: number;
                     error: string | null } {
@@ -743,12 +756,16 @@ async function ring(stub: DurableObjectStub<ArchiveObject>, who: Binding, agent:
                              parent_id: null });
 }
 
+/** How often a case looks at its archive object's lane, and how many looks it waits at most. */
+const LANE_POLL_MS = 10;
+const LANE_LOOKS = 12_000;
+
 /** Until the lane's passes stand as `done` says (its own alarm runs them), or loudly not. */
 async function settled(stub: DurableObjectStub<ArchiveObject>,
                        done: (seen: { segments: number; records: number;
                                   purges: number }) => boolean):
     Promise<void> {
-  for (let n = 0; n < 1200; n++) {
+  for (let n = 0; n < LANE_LOOKS; n++) {
     const seen = await stub.legArchived();
     if (seen.error !== null) {
       throw new Error(`the archive lane's pass failed: ${seen.error}`);
@@ -756,9 +773,26 @@ async function settled(stub: DurableObjectStub<ArchiveObject>,
     if (seen.fails === 0 && done(seen)) {
       return;
     }
-    await scheduler.wait(100);
+    await scheduler.wait(LANE_POLL_MS);
   }
   throw new Error(`the archive lane did not settle: ${JSON.stringify(
+    await stub.legArchived())}`);
+}
+
+/**
+ * Until the lane is idle (`legIdle`), or loudly not: a case's passes all end inside its own
+ * run. A look between two passes (one ended, the next not yet begun: `bodies 8` takes two)
+ * sees `settled`'s condition already held; returning then, the next case's setup would drop
+ * the store under the second pass.
+ */
+async function idle(stub: DurableObjectStub<ArchiveObject>): Promise<void> {
+  for (let n = 0; n < LANE_LOOKS; n++) {
+    if (await stub.legIdle()) {
+      return;
+    }
+    await scheduler.wait(LANE_POLL_MS);
+  }
+  throw new Error(`the archive lane did not go idle: ${JSON.stringify(
     await stub.legArchived())}`);
 }
 
@@ -787,6 +821,7 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
         await archive.legAckSeq(2, offset!);
         await ring(archive, who, agents![0]!, "r2");
         await settled(archive, (seen) => seen.records >= want!);
+        await idle(archive);
         return (await archive.legArchived()).records;
       }
       if (path === "move" || path === "bodies" || path === "rewrite") {
@@ -795,6 +830,7 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
         await ring(archive, who, agents![0]!, "ring");
         await settled(archive, path === "rewrite" ? (seen) => seen.purges === 0
           : (seen) => seen.segments >= want!);
+        await idle(archive);
         return (await archive.legArchived()).records;
       }
       if (path === "edit") {
