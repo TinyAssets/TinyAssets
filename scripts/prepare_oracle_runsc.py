@@ -5,19 +5,42 @@ import io
 import re
 import sys
 import tarfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
+# GitHub's release download answers 502 or stalls now and then; every required
+# shard fetches here first, so one bad answer used to fail the whole run before
+# any test ran. The archive is pinned by digest, so a retry can only ever give
+# the same bytes or fail the digest check below.
+ATTEMPTS = 5
+FIRST_WAIT_S = 2
 
-def prepare(destination, *, fetch=urllib.request.urlopen):
+
+def fetched(url, *, fetch, sleep):
+    for attempt in range(ATTEMPTS):
+        try:
+            with fetch(url, timeout=120) as response:
+                return response.read()
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as failure:
+            if attempt == ATTEMPTS - 1:
+                raise
+            wait = FIRST_WAIT_S * 2 ** attempt
+            print(f"runtime fetch failed ({failure}); retrying in {wait}s",
+                  file=sys.stderr)
+            sleep(wait)
+    raise AssertionError("unreachable")
+
+
+def prepare(destination, *, fetch=urllib.request.urlopen, sleep=time.sleep):
     source = (Path(__file__).resolve().parents[1] /
               "deploy/install-boxhostd-preflight.sh").read_text()
     release, archive_sha, runsc_sha = (
         re.search(r"^" + name + r"=(\S+)$", source, re.M)[1]
         for name in ("release", "archive_sha", "runsc_sha"))
     url = f"https://github.com/google/gvisor/releases/download/{release}/gvisor-x86_64.tar.bz2"
-    with fetch(url, timeout=120) as response:
-        payload = response.read()
+    payload = fetched(url, fetch=fetch, sleep=sleep)
     if hashlib.sha256(payload).hexdigest() != archive_sha:
         raise ValueError("pinned runtime archive digest mismatch")
     destination.mkdir(parents=True, exist_ok=True)
