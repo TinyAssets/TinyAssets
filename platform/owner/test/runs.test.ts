@@ -544,6 +544,27 @@ describe("a conversation's inputs", () => {
   });
 });
 
+describe("a source outside the sandbox's egress scope", () => {
+  it("is neither offered nor started, though the owner's connection is usable", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const keyed = { engine: "claude-code", credential: "api_key", connection, scopes: [] };
+    // Active, with its models (`Connections.usable`), but with no egress scope stored: the
+    // sandbox could never reach its provider (`Connections.egressible`, `RunHost.reachable`).
+    await r.sql("UPDATE connections SET egress = NULL WHERE id = ?", connection);
+    expect(await r.sql("SELECT status FROM connections WHERE id = ?", connection))
+      .toEqual([{ status: "active" }]);
+    // `auto` is not offered it, and an agent that names it is refused: no run, no start.
+    await defineAgent(r.stub, r.bind(), "helper", { engine: "auto", scopes: [] });
+    expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "helper"))).message)
+      .toMatch(/^no_source/);
+    expect((await failure(() => ownerRun(r.stub, r.bind(), keyed))).message)
+      .toMatch(/^no_source/);
+    expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+    expect((await recorder(r.stub)).starts).toEqual([]);
+  });
+});
+
 describe("auto and the owner's sign-ins", () => {
   /** An agent on `auto`, the owner's strongest connected source. */
   const AUTO_AGENT = Object.freeze({ engine: "auto", scopes: [] });
