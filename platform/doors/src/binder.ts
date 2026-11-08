@@ -415,6 +415,22 @@ export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
 }
 
 /**
+ * The platform's own binding for `owner` at the cutover's import (`import.ts`): the reserved
+ * admin caller with the bundle whose message the consumer verified under `IMPORT_KEY`, and
+ * the control record's tier numbers, which the files plane's quota reads, as every account
+ * door's binding carries them. The owner's object takes it at its import doors alone, and
+ * only while the owner is pending.
+ */
+export function bindImport(env: DoorsEnv, owner: string, bundle: string, tiers: unknown): Bound {
+  const named = principal(owner);
+  if (!HEX64.test(bundle)) {
+    throw new Error("an import binding names its bundle's digest");
+  }
+  return bound(env, { owner: named, caller: ADMIN_CALLER, origin: null, import: { bundle },
+                      tiers });
+}
+
+/**
  * An inbound event's route as the directory holds it (`inbound.ts`): the owner it names, on
  * its own account, with the binding and revision the entry carries, which the object holds
  * against its own (`inboundAccept` alone takes it); the control record's tier numbers ride

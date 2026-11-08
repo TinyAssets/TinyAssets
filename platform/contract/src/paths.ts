@@ -46,6 +46,11 @@ export const GOALS_DIR = "/workspace/goals";
 /** The owner's profile: its directives are every agent's standing preferences. */
 export const PROFILE = "/workspace/USER.md";
 /**
+ * Where the cutover's importer puts an owner's tree from the old stack (`platform/import/`,
+ * the owner's import doors, `owner/src/import.ts`): the only tree those doors write.
+ */
+export const IMPORTED = "/workspace/imported";
+/**
  * Every tree only the owner's own authority changes: the agent definitions, the abilities'
  * trees, the goals and the profile. A grant the owner narrowed changes nothing in them
  * (`owner/src/paths.ts`'s `ownersOnly`).

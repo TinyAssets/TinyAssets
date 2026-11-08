@@ -88,6 +88,15 @@ export async function ownerRead(env: DoorsEnv, owner: string): Promise<Response 
     : refusal(MAINTENANCE);
 }
 
+/**
+ * The record's tier numbers for the cutover's import (`import.ts`), read as every account
+ * door's binding reads them; null for none, so the files plane's quota refuses rather than
+ * guesses (`tier.ts`). The import passes no gate: it runs dark, before `routes`.
+ */
+export async function importTiers(env: DoorsEnv): Promise<unknown> {
+  return tiersOf(await readControl(env.CONTROL));
+}
+
 function refusal(message: string): Response {
   return Response.json({ error: "unavailable", message },
                        { status: 503, headers: { "Retry-After": "60" } });

@@ -1141,6 +1141,54 @@
         "refused": "invalid file request",
         "required": { "lease_id": {}, "epoch": {}, "intent_id": {} }, "optional": {}
       }
+    },
+    {
+      "door": "importRows", "class": "import", "caller": "import", "capability": null,
+      "handler": "import", "gate": "units",
+      "args": {
+        "refused": "invalid import request",
+        "required": { "rows": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "importFiles", "class": "import", "caller": "import", "capability": null,
+      "handler": "import", "gate": "filing",
+      "args": {
+        "refused": "invalid import request",
+        "required": { "entries": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "importFileBegin", "class": "import", "caller": "import", "capability": null,
+      "handler": "import", "gate": "units",
+      "args": {
+        "refused": "invalid import request",
+        "required": { "path": {}, "size": {}, "mode": {}, "content_id": {}, "chunks": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "importFileStored", "class": "import", "caller": "import", "capability": null,
+      "handler": "import", "gate": "door",
+      "args": {
+        "refused": "invalid import request",
+        "required": { "intent_id": {}, "chunks": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "importFileCommit", "class": "import", "caller": "import", "capability": null,
+      "handler": "import", "gate": "filing",
+      "args": {
+        "refused": "invalid import request",
+        "required": { "intent_id": {}, "path": {}, "mode": {}, "content_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "importNotice", "class": "import", "caller": "import", "capability": null,
+      "handler": "import", "gate": "door",
+      "args": {
+        "refused": "invalid import request",
+        "required": { "detail": {} }, "optional": {}
+      }
     }
   ]
 }

@@ -731,6 +731,27 @@ export class Policy {
   }
 
   /**
+   * The cutover's import of the owner's old policy (`import.ts`), checked by the validator as
+   * any write is, and receipted as one: set (true) only while the stored policy is the
+   * default; nothing (false) once it is this document already; any other policy refused
+   * loudly (`import_conflict`). Deleted at the cutover with the import doors.
+   */
+  imported(document: unknown, now: number): boolean {
+    validate(document, this.#limits);
+    const row = this.#stored();
+    if (row.digest === policyDigest(document)) {
+      return false;
+    }
+    if (row.digest !== DEFAULT_POLICY_DIGEST) {
+      throw new Refusal("import_conflict",
+                        "import_conflict: the owner's policy is neither the default nor the " +
+                        "imported one");
+    }
+    this.write("import", row.generation, document, null, now);
+    return true;
+  }
+
+  /**
    * An owner policy change kept outside the document (an agent's wake limits, stored on
    * its registry row where the ledger reads them): it bumps the generation and is
    * receipted like a write. Run inside the caller's transaction with the change itself.

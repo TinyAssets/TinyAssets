@@ -2316,8 +2316,14 @@ R, S, M and W.
 - [ ] **The importer** (`import_research.md`): every existing owner's stores and files carried
   into the new platform by a job in `platform/import/` (Node, run on the droplet from the
   verified backup copy), which reads the contract and no Worker's `src` (its isolation guard).
-  It is deleted in the cutover's deletion change, with the import doors, the
-  `tinyassets-import` queue, the staging bucket and `IMPORT_KEY`.
+  It is deleted in the cutover's deletion change, with everything of the import window:
+  the owner's import doors (`owner/src/import.ts`, their six `import` rows in
+  `contract/doors.json`, the `import` class and caller, `Policy.imported`, `Files.openUploads`
+  and the binding's `import` field), `contract/src/import-message.ts`, the doors' consumer
+  (`doors/src/import.ts`, `putImportChunk`, `bindImport`, `importTiers`) and its bindings in
+  `doors/wrangler.jsonc` (`IMPORT_STAGING`, the `IMPORTS` producer, the consumer and its
+  dead-letter queue), the account's `tinyassets-import` and `tinyassets-import-dlq` queues and
+  `tinyassets-import-staging` bucket, and the doors' `IMPORT_KEY` secret.
   - [x] 1. The census (`census.ts`): §1's counts and the per-owner table, rule 0 (`rules.ts`:
     a reviewed rule for every old store, table and entry, held to the old stack's own DDL by
     `guards/old-tables.json`, an unknown one stopping its owner loudly), every fleet row
@@ -2328,9 +2334,20 @@ R, S, M and W.
     platform's own content ids, the row batches, `links.txt`, `refused.tar` and
     `ignored.tar`); the exclusion list's owners (input, never in code, never empty) to the
     private backup, a folder never inside the out folder nor holding it; a dry run.
-  - [ ] 3. The owner object's platform-only import doors (`pending` only, no new migration).
-  - [ ] 4. The doors' `tinyassets-import` consumer with `IMPORT_KEY` and `IMPORT_STAGING`, and
-    the bundles' upload to staging.
+  - [x] 3. The owner object's platform-only import doors (`owner/src/import.ts`, the `import`
+    class: the platform's caller with an import binding, `pending` only, every other caller
+    and state refused `import_refused`; no new migration): `importRows` (the policy over the
+    default, collection rows by their own write path), `importFiles` (folders and inline
+    files), `importFileBegin`/`Stored`/`Commit` (a chunked file by the upload door's steps, its
+    bytes never through the object) and `importNotice`, each idempotent from the owner's state
+    (another file or row at a key refused `import_conflict`), within the contract's bounds.
+  - [x] 4. The doors' `tinyassets-import` consumer (`doors/src/import.ts`): `IMPORT_KEY`
+    present, the message's MAC, no `o:` record, the bundle's index and every page held to
+    their digests, all before any write; bounded slices with their own continuation, one
+    chunk in hand at a time; a dead-letter queue. The deploy kit's `dark` makes the queue, its
+    dead-letter queue and `IMPORT_STAGING`'s bucket from the configs. The job's `stage`
+    uploads the bundles over R2's S3 API and sends one MAC'd message an owner over the Queues
+    HTTP API (a dry run prints what it would send); its credentials are the run's inputs.
   - [ ] 5. `importCheck` and `importDiscard`, the job's verify and wipe steps, and the admit
     step after them (`tierSet`, `admissionSet`, `o:`). It never admits an owner the old stack
     never admitted (no `owner_admission` row: `owner.json` says `absent`, and the census and
@@ -2381,7 +2398,8 @@ R, S, M and W.
 - [ ] Full backup; each owner's broker stores imported into their object and each
   volume into object storage, each imported owner admitted (`admissionSet` from the
   platform caller, and its `o:` record), as sign-up admits one; DNS switched; the droplet
-  paths deleted, and `platform/import/` with them (the importer above). The droplet is
+  paths deleted, and `platform/import/` with them, and the import window's doors, bindings,
+  queues, bucket and `IMPORT_KEY` (the importer above lists each). The droplet is
   stopped, not destroyed, through a hold of 14 days after the cutover, and the founder is
   told before it and the final backup are destroyed (the founder, 2026-11-07). S36 reads
   converged.

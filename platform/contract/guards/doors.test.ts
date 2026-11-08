@@ -55,7 +55,7 @@ describe("the door table", () => {
     ["an unknown gate", changed("fileStat", { gate: "later" })],
     ["an unknown guard", changed("fileStat", { guard: "maybe" })],
     ["no handler module", without("fileStat", "handler")],
-    ["a door class past the four", changed("fileStat", { class: "write" })],
+    ["a door class past the five", changed("fileStat", { class: "write" })],
     ["admission read by an account door", changed("fileStat", { class: "admission" })],
     ["a platform door that reads admission", changed("tierSet", { class: "work" })],
     ["an owner's door that names no act", without("policyRead", "action")],
@@ -69,6 +69,10 @@ describe("the door table", () => {
     ["a door named twice", [...raw.doors, row("fileStat")]],
     ["a key of no step", changed("fileStat", { owner: "alice" })],
     ["a door that binds nothing", changed("keyList", { caller: "none", class: null })],
+    ["an account door of the import class", changed("fileStat", { class: "import" })],
+    ["an import door of another class", changed("importRows", { class: "work" })],
+    ["an import door on the reserved line", changed("importRows", { caller: "reserved" })],
+    ["an import door that binds nothing", changed("importFiles", { caller: "none", class: null })],
     ["an unbound door that binds", changed("sandboxRung", { caller: "account", class: "work" })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);
