@@ -53,6 +53,7 @@ import {
   SIGNIN_DOOR, SIGNIN_EVENTS_DOOR, SYNC_DOOR, SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
+import type { SettleSent } from "../../contract/src/owner";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SYNC_BODY_MAX } from "../../contract/src/limits";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../contract/src/run-events";
 import { faultOf, type Refusal, REFUSALS, refusalOf } from "../../contract/src/refusal";
@@ -125,7 +126,7 @@ async function spendOf(outcome: ReadableStream<Uint8Array> | null): Promise<Mete
 }
 
 /** Settle through the stub that opened the call, then once more through a fresh one. */
-async function settleOnce(env: DoorsEnv, bound: Bound, request: Record<string, unknown>):
+async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
     Promise<void> {
   try {
     await bound.stub.egressSettle(bound.binding, request);

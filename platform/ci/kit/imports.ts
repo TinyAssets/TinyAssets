@@ -8,19 +8,22 @@
  * rules allow, anywhere or in one file alone; absolute specifiers, dynamic `import()`,
  * `require` and type imports by path are refused. A name the rules ban (an identifier, a
  * private name or any string, template parts included) is refused outside where they allow
- * it. Every rule holds over the import closure: each module a source reaches through
- * relative imports, however deep, is checked as the Worker's own source is. A job (`job`, a
+ * it. Every rule holds over the import closure: each module a source reaches by a relative
+ * specifier (an import or re-export, a type imported by path, `import()`, `require()` or
+ * `/// <reference path>`), however deep, is checked as the Worker's own source is, a module
+ * outside every Worker's `src/` on the way (a test's helper) read from disk. A job (`job`, a
  * workspace run in Node rather than deployed) is held the same way from its own folder.
  *
  * No Worker imports another Worker's `src` (`decisions.md` A1): whatever a workspace's rules
  * list, an import that lands in another Worker's source is refused (`workerOf`), and a
  * Worker's rules may name only the contract's modules and the source records'
- * (`outsideProblems`), which `ci/guards/isolation.test.ts` holds for every Worker.
+ * (`outsideProblems`). `ci/guards/isolation.test.ts` holds both for every Worker, with rules
+ * or without: no Worker's closure reaches another Worker's source (`foreignReach`).
  *
  * Tripwires for our own code (a split spelling such as `env["GATEWAY_" + "KEYRING"]` is not
  * seen), not proof against deliberate evasion.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 
 import ts from "typescript";
@@ -70,7 +73,7 @@ export function resolved(path: string, specifier: string): string {
  * contract's, the source records', a job's, a test's.
  */
 export function workerOf(path: string): string | null {
-  const folder = /^([^/]+)\/src\//.exec(path)?.[1];
+  const folder = /^([^/]+)\/src(?:\/|$)/.exec(path)?.[1];
   return folder !== undefined && existsSync(join(PLATFORM, folder, "wrangler.jsonc")) ? folder
     : null;
 }
@@ -170,24 +173,45 @@ export function isolationProblems(rules: ImportRules, path: string, source: stri
   return problems;
 }
 
-/** The relative specifiers `source` imports or re-exports. */
+/**
+ * The relative specifiers `source` reaches: imports and re-exports, a type imported by path
+ * (`import("…").T`), `import()` and `require()` of a literal, and `/// <reference path>`.
+ */
 function relativeImports(path: string, source: string): string[] {
-  const found: string[] = [];
+  const file = parse(path, source);
+  const found = file.referencedFiles.map((each) => each.fileName);
   const visit = (node: ts.Node): void => {
+    let specifier: ts.Node | undefined;
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
-        && node.moduleSpecifier !== undefined && ts.isStringLiteralLike(node.moduleSpecifier)
-        && node.moduleSpecifier.text.startsWith(".")) {
-      found.push(node.moduleSpecifier.text);
+        && node.moduleSpecifier !== undefined) {
+      specifier = node.moduleSpecifier;
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      specifier = node.argument.literal;
+    } else if (ts.isCallExpression(node)
+               && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+                   || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
+      specifier = node.arguments[0];
+    }
+    if (specifier !== undefined && ts.isStringLiteralLike(specifier)) {
+      found.push(specifier.text);
     }
     ts.forEachChild(node, visit);
   };
-  visit(parse(path, source));
-  return found;
+  visit(file);
+  return found.filter((specifier) => specifier.startsWith("."));
+}
+
+/** A module outside every Worker's `src/` (a test's helper, a guard), read from disk. */
+function onDisk(path: string): string | undefined {
+  const full = join(PLATFORM, path);
+  return !/^[^/]+\/src\//.test(path) && !path.split("/").includes("node_modules")
+    && existsSync(full) ? readFileSync(full, "utf8") : undefined;
 }
 
 /**
- * Every source `worker`'s own reach through relative imports, however deep, with its own:
- * what its bundle holds of ours. A data file (`.json`) is checked by its import's path alone.
+ * Every source `worker`'s own reach by relative specifiers (`relativeImports`), however
+ * deep, with its own: what its bundle holds of ours, and any module outside a Worker's `src/`
+ * on the way. A data file (`.json`) is checked by its import's path alone.
  */
 export function closure(worker: string,
                         all: ReadonlyMap<string, string> = workerSources()): Map<string, string> {
@@ -210,14 +234,15 @@ function walk(all: ReadonlyMap<string, string>, queue: string[]): Map<string, st
   const reached = new Map<string, string>();
   while (queue.length) {
     const path = queue.pop()!;
-    const source = all.get(path);
+    const source = all.get(path) ?? onDisk(path);
     if (reached.has(path) || source === undefined) {
       continue;
     }
     reached.set(path, source);
     for (const specifier of relativeImports(path, source)) {
       const at = resolved(path, specifier);
-      queue.push(...[`${at}.ts`, `${at}/index.ts`].filter((next) => all.has(next)));
+      queue.push(...[`${at}.ts`, `${at}/index.ts`]
+        .filter((next) => all.has(next) || onDisk(next) !== undefined));
     }
   }
   return reached;

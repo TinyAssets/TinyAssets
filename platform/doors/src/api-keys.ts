@@ -138,7 +138,7 @@ export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: 
   const minted = newKey();
   const row = await stub.keyMint(binding, {
     key_id: minted.keyId, name, scopes,
-    ...(proposal === undefined ? {} : { proposal: proposal as never }) });
+    ...(proposal === undefined ? {} : { proposal }) });
   await putKey(env, minted.keyId,
                { o: binding.owner, h: await secretHash(minted.secret), c: row.created_at });
   return { key: minted.key, key_id: minted.keyId, name: row.name, created_at: row.created_at,

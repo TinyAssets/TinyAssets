@@ -69,6 +69,9 @@ import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
 import type { GatewayService, Refreshed } from "../../contract/src/gateway";
+import type {
+  ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
+} from "../../contract/src/owner";
 import { isGatewayCode, Refusal, refusalOf } from "../../contract/src/refusal";
 import {
   CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODELS_JSON_MAX, REDIRECT_URI_MAX,
@@ -960,42 +963,6 @@ export class Connections {
       this.#pruneRevoked();
     });
   }
-}
-
-/**
- * A connection to prepare: its source record's id, kind, display name and pi-ai provider,
- * whether its provider can be asked to revoke what it issues, and, for OAuth, the redirect
- * URI its flow (begun in the same unit) returns to.
- */
-export interface ConnectionPrepareRequest {
-  readonly source: string;
-  readonly kind: "api_key" | "oauth2";
-  readonly display_name: string;
-  readonly provider: string;
-  readonly revocable: boolean;
-  readonly redirect_uri?: string;
-}
-/** A prepared connection's sealed blob, its kid, its models and, for OAuth, its expiry. */
-export interface ConnectionCommitRequest {
-  readonly connection: string;
-  readonly version: number;
-  readonly blob: string;
-  readonly kid: string;
-  readonly models: unknown[];
-  readonly expires_at?: number | null;
-  /** The setup check's code, when it failed after the provider issued the credential. */
-  readonly failed?: string;
-  /**
-   * Where the credential may be forwarded (the setup check's `egress`: its sealed base URL
-   * and endpoints); every commit but a failed one carries it.
-   */
-  readonly egress?: unknown;
-}
-export interface ConnectionRequest {
-  readonly connection: string;
-}
-export interface FlowFinishRequest {
-  readonly state: string;
 }
 
 // -- THE DOORS: the `connections` rows' handlers (`contract/doors.json`) --------------------------

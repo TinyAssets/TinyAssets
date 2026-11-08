@@ -4,6 +4,8 @@
  * over it is refused before anything is read, and a body that grows past it while read
  * is refused there. Either is `413`, never a parse of the rest.
  */
+import type { JsonBody } from "../../contract/src/owner";
+
 export const TOO_LARGE = "the request body is too large";
 
 /**
@@ -74,7 +76,7 @@ export async function boundedBytes(request: Request, max: number): Promise<Uint8
 
 /** The body as one JSON object; `413` or `400` as a response when it is not one. */
 export async function jsonObject(request: Request, max: number):
-    Promise<Record<string, unknown> | Response> {
+    Promise<JsonBody | Response> {
   const text = await boundedText(request, max);
   if (text === null) {
     return Response.json({ error: TOO_LARGE }, { status: 413 });
@@ -88,5 +90,5 @@ export async function jsonObject(request: Request, max: number):
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return Response.json({ error: "the request is one JSON object" }, { status: 400 });
   }
-  return value as Record<string, unknown>;
+  return value as JsonBody;
 }

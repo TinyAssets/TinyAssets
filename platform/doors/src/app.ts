@@ -99,6 +99,7 @@ import { jsonObject } from "./body";
 import { APP_BODY_MAX, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
 import { APP_RESOURCE } from "../../contract/src/identity";
 import type { ControlRead } from "../../contract/src/control";
+import type { JsonBody } from "../../contract/src/owner";
 import { ownerGate, ownerRead } from "./control";
 import {
   deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
@@ -170,7 +171,7 @@ export function bearer(request: Request): string | null {
 interface Served {
   readonly env: DoorsEnv;
   readonly owner: Bound;
-  readonly body: Record<string, unknown>;
+  readonly body: JsonBody;
   readonly presented: string;
   readonly token: ValidatedAccessToken<unknown>;
   readonly request: Request;
@@ -331,8 +332,7 @@ async function exportStream({ owner: { binding, stub }, body: request }: Served)
   if (Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
     return failure(400, "an export request is at most its cursor and its export_id");
   }
-  let page = await stub.ownerExport(binding, request as { cursor?: string | null;
-                                                          export_id?: string });
+  let page = await stub.ownerExport(binding, request);
   const exportId = page.export_id;
   let pages = 0;
   const encoder = new TextEncoder();

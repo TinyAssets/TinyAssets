@@ -30,6 +30,7 @@ import { sha256Hex } from "../../contract/src/digest";
 
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
 import type { InboundAnswer } from "../../contract/src/binding";
+import type { JsonBody } from "../../contract/src/owner";
 import { refusalOf } from "../../contract/src/refusal";
 
 import apps from "../shared-apps.json" with { type: "json" };
@@ -284,7 +285,7 @@ export async function serveInbound(request: Request, env: DoorsEnv): Promise<Res
  * - `hooks/list`: the owner's bindings, never a secret or a token.
  */
 export const HOOK_ROUTES: Readonly<Record<string, (env: DoorsEnv, bound: Bound,
-                                                   request: Record<string, unknown>) =>
+                                                   request: JsonBody) =>
                                                    Promise<unknown>>> = Object.freeze({
   "hooks/create": async (env, { binding, stub }, request) => {
     const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");

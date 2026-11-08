@@ -40,6 +40,7 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { ADMISSION_TABLE } from "./schema";
 import type { TierName } from "../../contract/src/control";
+import type { AdmissionRequest } from "../../contract/src/owner";
 import { tierName } from "./tier";
 import type {
   Door, OwnerState,
@@ -212,14 +213,6 @@ export function writeTombstone(sql: Pick<SqlStorage, "exec">): void {
   sql.exec(ADMISSION_TABLE);
   sql.exec("INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'erased', '[]')");
 }
-
-/**
- * The platform's change of the owner's admission (`admission.ts`): its admit at sign-up, or
- * a suspension's reason and whether it holds.
- */
-export type AdmissionRequest =
-  | { readonly admit: true }
-  | { readonly reason: string; readonly suspended: boolean };
 
 // -- THE DOORS: the `admission` rows' handlers (`contract/doors.json`) ----------------------------
 //

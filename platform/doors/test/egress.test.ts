@@ -27,6 +27,9 @@ import {
   url,
 } from "./support";
 import type { NetworkPlan } from "../../contract/src/sandbox";
+import type {
+  EgressRequest, ReserveRequest, SettleSent,
+} from "../../contract/src/owner";
 
 const COMPLETIONS = "/openai/v1/chat/completions";
 
@@ -416,17 +419,17 @@ describe("the egress door", () => {
     const getByName = doorsEnv.OWNER.getByName.bind(doorsEnv.OWNER);
     vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation((name: string) => {
       const real = getByName(name);
-      return { egressOpen: (binding: Binding, request: object) => {
+      return { egressOpen: (binding: Binding, request: EgressRequest) => {
                  asked.open.push(request);
                  return real.egressOpen(binding, request);
                },
-               egressReserve: (binding: Binding, request: object) => {
+               egressReserve: (binding: Binding, request: ReserveRequest) => {
                  asked.reserve.push(request);
                  return real.egressReserve(binding, request);
                },
                egressBeat: (binding: Binding, request: { reservation: string }) =>
                  real.egressBeat(binding, request),
-               egressSettle: (binding: Binding, request: Record<string, unknown>) =>
+               egressSettle: (binding: Binding, request: SettleSent) =>
                  real.egressSettle(binding, request) } as unknown as typeof real;
     });
     // The model the last key, after the messages, as JSON allows anywhere in an object.

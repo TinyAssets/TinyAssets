@@ -1,6 +1,9 @@
 /**
- * No Worker imports another Worker's `src` (`decisions.md` A1), type imports included: every
- * Worker's whole import closure reaches no other Worker's source, whatever its rules say; and
+ * No Worker imports another Worker's `src` (`decisions.md` A1): every Worker's whole import
+ * closure reaches no other Worker's source, whatever its rules say, by every way one module
+ * names another (an import or re-export, type ones included; a type imported by path;
+ * `import()`; `require()`; `/// <reference path>`) and through any module outside a Worker's
+ * `src` on the way (a test's helper, a guard); and
  * every workspace's isolation rules (`<workspace>/guards/rules.ts`, the kit's `ImportRules`)
  * name no Worker's source but its own, a Worker's naming only the contract's modules and the
  * source records' (`ci/kit/imports.ts`, `outsideProblems`). The kit's checker refuses such an
@@ -38,7 +41,8 @@ const rules = (worker: string, outside: readonly string[], job?: string): Import
   ({ worker, called: worker, outside, bare: {}, banned: [], ...(job === undefined ? {} : { job }) });
 
 describe("no Worker's source reaches another Worker's", () => {
-  it("over every Worker's whole import closure, type imports included", () => {
+  it("over every Worker's whole import closure, by every way one module names another",
+     () => {
     const sources = workerSources();
     const workers = workerFolders();
     expect(workers).toEqual(["doors", "files", "gateway", "hooks", "owner", "sandbox"]);
@@ -58,10 +62,26 @@ describe("no Worker's source reaches another Worker's", () => {
     expect(all.flatMap(outsideProblems)).toEqual([]);
   });
 
+  const OWNER_DO = ["owner/src/owner-do.ts", "export class OwnerDO {}"] as const;
   it.each([
     ["a type import of the owner's object, from a doors source",
      new Map([["doors/src/probe.ts", 'import type { OwnerDO } from "../../owner/src/owner-do";'],
-              ["owner/src/owner-do.ts", "export class OwnerDO {}"]])],
+              OWNER_DO])],
+    ["a type imported by path",
+     new Map([["doors/src/probe.ts",
+               'export type Probe = import("../../owner/src/owner-do").OwnerDO;'], OWNER_DO])],
+    ["an import()",
+     new Map([["doors/src/probe.ts",
+               'export const probe = () => import("../../owner/src/owner-do");'], OWNER_DO])],
+    ["a require()",
+     new Map([["doors/src/probe.ts", 'export const probe = require("../../owner/src/owner-do");'],
+              OWNER_DO])],
+    ["a reference path",
+     new Map([["doors/src/probe.ts",
+               '/// <reference path="../../owner/src/owner-do.ts" />\nexport {};'], OWNER_DO])],
+    ["a re-export through a test's helper, read from disk (`ci/guards/fixtures/helper.ts`)",
+     new Map([["doors/src/probe.ts",
+               'export type { OwnerDO } from "../../ci/guards/fixtures/helper";'], OWNER_DO])],
     ["another Worker's source, reached through the contract",
      new Map([["doors/src/probe.ts", 'import { x } from "../../contract/src/probe";'],
               ["contract/src/probe.ts", 'export { x } from "../../gateway/src/forward";'],
@@ -83,6 +103,8 @@ describe("no Worker's source reaches another Worker's", () => {
   it.each([
     ["another Worker's source", rules("gateway", ["owner/src/text"])],
     ["another Worker's source, for a job", rules("import", ["owner/src/files"], "import")],
+    ["another Worker's source as a bare folder, for a job",
+     rules("import", ["files/src"], "import")],
     ["a module neither the contract's nor the records'", rules("hooks", ["doors/test/support"])],
   ])("sees rules naming %s", (_what, named) => {
     expect(outsideProblems(named)).not.toEqual([]);

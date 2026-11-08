@@ -177,7 +177,9 @@ import {
 import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type {
-  BilledEvent, EgressOpened, EgressRefusal, EgressReserved, OwnerDoors,
+  AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
+  ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
+  FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, SigninEventsRequest,
 } from "../../contract/src/owner";
 import { Sessions, sessionsDoors } from "./sessions";
 import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
@@ -204,10 +206,7 @@ import type {
   DisableRequest, InboxDigestRequest, PostRequest, ReadRequest, SubscribeRequest,
   UnsubscribeRequest, WakeLimitsRequest,
 } from "./ledger";
-import type { AdmissionRequest } from "./admission";
-import type {
-  BindingRequest, InboundCreateRequest, InboundEvent, InboundSetRequest,
-} from "./inbound";
+import type { InboundEvent } from "./inbound";
 import type { CardRequest, PolicyWriteRequest, ProposeRequest } from "./policy";
 import type {
   ChangesRequest, FetchMetadata, FileAppendRequest, FileChunksRequest, FileConflicted,
@@ -218,9 +217,6 @@ import type {
   UploadChunksRequest, UploadCommitRequest, UploadStoredRequest, VersionRequest,
 } from "./files";
 import type { ClientRequest, ForgetRequest } from "./grants";
-import type {
-  ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
-} from "./connections";
 import type { ConversationRequest } from "./relay";
 import type { EraseRequest } from "./erasure";
 import type {
@@ -229,7 +225,7 @@ import type {
 import type { KeyMintRequest } from "./keys";
 import type { RegistrationCardRequest } from "./registrations";
 import type {
-  SigninCodeRequest, SigninEventsRequest, SigninRequest, SigninRequestById, SigninStartRequest,
+  SigninCodeRequest, SigninRequest, SigninRequestById, SigninStartRequest,
 } from "./signins";
 import type { TierRequest } from "./tier";
 
@@ -2856,7 +2852,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * A streaming call's beat from its door (`EGRESS_BEAT_S`): the open reservation its egress
    * token opened is still its door's, so it is not settled lost.
    */
-  egressBeat(binding: Binding, request: { reservation: string }): Promise<{ beat: boolean }> {
+  egressBeat(binding: Binding, request: BeatRequest): Promise<{ beat: boolean }> {
     return this.#run("egressBeat", binding, request, egressDoors.egressBeat);
   }
 

@@ -84,7 +84,9 @@ import type { SandboxLease } from "./files";
 import { costMicros, largestFitting, periods } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
 import type { MeterOutcome } from "../../contract/src/gateway";
-import type { EgressOpened, EgressRefusal, EgressReserved } from "../../contract/src/owner";
+import type {
+  EgressOpened, EgressRefusal, EgressRequest, EgressReserved, ReserveRequest,
+} from "../../contract/src/owner";
 import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
@@ -131,27 +133,6 @@ export interface LiveStream {
   readonly run: string;
 }
 
-
-export interface EgressRequest {
-  /** The run the call's path names (`/r/<run>/c/<connection>/...`). */
-  readonly run: string;
-  readonly connection: string;
-  readonly method: string;
-  /** The path (and query) after `/c/<connection>`, as the provider's API names it. */
-  readonly path: string;
-  /** The request body's declared length, or null. */
-  readonly bytes_hint: number | null;
-}
-
-/**
- * An admitted model call's reserve, as the gateway's one parse of its body read it: the
- * model the body (or the path) names, and its tier option's value, or null when absent.
- */
-export interface ReserveRequest {
-  readonly reservation: string;
-  readonly model: string;
-  readonly tier: string | null;
-}
 
 export interface SettleRequest {
   readonly reservation: string;

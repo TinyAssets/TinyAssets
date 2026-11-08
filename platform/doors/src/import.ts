@@ -242,7 +242,7 @@ class Slice {
       }
       const page = await part(this.#env, this.#message, this.#index, each.part);
       if (each.kind === "rows") {
-        await this.#call(stub.importRows(binding, { rows: listOf(page, "rows") as never }));
+        await this.#call(stub.importRows(binding, { rows: listOf(page, "rows") }));
         continue;
       }
       const stopped = await this.#files(listOf(page, "entries").map(entryOf), entry);
@@ -260,7 +260,7 @@ class Slice {
     let bytes = 0;
     const flush = async () => {
       if (batch.length > 0) {
-        await this.#call(stub.importFiles(binding, { entries: batch as never }));
+        await this.#call(stub.importFiles(binding, { entries: batch }));
       }
       batch = [];
       bytes = 0;
