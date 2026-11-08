@@ -21,7 +21,7 @@ import {
   PAGE_USABLE, RECORD_FIXED, record, recordBytes, SHARE_BYTES, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import type { OwnerDO } from "../src/owner-do";
-import { FILE_SETTINGS } from "../src/policy";
+import { FILE_SETTINGS } from "../../contract/src/policy-document";
 import { MIGRATIONS } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, filesOn, inFiles, namedCode, sqlIn, text } from "./support";

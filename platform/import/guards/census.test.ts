@@ -80,7 +80,8 @@ describe("the census", () => {
       archived_stores: 8,
     });
     expect((report["files"] as { largest: number }).largest).toBe(4 * 1024 * 1024 + 10);
-    expect(report["rows"]).toEqual({ policies: 2, collection_rows: 2, body_bytes: 27 });
+    expect(report["rows"]).toEqual({ policies: 2, policies_archived: 0, collection_rows: 2,
+                                     body_bytes: 27 });
     expect(report["stores"]).toMatchObject({
       "account/policy.db/policy carry": 2, "account/policy.db/once_approvals drop": 1,
       "account/policy.db/receipts archive": 1, "account/conversations.db/collection_rows carry": 2,

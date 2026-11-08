@@ -7,6 +7,9 @@
  */
 import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "./limits";
 
+/** The most versions policy can keep of a path (`FILE_SETTINGS.keep_versions`). */
+export const KEEP_CEILING = 1000;
+
 export const FILE_DEFAULTS = Object.freeze({
   max_inline_bytes: 256 * 1024 ** 2,
   max_manifest_bytes: 512 * 1024 ** 2,

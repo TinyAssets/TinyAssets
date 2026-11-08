@@ -9,10 +9,16 @@
  * - `bundle <work> --tiers <control.json> --exclude <list> --out <dir> --private <dir>`
  *   (or `--dry-run`, which writes nothing): the bundles, the digests and billing ids in 0600
  *   files of the private folder, and counts alone on stdout;
- * - `stage <out> --run <id>` (or `--dry-run`, which sends nothing and needs no credential):
- *   every bundle checked whole, uploaded to the staging bucket and its message put on the
- *   import queue (`stage.ts`), the window's credentials read from the environment the
- *   operator runs it in (`STAGE_INPUTS`), never from a file; counts and ordinals on stdout.
+ *   (`--rehearsal <run>`: each bundle under its rehearsal's name, `rehearsalName`);
+ * - `stage <out> --run <id>` (or `--dry-run`, which sends nothing and needs no credential;
+ *   `--rehearsal`, for a rehearsal's bundles): every bundle checked whole, uploaded to the
+ *   staging bucket and its message put on the import queue (`stage.ts`), the window's
+ *   credentials read from the environment the operator runs it in (`STAGE_INPUTS`), never
+ *   from a file; counts and ordinals on stdout;
+ * - `verify <out> --run <id> --record <file>`, `admit <out> --run <id> --record <file>`,
+ *   `wipe <out> --run <id> --record <file>` and `dlq <out> --run <id> [--delete]`: the
+ *   window's steps after staging (`window.ts`), with the same credentials; exit 0 when the
+ *   step holds (every owner clean, every listing empty, no dead letter), 3 when not.
  *
  * The images are read only through mounts the kernel says are read-only XFS
  * (`/proc/self/mountinfo`), so a live or writable volume is never read. stdout holds counts
@@ -27,6 +33,7 @@ import { buildBundles, exclusionList } from "./bundle";
 import { census, type Tiers } from "./census";
 import { type Fetcher, type Inputs, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
+import { admit, CLOCK, type Clock, deadLetters, verify, wipe } from "./window";
 
 /** The environment variables a staging run takes its credentials from, by input. */
 export const STAGE_INPUTS = Object.freeze({
@@ -56,9 +63,45 @@ export async function stageMain(argv: readonly string[],
   }
   const dry = argv.includes("--dry-run");
   const summary = await stage(resolve(given), required(argv, "--run"),
-                              dry ? null : stageInputs(env), fetcher, print);
+                              dry ? null : stageInputs(env), fetcher, print, undefined,
+                              argv.includes("--rehearsal"));
   print(JSON.stringify(summary, null, 2));
   return 0;
+}
+
+/** The window's steps after staging: `verify`, `admit`, `wipe` and `dlq` (`window.ts`). */
+export const WINDOW_STEPS = Object.freeze(["verify", "admit", "wipe", "dlq"] as const);
+
+/** `<step> <out> --run <id> ...`: its exit code, 0 when the step holds, 3 when not. */
+export async function windowMain(argv: readonly string[],
+                                 env: Readonly<Record<string, string | undefined>>,
+                                 print: (line: string) => void, fetcher: Fetcher = NETWORK,
+                                 clock: Clock = CLOCK): Promise<number> {
+  const [step, given] = argv;
+  if (given === undefined) {
+    throw new Error(`usage: ${step} <out> --run <id> --record <file>`);
+  }
+  const out = resolve(given);
+  const run = required(argv, "--run");
+  const window = { inputs: stageInputs(env), fetcher, clock };
+  if (step === "dlq") {
+    const read = await deadLetters(window, out, run, argv.includes("--delete"), print);
+    return read.messages === 0 ? 0 : 3;
+  }
+  const record = resolve(required(argv, "--record"));
+  if (step === "verify") {
+    const summary = await verify(out, run, window, record, print);
+    return summary.clean === summary.bundles ? 0 : 3;
+  }
+  if (step === "admit") {
+    await admit(out, run, window, record, print);
+    return 0;
+  }
+  if (step === "wipe") {
+    const proof = await wipe(out, run, window, record, print);
+    return proof.records === 0 && proof.staged === 0 && proof.objects === 0 ? 0 : 3;
+  }
+  throw new Error(`no step ${step}`);
 }
 
 function option(argv: readonly string[], name: string): string | null {
@@ -184,6 +227,7 @@ export function main(argv: readonly string[], mountinfo: () => string,
     const summary = buildBundles(copy, {
       out, private: privateDir, tiers,
       exclude: exclusionList(readFileSync(required(argv, "--exclude"), "utf8")),
+      rehearsal: option(argv, "--rehearsal"),
     });
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
     return Object.keys(summary.refused).length === 0 ? 0 : 3;
@@ -199,6 +243,11 @@ if (process.argv[1] !== undefined && /import\.mjs$|cli\.ts$/.test(process.argv[1
   if (process.argv[2] === "stage") {
     stageMain(process.argv.slice(2), process.env,
               (line) => process.stdout.write(`${line}\n`)).then((code) => {
+      process.exitCode = code;
+    }, refuse);
+  } else if ((WINDOW_STEPS as readonly string[]).includes(process.argv[2] ?? "")) {
+    windowMain(process.argv.slice(2), process.env,
+               (line) => process.stdout.write(`${line}\n`)).then((code) => {
       process.exitCode = code;
     }, refuse);
   } else {

@@ -55,6 +55,7 @@ import { tokenShaped } from "../../contract/src/routing-mac";
 import {
   DNS_SERVERS as RESOLVERS, EGRESS_HOST as DOOR_HOST, GENERATION_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
+import { checkDestination } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
 
 /**
@@ -66,56 +67,6 @@ import { Refusal } from "../../contract/src/refusal";
  */
 export const EGRESS_HOST = "egress.tinyassets.io";
 export const DNS_SERVERS: readonly string[] = Object.freeze(["1.1.1.1"]);
-
-/**
- * The refusal of an IP-literal egress destination. Workers `fetch` shows no resolved
- * address, so the gateway fetches strictly publicly, E2B filters the sandbox's CIDRs (8b's
- * live probe confirms private addresses are unreachable), and a destination is a DNS name,
- * matched by SNI.
- */
-export const EGRESS_IP_LITERAL = "egress_ip_literal: an egress destination is a DNS name, " +
-  "never an IP literal";
-/** `normalize_destination`'s DNS label: underscores allowed, hyphens interior. */
-const LABEL = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
-/** A host the URL parser turned into an IPv4 address. */
-const IPV4 = /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/;
-
-/**
- * One egress destination of the owner's policy (`policy.ts` validates each by this):
- * `normalize_destination(host, port) == entry`, for a hostname: lowercase ASCII DNS labels
- * with no trailing dot, as the Python's IDNA fast path leaves them, and a port. An IP
- * literal, in any spelling the URL parser reads as an address, is refused
- * (`EGRESS_IP_LITERAL`); a host no URL can carry (a name ending in a number, a malformed
- * `xn--` label) is invalid.
- */
-export function checkDestination(entry: unknown): void {
-  if (typeof entry !== "object" || entry === null || Array.isArray(entry)
-      || Object.keys(entry).sort().join() !== "host,port") {
-    throw new Refusal("invalid", "invalid egress destination");
-  }
-  const { host, port } = entry as Record<string, unknown>;
-  if (typeof host !== "string" || typeof port !== "number" || !Number.isSafeInteger(port)
-      || port < 1 || port > 65_535) {
-    throw new Refusal("invalid", "invalid egress destination");
-  }
-  if (host.includes(":") || host.startsWith("[")) {
-    throw new Refusal("egress_ip_literal", EGRESS_IP_LITERAL);
-  }
-  if (!host || host.length > 253 || !host.split(".").every((label) => LABEL.test(label))) {
-    throw new Refusal("invalid", "invalid egress destination");
-  }
-  // The host as a URL reads it: any spelling of an IPv4 address (decimal, hex, octal,
-  // short forms) comes back dotted, and a name ending in a number is no host at all.
-  let parsed: string;
-  try {
-    parsed = new URL(`https://${host}/`).hostname;
-  } catch {
-    throw new Refusal("invalid", "invalid egress destination");
-  }
-  if (IPV4.test(parsed)) {
-    throw new Refusal("egress_ip_literal", EGRESS_IP_LITERAL);
-  }
-}
 
 /** What the owner is told of an allowlist: not a data boundary in v1 (above). */
 export const BOUNDARY_NOTE = "An egress allowlist keeps the sandbox's tools to the listed " +

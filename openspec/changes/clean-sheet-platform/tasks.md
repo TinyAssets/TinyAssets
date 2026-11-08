@@ -2317,9 +2317,13 @@ R, S, M and W.
   into the new platform by a job in `platform/import/` (Node, run on the droplet from the
   verified backup copy), which reads the contract and no Worker's `src` (its isolation guard).
   It is deleted in the cutover's deletion change, with everything of the import window:
-  the owner's import doors (`owner/src/import.ts`, their six `import` rows in
-  `contract/doors.json`, the `import` class and caller, `Policy.imported`, `Files.openUploads`
-  and the binding's `import` field), `contract/src/import-message.ts`, the doors' consumer
+  the owner's import doors (`owner/src/import.ts`, their eight `import` rows in
+  `contract/doors.json`, the `import` class and the `import` and `discard` callers,
+  `Policy.imported`, `Files.openUploads`, `Files.entriesPage`, `Files.chunksPage`,
+  `Collections.rowsPage`, the files plane's `mtime_ms` write option, `Erasure.discard` and its
+  `bare` wipe, the object's `#discarded`, `DISCARDED` and the binding's `import` field),
+  `contract/src/import-message.ts` (its rehearsal names with it, and the doors' sign-in refusal
+  of one), the doors' consumer
   (`doors/src/import.ts`, `putImportChunk`, `bindImport`, `importTiers`) and its bindings in
   `doors/wrangler.jsonc` (`IMPORT_STAGING`, the `IMPORTS` producer, the consumer and its
   dead-letter queue), the account's `tinyassets-import` and `tinyassets-import-dlq` queues and
@@ -2348,22 +2352,35 @@ R, S, M and W.
     dead-letter queue and `IMPORT_STAGING`'s bucket from the configs. The job's `stage`
     uploads the bundles over R2's S3 API and sends one MAC'd message an owner over the Queues
     HTTP API (a dry run prints what it would send); its credentials are the run's inputs.
-  - [ ] 5. `importCheck` and `importDiscard`, the job's verify and wipe steps, and the admit
-    step after them (`tierSet`, `admissionSet`, `o:`). It never admits an owner the old stack
-    never admitted (no `owner_admission` row: `owner.json` says `absent`, and the census and
-    the builder refuse and count one); one found is the founder's to rule on. It also owes:
-    - a file's mtime kept, since an admitted owner can't be imported again;
-    - a policy the validator refuses found by the census, archived as a file, with the default
-      kept;
-    - `importCheck` as the record of what failed, because terminal drops are acked and never
-      reach the dead-letter queue;
-    - a reader for the dead-letter queue;
-    - the admit only after the owner's queue is drained and `importCheck` shows no
-      differences, so no chunk is still in flight;
-    - a test that two copies of one owner's import converge, which is what a kill between the
-      continuation and the ack leaves running;
-    - the consumer's hold enforced, or `IMPORT_HOLD_BYTES` gone, with an import case in the
-      memory leg (`rvimport34_report.md`).
+  - [x] 5. `importCheck` and `importDiscard` (`owner/src/import.ts`), each through the
+    consumer as an MAC'd `check` or `discard` message answered in the staging bucket, and the
+    job's `verify`, `wipe`, `admit` and `dlq` steps (`import/window.ts`, `import/check.ts`).
+    - `importCheck` reads the owner back through the object's own paths, a page at a time:
+      every entry (path, kind, size, mode, content id, mtime); every chunk read back through
+      `FILES` under the owner's data key, none sampled (the owners are small), the object
+      holding none of its bytes; the rows' count and order-free digest; the policy's digest,
+      tier, admission and storage. `verify` holds it to the bundle: 0 missing, 0 extra, 0
+      different, or the owner failed. It is the record of what failed: a terminal drop is
+      acked and never reaches the dead-letter queue. An owner's import must also be marked
+      done (the queue's backlog is no field of the Queues API), so a still-running copy of its
+      chain can only put a chunk already live.
+    - `importDiscard` is the erasure's own R2 deletion and `deleteAll()` (`Erasure.discard`),
+      with no tombstone, no `o:` erased record and no WorkOS: a `pending` owner, or a
+      `rehearsal-<run>-<sha256(P)[:24]>` name (`rehearsalName`, which the doors refuse as an
+      owner issuer's subject) in any state. `wipe` deletes the run's `o:rehearsal-<run>-`
+      records and staging, and proves the three listings empty.
+    - `admit` runs only once every owner verified clean and the dead-letter queue is empty, then
+      each owner in turn: `tierSet`, `admissionSet {admit:true}`, each suspension, the `o:`
+      record (review L8); never an owner the old stack never admitted (`absent`). One failed
+      owner blocks every admit; going on without it is the founder's call.
+    - `dlq` reads the dead-letter queue over its HTTP pull consumer (added when it has none: a
+      Worker config cannot name one) and deletes only with `--delete`.
+    - Each file keeps its mtime (the files plane's `mtime_ms`, no schema change). A policy the
+      validator (moved to `contract/src/policy-document.ts`) refuses is counted by the census
+      and archived verbatim as `/workspace/imported/policy.refused.json`, the default kept.
+      The consumer reads no staged object past `IMPORT_HOLD_BYTES`, and the memory leg holds
+      the check's read-back to no chunk in hand. Tested: two copies of one import converge,
+      and a kill at every step of import, check, discard and admit converges on a run again.
   - [x] 6. The deploy kit's route handback (`platform/deploy/deploy.ts`). Before any
     change, mode `routes` keeps a route record in the control namespace. It holds the
     before-state of each outward change `routes` makes beyond `dark`'s: the zone's routes and

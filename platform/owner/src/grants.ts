@@ -91,7 +91,8 @@ import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
 import { may } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
-import { canonical, plain, type Policy, policyDigest } from "./policy";
+import { canonical, plain, policyDigest } from "../../contract/src/policy-document";
+import type { Policy } from "./policy";
 import { codePoints, utf8Bytes } from "../../contract/src/text";
 import type {
   Call, GrantRequest, OwnerState,

@@ -28,6 +28,7 @@ import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
 import { sha256Hex } from "../contract/src/digest";
+import { rehearsalName } from "../contract/src/import-message";
 
 import { type Tiers } from "./build";
 import { admissionProblems, erased, measure, verifyCopy, withheld } from "./census";
@@ -53,6 +54,12 @@ export interface Options {
   /** The principals whose owners start fresh: backed up, never imported. Never empty. */
   readonly exclude: ReadonlySet<string>;
   readonly tiers: Tiers;
+  /**
+   * A rehearsal's run: each bundle in `out` is then its owner's under its rehearsal's name
+   * (`rehearsalName`), never its real one, and keyed by it, so the rehearsal imports into
+   * objects no one can sign into and its wipe needs no erasure (`import_research.md` §4).
+   */
+  readonly rehearsal?: string | null;
 }
 
 /** The run's counts: no key, no digest, no name. */
@@ -126,6 +133,11 @@ export function erasureGuard(fleet: Fleet, principals: Iterable<string>): void {
       throw new Error("an erased or erasing owner reached a bundle: the run is refused");
     }
   }
+}
+
+/** The owner under a rehearsal's name, keyed by it; its tree and stores its own still. */
+function renamed(owner: Owner, name: string): Owner {
+  return { ...owner, principal: name, key: sha256Hex(name).slice(0, 16) };
 }
 
 /** One owner's bundle at `dir`, or the fit's problems (and nothing left at `dir`). */
@@ -234,7 +246,9 @@ export function buildBundles(copy: Copy, options: Options): Summary {
     }
     erasureGuard(fleet, [owner.principal]);
     const base = excluded ? options.private : options.out;
-    const built = writeBundle(owner, copy, base === null ? null : join(base, owner.key),
+    const named = excluded || (options.rehearsal ?? null) === null ? owner
+      : renamed(owner, rehearsalName(options.rehearsal!, owner.principal));
+    const built = writeBundle(named, copy, base === null ? null : join(base, named.key),
                               options.tiers, !excluded);
     if (built.problems.length > 0) {
       count(built.problems);
@@ -247,7 +261,7 @@ export function buildBundles(copy: Copy, options: Options): Summary {
     if (built.digest !== null) {
       digests[owner.key] = built.digest;
     }
-    record.push({ key: owner.key, owner: owner.principal, uid: owner.uid, excluded,
+    record.push({ key: named.key, owner: owner.principal, uid: owner.uid, excluded,
                   tier: owner.plan?.tier ?? "free", ends_at: owner.plan?.ends_at ?? null,
                   customer_id: owner.plan?.customer_id ?? null,
                   subscription_id: owner.plan?.subscription_id ?? null });

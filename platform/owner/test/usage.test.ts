@@ -14,7 +14,8 @@ import { describe, expect, it } from "vitest";
 
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
-import { MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
+import { MODEL_DEFAULTS, MODEL_SETTINGS, validate } from "../../contract/src/policy-document";
+import { modelSettings } from "../src/policy";
 import {
   type Ask, largestFitting, type ModelCaps, periods, priced, Usage, USAGE_LIMITS,
   type UsageLimits,

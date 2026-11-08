@@ -15,9 +15,10 @@ import { describe, expect, it } from "vitest";
 import { clock } from "../src/clock";
 import type { OwnerDO } from "../src/owner-do";
 import {
-  canonical, DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, Policy,
-  POLICY_LIMITS, policyDigest, validate,
-} from "../src/policy";
+  canonical, DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, POLICY_LIMITS,
+  policyDigest, validate,
+} from "../../contract/src/policy-document";
+import { Policy } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure } from "./support";
 

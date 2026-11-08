@@ -24,6 +24,7 @@ import {
   buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, pages, PAGE_ROWS,
   PRIVATE_RECORD,
 } from "../bundle";
+import { census } from "../census";
 import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
 import {
@@ -147,6 +148,26 @@ describe("the bundle builder", () => {
     expect(json(join(out, keyOf(BOB), "owner.json"))).toMatchObject({
       admission: { state: "suspended", reasons: ["billing"] }, tier: "free" });
     expect(rows(join(out, keyOf(BOB)))).toEqual([]);
+  });
+
+  it("archives a policy the platform's validator refuses, verbatim, and keeps the default, " +
+     "found by the census first", () => {
+    const { f, out, options } = setup();
+    const at = join(f.account(ALICE), "policy.db");
+    const refused = JSON.stringify({ entries: [], egress: { mode: "everywhere",
+                                                            destinations: [] } });
+    const db = new DatabaseSync(at);
+    db.prepare("UPDATE policy SET document = ?").run(refused);
+    db.close();
+    expect((census(f.copy, TIERS).report["rows"] as Record<string, number>)["policies_archived"])
+      .toBe(1);
+    buildBundles(f.copy, options);
+    const bundle = join(out, keyOf(ALICE));
+    expect(rows(bundle).filter((row) => row.kind === "policy")).toEqual([]);
+    const archived = manifest(bundle).find((entry) => entry.path === `${I}/policy.refused.json`)!;
+    expect(bytesOf(bundle, archived).toString("utf8")).toBe(refused);
+    expect(bytesOf(bundle, manifest(bundle).find((entry) => entry.path === `${I}/README.md`)!)
+      .toString("utf8")).toContain("`policy.refused.json` is your old policy, unchanged");
   });
 
   it("archives each store by rule 0: kept tables only, a whole store byte for byte", () => {
