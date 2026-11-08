@@ -9,6 +9,10 @@ spec = importlib.util.spec_from_file_location("prepare_oracle_runsc", SCRIPT)
 runsc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runsc)
 
+pytestmark = pytest.mark.verifies(
+    "ci-linux-proof-venue:The required shards run the unchanged gate runner",
+)
+
 
 class Answer:
     def __init__(self, body):
