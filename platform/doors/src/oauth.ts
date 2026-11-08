@@ -34,6 +34,10 @@ import {
   OAuthAuthorizationServer, type OAuthResourceContext, OAuthResourceServer,
   type ValidatedAccessToken,
 } from "@cloudflare/workers-oauth-provider";
+// The provider is pinned (1.2.4, `package.json`). The handles canary tells the doors from
+// the old daemon by its empty anonymous 401 body on `/mcp`
+// (`scripts/cutover_handles_canary.py` `mcp_side`), and `test/oauth.test.ts` pins that body,
+// so a version that adds one fails there before the canary misreads a side.
 
 import { refusedRegistrationLine, registrationRefusal } from "./apps";
 import {
