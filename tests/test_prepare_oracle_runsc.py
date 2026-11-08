@@ -1,3 +1,4 @@
+import http.client
 import importlib.util
 import urllib.error
 from pathlib import Path
@@ -40,14 +41,18 @@ def flaky(failures, body=b"bytes"):
     return fetch, calls
 
 
-def test_a_502_or_a_stall_is_retried_and_the_bytes_come_back():
-    failures = [urllib.error.HTTPError("u", 502, "Bad Gateway", {}, None),
-                TimeoutError("The read operation timed out")]
+def status(code):
+    return urllib.error.HTTPError("u", code, "status", {}, None)
+
+
+def test_a_502_a_stall_and_a_cut_body_are_retried_and_the_bytes_come_back():
+    failures = [status(502), TimeoutError("The read operation timed out"),
+                http.client.IncompleteRead(b"part"), status(429)]
     fetch, calls = flaky(failures)
     waits = []
     assert runsc.fetched("u", fetch=fetch, sleep=waits.append) == b"bytes"
-    assert len(calls) == 3
-    assert waits == [2, 4]
+    assert len(calls) == 5
+    assert waits == [2, 4, 8, 16]
 
 
 def test_it_gives_up_after_its_attempts_with_the_last_failure():
@@ -58,8 +63,16 @@ def test_it_gives_up_after_its_attempts_with_the_last_failure():
     assert len(calls) == runsc.ATTEMPTS
 
 
-def test_anything_else_is_not_retried():
-    fetch, calls = flaky([ValueError("not a network failure")])
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("failure", [status(404), status(403), ValueError("no")])
+def test_a_missing_release_or_any_other_fault_fails_at_once(failure):
+    fetch, calls = flaky([failure])
+    with pytest.raises(type(failure)):
         runsc.fetched("u", fetch=fetch, sleep=lambda s: None)
     assert len(calls) == 1
+
+
+def test_prepare_retries_then_still_holds_the_bytes_to_the_pin(tmp_path):
+    fetch, calls = flaky([status(503)], body=b"not the pinned archive")
+    with pytest.raises(ValueError, match="archive digest mismatch"):
+        runsc.prepare(tmp_path / "out", fetch=fetch, sleep=lambda s: None)
+    assert len(calls) == 2

@@ -1,6 +1,7 @@
 """Fetch the production-pinned runtime into a disposable oracle output directory."""
 
 import hashlib
+import http.client
 import io
 import re
 import sys
@@ -13,18 +14,26 @@ from pathlib import Path
 # GitHub's release download answers 502 or stalls now and then; every required
 # shard fetches here first, so one bad answer used to fail the whole run before
 # any test ran. The archive is pinned by digest, so a retry can only ever give
-# the same bytes or fail the digest check below.
+# the same bytes or fail the digest check below. A 4xx other than 408 or 429
+# (a missing pinned release, a refusal) is a real fault and fails at once.
 ATTEMPTS = 5
 FIRST_WAIT_S = 2
+TIMEOUT_S = 60
+
+
+def passing(failure):
+    if isinstance(failure, urllib.error.HTTPError):
+        return failure.code >= 500 or failure.code in (408, 429)
+    return isinstance(failure, (OSError, http.client.HTTPException))
 
 
 def fetched(url, *, fetch, sleep):
     for attempt in range(ATTEMPTS):
         try:
-            with fetch(url, timeout=120) as response:
+            with fetch(url, timeout=TIMEOUT_S) as response:
                 return response.read()
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as failure:
-            if attempt == ATTEMPTS - 1:
+        except Exception as failure:
+            if attempt == ATTEMPTS - 1 or not passing(failure):
                 raise
             wait = FIRST_WAIT_S * 2 ** attempt
             print(f"runtime fetch failed ({failure}); retrying in {wait}s",
