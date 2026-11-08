@@ -84,6 +84,7 @@ import { costMicros, largestFitting, periods } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
 import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
+import type { ModelRecord } from "../../contract/src/model-record";
 
 
 /**
@@ -266,12 +267,37 @@ export interface EgressCaps {
   readonly source_monthly_cost: number | null;
 }
 
-/** A connection's model as a sandbox call is priced by it: opaque here but for its bounds. */
-export interface EgressModel {
-  readonly id: string;
-  readonly maxTokens: number;
-  readonly contextWindow: number;
+/**
+ * Egress pricing: a sandbox call's most cost before its model is known, input at its
+ * dearest of uncached, cache-read and cache-write rates, each model's tokens at its rates by
+ * `cost` (pi-ai's `calculateCost`, `usage.ts`'s `priced`, handed in: the sandbox's spend runs
+ * nothing of pi's engine).
+ */
+
+/** A model's cost record with its input at its dearest rate: what a token can cost at most. */
+function dearest(model: ModelRecord): ModelRecord {
+  const top = (rates: { input: number; cacheRead: number; cacheWrite: number }) =>
+    Math.max(rates.input, rates.cacheRead, rates.cacheWrite);
+  return { ...model, cost: { ...model.cost, input: top(model.cost),
+                             ...(model.cost.tiers === undefined ? {}
+                               : { tiers: model.cost.tiers.map((tier) =>
+                                 ({ ...tier, input: top(tier) })) }) } };
 }
+
+/**
+ * The most µ$ a sandbox call of `input` and `output` tokens can cost on any of `models`,
+ * each model's tokens at most its own context window and output cap, at its dearest rates.
+ */
+export function egressPrice(models: readonly ModelRecord[], input: number, output: number,
+                            cost: ModelCost): number {
+  return Math.max(...models.map((model) => cost(dearest(model),
+                                                Math.min(input, model.contextWindow),
+                                                Math.min(output, model.maxTokens))));
+}
+
+/** A model's µ$ for `input` and `output` tokens at its catalog rates. */
+export type ModelCost = (model: ModelRecord, input: number, output: number) => number;
+
 
 /** What `open` reads beside its own rows, each at the open's unit. */
 export interface EgressDeps {
@@ -298,17 +324,13 @@ export interface EgressDeps {
   /** The connection's egress scope, source and models; null as `credential`'s. */
   readonly connection: (connection: string) =>
     { readonly scope: EgressScope; readonly source: string; readonly provider: string;
-      readonly models: readonly EgressModel[] } | null;
+      readonly models: readonly ModelRecord[] } | null;
   /** The caps for a call of `source`. */
   readonly caps: (source: string) => EgressCaps;
   /** The µ$ held in a period (`d:<day>`, `m:<month>`) by `source`, or by every source. */
   readonly spent: (period: string, source: string | null) => number;
-  /**
-   * The most µ$ a call of `input` and `output` tokens on any of `models` can cost (the
-   * catalog's rates, by pi-ai's `calculateCost`, each model's tokens at most its own
-   * context window and output cap): non-decreasing in the output.
-   */
-  readonly price: (models: readonly EgressModel[], input: number, output: number) => number;
+  /** A model's cost at its rates (pi-ai's `calculateCost`, `usage.ts`). */
+  readonly cost: ModelCost;
   /** In the open's unit: the spend counters past their window pruned, as `usage.ts` does. */
   readonly pruned: (now: number) => void;
 }
@@ -620,7 +642,7 @@ export class Egress {
    * tier's `multiplier`, so what it holds bounds what it can cost; the settle gives the
    * difference back. Refused, with the cap that binds, below `MIN_OUTPUT`.
    */
-  #reserve(runId: string, source: string, model: EgressModel, multiplier: number,
+  #reserve(runId: string, source: string, model: ModelRecord, multiplier: number,
            now: number): ({ ok: true } & Charged) | { ok: false; rule: string } {
     const models = [model];
     const input = model.contextWindow;
@@ -651,8 +673,10 @@ export class Egress {
     const floor = Math.min(most, MIN_OUTPUT);
     const byTokens = caps.run_tokens === null ? Number.POSITIVE_INFINITY
       : caps.run_tokens - run.tokens - input;
+    // The call's model is unknown until the gateway reads the body: priced at the most any
+    // of the connection's models charges (`egressPrice`), non-decreasing in the output.
     const price = (output: number) =>
-      Math.ceil(this.#deps.price(models, input, output) * multiplier);
+      Math.ceil(egressPrice(models, input, output, this.#deps.cost) * multiplier);
     const fits = (output: number) => price(output) <= costRoom;
     const output = largestFitting(Math.min(most, byTokens), fits);
     if (output < floor || output < 1) {

@@ -96,18 +96,13 @@
 import { HEX64, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 import { codePoints, principal, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
-import { type EditRefusal, type Edited, letGo, planEdit } from "./edit";
+import { type EditRefusal, type Edited, planEdit } from "./edit";
+import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
+import { slotted } from "../../contract/src/slots";
 import {
-  APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, MOVE_PASS_UNITS, moveTableUnits, ownerSlots,
-} from "./holds";
-import {
-  isSlotBusy, type Lease as PoolLease, slotBusy, type SlotPool, slotted,
-} from "../../contract/src/slots";
-import {
-  BATCH_BYTES, CHUNK_BYTES, ENGINE_SIGNINS, GC_GRACE_S, INLINE_BYTES, PLACE_BYTES,
-  SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS, SLOT_WAIT_MS,
+ CHUNK_BYTES, ENGINE_SIGNINS, GC_GRACE_S, INLINE_BYTES, PLACE_BYTES, SIGNIN_LIST_CHARS,
+ SIGNIN_MODELS_CHARS,
 } from "../../contract/src/limits";
-import { createHash } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
@@ -153,50 +148,39 @@ import {
   keepTiers, keptTiers, PLATFORM_TIER_ONLY, type TierName, tierNumbers,
 } from "./tier";
 import {
-  Bodies, bodyOffset, inlineWindow, type Located, type Placed, placedAs,
-  type Placing, type Window, WINDOWS_BYTES,
+ Bodies, bodyOffset, type Located, type Placed, placedAs, type Placing, type Window,
 } from "./bodies";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import {
-  bodied, type Cut, fitList, fitPage, PAGE_BYTES, RESULT_TOO_LARGE, whole as fits,
+  agentsPage, bodied, conflictShown, contentsOf, fitList, fitPage, fittedRow, fittedRun,
+  headChars, type Heads, heads, headWindow, INBOX_PART, PAGE_BYTES, RESULT_TOO_LARGE,
+  type Shown, type Wants, windowed, windowedAll,
 } from "./pages";
 import {
-  type Changed, type Changes, checkBody, Collections, Conflict, type History,
-  type HistoryEntry, type Page, type Row,
+ checkBody, Collections, Conflict, type History, type HistoryEntry, type Page, type Row,
 } from "./collections";
 import {
   Connections, type ConnectionView,
   type GatewayService, type Prepared,
 } from "./connections";
-import type { ModelRecord } from "../../contract/src/model-record";
 import { ERASING, FileFault, Refusal } from "../../contract/src/refusal";
 import {
-  type Change as FileChange, type ChunkRef, type ChunkStore, type Content,
-  type Entry, FileConflict, Files, type Lease, MAX_OPEN_INTENTS,
-  OWNER_AUTHORITY, type SandboxLease, type SyncOp, type SyncOutcome, type Usage, WHOLE_BYTES,
+ type Change as FileChange, type ChunkRef, type ChunkStore, type Content, type Entry,
+ FileConflict, Files, type Lease, MAX_OPEN_INTENTS, OWNER_AUTHORITY, type SandboxLease,
+ type SyncOp, type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
 import { type Client, type ConnectedApp, type Grant, Grants, type Scope } from "./grants";
 import {
-  CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
+  CODE_MODE_OFF, CODE_NOT_SERVED, type CodemodeBounds, type CodeRequest, type CodeResult, codeTool,
+  type HooksService, runScript,
 } from "./codemode";
 import {
-  type Actor, type Agent, type ArchivedMail, archivedHead, archivedMail, archivedRecipients,
-  keptRecord, type MailParts,
-  recordHead,
-  type ChainMail,
-  checkMessage, clock,
-  type Delivery, type Fence, Ledger, type LedgerLimits, STORAGE_BUSY,
-  type MailAuthority, type MailPage, RUN_NO_MAILBOX,
-  apiKeyOrigin, MAIL_HEADER_BYTES, mailInput, type NativeAgent, nativeId, type Origin,
-  outsideOrigin, type Posted, registrant, type Source,
+ type Actor, type Agent, type ChainMail, clock, type Delivery, Ledger, type LedgerLimits,
+ type MailAuthority, type MailPage, RUN_NO_MAILBOX, apiKeyOrigin, mailInput, type NativeAgent,
+ nativeId, type Origin, outsideOrigin, type Posted, registrant, type Source,
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
-import {
-  chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_BYTES,
-  MOVE_RECORDS, MoveTable, pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES,
-  type Source as Run,
-} from "./segments";
 import { Erasure } from "./erase";
 import { ERASE_RETRY_MS, erasing, markOutside, outsideDone, PUT_GRACE_MS, wiped } from "./erasure";
 import {
@@ -210,6 +194,8 @@ import {
   ABILITY_TREES, AGENTS_DIR, MAX_NAME_BYTES, nameOf, parentOf, storedPath, within,
 } from "../../contract/src/paths";
 import { migrate } from "./migrate";
+import { Archive, archiveMoving, type ArchiveMoveSeen, type ChainStep, ParentMoved, READ_TRIES }
+  from "./archive";
 import { MIGRATIONS } from "./schema";
 import { decodeExportCursor, encodeExportCursor } from "./export";
 import { Backups, MANIFEST_PROTECT_S } from "./backup";
@@ -520,70 +506,6 @@ export interface BoardDigestRequest {
   readonly limit: number;
   readonly after: number;
   readonly head_chars?: number;
-}
-
-/**
- * A row as a digest shows it, the head of its body and the body's UTF-8 bytes (`body_bytes`,
- * as a cut body's); or its deletion.
- */
-export type RowHead =
-  | (Omit<Extract<Changed, { deleted: false }>, "body">
-     & { readonly head: string; readonly body_bytes: number })
-  | Extract<Changed, { deleted: true }>;
-
-/** Rows changed past a digest's cursor, and the next cursor; `reset` as `Changes`'. */
-export interface Heads {
-  readonly cursor: number;
-  readonly rows: RowHead[];
-  readonly reset?: true;
-}
-
-/** One code mode script (`codeRun`). */
-export interface CodeRequest {
-  readonly script: string;
-}
-
-/**
- * A script's end, as pi-codemode reports it: its value or its error, its output, how many
- * tool calls ended each way, and which calls of tools that change something landed
- * (`landed`, in order, a run of the same tool and outcome as one entry with its count), so
- * an agent knows what a stopped script did. Its output past what one tool answer holds
- * (`PAGE_BYTES`, `pages.ts`) is cut, said so (`output_cut`); a value past it alone is
- * refused `answer_too_large`, its calls kept (`fittedCode`).
- */
-export type CodeResult =
-  | { readonly ok: true; readonly value: JsonValue; readonly output: CodeOutput[];
-      readonly calls: CodeCalls; readonly landed: Landed[]; readonly output_cut?: OutputCut }
-  | { readonly ok: false; readonly error: { readonly kind: string; readonly message: string };
-      readonly output: CodeOutput[]; readonly calls: CodeCalls; readonly landed: Landed[];
-      readonly output_cut?: OutputCut };
-
-/**
- * A script's output cut to fit one answer (review M6), said so: how many items it had, and
- * how many the answer keeps whole (the next one, a text, cut at a character after them).
- */
-export interface OutputCut {
-  readonly items: number;
-  readonly kept: number;
-}
-
-/** A run of one tool's calls with one outcome, in a script's order. */
-export interface Landed {
-  readonly name: string;
-  readonly status: "ok" | "error" | "cancelled";
-  readonly count: number;
-}
-
-/** A script's value: JSON, as pi-codemode hands it back (an object or array, untyped). */
-export type JsonValue = null | boolean | number | string | object;
-/** One item of a script's output: its text, or an image. */
-export type CodeOutput = { readonly type: "text"; readonly text: string; readonly console?: true }
-  | { readonly type: "image"; readonly data: string; readonly mimeType: string };
-/** A script's tool calls, counted by how each ended. */
-export interface CodeCalls {
-  readonly ok: number;
-  readonly error: number;
-  readonly cancelled: number;
 }
 
 /**
@@ -1173,167 +1095,6 @@ function fields(request: unknown, required: readonly string[], optional: readonl
 /** The board (`collections.ts`), and every room's prefix: `room:<app>:<room>`. */
 const BOARD = "board";
 const ROOM_PREFIX = "room:";
-/** Code mode's tool (`doors/src/tools.ts`), and its refusals. */
-const CODE = "code";
-export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode off";
-export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
-const CODE_TIMED_OUT = "the script is past its time";
-/**
- * A script's answer fitted to one tool answer (`pages.ts`, review M6): its value and calls
- * whole, its output's items while they fit and the next text cut at a character, said so
- * (`output_cut`). A value that alone passes one answer is refused `answer_too_large`, its
- * calls and what landed kept, so nothing is lost silently.
- */
-function fittedCode(answer: CodeResult): CodeResult {
-  if (jsonBytes(answer) <= PAGE_BYTES) {
-    return answer;
-  }
-  const cut: OutputCut = { items: answer.output.length, kept: answer.output.length };
-  const bare = { ...answer, output: [], output_cut: cut };
-  if (jsonBytes(bare) > PAGE_BYTES) {
-    return { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
-             output: [], calls: answer.calls, landed: answer.landed };
-  }
-  const output: CodeOutput[] = [];
-  let used = jsonBytes(bare);
-  for (const item of answer.output) {
-    const bytes = jsonBytes(item) + (output.length > 0 ? 1 : 0);
-    if (used + bytes > PAGE_BYTES) {
-      const meta = jsonBytes({ ...item, text: "" }) + (output.length > 0 ? 1 : 0);
-      if (item.type === "text" && used + meta + 8 <= PAGE_BYTES) {
-        output.push({ ...item, text: fitted(item.text, PAGE_BYTES - used - meta + 2).text });
-      }
-      break;
-    }
-    used += bytes;
-    output.push(item);
-  }
-  const kept = output.length > 0 && output.at(-1) !== answer.output[output.length - 1]
-    ? output.length - 1 : output.length;
-  return { ...answer, output, output_cut: { items: answer.output.length, kept } };
-}
-
-/** A script's value past what one tool answer holds (`pages.ts`), refused whole. */
-export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is past the " +
-  `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
-  "it back";
-/** A digest's head of each body, in characters, unless the caller names another. */
-const HEAD_CHARS = 512;
-
-/** A digest's `head_chars`: a whole number of characters, `HEAD_CHARS` when omitted. */
-function headChars(value: unknown): number {
-  if (value === undefined) {
-    return HEAD_CHARS;
-  }
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Refusal("invalid", "head_chars is a whole number of characters");
-  }
-  return value;
-}
-
-/**
- * What a page's unit names to read from R2: the placed bodies' content ids, and, by content
- * id, the most bytes of each window (one answer's when omitted) and the byte it starts at
- * (0 when omitted: the page's first item's `body_offset`).
- */
-interface Wants {
-  readonly contents: readonly string[];
-  readonly maxOf?: (contentId: string) => number;
-  readonly offsetOf?: (contentId: string) => number;
-}
-
-/** What each of an inbox digest's two parts, its mail and its rooms, fits: half an answer. */
-const INBOX_PART = (PAGE_BYTES - 32) / 2;
-
-/** A head's window of a placed body: at most four bytes a character, within one answer. */
-function headWindow(chars: number): number {
-  return Math.min(4 * chars, PAGE_BYTES);
-}
-
-/**
- * Changed rows as a digest shows them, fitted to one answer (`pages.ts`): each body cut to
- * its first `chars` characters, read from its row or its placed body's window; the rows in
- * order while they fit, at least one, the first's head cut further when it does not; the
- * page ends before a placed body not read, and when rows are left the cursor is the last
- * row's change.
- */
-function heads(changes: Changes, chars: number, windows: ReadonlyMap<string, Window>,
-               bytes: number = PAGE_BYTES): Heads {
-  const rows: { row: RowHead }[] = [];
-  for (const row of changes.rows) {
-    if (row.deleted) {
-      rows.push({ row });
-      continue;
-    }
-    const { body, content_id: contentId, ...rest } =
-      row as Extract<Changed, { deleted: false }> & { content_id?: string };
-    const window = contentId === undefined ? inlineWindow(body, 0) : windows.get(contentId);
-    if (window === undefined) {
-      break;
-    }
-    const head = [...window.text.slice(0, 2 * chars)].slice(0, chars).join("");
-    rows.push({ row: { ...rest, head, body_bytes: window.size } });
-  }
-  const reset = changes.reset === true ? { reset: true as const } : {};
-  const fixed = jsonBytes({ ...reset, cursor: changes.cursor, rows: [] });
-  const kept = rows.length === 0 ? [] : fitPage(fixed, rows, ({ row }, room, first) => {
-    const fit = fits(row, room);
-    if (fit !== null || !first || row.deleted) {
-      return fit;
-    }
-    const meta = jsonBytes({ ...row, head: "" });
-    if (room - meta + 2 < 2) {
-      throw new Refusal("result_too_large", RESULT_TOO_LARGE);
-    }
-    return fits({ ...row, head: fitted(row.head, room - meta + 2).text }, room);
-  }, bytes);
-  if (kept.length === 0 && changes.rows.length > 0) {
-    throw new Error("a digest's first row is always read");
-  }
-  return { ...reset,
-           cursor: kept.length === changes.rows.length ? changes.cursor : kept.at(-1)!.change,
-           rows: kept };
-}
-
-/**
- * A row or entry, its body taken from its row or its placed body's window (`body_offset`
- * from `offset`), as a page fits it; null for a placed body not read.
- */
-function windowed<T extends { readonly body: string; readonly content_id?: string }>(
-    row: T, windows: ReadonlyMap<string, Window>, offset = 0):
-    { item: Omit<T, "content_id">; window: Window } | null {
-  const { content_id: contentId, ...item } = row;
-  const window = contentId === undefined ? inlineWindow(row.body, offset)
-    : windows.get(contentId);
-  return window === undefined ? null : { item, window };
-}
-
-/** Rows or entries with their windows, in order, up to the first placed body not read. */
-function windowedAll<T extends { readonly body: string; readonly content_id?: string }>(
-    rows: readonly T[], windows: ReadonlyMap<string, Window>, offset = 0):
-    { item: Omit<T, "content_id">; window: Window }[] {
-  const out: { item: Omit<T, "content_id">; window: Window }[] = [];
-  for (const [index, row] of rows.entries()) {
-    const read = windowed(row, windows, index === 0 ? offset : 0);
-    if (read === null) {
-      break;
-    }
-    out.push(read);
-  }
-  return out;
-}
-
-/**
- * One row as an answer shows it, fitted (`pages.ts`), beside the answer's other fields
- * (`fixed` bytes).
- */
-function fittedRow<T extends { readonly body: string }>(
-    read: { item: T; window: Window } | null, fixed: number): T & Partial<Cut> {
-  if (read === null) {
-    throw new Error("a placed body its row names was not read");
-  }
-  return bodied(read.item, read.window, PAGE_BYTES - fixed, true)!.item;
-}
 
 /**
  * A search's `next_cursor`: the stored path it resumes after, as base64url (review L5), an
@@ -1350,63 +1111,6 @@ function cursorPath(cursor: unknown): string {
   }
   return Buffer.from(cursor, "base64url").toString("utf8");
 }
-
-/** The agents list's three lists, in the order a page reads them. */
-const AGENT_LISTS = Object.freeze(["agents", "owner_agents", "apps"] as const);
-
-/** Each list's stable key: an agent's id, an owner agent's id, an app's name. */
-function agentKey(list: (typeof AGENT_LISTS)[number], item: Agent | NativeAgent | ConnectedApp):
-    string {
-  return list === "apps" ? (item as ConnectedApp).name : (item as Agent | NativeAgent).agent_id;
-}
-
-/**
- * The agents a caller sees, fitted to one answer after the cursor `after` (`outsideAgents`,
- * review M3 and its verification): the three lists read as one sequence, each by its stable
- * key, so an agent added or removed between pages is neither skipped nor answered twice;
- * `next`, the last one answered's `<list>:<key>`, when some are left.
- */
-function agentsPage(all: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] },
-                    after: string | null):
-    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
-  const at = after === null ? null : { list: AGENT_LISTS.indexOf(
-    after.slice(0, after.indexOf(":")) as (typeof AGENT_LISTS)[number]),
-                                       key: after.slice(after.indexOf(":") + 1) };
-  if (at !== null && at.list < 0) {
-    throw new Refusal("invalid", "after is a next an agents list answered");
-  }
-  const items = AGENT_LISTS.flatMap((list, index) => [...all[list]]
-    .map((item) => ({ list, item, key: agentKey(list, item) }))
-    .sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
-    .filter((entry) => at === null || index > at.list || (index === at.list && entry.key > at.key)));
-  const empty = { agents: [], owner_agents: [], apps: [] };
-  if (items.length === 0) {
-    return empty;
-  }
-  const kept = fitPage(jsonBytes({ ...empty, next: `owner_agents:${"\u0001".repeat(512)}` }),
-                       items, (entry, room) => fits(entry.item, room));
-  const page: { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[] } =
-    { agents: [], owner_agents: [], apps: [] };
-  for (const [index, entry] of kept.entries()) {
-    (page[items[index]!.list] as unknown[]).push(entry);
-  }
-  const last = items[kept.length - 1]!;
-  return kept.length === items.length ? page : { ...page, next: `${last.list}:${last.key}` };
-}
-
-/** A run as an answer shows it: its result cut further to fit one, `result_cut` then. */
-function fittedRun<T extends { readonly result: string | null; readonly result_cut: boolean }>(
-    view: T): T {
-  if (view.result === null || jsonBytes(view) <= PAGE_BYTES) {
-    return view;
-  }
-  const meta = jsonBytes({ ...view, result: "", result_cut: true });
-  if (meta + 2 > PAGE_BYTES) {
-    throw new Refusal("result_too_large", RESULT_TOO_LARGE);
-  }
-  return { ...view, result: fitted(view.result, PAGE_BYTES - meta + 2).text, result_cut: true };
-}
-
 
 function conflicted<T>(act: () => T): T | Conflicted {
   try {
@@ -1451,7 +1155,6 @@ function heldToRead(account: Account, asked: unknown): void {
 export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
   "only when absent: read the file first (fetch, file_read or file_stat)";
 
-
 function fileConflicted<T>(act: () => T): T | FileConflicted {
   try {
     return act();
@@ -1472,45 +1175,6 @@ async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileCo
     }
     throw error;
   }
-}
-
-/**
- * How often a mailbox read reads its placed bodies again when mail that came between its
- * read of them and its unit put an unread placed body first (ADR-035).
- */
-const READ_TRIES = 3;
-
-/**
- * A read of the archive that the lane's moves and rewrites changed under each of its
- * `READ_TRIES`: retried soon, never an internal error (reviews N9 and N10).
- */
-function archiveMoving(): Refusal {
-  const retry = 1;
-  return new Refusal(STORAGE_BUSY, `${STORAGE_BUSY}: the archive moved this mail under each ` +
-    `of ${READ_TRIES} reads; try again in ${retry} second. ` +
-    JSON.stringify({ retry_after_s: retry }), { retryAfterS: retry });
-}
-
-/** A post's parent, hot at its gate, moved to the archive before its unit (`roomPost`). */
-class ParentMoved extends Error {
-  override readonly name = "ParentMoved";
-}
-
-/** The placed contents a read's rows name (ADR-035). */
-function contentsOf(rows: readonly object[]): string[] {
-  return rows.flatMap((row) => {
-    const id = (row as { readonly content_id?: string }).content_id;
-    return id === undefined ? [] : [id];
-  });
-}
-
-/**
- * What a writing door's answer shows of placed bodies (ADR-035): the content ids it names,
- * located in its unit, and the answer with their windows read in.
- */
-interface Shown<T> {
-  readonly contents: (value: T) => readonly string[];
-  readonly fill: (value: T, windows: ReadonlyMap<string, Window>) => T;
 }
 
 /**
@@ -1544,17 +1208,6 @@ export type WrittenRow = Omit<Row, "body" | "content_id"> & { readonly body_byte
 function writtenRow(row: Row): WrittenRow {
   const { body, content_id: _placed, ...rest } = row;
   return { ...rest, body_bytes: utf8Bytes(body) };
-}
-
-/** A conflict's current row, read back as `get` shows it: fitted to one answer. */
-function conflictShown<T extends object>(): Shown<T> {
-  return {
-    contents: (value) => "conflict" in value && value.conflict !== null
-      ? contentsOf([value.conflict as Row]) : [],
-    fill: (value, windows) => "conflict" in value && value.conflict !== null
-      ? { ...value, conflict: fittedRow(windowed(value.conflict as Row, windows),
-                                        jsonBytes({ ...value, conflict: null }) - 4) } : value,
-  };
 }
 
 /**
@@ -1629,7 +1282,6 @@ export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was a
  * stands, in ms: a call's own bound (a convention; the run itself has no deadline).
  */
 export const RUN_WAIT_MS = 60_000;
-
 
 /** A run's input: well-formed text, at least a character; its size is the door's bound. */
 function runText(value: unknown, what: string): string {
@@ -1725,194 +1377,6 @@ function eventsRequest(r: Record<string, unknown>): {
   return { frames: frames as PostedFrame[], end };
 }
 
-/** An archived record read whole in one read when no larger (a chain page's own share). */
-const ARCHIVED_WHOLE_BYTES = 64 * 1024;
-/** The bytes first read of a larger record for its first two lines (more when they pass it). */
-const ARCHIVED_HEAD_BYTES = 16 * 1024;
-
-/** The `archive` lane's failed passes in a row at which the owner is told, once. */
-const ARCHIVE_FAILS_TOLD = 3;
-/** How long a failed `archive` pass holds its lane. */
-const ARCHIVE_RETRY_S = 60;
-/**
- * How long a pass refused `busy` holds its lane (review round 11, Lows A and B): the pool's
- * own wait (`SLOT_WAIT_MS`), the term a full queue of larger holds turns over within (the
- * memory leg checks it), so the units held when it was refused have been given back.
- */
-const ARCHIVE_BUSY_RETRY_S = SLOT_WAIT_MS / 1000;
-/**
- * What the owner is told when a busy pool keeps the archive from moving while the hot set
- * stands at its ceiling: once a blocked spell (since the last segment the lane placed).
- */
-const ARCHIVE_BUSY_TOLD = "New mail is held at its ceiling because this server is too busy " +
-  `to move older mail out just now; nothing is lost, and the archive tries again every ${
-    ARCHIVE_BUSY_RETRY_S} seconds.`;
-
-/**
- * An archive move's reads of stored contents (review N5): each chunk read whole through
- * `FILES` (which rechecks its hash), the last one kept for the next range in it; and each
- * content the move's table gives a hash for (a placed body, its message's) checked as its
- * chunks are first read, in order, in the move's first pass (`bodiesChecked`), one hash at a
- * time, so a move of many placed bodies holds none but the one being read.
- */
-class MoveReader {
-  readonly #files: Files;
-  readonly #table: MoveTable;
-  /** Each content's next chunk to hash; its count once checked. */
-  readonly #next: Uint32Array;
-  #hashing: { ref: number; hash: ReturnType<typeof createHash> } | null = null;
-  #checking = true;
-  #last: { sha256: string; bytes: Uint8Array } | null = null;
-
-  constructor(files: Files, table: MoveTable) {
-    this.#files = files;
-    this.#table = table;
-    this.#next = new Uint32Array(Math.max(1, table.contents));
-  }
-
-  readonly read = async (content: Stored, index: number): Promise<Uint8Array> => {
-    const sha256 = content.chunks[index];
-    if (sha256 === undefined) {
-      throw new Error("a move's range runs past its content");
-    }
-    let bytes = this.#last?.sha256 === sha256 ? this.#last.bytes : undefined;
-    if (bytes === undefined) {
-      // The chunk kept is let go before the next arrives: its pieces are taken (`makeChunk`
-      // and `lineAt` copy what they keep), so it never outlives its use (`letGo`).
-      this.letGo();
-      bytes = (await this.#files.fetch([{ sha256 }]))[0];
-      if (bytes === undefined) {
-        throw new Error("a move's chunk was not read");
-      }
-      this.#last = { sha256, bytes };
-    }
-    const ref = Number(content.id);
-    if (this.#checking && this.#table.expected(ref) !== null && this.#next[ref] === index) {
-      if (this.#hashing?.ref !== ref) {
-        this.#hashing = { ref, hash: createHash("sha256") };
-      }
-      this.#hashing.hash.update(bytes);
-      this.#next[ref]!++;
-      if (index + 1 === content.chunks.length) {
-        if (this.#hashing.hash.digest("hex") !== this.#table.expected(ref)) {
-          throw new Error("an archived body is not the body its message holds");
-        }
-        this.#hashing = null;
-      }
-    }
-    return bytes;
-  };
-
-  /** The chunk kept for the next range let go, its buffer detached (`edit.ts`'s `letGo`). */
-  letGo(): void {
-    if (this.#last !== null) {
-      letGo(this.#last.bytes);
-      this.#last = null;
-    }
-  }
-
-  /** After the first pass: every content with a hash read whole and checked, or loudly not. */
-  bodiesChecked(): void {
-    for (let ref = 0; ref < this.#table.contents; ref++) {
-      if (this.#table.expected(ref) !== null
-          && this.#next[ref] !== this.#table.contentOf(ref).chunks.length) {
-        throw new Error("an archived body is not the body its message holds");
-      }
-    }
-    this.#checking = false;
-  }
-}
-
-/**
- * `lease` grown to `total` units now, or refused `busy` (everything it holds given back):
- * inside the alarm a pass never waits on the pool, since the object's other lanes would wait
- * with it (round 11, Low B). A call that does not fit at once leaves its queue at the next
- * turn of the event loop; the lane holds and tries again (`ARCHIVE_BUSY_RETRY_S`).
- */
-async function now(lease: PoolLease, total: number): Promise<void> {
-  const turn = new AbortController();
-  const timer = setTimeout(() => turn.abort(slotBusy()), 0);
-  try {
-    await lease.grow(total, turn.signal);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * An archive move's or rewrite's holds on the isolate's pool (ADR-037), one lease in the
- * larger class (`SlotPool.lease`, the pool's one admission rule), each growth taken now or
- * refused `busy` (`now`: inside the alarm it never waits). Its table's units
- * (`moveTableUnits`), taken before its records arrive and held to its end, since the table's
- * bytes are in hand throughout; grown as a rewrite takes in a neighbour; and each pass's
- * `MOVE_PASS_UNITS` beside them, grown before the pass's first chunk arrives and given back
- * (`Lease.shrink`) once its last is gone: its waits each bring or send its bytes (a chunk
- * read, a chunk put, a unit reading hot records' lines), never a begin or a commit. Refused
- * `busy`, the pass ends with nothing changed: the lane holds and tries again
- * (`ARCHIVE_BUSY_RETRY_S`), not counted as a failure (`#archivePass`).
- */
-class MoveHold {
-  readonly #pool: SlotPool;
-  readonly #lease: PoolLease;
-  /** The units its records hold; a pass's are grown past them and given back. */
-  #table: number;
-
-  private constructor(pool: SlotPool, lease: PoolLease, table: number) {
-    this.#pool = pool;
-    this.#lease = lease;
-    this.#table = table;
-  }
-
-  /** The units for a table of `records` records: a lease in the larger class. */
-  static async take(pool: SlotPool, records: number): Promise<MoveHold> {
-    const lease = pool.lease("", true);
-    const table = moveTableUnits(records);
-    await now(lease, table);
-    return new MoveHold(pool, lease, table);
-  }
-
-  /** The units held for the table. */
-  get units(): number {
-    return this.#table;
-  }
-
-  /** The table grown to hold `records` records: its units grown first. */
-  async table(records: number): Promise<void> {
-    const table = moveTableUnits(records);
-    if (table > this.#table) {
-      await now(this.#lease, table);
-      this.#table = table;
-    }
-  }
-
-  /** One pass, holding its own units beside the table's; `letGo` drops what it kept. */
-  async pass<T>(act: () => Promise<T>, letGo: () => void): Promise<T> {
-    await now(this.#lease, this.#table + MOVE_PASS_UNITS);
-    try {
-      const done = await act();
-      letGo();
-      if (this.#pool.observe !== null) {
-        await this.#pool.observe(this.#lease.units);
-      }
-      return done;
-    } finally {
-      letGo();
-      this.#lease.shrink(this.#table);
-    }
-  }
-
-  release(): void {
-    this.#lease.release();
-  }
-}
-
-/** The owner's notice that the archive keeps failing: its last error as it said it, if any. */
-function archiveFailing(said: string | null): string {
-  return `Older mail could not be moved out (${said ?? "the last tries stopped before they " +
-    "could say why"}), so new mail may wait at the hot ceiling; the archive tries again ` +
-    "every minute.";
-}
-
 /** What the object's lanes run over: its stores, its in-process callers and the passes. */
 export interface LaneDeps {
   readonly ledger: Ledger;
@@ -2003,16 +1467,6 @@ export function ownerLanes(deps: LaneDeps):
   };
 }
 
-/** An archive move as a test sees it between its passes: its kind, what it replaces, holds. */
-export interface ArchiveMoveSeen {
-  readonly stream: "mail" | "rewrite";
-  readonly replaced: number;
-  readonly records: number;
-}
-
-/** Where a test may hold a chain read (`Internals.chainStep`). */
-export type ChainStep = "fenced" | "hot";
-
 /** What a test reaches past the doors: the erasure's internal path and its retry interval. */
 export interface Internals {
   readonly erasure?: (internal: Erasure) => void;
@@ -2049,27 +1503,6 @@ export interface Internals {
    * none, the tests of everything else, which start from an empty workspace.
    */
   readonly starter?: StarterPackage | null;
-}
-
-/** A model's cost record with its input at its dearest rate: what a token can cost at most. */
-function dearest(model: ModelRecord): ModelRecord {
-  const top = (rates: { input: number; cacheRead: number; cacheWrite: number }) =>
-    Math.max(rates.input, rates.cacheRead, rates.cacheWrite);
-  return { ...model, cost: { ...model.cost, input: top(model.cost),
-                             ...(model.cost.tiers === undefined ? {}
-                               : { tiers: model.cost.tiers.map((tier) =>
-                                 ({ ...tier, input: top(tier) })) }) } };
-}
-
-/**
- * The most µ$ a sandbox call of `input` and `output` tokens can cost on any of `models`,
- * each model's tokens at most its own context window and output cap, at its dearest rates.
- */
-export function egressPrice(models: readonly ModelRecord[], input: number, output: number):
-    number {
-  return Math.max(...models.map((model) => priced(dearest(model),
-                                                  Math.min(input, model.contextWindow),
-                                                  Math.min(output, model.maxTokens))));
 }
 
 /**
@@ -2160,10 +1593,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sandbox: SandboxLeases;
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
-  /** A test's step between an archive move's passes (`Internals.archiveBetweenPasses`). */
-  readonly #betweenPasses: ((storage: OwnerStorage, move: ArchiveMoveSeen) => void) | null;
-  /** A test's steps in a chain read (`Internals.chainStep`). */
-  readonly #chainStep: ((step: ChainStep) => Promise<void>) | null;
+  /** The archive: its moves and rewrites, and reads of archived mail (`archive.ts`). */
+  readonly #archive: Archive;
   /**
    * What rings outside agents' doorbells (`wakes.ts`), called in process by the `wakes`
    * lane: every wake kind's request from its record, after the kill switch (`CONTROL`).
@@ -2312,11 +1743,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                  source_monthly_cost: own?.monthly_cost ?? null };
       },
       spent: (period, source) => this.#usage.spent(period, source),
-      // The call's model is unknown until the gateway reads the body: priced at the most
-      // any of the connection's models charges, input at its dearest of uncached,
-      // cache-read and cache-write rates, by pi-ai's `calculateCost` (`priced`).
-      price: (models, input, output) => egressPrice(models as readonly ModelRecord[], input,
-                                                    output),
+      cost: priced,
       pruned: (now) => this.#usage.spendPruned(now),
     });
     this.#usage = new ModelUsage(storage, () => {
@@ -2409,7 +1836,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       archive: { next: (now) => this.#ledger.archiveDue()
                    || this.#ledger.purgedAgents().length > 0
                    || this.#ledger.archiveCompactPending() ? now : null,
-                 run: () => this.#archivePass() },
+                 run: () => this.#archive.pass() },
       starter: this.#starter, sender: () => this.#sender, admitted, clock, write, runWakes,
     }), clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
@@ -2465,8 +1892,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#sandbox = this.#sandboxLeases();
     internals.sandbox?.(this.#sandbox);
     this.#codemode = internals.codemode ?? {};
-    this.#betweenPasses = internals.archiveBetweenPasses ?? null;
-    this.#chainStep = internals.chainStep ?? null;
+    this.#archive = new Archive({
+      storage, door: (act) => this.#door(act), ledger: this.#ledger, files: this.#files,
+      bodies: this.#bodies, notices: this.#notices,
+      rereadingPage: (locate, read, again) => this.#rereadingPage(locate, read, again),
+      betweenPasses: internals.archiveBetweenPasses ?? null,
+      chainStep: internals.chainStep ?? null,
+    });
     this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
@@ -3788,17 +3220,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // parent: archived mail never returns hot, so a second post finds it archived.
     const gated = await this.#door(() => {
       door.bound();
-      return this.#archivedParent(request);
+      return this.#archive.archivedParent(request);
     });
     for (let tries = 0; ; tries++) {
       const parent = tries === 0 ? gated : await this.#door(() => {
         door.bound();
-        return this.#archivedParent(request);
+        return this.#archive.archivedParent(request);
       });
-      const archived = parent === null ? null : await this.#archived(parent.seq, parent.id);
+      const archived = parent === null ? null : await this.#archive.archived(parent.seq, parent.id);
       // In each unit: the parent the gate found hot is hot still.
       const kept = () => {
-        if (archived === null && this.#archivedParent(request) !== null) {
+        if (archived === null && this.#archive.archivedParent(request) !== null) {
           throw new ParentMoved();
         }
       };
@@ -4123,7 +3555,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       : account.grant?.profile ?? "custom";
     const names = profile === "custom" ? customTools(document) : profileNames(profile);
     return { profile, tools: hookSettings(document).codemode ? names
-                                                             : names.filter((n) => n !== CODE) };
+      : names.filter((n) => n !== codeTool()) };
   }
 
   /**
@@ -4154,7 +3586,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         throw new Refusal("code_mode_off", CODE_MODE_OFF);
       }
       const { tools: names } = this.#profile(account);
-      if (!names.includes(CODE)) {
+      if (!names.includes(codeTool())) {
         throw new Refusal("tool_not_served", CODE_NOT_SERVED);
       }
       // The gate its door read: every `/mcp` and `/api` binding carries the client's origin,
@@ -4162,63 +3594,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // door) and the owner's app (no origin) the maintenance gate.
       const gate: Gate = account.origin !== null && account.run === null ? "outside" : "owner";
       return { owner: account.owner, script: r["script"],
-               tools: toolsNamed(names.filter((name) => name !== CODE)), gate };
+               tools: toolsNamed(names.filter((name) => name !== codeTool())), gate };
     });
     const control = this.#control();
     const closed = await control.refusal(gate, owner);
     if (closed !== null) {
       throw new Refusal("refused", closed);
     }
-    // The wall bound, held here too: pi-codemode's own deadline is a timer, which a script
-    // calling tools back to back starved in workerd, so each call checks the clock, which
-    // moves with every call's I/O, and ends the execution past it.
-    const timeoutMs = this.#codemode.timeoutMs ?? CODEMODE_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
-    const late = new AbortController();
-    const sandbox = codemodeSandbox({
-      ...this.#codemode,
-      service: () => this.env.HOOKS,
-      owner: () => owner,
-      tools: tools.map((tool) => ({ name: tool.name, description: tool.description,
-                                    inputSchema: tool.input,
-                                    execute: (args: unknown) => {
-                                      if (Date.now() >= deadline) {
-                                        late.abort();
-                                        throw new Error(CODE_TIMED_OUT);
-                                      }
-                                      return this.#scripted(binding, tool, args,
-                                                            () => control.refusal(gate, owner));
-                                    } })),
-    });
-    try {
-      const result = await sandbox.execute(script, { signal: late.signal });
-      const calls = { ok: 0, error: 0, cancelled: 0 };
-      const landed: Landed[] = [];
-      const changes = new Set(tools.filter((tool) => !tool.readOnlyHint)
-        .map((tool) => tool.name));
-      for (const call of result.calls) {
-        calls[call.status] += 1;
-        const last = landed.at(-1);
-        if (!changes.has(call.name)) {
-          continue;
-        }
-        if (last?.name === call.name && last.status === call.status) {
-          landed[landed.length - 1] = { ...last, count: last.count + 1 };
-        } else {
-          landed.push({ name: call.name, status: call.status, count: 1 });
-        }
-      }
-      const error = late.signal.aborted && !result.ok
-        ? { kind: "timeout", message: `Execution timed out after ${timeoutMs} ms` }
-        : result.ok ? null : { kind: result.error.kind, message: result.error.message };
-      const answer: CodeResult = error === null
-        ? { ok: true, value: (result as { value: JsonValue }).value, output: result.output,
-            calls, landed }
-        : { ok: false, error, output: result.output, calls, landed };
-      return fittedCode(answer);
-    } finally {
-      await sandbox.close();
-    }
+    return runScript({ bounds: this.#codemode, service: () => this.env.HOOKS, owner, script,
+                       tools, call: (tool, args) => this.#scripted(
+                         binding, tool, args, () => control.refusal(gate, owner)) });
   }
 
   /** One tool call of a script: rechecked as `codeRun` says, then the tool's own door. */
@@ -4235,7 +3620,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         if (!hookSettings(this.#policy.read().document).codemode) {
           throw new Refusal("code_mode_off", CODE_MODE_OFF);
         }
-        if (!tools.includes(CODE) || !tools.includes(tool.name)) {
+        if (!tools.includes(codeTool()) || !tools.includes(tool.name)) {
           throw new Refusal("tool_not_served", CODE_NOT_SERVED);
         }
       });
@@ -4259,632 +3644,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   mailChain(binding: Binding, request: ChainRequest):
       Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
-    return this.#units("mailChain", binding, request, (door) => this.#chain(door));
-  }
-
-  /** The owner's read of a mail chain, its call checked in each unit (`mailChain`). */
-  async #chain(door: Door): Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
-    const { r } = await this.#door(() => door.check());
-    const after = r["after"] ?? 0;
-    if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
-      throw new Refusal("invalid", "a chain read's after is a seq");
-    }
-    const offset = bodyOffset(r["body_offset"]);
-    // Its root: the hot message's, or the archived one's, read from its segment.
-    const start = await this.#door(() => this.#ledger.chainStart(r["message_id"]));
-    let root: string;
-    let rootSeq: number;
-    let room: string;
-    if ("archived" in start) {
-      const found = await this.#archived(start.archived, r["message_id"] as string);
-      if (found === null) {
-        throw new Refusal("refused", "no such message held");
-      }
-      root = found.message.chain_root;
-      room = found.message.room_id;
-      rootSeq = await this.#door(() => this.#ledger.seqOf(root)) ?? 0;
-    } else {
-      ({ root, root_seq: rootSeq, room } = start);
-    }
-    const most = typeof r["limit"] === "number" ? r["limit"] : 1;
-    for (let tries = 0; tries < READ_TRIES; tries++) {
-      const read = await this.#chainPage(door, r, { root, rootSeq, room }, after, offset,
-                                         most);
-      if (read !== null) {
-        return { root, messages: read.messages, more: read.more };
-      }
-    }
-    throw archiveMoving();
-  }
-
-  /**
-   * One read of a chain's page (`mailChain`), or null when the archive changed under it.
-   * Its archived messages past `after`, as a page reads placed bodies (`pages.ts`, PR 1):
-   * the next segments' chain maps, then each record by range, its body only as the window
-   * a page may show (from `body_offset` when it is the page's first message), the windows
-   * stopping at `WINDOWS_BYTES` past the first; the first left unread is the frontier, so
-   * the page stops below it and the next goes on from there. Each fence's content and chunks
-   * are located in the fences' own unit, with the archive's mark (review N10); a segment
-   * replaced after it (a merge, a compaction, a purge's rewrite) is read from its chunks in
-   * their grace, and a read that fails all the same (a chunk collected early, past the figure)
-   * is a changed archive, read again, when the mark moved (`#segmentsRead`). Its hot rows are
-   * read in a later unit, which first checks that no segment made since may hold the chain's
-   * room past `after`: a move between them took mail out of the hot rows into a segment the
-   * read never saw (review N9), so the read is null, and `mailChain` reads again from the
-   * fences. Another room's moves never count. The page stays the one bounded page
-   * `ledger.chain` fits; only the reads are repeated, at most `READ_TRIES`.
-   */
-  async #chainPage(door: Door, r: Record<string, unknown>,
-                   chain: { root: string; rootSeq: number; room: string }, after: number,
-                   offset: number, most: number):
-      Promise<{ messages: ChainMail[]; more: boolean } | null> {
-    const { root, rootSeq, room } = chain;
-    const { fenced, firstHot, seen, located } = await this.#door(() => {
-      const fences = this.#ledger.chainFences(rootSeq, after);
-      return { fenced: fences, firstHot: this.#ledger.chainNext(root, after),
-               seen: this.#ledger.archiveMark(),
-               located: this.#bodies.locate(fences.fences.map((fence) => fence.content_id)) };
-    });
-    await this.#chainStep?.("fenced");
-    let frontier = fenced.frontier;
-    const mail: ArchivedMail[] = [];
-    const read = await this.#segmentsRead(seen.mark, async () => {
-      let held = 0;
-      read: for (const fence of fenced.fences) {
-        const chunks = located.get(fence.content_id)!.chunks;
-        const trailer = await this.#trailer(fence, chunks);
-        for (const [key, at, length] of trailer.chains[root] ?? []) {
-          if (key <= after) {
-            continue;
-          }
-          if (mail.length >= most || (mail.length > 0 && held >= WINDOWS_BYTES)) {
-            frontier = key;
-            break read;
-          }
-          const first = mail.length === 0 && (firstHot === null || key < firstHot);
-          const found = await this.#archivedRecord(chunks, at, length, first ? offset : 0);
-          held += found.body === null ? 0 : found.body.end - found.body.offset;
-          mail.push(found);
-        }
-      }
-      return true;
-    });
-    if (read === null) {
-      return null;
-    }
-    await this.#chainStep?.("hot");
-    // Its hot messages' placed bodies (ADR-035) are read from R2 between its units, and the
-    // page, hot and archived together, fits one answer.
-    const archived = { root, mail, frontier };
-    const page = (windows: ReadonlyMap<string, Window>) => this.#ledger.chain(
-      r["message_id"], after, r["limit"], windows, offset, r["body_message_id"] ?? null,
-      archived);
-    return this.#rereadingPage(() => {
-      door.check();
-      const read = page(new Map());
-      return { contents: read.placed,
-               offsetOf: (contentId) => contentId === read.first ? offset : 0 };
-    }, (windows) => {
-      door.check();
-      return this.#ledger.movedSince(seen.newest, room, after) ? null : page(windows);
-    }, (read) => read !== null && read.messages.length === 0 && read.placed.length > 0);
-  }
-
-  // -- THE ARCHIVE (slice STORE item 2, `segments.ts`) --------------------------------------
-
-  /**
-   * Segments' reads from R2, outside any unit, after the unit that took their fences, their
-   * located chunks and the archive's `mark`: the reads' value, or null when they failed
-   * because the archive changed since (the mark moved), for the caller to read again. A
-   * segment replaced since (a merge, a compaction, a purge's rewrite) is let go as garbage
-   * in its grace (`GC_GRACE_S`, 30 days), so its chunks still read for far longer than one
-   * read, and their hashes still check; but past the owner's figure the oldest garbage is
-   * collected early (`files.ts`), and a just-replaced segment's chunks, the newest, could
-   * still go, so a failed read is retried when the mark moved. With the mark unchanged, the
-   * failure is no change of the archive's, and stands, loudly.
-   */
-  async #segmentsRead<T>(mark: string, read: () => Promise<T>): Promise<T | null> {
-    try {
-      return await read();
-    } catch (error) {
-      if (await this.#door(() => this.#ledger.archiveMark().mark !== mark)) {
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * A byte range of a segment's content, read from R2 outside any unit by the verified
-   * ranges it spans (`FILES` reads each whole chunk, rechecks its hash and answers the range).
-   */
-  async #segmentBytes(chunks: readonly string[], offset: number, length: number):
-      Promise<Uint8Array> {
-    return joined(await this.#files.fetch(chunkReads(chunks, offset, length)));
-  }
-
-  /** A segment's trailer, read alone by its fence's range. */
-  async #trailer(fence: Fence, chunks: readonly string[]):
-      Promise<ReturnType<typeof parseTrailer>> {
-    return parseTrailer(utf8Decoder("keep").decode(
-      await this.#segmentBytes(chunks, fence.trailer_offset, fence.trailer_bytes)));
-  }
-
-  /**
-   * An archived record read by range, never its body whole (PR 1): a small one in one read;
-   * a larger one its head (its message's row and its body's), its recipients' lines, and
-   * its body's window from `offset` (at most `PAGE_BYTES`, cut back to a character), or no
-   * body at all (`offset` null: a reply's parent needs only its row).
-   */
-  async #archivedRecord(chunks: readonly string[], at: number, length: number,
-                        offset: number | null): Promise<ArchivedMail> {
-    if (length <= ARCHIVED_WHOLE_BYTES) {
-      return archivedMail(await this.#segmentBytes(chunks, at, length), offset);
-    }
-    let head = null;
-    for (let read = ARCHIVED_HEAD_BYTES; head === null; read *= 4) {
-      head = archivedHead(await this.#segmentBytes(chunks, at, Math.min(length, read)));
-      if (head === null && read >= length) {
-        throw new Error("an archived mail record lacks its message or its body");
-      }
-    }
-    const bodyAt = at + head.bodyAt;
-    const tail = bodyAt + head.bodyBytes + 1;
-    const recipients = archivedRecipients(await this.#segmentBytes(chunks, tail,
-                                                                   at + length - tail));
-    return { message: head.message, recipients, body: offset === null ? null
-      : await this.#bodies.windowAt(chunks, bodyAt, head.bodyBytes, offset, PAGE_BYTES) };
-  }
-
-  /**
-   * An archived message by the seq its id carries, from its segment; null when none. Its
-   * fences' contents are located with them and the archive's mark, and a read that failed
-   * because the archive changed is read again (`#segmentsRead`, review N10), at most
-   * `READ_TRIES`, then refused `storage_busy`.
-   */
-  async #archived(seq: number, messageId: string): Promise<ArchivedMail | null> {
-    for (let tries = 0; tries < READ_TRIES; tries++) {
-      const { fences, seen, located } = await this.#door(() => {
-        const fences = this.#ledger.archiveFences(seq);
-        return { fences, seen: this.#ledger.archiveMark(),
-                 located: this.#bodies.locate(fences.map((fence) => fence.content_id)) };
-      });
-      const found = await this.#segmentsRead(seen.mark, async () => {
-        for (const fence of fences) {
-          const chunks = located.get(fence.content_id)!.chunks;
-          const placement = (await this.#trailer(fence, chunks)).keys
-            .find(([key]) => key === seq);
-          if (placement !== undefined) {
-            return { mail: await this.#archivedRecord(chunks, placement[1], placement[2], null) };
-          }
-        }
-        return { mail: null };
-      });
-      if (found === null) {
-        continue;
-      }
-      if (found.mail === null) {
-        return null;
-      }
-      const mail = found.mail;
-      const purged = await this.#door(() => this.#ledger.purgedAgents());
-      return mail.message.message_id === messageId
-        && !roomMembers(mail.message.room_id).some((member) => purged.includes(member))
-        ? mail : null;
-    }
-    throw archiveMoving();
-  }
-
-  /** In a unit: a post's parent's seq, when it is archived (not hot, and the object's). */
-  #archivedParent(request: PostRequest): { id: string; seq: number } | null {
-    const parentId = (request as { parent_id?: unknown } | null)?.parent_id;
-    if (typeof parentId !== "string") {
-      return null;
-    }
-    try {
-      const start = this.#ledger.chainStart(parentId);
-      return "archived" in start ? { id: parentId, seq: start.archived } : null;
-    } catch {
-      return null;  // not one the object gave: the post refuses it as no parent
-    }
-  }
-
-  /**
-   * One pass of the `archive` lane: a deleted agent's mail rewritten out of a segment, or
-   * else one move of acked mail (a straggler's merge, or the tail's new segment). A move
-   * that would leave the storage figure higher than it found it is refused for the figure
-   * (`archive_full`): the archive is then blocked, and a post at the hot ceiling is the one
-   * wall, `storage_full`, until the owner frees space (review M1). A failure outside (the
-   * storage service down) holds the lane a while. Each pass is counted in storage as it
-   * begins and cleared as it ends (review N3), so a pass killed with its isolate (for memory,
-   * say) still counts: at `ARCHIVE_FAILS_TOLD` in a row the owner is told once, with the last
-   * error as it said it, or that the passes stopped before they could say.
-   */
-  async #archivePass(): Promise<unknown> {
-    let begun: { fails: number; error: string | null } | null = null;
-    try {
-      // Blocked and still full: nothing to try until the owner frees space.
-      begun = await this.#door(() => {
-        const { stored, figure } = this.#files.storedNow();
-        return this.#ledger.archiveBlocked() && figure !== null && stored >= figure ? null
-          : this.#ledger.archiveBegin();
-      });
-      if (begun === null) {
-        return { hold: clock() + ARCHIVE_RETRY_S };
-      }
-      if (begun.fails === ARCHIVE_FAILS_TOLD && begun.error === null) {
-        // The third failed pass never reached its catch: it went with its isolate.
-        await this.#door(() => this.#notices.add("storage_busy_long", archiveFailing(null),
-                                                 clock()));
-      }
-      // A purge's rewrite first, so a deleted agent's mail leaves R2 promptly; the order is
-      // not needed for correctness (a merge into a segment that still holds it keeps it,
-      // and its bloom names the agent, so the purge rewrites that segment in turn). A
-      // rewrite that fails never holds the move behind it (review N7): the move runs, and
-      // the rewrite's failure is the pass's, counted and told at three.
-      // Each holds its own units of the isolate's pool (`MoveHold`), released as it ends.
-      let rewrote = false;
-      let failed: unknown = null;
-      try {
-        rewrote = await this.#archiveRewrite();
-      } catch (error) {
-        if (error instanceof Refusal && error.code === "archive_changed") {
-          rewrote = true;
-        } else {
-          failed = error;
-        }
-      }
-      // The move runs whenever mail is due (the hot set past half), a rewrite or not, so a
-      // long purge never holds new mail at `storage_busy` (review N8); the rewrite's table
-      // and units are let go before it, so the pass holds one move's at a time.
-      if (!rewrote || await this.#door(() => this.#ledger.archiveDue())) {
-        await this.#archiveMove();
-      }
-      if (failed !== null) {
-        throw failed;
-      }
-      await this.#door(() => this.#ledger.archiveEnded());
-      return undefined;
-    } catch (error) {
-      if (error instanceof Refusal && error.code === "archive_changed") {
-        await this.#door(() => this.#ledger.archiveEnded());
-        return undefined;  // the batch moved under it: the next pass picks again
-      }
-      if (error instanceof Refusal && (error.code === "archive_full"
-                                       || error.code === "storage_full")) {
-        const first = await this.#door(() => {
-          const was = this.#ledger.archiveBlocked();
-          this.#ledger.blockArchive();
-          this.#ledger.archiveEnded();  // its own cause, told in its own words
-          return !was;
-        });
-        if (first) {
-          await this.#door(() => this.#notices.add("storage_busy_long",
-            "Older mail could not be moved out because your storage is full, so new mail is " +
-              "refused until you free some space or upgrade.", clock()));
-        }
-        return { hold: clock() + ARCHIVE_RETRY_S };
-      }
-      if (isSlotBusy(error)) {
-        // The isolate's pool full (`busy`, `MoveHold`): contention, not storage (round 11,
-        // Low A). Not a failed pass, never logged: the lane tries again once the pool's own
-        // wait has turned its queue over. The owner is told only when it puts storage at risk,
-        // the hot set at its ceiling (the next post refused `storage_busy`) with the moves
-        // blocked: once a blocked spell, since the last segment the lane placed.
-        await this.#door(() => {
-          if (begun !== null) {
-            this.#ledger.archiveBusy(begun);
-          }
-          if (this.#ledger.atHotCeiling()) {
-            const since = this.#ledger.lastPlaced();
-            if (!this.#notices.list().some((notice) => notice.type === "storage_busy_long"
-                && notice.detail === ARCHIVE_BUSY_TOLD && notice.at >= since)) {
-              this.#notices.add("storage_busy_long", ARCHIVE_BUSY_TOLD, clock());
-            }
-          }
-        });
-        return { hold: clock() + ARCHIVE_BUSY_RETRY_S };
-      }
-      console.error("the archive lane's pass failed", error);
-      if (begun !== null) {
-        // What failed, as it said it, never a cause it did not give (review N1).
-        const said = (error instanceof Error ? error.message.split("\n")[0]! : String(error))
-          .slice(0, 200);
-        const fails = begun.fails + 1;
-        await this.#door(() => {
-          this.#ledger.archiveFailed(said);
-          if (fails === ARCHIVE_FAILS_TOLD) {
-            this.#notices.add("storage_busy_long", archiveFailing(said), clock());
-          }
-        });
-      }
-      return { hold: clock() + ARCHIVE_RETRY_S };
-    }
-  }
-
-  /**
-   * One move: a straggler's merge (acked mail whose keys fall in a segment, rewritten into
-   * it, so no two segments overlap) or the tail's new segment, in the move's two units.
-   * Planned from lengths alone, then streamed (`#placePieces`): nothing is read whole.
-   */
-  async #archiveMove(): Promise<void> {
-    const pick = await this.#door(() => this.#ledger.archivePick());
-    if (pick === null) {
-      return;
-    }
-    // Its table's units before its records arrive: the batch's, and its segment's.
-    const hold = await MoveHold.take(ownerSlots(), pick.seqs.length + (pick.into?.records ?? 0));
-    try {
-      const table = new MoveTable();
-      const batch = await this.#door(() => this.#ledger.archiveBatch(pick.seqs, table,
-        (contentId, bytes, sha256) => table.addContent(
-          bytes, this.#bodies.locate([contentId]).get(contentId)!.chunks, sha256)));
-      if (batch === null) {
-        return;
-      }
-      const reader = new MoveReader(this.#files, table);
-      if (pick.into !== null) {
-        const into = pick.into;
-        await hold.pass(() => this.#scanSegment(into, table, reader), () => reader.letGo());
-      }
-      const all = Array.from({ length: table.count }, (_, n) => n);
-      await this.#placePieces(table, all, pick.into === null ? [] : [pick.into], pick.seqs,
-                              batch.digest, "mail", reader, hold);
-    } finally {
-      hold.release();
-    }
-  }
-
-  /**
-   * One rewrite pass: the next segment a deleted agent's mail may be in, without that mail;
-   * one left under `SEGMENT_LEAST_BYTES` takes in its neighbours by key (never by id), so
-   * ranges stay disjoint. Each segment is scanned with the purge's filter: only what is kept
-   * enters the move's table, the rest streams past (review N7).
-   *
-   * Bounded, compacting across passes: a pass takes in a neighbour only while what it keeps
-   * and the neighbour's records stay within `MOVE_RECORDS` and the neighbours it scans
-   * within `MOVE_BYTES` (a merge's work), and stops there. A pass stopped so, still under the
-   * least, places what it kept as one small segment: the next pass, finding a segment under
-   * the least that is not the only one (`purgeNext`, derived from the fences alone, so a
-   * restore keeps it), takes it back as its target and goes on taking in its neighbours,
-   * and so on until it holds the least or stands alone. Each pass leaves the archive whole and disjoint, only less compacted
-   * until the last; the first neighbour always fits (a small segment's records are under
-   * the least's worth and a piece's at most 49,933), so every pass makes progress. False
-   * when no rewrite waits.
-   */
-  async #archiveRewrite(): Promise<boolean> {
-    const target = await this.#door(() => this.#ledger.purgeNext());
-    if (target === null) {
-      return false;
-    }
-    const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
-    const keep = (room: string) => !roomMembers(room).some((member) => purged.has(member));
-    // Its table's units before its records arrive, grown as it takes in each neighbour.
-    const hold = await MoveHold.take(ownerSlots(), target.fence.records);
-    try {
-      return await this.#rewriteHeld(target, keep, hold);
-    } finally {
-      hold.release();
-    }
-  }
-
-  /** `#archiveRewrite` holding its table's units (`hold`, for the target's records). */
-  async #rewriteHeld(target: { fence: Fence; compact: boolean },
-                     keep: (room: string) => boolean, hold: MoveHold): Promise<boolean> {
-    const table = new MoveTable();
-    const scan = (fence: Fence) => {
-      const reader = new MoveReader(this.#files, table);
-      return hold.pass(() => this.#scanSegment(fence, table, reader, keep),
-                       () => reader.letGo());
-    };
-    const first = await scan(target.fence);
-    if (first.kept === first.all && !target.compact) {
-      await this.#door(() => this.#ledger.purgeSkip(target.fence.segment));
-      return true;
-    }
-    const replaced = [target.fence];
-    let size = 0;
-    for (let n = 0; n < table.count; n++) {
-      size += table.length(n);
-    }
-    let scanned = 0;
-    // Left small, it takes in its neighbours by key (a neighbour a purge also thinned may
-    // not be enough alone), within the pass's bound, until it holds the least or none is
-    // left: never by id.
-    while (size < SEGMENT_LEAST_BYTES) {
-      const span = { ...target.fence,
-                     first_key: Math.min(...replaced.map((fence) => fence.first_key)),
-                     last_key: Math.max(...replaced.map((fence) => fence.last_key)) };
-      const beside = await this.#door(() => this.#ledger.fenceBeside(span));
-      if (beside === null) {
-        break;
-      }
-      if (table.count + beside.records > MOVE_RECORDS || scanned + beside.bytes > MOVE_BYTES) {
-        break;  // the pass's bound: the next pass goes on from what this one places
-      }
-      replaced.push(beside);
-      scanned += beside.bytes;
-      // What it keeps so far and all the neighbour's: within `MOVE_RECORDS` (checked above).
-      await hold.table(table.count + beside.records);
-      const from = table.count;
-      await scan(beside);
-      for (let n = from; n < table.count; n++) {
-        size += table.length(n);
-      }
-    }
-    if (target.compact && replaced.length === 1) {
-      return false;  // a small segment with no neighbour to take in stands alone, as it may
-    }
-    const all = Array.from({ length: table.count }, (_, n) => n);
-    await this.#placePieces(table, all, replaced, [], "0".repeat(64), "rewrite",
-                            new MoveReader(this.#files, table), hold);
-    return true;
-  }
-
-  /**
-   * A segment's records appended to a move's table as ranges of its content, never held
-   * (review N5): its trailer read, then each record's first line alone (its room, its chain,
-   * its time), the chunks read whole one at a time, in order. Only the records `keep` takes
-   * (by room) enter the table (review N7: a purge's dropped mail streams past). Its records
-   * read, and those kept.
-   */
-  async #scanSegment(fence: Fence, table: MoveTable, reader: MoveReader | null,
-                     keep: (room: string) => boolean = () => true):
-      Promise<{ all: number; kept: number }> {
-    const located = await this.#door(() => this.#bodies.locate([fence.content_id]));
-    const ref = table.addContent(fence.bytes, located.get(fence.content_id)!.chunks, null);
-    const content = table.contentOf(ref);
-    const read = (reader ?? new MoveReader(this.#files, table)).read;
-    const trailer = parseTrailer(utf8Decoder("keep")
-      .decode(await lineAt(content, fence.trailer_offset, fence.trailer_bytes, read)));
-    let kept = 0;
-    for (const [key, offset, length] of trailer.keys) {
-      const head = recordHead(await lineAt(content, offset, length, read));
-      if (keep(head.room)) {
-        keptRecord(table, key, offset, length, ref, head);
-        kept++;
-      }
-    }
-    return { all: trailer.keys.length, kept };
-  }
-
-  /**
-   * A move's records (`indices` into its table) placed as one or two segments (`pack`),
-   * replacing `replaced` and the hot batch `seqs` in its second unit (ADR-035's order: the
-   * bytes to R2 first, held by uploads that may pass the storage figure, then named in one
-   * unit, which may not leave the stored figure above both the figure and where the move
-   * found it: `archive_full`). Streamed (review N5, the memory research's §2 A): each piece
-   * planned from its records' lengths; pass 1 makes each chunk from the source ranges it
-   * covers, hashes it and drops it (and checks each placed body against its message's hash),
-   * for `Files.begin`; pass 2 makes each again and sends it, one a call. The sources do not
-   * change between the passes (contents are named by their hashes; the batch's rows are
-   * checked at the commit by their digest), and a chunk that did differ is refused by R2's
-   * check of its hash: loudly.
-   */
-  async #placePieces(table: MoveTable, indices: readonly number[], replaced: readonly Fence[],
-                     seqs: readonly number[], digest: string, stream: "mail" | "rewrite",
-                     reader: MoveReader, hold: MoveHold): Promise<void> {
-    const ordered = [...indices].sort((a, b) => table.key(a) - table.key(b));
-    const plans = ordered.length === 0 ? []
-      : pack(ordered, SEGMENT_LEAST_BYTES, (n) => table.length(n)).map((part) => {
-        const piece = table.piece(Uint32Array.from(part));
-        return { plan: planSegment("mail", piece), indices: piece.indices };
-      });
-    const hashes: string[][] = [];
-    await hold.pass(async () => {
-      for (const { plan, indices: at } of plans) {
-        const sources = (from: number, to: number) =>
-          this.#moveSources(table, at.subarray(from, to));
-        const each: string[] = [];
-        for (let n = 0; n < plan.chunks; n++) {
-          const made = await makeChunk(plan, n, sources, reader.read);
-          each.push(sha256Hex(made));
-          letGo(made);
-        }
-        hashes.push(each);
-      }
-    }, () => reader.letGo());
-    reader.bodiesChecked();
-    if (this.#betweenPasses !== null) {
-      const between = this.#betweenPasses;
-      await this.#door(() => between(this.#storage, { stream, replaced: replaced.length,
-                                                     records: table.count }));
-    }
-    const pieces = plans.map(({ plan, indices: at }) => {
-      const members = new Set<string>();
-      let firstAt = Number.MAX_SAFE_INTEGER;
-      let lastAt = 0;
-      for (const n of at) {
-        for (const member of roomMembers(table.room(n))) {
-          members.add(member);
-        }
-        firstAt = Math.min(firstAt, table.at(n));
-        lastAt = Math.max(lastAt, table.at(n));
-      }
-      return { plan, at, fence: {
-        first_key: plan.first, last_key: plan.last, first_at: firstAt, last_at: lastAt,
-        records: plan.records.count, bytes: plan.size,
-        trailer_offset: plan.trailer_offset, trailer_bytes: plan.trailer_bytes,
-        members: Ledger.members(members) } };
-    });
-    const begun = await this.#door(() => {
-      const before = this.#files.storedNow().stored;
-      const started = pieces.map((piece, n) => this.#files.begin(
-        piece.plan.size, hashes[n]!, "owner", [], true, null, true));
-      this.#ledger.moveBegun(stream, started[0]?.intent_id ?? "0".repeat(32), digest, clock(),
-                             before);
-      return { started, before };
-    });
-    try {
-      await hold.pass(async () => {
-        for (const [n, piece] of pieces.entries()) {
-          const sources = (from: number, to: number) =>
-            this.#moveSources(table, piece.at.subarray(from, to));
-          const wanted = new Set(begun.started[n]!.missing);
-          for (const [k, sha256] of hashes[n]!.entries()) {
-            if (wanted.delete(sha256)) {
-              const made = await makeChunk(piece.plan, k, sources, reader.read);
-              await this.#files.upload(begun.started[n]!.intent_id, [{ sha256, bytes: made }]);
-              letGo(made);
-            }
-          }
-        }
-      }, () => reader.letGo());
-      await this.#door(() => {
-        const named: { content_id: string; fence: (typeof pieces)[number]["fence"] }[] = [];
-        const adopt = (n: number): void => {
-          if (n === pieces.length) {
-            this.#ledger.archiveCommit(seqs, digest, replaced, named, clock());
-            const { stored, figure } = this.#files.storedNow();
-            if (figure !== null && stored > Math.max(figure, begun.before)) {
-              throw new Refusal("archive_full",
-                                "archive_full: the move would leave the storage figure higher " +
-                                "than it found it");
-            }
-            this.#ledger.moveEnded(stream);
-            return;
-          }
-          this.#files.adopt(begun.started[n]!.intent_id, "owner", (contentId) => {
-            named.push({ content_id: contentId, fence: pieces[n]!.fence });
-            adopt(n + 1);
-          });
-        };
-        adopt(0);
-      });
-    } finally {
-      await this.#door(() => {
-        for (const started of begun.started) {
-          this.#files.abort(started.intent_id);
-        }
-        this.#ledger.moveEnded(stream, begun.started[0]?.intent_id ?? "0".repeat(32));
-      });
-    }
-  }
-
-  /**
-   * The sources of a group of a move's records (`at`, their indices in its table), in their
-   * order: a kept one's range of its segment; a hot one's lines, read again in a unit,
-   * around its body (inline, or its placed content's whole range).
-   */
-  async #moveSources(table: MoveTable, at: Uint32Array): Promise<(readonly Run[])[]> {
-    const hot: number[] = [];
-    for (const n of at) {
-      if (table.kind(n) !== MoveTable.KEPT) {
-        hot.push(table.key(n));
-      }
-    }
-    const parts = hot.length === 0 ? new Map<number, MailParts>()
-      : await this.#door(() => this.#ledger.archiveParts(hot));
-    return Array.from(at, (n): Run[] => {
-      if (table.kind(n) === MoveTable.KEPT) {
-        return [{ content: table.content(n), offset: table.offset(n), length: table.length(n) }];
-      }
-      const own = parts.get(table.key(n))!;
-      if (table.kind(n) === MoveTable.INLINE) {
-        return [own.head, own.inline!, own.tail];
-      }
-      const content = table.content(n);
-      return [own.head, { content, offset: 0, length: content.size }, own.tail];
+    return this.#units("mailChain", binding, request, async (door) => {
+      const { r } = await this.#door(() => door.check());
+      return this.#archive.chain(door, r);
     });
   }
 
@@ -6486,7 +5248,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
-
   // -- THE VENDOR'S OWN SIGN-IN, inside a sandbox (slice SIGNIN; `signins.ts`) -----------
 
   /** Whether `id` is a live sign-in's: an app socket may watch it (the owner's own). A read. */
@@ -7468,7 +6229,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     };
     return Object.freeze(leases);
   }
-
 
   /**
    * One sandbox request, admitted at open (`Egress.open`): its blob, version, generation,

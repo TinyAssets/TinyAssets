@@ -19,6 +19,10 @@
  */
 import { randomUUID } from "node:crypto";
 
+import { doorRow, type Tool } from "../../contract/src/doors";
+import { fitted, jsonBytes } from "../../contract/src/encoded";
+import { PAGE_BYTES } from "./pages";
+
 import {
   type CodemodeRemote, type CodemodeRemoteExchange, type CodemodeRemoteRequest,
   RemoteCodemodeSandbox,
@@ -73,4 +77,173 @@ export function codemodeSandbox(parts: CodemodeParts): RemoteCodemodeSandbox {
                                                                         exchange) };
     },
   });
+}
+
+/** One code mode script (`codeRun`). */
+export interface CodeRequest {
+  readonly script: string;
+}
+
+/**
+ * A script's end, as pi-codemode reports it: its value or its error, its output, how many
+ * tool calls ended each way, and which calls of tools that change something landed
+ * (`landed`, in order, a run of the same tool and outcome as one entry with its count), so
+ * an agent knows what a stopped script did. Its output past what one tool answer holds
+ * (`PAGE_BYTES`, `pages.ts`) is cut, said so (`output_cut`); a value past it alone is
+ * refused `answer_too_large`, its calls kept (`fittedCode`).
+ */
+export type CodeResult =
+  | { readonly ok: true; readonly value: JsonValue; readonly output: CodeOutput[];
+      readonly calls: CodeCalls; readonly landed: Landed[]; readonly output_cut?: OutputCut }
+  | { readonly ok: false; readonly error: { readonly kind: string; readonly message: string };
+      readonly output: CodeOutput[]; readonly calls: CodeCalls; readonly landed: Landed[];
+      readonly output_cut?: OutputCut };
+
+/**
+ * A script's output cut to fit one answer (review M6), said so: how many items it had, and
+ * how many the answer keeps whole (the next one, a text, cut at a character after them).
+ */
+export interface OutputCut {
+  readonly items: number;
+  readonly kept: number;
+}
+
+/** A run of one tool's calls with one outcome, in a script's order. */
+export interface Landed {
+  readonly name: string;
+  readonly status: "ok" | "error" | "cancelled";
+  readonly count: number;
+}
+
+/** A script's value: JSON, as pi-codemode hands it back (an object or array, untyped). */
+export type JsonValue = null | boolean | number | string | object;
+/** One item of a script's output: its text, or an image. */
+export type CodeOutput = { readonly type: "text"; readonly text: string; readonly console?: true }
+  | { readonly type: "image"; readonly data: string; readonly mimeType: string };
+/** A script's tool calls, counted by how each ended. */
+export interface CodeCalls {
+  readonly ok: number;
+  readonly error: number;
+  readonly cancelled: number;
+}
+
+/** Code mode's own tool's name, as its door's row names it (`codeRun`). */
+export function codeTool(): string {
+  return doorRow("codeRun").tool!.name;
+}
+
+/** Code mode's refusals. */
+
+export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode off";
+
+export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
+
+const CODE_TIMED_OUT = "the script is past its time";
+
+/**
+ * A script's answer fitted to one tool answer (`pages.ts`, review M6): its value and calls
+ * whole, its output's items while they fit and the next text cut at a character, said so
+ * (`output_cut`). A value that alone passes one answer is refused `answer_too_large`, its
+ * calls and what landed kept, so nothing is lost silently.
+ */
+export function fittedCode(answer: CodeResult): CodeResult {
+  if (jsonBytes(answer) <= PAGE_BYTES) {
+    return answer;
+  }
+  const cut: OutputCut = { items: answer.output.length, kept: answer.output.length };
+  const bare = { ...answer, output: [], output_cut: cut };
+  if (jsonBytes(bare) > PAGE_BYTES) {
+    return { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
+             output: [], calls: answer.calls, landed: answer.landed };
+  }
+  const output: CodeOutput[] = [];
+  let used = jsonBytes(bare);
+  for (const item of answer.output) {
+    const bytes = jsonBytes(item) + (output.length > 0 ? 1 : 0);
+    if (used + bytes > PAGE_BYTES) {
+      const meta = jsonBytes({ ...item, text: "" }) + (output.length > 0 ? 1 : 0);
+      if (item.type === "text" && used + meta + 8 <= PAGE_BYTES) {
+        output.push({ ...item, text: fitted(item.text, PAGE_BYTES - used - meta + 2).text });
+      }
+      break;
+    }
+    used += bytes;
+    output.push(item);
+  }
+  const kept = output.length > 0 && output.at(-1) !== answer.output[output.length - 1]
+    ? output.length - 1 : output.length;
+  return { ...answer, output, output_cut: { items: answer.output.length, kept } };
+}
+
+/** A script's value past what one tool answer holds (`pages.ts`), refused whole. */
+export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is past the " +
+  `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
+  "it back";
+
+/** What a script runs with: its bounds, the hooks Worker, its owner, and its tools. */
+export interface ScriptParts {
+  readonly bounds: CodemodeBounds;
+  readonly service: () => HooksService | undefined;
+  readonly owner: string;
+  readonly script: string;
+  /** The caller's tools, each called through its own door (`call`), rechecked there. */
+  readonly tools: readonly Tool[];
+  readonly call: (tool: Tool, args: unknown) => Promise<unknown>;
+}
+
+/**
+ * One script run to its end (the MCP door's `code`, `codeRun`): its tools' calls counted by
+ * how each ended, the writes that landed in order, a script past its wall time ended as a
+ * `timeout`, and the answer fitted to one tool answer (`fittedCode`).
+ */
+export async function runScript(parts: ScriptParts): Promise<CodeResult> {
+  // The wall bound, held here too: pi-codemode's own deadline is a timer, which a script
+  // calling tools back to back starved in workerd, so each call checks the clock, which
+  // moves with every call's I/O, and ends the execution past it.
+  const timeoutMs = parts.bounds.timeoutMs ?? CODEMODE_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  const late = new AbortController();
+  const sandbox = codemodeSandbox({
+    ...parts.bounds,
+    service: parts.service,
+    owner: () => parts.owner,
+    tools: parts.tools.map((tool) => ({
+      name: tool.name, description: tool.description, inputSchema: tool.input,
+      execute: (args: unknown) => {
+        if (Date.now() >= deadline) {
+          late.abort();
+          throw new Error(CODE_TIMED_OUT);
+        }
+        return parts.call(tool, args);
+      } })),
+  });
+  try {
+    const result = await sandbox.execute(parts.script, { signal: late.signal });
+    const calls = { ok: 0, error: 0, cancelled: 0 };
+    const landed: Landed[] = [];
+    const changes = new Set(parts.tools.filter((tool) => !tool.readOnlyHint)
+      .map((tool) => tool.name));
+    for (const call of result.calls) {
+      calls[call.status] += 1;
+      const last = landed.at(-1);
+      if (!changes.has(call.name)) {
+        continue;
+      }
+      if (last?.name === call.name && last.status === call.status) {
+        landed[landed.length - 1] = { ...last, count: last.count + 1 };
+      } else {
+        landed.push({ name: call.name, status: call.status, count: 1 });
+      }
+    }
+    const error = late.signal.aborted && !result.ok
+      ? { kind: "timeout", message: `Execution timed out after ${timeoutMs} ms` }
+      : result.ok ? null : { kind: result.error.kind, message: result.error.message };
+    const answer: CodeResult = error === null
+      ? { ok: true, value: (result as { value: JsonValue }).value, output: result.output,
+          calls, landed }
+      : { ok: false, error, output: result.output, calls, landed };
+    return fittedCode(answer);
+  } finally {
+    await sandbox.close();
+  }
 }

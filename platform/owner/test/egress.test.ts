@@ -17,12 +17,13 @@ import { PLATFORM_CALLER } from "../src/admission";
 import type { ModelRecord } from "../../contract/src/model-record";
 import { EGRESS_BEAT_S } from "../../contract/src/egress";
 import {
-  EGRESS_LIMITS, type EgressMetering, type EgressOpened, type EgressRefusal, LOST_AFTER_S,
+  EGRESS_LIMITS, type EgressMetering, type EgressOpened, type EgressRefusal, egressPrice,
+  LOST_AFTER_S,
 } from "../src/egress";
 import { EGRESS_DEADLINE_S, SPEND_KEPT } from "../../contract/src/limits";
 import type { Binding } from "../src/owner-do";
 import { apiRules } from "../../contract/src/api-rules";
-import { egressPrice, NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
+import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
 import { priced } from "../src/usage";
 import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
@@ -682,7 +683,7 @@ async function pricedModels(r: Gated, connection: string) {
                                     connection)) as [{ models: string }];
   return (JSON.parse(models) as ModelRecord[]).filter((model) => model.cost.output > 0)
     .map((model) => ({ model, holds: egressPrice([model], model.contextWindow,
-                                                 model.maxTokens) }))
+                                                 model.maxTokens, priced) }))
     .sort((a, b) => a.holds - b.holds);
 }
 
@@ -901,7 +902,7 @@ describe("the spend caps", () => {
                    maxTokens: 50_000 } as ModelRecord;
     // The wide model's million input tokens at 2, its thousand output at 10; the dear one's
     // hundred thousand at 3 and its 50,000 at 20: the dearer of the two.
-    expect(egressPrice([wide, dear], 1_000_000, 50_000))
+    expect(egressPrice([wide, dear], 1_000_000, 50_000, priced))
       .toBe(Math.max(1_000_000 * 2 + 1_000 * 10, 100_000 * 3 + 50_000 * 20));
   });
 
