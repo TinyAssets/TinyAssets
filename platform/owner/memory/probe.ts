@@ -707,6 +707,8 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       await stub.legAckSeq(1, lasts.dot);
       await ring(stub, who, agents[0]!, "r1");
       await settled(stub, (seen) => seen.records >= sealed + 7_700);
+      // Its passes all over before the run: none left to run inside the measured move.
+      await idle(stub);
       LEG.ready.push({ name, who, agents, want: (await stub.legArchived()).records + 10_000,
                        offset: lasts.pat });
     } else if (path === "bodies" || path === "rewrite") {
@@ -728,6 +730,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       if (path === "rewrite") {
         await ring(stub, who, agents[0]!, "r0");
         await settled(stub, (seen) => seen.segments >= 1);
+        await idle(stub);
         await stub.legRemove(agents[1]!);
       }
       LEG.ready.push({ name, who, agents, want: path === "rewrite" ? 0 : 1 });
