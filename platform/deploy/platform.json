@@ -1,5 +1,5 @@
 {
-  "about": "What the deploy kit needs that no Worker's config can say (deploy/facts.ts reads it, with the six wrangler.jsonc). Everything a config says (each Worker's name, bindings, required secrets, bucket and queues, and the order its bindings set) is read from the config; the shared apps' signing secrets from doors/shared-apps.json; the doors' public identity from doors/src/identity.json. Each entry here carries its reason.",
+  "about": "What the deploy kit needs that no Worker's config can say (deploy/facts.ts reads it, with the six wrangler.jsonc). Everything a config says (each Worker's name, bindings, required secrets, bucket and queues, and the order its bindings set) is read from the config; the shared apps' signing secrets from doors/shared-apps.json; the doors' public identity from contract/identity.json. Each entry here carries its reason.",
   "namespaces": {
     "why": "A config names a KV namespace by an id the account gives when it is made (a placeholder as checked in), never by its title: the kit finds each by its title, or makes it, and fills the id in. One title per binding name: every Worker's CONTROL is the one namespace.",
     "titles": { "OAUTH_KV": "tinyassets-oauth", "DIRECTORY": "tinyassets-directory",

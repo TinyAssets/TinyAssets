@@ -21,9 +21,13 @@ import { join } from "node:path";
 import type { ImportRules } from "../../ci/kit/imports";
 import { PLATFORM } from "../../ci/paths";
 
-/** The contract's data files: the wake kinds, the owner's doors and the tool profiles. */
+/**
+ * The contract's data files: the wake kinds, the owner's doors, the tool profiles, the AI
+ * apps an owner may connect and the doors' public identity.
+ */
 const WAKE_KINDS = "contract/wake-kinds.json";
-const DATA = Object.freeze([WAKE_KINDS, "contract/doors.json", "contract/profiles.json"]);
+const DATA = Object.freeze([WAKE_KINDS, "contract/doors.json", "contract/profiles.json",
+                            "contract/apps.json", "contract/identity.json"]);
 
 export const IMPORTS: ImportRules = Object.freeze({
   worker: "contract",

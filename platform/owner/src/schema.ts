@@ -2012,7 +2012,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
   // 4, after the starter's 3 (slice BRAIN): which of `apps.json`'s vendors an MCP client is,
-  // as its sign-in knew it (`doors/src/apps.ts`): an app's id, verified (1) by its CIMD
+  // as its sign-in knew it (`contract/src/apps.ts`): an app's id, verified (1) by its CIMD
   // host or named (0) by its self-declared name; null when none matched, and for an API
   // key. `agents_list` answers the owner's connected apps from it. The table is exported,
   // so its capture triggers that write rows are made again with the two columns.

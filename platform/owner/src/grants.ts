@@ -87,7 +87,7 @@ import { HEX64 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
-import { appList, connectUrl, type Vendor } from "../../doors/src/apps";
+import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
 import { may } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";

@@ -10,7 +10,8 @@ import { env } from "cloudflare:workers";
 
 import { verifyToken } from "../../contract/src/routing-mac";
 
-import type { Binding, OwnerDO } from "../src/owner-do";
+import type { OwnerDO } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import type { RunReceipt } from "../src/runs";
 import type { SandboxStart } from "../src/sandbox";
 import type { RecordingSandbox } from "./sandbox-fake";

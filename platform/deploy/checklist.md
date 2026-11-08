@@ -161,7 +161,7 @@ It never counts as "absent".
    off. It also holds your tier numbers: free 5 runs and 25 GB, paid 10 runs and 250 GB. If the
    record is there, the kit leaves it alone. If the read fails, the whole run stops.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:** the doors'
-   callback (`signin.callback` in `platform/doors/src/identity.json`), with the checks in
+   callback (`signin.callback` in `platform/contract/identity.json`), with the checks in
    step 1, before any Cloudflare change, since the early sign-in check needs it. The kit
    never deletes one.
 7. **E2B's lifecycle webhook** (the doors' `hook` in `identity.json`, matched by
@@ -220,7 +220,7 @@ It never counts as "absent".
   record (`control_key` in `identity.json`): the doors read a missing record as open and would admit owners on
   these two paths.
 - **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
-  the doors' routes over (`routes` in `platform/doors/src/identity.json`) one route at a
+  the doors' routes over (`routes` in `platform/contract/identity.json`) one route at a
   time, through Cloudflare's routes API, so no path is ever served by nothing:
   - A pattern another Worker holds is moved to the doors in place (`PUT`, one change). Today
     that is the old proxy's (`tinyassets-mcp-proxy`) `mcp*`.

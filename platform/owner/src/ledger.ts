@@ -89,6 +89,7 @@
  * object's (`owner-do.ts`, `sessions.ts`, `policy.ts`), as the Python's router op ran
  * them around the ledger.
  */
+import type { Origin, Source } from "../../contract/src/binding";
 import { codePoints, isPrintable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX16, HEX64, SUBSCRIPTION_ID } from "../../contract/src/ids";
@@ -326,17 +327,7 @@ export function checkMessage(body: unknown): asserts body is string {
   }
 }
 
-/** A verified outside client: what the binder resolved the caller's credential to. */
-export interface Origin {
-  readonly client: string;
-  readonly family: string;
-}
 
-/** How the binder verified an origin: an API key (`ref` is its key id) or an MCP client. */
-export interface Source {
-  readonly kind: "api_key" | "mcp";
-  readonly ref: string;
-}
 
 /** A run of one of the owner's own agents, which acts in the ledger as that agent. */
 export interface Native {

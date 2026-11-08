@@ -18,7 +18,7 @@ import { PLATFORM_CALLER } from "../src/admission";
 import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
 import { WriteGate } from "../src/gate";
 import { AUTHORITY_CHANGED } from "../src/authority";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";

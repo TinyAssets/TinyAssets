@@ -13,7 +13,7 @@ import { profile, proves } from "../../contract/src/inbound-proof";
 import { Keys, TOO_MANY_KEYS } from "../src/keys";
 import { MAX_KEYS } from "../../contract/src/limits";
 import { GRANT_LIMITS } from "../src/grants";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { failure, inGate } from "./support";
 
 function pending(): { stub: DurableObjectStub; owner: string } {

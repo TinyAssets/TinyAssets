@@ -21,8 +21,7 @@ import { fake, once, parseWrangler, readWrangler, workerConfig } from "../worker
  * and the guards check by its import's path. Any other file there is a script the source
  * guards must scan.
  */
-const DATA_FILES: readonly string[] = Object.freeze(["doors/src/identity.json",
-                                                    "owner/src/model-ranking.json"]);
+const DATA_FILES: readonly string[] = Object.freeze(["owner/src/model-ranking.json"]);
 
 describe("the guard kit", () => {
   it("finds every wrangler config under a root, in order, and none of a dependency's", () => {

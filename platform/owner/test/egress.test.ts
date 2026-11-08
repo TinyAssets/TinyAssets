@@ -21,7 +21,7 @@ import {
   LOST_AFTER_S,
 } from "../src/egress";
 import { EGRESS_DEADLINE_S, SPEND_KEPT } from "../../contract/src/limits";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { apiRules } from "../../contract/src/api-rules";
 import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
 import { priced } from "../src/usage";

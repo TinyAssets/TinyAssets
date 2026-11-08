@@ -19,7 +19,7 @@ import { ERASING } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
 import { NO_ERASURE } from "../../owner/src/owner-do";
 import { LEDGER_LIMITS, nativeId } from "../../owner/src/ledger";
-import type { Binding } from "../../owner/src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { defineAgent } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
 import { API_BODY_MAX, ERASURE_QUEUE, INBOUND_BODY_MAX, MCP_RESOURCE, now } from "../src/config";

@@ -22,7 +22,7 @@ import { CONNECTION_LIMITS } from "../src/connections";
 import { MODELS_JSON_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../src/egress";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import { hashed, ownerRun, secretOf } from "./runs-support";

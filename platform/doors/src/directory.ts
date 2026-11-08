@@ -28,7 +28,7 @@ import { principal } from "../../contract/src/text";
 import { parseTiers, type Tiers } from "../../owner/src/tier";
 
 import type { DoorsEnv } from "./config";
-import identity from "./identity.json" with { type: "json" };
+import identity from "../../contract/identity.json" with { type: "json" };
 
 const KEY_ID = HEX16;
 /** The control record's key (`identity.json`), read as text: this module holds no object. */

@@ -12,7 +12,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { apiKeyOrigin } from "../../owner/src/ledger";
-import type { Binding } from "../../owner/src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { mcpOrigin } from "../src/binder";
 import { profileNames } from "../../contract/src/doors";
 import {

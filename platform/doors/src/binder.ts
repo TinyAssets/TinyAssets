@@ -20,20 +20,21 @@ import { HEX16, HEX32, HEX64, RUN_ID } from "../../contract/src/ids";
 
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
-import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
+import type { OwnerDO } from "../../owner/src/owner-do";
+import type { Binding, Origin } from "../../contract/src/binding";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
 } from "../../contract/src/socket-shape";
 import { principal } from "../../contract/src/text";
 import { ADMIN_CALLER } from "../../admin/src/caller";
 
-import type { Vendor } from "./apps";
+import type { Vendor } from "../../contract/src/apps";
 import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 
 import {
-  APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
-  ownerIssuer,
+  type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE, ownerIssuer,
 } from "./config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
 

@@ -12,7 +12,8 @@ import {
   CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
   HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
-import type { Binding, OwnerDO } from "../src/owner-do";
+import type { OwnerDO } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { SCHEDULE } from "../src/schedule";
 import { storageFull, storageFullRefusal } from "../src/storage-full";

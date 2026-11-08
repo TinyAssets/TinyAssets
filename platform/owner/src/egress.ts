@@ -71,6 +71,7 @@
  * finish within the gateway's 5-minute deadline: here a policy write ends it, as it ends
  * the owner's in-flight turns.
  */
+import type { SandboxBinding } from "../../contract/src/binding";
 import { CONNECTION_ID, HEX32, HEX64, randomHex, RUN_ID } from "../../contract/src/ids";
 
 import { apiRules, freeCall, tierMultiplier } from "../../contract/src/api-rules";
@@ -126,23 +127,6 @@ export interface LiveStream {
   readonly run: string;
 }
 
-/**
- * What the binder knows of the sandbox from its token (`Binding.sandbox`): which token it
- * is, the SHA-256 of its secret, and for the egress token the egress generation E2B's
- * transform set beside it.
- */
-export type SandboxBinding =
-  | { readonly kind: "egress"; readonly token: string; readonly generation: number;
-      /** The SHA-256 of the run's own secret its path carried (`/r/<run>/<secret>/...`). */
-      readonly secret?: string;
-      /** The SHA-256 of the runner's secret (`x-ta-runner`): the runner's own doors. */
-      readonly runner?: string }
-  /**
-   * The sync agent's call: its sync token's hash, and the egress token's E2B's transform
-   * set beside it (slice S review M-5): the sync token alone, taken out of the VM, reaches
-   * nothing, since only a call from inside the sandbox carries its own lease's egress token.
-   */
-  | { readonly kind: "sync"; readonly token: string; readonly egress: string };
 
 export interface EgressRequest {
   /** The run the call's path names (`/r/<run>/c/<connection>/...`). */

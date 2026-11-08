@@ -13,14 +13,13 @@ import { verifyToken } from "../../contract/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
 import { AGENT_DISABLED } from "../src/agent-file";
 import { AGENT_CHANGED } from "../src/launch";
-import type { Binding } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { Files } from "../src/files";
-import { RUNS_KEPT } from "../src/runs";
+import { NO_CONVERSATION, RUN_ENDED, RUNS_KEPT, SIGNIN_REQUIRED } from "../src/runs";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import {
   EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,
 } from "../../contract/src/run-events";
-import { NO_CONVERSATION, RUN_ENDED, SIGNIN_REQUIRED } from "../src/runs";
 import { SANDBOX_ABSENT } from "../src/sandbox";
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated } from "./gateway-support";

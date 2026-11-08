@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { CHUNK_BYTES } from "../../contract/src/limits";
 import { type Entry } from "../src/files";
-import type { Origin } from "../src/ledger";
+import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { APPEND_TRIES, UNREAD_CHANGE, UNREAD_WRITE } from "../src/owner-do";
 import { AGENTS_OWNER_ONLY } from "../src/paths";

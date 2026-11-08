@@ -20,7 +20,8 @@ import { GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits
 import { WriteGate } from "../src/gate";
 import { GRANT_LIMITS, scopes } from "../src/grants";
 import { MAX_BODY_BYTES } from "../src/ledger";
-import type { Binding, OwnerDO } from "../src/owner-do";
+import type { OwnerDO } from "../src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { TIER_UNREAD } from "../src/tier";
 import { MUSE, rig } from "./ledger-support";
 import { at, readOn } from "./pages-support";

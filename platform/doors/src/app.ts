@@ -96,9 +96,8 @@ import {
   socketRequest, withTiers,
 } from "./binder";
 import { jsonObject } from "./body";
-import {
-  APP_BODY_MAX, APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE,
-} from "./config";
+import { APP_BODY_MAX, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import { type Gated, ownerGate, ownerRead } from "./control";
 import {
   deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,

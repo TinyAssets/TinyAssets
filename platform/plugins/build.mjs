@@ -17,7 +17,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILLS = join(HERE, "..", "starter", "workspace", ".agents", "skills");
 const STARTER = JSON.parse(readFileSync(join(HERE, "..", "starter", "manifest.json"), "utf8"));
 // The doors' public identity: the origin, and the MCP door the plugins connect to.
-const IDENTITY = JSON.parse(readFileSync(join(HERE, "..", "doors", "src", "identity.json"),
+const IDENTITY = JSON.parse(readFileSync(join(HERE, "..", "contract", "identity.json"),
                                          "utf8"));
 const ORIGIN = `https://${IDENTITY.host}`;
 const SERVER = `${ORIGIN}${IDENTITY.mcp}`;

@@ -13,7 +13,8 @@ import {
   apiKeyOrigin as doorsKeyOrigin, bindApiKey, bindKeyRegistration, bindMcp, bindOwner,
   bindSignIn, installationOf, mcpClient, mcpOrigin, ownerOf,
 } from "../src/binder";
-import { APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, WEB_CLIENT } from "../src/config";
+import { type DoorsEnv, MCP_RESOURCE, WEB_CLIENT } from "../src/config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import { FAKE_ISSUER } from "./fake-upstream";
 import { mintKeyFor } from "./keys";
 import {

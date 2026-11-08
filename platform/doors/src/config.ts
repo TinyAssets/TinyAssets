@@ -3,7 +3,7 @@
  * the first-party clients, and the environment it binds (`wrangler.jsonc`, held by
  * `guards/config.test.ts`).
  *
- * The public identity is `identity.json`, its one copy, which the deploy kit
+ * The public identity is the contract's `identity.json`, its one copy, which the deploy kit
  * (`deploy/facts.ts`) and the plugins (`plugins/build.mjs`) read too: `host`, the public
  * origin's; `egress`, the sandbox's door, a custom domain of this Worker; `routes`, the
  * route patterns the doors take at the cutover, each from the origin; the MCP door
@@ -14,7 +14,7 @@
  * `guards/identity.test.ts`: the runner the sandbox template ships is built from that file,
  * so it changes only with a new template pair.
  */
-import identity from "./identity.json" with { type: "json" };
+import identity from "../../contract/identity.json" with { type: "json" };
 import type { Source } from "../../contract/src/egress-scope";
 import type { ChunkPut } from "../../files/src/index";
 import type { Verified } from "../../gateway/src/forward";
@@ -53,8 +53,6 @@ export const ISSUER = PUBLIC_ORIGIN;
 /** The MCP door's path, and the outside resource MCP clients' tokens are bound to. */
 export const MCP_PATH = `${identity.mcp}`;
 export const MCP_RESOURCE = `${PUBLIC_ORIGIN}${MCP_PATH}`;
-/** The first-party resource: the owner's own app's tokens, for `/app/api/*`. */
-export const APP_RESOURCE = `${PUBLIC_ORIGIN}${identity.first_party.resource}`;
 /** Where a sign-in starts. */
 export const AUTHORIZE_PATH = `${identity.signin.authorize}`;
 /** Where the upstream sign-in returns the browser. */

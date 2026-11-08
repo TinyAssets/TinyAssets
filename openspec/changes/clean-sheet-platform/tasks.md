@@ -2190,14 +2190,14 @@ R, S, M and W.
   - File reads and writes await a new owner's seed (`#seededFor`, after the caller's
     authority; the write-gate guard knows it), so a first `fetch` of `/workspace/USER.md`
     finds the seeded profile and a first append lands after it.
-  - The vendor at sign-in (`doors/src/apps.ts`): a CIMD client by its document's host
+  - The vendor at sign-in (`contract/src/apps.ts`): a CIMD client by its document's host
     (verified), any other by a word of its registered name (unverified), carried in the
     grant's props and binding and kept on its grant row (migration 4: `vendor`,
     `vendor_verified`, exported, capture triggers made again). `agents_list.apps` to every
     grant, narrowed and run ones included: each `apps.json` app connected or not, with its
     `connect_url`, and unmatched clients as one line. The owner app's connected apps page
     names each app by vendor and links each one not connected.
-  - `platform/doors/apps.json`: Claude, ChatGPT (with dots and Codex), Grok Bot, Meta Muse,
+  - `platform/contract/apps.json`: Claude, ChatGPT (with dots and Codex), Grok Bot, Meta Muse,
     Gemini and Cursor, each with match data, `registration`, connect link, sentence, steps
     and copy text, its vendor page and the date read. ChatGPT's steps are the current
     "Plugins, +, Add custom MCP server" (read 2026-11-04). The public `/connect` page built
@@ -2535,7 +2535,7 @@ R, S, M and W.
 - [ ] **The public `/connect` page from `apps.json`** (slice BRAIN's website part, on branch
   `platform-brain-site`), after the routes move above, so the live site never shows steps the
   live `/mcp` does not serve: merge it to `main` (`deploy-site-react.yml` publishes it, its path
-  filter then including `platform/doors/apps.json`), and its sweep checks one section per app
+  filter then including `platform/contract/apps.json`), and its sweep checks one section per app
   `apps.json` names. It carries `WebSite/site-react/app/connect/page.tsx`,
   `WebSite/site-react/scripts/sweep.py`, the workflow's path filter and the
   `public-website-surface` spec's `/connect` line. Then `connect_url` reaches every app's

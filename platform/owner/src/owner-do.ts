@@ -107,8 +107,7 @@ import {
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import type { Vendor } from "../../doors/src/apps";
-import { APP_RESOURCE } from "../../doors/src/config";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import { mintToken, sealRoute } from "../../contract/src/routing-mac";
 import {
   doorRow, type DoorRow, type ProfileName, profileNames, takesRequest, type Tool, toolsNamed,
@@ -168,10 +167,13 @@ import {
   type HooksService, runScript,
 } from "./codemode";
 import {
- type Actor, type Agent, type ChainMail, clock, Ledger, type LedgerLimits, type MailAuthority,
- type MailPage, RUN_NO_MAILBOX, apiKeyOrigin, type NativeAgent, nativeId, type Origin,
- outsideOrigin, type Posted, registrant, type Source,
+  type Actor, type Agent, type ChainMail, clock, Ledger, type LedgerLimits, type MailAuthority,
+  type MailPage, RUN_NO_MAILBOX, apiKeyOrigin, type NativeAgent, nativeId, outsideOrigin,
+  type Posted, registrant,
 } from "./ledger";
+import type {
+  Binding, InboundAnswer, Origin, SandboxBinding, Source,
+} from "../../contract/src/binding";
 import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
 import { ERASE_RETRY_MS, erasing, markOutside, outsideDone, PUT_GRACE_MS, wiped } from "./erasure";
@@ -210,8 +212,7 @@ import {
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, type EgressReserved,
-  egressRequest, reserveRequest,
-  type SandboxBinding, sandboxBinding, settleRequest,
+  egressRequest, reserveRequest, sandboxBinding, settleRequest,
 } from "./egress";
 import { EGRESS_ORIGIN, runUrls } from "../../contract/src/egress";
 import {
@@ -222,80 +223,11 @@ import { Doorbell, type RingAnswer, type WakeSender } from "./wakes";
 import { eventKind, type Events, kindFor, wakeKinds } from "../../contract/src/wake-records";
 import { follows } from "../../contract/src/wake-kinds";
 
-/**
- * Whose object this is, who is asking and through what: set by the binder from a
- * verified credential, the one binding every door takes. `caller` is the owner's own
- * account, or, at the collection doors alone, another owner visiting (origin null).
- * `origin` is the verified outside client the owner's account acts through (an outside
- * agent), or null. The object takes every sender and reader from here, never from a
- * request field.
- */
 /** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
 export const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
 export const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
 
-export interface Binding {
-  readonly owner: string;
-  readonly caller: string;
-  readonly origin: Origin | null;
-  /** How the binder verified `origin`: an MCP client or an API key. Every outside call. */
-  readonly source?: Source;
-  /**
-   * When the credential was signed in, in whole seconds: an outside client's, which a
-   * revoke fences, or the owner's interactive sign-in, which opens a session. Every MCP
-   * call carries it: the grant's original interactive sign-in, which a token refresh never
-   * moves. A revoke, and once any MCP revoke is forgotten the owner-wide fence, refuses an
-   * MCP call without it.
-   */
-  readonly authenticated_at?: number;
-  /** The owner's protected-session cookie, as the browser presented it. */
-  readonly session?: string;
-  /**
-   * The sandbox, as the egress door read its token (`egress.ts`): which token it is (the
-   * egress token or the sync token), the SHA-256 of its secret and, for the egress token,
-   * the egress generation its
-   * network's transform set. Only the egress doors take it; every other door refuses it.
-   */
-  readonly sandbox?: SandboxBinding;
-  /**
-   * A run's call on the egress host (its MCP door, its event door): the run its path named,
-   * beside the egress token's `sandbox`. The object resolves the live lease, the run under
-   * it and its grant, and holds every door to that grant (`#runAccount`).
-   */
-  readonly run?: string;
-  /**
-   * The tier numbers of the platform's control record (`tier.ts`), as the binder read them
-   * for a run door: never a request field, and never the owner's tier, which is the
-   * object's own row.
-   */
-  readonly tiers?: unknown;
-  /**
-   * The served records whose vendor sign-in the platform's control record switches on, as
-   * the binder read it for this call (`signins.ts`, `switches`): never a request field. The
-   * object keeps the last list it was handed for the runs its own lane starts.
-   */
-  readonly signins?: unknown;
-  /**
-   * The first-party grant the owner's token was issued under, and that token's expiry
-   * (whole seconds), from the provider's own unwrap: a socket ticket's binding, and a
-   * sign-out's (`bindOwnerGrant`, `bindSignOut`).
-   */
-  readonly grant?: string;
-  readonly expires_at?: number;
-  /**
-   * An inbound event's route, as the binder read it from the directory (`h:` or `i:`): the
-   * owner's binding it names, at the revision the entry carries. Only `inboundAccept` takes
-   * it; every other door refuses it.
-   */
-  readonly inbound?: { readonly binding: string; readonly revision: number };
-  /**
-   * Which of `apps.json`'s vendors an MCP client is, as its sign-in knew it (the grant's
-   * props, `doors/src/apps.ts`): recorded on its grant's row, never a request field.
-   */
-  readonly vendor?: Vendor | null;
-}
 
-export type { Origin, Source, WakeSender };
 
 /** A message to an agent: a run in a conversation, new or continued (`agentSubmit`). */
 export interface SubmitRequest {
@@ -585,10 +517,6 @@ export interface InboundEvent {
   readonly headers: Readonly<Record<string, string>>;
 }
 
-export type InboundAnswer =
-  | { readonly state: "admitted"; readonly receipt: string; readonly deduped: boolean }
-  | { readonly state: "refused"; readonly error: string; readonly retry?: true }
-  | { readonly state: "no_op"; readonly error: string };
 
 export interface UploadStoredRequest {
   readonly intent_id: string;

@@ -6,7 +6,8 @@
  * among them are the contract's `profiles.json`. Here, a door's call on the bound object,
  * which a tool and an owner-surface route make alike.
  */
-import type { Binding, OwnerDO } from "../../owner/src/owner-do";
+import type { OwnerDO } from "../../owner/src/owner-do";
+import type { Binding } from "../../contract/src/binding";
 import { doorRow, takesRequest } from "../../contract/src/doors";
 
 /**
