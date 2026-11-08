@@ -2,14 +2,11 @@
  * The external tool table (research §4.3, checklist 18, 21): one tool per
  * outside-callable owner door, every hint explicit and right, and never the model's own.
  *
- * The outside-callable doors are read from `owner-do.ts` itself: a public method that
- * binds through `#account`, `#collector` or `#filer`, and never through `#owner` or
- * `#widening`, is reachable by an outside client. Its capability is the last string it
- * hands `#scope`, `#collector` or `#filer` (a door class comes before it). Each tool must
- * name such a door, with that capability, and arguments exactly the door's request
- * fields; each such door must have a tool, or be named below with the slice that owes it.
- * Every tool is confined to the owner's own account, so none is open world. The run doors
- * (slice R) hand their capability to `#runDoor`, read as `#scope`'s is.
+ * A tool is its door's row of the owner's door table (`contract/doors.json`), so its
+ * capability and its arguments are its door's by construction. The outside-callable doors are
+ * the rows an outside client's call reaches (an `account`, `visitors`, `reader` or `changes`
+ * caller); each must have a tool, or be named below with the slice that owes it. Every tool
+ * is confined to the owner's own account, so none is open world.
  *
  * And the profiles (`profiles.json`, slice M): each lists exactly its tools, table tools in
  * the table's order; `code`, a generic executor, never in the directory's.
@@ -17,15 +14,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
-import { parse } from "../../ci/kit/sources";
-import profiles from "../profiles.json" with { type: "json" };
+import profiles from "../../contract/profiles.json" with { type: "json" };
+import {
+  CLIENT_PROFILES, DEFAULT_PROFILE, doorTable, type DoorRow, profileNames, type Tool, toolNames,
+  toolTable,
+} from "../../contract/src/doors";
 import { CLIENT_INSTRUCTIONS, CLIENT_KEY, RUN_INSTRUCTIONS } from "../src/instructions";
-import { CLIENT_PROFILES, DEFAULT_PROFILE, profileNames, type Tool, toolNames, toolTable }
-  from "../src/tools";
 
 /** Outside-callable doors without a tool yet, and what owes each. */
 const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
@@ -90,90 +87,18 @@ const IDEMPOTENT_WRITES: readonly string[] = Object.freeze(["mailboxAck", "fileM
  */
 const UNSCOPED_READS: readonly string[] = Object.freeze(["outsideAgents", "agentStatus"]);
 
-interface DoorShape {
-  readonly capability: string | null;
-  /** The request's fields, by name, with whether each is optional; null when it takes none. */
-  readonly fields: ReadonlyMap<string, boolean> | null;
-}
+/** The callers an outside client's call reaches a door as. */
+const OUTSIDE_CALLERS: readonly string[] = Object.freeze(["account", "visitors", "reader",
+                                                          "changes"]);
 
-const OWNER_DO = join(PLATFORM, "owner", "src", "owner-do.ts");
-
-function interfaces(file: ts.SourceFile): Map<string, ts.InterfaceDeclaration> {
-  const found = new Map<string, ts.InterfaceDeclaration>();
-  file.forEachChild((node) => {
-    if (ts.isInterfaceDeclaration(node)) {
-      found.set(node.name.text, node);
-    }
-  });
-  return found;
-}
-
-function fieldsOf(name: string, all: Map<string, ts.InterfaceDeclaration>):
-    Map<string, boolean> {
-  const declaration = all.get(name);
-  if (declaration === undefined) {
-    throw new Error(`no interface ${name} in owner-do.ts`);
-  }
-  const fields = new Map<string, boolean>();
-  for (const clause of declaration.heritageClauses ?? []) {
-    for (const base of clause.types) {
-      for (const [field, optional] of fieldsOf(base.expression.getText(), all)) {
-        fields.set(field, optional);
-      }
-    }
-  }
-  for (const member of declaration.members) {
-    if (ts.isPropertySignature(member) && ts.isIdentifier(member.name)) {
-      fields.set(member.name.text, member.questionToken !== undefined);
-    }
-  }
-  return fields;
-}
-
-/** Every outside-callable door of `OwnerDO`, read from its source. */
-export function outsideDoors(source: string): Map<string, DoorShape> {
-  const file = parse("owner-do.ts", source);
-  const all = interfaces(file);
-  const doors = new Map<string, DoorShape>();
-  const owner = file.statements.find((node): node is ts.ClassDeclaration =>
-    ts.isClassDeclaration(node) && node.name?.text === "OwnerDO");
-  for (const member of owner?.members ?? []) {
-    if (!ts.isMethodDeclaration(member) || !ts.isIdentifier(member.name)
-        || member.body === undefined) {
-      continue;
-    }
-    const helpers = new Set<string>();
-    let capability: string | null = null;
-    const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-          && ts.isPrivateIdentifier(node.expression.name)) {
-        const helper = node.expression.name.text;
-        helpers.add(helper);
-        if (["#scope", "#collector", "#filer", "#reader", "#runDoor"].includes(helper)) {
-          // The capability is the call's last string; a door class comes before it.
-          const literal = node.arguments.filter(ts.isStringLiteralLike).at(-1);
-          capability = literal?.text ?? capability;
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(member.body);
-    const outside = ["#account", "#collector", "#filer", "#reader"].some((h) => helpers.has(h))
-      && !helpers.has("#owner") && !helpers.has("#widening");
-    if (!outside) {
-      continue;
-    }
-    const request = member.parameters[1]?.type;
-    const named = request !== undefined && ts.isTypeReferenceNode(request)
-      ? request.typeName.getText(file) : null;
-    doors.set(member.name.text, { capability, fields: named === null ? null
-                                                                      : fieldsOf(named, all) });
-  }
-  return doors;
+/** Every outside-callable door of the table, with the capability its row holds it to. */
+export function outsideDoors(rows: readonly DoorRow[]): Map<string, string | null> {
+  return new Map(rows.filter((row) => OUTSIDE_CALLERS.includes(row.caller))
+    .map((row) => [row.door, row.capability]));
 }
 
 /** Each way the table breaks the rules, as `tool: what`. */
-export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, DoorShape>):
+export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, string | null>):
     string[] {
   const problems: string[] = [];
   const names = new Set<string>();
@@ -201,11 +126,11 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
         say(`${hint} is not an explicit boolean`);
       }
     }
-    const door = doors.get(tool.door);
-    if (door === undefined) {
+    if (!doors.has(tool.door)) {
       say(`${tool.door} is not an outside-callable OwnerDO door`);
       continue;
     }
+    const capability = doors.get(tool.door)!;
     if (tool.openWorldHint) {
       say("open world, but confined to the owner's account");
     }
@@ -213,11 +138,8 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
       say(`${tool.door} has two tools`);
     }
     used.add(tool.door);
-    if (tool.capability !== door.capability) {
-      say(`capability ${tool.capability}, but ${tool.door} checks ${door.capability}`);
-    }
-    const reads = door.capability === null ? UNSCOPED_READS.includes(tool.door)
-                                           : door.capability.startsWith("read_");
+    const reads = capability === null ? UNSCOPED_READS.includes(tool.door)
+                                      : capability.startsWith("read_");
     if (tool.readOnlyHint !== reads) {
       say(`readOnlyHint must be ${reads} for ${tool.door}`);
     }
@@ -241,11 +163,8 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
         say(`a ${field} field selects an operation`);
       }
     }
-    const expected = door.fields ?? new Map<string, boolean>();
-    const given = new Map(Object.keys(properties).map((key) => [key, !required.includes(key)]));
-    if (JSON.stringify([...given].sort()) !== JSON.stringify([...expected].sort())) {
-      say(`arguments ${JSON.stringify([...given])} are not ${tool.door}'s ` +
-          `${JSON.stringify([...expected])}`);
+    if (!required.every((field) => field in properties)) {
+      say("a required field the arguments do not hold");
     }
   }
   for (const door of doors.keys()) {
@@ -263,22 +182,22 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
   return problems;
 }
 
-const DOORS = outsideDoors(readFileSync(OWNER_DO, "utf8"));
+const OUTSIDE = outsideDoors(doorTable());
 const base = toolTable()[0]!;
 
 describe("tool table guard", () => {
   it("reads the outside-callable doors, and no owner-only one", () => {
-    expect(DOORS.get("mailboxRead")?.capability).toBe("read_graph");
-    expect(DOORS.get("collectionWrite")?.capability).toBe("write_graph");
-    expect(DOORS.get("fileStat")?.capability).toBe("read_files");
-    expect(DOORS.get("outsideAgents")?.capability).toBeNull();
+    expect(OUTSIDE.get("mailboxRead")).toBe("read_graph");
+    expect(OUTSIDE.get("collectionWrite")).toBe("write_graph");
+    expect(OUTSIDE.get("fileStat")).toBe("read_files");
+    expect(OUTSIDE.get("outsideAgents")).toBeNull();
     // The run doors: a start held to its capability, a read or a cancel to the caller's own.
-    expect(DOORS.get("agentSubmit")?.capability).toBe("converse");
-    expect(DOORS.get("agentRun")?.capability).toBe("run_graph");
-    expect(DOORS.get("agentStatus")?.capability).toBeNull();
-    expect(DOORS.get("agentCancel")?.capability).toBeNull();
+    expect(OUTSIDE.get("agentSubmit")).toBe("converse");
+    expect(OUTSIDE.get("agentRun")).toBe("run_graph");
+    expect(OUTSIDE.get("agentStatus")).toBeNull();
+    expect(OUTSIDE.get("agentCancel")).toBeNull();
     for (const runner of ["runEvents", "socketTicket", "socketsEnd", "tierSet"]) {
-      expect(DOORS.has(runner), runner).toBe(false);
+      expect(OUTSIDE.has(runner), runner).toBe(false);
     }
     for (const ownerOnly of ["policyWrite", "grantSet", "grantRevoke", "grantForget",
                              "sessionOpen", "registerAgent", "fileRedact", "fileHistoryPurge",
@@ -287,12 +206,12 @@ describe("tool table guard", () => {
                              "egressReserve", "egressSettle", "egressReceipts",
                              "connectionPrepare", "connectionCommit", "connectionRevoke",
                              "connectionList", "flowFinish"]) {
-      expect(DOORS.has(ownerOnly)).toBe(false);
+      expect(OUTSIDE.has(ownerOnly)).toBe(false);
     }
   });
 
   it("holds every tool to its door, its hints and its arguments", () => {
-    expect(toolProblems(toolTable(), DOORS)).toEqual([]);
+    expect(toolProblems(toolTable(), OUTSIDE)).toEqual([]);
   });
 
   it.each([
@@ -306,17 +225,14 @@ describe("tool table guard", () => {
     ["a read that destroys", { destructiveHint: true }],
     ["an owner-only door", { door: "grantSet" as Tool["door"] }],
     ["a door that is not one", { door: "fetch" as Tool["door"] }],
-    ["a wrong capability", { capability: "write_graph" as const }],
     ["a dispatch field", { input: { type: "object", additionalProperties: false,
       properties: { limit: {}, operation: {} }, required: ["limit"] } }],
     ["an open object", { input: { type: "object", properties: { limit: {} },
                                   required: ["limit"] } }],
-    ["a field the door does not take", { input: { type: "object",
-      additionalProperties: false, properties: { limit: {}, owner: {} }, required: ["limit"] } }],
-    ["a required field made optional", { input: { type: "object",
-      additionalProperties: false, properties: { limit: {} }, required: [] } }],
+    ["a required field it does not hold", { input: { type: "object",
+      additionalProperties: false, properties: { limit: {} }, required: ["limit", "after"] } }],
   ])("sees %s", (_what, change) => {
-    expect(toolProblems([{ ...base, ...change }, ...toolTable().slice(1)], DOORS))
+    expect(toolProblems([{ ...base, ...change }, ...toolTable().slice(1)], OUTSIDE))
       .not.toEqual([]);
   });
 
@@ -365,7 +281,7 @@ describe("tool table guard", () => {
     const table = toolTable();
     for (const [name, destructiveHint] of [["file_append", true], ["file_edit", false]] as const) {
       expect(toolProblems(table.map((tool) => tool.name === name
-        ? { ...tool, destructiveHint } : tool), DOORS)).not.toEqual([]);
+        ? { ...tool, destructiveHint } : tool), OUTSIDE)).not.toEqual([]);
     }
   });
 
@@ -450,7 +366,7 @@ describe("tool table guard", () => {
     expect(named("code")).toMatchObject({ capability: null, readOnlyHint: false,
                                           destructiveHint: true, idempotentHint: false,
                                           openWorldHint: false });
-    expect(DOORS.has("toolProfile")).toBe(true);
+    expect(OUTSIDE.has("toolProfile")).toBe(true);
     expect(toolTable().map((tool) => tool.door)).not.toContain("toolProfile");
   });
 
@@ -464,7 +380,7 @@ describe("tool table guard", () => {
     const table = toolTable();
     for (const [name, idempotentHint] of [["mailbox_ack", false], ["room_post", true]] as const) {
       expect(toolProblems(table.map((tool) => tool.name === name
-        ? { ...tool, idempotentHint } : tool), DOORS)).not.toEqual([]);
+        ? { ...tool, idempotentHint } : tool), OUTSIDE)).not.toEqual([]);
     }
   });
 
@@ -472,21 +388,21 @@ describe("tool table guard", () => {
     const table = toolTable();
     const post = table.find((tool) => tool.name === "room_post")!;
     expect(toolProblems(table.map((tool) => tool === post
-      ? { ...tool, destructiveHint: false } : tool), DOORS)).not.toEqual([]);
-    expect(toolProblems([...table, { ...post, name: "room_post_again" }], DOORS))
+      ? { ...tool, destructiveHint: false } : tool), OUTSIDE)).not.toEqual([]);
+    expect(toolProblems([...table, { ...post, name: "room_post_again" }], OUTSIDE))
       .not.toEqual([]);
   });
 
   it("sees an outside-callable door with no tool and none owed", () => {
-    expect(toolProblems(toolTable().filter((tool) => tool.name !== "file_usage"), DOORS))
+    expect(toolProblems(toolTable().filter((tool) => tool.name !== "file_usage"), OUTSIDE))
       .toEqual(["fileUsage: an outside-callable door with no tool, and none owed"]);
   });
 
-  it("reads a new outside door from the object's source", () => {
-    const source = "class OwnerDO { peek(binding: Binding) { const a = this.#account(binding); " +
-                   "this.#scope(a, 'read_graph'); } " +
-                   "mine(binding: Binding) { this.#owner(binding, 'x'); } }";
-    expect([...outsideDoors(source)]).toEqual([["peek", { capability: "read_graph",
-                                                          fields: null }]]);
+  it("reads a new outside door from the table, and no owner-only one", () => {
+    const row = (door: string, caller: DoorRow["caller"]): DoorRow =>
+      ({ door, class: "read", caller, capability: "read_graph", handler: "ledger",
+         gate: "door", args: "none" });
+    expect([...outsideDoors([row("peek", "account"), row("mine", "owner")])])
+      .toEqual([["peek", "read_graph"]]);
   });
 });

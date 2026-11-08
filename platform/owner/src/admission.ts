@@ -34,6 +34,7 @@
  * (`admission-caller.test.ts`). A suspension adds a reason, a resumption takes one away,
  * and an erased owner is never set again.
  */
+import type { DoorClass as TableClass } from "../../contract/src/doors";
 import { wiped } from "./erasure";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
@@ -81,10 +82,10 @@ export function workRefusal(state: Admission): Refusal | null {
 /**
  * What a door does, which decides what a suspension leaves it: `work` spends or grows
  * (a message, a launch, a write that adds), `read` only reads (and signs in), `reduce` only
- * lowers risk or storage (a cancel, a revoke, a delete or purge). Every door declares its
- * class in its binding check (the door-class guard).
+ * lowers risk or storage (a cancel, a revoke, a delete or purge). Every door's row names its
+ * class (`contract/doors.json`); the platform's own doors' rows name `admission`, read by none.
  */
-export type DoorClass = "work" | "read" | "reduce";
+export type DoorClass = Exclude<TableClass, "admission">;
 
 /**
  * Why a door of class `door` is refused under `state`, or null. A `billing` suspension

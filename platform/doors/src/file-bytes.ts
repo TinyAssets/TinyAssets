@@ -33,11 +33,6 @@ import type { Bound } from "./binder";
 import type { DoorsEnv } from "./config";
 import { refusalResponse } from "./refused";
 
-/** The owner-surface paths of the upload, after `/app/api/`. */
-export const UPLOAD_PREFIX = "files/upload/";
-export const UPLOAD_BEGIN = "files/upload/begin";
-export const UPLOAD_COMMIT = "files/upload/commit";
-export const UPLOAD_ABORT = "files/upload/abort";
 const CHUNK_PATH = /^([0-9a-f]{32})\/(0|[1-9][0-9]{0,5})$/;
 
 function failure(status: number, message: string, headers: HeadersInit = {}): Response {

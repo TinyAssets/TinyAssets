@@ -71,10 +71,14 @@ A tool's result SHALL be one `text` content block holding its JSON, with no `str
 - **THEN** the call fails as `internal error` and the size is logged, and no truncated text is sent
 
 ### Requirement: One external tool per outside-callable owner door
-Each external tool SHALL call exactly one owner door an outside client can reach, with that door's capability and arguments, a title, and explicit `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. No tool SHALL select an operation by a field, and an engine's own tools (`read`, `write`, `edit`, `bash`, `ta`) SHALL never be served as ours. Each outside-callable door without a tool SHALL be named with the slice that owes it, or as the doors' own (`toolProfile`).
+Each external tool SHALL be its door's row of the owner's door table (`contract/doors.json`), the one list of the owner object's doors: it calls exactly that one owner door, which an outside client can reach, and every tool's capability and argument schema SHALL come from that row, beside its title and explicit `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. No tool SHALL select an operation by a field, and an engine's own tools (`read`, `write`, `edit`, `bash`, `ta`) SHALL never be served as ours. Each outside-callable door without a tool SHALL be named with the slice that owes it, or as the doors' own (`toolProfile`).
+
+#### Scenario: A door's capability or arguments change
+- **WHEN** a door's row names another capability, or another argument schema
+- **THEN** its tool is held to that capability and serves that schema, with no other list to change
 
 #### Scenario: A tool added for an owner-only door
-- **WHEN** a tool names `grantSet`, `policyWrite` or any door bound through `#owner` or `#widening`
+- **WHEN** a tool is given to a door an outside client cannot reach (its row's caller is the owner itself, the owner's session or the platform, as `grantSet`'s and `policyWrite`'s are)
 - **THEN** the tool guard fails CI
 
 ### Requirement: No tool is open world, and the run tools are run doors
@@ -89,7 +93,7 @@ Every tool SHALL be confined to the owner's account, `openWorldHint` false. The 
 - **THEN** it is refused `no_run`, as for a run that does not exist
 
 ### Requirement: Each caller is served exactly its own tool profile
-A profile SHALL be data (`doors/profiles.json`) listing table tools in the table's order: `custom`, the owner's own choice (by default every tool), which every grant on `/mcp` and every API key names until the owner names another, since each is a custom connector; `directory`, every tool but `code`, a generic executor, as OpenAI's plugin guidelines require (each operation its own tool, no generic executor enabling operations not exposed for review), cited there, for a listing's own MCP resource once it is submitted, `search` and `fetch` among them in the shape ChatGPT's deep research and company knowledge call; `run`, the table but `converse` and the mailbox tools. `/mcp`, a run's MCP door and `/api` SHALL serve a request only the tools the object answers for its caller (`toolProfile`), asked before any tool is listed; a caller the object refuses SHALL be answered that refusal (`403`) and no tool, and a tool outside the profile SHALL be unknown (`/api`: `404`).
+A profile SHALL be data (`contract/profiles.json`) listing table tools in the table's order: `custom`, the owner's own choice (by default every tool), which every grant on `/mcp` and every API key names until the owner names another, since each is a custom connector; `directory`, every tool but `code`, a generic executor, as OpenAI's plugin guidelines require (each operation its own tool, no generic executor enabling operations not exposed for review), cited there, for a listing's own MCP resource once it is submitted, `search` and `fetch` among them in the shape ChatGPT's deep research and company knowledge call; `run`, the table but `converse` and the mailbox tools. `/mcp`, a run's MCP door and `/api` SHALL serve a request only the tools the object answers for its caller (`toolProfile`), asked before any tool is listed; a caller the object refuses SHALL be answered that refusal (`403`) and no tool, and a tool outside the profile SHALL be unknown (`/api`: `404`).
 
 #### Scenario: Two clients of one owner
 - **WHEN** the owner names one client's profile `directory` and leaves another's

@@ -1,0 +1,1146 @@
+{
+  "about": "The owner object's doors (contract/src/doors.ts): one row for each public RPC method of OwnerDO, read by the object's runner and by the doors' tool table.",
+  "doors": [
+    {
+      "door": "inboxDigest", "class": "read", "caller": "account", "guard": "no_mailbox",
+      "capability": "read_graph", "fieldsFirst": true, "handler": "ledger", "gate": "units",
+      "args": {
+        "refused": "invalid ledger request",
+        "required": {
+          "limit": { "type": "integer", "description": "At most this many messages, and this many room rows" },
+          "after": { "type": "integer", "description": "Changes after this cursor: 0 at first, then the last answer's cursor" }
+        },
+        "optional": {
+          "max_bytes": { "type": "integer", "description": "At most this many mail body bytes in all" },
+          "head_chars": { "type": "integer", "description": "At most this many characters of each row's body (512 when omitted)" }
+        }
+      },
+      "tool": {
+        "name": "inbox_digest", "title": "Inbox digest", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Read what is new for this agent in one call: its unacknowledged mail, oldest first, and the rows of the owner's rooms changed after a cursor, each with the head of its body. Acknowledge mail with mailbox_ack; a mail body cut to fit (truncated true) is read on with mailbox_read's body_offset and message_id; read a whole row with collection_get. An answer with reset true means a deletion past the cursor is no longer kept: read the rooms again whole, then go on from the cursor given."
+      }
+    },
+    {
+      "door": "boardDigest", "class": "read", "caller": "visitors", "capability": "read_graph",
+      "handler": "collections", "gate": "units",
+      "args": {
+        "refused": "invalid collection request",
+        "required": {
+          "limit": { "type": "integer", "description": "At most this many rows" },
+          "after": { "type": "integer", "description": "Changes after this cursor: 0 at first, then the last answer's cursor" }
+        },
+        "optional": {
+          "head_chars": { "type": "integer", "description": "At most this many characters of each row's body (512 when omitted)" }
+        }
+      },
+      "tool": {
+        "name": "board_digest", "title": "Board digest", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Read the owner's board rows changed after a cursor in one call, each with its etag and the head of its body. Claim a row with collection_write on its etag; read a whole row with collection_get. An answer with reset true means a deletion past the cursor is no longer kept: read the board again whole (collection_pull), then go on from the cursor given."
+      }
+    },
+    {
+      "door": "mailboxRead", "class": "read", "caller": "account", "guard": "no_mailbox",
+      "capability": "read_graph", "fieldsFirst": true, "handler": "ledger", "gate": "units",
+      "args": {
+        "refused": "invalid ledger request",
+        "required": {
+          "limit": { "type": "integer", "description": "At most this many messages" }
+        },
+        "optional": {
+          "max_bytes": { "type": "integer", "description": "At most this many body bytes in all" },
+          "pad_bytes": { "type": "integer", "description": "Pad the page to this many bytes" },
+          "body_offset": { "type": "integer", "description": "The first item's body from this byte: a body_next_offset an answer gave (0 when omitted)" },
+          "message_id": { "type": "string", "description": "With body_offset, the message whose body is read on" }
+        }
+      },
+      "tool": {
+        "name": "mailbox_read", "title": "Read mailbox", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Read this agent's unacknowledged mailbox messages, oldest first. One answer holds at most 50000 characters: a message whose body does not fit is cut, with truncated true and body_next_offset; read the rest by calling again with body_offset set to it and message_id set to that message's, before acknowledging it."
+      }
+    },
+    {
+      "door": "mailboxAck", "class": "reduce", "caller": "account", "guard": "no_mailbox",
+      "capability": "write_graph", "fieldsFirst": true, "handler": "ledger", "gate": "synced",
+      "args": {
+        "refused": "invalid ledger request",
+        "required": {
+          "through": { "type": "integer", "description": "The last sequence number read" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "mailbox_ack", "title": "Acknowledge mailbox", "readOnlyHint": false,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Acknowledge this agent's mailbox messages through a sequence number."
+      }
+    },
+    {
+      "door": "roomPost", "class": "work", "caller": "account", "capability": "write_graph",
+      "handler": "ledger", "gate": "units",
+      "args": {
+        "refused": "invalid ledger request",
+        "required": {
+          "room_id": { "type": "string", "description": "The room's id" },
+          "client_message_id": { "type": "string", "description": "Your id for this message, for retries" },
+          "body": { "type": "string", "description": "The message text" },
+          "parent_id": { "type": ["string", "null"], "description": "The message replied to, or null" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "room_post", "title": "Post to room", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Post a message to a room of the owner's account: dm:<agent> with the owner, or dm:<agent>+<agent> between two agents. Mail to one of the owner's own agents starts its run, whose result is its reply."
+      }
+    },
+    {
+      "door": "outsideAgents", "class": "read", "caller": "account", "capability": null,
+      "handler": "ledger", "gate": "units",
+      "args": {
+        "refused": "invalid collection request", "required": {},
+        "optional": {
+          "after": { "type": "string", "description": "Read on after this: a next an answer gave" }
+        },
+        "omitted": true
+      },
+      "tool": {
+        "name": "agents_list", "title": "List agents", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "List the agents registered for this connection, the owner's own agents, each with the id its rooms name, and which of the owner's AI apps are connected to TinyAssets, each one not connected with its connect_url, the page with its connect step. One answer holds as many as fit; when it carries next, read again with after set to it for the rest."
+      }
+    },
+    {
+      "door": "registerPropose", "class": "work", "caller": "account", "guard": "own_card",
+      "capability": null, "handler": "registrations", "gate": "door",
+      "args": {
+        "refused": "invalid ledger request",
+        "required": {
+          "command_center_id": { "type": "string", "description": "The command center to register in" },
+          "display_name": { "type": "string", "description": "The agent's display name" },
+          "delivery_method": { "type": "string", "description": "How the agent is reached: pull or mcp_event" },
+          "recipe_id": { "type": ["string", "null"], "description": "The recipe the agent runs, or null" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "agent_register", "title": "Request agent registration", "readOnlyHint": false,
+        "destructiveHint": false, "idempotentHint": false, "openWorldHint": false,
+        "description": "File this connection's agent registration for the owner to approve."
+      }
+    },
+    {
+      "door": "policyPropose", "class": "work", "caller": "account",
+      "capability": "propose_policy", "fieldsFirst": true, "handler": "policy", "gate": "door",
+      "args": {
+        "refused": "invalid policy request",
+        "required": { "change": { "type": "object", "description": "The proposed change" } },
+        "optional": {
+          "request_id": { "type": "string", "description": "Your id for this proposal, for retries" }
+        }
+      },
+      "tool": {
+        "name": "policy_propose", "title": "Propose policy change", "readOnlyHint": false,
+        "destructiveHint": false, "idempotentHint": false, "openWorldHint": false,
+        "description": "Propose a change to the owner's policy, for the owner to approve."
+      }
+    },
+    {
+      "door": "collectionGet", "class": "read", "caller": "visitors", "capability": "read_graph",
+      "handler": "collections", "gate": "units",
+      "args": {
+        "refused": "invalid collection request",
+        "required": {
+          "collection": { "type": "string", "description": "The collection's name" },
+          "row_id": { "type": "string", "description": "The row's id" }
+        },
+        "optional": {
+          "body_offset": { "type": "integer", "description": "The body from this byte: a body_next_offset an answer gave" },
+          "etag": { "type": "string", "description": "The etag the earlier part came with" }
+        }
+      },
+      "tool": {
+        "name": "collection_get", "title": "Get collection row", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Read one row of a collection. One answer holds at most 50000 characters: a body that does not fit is cut, with truncated true and body_next_offset; read the rest by calling again with body_offset set to it and etag set to the row's etag, which refuses the read if the row changed meanwhile."
+      }
+    },
+    {
+      "door": "collectionPull", "class": "read", "caller": "visitors",
+      "capability": "read_graph", "handler": "collections", "gate": "units",
+      "args": {
+        "refused": "invalid collection request",
+        "required": {
+          "collection": { "type": "string", "description": "The collection's name" },
+          "after": { "type": "integer", "description": "Rows changed after this revision" },
+          "limit": { "type": "integer", "description": "At most this many rows" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "collection_list", "title": "List collection rows", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "List a collection's rows changed after a revision, as many as one answer holds (at most 50000 characters); go on from the cursor it gives. A first row whose body does not fit is cut (truncated true): read the rest with collection_get."
+      }
+    },
+    {
+      "door": "collectionHistory", "class": "read", "caller": "visitors",
+      "capability": "read_graph", "handler": "collections", "gate": "units",
+      "args": {
+        "refused": "invalid collection request",
+        "required": {
+          "collection": { "type": "string", "description": "The collection's name" },
+          "row_id": { "type": "string", "description": "The row's id" }
+        },
+        "optional": {
+          "before_revision": { "type": "integer", "description": "Entries before this revision" },
+          "body_offset": { "type": "integer", "description": "The first item's body from this byte: a body_next_offset an answer gave (0 when omitted)" }
+        }
+      },
+      "tool": {
+        "name": "collection_history", "title": "Collection row history", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Read the kept history of one collection row, newest first by page; pass before_revision for the older entries when the answer says more. A newest entry whose body does not fit one answer is cut (truncated true): call again with the same before_revision and body_offset set to its body_next_offset."
+      }
+    },
+    {
+      "door": "collectionWrite", "class": "work", "caller": "visitors",
+      "capability": "write_graph", "handler": "collections", "gate": "units",
+      "args": {
+        "refused": "invalid collection request",
+        "required": {
+          "collection": { "type": "string", "description": "The collection's name" },
+          "row_id": { "type": "string", "description": "The row's id" },
+          "body": { "type": "string", "description": "The row's new body" },
+          "expected_etag": { "type": "string", "description": "The row's current etag, or \"\" to create it" },
+          "private": { "type": "boolean", "description": "Whether only the owner may read the row" }
+        },
+        "optional": {
+          "history_op": { "type": "string", "description": "The history entry's operation name" }
+        }
+      },
+      "tool": {
+        "name": "collection_write", "title": "Write collection row", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Write one collection row against its current etag. A new row (expected_etag \"\") is refused when the row exists, so creating one claims an act: on the board, the first agent to create the row named for an act holds it, and a conflict means another agent has it."
+      }
+    },
+    {
+      "door": "collectionDelete", "class": "reduce", "caller": "visitors", "guard": "owner_rows",
+      "action": "delete", "capability": "write_graph", "handler": "collections", "gate": "units",
+      "args": {
+        "refused": "invalid collection request",
+        "required": {
+          "collection": { "type": "string", "description": "The collection's name" },
+          "row_id": { "type": "string", "description": "The row's id" },
+          "expected_etag": { "type": "string", "description": "The row's current etag" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "collection_delete", "title": "Delete collection row", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Delete one collection row against its current etag."
+      }
+    },
+    {
+      "door": "collectionClear", "class": "reduce", "caller": "visitors", "guard": "owner_rows",
+      "action": "clear", "capability": "write_graph", "handler": "collections", "gate": "synced",
+      "args": {
+        "refused": "invalid collection request",
+        "required": {
+          "collection": { "type": "string", "description": "The collection's name" },
+          "writer": { "type": ["string", "null"], "description": "Only this writer's rows, or null for all" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "collection_clear", "title": "Clear collection", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Delete a collection's rows, or one writer's rows."
+      }
+    },
+    {
+      "door": "fileStat", "class": "read", "caller": "account", "capability": "read_files",
+      "handler": "files", "gate": "door",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "file_stat", "title": "File info", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Read one file's or directory's entry."
+      }
+    },
+    {
+      "door": "fileList", "class": "read", "caller": "reader", "capability": "read_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "dir": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "limit": { "type": "integer", "description": "At most this many entries" }
+        },
+        "optional": {
+          "after": { "type": "string", "description": "Entries after this name" },
+          "head_chars": { "type": "integer", "description": "At most this many characters of each small file's text" }
+        }
+      },
+      "tool": {
+        "name": "file_list", "title": "List directory", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "List a directory's entries by name. With head_chars, each small file also carries the start of its text, enough to read its title and description."
+      }
+    },
+    {
+      "door": "fileText", "class": "read", "caller": "account", "capability": "read_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" }
+        },
+        "optional": {
+          "offset": { "type": "integer", "description": "The byte to start at: 0, or a next_offset" },
+          "max_bytes": { "type": "integer", "description": "At most this many bytes of text" }
+        }
+      },
+      "tool": {
+        "name": "file_read", "title": "Read file", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Use this to read a file of the user's TinyAssets workspace by its path, such as their profile /workspace/USER.md: its UTF-8 text from offset (0 when omitted), at most max_bytes (65536 when omitted, up to 4194304) and at most what one answer holds (50000 characters), cut at a character. next_offset is where the next part starts, or null at the end. Its entry carries the etag file_edit and file_write take."
+      }
+    },
+    {
+      "door": "fileSearch", "class": "read", "caller": "account", "capability": "read_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": { "query": { "type": "string", "description": "The words to look for" } },
+        "optional": {
+          "cursor": { "type": "string", "description": "A next_cursor a search answered" }
+        }
+      },
+      "tool": {
+        "name": "search", "title": "Search files", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Use this when the user's request may depend on what they or their other agents already saved: their details, preferences, goals, decisions, notes and projects. Searches the user's TinyAssets workspace by words: file paths, titles, descriptions and tags, small files' text, and index lines (/workspace/index.md maps the workspace). Answers the best results, each an id for fetch, a title and a url. When next_cursor is set, only part of the files were searched: search again with it for the rest."
+      }
+    },
+    {
+      "door": "fileFetch", "class": "read", "caller": "account", "capability": "read_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "id": { "type": "string", "description": "The id a search answered: the file's path" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "fetch", "title": "Fetch file", "readOnlyHint": true, "destructiveHint": false,
+        "idempotentHint": true, "openWorldHint": false,
+        "description": "Use this to read one of the user's TinyAssets files a search found, by its id, the file's path: its title, its text (as much as one answer holds; when metadata.truncated, file_read reads on from metadata.next_offset), its url and its metadata, the etag file_edit takes among them."
+      }
+    },
+    {
+      "door": "fileAppend", "class": "work", "caller": "account", "capability": "write_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "content": { "type": "string", "description": "The text to add at the end, as UTF-8: at most 4 MiB" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "file_append", "title": "Append to file", "readOnlyHint": false,
+        "destructiveHint": false, "idempotentHint": false, "openWorldHint": false,
+        "description": "Use this to save what the user tells you that is worth keeping, so their other agents know it too: adds text at the end of a file in their TinyAssets workspace, such as a directive at the end of /workspace/USER.md or a note in their knowledge, and makes the file when it is absent. It never changes what is already there. The text goes in exactly as given: begin it with a newline where the file needs one. A JSON, TOML or YAML file is changed with file_edit instead."
+      }
+    },
+    {
+      "door": "fileWrite", "class": "work", "caller": "account", "capability": "write_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "expected_etag": { "type": "string", "description": "The file's current etag, from fetch, file_read or file_stat, or \"\" to create it only when absent" },
+          "content": { "type": "string", "description": "The file's whole text, as UTF-8: at most 4 MiB" }
+        },
+        "optional": {
+          "mode": { "type": "integer", "description": "1 to make the file executable, 0 not; kept when omitted" }
+        }
+      },
+      "tool": {
+        "name": "file_write", "title": "Write file", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Write a whole file of the user's TinyAssets workspace: its text replaces what is there, at the file's current etag, or \"\" to create a file that is not there yet. A conflict answers the file as it now stands. At most 4 MiB of text."
+      }
+    },
+    {
+      "door": "fileEdit", "class": "work", "caller": "account", "capability": "write_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "old_text": { "type": "string", "description": "The exact text to replace: it occurs once" },
+          "new_text": { "type": "string", "description": "What replaces it" },
+          "expected_etag": { "type": "string", "description": "The file's current etag" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "file_edit", "title": "Edit file", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Use this to correct a file of the user's TinyAssets workspace in place, such as a directive in /workspace/USER.md that stopped being true: replaces the one exact occurrence of old_text with new_text, at the file's current etag (from fetch, file_read or file_stat). Text found nowhere, or more than once, is refused: give enough of it to be unique. A conflict answers the file as it now stands."
+      }
+    },
+    {
+      "door": "fileHistory", "class": "read", "caller": "account", "capability": "read_files",
+      "handler": "files", "gate": "door",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "limit": { "type": "integer", "description": "At most this many versions" }
+        },
+        "optional": {
+          "before": { "type": "integer", "description": "Versions before this one" }
+        }
+      },
+      "tool": {
+        "name": "file_history", "title": "File history", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "List a path's kept versions, newest first."
+      }
+    },
+    {
+      "door": "fileUsage", "class": "read", "caller": "account", "capability": "read_files",
+      "handler": "files", "gate": "door", "args": "none",
+      "tool": {
+        "name": "file_usage", "title": "File usage", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Read the owner's file usage and quotas."
+      }
+    },
+    {
+      "door": "fileMkdir", "class": "work", "caller": "account", "capability": "write_files",
+      "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "expected_etag": { "type": ["string", "null"], "description": "The entry's current etag, or null to create it" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "file_mkdir", "title": "Make directory", "readOnlyHint": false,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Make a directory against the path's current etag."
+      }
+    },
+    {
+      "door": "fileRemove", "class": "reduce", "caller": "account", "capability": "write_files",
+      "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "expected_etag": { "type": "string", "description": "The entry's current etag, from file_stat, fetch or file_read" },
+          "recursive": { "type": "boolean", "description": "Whether a directory's contents go too" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "file_remove", "title": "Remove file", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Remove a file or directory against its current etag."
+      }
+    },
+    {
+      "door": "fileRename", "class": "work", "caller": "account", "capability": "write_files",
+      "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "from": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "to": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "expected_etag": { "type": "string", "description": "The entry's current etag, from file_stat, fetch or file_read" },
+          "replace": { "type": "boolean", "description": "Whether an entry at the new path is replaced" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "file_rename", "title": "Rename file", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Rename a file or directory against its current etag."
+      }
+    },
+    {
+      "door": "fileRestore", "class": "work", "caller": "account", "capability": "write_files",
+      "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request",
+        "required": {
+          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+          "version": { "type": "integer", "description": "The kept version to restore" },
+          "expected_etag": { "type": "string", "description": "The path's current etag, or \"\" when no file is there now" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "file_restore", "title": "Restore file version", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Make a kept version of a file its current content."
+      }
+    },
+    {
+      "door": "agentSubmit", "class": "work", "caller": "account", "capability": "converse",
+      "scope": "agent", "agent": { "field": "agent_id", "default": "main" }, "fieldsFirst": true,
+      "handler": "runs", "gate": "units",
+      "args": {
+        "refused": "invalid run request",
+        "required": {
+          "message": { "type": "string", "description": "The message" },
+          "client_send_id": { "type": "string", "description": "Your id for this message, for retries: letters, digits, - and _" }
+        },
+        "optional": {
+          "agent_id": { "type": "string", "description": "Which of the owner's agents: main when omitted" },
+          "conversation_id": { "type": "string", "description": "A conversation of yours to continue" },
+          "wait_ms": { "type": "integer", "description": "How long to wait for the run to end, in ms: at most 60000" }
+        }
+      },
+      "tool": {
+        "name": "converse", "title": "Talk with an agent", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Send a message to one of the owner's agents: a run of its engine in a new conversation, or in one of yours by conversation_id. A retry with the same client_send_id is the same run. Waits up to wait_ms for the run to end, then answers the run as it stands; run_status reads it later."
+      }
+    },
+    {
+      "door": "agentRun", "class": "work", "caller": "account", "capability": "run_graph",
+      "scope": "agent", "agent": { "field": "agent" }, "fieldsFirst": true, "handler": "runs",
+      "gate": "units",
+      "args": {
+        "refused": "invalid run request",
+        "required": {
+          "agent": { "type": "string", "description": "Which of the owner's agents, such as main" },
+          "input": { "type": "string", "description": "What the agent is asked to do" }
+        },
+        "optional": {
+          "at": { "type": "number", "description": "When to run it, in seconds since the epoch" },
+          "cron": { "type": "string", "description": "Run it at the times this names: minute, hour, day of the month, month and day of the week, in UTC" }
+        }
+      },
+      "tool": {
+        "name": "run_graph", "title": "Run an agent", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Launch one of the owner's agents on an input, in a fresh conversation of its own: now, at a time, or at the times a cron names. Answers the run, or the schedule, at once."
+      }
+    },
+    {
+      "door": "agentStatus", "class": "read", "caller": "account", "capability": null,
+      "scope": "agent", "handler": "runs", "gate": "door",
+      "args": {
+        "refused": "invalid run request", "required": {},
+        "optional": {
+          "run_id": { "type": "string", "description": "The run's id" },
+          "schedule_id": { "type": "string", "description": "The schedule's id" }
+        }
+      },
+      "tool": {
+        "name": "run_status", "title": "Run status", "readOnlyHint": true,
+        "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+        "description": "Read one of your runs, its state and its result once done, or one of your schedules."
+      }
+    },
+    {
+      "door": "agentCancel", "class": "reduce", "caller": "account", "capability": null,
+      "scope": "agent", "handler": "runs", "gate": "units",
+      "args": {
+        "refused": "invalid run request", "required": {},
+        "optional": {
+          "run_id": { "type": "string", "description": "The run's id" },
+          "schedule_id": { "type": "string", "description": "The schedule's id" }
+        }
+      },
+      "tool": {
+        "name": "run_cancel", "title": "Cancel run", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": true, "openWorldHint": false,
+        "description": "Cancel one of your runs (its engine is stopped), or one of your schedules."
+      }
+    },
+    {
+      "door": "codeRun", "class": "work", "caller": "account", "capability": null,
+      "handler": "codemode", "gate": "units",
+      "args": {
+        "refused": "invalid code request",
+        "required": {
+          "script": { "type": "string", "description": "The script: the body of an async function" }
+        },
+        "optional": {}
+      },
+      "tool": {
+        "name": "code", "title": "Run a script of tool calls", "readOnlyHint": false,
+        "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
+        "description": "Run one JavaScript script that calls your other tools here as `await tools.<name>(args)`, each held to your grant, and answer its return value and output: many tool calls in one. Its effects are the effects of the tools it calls. Only while the owner's policy turns code mode on; a script past its time or compute bound is stopped."
+      }
+    },
+    {
+      "door": "sessionOpen", "class": "read", "caller": "owner", "action": "open its session",
+      "capability": null, "handler": "sessions", "gate": "door", "args": "none"
+    },
+    {
+      "door": "sessionExtend", "class": "read", "caller": "owner", "action": "renew its session",
+      "capability": null, "handler": "sessions", "gate": "quiet", "args": "none"
+    },
+    {
+      "door": "sessionClose", "class": "reduce", "caller": "owner", "action": "sign out",
+      "capability": null, "handler": "sessions", "gate": "synced", "args": "none"
+    },
+    {
+      "door": "sessionCloseAll", "class": "reduce", "caller": "owner", "action": "sign out",
+      "capability": null, "handler": "sessions", "gate": "units", "args": "none"
+    },
+    {
+      "door": "sandboxBilled", "class": null, "caller": "none", "capability": null,
+      "handler": "sandbox-time", "gate": "units", "args": "loose"
+    },
+    {
+      "door": "sandboxDays", "class": "read", "caller": "owner",
+      "action": "read its sandbox time", "capability": null, "handler": "sandbox-time",
+      "gate": "door", "args": "loose"
+    },
+    {
+      "door": "storageUsage", "class": "read", "caller": "owner", "action": "read its storage",
+      "capability": null, "handler": "files", "gate": "door", "args": "none"
+    },
+    {
+      "door": "ownerExport", "class": "read", "caller": "owner",
+      "action": "export everything it holds", "live": true, "capability": null,
+      "handler": "export", "gate": "units",
+      "args": {
+        "refused": "an export request is at most its cursor and its export_id", "required": {},
+        "optional": { "cursor": {}, "export_id": {} }, "undefinedAllowed": true
+      }
+    },
+    {
+      "door": "exportChunks", "class": "read", "caller": "owner",
+      "action": "export everything it holds", "live": true, "capability": null,
+      "handler": "export", "gate": "units",
+      "args": {
+        "refused": "an export's chunks are its export_id and one or two sha256s",
+        "required": { "export_id": {}, "sha256s": {} }, "optional": {}, "undefinedAllowed": true
+      }
+    },
+    {
+      "door": "exportEnd", "class": "reduce", "caller": "owner", "action": "end its export",
+      "capability": null, "handler": "export", "gate": "quiet", "args": "loose"
+    },
+    {
+      "door": "dataKeyRewrap", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "files", "gate": "units", "args": "none"
+    },
+    {
+      "door": "policyRead", "class": "read", "caller": "owner", "action": "read its policy",
+      "capability": null, "handler": "policy", "gate": "door", "args": "none"
+    },
+    {
+      "door": "policyReceipts", "class": "read", "caller": "owner", "action": "read its policy",
+      "capability": null, "handler": "policy", "gate": "door", "args": "none"
+    },
+    {
+      "door": "policyWrite", "class": "work", "caller": "session", "rule": "write",
+      "action": "write its policy", "capability": null, "handler": "policy", "gate": "units",
+      "args": {
+        "refused": "invalid policy request",
+        "required": { "expected_generation": {}, "policy": {} }, "optional": { "proposal": {} }
+      }
+    },
+    {
+      "door": "policyProposal", "class": "read", "caller": "owner", "action": "read its policy",
+      "capability": null, "handler": "policy", "gate": "door",
+      "args": {
+        "refused": "invalid policy request", "required": { "request_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "policyWakeLimits", "class": "work", "caller": "session", "rule": "wake_limits",
+      "action": "change its agents' policy", "capability": null, "handler": "ledger",
+      "gate": "door",
+      "args": {
+        "refused": "invalid policy request",
+        "required": {
+          "agent_id": {}, "max_wakes_per_hour": {}, "batch_window_s": {},
+          "expected_generation": {}
+        },
+        "optional": {}
+      }
+    },
+    {
+      "door": "grantList", "class": "read", "caller": "owner",
+      "action": "read its outside clients", "capability": null, "handler": "grants",
+      "gate": "door", "args": "none"
+    },
+    {
+      "door": "grantSet", "class": "work", "caller": "session", "rule": "outside_set",
+      "action": "change an outside client's grant", "capability": null, "handler": "grants",
+      "gate": "synced",
+      "args": {
+        "refused": "invalid policy request",
+        "required": {
+          "client": {}, "source": {}, "mode": {}, "scopes": {}, "expected_revision": {},
+          "name": {}
+        },
+        "optional": { "profile": {} }
+      }
+    },
+    {
+      "door": "grantRevoke", "class": "reduce", "caller": "owner",
+      "action": "revoke an outside client's grant", "capability": null, "handler": "grants",
+      "gate": "synced",
+      "args": {
+        "refused": "invalid policy request", "required": { "client": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "grantForget", "class": "reduce", "caller": "owner",
+      "action": "forget an outside client's grant", "capability": null, "handler": "grants",
+      "gate": "door",
+      "args": {
+        "refused": "invalid policy request", "required": { "client": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "grantForgetRevoked", "class": "reduce", "caller": "session",
+      "rule": "outside_forget", "action": "forget its revoked outside clients",
+      "capability": null, "handler": "grants", "gate": "door",
+      "args": {
+        "refused": "invalid policy request", "required": { "clients": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "keyMint", "class": "work", "caller": "session", "rule": "key_mint",
+      "action": "mint an API key", "capability": null, "handler": "keys", "gate": "synced",
+      "args": {
+        "refused": "invalid policy request",
+        "required": { "key_id": {}, "name": {}, "scopes": {} }, "optional": { "proposal": {} }
+      }
+    },
+    {
+      "door": "keyList", "class": "read", "caller": "owner", "action": "read its API keys",
+      "capability": null, "handler": "keys", "gate": "door", "args": "none"
+    },
+    {
+      "door": "ownerErase", "class": "reduce", "caller": "session", "rule": "owner_erase",
+      "action": "erase its account", "capability": null, "handler": "erasure", "gate": "units",
+      "args": { "refused": "invalid policy request", "required": { "confirm": {} }, "optional": {} }
+    },
+    {
+      "door": "erasureOutside", "class": "admission", "caller": "erasure", "capability": null,
+      "handler": "erasure", "gate": "door", "args": "none"
+    },
+    {
+      "door": "erasureOutsideDone", "class": "admission", "caller": "erasure",
+      "capability": null, "handler": "erasure", "gate": "door", "args": "none"
+    },
+    {
+      "door": "inboundList", "class": "read", "caller": "owner",
+      "action": "read its inbound bindings", "capability": null, "handler": "inbound",
+      "gate": "door", "args": "none"
+    },
+    {
+      "door": "inboundCreate", "class": "work", "caller": "session", "rule": "inbound_create",
+      "action": "add an inbound binding", "capability": null, "handler": "inbound",
+      "gate": "door", "args": "loose"
+    },
+    {
+      "door": "inboundSet", "class": "work", "caller": "session", "rule": "inbound_set",
+      "action": "change an inbound binding", "capability": null, "handler": "inbound",
+      "gate": "door", "args": "loose"
+    },
+    {
+      "door": "inboundRevoke", "class": "reduce", "caller": "owner",
+      "action": "withdraw an inbound binding", "capability": null, "handler": "inbound",
+      "gate": "door", "args": "loose"
+    },
+    {
+      "door": "inboundAccept", "class": "work", "caller": "inbound", "capability": null,
+      "handler": "inbound", "gate": "units",
+      "args": {
+        "refused": "invalid policy request",
+        "required": { "event_id": {}, "event_at": {}, "body": {}, "headers": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "fileUploadTarget", "class": "work", "caller": "account",
+      "capability": "write_files", "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request", "required": { "intent_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "fileUploadStored", "class": "work", "caller": "account",
+      "capability": "write_files", "handler": "files", "gate": "door",
+      "args": {
+        "refused": "invalid file request", "required": { "intent_id": {}, "chunks": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "registerAgent", "class": "work", "caller": "session",
+      "rule": "OUTSIDE_AGENTS.register", "action": null, "registering": true, "capability": null,
+      "handler": "ledger", "gate": "synced",
+      "args": {
+        "owner": {
+          "required": { "card_id": {}, "digest": {} }, "optional": {},
+          "refused": "invalid ledger request"
+        },
+        "outside": {
+          "required": {
+            "command_center_id": {}, "display_name": {}, "delivery_method": {}, "recipe_id": {}
+          },
+          "optional": {}, "refused": "invalid ledger request"
+        }
+      }
+    },
+    {
+      "door": "registerProposal", "class": "read", "caller": "owner",
+      "action": "read its agents' registrations", "capability": null, "handler": "registrations",
+      "gate": "door",
+      "args": {
+        "refused": "invalid ledger request", "required": { "card_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "disableAgent", "class": "reduce", "caller": "session",
+      "rule": "OUTSIDE_AGENTS.disable", "action": null, "capability": null, "handler": "ledger",
+      "gate": "synced",
+      "args": {
+        "refused": "invalid ledger request", "required": { "agent_id": {}, "reason": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "agentDoorbell", "class": "work", "caller": "session",
+      "rule": "OUTSIDE_AGENTS.doorbell", "action": "set its agents' doorbells",
+      "capability": null, "handler": "ledger", "gate": "door",
+      "args": {
+        "refused": "invalid ledger request",
+        "required": {
+          "agent_id": {}, "kind": {}, "subscription_id": {}, "board": {}, "rooms": {},
+          "blob": {}, "kid": {}, "version": {}
+        },
+        "optional": {}
+      }
+    },
+    {
+      "door": "agentDoorbellEnd", "class": "reduce", "caller": "session",
+      "rule": "OUTSIDE_AGENTS.doorbell_end", "action": "end its agents' doorbells",
+      "capability": null, "handler": "ledger", "gate": "door",
+      "args": {
+        "refused": "invalid ledger request", "required": { "subscription_id": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "deleteAgent", "class": "reduce", "caller": "session",
+      "rule": "OUTSIDE_AGENTS.delete", "action": "change its agents' policy", "capability": null,
+      "handler": "ledger", "gate": "synced",
+      "args": {
+        "refused": "invalid ledger request", "required": { "agent_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "connectionPrepare", "class": "work", "caller": "session",
+      "rule": "connection_prepare", "action": "connect a model source", "capability": null,
+      "handler": "connections", "gate": "synced", "args": "loose"
+    },
+    {
+      "door": "connectionCommit", "class": "work", "caller": "session",
+      "rule": "connection_commit", "action": "connect a model source", "capability": null,
+      "handler": "connections", "gate": "synced", "args": "loose"
+    },
+    {
+      "door": "connectionRevoke", "class": "reduce", "caller": "session",
+      "rule": "connection_revoke", "action": "revoke a model source", "capability": null,
+      "handler": "connections", "gate": "units", "args": "loose"
+    },
+    {
+      "door": "connectionList", "class": "read", "caller": "session", "rule": "connection_list",
+      "action": "read its model sources", "receipt": null, "capability": null,
+      "handler": "connections", "gate": "door", "args": "none"
+    },
+    {
+      "door": "flowFinish", "class": "work", "caller": "session", "rule": "flow_finish",
+      "action": "connect a model source", "receipt": { "state": "[state]" }, "capability": null,
+      "handler": "connections", "gate": "synced", "args": "loose"
+    },
+    {
+      "door": "usageReceipts", "class": "read", "caller": "owner",
+      "action": "read its model spend", "capability": null, "handler": "usage", "gate": "door",
+      "args": "none"
+    },
+    {
+      "door": "noticeList", "class": "read", "caller": "owner", "action": "read its notices",
+      "capability": null, "handler": "notices", "gate": "door", "args": "none"
+    },
+    {
+      "door": "starterReceipts", "class": "read", "caller": "owner",
+      "action": "read its starter files' receipts", "capability": null, "handler": "starter",
+      "gate": "door", "args": "none"
+    },
+    {
+      "door": "admissionSet", "class": "admission", "caller": "reserved", "action": "admission",
+      "capability": null, "handler": "admission", "gate": "units", "args": "loose"
+    },
+    {
+      "door": "toolProfile", "class": "read", "caller": "account", "capability": null,
+      "handler": "codemode", "gate": "door", "args": "none"
+    },
+    {
+      "door": "mailChain", "class": "read", "caller": "owner",
+      "action": "read its agents' mail chains", "capability": null, "handler": "ledger",
+      "gate": "units",
+      "args": {
+        "refused": "invalid ledger request", "required": { "message_id": {}, "limit": {} },
+        "optional": { "after": {}, "body_offset": {}, "body_message_id": {} }
+      }
+    },
+    {
+      "door": "wakeEvents", "class": "read", "caller": "account", "capability": "read_graph",
+      "scope": "handler", "handler": "ledger", "gate": "door", "args": "loose"
+    },
+    {
+      "door": "wakeSubscribe", "class": "work", "caller": "account", "capability": "read_graph",
+      "scope": "handler", "handler": "ledger", "gate": "synced",
+      "args": {
+        "refused": "invalid ledger request",
+        "required": {
+          "subscription_id": {}, "name": {}, "arguments": {}, "blob": {}, "kid": {},
+          "version": {}, "expires_at": {}
+        },
+        "optional": {}
+      }
+    },
+    {
+      "door": "wakeUnsubscribe", "class": "reduce", "caller": "account", "capability": null,
+      "handler": "ledger", "gate": "door",
+      "args": {
+        "refused": "invalid ledger request", "required": { "subscription_id": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "fileRead", "class": "read", "caller": "reader", "capability": "read_files",
+      "handler": "files", "gate": "door",
+      "args": {
+        "refused": "invalid file request", "required": { "path": {} },
+        "optional": { "etag": {} }
+      }
+    },
+    {
+      "door": "fileReadChunks", "class": "read", "caller": "reader", "capability": "read_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": { "path": {}, "version": {}, "first": {}, "count": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "fileUploadBegin", "class": "work", "caller": "account",
+      "capability": "write_files", "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request", "required": { "size": {}, "chunks": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "fileUploadChunks", "class": "work", "caller": "account",
+      "capability": "write_files", "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request", "required": { "intent_id": {}, "chunks": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "fileUploadCommit", "class": "work", "caller": "account",
+      "capability": "write_files", "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request",
+        "required": { "intent_id": {}, "path": {}, "expected_etag": {} },
+        "optional": { "mode": {} }
+      }
+    },
+    {
+      "door": "fileUploadAbort", "class": "reduce", "caller": "account",
+      "capability": "write_files", "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request", "required": { "intent_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "fileRedact", "class": "reduce", "caller": "owner",
+      "action": "redact its file history", "capability": null, "handler": "files",
+      "gate": "filing",
+      "args": {
+        "refused": "invalid file request", "required": { "path": {}, "version": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "fileHistoryPurge", "class": "reduce", "caller": "owner",
+      "action": "purge its file history", "capability": null, "handler": "files",
+      "gate": "filing",
+      "args": { "refused": "invalid file request", "required": { "path": {} }, "optional": {} }
+    },
+    {
+      "door": "fileChanges", "class": "read", "caller": "changes", "capability": "read_files",
+      "handler": "files", "gate": "door",
+      "args": {
+        "refused": "invalid file request", "required": { "after": {}, "limit": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "runEvents", "class": "reduce", "caller": "run", "capability": null,
+      "handler": "runs", "gate": "units",
+      "args": { "refused": "invalid run events", "required": { "frames": {} }, "optional": { "end": {} } }
+    },
+    {
+      "door": "signinStart", "class": "work", "caller": "owner",
+      "action": "sign in inside a sandbox", "guard": "sandbox", "capability": null,
+      "handler": "signins", "gate": "units",
+      "args": {
+        "refused": "invalid run request", "required": { "engine": {} },
+        "optional": { "authority": {}, "region": {}, "mode": {} }
+      }
+    },
+    {
+      "door": "signinEvents", "class": "reduce", "caller": "runner", "capability": null,
+      "handler": "signins", "gate": "units", "args": "loose"
+    },
+    {
+      "door": "signinCode", "class": "work", "caller": "owner",
+      "action": "sign in inside a sandbox", "capability": null, "handler": "signins",
+      "gate": "units",
+      "args": {
+        "refused": "invalid run request", "required": { "id": {}, "code": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "signinCancel", "class": "reduce", "caller": "owner", "action": "stop a sign-in",
+      "capability": null, "handler": "signins", "gate": "units",
+      "args": { "refused": "invalid run request", "required": { "id": {} }, "optional": {} }
+    },
+    {
+      "door": "signinList", "class": "read", "caller": "owner", "action": "see its sign-ins",
+      "capability": null, "handler": "signins", "gate": "door", "args": "none"
+    },
+    {
+      "door": "runList", "class": "read", "caller": "account", "capability": null,
+      "scope": "agent", "handler": "runs", "gate": "door",
+      "args": {
+        "refused": "invalid run request", "required": {},
+        "optional": { "before": {}, "limit": {} }
+      }
+    },
+    {
+      "door": "signinReport", "class": "work", "caller": "runner",
+      "closed": "egress_lease_closed", "capability": null, "handler": "signins", "gate": "door",
+      "args": {
+        "refused": "invalid sign-in report", "required": { "signins": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "sandboxRung", "class": null, "caller": "none", "capability": null,
+      "handler": "runs", "gate": "units", "args": "none"
+    },
+    {
+      "door": "socketTicket", "class": "read", "caller": "owner", "action": "open an app socket",
+      "capability": null, "handler": "relay", "gate": "door",
+      "args": {
+        "refused": "invalid run request", "required": { "conversation_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "socketsEnd", "class": "reduce", "caller": "owner",
+      "action": "end its app sockets", "capability": null, "handler": "relay", "gate": "units",
+      "args": "none"
+    },
+    {
+      "door": "tierSet", "class": "admission", "caller": "reserved", "action": "tier",
+      "capability": null, "handler": "tier", "gate": "door", "args": "loose"
+    },
+    {
+      "door": "tierRead", "class": "read", "caller": "owner", "action": "read its tier",
+      "capability": null, "handler": "tier", "gate": "door", "args": "none"
+    },
+    {
+      "door": "egressOpen", "class": "work", "caller": "egress", "capability": null,
+      "handler": "egress", "gate": "units", "args": "loose"
+    },
+    {
+      "door": "egressReserve", "class": "work", "caller": "egress", "capability": null,
+      "handler": "egress", "gate": "door", "args": "loose"
+    },
+    {
+      "door": "egressBeat", "class": "reduce", "caller": "egress", "capability": null,
+      "handler": "egress", "gate": "door", "args": "loose"
+    },
+    {
+      "door": "egressSettle", "class": "reduce", "caller": "egress", "capability": null,
+      "handler": "egress", "gate": "door", "args": "loose"
+    },
+    {
+      "door": "egressReceipts", "class": "read", "caller": "owner",
+      "action": "read its sandbox's egress", "capability": null, "handler": "egress",
+      "gate": "door", "args": "none"
+    },
+    {
+      "door": "fileSyncCommit", "class": "work", "caller": "lease",
+      "action": "hold the file sync lease", "capability": "write_files", "handler": "files",
+      "gate": "filing",
+      "args": {
+        "refused": "invalid file request",
+        "required": { "lease_id": {}, "epoch": {}, "ops": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "fileSyncUploadBegin", "class": "work", "caller": "sync", "capability": "write_files",
+      "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request",
+        "required": { "lease_id": {}, "epoch": {}, "size": {}, "chunks": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "fileSyncUploadChunks", "class": "work", "caller": "sync", "capability": "write_files",
+      "handler": "files", "gate": "units",
+      "args": {
+        "refused": "invalid file request",
+        "required": { "lease_id": {}, "epoch": {}, "intent_id": {}, "chunks": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "fileSyncUploadAbort", "class": "work", "caller": "sync", "capability": "write_files",
+      "handler": "files", "gate": "filing",
+      "args": {
+        "refused": "invalid file request",
+        "required": { "lease_id": {}, "epoch": {}, "intent_id": {} }, "optional": {}
+      }
+    }
+  ]
+}

@@ -9,13 +9,13 @@
  * (`scoped`), or none (`revoked`).
  *
  * A scoped grant holds exact `{universe, agent, capability}` triples. The capabilities
- * the object's doors check (`CAPABILITIES`): `read_graph` and `write_graph` (the mailbox,
+ * the object's doors check (`RUN_CAPABILITIES`): `read_graph` and `write_graph` (the mailbox,
  * its doorbell subscription and the collections), `propose_policy` (an agent's policy
  * proposal), `read_files` and `write_files` (the file doors), `converse` and `run_graph`
  * (the Python's REST scopes for a message to an agent and a run of one, whose doors the
  * runs slice (R) brings back).
  *
- * A grant also names its **tool profile** (`profile`, slice M; `doors/profiles.json`):
+ * A grant also names its **tool profile** (`profile`, slice M; `contract/profiles.json`):
  * which of the MCP door's tools the client is served. `custom` (the owner's own choice of
  * tools, its policy's `tools.custom`), since every grant here is a custom connector's; the
  * owner may name `directory` (no `code`). Code mode is the owner's choice that way, and its
@@ -88,16 +88,13 @@ import { Refusal } from "../../contract/src/refusal";
 import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { appList, connectUrl, type Vendor } from "../../doors/src/apps";
-import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../doors/src/tools";
+import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
+import { may } from "./authority";
+import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { canonical, plain, type Policy, policyDigest } from "./policy";
 import { codePoints, utf8Bytes } from "../../contract/src/text";
 
 export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
-/** The capabilities a scoped grant's triples name at the object's doors. */
-export const CAPABILITIES = Object.freeze(
-  ["read_graph", "write_graph", "propose_policy", "read_files", "write_files", "converse",
-   "run_graph"] as const);
-export type Capability = (typeof CAPABILITIES)[number];
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
 /** Clients one owner forget names at most. */
 const MAX_FORGET = 100;
@@ -216,7 +213,7 @@ function authority(mode: string, held: readonly Scope[], profile: string): strin
 
 /**
  * `outside_scopes`: exact triples; a wildcard is never a scope, and a capability is one a
- * door checks (`CAPABILITIES`), so a grant never names one that nothing would hold.
+ * door checks (`RUN_CAPABILITIES`), so a grant never names one that nothing would hold.
  */
 export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scope[] {
   if (!Array.isArray(value) || value.some((scope) =>
@@ -225,9 +222,9 @@ export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scop
                                         || codePoints(v) > 512))) {
     throw new Refusal("invalid", "outside scopes require exact universe, agent and capability");
   }
-  if (value.some((scope) => !(CAPABILITIES as readonly string[]).includes(
+  if (value.some((scope) => !(RUN_CAPABILITIES as readonly string[]).includes(
     (scope as Record<string, string>)["capability"]!))) {
-    throw new Refusal("invalid", `a scope's capability is one of ${CAPABILITIES.join(", ")}`);
+    throw new Refusal("invalid", `a scope's capability is one of ${RUN_CAPABILITIES.join(", ")}`);
   }
   if (utf8Bytes(JSON.stringify(value)) > limits.maxScopesBytes) {
     throw new Refusal("invalid",
@@ -245,13 +242,6 @@ function outsideClient(client: unknown, source: unknown = "mcp"): string {
     throw new Refusal("invalid", "invalid outside client source");
   }
   return client;
-}
-
-/** Whether a scoped grant holds exactly this triple; `full` holds every one. */
-export function holds(grant: Grant, scope: Scope): boolean {
-  return grant.mode === "full" || (grant.mode === "scoped" && grant.scopes.some((held) =>
-    held.universe === scope.universe && held.agent === scope.agent
-    && held.capability === scope.capability));
 }
 
 type Usage = { owner_clients: number; free_clients: number };
@@ -381,8 +371,8 @@ export class Grants {
   reads(client: string, scope: Scope): boolean {
     const row = this.#row(client);
     return row !== undefined && row.mode !== "revoked"
-      && holds({ mode: row.mode as Grant["mode"], scopes: JSON.parse(row.scopes) as Scope[],
-                 generation: row.generation, profile: row.profile as ProfileName }, scope);
+      && may({ mode: row.mode, scopes: JSON.parse(row.scopes) as Scope[] }, scope.capability,
+             scope);
   }
 
   /**

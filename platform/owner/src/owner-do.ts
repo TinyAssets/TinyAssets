@@ -34,7 +34,7 @@
  * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
- * but its doors (`RPC_METHODS` in the tests pins the list). Its timed work is the one
+ * but its doors (the door table, `contract/doors.json`, lists them). Its timed work is the one
  * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
  * object's single physical alarm, beside the erasure's job. The object is a plain Durable
  * Object that holds a Lifecycle, never the SDK's `Agent`, and installs none of Lifecycle's
@@ -77,7 +77,7 @@
  * changed for it since its cursor in one read, held to its grant; `codeRun` is code mode at
  * the MCP door, one script calling the caller's other tools (`codemode.ts`), refused unless
  * the owner's policy turns `hooks.codemode` on and the caller's profile holds `code`; and
- * `toolProfile` answers the doors which tools a caller is served (`doors/profiles.json`:
+ * `toolProfile` answers the doors which tools a caller is served (`contract/profiles.json`:
  * its grant's profile, or a run's).
  *
  * Erasing the owner (`erasure.ts`, `erase.ts`) is an internal path, which no door reaches
@@ -116,8 +116,9 @@ import type { Vendor } from "../../doors/src/apps";
 import { APP_RESOURCE } from "../../doors/src/config";
 import { LEASE_LIVED, mintToken, sealRoute } from "../../contract/src/routing-mac";
 import {
-  type ProfileName, profileNames, takesRequest, type Tool, toolsNamed,
-} from "../../doors/src/tools";
+  doorRow, type DoorRow, type ProfileName, profileNames, takesRequest, type Tool, toolsNamed,
+} from "../../contract/src/doors";
+import type { RunCapability } from "../../contract/src/capabilities";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { CREDENTIAL_KINDS, type CredentialKind, SourceRecordError } from "../../sources/src/schema";
@@ -128,7 +129,7 @@ import {
   tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
-import { agentId, AUTHORITY_CHANGED, type Stamped } from "./authority";
+import { agentId, AUTHORITY_CHANGED, may, NOT_GRANTED, type Stamped } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay";
 import { type Ask, SIGNIN_REQUIRED, type LiveRun, type MailAnswer,
          mailConversation, NO_SCHEDULE,
@@ -175,8 +176,7 @@ import {
   OWNER_AUTHORITY, type SandboxLease, type SyncOp, type SyncOutcome, type Usage, WHOLE_BYTES,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
-import { type Capability, type Client, type ConnectedApp, type Grant, Grants, holds, type Scope }
-  from "./grants";
+import { type Client, type ConnectedApp, type Grant, Grants, type Scope } from "./grants";
 import {
   CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
 } from "./codemode";
@@ -637,8 +637,7 @@ export const NO_ERASURE = "no erasure of this owner is under way";
 /** What the owner types to erase its account. */
 export const ERASE_CONFIRM = "erase my account";
 
-function erasureConfirmed(request: unknown): void {
-  const r = policyFields(request, ["confirm"]);
+function erasureConfirmed(r: Record<string, unknown>): void {
   if (r["confirm"] !== ERASE_CONFIRM) {
     throw new Refusal("invalid", `an erasure is confirmed by ${JSON.stringify(ERASE_CONFIRM)}`);
   }
@@ -1083,6 +1082,55 @@ interface Serves {
   readonly registering?: boolean;
 }
 
+/**
+ * A call as its door's row bound it (`contract/doors.json`): its account, and what a sandbox,
+ * runner or inbound door's binding names (the lease's readable set, the lease, the route's
+ * binding), or that the platform's erasure door found the owner already erased.
+ */
+interface Bound {
+  readonly account: Account;
+  readonly readable: Readable | null;
+  readonly lease: SandboxLease | null;
+  readonly route: InboundRow | null;
+  readonly erased: boolean;
+}
+
+/** A bound call with no account of its own (a sandbox's, the platform's, or none). */
+function bound(owner: string, caller: string): Bound {
+  return { account: { owner, caller, origin: null, grant: null, run: null }, readable: null,
+           lease: null, route: null, erased: false };
+}
+
+/**
+ * A door's call once its row's every step held: bound, its request's fields (`r`), a session
+ * door's live session, a run door's place (its universe and agent), and, for a door whose
+ * handler names the place its capability is held at, that check (`held`).
+ */
+interface Call extends Bound {
+  /** The binding the call came with, as the binder handed it. */
+  readonly binding: Binding;
+  readonly r: Record<string, unknown>;
+  readonly session: string;
+  readonly universe: string | null;
+  readonly agent: string;
+  held(place: unknown): void;
+}
+
+/** A door whose handler makes its own units: its call, checked again in each. */
+interface Door {
+  /** Every step of the row, in the unit it is called in. */
+  check(): Call;
+  /** `act` on the checked call; a session door's refusal receipted. */
+  within<T>(act: (call: Call) => T): T;
+  /** The bind and account steps alone. */
+  bound(): Account;
+  /** Every step but the fields: the caller's authority, whatever it asks. */
+  authorized(): void;
+}
+
+/** What a run door needs where its agent acts: to start work, or (null) to read or cancel it. */
+type RunNeed = "converse" | "run_graph" | null;
+
 export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
 export const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
 /** A sandbox token's binding at any door but its own, and any other binding at those. */
@@ -1105,11 +1153,10 @@ export const SYNC_FENCED = "sync_fenced: the sync lease was lost; this sync is f
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
- * `undefined`: a field sent is a value, as the Python door refused `None`.
+ * `undefined` unless `undefinedAllowed`: a field sent is a value. Else refused `refusal`.
  */
-function fields(request: unknown, required: readonly string[],
-                optional: readonly string[] = [],
-                refusal = "invalid collection request"): Record<string, unknown> {
+function fields(request: unknown, required: readonly string[], optional: readonly string[],
+                refusal: string, undefinedAllowed = false): Record<string, unknown> {
   if (typeof request !== "object" || request === null || Array.isArray(request)) {
     throw new Refusal("invalid", refusal);
   }
@@ -1117,16 +1164,10 @@ function fields(request: unknown, required: readonly string[],
   const keys = entries.map(([key]) => key);
   if (!required.every((key) => keys.includes(key))
       || !keys.every((key) => required.includes(key) || optional.includes(key))
-      || entries.some(([, value]) => value === undefined)) {
+      || (!undefinedAllowed && entries.some(([, value]) => value === undefined))) {
     throw new Refusal("invalid", refusal);
   }
   return request as Record<string, unknown>;
-}
-
-/** A ledger request's fields: exactly these, never a sender, reader or owner. */
-function ledgerFields(request: unknown, required: readonly string[],
-                      optional: readonly string[] = []): Record<string, unknown> {
-  return fields(request, required, optional, "invalid ledger request");
 }
 
 /** The board (`collections.ts`), and every room's prefix: `room:<app>:<room>`. */
@@ -1366,10 +1407,6 @@ function fittedRun<T extends { readonly result: string | null; readonly result_c
   return { ...view, result: fitted(view.result, PAGE_BYTES - meta + 2).text, result_cut: true };
 }
 
-function policyFields(request: unknown, required: readonly string[],
-                      optional: readonly string[] = []): Record<string, unknown> {
-  return fields(request, required, optional, "invalid policy request");
-}
 
 function conflicted<T>(act: () => T): T | Conflicted {
   try {
@@ -1414,10 +1451,6 @@ function heldToRead(account: Account, asked: unknown): void {
 export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
   "only when absent: read the file first (fetch, file_read or file_stat)";
 
-function fileFields(request: unknown, required: readonly string[],
-                    optional: readonly string[] = []): Record<string, unknown> {
-  return fields(request, required, optional, "invalid file request");
-}
 
 function fileConflicted<T>(act: () => T): T | FileConflicted {
   try {
@@ -1558,8 +1591,6 @@ export const MAIN_AGENT = "main";
 const MAIL_INPUT_BYTES = 0;
 /** How many times a placed body begins again past a chunk the sweep is deleting. */
 const PLACE_TRIES = 5;
-/** What only the owner does with a mail chain: read it (`mailChain`). */
-const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 /**
@@ -1599,10 +1630,6 @@ export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was a
  */
 export const RUN_WAIT_MS = 60_000;
 
-function runFields(request: unknown, required: readonly string[],
-                   optional: readonly string[] = []): Record<string, unknown> {
-  return fields(request, required, optional, "invalid run request");
-}
 
 /** A run's input: well-formed text, at least a character; its size is the door's bound. */
 function runText(value: unknown, what: string): string {
@@ -1634,9 +1661,8 @@ function requestKey(client: string | null, sendId: unknown): string {
 }
 
 /** The engine, its reports in one batch at most `ENGINE_SIGNINS`, each engine once. */
-function signinRequest(request: unknown):
+function signinRequest(r: Record<string, unknown>):
     { engine: string; signed_in: boolean; models: string[] }[] {
-  const r = fields(request, ["signins"], [], "invalid sign-in report");
   const signins = r["signins"];
   if (!Array.isArray(signins) || signins.length === 0 || signins.length > ENGINE_SIGNINS) {
     throw new Refusal("invalid", `a sign-in report names 1 to ${ENGINE_SIGNINS} engines`);
@@ -1668,9 +1694,8 @@ function signinRequest(request: unknown):
 }
 
 /** The runner's report, exactly: frames numbered from 1 and rising, and an optional end. */
-function eventsRequest(request: unknown): {
+function eventsRequest(r: Record<string, unknown>): {
   frames: PostedFrame[]; end: { exit_code: number | null } | null } {
-  const r = fields(request, ["frames"], ["end"], "invalid run events");
   const frames = r["frames"];
   if (!Array.isArray(frames)) {
     throw new Refusal("invalid", "invalid run events");
@@ -2310,11 +2335,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       signinOn: (engine) => switchedOn(storage, undefined, clock()).has(engine),
       usable: () => this.#connections.usable(),
       egressible: () => this.#connections.egressible(),
-      standing: (stamp) => {
-        const grant = this.#grants.standing(stamp.client, stamp.generation,
-                                            stamp.authenticated_at);
-        return { mode: grant.mode, holds: (scope) => holds(grant, scope as Scope) };
-      },
+      standing: (stamp) => this.#grants.standing(stamp.client, stamp.generation,
+                                                 stamp.authenticated_at),
       tier: () => ownerTier(storage),
       // The lane's: the tier's simultaneous runs, by the numbers the binder last handed.
       capacity: () => {
@@ -2590,7 +2612,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A run's call on the egress host (its MCP door; ADR-034 decision 6): the egress token's
    * live lease, the run its path named live under it, and that run's grant. Every door it
    * reaches is held to the grant's scopes (`#scope`), as its initiator: the owner's own
-   * work acts as the owner (never the owner itself at an owner-only door, `#owner`), a
+   * work acts as the owner (never the owner itself at an owner-only door, `#ownerOf`), a
    * client's as that client, whose stamp is rechecked here at every call; a stamp that no
    * longer stands ends the client's runs, in this unit, and refuses.
    */
@@ -2624,7 +2646,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /** The owner itself, on its own account, never an outside client nor a run. */
-  #owner(binding: Binding, door: DoorClass, action: string): Account {
+  #ownerOf(binding: Binding, door: DoorClass, action: string): Account {
     const account = this.#account(binding, door);
     if (account.origin !== null || account.run !== null) {
       throw new Refusal("refused", `only the owner may ${action}`);
@@ -2632,27 +2654,77 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return account;
   }
 
+  // -- THE RUNNER: every door's bind, account, scope and fields, from its row ------------
+  //
+  // Each door is a row of the contract's table (`contract/doors.json`) and its handler: the
+  // public method names its row and hands the handler, and the steps are these, from the
+  // row alone.
+
+  /** A door whose handler runs in one unit of its row's gate, checked in that unit. */
+  #run<T>(name: string, binding: Binding, request: unknown, act: (call: Call) => T):
+      Promise<T> {
+    const row = doorRow(name);
+    const unit = () => this.#within(row, binding, request, act);
+    switch (row.gate) {
+      case "door":
+        return this.#door(unit);
+      case "quiet":
+        return this.#quiet(unit);
+      case "synced":
+        return this.#synced(unit);
+      case "filing":
+        return this.#filing(unit);
+      case "units":
+        break;
+    }
+    throw new Error(`${name} runs in units of its own`);
+  }
+
+  /** A door whose handler makes its own units, each checking the call again. */
+  #units<T>(name: string, binding: Binding, request: unknown,
+            act: (door: Door) => Promise<T>): Promise<T> {
+    const row = doorRow(name);
+    if (row.gate !== "units") {
+      throw new Error(`${name} runs in one unit of its gate`);
+    }
+    return act({
+      check: () => this.#within(row, binding, request, (call) => call),
+      within: (inner) => this.#within(row, binding, request, inner),
+      bound: () => this.#bound(row, binding, request).account,
+      authorized: () => {
+        const { account } = this.#bound(row, binding, request);
+        this.#guard(row, binding, account);
+        this.#scoped(row, account, null);
+      },
+    });
+  }
+
   /**
-   * A widening: the owner's live session, checked against the object's own session row
-   * (S30, N10). `owner` names what only the owner itself, never an outside client, may
-   * do in it. A refusal after the account is bound leaves a refusal receipt of what was
-   * asked, written once the refused change has rolled back.
+   * `act` on the call its row checks. A session door is a widening: the owner's live
+   * session, checked against the object's own session row (S30, N10), and, when the row
+   * names what only the owner itself may do in it, never an outside client's call. A
+   * refusal after its account is bound leaves a refusal receipt of what was asked (the
+   * row's stand-in for it, where it names one), written once the refused change rolled back.
    */
-  #widening<T>(binding: Binding, door: DoorClass, action: string, request: unknown,
-               owner: string | null,
-               act: (account: Account, sessionId: string) => T, serves: Serves = {}): T {
-    const account = this.#account(binding, door, serves);
+  #within<T>(row: DoorRow, binding: Binding, request: unknown, act: (call: Call) => T): T {
+    if (row.caller !== "session") {
+      return act(this.#checked(row, binding, request, this.#bound(row, binding, request), ""));
+    }
+    const account = this.#account(binding, row.class as DoorClass,
+                                  { registering: row.registering === true });
     try {
       // An outside client holds no owner session, so what only the owner may do is
       // refused as that before the session is looked for.
-      if (owner !== null && account.origin !== null) {
-        throw new Refusal("refused", `only the owner may ${owner}`);
+      if (typeof row.action === "string" && account.origin !== null) {
+        throw new Refusal("refused", `only the owner may ${row.action}`);
       }
-      return act(account, this.#sessions.live(binding.session, clock()));
+      const session = this.#sessions.live(binding.session, clock());
+      return act(this.#checked(row, binding, request, { ...bound("", ""), account }, session));
     } catch (error) {
       if (error instanceof Refusal) {
         try {
-          this.#policy.refusal(action, { request, origin: account.origin }, clock());
+          this.#policy.refusal(row.rule!, { request: "receipt" in row ? row.receipt : request,
+                                            origin: account.origin }, clock());
         } catch {
           console.error("owner-session refusal receipt unavailable");  // refuse regardless
         }
@@ -2661,27 +2733,199 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
-  /**
-   * A scoped outside client reaches its own mailbox only with `capability` granted, as
-   * `agent` (the `main` agent by default), in `center` (default: the command center its
-   * one enabled agent is registered in). `full` and the owner pass.
-   */
-  #scope(account: Account, capability: Capability, center?: unknown,
-         agent: string = MAIN_AGENT): void {
-    if (account.run !== null) {
-      // A run holds its grant's scopes, which admission already held to its initiator's.
-      if (!account.run.scopes.includes(capability)) {
-        throw new Refusal("refused", "outside client capability not granted");
+  /** The bind and account steps of the row's caller kind (`contract/src/doors.ts`). */
+  #bound(row: DoorRow, binding: Binding, request: unknown): Bound {
+    const door = row.class as DoorClass;
+    const capability = row.capability!;
+    switch (row.caller) {
+      case "account":
+      case "session":
+        return { ...bound("", ""), account: this.#account(binding, door) };
+      case "visitors":
+        return { ...bound("", ""), account: this.#account(binding, door, { visitors: true }) };
+      case "owner": {
+        const account = this.#ownerOf(binding, door, row.action!);
+        if (row.live === true) {
+          this.#sessions.live(binding.session, clock());
+        }
+        return { ...bound("", ""), account };
       }
+      case "lease":
+        return binding.sandbox === undefined
+          ? { ...bound("", ""), account: this.#ownerOf(binding, door, row.action!) }
+          : this.#syncer(binding, door, capability, request as SyncCommitRequest);
+      case "sync":
+        return this.#syncer(binding, door, capability,
+                            request as { lease_id?: unknown; epoch?: unknown });
+      case "reader":
+      case "changes": {
+        // A run's own call carries its egress token as its sandbox: a reader's caller too.
+        const filer = binding.sandbox === undefined
+          || (row.caller === "reader" && binding.run !== undefined);
+        if (!filer) {
+          return this.#syncer(binding, door, capability, null);
+        }
+        const account = this.#account(binding, door);
+        this.#scope(account, capability);
+        return { ...bound("", ""), account };
+      }
+      case "egress": {
+        const { owner, caller } = this.#bind(binding, door, "egress");
+        return bound(owner, caller);
+      }
+      case "runner":
+      case "run": {
+        const { owner, caller } = this.#bind(binding, door,
+                                             row.caller === "run" ? "run" : "egress");
+        const lease = this.#runner(binding);
+        if (lease === null) {
+          throw row.closed === "egress_lease_closed"
+            ? new Refusal("refused", "egress_lease_closed") : new Refusal("run_ended", RUN_ENDED);
+        }
+        return { ...bound(owner, caller), lease };
+      }
+      case "inbound": {
+        const { owner } = this.#bind(binding, door, "inbound");
+        if (binding.origin !== null || binding.caller !== owner || binding.session !== undefined
+            || binding.source !== undefined) {
+          throw new Refusal("invalid", "invalid inbound binding");
+        }
+        const route = binding.inbound!;
+        return { ...bound(owner, owner),
+                 route: this.#inbound.current(bindingId(route.binding), route.revision) };
+      }
+      case "reserved": {
+        const { owner, caller } = this.#bind(binding, "admission");
+        if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
+            || binding.session !== undefined || binding.source !== undefined) {
+          throw new Refusal("refused", row.action === "tier" ? PLATFORM_TIER_ONLY : PLATFORM_ONLY);
+        }
+        return bound(owner, caller);
+      }
+      case "erasure": {
+        // An owner wiped once its outside record was confirmed: its platform doors answer so.
+        if ((this.#tombstone || this.#erasure.erased) && binding?.caller === PLATFORM_CALLER) {
+          return { ...bound("", PLATFORM_CALLER), erased: true };
+        }
+        const { owner, caller } = this.#bind(binding, "admission", "erasure");
+        if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
+            || binding.session !== undefined || binding.source !== undefined) {
+          throw new Refusal("refused", PLATFORM_ONLY);
+        }
+        if (!erasing(this.#storage)) {
+          throw new Refusal("refused", NO_ERASURE);
+        }
+        return bound(owner, caller);
+      }
+      case "none":
+        return bound("", "");
+    }
+  }
+
+  /** The guard, scope and fields steps of a bound call, in the row's order. */
+  #checked(row: DoorRow, binding: Binding, request: unknown, held: Bound, session: string):
+      Call {
+    const { account } = held;
+    this.#guard(row, binding, account);
+    let r: Record<string, unknown>;
+    let place: { universe: string | null; agent: string };
+    if (row.fieldsFirst === true) {
+      r = this.#fields(row, request, account);
+      place = this.#scoped(row, account, r);
+    } else {
+      place = this.#scoped(row, account, null);
+      r = this.#fields(row, request, account);
+    }
+    return { ...held, binding, r, session, universe: place.universe, agent: place.agent,
+             held: (where) => this.#scope(account, row.capability!, where) };
+  }
+
+  /** A row's guard: a check of its caller after the account (`contract/src/doors.ts`). */
+  #guard(row: DoorRow, binding: Binding, account: Account): void {
+    switch (row.guard) {
+      case undefined:
+        return;
+      case "no_mailbox":
+        // A run reads and acks no mailbox: its mail is its input, and its agent's mailbox
+        // holds every authority's mail, which no one run's authority covers.
+        if (account.run !== null) {
+          throw new Refusal("run_no_mailbox", RUN_NO_MAILBOX);
+        }
+        return;
+      case "owner_rows":
+        if (account.caller !== account.owner) {
+          throw new Refusal("refused", `only the owner may ${row.action} collection rows`);
+        }
+        return;
+      case "own_card":
+        if (account.origin === null || account.grant === null) {
+          throw new Refusal("refused", "only an outside client files its own agent's registration");
+        }
+        if (registrant(binding.source, account.origin).kind !== "mcp") {
+          throw new Refusal("refused",
+                            "an API key's agent registers from the owner's browser with the key");
+        }
+        return;
+      case "sandbox":
+        if (this.env.SANDBOX === undefined) {
+          throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
+        }
+        return;
+    }
+  }
+
+  /**
+   * The scope step: an account door's capability held where its caller acts (`#scope`), or,
+   * at a run door, where the agent its request names acts (`#runDoor`), its universe kept.
+   */
+  #scoped(row: DoorRow, account: Account, r: Record<string, unknown> | null):
+      { universe: string | null; agent: string } {
+    const none = { universe: null, agent: MAIN_AGENT };
+    if ((row.caller !== "account" && row.caller !== "visitors") || row.scope === "handler") {
+      return none;
+    }
+    if (row.scope === "agent") {
+      const agent = r === null || row.agent === undefined ? null
+        : agentId(r[row.agent.field] ?? row.agent.default);
+      return { universe: this.#runDoor(account, row.capability as RunNeed, agent),
+               agent: agent ?? MAIN_AGENT };
+    }
+    if (row.capability !== null) {
+      this.#scope(account, row.capability);
+    }
+    return none;
+  }
+
+  /** The fields step: the request held to its row's arguments; a loose one is its module's. */
+  #fields(row: DoorRow, request: unknown, account: Account): Record<string, unknown> {
+    const args = row.args;
+    if (args === "none" || args === "loose") {
+      return {};
+    }
+    const held = "refused" in args ? args : account.origin === null ? args.owner : args.outside;
+    const asked = held.omitted === true && (request === undefined || request === null) ? {}
+      : request;
+    return fields(asked, Object.keys(held.required), Object.keys(held.optional), held.refused,
+                  held.undefinedAllowed === true);
+  }
+
+  /**
+   * `capability` held as `agent` (the `main` agent by default), in `center` (default: the
+   * command center a scoped client's one enabled agent is registered in): a run holds its
+   * grant's scopes, which admission already held to its initiator's; a scoped grant its
+   * triples there (`authority.may`); a full grant, and the owner, everything.
+   */
+  #scope(account: Account, capability: RunCapability, center?: unknown,
+         agent: string = MAIN_AGENT): void {
+    if (account.run === null && account.grant?.mode !== "scoped") {
       return;
     }
-    if (account.grant?.mode !== "scoped") {
-      return;
-    }
-    const universe = center === undefined ? this.#universe(account) : center;
-    if (typeof universe !== "string"
-        || !holds(account.grant, { universe, agent, capability })) {
-      throw new Refusal("refused", "outside client capability not granted");
+    const universe = account.run !== null ? null
+      : center === undefined ? this.#universe(account) : center;
+    if (!may(account.run !== null ? { run: account.run.scopes } : account.grant,
+             capability, account.run !== null ? "anywhere"
+               : { universe: typeof universe === "string" ? universe : null, agent })) {
+      throw new Refusal("refused", NOT_GRANTED);
     }
   }
 
@@ -2705,24 +2949,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A verified interactive sign-in opens a session; its cookie is returned once. */
   sessionOpen(binding: Binding): Promise<{ session: string; expires_at: number }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "open its session");
+    return this.#run("sessionOpen", binding, undefined, () => {
       return this.#sessions.open(binding.authenticated_at, clock());
     });
   }
 
   sessionExtend(binding: Binding): Promise<{ expires_at: number }> {
     // Quiet: a renewal changes nothing an export reads, so an export open across it stands.
-    return this.#quiet(() => {
-      this.#owner(binding, "read", "renew its session");
+    return this.#run("sessionExtend", binding, undefined, () => {
       return this.#sessions.extend(binding.session, clock());
     });
   }
 
   /** One session signed out, and the connection flows it began cancelled with it. */
   sessionClose(binding: Binding): Promise<{ closed: number }> {
-    return this.#synced(() => {
-      this.#owner(binding, "reduce", "sign out");
+    return this.#run("sessionClose", binding, undefined, () => {
       const id = this.#sessions.id(binding.session);
       const closed = this.#sessions.close(binding.session);
       if (id !== null) {
@@ -2736,14 +2977,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * Every session signed out: account revocation and deletion (`revoke_owner`), every open
    * connection flow cancelled in the same unit, so a late callback finds none.
    */
-  async sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
-    const closed = await this.#synced(() => {
-      this.#owner(binding, "reduce", "sign out");
-      this.#connections.cancelFlows(null);
-      return this.#sessions.closeAll();
+  sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
+    return this.#units("sessionCloseAll", binding, undefined, async (door) => {
+      const closed = await this.#synced(() => door.within(() => {
+        this.#connections.cancelFlows(null);
+        return this.#sessions.closeAll();
+      }));
+      this.#relay.closeAll("signedOut");  // account revocation: every device's sockets
+      return closed;
     });
-    this.#relay.closeAll("signedOut");  // account revocation: every device's sockets
-    return closed;
   }
 
   // -- SANDBOX TIME: the sandbox Worker's log, metered (`sandbox-time.ts`) -----------
@@ -2785,19 +3027,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * counts nothing.
    */
   async sandboxBilled(event: BilledEvent): Promise<{ counted: boolean }> {
-    if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
-      return { counted: false };
-    }
-    const checked = billedEvent(event);
-    return this.#door(() => ({ counted: this.#sandboxTime.billed(checked, Date.now()) }));
+    return this.#units("sandboxBilled", undefined as unknown as Binding, event, async () => {
+      if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
+        return { counted: false };
+      }
+      const checked = billedEvent(event);
+      return this.#door(() => ({ counted: this.#sandboxTime.billed(checked, Date.now()) }));
+    });
   }
 
   /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
   sandboxDays(binding: Binding, request: { days?: number }): Promise<{
       days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
               gb_seconds: number; unverified_executions: number }[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its sandbox time");
+    return this.#run("sandboxDays", binding, request, () => {
       const days = request?.days ?? 31;
       if (typeof days !== "number" || !Number.isSafeInteger(days) || days < 1 || days > 400) {
         throw new Refusal("invalid", "days is 1 to 400");
@@ -2820,8 +3063,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       used_bytes: number; limit_bytes: number | null;
       breakdown: { files: number; messages: number; collections: number };
       deleted_content: { kept_bytes: number; kept_up_to_days: number } }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its storage");
+    return this.#run("storageUsage", binding, undefined, () => {
       const usage = this.#files.usage();
       const used = usage.stored;
       // Each kind's bodies, inline or placed (a placed content counted once); files are the
@@ -2852,13 +3094,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async ownerExport(binding: Binding,
                     request: { cursor?: string | null; export_id?: string }):
       Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
+    return this.#units("ownerExport", binding, request, (door) => this.#exported(door, request));
+  }
+
+  /** The export's next object, its call checked in its first unit. */
+  async #exported(door: Door, request: { cursor?: string | null; export_id?: string }):
+      Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
     const asked = await this.#quiet(() => {
-      this.#owner(binding, "read", "export everything it holds");
-      this.#sessions.live(binding.session, clock());
-      if (typeof request !== "object" || request === null || Array.isArray(request)
-          || Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
-        throw new Refusal("invalid", "an export request is at most its cursor and its export_id");
-      }
+      door.check();
       const now = clock();
       const first = request.cursor === null || request.cursor === undefined;
       const open = first ? this.#exports.open(now, this.#backups.forExport(now))
@@ -2905,27 +3148,26 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async exportChunks(binding: Binding, request: { export_id: string; sha256s: string[] }):
       Promise<{ chunks: { sha256: string; data: string }[] }> {
-    const wanted = await this.#door(() => {
-      this.#owner(binding, "read", "export everything it holds");
-      this.#sessions.live(binding.session, clock());
-      if (typeof request !== "object" || request === null
-          || Object.keys(request).sort().join() !== "export_id,sha256s"
-          || !Array.isArray(request.sha256s) || request.sha256s.length < 1
-          || request.sha256s.length > 2) {
-        throw new Refusal("invalid", "an export's chunks are its export_id and one or two sha256s");
-      }
-      this.#exports.named(request.export_id, clock());
-      return this.#files.storedChunks(request.sha256s);
+    return this.#units("exportChunks", binding, request, async (door) => {
+      const wanted = await this.#door(() => {
+        door.check();
+        if (!Array.isArray(request.sha256s) || request.sha256s.length < 1
+            || request.sha256s.length > 2) {
+          throw new Refusal("invalid",
+                            "an export's chunks are its export_id and one or two sha256s");
+        }
+        this.#exports.named(request.export_id, clock());
+        return this.#files.storedChunks(request.sha256s);
+      });
+      const bytes = await this.#files.fetch(wanted.map((sha256) => ({ sha256 })));
+      return { chunks: wanted.map((sha256, at) => ({
+        sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
     });
-    const bytes = await this.#files.fetch(wanted.map((sha256) => ({ sha256 })));
-    return { chunks: wanted.map((sha256, at) => ({
-      sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
   }
 
   /** An export ended: its id names it no longer. */
   exportEnd(binding: Binding, request: { export_id: string }): Promise<{ ended: boolean }> {
-    return this.#quiet(() => {
-      this.#owner(binding, "reduce", "end its export");
+    return this.#run("exportEnd", binding, request, () => {
       return { ended: this.#exports.end(request?.export_id) };
     });
   }
@@ -2937,29 +3179,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is.
    */
   async dataKeyRewrap(binding: Binding): Promise<{ rewrapped: boolean; roots: number }> {
-    const days = await this.#door(() => {
-      const { caller } = this.#bind(binding, "admission");
-      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
-          || binding.session !== undefined || binding.source !== undefined) {
-        throw new Refusal("refused", PLATFORM_ONLY);
-      }
-      return this.#backups.manifests().map((manifest) => manifest.gen);
+    return this.#units("dataKeyRewrap", binding, undefined, async (door) => {
+      const days = await this.#door(() => {
+        door.check();
+        return this.#backups.manifests().map((manifest) => manifest.gen);
+      });
+      return this.#files.rewrap(days);
     });
-    return this.#files.rewrap(days);
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------
 
   policyRead(binding: Binding): Promise<Projection> {
-    return this.#door(() => {
-      const { owner } = this.#owner(binding, "read", "read its policy");
+    return this.#run("policyRead", binding, undefined, ({ account: { owner } }) => {
       return this.#policy.projection(owner);
     });
   }
 
   policyReceipts(binding: Binding): Promise<{ receipts: Receipt[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its policy");
+    return this.#run("policyReceipts", binding, undefined, () => {
       return { receipts: this.#policy.receipts() };
     });
   }
@@ -2972,16 +3210,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * generation.
    */
   async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
-    const done = await this.#synced(() => this.#widening(binding, "work", "write", request,
-                                                         "write its policy", ({ owner }, id) => {
-      const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
-      const written = this.#policy.write(id, r["expected_generation"], r["policy"],
-                                         r["proposal"] ?? null, clock());
-      return { owner, generation: written.generation, digest: written.digest,
-               policy: written.document };
-    }));
-    await this.#door(() => this.#egress.end("policy"));
-    return done;
+    return this.#units("policyWrite", binding, request, async (door) => {
+      const done = await this.#synced(() => door.within(({ account: { owner }, session, r }) => {
+        const written = this.#policy.write(session, r["expected_generation"], r["policy"],
+                                           r["proposal"] ?? null, clock());
+        return { owner, generation: written.generation, digest: written.digest,
+                 policy: written.document };
+      }));
+      await this.#door(() => this.#egress.end("policy"));
+      return done;
+    });
   }
 
   /**
@@ -2990,10 +3228,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   policyPropose(binding: Binding, request: ProposeRequest):
       Promise<{ request_digest: string; generation: number }> {
-    return this.#door(() => {
-      const account = this.#account(binding, "work");
-      const r = policyFields(request, ["change"], ["request_id"]);
-      this.#scope(account, "propose_policy");
+    return this.#run("policyPropose", binding, request, ({ account, r }) => {
       return this.#policy.propose(r["change"], r["request_id"] ?? null,
                                   account.origin?.client ?? "owner", clock());
     });
@@ -3002,9 +3237,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The pending card the owner is shown, and the digest its apply must name. */
   policyProposal(binding: Binding, request: CardRequest):
       Promise<{ change: Change; digest: string }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its policy");
-      const r = policyFields(request, ["request_id"]);
+    return this.#run("policyProposal", binding, request, ({ r }) => {
       const held = this.#policy.held(r["request_id"], clock());
       if (held === null) {
         throw new Refusal("refused", "no pending proposal for this card");
@@ -3020,29 +3253,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   policyWakeLimits(binding: Binding, request: WakeLimitsRequest):
       Promise<{ agent: Agent; generation: number }> {
-    return this.#door(() => {
-      return this.#widening(binding, "work", "wake_limits", request, "change its agents' policy",
-                            (_account, id) => {
-        const r = policyFields(request, ["agent_id", "max_wakes_per_hour", "batch_window_s",
-                                         "expected_generation"]);
-        return this.#storage.transactionSync(() => {
-          const agent = this.#ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
-                                                   r["batch_window_s"]);
-          const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
-                           batch_window_s: agent.batch_window_s };
-          const generation = this.#policy.changed(id, r["expected_generation"], "wake_limits",
-                                                  limits, agent.agent_id, clock());
-          return { agent, generation };
-        });
-      });
-    });
+    return this.#run("policyWakeLimits", binding, request, ({ session: id, r }) =>
+      this.#storage.transactionSync(() => {
+        const agent = this.#ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
+                                                 r["batch_window_s"]);
+        const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
+                         batch_window_s: agent.batch_window_s };
+        const generation = this.#policy.changed(id, r["expected_generation"], "wake_limits",
+                                                limits, agent.agent_id, clock());
+        return { agent, generation };
+      }));
   }
 
   // -- OUTSIDE_CLIENTS: grants (P0-3) ---------------------------------------------
 
   grantList(binding: Binding): Promise<{ clients: Client[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its outside clients");
+    return this.#run("grantList", binding, undefined, () => {
       return { clients: this.#grants.list() };
     });
   }
@@ -3056,11 +3282,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   grantSet(binding: Binding, request: GrantRequest): Promise<
       { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
         revision: number }> {
-    return this.#synced(() => this.#widening(binding, "work", "outside_set", request,
-                                             "change an outside client's grant",
-                                             (_account, id) => {
-      const r = policyFields(request, ["client", "source", "mode", "scopes",
-                                       "expected_revision", "name"], ["profile"]);
+    return this.#run("grantSet", binding, request, ({ session: id, r }) => {
       return this.#storage.transactionSync(() => {
         const { moved, ...set } = this.#grants.set(id, r as unknown as GrantRequest, clock());
         if (moved) {
@@ -3072,7 +3294,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         return set;
       });
-    }));
+    });
   }
 
   /**
@@ -3081,9 +3303,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   grantRevoke(binding: Binding, request: ClientRequest):
       Promise<{ client: string; revoked: boolean; generation: number; revision: number }> {
-    return this.#synced(() => {
-      this.#owner(binding, "reduce", "revoke an outside client's grant");
-      const r = policyFields(request, ["client"]);
+    return this.#run("grantRevoke", binding, request, ({ r }) => {
       return this.#storage.transactionSync(() => {
         const revoked = this.#grants.revoke(r["client"], clock());
         this.#endClient(revoked.client);
@@ -3101,9 +3321,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   grantForget(binding: Binding, request: ClientRequest):
       Promise<{ client: string; forgotten: boolean }> {
-    return this.#door(() => {
-      this.#owner(binding, "reduce", "forget an outside client's grant");
-      const r = policyFields(request, ["client"]);
+    return this.#run("grantForget", binding, request, ({ r }) => {
       return this.#storage.transactionSync(() => {
         const forgot = this.#grants.forgetKey(r["client"], clock());
         if (forgot.forgotten) {
@@ -3121,19 +3339,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   grantForgetRevoked(binding: Binding, request: ForgetRequest):
       Promise<{ forgotten: string[]; mcp_fence: number }> {
-    return this.#door(() => {
-      return this.#widening(binding, "reduce", "outside_forget", request,
-                            "forget its revoked outside clients", (_account, id) => {
-        const r = policyFields(request, ["clients"]);
-        return this.#storage.transactionSync(() => {
-          const forgot = this.#grants.forgetRevoked(id, r["clients"], clock());
-          for (const client of forgot.forgotten) {
-            this.#keys.forgotten(client);
-          }
-          return forgot;
-        });
-      });
-    });
+    return this.#run("grantForgetRevoked", binding, request, ({ session: id, r }) =>
+      this.#storage.transactionSync(() => {
+        const forgot = this.#grants.forgetRevoked(id, r["clients"], clock());
+        for (const client of forgot.forgotten) {
+          this.#keys.forgotten(client);
+        }
+        return forgot;
+      }));
   }
 
   // -- THE KEY STORE: the owner's API keys (slice L; `keys.ts`) ------------------------
@@ -3147,9 +3360,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   keyMint(binding: Binding, request: KeyMintRequest): Promise<ApiKey & { scopes: Scope[];
       revision: number }> {
-    return this.#synced(() => this.#widening(binding, "work", "key_mint", request,
-                                             "mint an API key", (_account, id) => {
-      const r = policyFields(request, ["key_id", "name", "scopes"], ["proposal"]);
+    return this.#run("keyMint", binding, request, ({ session: id, r }) => {
       const key = keyId(r["key_id"]);
       const name = keyName(r["name"]);
       const now = Math.floor(clock());  // whole seconds: the directory entry's mint time
@@ -3164,13 +3375,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         return { ...row, scopes: set.scopes, revision: set.revision };
       });
-    }));
+    });
   }
 
   /** The owner's API keys, live and revoked: what its key list shows, and its erasure ends. */
   keyList(binding: Binding): Promise<{ keys: ApiKey[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its API keys");
+    return this.#run("keyList", binding, undefined, () => {
       return { keys: this.#keys.list() };
     });
   }
@@ -3185,16 +3395,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * none of them resting on this request finishing.
    */
   async ownerErase(binding: Binding, request: EraseRequest): Promise<{ erasing: true }> {
-    const confirmed = await this.#door(() => this.#widening(binding, "reduce", "owner_erase",
-                                                            request, "erase its account", () => {
-      erasureConfirmed(request);
-      return true;
-    }));
-    if (!confirmed) {
-      throw new Error("an erasure's widening returned without confirming it");
-    }
-    await this.#erasure.begin();
-    return { erasing: true };
+    return this.#units("ownerErase", binding, request, async (door) => {
+      const confirmed = await this.#door(() => door.within(({ r }) => {
+        erasureConfirmed(r);
+        return true;
+      }));
+      if (!confirmed) {
+        throw new Error("an erasure's widening returned without confirming it");
+      }
+      await this.#erasure.begin();
+      return { erasing: true as const };
+    });
   }
 
   /**
@@ -3204,47 +3415,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * owner is wiped (its outside record confirmed before the wipe).
    */
   erasureOutside(binding: Binding): Promise<{ keys: string[]; routes: string[] } | null> {
-    return this.#door(() => {
-      if ((this.#tombstone || this.#erasure.erased) && binding?.caller === PLATFORM_CALLER) {
-        return null;
-      }
-      const { caller } = this.#bind(binding, "admission", "erasure");
-      this.#platformErasure(binding, caller);
-      return { keys: this.#keys.ids(), routes: this.#inbound.routes() };
-    });
+    return this.#run("erasureOutside", binding, undefined, ({ erased }) =>
+      erased ? null : { keys: this.#keys.ids(), routes: this.#inbound.routes() });
   }
 
   /** The doors' confirmation that the outside record is done: the wipe may go on. */
   erasureOutsideDone(binding: Binding): Promise<{ confirmed: true }> {
-    return this.#door(() => {
-      if ((this.#tombstone || this.#erasure.erased) && binding?.caller === PLATFORM_CALLER) {
+    return this.#run("erasureOutsideDone", binding, undefined, ({ erased }) => {
+      if (erased) {
         return { confirmed: true } as const;
       }
-      const { caller } = this.#bind(binding, "admission", "erasure");
-      this.#platformErasure(binding, caller);
       markOutside(this.#storage);
       this.#erasure.resume();
       return { confirmed: true };
     });
   }
 
-  /** The platform's reserved caller, at an erasure under way, and no one else. */
-  #platformErasure(binding: Binding, caller: string): void {
-    if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
-        || binding.session !== undefined || binding.source !== undefined) {
-      throw new Refusal("refused", PLATFORM_ONLY);
-    }
-    if (!erasing(this.#storage)) {
-      throw new Refusal("refused", NO_ERASURE);
-    }
-  }
-
   // -- INBOUND: the owner's event sources (slice L; `inbound.ts`) ----------------------
 
   /** The owner's inbound bindings, never a secret. */
   inboundList(binding: Binding): Promise<{ bindings: InboundBinding[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its inbound bindings");
+    return this.#run("inboundList", binding, undefined, () => {
       return { bindings: this.#inbound.list() };
     });
   }
@@ -3255,23 +3446,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * app's installation, which only its install flow (owed) may name.
    */
   inboundCreate(binding: Binding, request: InboundCreateRequest): Promise<InboundBinding> {
-    return this.#door(() => this.#widening(binding, "work", "inbound_create", request,
-                                           "add an inbound binding", () =>
-      this.#inbound.create(inboundCreated(request), clock())));
+    return this.#run("inboundCreate", binding, request, () =>
+      this.#inbound.create(inboundCreated(request), clock()));
   }
 
   /** The owner's change of a binding, in its session, against its revision. */
   inboundSet(binding: Binding, request: InboundSetRequest): Promise<InboundBinding> {
-    return this.#door(() => this.#widening(binding, "work", "inbound_set", request,
-                                           "change an inbound binding", () =>
-      this.#inbound.set(request, clock())));
+    return this.#run("inboundSet", binding, request, () => this.#inbound.set(request, clock()));
   }
 
   /** A binding withdrawn, a narrowing the owner's account makes without a session. */
   inboundRevoke(binding: Binding, request: BindingRequest):
       Promise<{ binding_id: string; route: string | null }> {
-    return this.#door(() => {
-      this.#owner(binding, "reduce", "withdraw an inbound binding");
+    return this.#run("inboundRevoke", binding, request, () => {
       return this.#inbound.revoke(request);
     });
   }
@@ -3285,10 +3472,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * events are a no-op until the owner changes the binding.
    */
   inboundAccept(binding: Binding, request: InboundEvent): Promise<InboundAnswer> {
-    return this.#placing((): { body: unknown; writer: string } | { done: InboundAnswer } => {
-      const { owner } = this.#bind(binding, "work", "inbound");
+    return this.#units("inboundAccept", binding, request, (door) => this.#placing((): {
+        body: unknown; writer: string } | { done: InboundAnswer } => {
       const now = clock();
-      const event = this.#inboundEvent(binding, owner, request, now);
+      const event = this.#inboundEvent(door.check(), now);
       if ("done" in event) {
         return event;
       }
@@ -3302,9 +3489,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return { body: event.envelope, writer: "owner" };
     }, (placed) => {
-      const { owner } = this.#bind(binding, "work", "inbound");
       const now = clock();
-      const event = this.#inboundEvent(binding, owner, request, now);
+      const event = this.#inboundEvent(door.check(), now);
       if ("done" in event) {
         return event.done;
       }
@@ -3317,24 +3503,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       } catch (error) {
         return this.#inboundRefused(event.row, error, now);
       }
-    }, { synced: true });
+    }, { synced: true }));
   }
 
   /**
-   * An inbound event checked in its unit: the binding at the route's revision, enabled, an
-   * owner-held proof on the raw bytes, and its mail's room, key and envelope; or the no-op a
-   * tripped breaker answers.
+   * An inbound event checked in its unit (its route's binding at the route's revision,
+   * enabled, as the call bound it): an owner-held proof on the raw bytes, and its mail's
+   * room, key and envelope; or the no-op a tripped breaker answers.
    */
-  #inboundEvent(binding: Binding, owner: string, request: InboundEvent, now: number):
+  #inboundEvent({ route, r }: Call, now: number):
       { done: InboundAnswer }
       | { row: InboundRow; room: string; cmid: string; envelope: string } {
-    if (binding.origin !== null || binding.caller !== owner || binding.session !== undefined
-        || binding.source !== undefined) {
-      throw new Refusal("invalid", "invalid inbound binding");
-    }
-    const route = binding.inbound!;
-    const row = this.#inbound.current(bindingId(route.binding), route.revision);
-    const r = policyFields(request, ["event_id", "event_at", "body", "headers"]);
+    const row = route!;
     const eventId = r["event_id"];
     const eventAt = r["event_at"];
     const body = r["body"];
@@ -3414,14 +3594,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileUploadTarget(binding: Binding, request: IntentRequest):
       Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
                 pending: string[] }> {
-    const plan = await this.#door(() => {
-      this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["intent_id"]);
-      return this.#files.uploadPlan(r["intent_id"]);
+    return this.#units("fileUploadTarget", binding, request, async (door) => {
+      const plan = await this.#door(() => this.#files.uploadPlan(door.check().r["intent_id"]));
+      // The namespace and its wrapped data key, which only `FILES` opens (slice P, M4).
+      const { ns, key } = await this.#files.space();
+      return { namespace: ns, key, ...plan };
     });
-    // The namespace and its wrapped data key, which only `FILES` opens (slice P, M4).
-    const { ns, key } = await this.#files.space();
-    return { namespace: ns, key, ...plan };
   }
 
   /**
@@ -3429,11 +3607,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * its hash): recorded as `fileUploadChunks` records its own puts.
    */
   fileUploadStored(binding: Binding, request: UploadStoredRequest): Promise<{ stored: number }> {
-    return this.#door(() => {
-      this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["intent_id", "chunks"]);
-      return this.#files.stored(r["intent_id"], r["chunks"]);
-    });
+    return this.#run("fileUploadStored", binding, request, ({ r }) =>
+      this.#files.stored(r["intent_id"], r["chunks"]));
   }
 
   /** In the revoke's transaction: revoked rows past their bound forgotten, keys with them. */
@@ -3468,35 +3643,37 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async outsideAgents(binding: Binding, request: AgentsRequest = {}):
       Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
                 next?: string }> {
-    await this.#seededFor(() => {
-      this.#account(binding, "read");
+    return this.#units("outsideAgents", binding, request, async (door) => {
+      await this.#seededFor(door);
+      return this.#door(() => this.#agentsListed(door.check()));
     });
-    return this.#door(() => {
-      const account = this.#account(binding, "read");
-      const own = account.origin === null && account.run === null;
-      let natives = this.#ledger.natives(own);
-      const grant = account.grant;
-      if (!own && grant !== null && grant.mode === "scoped") {
-        // Where it acts: a run's stamp's universe, or the command center of a client's one
-        // enabled agent; none (no agent registered yet) covers none of them.
-        const mine = account.origin === null ? [] : this.#ledger.agents(account.origin)
-          .filter((agent) => agent.disabled_reason === null);
-        const universe = account.run !== null ? account.run.stamp?.universe ?? null
-          : mine.length === 1 ? mine[0]!.command_center_id : null;
-        natives = natives.filter((native) => universe !== null && holds(grant, {
-          universe, agent: native.agent, capability: "converse" }));
-      }
-      // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
-      // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
-      // app that is not connected yet.
-      const r = fields(request ?? {}, [], ["after"]);
-      const after = r["after"] === undefined ? null : r["after"];
-      if (after !== null && typeof after !== "string") {
-        throw new Refusal("invalid", "after is a next an agents list answered");
-      }
-      return agentsPage({ agents: this.#ledger.agents(account.origin), owner_agents: natives,
-                          apps: this.#grants.apps() }, after);
-    });
+  }
+
+  /** The agents a caller sees, a page of them (`outsideAgents`). */
+  #agentsListed({ account, r }: Call):
+      { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
+    const own = account.origin === null && account.run === null;
+    let natives = this.#ledger.natives(own);
+    const grant = account.grant;
+    if (!own && grant !== null && grant.mode === "scoped") {
+      // Where it acts: a run's stamp's universe, or the command center of a client's one
+      // enabled agent; none (no agent registered yet) covers none of them.
+      const mine = account.origin === null ? [] : this.#ledger.agents(account.origin)
+        .filter((agent) => agent.disabled_reason === null);
+      const universe = account.run !== null ? account.run.stamp?.universe ?? null
+        : mine.length === 1 ? mine[0]!.command_center_id : null;
+      natives = natives.filter((native) => may(grant, "converse",
+                                               { universe, agent: native.agent }));
+    }
+    // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
+    // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
+    // app that is not connected yet.
+    const after = r["after"] === undefined ? null : r["after"];
+    if (after !== null && typeof after !== "string") {
+      throw new Refusal("invalid", "after is a next an agents list answered");
+    }
+    return agentsPage({ agents: this.#ledger.agents(account.origin), owner_agents: natives,
+                        apps: this.#grants.apps() }, after);
   }
 
   /**
@@ -3508,20 +3685,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * together with the owner's session.
    */
   registerAgent(binding: Binding, request: RegisterRequest | CardApply): Promise<Agent> {
-    return this.#synced(() => this.#widening(binding, "work", "OUTSIDE_AGENTS.register", request, null,
-                                             ({ origin }) => {
+    return this.#run("registerAgent", binding, request, ({ account: { origin }, r }) => {
       if (origin === null) {
-        const r = ledgerFields(request, ["card_id", "digest"]);
         return this.#storage.transactionSync(() => {
           const card = this.#registrations.take(r["card_id"], r["digest"], clock());
           return this.#ledger.register(card.origin, card.source,
                                        card.request as unknown as RegisterRequest);
         });
       }
-      const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
-                                       "recipe_id"]);
       return this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
-    }, { registering: true }));
+    });
   }
 
   /**
@@ -3531,28 +3704,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   registerPropose(binding: Binding, request: RegisterRequest):
       Promise<{ card_id: string; digest: string; expires_at: number }> {
-    return this.#door(() => {
-      const account = this.#account(binding, "work");
-      if (account.origin === null || account.grant === null) {
-        throw new Refusal("refused", "only an outside client files its own agent's registration");
-      }
-      if (registrant(binding.source, account.origin).kind !== "mcp") {
-        throw new Refusal("refused",
-                          "an API key's agent registers from the owner's browser with the key");
-      }
-      const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
-                                       "recipe_id"]);
-      return this.#registrations.file(account.origin, (binding.source as Source).ref, {
-        client: account.origin.client, generation: account.grant.generation,
+    return this.#run("registerPropose", binding, request, ({ account, r }) => {
+      return this.#registrations.file(account.origin!, (binding.source as Source).ref, {
+        client: account.origin!.client, generation: account.grant!.generation,
         authenticated_at: binding.authenticated_at ?? null }, r, clock());
     });
   }
 
   /** The pending registration card the owner is shown, and the digest its apply names. */
   registerProposal(binding: Binding, request: RegistrationCardRequest): Promise<Card> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its agents' registrations");
-      const r = ledgerFields(request, ["card_id"]);
+    return this.#run("registerProposal", binding, request, ({ r }) => {
       const card = this.#registrations.card(r["card_id"], clock());
       if (card === null) {
         throw new Refusal("refused", "no pending registration for this card");
@@ -3566,11 +3727,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * holds no owner session, and its call never carries one.
    */
   disableAgent(binding: Binding, request: DisableRequest): Promise<Agent> {
-    return this.#synced(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.disable", request, null,
-                                             ({ origin }) => {
-      const r = ledgerFields(request, ["agent_id", "reason"]);
-      return this.#ledger.disable(r["agent_id"], r["reason"], origin);
-    }));
+    return this.#run("disableAgent", binding, request, ({ account: { origin }, r }) =>
+      this.#ledger.disable(r["agent_id"], r["reason"], origin));
   }
 
   /**
@@ -3583,10 +3741,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   agentDoorbell(binding: Binding, request: AgentDoorbellRequest):
       Promise<{ agent_id: string; subscription_id: string }> {
-    return this.#door(() => this.#widening(binding, "work", "OUTSIDE_AGENTS.doorbell", request,
-                                           "set its agents' doorbells", () => {
-      const r = ledgerFields(request, ["agent_id", "kind", "subscription_id", "board", "rooms",
-                                       "blob", "kid", "version"]);
+    return this.#run("agentDoorbell", binding, request, ({ r }) => {
       const stored = this.#ledger.subscribe(null, {
         subscription_id: r["subscription_id"] as string, agent_id: r["agent_id"] as string,
         kind: r["kind"] as string, board: r["board"] as boolean,
@@ -3594,27 +3749,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         kid: r["kid"] as string, version: r["version"] as number, expires_at: null,
       });
       return { agent_id: stored.agent_id, subscription_id: r["subscription_id"] as string };
-    }));
+    });
   }
 
   /** Only the owner itself, in its session, ends a doorbell it pasted, by its id. */
   agentDoorbellEnd(binding: Binding, request: UnsubscribeRequest):
       Promise<{ unsubscribed: boolean }> {
-    return this.#door(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.doorbell_end",
-                                           request, "end its agents' doorbells", () => {
-      const r = ledgerFields(request, ["subscription_id"]);
-      return { unsubscribed: this.#ledger.unsubscribe(null, r["subscription_id"]) };
-    }));
+    return this.#run("agentDoorbellEnd", binding, request, ({ r }) =>
+      ({ unsubscribed: this.#ledger.unsubscribe(null, r["subscription_id"]) }));
   }
 
   /** Only the owner itself, in its session, deletes an agent. */
   deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
-    return this.#synced(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.delete", request,
-                                             "change its agents' policy", () => {
-      const r = ledgerFields(request, ["agent_id"]);
-      return this.#ledger.remove(r["agent_id"]);
-    }));
+    return this.#run("deleteAgent", binding, request, ({ r }) =>
+      this.#ledger.remove(r["agent_id"]));
   }
 
   // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
@@ -3627,18 +3776,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * lane, which this door's unit rings), so its caller holds `converse` there too, as a
    * `converse` call would.
    */
-  async roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
+  roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
+    return this.#units("roomPost", binding, request, (door) => this.#posted(door, request));
+  }
+
+  /** A post, its call checked in each unit (`roomPost`). */
+  async #posted(door: Door, request: PostRequest): Promise<Posted> {
     // A parent archived (acked, moved to a segment) is read from R2 before the units: its
     // seq, from its id, in the gate; then its record, outside. One the lane moved after the
     // gate found it hot is read so in a post again (review N10's Low), never refused as no
     // parent: archived mail never returns hot, so a second post finds it archived.
     const gated = await this.#door(() => {
-      this.#account(binding, "work");
+      door.bound();
       return this.#archivedParent(request);
     });
     for (let tries = 0; ; tries++) {
       const parent = tries === 0 ? gated : await this.#door(() => {
-        this.#account(binding, "work");
+        door.bound();
         return this.#archivedParent(request);
       });
       const archived = parent === null ? null : await this.#archived(parent.seq, parent.id);
@@ -3651,9 +3805,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       try {
         return await this.#busyRings(() => this.#placing((): { body: unknown; writer: string }
                                                             | { done: Posted } => {
-          const account = this.#account(binding, "work");
-          this.#scope(account, "write_graph");
-          const { r, actor } = this.#poster(account, binding, request);
+          const call = door.check();
+          const { r, account } = call;
+          const { actor } = this.#poster(call);
           kept();
           // The room, the sender, the parent, the caps and a resend, before any byte is placed.
           const resend = this.#ledger.prepare(actor, r["room_id"], r["client_message_id"],
@@ -3661,9 +3815,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           return resend !== null ? { done: resend }
             : { body: r["body"], writer: filerOf(account) };
         }, (placed) => {
-          const account = this.#account(binding, "work");
-          this.#scope(account, "write_graph");
-          const { r, actor, authority } = this.#poster(account, binding, request);
+          const call = door.check();
+          const { r, account } = call;
+          const { actor, authority } = this.#poster(call);
           kept();
           return this.#ledger.post(actor, r["room_id"], r["client_message_id"], r["body"],
                                    r["parent_id"], clock(), authority, placed,
@@ -3697,8 +3851,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A post's caller checked, in each of its units: the first places nothing for a post the
    * checks refuse, and the second commits only what they still allow.
    */
-  #poster(account: Account, binding: Binding, request: PostRequest) {
-    const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
+  #poster({ account, r, binding }: Call): { actor: Actor; authority: MailAuthority | null } {
     const actor = this.#actor(account);
     const authority = this.#mailAuthority(binding, account);
     const to = this.#ledger.recipient(actor, r["room_id"]);
@@ -3706,7 +3859,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#mailsAgent(account, authority, to.native);
       this.#keepTiers(binding);
     }
-    return { r, actor, authority };
+    return { actor, authority };
   }
 
   /** Who a caller is in the ledger: a run, its agent; else the owner or the outside client. */
@@ -3747,10 +3900,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (authority === null || account.grant?.mode !== "scoped") {
       return;
     }
-    if (authority.universe === null
-        || !holds(account.grant, { universe: authority.universe, agent,
-                                   capability: "converse" })) {
-      throw new Refusal("refused", "outside client capability not granted");
+    if (!may(account.grant, "converse", { universe: authority.universe, agent })) {
+      throw new Refusal("refused", NOT_GRANTED);
     }
   }
 
@@ -3779,16 +3930,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
   connectionPrepare(binding: Binding, request: ConnectionPrepareRequest): Promise<Prepared> {
-    return this.#synced(() => this.#widening(binding, "work", "connection_prepare", request,
-                                             "connect a model source", (_account, id) =>
-      this.#connections.prepare(id, request, clock())));
+    return this.#run("connectionPrepare", binding, request, ({ session }) =>
+      this.#connections.prepare(session, request, clock()));
   }
 
   /** The sealed blob the gateway returned, and the models its setup check listed. */
   connectionCommit(binding: Binding, request: ConnectionCommitRequest): Promise<ConnectionView> {
-    return this.#synced(() => this.#widening(binding, "work", "connection_commit", request,
-                                             "connect a model source",
-                                             () => this.#connections.commit(request, clock())));
+    return this.#run("connectionCommit", binding, request, () =>
+      this.#connections.commit(request, clock()));
   }
 
   /**
@@ -3797,35 +3946,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async connectionRevoke(binding: Binding, request: ConnectionRequest):
       Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
-    const revoked = await this.#synced(() => this.#widening(binding, "reduce",
-                                                            "connection_revoke", request,
-                                                            "revoke a model source",
-      () => this.#connections.revoke(request, clock())));
-    await this.#door(() => this.#egress.end("connection",
-                                            (live) => live.connection === revoked.connection));
-    return revoked;
+    return this.#units("connectionRevoke", binding, request, async (door) => {
+      const revoked = await this.#synced(() => door.within(() =>
+        this.#connections.revoke(request, clock())));
+      await this.#door(() => this.#egress.end("connection",
+                                              (live) => live.connection === revoked.connection));
+      return revoked;
+    });
   }
 
   /** Every connection, newest first, never its blob. */
   connectionList(binding: Binding): Promise<{ connections: ConnectionView[] }> {
-    return this.#door(() => this.#widening(binding, "read", "connection_list", null,
-                                           "read its model sources",
-                                           () => ({ connections: this.#connections.list() })));
+    return this.#run("connectionList", binding, undefined, () =>
+      ({ connections: this.#connections.list() }));
   }
 
   /** The callback's state, in the session that began the flow: its verifier, used up. */
   flowFinish(binding: Binding, request: FlowFinishRequest):
       Promise<{ connection: string; version: number; verifier: string; redirect_uri: string;
                 source: string }> {
-    return this.#synced(() => this.#widening(binding, "work", "flow_finish", { state: "[state]" },
-                                             "connect a model source", (_account, id) =>
-      this.#connections.flowFinish(id, request, clock())));
+    return this.#run("flowFinish", binding, request, ({ session }) =>
+      this.#connections.flowFinish(session, request, clock()));
   }
 
   /** The owner's newest model-call receipts: what each call reserved, and what it cost. */
   usageReceipts(binding: Binding): Promise<{ receipts: UsageReceipt[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its model spend");
+    return this.#run("usageReceipts", binding, undefined, () => {
       return { receipts: this.#usage.receipts(clock()) };
     });
   }
@@ -3834,8 +3980,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** The owner's notices, newest first (`notices.ts`). */
   noticeList(binding: Binding): Promise<{ notices: Notice[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its notices");
+    return this.#run("noticeList", binding, undefined, () => {
       return { notices: this.#notices.list() };
     });
   }
@@ -3847,8 +3992,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   starterReceipts(binding: Binding):
       Promise<{ version: number; carried: number; receipts: StarterReceipt[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its starter files' receipts");
+    return this.#run("starterReceipts", binding, undefined, () => {
       return { version: this.#starter.version(), carried: this.#starter.carried(),
                receipts: this.#starter.receipts() };
     });
@@ -3865,25 +4009,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * gives the `wakes` lane its job back.
    */
   async admissionSet(binding: Binding, request: AdmissionRequest): Promise<Admission> {
-    const set = await this.#synced(() => {
-      const { caller } = this.#bind(binding, "admission");
-      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
-          || binding.session !== undefined || binding.source !== undefined) {
-        throw new Refusal("refused", PLATFORM_ONLY);
-      }
-      return setAdmission(this.#storage, request);
-    });
-    if (set.state === "suspended") {
-      // The prompt stop: its streams, and its runs' CLIs (each settles from its runner).
-      await this.#door(() => {
-        this.#egress.end("admission");
-        this.#cancelInSandbox(this.#runs.endAll(clock()));
+    return this.#units("admissionSet", binding, request, async (door) => {
+      const set = await this.#synced(() => {
+        door.check();
+        return setAdmission(this.#storage, request);
       });
-    }
-    if (doorRefusal(set, "read") !== null) {
-      this.#relay.closeAll("suspended");  // reads refused: an abuse suspension
-    }
-    return set;
+      if (set.state === "suspended") {
+        // The prompt stop: its streams, and its runs' CLIs (each settles from its runner).
+        await this.#door(() => {
+          this.#egress.end("admission");
+          this.#cancelInSandbox(this.#runs.endAll(clock()));
+        });
+      }
+      if (doorRefusal(set, "read") !== null) {
+        this.#relay.closeAll("suspended");  // reads refused: an abuse suspension
+      }
+      return set;
+    });
   }
 
   /**
@@ -3893,36 +4035,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the bodies picks up.
    */
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
-    return this.#rereadingPage(() => {
-      const account = this.#account(binding, "read");
-      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes", "body_offset",
-                                                  "message_id"]);
-      this.#noMailbox(account);
-      this.#scope(account, "read_graph");
+    return this.#units("mailboxRead", binding, request, (door) => this.#rereadingPage(() => {
+      const { account, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
       const next = this.#ledger.placedNext(account.origin, r["limit"]);
       return { contents: next.contents,
                offsetOf: (contentId) => contentId === next.first ? offset : 0 };
     }, (windows) => {
-      const account = this.#account(binding, "read");
-      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes", "body_offset",
-                                                  "message_id"]);
-      this.#noMailbox(account);
-      this.#scope(account, "read_graph");
+      const { account, r } = door.check();
       return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
                                r["pad_bytes"] ?? 0, clock(), windows,
                                bodyOffset(r["body_offset"]), PAGE_BYTES, r["message_id"] ?? null);
-    }, (page) => page.messages.length === 0 && page.more);
+    }, (page) => page.messages.length === 0 && page.more));
   }
 
   mailboxAck(binding: Binding, request: AckRequest): Promise<{ reader: string; through: number }> {
-    return this.#synced(() => {
-      const account = this.#account(binding, "reduce");
-      const r = ledgerFields(request, ["through"]);
-      this.#noMailbox(account);
-      this.#scope(account, "write_graph");
-      return this.#ledger.ack(account.origin, r["through"]);
-    });
+    return this.#run("mailboxAck", binding, request, ({ account, r }) =>
+      this.#ledger.ack(account.origin, r["through"]));
   }
 
   // -- DIGESTS and CODE MODE: a main agent's few calls (slice M) -------------------
@@ -3935,16 +4064,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * row only to its writer. Its mail part is a mailbox read, so a run is refused it
    * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
    */
-  async inboxDigest(binding: Binding, request: InboxDigestRequest):
+  inboxDigest(binding: Binding, request: InboxDigestRequest):
       Promise<{ mail: MailPage; rooms: Heads }> {
+    return this.#units("inboxDigest", binding, request, (door) => this.#inbox(door));
+  }
+
+  /** What changed for an agent, its call checked in each unit (`inboxDigest`). */
+  async #inbox(door: Door): Promise<{ mail: MailPage; rooms: Heads }> {
     // Its placed bodies (ADR-035), mail and rows, are read from R2 between its units, as a
     // mailbox read's; the read's unit marks only the mail it returns. One answer holds
     // both: each part fits half of it (`INBOX_PART`, `pages.ts`), so neither starves.
     const { mail, rooms, windows, chars } = await this.#rereadingPage(() => {
-      const account = this.#account(binding, "read");
-      const r = ledgerFields(request, ["limit", "after"], ["max_bytes", "head_chars"]);
-      this.#noMailbox(account);
-      this.#scope(account, "read_graph");
+      const { account, r } = door.check();
       const chars = headChars(r["head_chars"]);
       const mail = new Set(this.#ledger.placedNext(account.origin, r["limit"], INBOX_PART)
         .contents);
@@ -3952,10 +4083,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         account.caller, { prefix: ROOM_PREFIX }, r["after"], r["limit"]).rows)],
                maxOf: (contentId) => mail.has(contentId) ? INBOX_PART : headWindow(chars) };
     }, (windows) => {
-      const account = this.#account(binding, "read");
-      const r = ledgerFields(request, ["limit", "after"], ["max_bytes", "head_chars"]);
-      this.#noMailbox(account);
-      this.#scope(account, "read_graph");
+      const { account, r } = door.check();
       const changes = this.#collections.changed(account.caller, { prefix: ROOM_PREFIX },
                                                 r["after"], r["limit"]);
       return {
@@ -3969,15 +4097,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
   boardDigest(binding: Binding, request: BoardDigestRequest): Promise<Heads> {
-    return this.#reading(() => {
-      const { caller } = this.#collector(binding, "read", "read_graph");
-      const r = fields(request, ["limit", "after"], ["head_chars"]);
+    return this.#units("boardDigest", binding, request, (door) => this.#reading(() => {
+      const { account: { caller }, r } = door.check();
       const chars = headChars(r["head_chars"]);
       const changes = this.#collections.changed(caller, { collection: BOARD }, r["after"],
                                                 r["limit"]);
       return { value: { changes, chars }, contents: contentsOf(changes.rows),
                maxOf: () => headWindow(chars) };
-    }, ({ changes, chars }, windows) => heads(changes, chars, windows));
+    }, ({ changes, chars }, windows) => heads(changes, chars, windows)));
   }
 
   /**
@@ -3986,7 +4113,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * owner's own, `custom`. `code` only while the owner's policy turns code mode on.
    */
   toolProfile(binding: Binding): Promise<{ profile: ProfileName; tools: readonly string[] }> {
-    return this.#door(() => this.#profile(this.#account(binding, "read")));
+    return this.#run("toolProfile", binding, undefined, ({ account }) =>
+      this.#profile(account));
   }
 
   #profile(account: Account): { profile: ProfileName; tools: readonly string[] } {
@@ -4012,9 +4140,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * logged here in full.
    */
   async codeRun(binding: Binding, request: CodeRequest): Promise<CodeResult> {
+    return this.#units("codeRun", binding, request, (door) => this.#coded(door, binding));
+  }
+
+  /** A script's run (`codeRun`), its call checked in its first unit. */
+  async #coded(door: Door, binding: Binding): Promise<CodeResult> {
     const { owner, script, tools, gate } = await this.#door(() => {
-      const account = this.#account(binding, "work");
-      const r = fields(request, ["script"], [], "invalid code request");
+      const { account, r } = door.check();
       if (typeof r["script"] !== "string" || r["script"].trim() === "") {
         throw new Refusal("invalid", "a script is text");
       }
@@ -4098,7 +4230,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         throw new Refusal("refused", closed);
       }
       await this.#door(() => {
-        const { tools } = this.#profile(this.#account(binding, "read"));
+        const { tools } = this.#profile(this.#within(doorRow("toolProfile"), binding, undefined,
+                                                     ({ account }) => account));
         if (!hookSettings(this.#policy.read().document).codemode) {
           throw new Refusal("code_mode_off", CODE_MODE_OFF);
         }
@@ -4106,8 +4239,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           throw new Refusal("tool_not_served", CODE_NOT_SERVED);
         }
       });
-      const door = this[tool.door] as unknown as (...args: unknown[]) => Promise<unknown>;
-      return await Reflect.apply(door, this, takesRequest(tool) ? [binding, args] : [binding]);
+      // The tool's own door, by its row: admitted again, as any call of it is.
+      const row = doorRow(tool.door);
+      const door = (this as unknown as Record<string, unknown>)[row.door] as
+        (...args: unknown[]) => Promise<unknown>;
+      return await Reflect.apply(door, this, takesRequest(row) ? [binding, args] : [binding]);
     } catch (error) {
       if (!(error instanceof Refusal)) {
         console.error(`code mode's ${tool.name} call failed`, error);
@@ -4118,27 +4254,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A run reads and acks no mailbox: its mail is its input, and its agent's mailbox holds
-   * every authority's mail, which no one run's authority covers. A run sees its own thread,
-   * under its own authority, as its conversation.
-   */
-  #noMailbox(account: Account): void {
-    if (account.run !== null) {
-      throw new Refusal("run_no_mailbox", RUN_NO_MAILBOX);
-    }
-  }
-
-  /**
    * The owner's view of a mail chain (agents' mail to each other included), from any of its
    * messages, such as the mail a run's receipt names: oldest first, after `after`.
    */
-  async mailChain(binding: Binding, request: ChainRequest):
+  mailChain(binding: Binding, request: ChainRequest):
       Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
-    const r = await this.#door(() => {
-      this.#owner(binding, "read", CHAINS);
-      return ledgerFields(request, ["message_id", "limit"], ["after", "body_offset",
-                                                             "body_message_id"]);
-    });
+    return this.#units("mailChain", binding, request, (door) => this.#chain(door));
+  }
+
+  /** The owner's read of a mail chain, its call checked in each unit (`mailChain`). */
+  async #chain(door: Door): Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
+    const { r } = await this.#door(() => door.check());
     const after = r["after"] ?? 0;
     if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
       throw new Refusal("invalid", "a chain read's after is a seq");
@@ -4162,7 +4288,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     const most = typeof r["limit"] === "number" ? r["limit"] : 1;
     for (let tries = 0; tries < READ_TRIES; tries++) {
-      const read = await this.#chainPage(binding, r, { root, rootSeq, room }, after, offset,
+      const read = await this.#chainPage(door, r, { root, rootSeq, room }, after, offset,
                                          most);
       if (read !== null) {
         return { root, messages: read.messages, more: read.more };
@@ -4188,7 +4314,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * fences. Another room's moves never count. The page stays the one bounded page
    * `ledger.chain` fits; only the reads are repeated, at most `READ_TRIES`.
    */
-  async #chainPage(binding: Binding, r: Record<string, unknown>,
+  async #chainPage(door: Door, r: Record<string, unknown>,
                    chain: { root: string; rootSeq: number; room: string }, after: number,
                    offset: number, most: number):
       Promise<{ messages: ChainMail[]; more: boolean } | null> {
@@ -4234,12 +4360,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       r["message_id"], after, r["limit"], windows, offset, r["body_message_id"] ?? null,
       archived);
     return this.#rereadingPage(() => {
-      this.#owner(binding, "read", CHAINS);
+      door.check();
       const read = page(new Map());
       return { contents: read.placed,
                offsetOf: (contentId) => contentId === read.first ? offset : 0 };
     }, (windows) => {
-      this.#owner(binding, "read", CHAINS);
+      door.check();
       return this.#ledger.movedSince(seen.newest, room, after) ? null : page(windows);
     }, (read) => read !== null && read.messages.length === 0 && read.placed.length > 0);
   }
@@ -4770,8 +4896,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * caller with none is refused.
    */
   wakeEvents(binding: Binding, commandCenter?: string): Promise<{ events: Events[] }> {
-    return this.#door(() => {
-      const account = this.#account(binding, "read");
+    return this.#run("wakeEvents", binding, commandCenter, ({ account, held }) => {
       const grant = account.grant;
       if (account.origin === null || account.run !== null || grant === null) {
         if (commandCenter !== undefined) {
@@ -4780,14 +4905,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return { events: [] };
       }
       if (commandCenter === undefined) {
-        const reads = grant.mode === "full"
-          || grant.scopes.some((scope) => scope.capability === "read_graph");
+        const reads = may(grant, "read_graph", "anywhere");
         return { events: reads ? wakeKinds().flatMap((kind) => kind.push?.events ?? []) : [] };
       }
       if (typeof commandCenter !== "string") {
         throw new Refusal("invalid", "invalid subscription arguments");
       }
-      this.#scope(account, "read_graph", commandCenter);
+      held(commandCenter);
       const agent = this.#ledger.subscriber(account.origin, commandCenter);
       if (agent === undefined) {
         throw new Refusal("refused", "not this caller's subscribing agent");
@@ -4805,10 +4929,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   wakeSubscribe(binding: Binding, request: SubscribeRequest):
       Promise<{ subscription_id: string; agent_id: string; expires_at: number | null }> {
-    return this.#synced(() => {
-      const account = this.#account(binding, "work");
-      const r = ledgerFields(request, ["subscription_id", "name", "arguments", "blob", "kid",
-                                       "version", "expires_at"]);
+    return this.#run("wakeSubscribe", binding, request, ({ account, r, held }) => {
       if (account.origin === null || account.run !== null) {
         throw new Refusal("refused", "only an agent's own client subscribes its doorbell");
       }
@@ -4821,7 +4942,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (typeof center !== "string") {
         throw new Refusal("invalid", "invalid subscription arguments");
       }
-      this.#scope(account, "read_graph", center);
+      held(center);
       const stored = this.#ledger.subscribe(account.origin, {
         subscription_id: r["subscription_id"] as string, command_center_id: center,
         board: follow.board, rooms: follow.rooms, blob: r["blob"] as string,
@@ -4838,9 +4959,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   wakeUnsubscribe(binding: Binding, request: UnsubscribeRequest):
       Promise<{ unsubscribed: boolean }> {
-    return this.#door(() => {
-      const account = this.#account(binding, "reduce");
-      const r = ledgerFields(request, ["subscription_id"]);
+    return this.#run("wakeUnsubscribe", binding, request, ({ account, r }) => {
       if (account.origin === null || account.run !== null) {
         throw new Refusal("refused", "only the client that holds a subscription ends it");
       }
@@ -4948,11 +5067,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * A sync door's caller by the sync token: the live lease's own, and when `request` names a
-   * lease, that lease at its epoch; else refused, as a lost lease's sync is fenced.
+   * lease, that lease at its epoch; else refused, as a lost lease's sync is fenced. What it
+   * reads and writes is held to `capability` as the lease's authority holds it.
    */
-  #syncer(binding: Binding, door: DoorClass, request: { lease_id?: unknown; epoch?: unknown }
-                                                      | null): Readable {
-    this.#bind(binding, door, "sync");
+  #syncer(binding: Binding, door: DoorClass, capability: RunCapability,
+          request: { lease_id?: unknown; epoch?: unknown } | null): Bound {
+    const { owner, caller } = this.#bind(binding, door, "sync");
+    const readable = (held: Readable): Bound => ({ ...bound(owner, caller), readable: held });
     const sandbox = sandboxBinding(binding.sandbox);
     const lease = sandbox.kind === "sync"
       ? this.#files.leaseByToken("sync", sandbox.token, clock()) : null;
@@ -4971,7 +5092,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // only what it may write (as itself, never into the owner's trees: `Files.syncCommit`),
     // by its grant as its live run stamped it, standing now.
     if (lease.authority === OWNER_AUTHORITY) {
-      return { lease: lease.lease_id, scope: null, test: () => true };
+      return readable({ lease: lease.lease_id, scope: null, test: () => true });
     }
     {
       const stamp = this.#runs.authorityStamp(lease.authority);
@@ -4987,37 +5108,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         throw error;
       }
-      const capability = door === "read" ? "read_files" : "write_files";
-      const held = grant.mode === "full" || (stamp!.universe !== null && holds(grant, {
-        universe: stamp!.universe, agent: stamp!.agent, capability }));
-      if (held) {
-        return { lease: lease.lease_id, scope: "*", test: () => true };
+      if (may(grant, capability, stamp!)) {
+        return readable({ lease: lease.lease_id, scope: "*", test: () => true });
       }
       if (door !== "read") {
-        throw new Refusal("refused", "outside client capability not granted");
+        throw new Refusal("refused", NOT_GRANTED);
       }
       const agents = this.#runs.liveAgents(lease.authority)
         .map((agent) => `${AGENTS_DIR}/${agent}`);
-      return { lease: lease.lease_id, scope: agents.join("\n"),
-               test: (path) => path === AGENTS_DIR || agents.some((dir) => within(path, dir))
-                 || ABILITY_TREES.some((tree) => within(path, tree)) };
+      return readable({ lease: lease.lease_id, scope: agents.join("\n"),
+                        test: (path) => path === AGENTS_DIR
+                          || agents.some((dir) => within(path, dir))
+                          || ABILITY_TREES.some((tree) => within(path, tree)) });
     }
-  }
-
-  #ownerOnly(owner: string, caller: string, action: string): void {
-    if (caller !== owner) {
-      throw new Refusal("refused", `only the owner may ${action} collection rows`);
-    }
-  }
-
-  /**
-   * A collection door's caller: the owner, a visiting owner, or an outside client the
-   * owner's account acts through, admitted against its grant and held to `capability`.
-   */
-  #collector(binding: Binding, door: DoorClass, capability: Capability): Account {
-    const account = this.#account(binding, door, { visitors: true });
-    this.#scope(account, capability);
-    return account;
   }
 
   /**
@@ -5162,15 +5265,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   collectionWrite(binding: Binding, request: WriteRequest):
       Promise<{ row: WrittenRow } | Conflicted> {
-    return this.#placing(() => {
-      const account = this.#collector(binding, "work", "write_graph");
-      const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
-                       ["history_op"]);
+    return this.#units("collectionWrite", binding, request, (door) => this.#placing(() => {
+      const { account, r } = door.check();
       return { body: checkBody(r["body"]), writer: filerOf(account) };
     }, (placed) => {
-      const account = this.#collector(binding, "work", "write_graph");
-      const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
-                       ["history_op"]);
+      const { account, r } = door.check();
       const collection = r["collection"] as string;
       const before = this.#collections.clock();
       const written = conflicted(() => ({
@@ -5182,7 +5281,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }));
       this.#ring(account, collection, before);
       return written;
-    }, { shown: conflictShown(), synced: true });
+    }, { shown: conflictShown(), synced: true }));
   }
 
   /**
@@ -5191,9 +5290,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * `collection_get`'s `body_offset`.
    */
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
-    return this.#reading(() => {
-      const { caller } = this.#collector(binding, "read", "read_graph");
-      const r = fields(request, ["collection", "after", "limit"]);
+    return this.#units("collectionPull", binding, request, (door) => this.#reading(() => {
+      const { account: { caller }, r } = door.check();
       const page = this.#collections.pull(caller, r["collection"] as string, r["after"],
                                           r["limit"]);
       return { value: page, contents: contentsOf(page.rows) };
@@ -5203,7 +5301,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         ({ item, window }, room, first) => bodied(item, window, room, first));
       return { cursor: rows.length === page.rows.length ? page.cursor : rows.at(-1)!.seq,
                rows: rows as Row[] };
-    });
+    }));
   }
 
   /**
@@ -5211,9 +5309,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * `etag`, refused when the row is no longer the one that answer read.
    */
   collectionGet(binding: Binding, request: GetRequest): Promise<{ row: Row | null }> {
-    return this.#reading(() => {
-      const { caller } = this.#collector(binding, "read", "read_graph");
-      const r = fields(request, ["collection", "row_id"], ["body_offset", "etag"]);
+    return this.#units("collectionGet", binding, request, (door) => this.#reading(() => {
+      const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
       // A read on names the revision it reads (review L3), so two are never spliced.
       if (offset > 0 && r["etag"] === undefined) {
@@ -5228,7 +5325,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { value: { got, offset }, contents: contentsOf(got.row === null ? [] : [got.row]),
                offsetOf: () => offset };
     }, ({ got, offset }, windows) => ({ row: got.row === null ? null
-      : fittedRow(windowed(got.row, windows, offset), jsonBytes({ row: null }) - 4) as Row }));
+      : fittedRow(windowed(got.row, windows, offset), jsonBytes({ row: null }) - 4) as Row })));
   }
 
   /**
@@ -5237,9 +5334,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * entry's body from that byte.
    */
   collectionHistory(binding: Binding, request: HistoryRequest): Promise<History> {
-    return this.#reading(() => {
-      const { caller } = this.#collector(binding, "read", "read_graph");
-      const r = fields(request, ["collection", "row_id"], ["before_revision", "body_offset"]);
+    return this.#units("collectionHistory", binding, request, (door) => this.#reading(() => {
+      const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
       const kept = this.#collections.history(caller, r["collection"] as string,
                                              r["row_id"] as string, r["before_revision"] ?? null);
@@ -5254,29 +5350,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const entries = (fitted as HistoryEntry[]).reverse();
       return entries.length === kept.entries.length ? { ...kept, entries }
         : { entries, more: true, before_revision: entries[0]!.revision };
-    });
+    }));
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest):
       Promise<{ deleted: number } | Conflicted> {
-    return this.#reading(() => {
-      const account = this.#collector(binding, "reduce", "write_graph");
-      this.#ownerOnly(account.owner, account.caller, "delete");
-      const r = fields(request, ["collection", "row_id", "expected_etag"]);
+    return this.#units("collectionDelete", binding, request, (door) => this.#reading(() => {
+      const { account, r } = door.check();
       const before = this.#collections.clock();
       const value = conflicted(() => this.#collections.delete(
         account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
       ));
       this.#ring(account, r["collection"] as string, before);
       return { value, contents: conflictShown<typeof value>().contents(value) };
-    }, conflictShown<{ deleted: number } | Conflicted>().fill, true);
+    }, conflictShown<{ deleted: number } | Conflicted>().fill, true));
   }
 
   collectionClear(binding: Binding, request: ClearRequest): Promise<{ deleted: number }> {
-    return this.#synced(() => {
-      const account = this.#collector(binding, "reduce", "write_graph");
-      this.#ownerOnly(account.owner, account.caller, "clear");
-      const r = fields(request, ["collection", "writer"]);
+    return this.#run("collectionClear", binding, request, ({ account, r }) => {
       const before = this.#collections.clock();
       const cleared = this.#collections.clear(account.caller, r["collection"] as string,
                                               r["writer"]);
@@ -5368,18 +5459,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // in a unit, and its later steps through units of their own (`Files`).
 
   /**
-   * A file door's account: the owner's own, or an outside client admitted against its
-   * grant and held to `read_files` or `write_files`. No visiting owner reaches another's
-   * files.
-   */
-  #filer(binding: Binding, door: DoorClass, capability: "read_files" | "write_files"):
-      Account {
-    const account = this.#account(binding, door);
-    this.#scope(account, capability);
-    return account;
-  }
-
-  /**
    * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files, skills, goals and
    * `agent.json`). The founder's rule (2026-11-03): every agent of the owner has full power by
    * default to do what any other of its agents can, so an agent (an outside client's call, or
@@ -5428,31 +5507,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   fileStat(binding: Binding, request: FileRequest): Promise<{ entry: Entry | null }> {
-    return this.#door(() => {
-      this.#filer(binding, "read", "read_files");
-      const r = fileFields(request, ["path"]);
+    return this.#run("fileStat", binding, request, ({ r }) => {
       return { entry: this.#files.stat(r["path"]) };
     });
   }
 
   /**
-   * A read door's caller: a file door's (`read_files`, every path it reaches visible), or the
-   * sync agent's by its sync token (slice S), held to the same readable set its change feed
-   * is filtered by (`#syncer`), so no content door shows a path the feed would not.
+   * A path a reader may not see is refused as one that does not exist: a file door's caller
+   * sees every path, the sync agent its lease's readable set (`#syncer`), so no content door
+   * shows a path its change feed would not.
    */
-  #reader(binding: Binding, door: "read", capability: "read_files"):
-      (path: string) => boolean {
-    // A run's own call carries its egress token as its sandbox: a file door's caller too.
-    if (binding.sandbox === undefined || binding.run !== undefined) {
-      this.#filer(binding, door, capability);
-      return () => true;
-    }
-    return this.#syncer(binding, door, null).test;
-  }
-
-  /** A path the reader may not see is refused as one that does not exist. */
-  #visible(visible: (path: string) => boolean, path: unknown): void {
-    if (typeof path === "string" && !visible(path)) {
+  #visible(call: Call, path: unknown): void {
+    if (typeof path === "string" && call.readable !== null && !call.readable.test(path)) {
       throw new FileFault("not_found", "no such file");
     }
   }
@@ -5463,30 +5529,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileList(binding: Binding, request: FileListRequest):
       Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
-    await this.#seededFor(() => {
-      this.#reader(binding, "read", "read_files");
+    return this.#units("fileList", binding, request, async (door) => {
+      await this.#seededFor(door);
+      return this.#door(() => this.#listed(door.check()));
     });
-    return this.#door(() => {
-      const visible = this.#reader(binding, "read", "read_files");
-      const r = fileFields(request, ["dir", "limit"], ["after", "head_chars"]);
-      const listed = this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
-      const entries = listed.entries.filter((entry) => visible(entry.path));
-      const chars = r["head_chars"] === undefined ? null
-        : whole(r["head_chars"], "head_chars", 0, Number.MAX_SAFE_INTEGER);
-      // One answer holds the page (`pages.ts`): when entries are left, `next` is the last
-      // one's name, so the next page starts after it.
-      const shown = chars === null ? entries : entries.map((entry) => {
-        if (entry.kind !== "file" || entry.size > INLINE_BYTES) {
-          return entry;
-        }
-        const inline = this.#files.open(entry.path).inline;
-        const text = inline === undefined ? null : textOf(inline);
-        return text === null ? entry : { ...entry, head: [...text].slice(0, chars).join("") };
-      });
-      return fitList({ ...listed, entries: shown }, shown,
-                     { entries: [], next: String.fromCharCode(1).repeat(MAX_NAME_BYTES) },
-                     (kept) => ({ entries: kept, next: nameOf(kept.at(-1)!.path) }));
+  }
+
+  /** A directory's page (`fileList`). */
+  #listed({ r, readable }: Call):
+      { entries: (Entry & { head?: string })[]; next: string | null } {
+    const listed = this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
+    const entries = listed.entries.filter((entry) => readable?.test(entry.path) ?? true);
+    const chars = r["head_chars"] === undefined ? null
+      : whole(r["head_chars"], "head_chars", 0, Number.MAX_SAFE_INTEGER);
+    // One answer holds the page (`pages.ts`): when entries are left, `next` is the last
+    // one's name, so the next page starts after it.
+    const shown = chars === null ? entries : entries.map((entry) => {
+      if (entry.kind !== "file" || entry.size > INLINE_BYTES) {
+        return entry;
+      }
+      const inline = this.#files.open(entry.path).inline;
+      const text = inline === undefined ? null : textOf(inline);
+      return text === null ? entry : { ...entry, head: [...text].slice(0, chars).join("") };
     });
+    return fitList({ ...listed, entries: shown }, shown,
+                   { entries: [], next: String.fromCharCode(1).repeat(MAX_NAME_BYTES) },
+                   (kept) => ({ entries: kept, next: nameOf(kept.at(-1)!.path) }));
   }
 
   /**
@@ -5497,12 +5565,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileText(binding: Binding, request: FileTextRequest):
       Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
-    await this.#seededFor(() => {
-      this.#filer(binding, "read", "read_files");
-    });
+    return this.#units("fileText", binding, request, (door) => this.#text(door));
+  }
+
+  /** A window of a file's text, its call checked in its units (`fileText`). */
+  async #text(door: Door):
+      Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
+    await this.#seededFor(door);
     const asked = await this.#door(() => {
-      this.#filer(binding, "read", "read_files");
-      const r = fileFields(request, ["path"], ["offset", "max_bytes"]);
+      const { r } = door.check();
       const content = this.#files.open(r["path"]);
       const offset = whole(r["offset"], "offset", 0, content.entry.size);
       const max = whole(r["max_bytes"], "max_bytes", READ_DEFAULT_BYTES, CHUNK_BYTES);
@@ -5578,32 +5649,34 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileSearch(binding: Binding, request: FileSearchRequest):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
-    await this.#seededFor(() => {
-      this.#filer(binding, "read", "read_files");
+    return this.#units("fileSearch", binding, request, async (door) => {
+      await this.#seededFor(door);
+      return this.#door(() => this.#searched(door.check()));
     });
-    return this.#door(() => {
-      this.#filer(binding, "read", "read_files");
-      const r = fileFields(request, ["query"], ["cursor"]);
-      const query = r["query"];
-      if (typeof query !== "string" || utf8Bytes(query) > SEARCH_QUERY_BYTES) {
-        throw new Refusal("invalid", `a query is text of at most ${SEARCH_QUERY_BYTES} bytes`);
-      }
-      const terms = new Set(words(query));
-      if (terms.size === 0) {
-        throw new Refusal("invalid", "a query has at least one word");
-      }
-      const cursor = r["cursor"] === undefined ? null : storedPath(cursorPath(r["cursor"]));
-      const scanned = this.#files.scan(cursor, SEARCH_SCAN);
-      const page = searchPage(scanned.entries, scanned.next !== null, terms, fileUrl);
-      const answer = page.resume === null ? { results: [...page.results], next_cursor: null }
-        : { results: [...page.results], next_cursor: pathCursor(page.resume),
-            note: "more of the files are still to search: search again with next_cursor" };
-      // Only paths of thousands of escaped characters pass one answer: told, never cut.
-      if (jsonBytes(answer) > PAGE_BYTES) {
-        throw new Refusal("result_too_large", RESULT_TOO_LARGE);
-      }
-      return answer;
-    });
+  }
+
+  /** A search's page (`fileSearch`). */
+  #searched({ r }: Call):
+      { results: SearchResult[]; next_cursor: string | null; note?: string } {
+    const query = r["query"];
+    if (typeof query !== "string" || utf8Bytes(query) > SEARCH_QUERY_BYTES) {
+      throw new Refusal("invalid", `a query is text of at most ${SEARCH_QUERY_BYTES} bytes`);
+    }
+    const terms = new Set(words(query));
+    if (terms.size === 0) {
+      throw new Refusal("invalid", "a query has at least one word");
+    }
+    const cursor = r["cursor"] === undefined ? null : storedPath(cursorPath(r["cursor"]));
+    const scanned = this.#files.scan(cursor, SEARCH_SCAN);
+    const page = searchPage(scanned.entries, scanned.next !== null, terms, fileUrl);
+    const answer = page.resume === null ? { results: [...page.results], next_cursor: null }
+      : { results: [...page.results], next_cursor: pathCursor(page.resume),
+          note: "more of the files are still to search: search again with next_cursor" };
+    // Only paths of thousands of escaped characters pass one answer: told, never cut.
+    if (jsonBytes(answer) > PAGE_BYTES) {
+      throw new Refusal("result_too_large", RESULT_TOO_LARGE);
+    }
+    return answer;
   }
 
   /**
@@ -5614,14 +5687,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileFetch(binding: Binding, request: FileFetchRequest):
       Promise<{ id: string; title: string; text: string; url: string;
                 metadata: FetchMetadata }> {
-    await this.#seededFor(() => {
-      this.#filer(binding, "read", "read_files");
-    });
-    const content = await this.#door(() => {
-      this.#filer(binding, "read", "read_files");
-      const r = fileFields(request, ["id"]);
-      return this.#files.open(r["id"]);
-    });
+    return this.#units("fileFetch", binding, request, (door) => this.#fetched(door));
+  }
+
+  /** A file by a search's id, its call checked in its units (`fileFetch`). */
+  async #fetched(door: Door): Promise<{ id: string; title: string; text: string; url: string;
+                                        metadata: FetchMetadata }> {
+    await this.#seededFor(door);
+    const content = await this.#door(() => this.#files.open(door.check().r["id"]));
     // One answer holds it (`pages.ts`): its text cut to what its other fields leave, and
     // `truncated` with `next_offset` for file_read to go on from.
     const read = await this.#window(content, 0, PAGE_BYTES);
@@ -5673,10 +5746,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileRead(binding: Binding, request: FileReadRequest):
       Promise<{ entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] }> {
-    return this.#door(() => {
-      const visible = this.#reader(binding, "read", "read_files");
-      const r = fileFields(request, ["path"], ["etag"]);
-      this.#visible(visible, r["path"]);
+    return this.#run("fileRead", binding, request, (call) => {
+      const { r } = call;
+      this.#visible(call, r["path"]);
       const content: Content = this.#files.open(r["path"]);
       if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
         return { entry: content.entry, not_modified: true };
@@ -5689,21 +5761,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** One or two of a kept version's chunks, from `first`, so a read pins its version. */
   async fileReadChunks(binding: Binding, request: FileChunksRequest):
       Promise<{ chunks: Uint8Array[] }> {
-    const reads = await this.#door(() => {
-      const visible = this.#reader(binding, "read", "read_files");
-      const r = fileFields(request, ["path", "version", "first", "count"]);
-      this.#visible(visible, r["path"]);
-      const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
-      const first = r["first"];
-      const many = r["count"];
-      if (typeof first !== "number" || typeof many !== "number" || !Number.isSafeInteger(first)
-          || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 2
-          || first + many > chunks.length) {
-        throw new Refusal("invalid", "first and count name 1 or 2 of the version's chunks");
-      }
-      return chunks.slice(first, first + many).map(({ sha256 }) => ({ sha256 }));
+    return this.#units("fileReadChunks", binding, request, async (door) => {
+      const reads = await this.#door(() => {
+        const call = door.check();
+        const { r } = call;
+        this.#visible(call, r["path"]);
+        const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
+        const first = r["first"];
+        const many = r["count"];
+        if (typeof first !== "number" || typeof many !== "number" || !Number.isSafeInteger(first)
+            || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 2
+            || first + many > chunks.length) {
+          throw new Refusal("invalid", "first and count name 1 or 2 of the version's chunks");
+        }
+        return chunks.slice(first, first + many).map(({ sha256 }) => ({ sha256 }));
+      });
+      return { chunks: await this.#files.fetch(reads) };
     });
-    return { chunks: await this.#files.fetch(reads) };
   }
 
   /**
@@ -5715,12 +5789,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileWrite(binding: Binding, request: FileWriteRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    await this.#seededFor(() => {
-      this.#filer(binding, "work", "write_files");
-    });
+    return this.#units("fileWrite", binding, request, (door) => this.#written(door, binding,
+                                                                               request));
+  }
+
+  /** A whole file written, its call checked in its units (`fileWrite`). */
+  async #written(door: Door, binding: Binding, request: FileWriteRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    await this.#seededFor(door);
     const { account, r, content } = await this.#door(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
+      const { account, r } = door.check();
       this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
       const asked = r["expected_etag"];
       if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
@@ -5740,7 +5818,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return await fileConflictedAfter(async () => ({
         entry: await this.#files.write(r["path"], content, {
           expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
-          authorize: () => this.#filer(binding, "work", "write_files") }),
+          authorize: () => door.check() }),
       }));
     } finally {
       await this.#schedule.sync();
@@ -5765,12 +5843,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * it is refused `file_busy`.
    */
   async fileAppend(binding: Binding, request: FileAppendRequest): Promise<{ entry: Entry }> {
-    await this.#seededFor(() => {
-      this.#filer(binding, "work", "write_files");
-    });
+    return this.#units("fileAppend", binding, request, (door) => this.#appended(door, binding,
+                                                                                 request));
+  }
+
+  /** Text added at the end of a file, its call checked in its units (`fileAppend`). */
+  async #appended(door: Door, binding: Binding, request: FileAppendRequest):
+      Promise<{ entry: Entry }> {
+    await this.#seededFor(door);
     const { account, path, added } = await this.#door(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["path", "content"]);
+      const { account, r } = door.check();
       this.#ownersTree(binding, account, "FILES.append", request, r["path"]);
       if (STRUCTURED.test(storedPath(r["path"]))) {
         throw new Refusal("invalid",
@@ -5788,8 +5870,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { account, path: storedPath(r["path"]), added };
     });
     const authorize = () => {
-      this.#ownersTree(binding, this.#filer(binding, "work", "write_files"), "FILES.append",
-                       request, path);
+      this.#ownersTree(binding, door.check().account, "FILES.append", request, path);
     };
     try {
       for (let tries = 0; ; tries += 1) {
@@ -5870,12 +5951,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileEdit(binding: Binding, request: FileEditRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    await this.#seededFor(() => {
-      this.#filer(binding, "work", "write_files");
-    });
+    return this.#units("fileEdit", binding, request, (door) => this.#edited(door, binding,
+                                                                             request));
+  }
+
+  /** One exact occurrence replaced, its call checked in its units (`fileEdit`). */
+  async #edited(door: Door, binding: Binding, request: FileEditRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    await this.#seededFor(door);
     const asked = await this.#door(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["path", "old_text", "new_text", "expected_etag"]);
+      const { account, r } = door.check();
       this.#ownersTree(binding, account, "FILES.edit", request, r["path"]);
       const [old, replacement, etag] = [r["old_text"], r["new_text"], r["expected_etag"]];
       if (typeof old !== "string" || old === "" || typeof replacement !== "string") {
@@ -5905,7 +5990,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { conflict: asked.conflict };
     }
     const { account, path, old, replacement, content } = asked;
-    const authorize = () => this.#filer(binding, "work", "write_files");
+    const authorize = () => door.check();
     const refused = (refusal: EditRefusal): never => {
       throw new Refusal("invalid", refusal === "ill_formed"
         ? "old_text and new_text are well-formed text"
@@ -5974,13 +6059,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * A new owner's starter seed, awaited before a door touches the files or lists the agents,
-   * after the caller's authority is checked in a unit (`check`): an outside agent's first
+   * after the caller's authority is checked in a unit (`Door.authorized`): an outside agent's first
    * `fetch` of `/workspace/USER.md` or `agents_list` finds the seeded profile and `main`
    * however soon after sign-up it comes, and its first write lands beside the seeded files,
    * never before them (autoconnect_research.md §2.1).
    */
-  async #seededFor(check: () => void): Promise<void> {
-    await this.#door(check);
+  async #seededFor(door: Door): Promise<void> {
+    await this.#door(() => door.authorized());
     await this.#seeded();
   }
 
@@ -5990,9 +6075,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileUploadBegin(binding: Binding, request: UploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
-    return this.#filing(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["size", "chunks"]);
+    return this.#run("fileUploadBegin", binding, request, ({ account, r }) => {
       return this.#files.begin(r["size"], r["chunks"], fileWriter(account));
     });
   }
@@ -6000,20 +6083,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** Send an upload's chunk bytes, at most two chunks a call; R2 checks each hash. */
   async fileUploadChunks(binding: Binding, request: UploadChunksRequest):
       Promise<{ created: number }> {
-    const r = await this.#door(() => {
-      this.#filer(binding, "work", "write_files");
-      return fileFields(request, ["intent_id", "chunks"]);
+    return this.#units("fileUploadChunks", binding, request, async (door) => {
+      const { r } = await this.#door(() => door.check());
+      // `Files.upload` records each chunk stored, once `FILES` took it, in a unit of its own.
+      return this.#files.upload(r["intent_id"], r["chunks"]);
     });
-    // `Files.upload` records each chunk stored, once `FILES` took it, in a unit of its own.
-    return this.#files.upload(r["intent_id"], r["chunks"]);
   }
 
   /** Commit an upload whose chunks are all stored as the file it declared. */
   fileUploadCommit(binding: Binding, request: UploadCommitRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#filing(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
+    return this.#run("fileUploadCommit", binding, request, ({ account, r }) => {
       this.#ownersTree(binding, account, "FILES.write", { path: r["path"] }, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.commit(r["intent_id"], r["path"], {
@@ -6023,18 +6103,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   fileUploadAbort(binding: Binding, request: IntentRequest): Promise<{ aborted: boolean }> {
-    return this.#filing(() => {
-      this.#filer(binding, "reduce", "write_files");
-      const r = fileFields(request, ["intent_id"]);
+    return this.#run("fileUploadAbort", binding, request, ({ r }) => {
       return this.#files.abort(r["intent_id"]);
     });
   }
 
   fileMkdir(binding: Binding, request: MkdirRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#filing(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["path", "expected_etag"]);
+    return this.#run("fileMkdir", binding, request, ({ account, r }) => {
       this.#ownersTree(binding, account, "FILES.mkdir", request, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
@@ -6045,9 +6121,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileRemove(binding: Binding, request: RemoveRequest):
       Promise<{ removed: number } | FileConflicted> {
-    return this.#filing(() => {
-      const account = this.#filer(binding, "reduce", "write_files");
-      const r = fileFields(request, ["path", "expected_etag", "recursive"]);
+    return this.#run("fileRemove", binding, request, ({ account, r }) => {
       this.#ownersTree(binding, account, "FILES.remove", request, r["path"]);
       heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => this.#files.remove(r["path"], {
@@ -6058,9 +6132,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileRename(binding: Binding, request: RenameRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#filing(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
+    return this.#run("fileRename", binding, request, ({ account, r }) => {
       this.#ownersTree(binding, account, "FILES.rename", request, r["from"], r["to"]);
       heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => ({
@@ -6073,9 +6145,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileHistory(binding: Binding, request: FileHistoryRequest):
       Promise<{ changes: FileChange[]; next: number | null }> {
-    return this.#door(() => {
-      this.#filer(binding, "read", "read_files");
-      const r = fileFields(request, ["path", "limit"], ["before"]);
+    return this.#run("fileHistory", binding, request, ({ r }) => {
       // One answer holds the page (`pages.ts`): when versions are left, `next` the last's.
       const kept = this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
       return fitList(kept, kept.changes, { changes: [], next: Number.MAX_SAFE_INTEGER },
@@ -6085,9 +6155,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileRestore(binding: Binding, request: RestoreRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    return this.#filing(() => {
-      const account = this.#filer(binding, "work", "write_files");
-      const r = fileFields(request, ["path", "version", "expected_etag"]);
+    return this.#run("fileRestore", binding, request, ({ account, r }) => {
       this.#ownersTree(binding, account, "FILES.restore", request, r["path"]);
       heldToRead(account, r["expected_etag"]);
       return fileConflicted(() => ({
@@ -6099,9 +6167,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** Drop a kept version's content: the owner's own act, never an outside client's. */
   fileRedact(binding: Binding, request: VersionRequest): Promise<{ redacted: number }> {
-    return this.#filing(() => {
-      this.#owner(binding, "reduce", "redact its file history");
-      const r = fileFields(request, ["path", "version"]);
+    return this.#run("fileRedact", binding, request, ({ r }) => {
       return this.#files.redact(r["path"], r["version"]);
     });
   }
@@ -6111,23 +6177,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * outside client's, and never refused for a quota.
    */
   fileHistoryPurge(binding: Binding, request: FileRequest): Promise<{ purged: number }> {
-    return this.#filing(() => {
-      this.#owner(binding, "reduce", "purge its file history");
-      const r = fileFields(request, ["path"]);
+    return this.#run("fileHistoryPurge", binding, request, ({ r }) => {
       return this.#files.purge(r["path"]);
     });
   }
 
   fileChanges(binding: Binding, request: ChangesRequest):
       Promise<{ changes: FileChange[]; cursor: number; reset: boolean }> {
-    return this.#door(() => {
-      let readable: Readable | null = null;
-      if (binding.sandbox === undefined) {
-        this.#filer(binding, "read", "read_files");
-      } else {
-        readable = this.#syncer(binding, "read", null);
-      }
-      const r = fileFields(request, ["after", "limit"]);
+    return this.#run("fileChanges", binding, request, ({ r, readable }) => {
       const changes = this.#files.changes(r["after"], r["limit"]);
       if (readable === null) {
         return changes;
@@ -6144,9 +6201,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   fileUsage(binding: Binding): Promise<Usage> {
-    return this.#door(() => {
-      return this.#files.usage(fileWriter(this.#filer(binding, "read", "read_files")));
-    });
+    return this.#run("fileUsage", binding, undefined, ({ account }) =>
+      this.#files.usage(fileWriter(account)));
   }
 
   // -- RUNS: the run doors (slice R, `runs.ts`; ADR-034 decision 4) -------------------------
@@ -6166,13 +6222,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the same `client_send_id` is the same run. Waits up to `wait_ms` for the run to settle,
    * then answers the run as it stands; its status is `agentStatus`'s.
    */
-  async agentSubmit(binding: Binding, request: SubmitRequest): Promise<RunView> {
+  agentSubmit(binding: Binding, request: SubmitRequest): Promise<RunView> {
+    return this.#units("agentSubmit", binding, request, (door) => this.#submitted(door, binding));
+  }
+
+  /** A message to an agent, its call checked in its units (`agentSubmit`). */
+  async #submitted(door: Door, binding: Binding): Promise<RunView> {
     const asked = await this.#door(() => {
-      const account = this.#account(binding, "work");
-      const r = runFields(request, ["message", "client_send_id"],
-                          ["agent_id", "conversation_id", "wait_ms"]);
-      const agent = agentId(r["agent_id"] ?? MAIN_AGENT);
-      this.#runDoor(account, "converse", agent);
+      const { account, r, agent } = door.check();
       const client = account.origin?.client ?? null;
       return { agent, client, prompt: runText(r["message"], "a message"),
                waitMs: waitOf(r["wait_ms"]),
@@ -6182,8 +6239,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     await this.#seeded();
     const read = await this.#readAgent(asked.agent);
     const run = await this.#launch(read, () => {
-      const account = this.#account(binding, "work");
-      const universe = this.#runDoor(account, "converse", asked.agent);
+      const { account, universe } = door.check();
       return { ...this.#initiated(binding, account, universe, asked.agent),
                agent: asked.agent, conversation: asked.conversation, request: asked.request,
                tiers: tierNumbers(this.#storage, binding.tiers, clock()), unattended: false,
@@ -6198,12 +6254,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * cron names (`cron`). A schedule's run is unattended: its source must allow that
    * (ADR-033 decision 3). An agent answers mail by being mailed itself (`roomPost`).
    */
-  async agentRun(binding: Binding, request: LaunchRequest): Promise<RunView | RunSchedule> {
+  agentRun(binding: Binding, request: LaunchRequest): Promise<RunView | RunSchedule> {
+    return this.#units("agentRun", binding, request, (door) => this.#launched(door, binding));
+  }
+
+  /** A launch of an agent, its call checked in its units (`agentRun`). */
+  async #launched(door: Door, binding: Binding): Promise<RunView | RunSchedule> {
     const asked = await this.#synced(() => {
-      const account = this.#account(binding, "work");
-      const r = runFields(request, ["agent", "input"], ["at", "cron"]);
-      const agent = agentId(r["agent"]);
-      const universe = this.#runDoor(account, "run_graph", agent);
+      const { account, r, agent, universe } = door.check();
       const input = runText(r["input"], "an input");
       const client = account.origin?.client ?? null;
       const at = r["at"] ?? null;
@@ -6231,8 +6289,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     await this.#seeded();
     const read = await this.#readAgent(asked.agent);
     const run = await this.#launch(read, () => {
-      const account = this.#account(binding, "work");
-      const universe = this.#runDoor(account, "run_graph", asked.agent);
+      const { account, universe } = door.check();
       // A run's own launch has no person at it: unattended, as a schedule's run is.
       return { ...this.#initiated(binding, account, universe, asked.agent),
                agent: asked.agent, conversation: null, request: null,
@@ -6244,11 +6301,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A run of the caller's, from its receipt; or a schedule of the caller's. */
   agentStatus(binding: Binding, request: RunRequest): Promise<RunView | RunSchedule> {
-    return this.#door(() => {
-      const account = this.#account(binding, "read");
-      this.#runDoor(account, null, null);
+    return this.#run("agentStatus", binding, request, ({ account, r }) => {
       const client = account.origin?.client ?? null;
-      const r = runFields(request, [], ["run_id", "schedule_id"]);
       if (("run_id" in r) === ("schedule_id" in r)) {
         throw new Refusal("invalid", "a status names a run_id or a schedule_id");
       }
@@ -6264,31 +6318,31 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async agentCancel(binding: Binding, request: RunRequest):
       Promise<RunView | { schedule_id: string; cancelled: true }> {
-    const found = await this.#synced(() => {
-      const account = this.#account(binding, "reduce");
-      this.#runDoor(account, null, null);
-      const client = account.origin?.client ?? null;
-      const r = runFields(request, [], ["run_id", "schedule_id"]);
-      if (("run_id" in r) === ("schedule_id" in r)) {
-        throw new Refusal("invalid", "a cancel names a run_id or a schedule_id");
+    return this.#units("agentCancel", binding, request, async (door) => {
+      const found = await this.#synced(() => {
+        const { account, r } = door.check();
+        const client = account.origin?.client ?? null;
+        if (("run_id" in r) === ("schedule_id" in r)) {
+          throw new Refusal("invalid", "a cancel names a run_id or a schedule_id");
+        }
+        if ("schedule_id" in r) {
+          return { schedule: this.#runs.unschedule(r["schedule_id"], client).schedule_id };
+        }
+        const run = this.#runs.receipt(r["run_id"], client).run_id;
+        if (this.env.SANDBOX === undefined && this.#runs.grant(run) !== null) {
+          throw new Refusal("sandbox_absent",
+                            SANDBOX_ABSENT);  // no CLI could be stopped: refused, loudly
+        }
+        return { run, client, live: this.#runs.cancel(run, clock()) };
+      });
+      if ("schedule" in found) {
+        return { schedule_id: found.schedule, cancelled: true };
       }
-      if ("schedule_id" in r) {
-        return { schedule: this.#runs.unschedule(r["schedule_id"], client).schedule_id };
+      if (found.live !== null) {
+        await this.#sandboxCancel(found.live);
       }
-      const run = this.#runs.receipt(r["run_id"], client).run_id;
-      if (this.env.SANDBOX === undefined && this.#runs.grant(run) !== null) {
-        throw new Refusal("sandbox_absent",
-                          SANDBOX_ABSENT);  // no CLI could be stopped: refused, loudly
-      }
-      return { run, client, live: this.#runs.cancel(run, clock()) };
+      return this.#door(() => fittedRun(this.#runs.receipt(found.run, found.client)));
     });
-    if ("schedule" in found) {
-      return { schedule_id: found.schedule, cancelled: true };
-    }
-    if (found.live !== null) {
-      await this.#sandboxCancel(found.live);
-    }
-    return this.#door(() => fittedRun(this.#runs.receipt(found.run, found.client)));
   }
 
   /**
@@ -6298,7 +6352,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * never committed; the batch renews the lease (the runner's heartbeat); the runner's
    * `end` settles the run.
    */
-  async runEvents(binding: Binding, request: EventsRequest):
+  runEvents(binding: Binding, request: EventsRequest):
+      Promise<{ accepted: number; settled: string | null }> {
+    return this.#units("runEvents", binding, request, (door) => this.#evented(door, binding,
+                                                                               request));
+  }
+
+  /** A runner's report, its call checked in each unit (`runEvents`). */
+  async #evented(door: Door, binding: Binding, request: EventsRequest):
       Promise<{ accepted: number; settled: string | null }> {
     // A reply this batch's settle would post, past `PLACE_BYTES`, is placed in R2 first, in
     // the gate's own first unit (ADR-035): the settle's unit then posts it by reference, so a
@@ -6308,12 +6369,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // refused before anything is written, and its runner posts it again.
       this.#posts.enter();
       try {
-        this.#bind(binding, "reduce", "run");
-        const lease = this.#runner(binding);
-        if (lease === null) {
-          throw new Refusal("run_ended", RUN_ENDED);
-        }
-        const r = eventsRequest(request);
+        const call = door.check();
+        const lease = call.lease!;
+        const r = eventsRequest(call.r);
         const reply = this.#runs.answering(binding.run as string, lease, r.frames, r.end);
         return reply === null || utf8Bytes(reply.result) <= PLACE_BYTES ? null
           : { placing: this.#beginReply(reply) };
@@ -6326,12 +6384,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     try {
       placed = placing?.placing == null ? null : await this.#bodies.send(placing.placing);
       const done = await this.#door(() => {
-        this.#bind(binding, "reduce", "run");
-        const lease = this.#runner(binding);
-        if (lease === null) {
-          throw new Refusal("run_ended", RUN_ENDED);
-        }
-        const r = eventsRequest(request);
+        const call = door.check();
+        const lease = call.lease!;
+        const r = eventsRequest(call.r);
         // Another batch landed between the units (a runner's retry): the reply this settle
         // would post is not the one placed, so the batch is posted again, never dropped. A
         // reply whose writer's files refused it (no placing) settles with a notice instead.
@@ -6469,14 +6524,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
    * a pasted code), or the code the Worker answered (`sandbox_waiting`, ...).
    */
-  async signinStart(binding: Binding, request: SigninStartRequest):
+  signinStart(binding: Binding, request: SigninStartRequest):
+      Promise<SigninView | { started: false; code: string }> {
+    return this.#units("signinStart", binding, request, (door) => this.#signinBegun(door,
+                                                                                   binding));
+  }
+
+  /** A vendor sign-in begun, its call checked in its first unit (`signinStart`). */
+  async #signinBegun(door: Door, binding: Binding):
       Promise<SigninView | { started: false; code: string }> {
     const begun = await this.#door(() => {
-      this.#owner(binding, "work", "sign in inside a sandbox");
-      if (this.env.SANDBOX === undefined) {
-        throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
-      }
-      const r = runFields(request, ["engine"], ["authority", "region", "mode"]);
+      const { r } = door.check();
       const rec = typeof r["engine"] === "string" ? bundledSources().get(r["engine"]) : undefined;
       const cli = rec?.cli;
       if (rec === undefined || cli === undefined || rec.unwired !== undefined
@@ -6548,14 +6606,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * owner's app sockets on the sign-in's id; its end ends it, and the lease goes once nothing
    * holds it.
    */
-  async signinEvents(binding: Binding, request: SigninEventsRequest):
+  signinEvents(binding: Binding, request: SigninEventsRequest):
+      Promise<{ accepted: number; ended: boolean }> {
+    return this.#units("signinEvents", binding, request, (door) => this.#signinFramed(door,
+                                                                                     request));
+  }
+
+  /** A sign-in's frames, its call checked in its unit (`signinEvents`). */
+  async #signinFramed(door: Door, request: SigninEventsRequest):
       Promise<{ accepted: number; ended: boolean }> {
     const { row, ended, stopped, events, frames } = await this.#door(() => {
-      this.#bind(binding, "reduce", "egress");
-      const lease = this.#runner(binding);
-      if (lease === null) {
-        throw new Refusal("run_ended", RUN_ENDED);
-      }
+      const lease = door.check().lease!;
       const r = eventsRequest({ frames: request.frames, ...(request.end === undefined ? {}
         : { end: request.end }) });
       const now = clock();
@@ -6588,38 +6649,38 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * The code the vendor's page showed the owner, pasted back: to the sign-in's CLI's stdin
    * (`SandboxService.signinInput`). The owner's own door.
    */
-  async signinCode(binding: Binding, request: SigninCodeRequest):
+  signinCode(binding: Binding, request: SigninCodeRequest):
       Promise<{ delivered: boolean }> {
-    const { row, code } = await this.#door(() => {
-      this.#owner(binding, "work", "sign in inside a sandbox");
-      const r = runFields(request, ["id", "code"]);
-      const code = pastedCode(r["code"]);
-      const row = this.#signins.wantsCode(r["id"], clock());
-      if (!switchedOn(this.#storage, binding.signins, clock()).has(row.engine)) {
-        throw new Refusal("signin_off", SIGNIN_OFF);
+    return this.#units("signinCode", binding, request, async (door) => {
+      const { row, code } = await this.#door(() => {
+        const { r } = door.check();
+        const code = pastedCode(r["code"]);
+        const row = this.#signins.wantsCode(r["id"], clock());
+        if (!switchedOn(this.#storage, binding.signins, clock()).has(row.engine)) {
+          throw new Refusal("signin_off", SIGNIN_OFF);
+        }
+        return { row, code };
+      });
+      const sandbox = this.env.SANDBOX;
+      if (sandbox === undefined) {
+        throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
       }
-      return { row, code };
+      return sandbox.signinInput(this.#ownerName(), { authority: row.authority, id: row.id,
+                                                      code });
     });
-    const sandbox = this.env.SANDBOX;
-    if (sandbox === undefined) {
-      throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
-    }
-    return sandbox.signinInput(this.#ownerName(), { authority: row.authority, id: row.id,
-                                                    code });
   }
 
   /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
-  async signinCancel(binding: Binding, request: SigninRequestById):
+  signinCancel(binding: Binding, request: SigninRequestById):
       Promise<{ cancelled: boolean }> {
-    const row = await this.#door(() => {
-      this.#owner(binding, "reduce", "stop a sign-in");
-      return this.#signins.get(runFields(request, ["id"])["id"]);
+    return this.#units("signinCancel", binding, request, async (door) => {
+      const row = await this.#door(() => this.#signins.get(door.check().r["id"]));
+      const sandbox = this.env.SANDBOX;
+      if (sandbox === undefined) {
+        throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
+      }
+      return sandbox.signinCancel(this.#ownerName(), { authority: row.authority, id: row.id });
     });
-    const sandbox = this.env.SANDBOX;
-    if (sandbox === undefined) {
-      throw new Refusal("sandbox_absent", SANDBOX_ABSENT);
-    }
-    return sandbox.signinCancel(this.#ownerName(), { authority: row.authority, id: row.id });
   }
 
   /**
@@ -6628,8 +6689,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   signinList(binding: Binding): Promise<{ signins: SigninView[];
                                            engines: ReturnType<Runs["signins"]> }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "see its sign-ins");
+    return this.#run("signinList", binding, undefined, () => {
       const now = clock();
       this.#signins.lost(now, new Set(this.#files.liveLeases(now).map((each) => each.lease_id)));
       return { signins: this.#signins.list().map(signinView), engines: this.#runs.signins() };
@@ -6643,10 +6703,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   runList(binding: Binding, request: RunListRequest):
       Promise<{ runs: RunListed[]; next: number | null }> {
-    return this.#door(() => {
-      const account = this.#account(binding, "read");
-      this.#runDoor(account, null, null);
-      const r = runFields(request, [], ["before", "limit"]);
+    return this.#run("runList", binding, request, ({ account, r }) => {
       return this.#runs.list(account.origin?.client ?? null, r["before"], r["limit"]);
     });
   }
@@ -6660,13 +6717,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async signinReport(binding: Binding, request: SigninRequest):
       Promise<{ recorded: number; lapsed: string[] }> {
-    return this.#door(() => {
-      this.#bind(binding, "work", "egress");
-      const lease = this.#runner(binding);
-      if (lease === null) {
-        throw new Refusal("refused", "egress_lease_closed");
-      }
-      const reports = signinRequest(request);
+    return this.#run("signinReport", binding, request, ({ lease: held, r }) => {
+      const lease = held!;
+      const reports = signinRequest(r);
       const lapsed: string[] = [];
       if (lease.authority !== OWNER_AUTHORITY) {
         // An outside client's sandbox's own sign-ins, kept on its lease: a login is never
@@ -6721,8 +6774,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * cancels only holding `run_graph`; for a door that starts work, `need` held where it acts (a scoped client's agent; a run's grant, and
    * a client's run's stamped grant as well, for the agent it launches); its universe.
    */
-  #runDoor(account: Account, need: "converse" | "run_graph" | null, agent: string | null):
-      string | null {
+  #runDoor(account: Account, need: RunNeed, agent: string | null): string | null {
     if (account.run !== null && need === "converse") {
       throw new Refusal("run_starts_none", RUN_STARTS_NONE);
     }
@@ -6741,9 +6793,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     this.#scope(account, need);
     const universe = account.run.stamp?.universe ?? null;
-    if (account.grant?.mode === "scoped"
-        && (universe === null || !holds(account.grant, { universe, agent, capability: need }))) {
-      throw new Refusal("refused", "outside client capability not granted");
+    if (account.grant?.mode === "scoped" && !may(account.grant, need, { universe, agent })) {
+      throw new Refusal("refused", NOT_GRANTED);
     }
     return universe;
   }
@@ -6955,16 +7006,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * reaches it. With no run waiting the owner leaves the line, so the next owner is rung.
    * An erased or erasing owner does nothing (its erasure takes it out of the line).
    */
-  async sandboxRung(): Promise<{ waiting: number }> {
-    if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
-      return { waiting: 0 };
-    }
-    const waiting = await this.#door(() => this.#runs.sandboxRung());
-    if (waiting === 0) {
-      await this.env.SANDBOX?.unwait(this.#ownerName());
-    }
-    await this.#schedule.sync();
-    return { waiting };
+  sandboxRung(): Promise<{ waiting: number }> {
+    return this.#units("sandboxRung", undefined as unknown as Binding, undefined, async () => {
+      if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
+        return { waiting: 0 };
+      }
+      const waiting = await this.#door(() => this.#runs.sandboxRung());
+      if (waiting === 0) {
+        await this.env.SANDBOX?.unwait(this.#ownerName());
+      }
+      await this.#schedule.sync();
+      return { waiting };
+    });
   }
 
   /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
@@ -7182,9 +7235,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   socketTicket(binding: Binding, request: ConversationRequest):
       Promise<{ ticket: string; conversation_id: string; expires_at: number }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "open an app socket");
-      const r = runFields(request, ["conversation_id"]);
+    return this.#run("socketTicket", binding, request, ({ r }) => {
       const conversation = r["conversation_id"];
       if (!this.#runs.owns(conversation, null) && !this.#signinOwned(conversation)) {
         throw new Refusal("ticket_refused", TICKET_REFUSED);
@@ -7211,18 +7262,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * outstanding tickets forgotten and its app sockets closed `signed_out`, every other
    * device's left open. The doors tell it before they revoke the grant.
    */
-  async socketsEnd(binding: Binding): Promise<{ grant: string; ended: true }> {
-    const grant = await this.#door(() => {
-      this.#owner(binding, "reduce", "end its app sockets");
-      const held = binding.grant;
-      if (typeof held !== "string" || held === "" || held.length > 128) {
-        throw new Refusal("invalid", "a grant id");
-      }
-      this.#tickets.endGrant(held);
-      return held;
+  socketsEnd(binding: Binding): Promise<{ grant: string; ended: true }> {
+    return this.#units("socketsEnd", binding, undefined, async (door) => {
+      const grant = await this.#door(() => {
+        door.check();
+        const held = binding.grant;
+        if (typeof held !== "string" || held === "" || held.length > 128) {
+          throw new Refusal("invalid", "a grant id");
+        }
+        this.#tickets.endGrant(held);
+        return held;
+      });
+      this.#relay.endGrant(grant);
+      return { grant, ended: true as const };
     });
-    this.#relay.endGrant(grant);
-    return { grant, ended: true };
   }
 
   /**
@@ -7269,14 +7322,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * this door's.
    */
   tierSet(binding: Binding, request: TierRequest): Promise<{ tier: TierName }> {
-    return this.#door(() => {
-      const { caller } = this.#bind(binding, "admission");
-      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
-          || binding.session !== undefined || binding.source !== undefined) {
-        throw new Refusal("refused", PLATFORM_TIER_ONLY);
-      }
-      return setTier(this.#storage, request);
-    });
+    return this.#run("tierSet", binding, request, () => setTier(this.#storage, request));
   }
 
   /**
@@ -7284,8 +7330,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * sets. The numbers are the control record's, which the doors read and show beside it.
    */
   tierRead(binding: Binding): Promise<{ tier: TierName }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its tier");
+    return this.#run("tierRead", binding, undefined, () => {
       return { tier: ownerTier(this.#storage) };
     });
   }
@@ -7430,9 +7475,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * reservation and end signal, or its refusal's fixed code and receipt. An OAuth
    * credential about to expire is refreshed first, as a model call's is.
    */
-  async egressOpen(binding: Binding, request: unknown): Promise<EgressOpened | EgressRefusal> {
+  egressOpen(binding: Binding, request: unknown): Promise<EgressOpened | EgressRefusal> {
+    return this.#units("egressOpen", binding, request, (door) => this.#egressOpened(door, binding,
+                                                                                   request));
+  }
+
+  /** A sandbox request admitted at open, its call checked in each unit (`egressOpen`). */
+  async #egressOpened(door: Door, binding: Binding, request: unknown):
+      Promise<EgressOpened | EgressRefusal> {
     const { r, live } = await this.#door(() => {
-      this.#bind(binding, "work", "egress");
+      door.check();
       const checked = egressRequest(request);
       const lease = this.#egress.lease(sandboxBinding(binding.sandbox), clock());
       // Only the live lease's own run connection is ever refreshed for it.
@@ -7451,7 +7503,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
     }
     return this.#door(() => {
-      this.#bind(binding, "work", "egress");
+      door.check();
       return this.#egress.open(sandboxBinding(binding.sandbox), r, clock());
     });
   }
@@ -7462,8 +7514,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * its refusal's fixed code and receipt. Held to the egress binding that opened the call.
    */
   egressReserve(binding: Binding, request: unknown): Promise<EgressReserved | EgressRefusal> {
-    return this.#door(() => {
-      this.#bind(binding, "work", "egress");
+    return this.#run("egressReserve", binding, request, () => {
       return this.#egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
                                   clock());
     });
@@ -7479,8 +7530,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * token opened is still its door's, so it is not settled lost.
    */
   egressBeat(binding: Binding, request: { reservation: string }): Promise<{ beat: boolean }> {
-    return this.#door(() => {
-      this.#bind(binding, "reduce", "egress");
+    return this.#run("egressBeat", binding, request, () => {
       return { beat: this.#egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
                                        clock()) };
     });
@@ -7488,8 +7538,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   egressSettle(binding: Binding, request: Record<string, unknown>):
       Promise<{ settled: boolean }> {
-    return this.#door(() => {
-      this.#bind(binding, "reduce", "egress");
+    return this.#run("egressSettle", binding, request, () => {
       const { resealed, ...rest } = request ?? {};
       const settled = this.#egress.settle(sandboxBinding(binding.sandbox),
                                           settleRequest(rest), clock());
@@ -7511,21 +7560,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** The owner's newest egress receipts: what the sandbox asked, and how each ended. */
   egressReceipts(binding: Binding): Promise<{ receipts: EgressReceipt[] }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its sandbox's egress");
+    return this.#run("egressReceipts", binding, undefined, () => {
       return { receipts: this.#egress.receipts() };
     });
   }
 
   fileSyncCommit(binding: Binding, request: SyncCommitRequest):
       Promise<{ outcomes: SyncOutcome[] }> {
-    return this.#filing(() => {
-      if (binding.sandbox === undefined) {
-        this.#owner(binding, "work", "hold the file sync lease");
-      } else {
-        this.#syncer(binding, "work", request);
-      }
-      const r = fileFields(request, ["lease_id", "epoch", "ops"]);
+    return this.#run("fileSyncCommit", binding, request, ({ r }) => {
       this.#heldBack = heldBackOf(r["ops"]);
       try {
         return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
@@ -7544,9 +7586,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileSyncUploadBegin(binding: Binding, request: SyncUploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
-    return this.#filing(() => {
-      this.#syncer(binding, "work", request);
-      const r = fileFields(request, ["lease_id", "epoch", "size", "chunks"]);
+    return this.#run("fileSyncUploadBegin", binding, request, ({ r }) => {
       return this.#files.syncBegin(r["lease_id"], r["epoch"], r["size"], r["chunks"]);
     });
   }
@@ -7554,16 +7594,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The sync agent's chunk bytes for its own upload, at most two chunks a call. */
   async fileSyncUploadChunks(binding: Binding, request: SyncUploadChunksRequest):
       Promise<{ created: number }> {
-    const r = await this.#door(() => {
-      this.#syncer(binding, "work", request);
-      const fields = fileFields(request, ["lease_id", "epoch", "intent_id", "chunks"]);
-      if (this.#files.intentWriter(fields["intent_id"])
-          !== this.#files.syncWriter(fields["lease_id"], fields["epoch"])) {
-        throw new Refusal("sync_fenced", SYNC_FENCED);
-      }
-      return fields;
+    return this.#units("fileSyncUploadChunks", binding, request, async (door) => {
+      const r = await this.#door(() => {
+        const { r: fields } = door.check();
+        if (this.#files.intentWriter(fields["intent_id"])
+            !== this.#files.syncWriter(fields["lease_id"], fields["epoch"])) {
+          throw new Refusal("sync_fenced", SYNC_FENCED);
+        }
+        return fields;
+      });
+      return this.#files.upload(r["intent_id"], r["chunks"]);
     });
-    return this.#files.upload(r["intent_id"], r["chunks"]);
   }
 
   /**
@@ -7573,9 +7614,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileSyncUploadAbort(binding: Binding, request: SyncUploadAbortRequest):
       Promise<{ aborted: boolean }> {
-    return this.#filing(() => {
-      this.#syncer(binding, "work", request);
-      const r = fileFields(request, ["lease_id", "epoch", "intent_id"]);
+    return this.#run("fileSyncUploadAbort", binding, request, ({ r }) => {
       const writer = this.#files.syncWriter(r["lease_id"], r["epoch"]);
       let owner: string | null;
       try {

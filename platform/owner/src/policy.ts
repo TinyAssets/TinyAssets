@@ -34,7 +34,7 @@
  *   hooks Worker. The MCP door's `code` tool refuses while it is off (slice M).
  * - The optional `tools` table is the owner's own tool profile (`custom`, slice M): the
  *   MCP door's tools a client whose grant names `custom` is served, each a tool of the
- *   table, none twice. Left out, `custom` is every tool (`doors/profiles.json`).
+ *   table, none twice. Left out, `custom` is every tool (`contract/profiles.json`).
  *
  * The Python closed the owner's public egress tunnels before a write committed and
  * cancelled its live streams after. Here a policy write ends the owner's sandbox egress
@@ -76,7 +76,7 @@ import { CHUNK_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { KEEP_CEILING } from "./files";
 import { checkDestination } from "./network";
-import { profileNames, toolNames } from "../../doors/src/tools";
+import { profileNames, toolNames } from "../../contract/src/doors";
 import { codePoints, SOURCE_ID } from "../../contract/src/text";
 
 export { EGRESS_IP_LITERAL } from "./network";

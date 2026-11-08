@@ -12,11 +12,10 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
-import { CAPABILITIES } from "../../owner/src/grants";
 import { wakeKinds } from "../../contract/src/wake-records";
 import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../../sources/src/catalog";
-import { profileNames, toolNames } from "../src/tools";
+import { profileNames, toolNames } from "../../contract/src/doors";
 import {
   appPost, call, connect, OPEN, registerClient, serveFirstPartyDocument, setControl,
   signInApp, TIERS, type Tokens, url,
@@ -177,8 +176,7 @@ describe("the owner surface's answers", () => {
                                                           null, {})) as
       { capabilities: { id: string; words: string }[] };
     // A run's and a key's capabilities are one list: both forms show it whole.
-    expect([...RUN_CAPABILITIES]).toEqual([...CAPABILITIES]);
-    expect(capabilities.map((c) => c.id)).toEqual([...CAPABILITIES]);
+    expect(capabilities.map((c) => c.id)).toEqual([...RUN_CAPABILITIES]);
     expect(capabilities.every((c) => c.words.length > 0)).toBe(true);
   });
 });

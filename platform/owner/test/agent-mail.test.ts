@@ -12,7 +12,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished } from "vitest";
 
-import { toolsNamed } from "../../doors/src/tools";
+import { toolsNamed } from "../../contract/src/doors";
 import { AGENT_RETIRED, type Ledger, MAIL_HEADER_BYTES, mailInput, NO_AGENT, nativeId,
          RUN_NO_MAILBOX } from "../src/ledger";
 import type { Binding } from "../src/owner-do";

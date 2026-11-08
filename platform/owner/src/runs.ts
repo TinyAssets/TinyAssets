@@ -72,7 +72,7 @@ import {
 
 import { AGENT_DISABLED, type AgentFile, AUTO } from "./agent-file";
 import type { RunCapability } from "../../contract/src/capabilities";
-import { AUTHORITY_CHANGED, type StandingGrant, type Stamped } from "./authority";
+import { AUTHORITY_CHANGED, may, type StandingGrant, type Stamped } from "./authority";
 import {
   CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, LEASE_TTL_S, MAX_LIST, QUEUE_BYTES, QUEUE_ROWS,
   RESULT_BYTES,
@@ -905,11 +905,7 @@ export class Runs {
       }
       throw error;
     }
-    if (grant.mode === "full") {
-      return () => true;
-    }
-    return (capability) => stamp.universe !== null
-      && grant.holds({ universe: stamp.universe, agent: stamp.agent, capability });
+    return (capability) => may(grant, capability, stamp);
   }
 
   /**

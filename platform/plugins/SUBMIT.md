@@ -31,12 +31,12 @@ from the starter's skills and `platform/doors/apps.json`. Don't edit them by han
 - **Example prompts:** take them from the manifest's `defaultPrompt`. Put "Set me up on
   TinyAssets" first.
 - **The review reads the MCP `instructions` and tool descriptions** (OpenAI: "scanned and
-  reviewed"). They sit in `platform/doors/src/instructions.ts` and `tools.ts`. Check them
+  reviewed"). They sit in `platform/doors/src/instructions.ts` and `platform/contract/doors.json`. Check them
   against the plugin guidelines on the day: no "always", no broad triggering, and nothing
   that redirects the conversation.
 - **The tool annotations** are explicit on every tool. `file_append` is
   `destructiveHint: false` because it only adds.
-- **The directory profile** (`profiles.json`, `directory`) leaves out `code`, the generic
+- **The directory profile** (`contract/profiles.json`, `directory`) leaves out `code`, the generic
   executor. Ask OpenAI whether a listed plugin's grants are pinned to it. The founder
   decides on that new door when the listing is accepted.
 
