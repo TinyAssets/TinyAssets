@@ -11,7 +11,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { apiKeyOrigin } from "../../owner/src/ledger";
+import { apiKeyOrigin } from "../../contract/src/binding";
 import type { Binding } from "../../contract/src/binding";
 import { mcpOrigin } from "../src/binder";
 import { profileNames } from "../../contract/src/doors";

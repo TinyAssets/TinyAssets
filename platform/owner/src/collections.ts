@@ -40,11 +40,23 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 
-import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
+import {
+  type Adopt, adopted, BODY_BYTES_MAX, bodyOffset, type Placed, READ_PAGE_BYTES,
+} from "./bodies";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
-import { PAGE_BYTES } from "./pages";
+import {
+  bodied, conflictShown, contentsOf, fitPage, fittedRow, headChars, heads, headWindow, PAGE_BYTES,
+  windowed, windowedAll,
+} from "./pages";
 import { codePoints, name, utf8Bytes } from "../../contract/src/text";
+import type {
+  Account, Call, Door, OwnerState,
+} from "./owner-do";
+import { clock } from "./clock";
+import { jsonBytes } from "../../contract/src/encoded";
+import { filerOf, MAIN_AGENT } from "./authority";
+import type { Heads } from "./pages";
 
 export interface Limits {
   /** A row body, in UTF-8 bytes: one call through the object whole (`BODY_BYTES_MAX`). */
@@ -718,3 +730,214 @@ export class Collections {
     ).one().top;
   }
 }
+
+/** The board (`collections.ts`), and every room's prefix: `room:<app>:<room>`. */
+export const BOARD = "board";
+
+export const ROOM_PREFIX = "room:";
+
+export function conflicted<T>(act: () => T): T | Conflicted {
+  try {
+    return act();
+  } catch (error) {
+    if (error instanceof Conflict) {
+      return { conflict: error.current };
+    }
+    throw error;
+  }
+}
+
+/** A written row as its write answers it: everything but its body, and the body's bytes. */
+export type WrittenRow = Omit<Row, "body" | "content_id"> & { readonly body_bytes: number };
+
+export function writtenRow(row: Row): WrittenRow {
+  const { body, content_id: _placed, ...rest } = row;
+  return { ...rest, body_bytes: utf8Bytes(body) };
+}
+
+/** The board's rows changed past `after`. */
+export interface BoardDigestRequest {
+  readonly limit: number;
+  readonly after: number;
+  readonly head_chars?: number;
+}
+export interface WriteRequest {
+  readonly collection: string;
+  readonly row_id: string;
+  readonly body: string;
+  readonly expected_etag: string;
+  readonly private: boolean;
+  readonly history_op?: string;
+}
+export interface PullRequest {
+  readonly collection: string;
+  readonly after: number;
+  readonly limit: number;
+}
+export interface KeyRequest {
+  readonly collection: string;
+  readonly row_id: string;
+}
+/**
+ * A row read: its key; with `body_offset`, its body from that byte (a `body_next_offset` an
+ * answer gave), and with `etag`, refused when the row changed since that answer.
+ */
+export interface GetRequest extends KeyRequest {
+  readonly body_offset?: number;
+  readonly etag?: string;
+}
+/**
+ * A history read: a row's key, and the revision to read before for older entries; with
+ * `body_offset`, the page's newest entry's body from that byte.
+ */
+export interface HistoryRequest extends KeyRequest {
+  readonly before_revision?: number;
+  readonly body_offset?: number;
+}
+export interface DeleteRequest {
+  readonly collection: string;
+  readonly row_id: string;
+  readonly expected_etag: string;
+}
+export interface ClearRequest {
+  readonly collection: string;
+  readonly writer: string | null;
+}
+/** A lost compare-and-swap is an answer carrying the row as it stands, not a refusal. */
+export interface Conflicted {
+  readonly conflict: Row | null;
+}
+
+// -- THE DOORS: the `collections` rows' handlers (`contract/doors.json`) --------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/**
+ * Ring the agents that follow `collection` for a change past `after` (slice W): only for
+ * the owner's own act (an outside client's write, or a run's, rings no agent, so no two
+ * agents wake each other without end, as slice ID's mail rings only the agent it
+ * addresses), only for the board or a room, only for a change anyone may see, and only
+ * agents with a live subscription following it whose grant reads their command center.
+ * Each wake says what changed and the cursor before it, so its digest is just the change.
+ */
+function ring(o: OwnerState, account: Account, collection: string, after: number): void {
+  const change = collection === BOARD ? "board"
+    : collection.startsWith(ROOM_PREFIX) ? "rooms" : null;
+  if (account.origin !== null || account.run !== null || change === null
+      || !o.collections.touched([collection], after)) {
+    return;
+  }
+  const agents = o.ledger.followers(collection, change === "board", clock())
+    .filter((agent) => o.grants.reads(agent.client, {
+      universe: agent.command_center_id, agent: MAIN_AGENT, capability: "read_graph" }));
+  if (agents.length) {
+    o.ledger.changed(change, after, agents.map((agent) => agent.agent_id));
+  }
+}
+
+/** The `collections` doors' handlers, by door. */
+export const collectionsDoors = Object.freeze({
+  async boardDigest(o: OwnerState, door: Door<BoardDigestRequest>): Promise<Heads> {
+    return o.reading(() => {
+      const { account: { caller }, r } = door.check();
+      const chars = headChars(r["head_chars"]);
+      const changes = o.collections.changed(caller, { collection: BOARD }, r["after"],
+                                                r["limit"]);
+      return { value: { changes, chars }, contents: contentsOf(changes.rows),
+               maxOf: () => headWindow(chars) };
+    }, ({ changes, chars }, windows) => heads(changes, chars, windows));
+  },
+  async collectionGet(o: OwnerState, door: Door<GetRequest>): Promise<{ row: Row | null }> {
+    return o.reading(() => {
+      const { account: { caller }, r } = door.check();
+      const offset = bodyOffset(r["body_offset"]);
+      // A read on names the revision it reads (review L3), so two are never spliced.
+      if (offset > 0 && r["etag"] === undefined) {
+        throw new Refusal("invalid", "body_offset reads on a row's body: name its etag");
+      }
+      const got = o.collections.get(caller, r["collection"] as string, r["row_id"] as string);
+      if (r["etag"] !== undefined && got.row?.etag !== r["etag"]) {
+        throw new Refusal("row_changed",
+                          "row_changed: the row is no longer the one at that etag: read it " +
+                          "again from its start");
+      }
+      return { value: { got, offset }, contents: contentsOf(got.row === null ? [] : [got.row]),
+               offsetOf: () => offset };
+    }, ({ got, offset }, windows) => ({ row: got.row === null ? null
+      : fittedRow(windowed(got.row, windows, offset), jsonBytes({ row: null }) - 4) as Row }));
+  },
+  async collectionPull(o: OwnerState, door: Door<PullRequest>): Promise<Page> {
+    return o.reading(() => {
+      const { account: { caller }, r } = door.check();
+      const page = o.collections.pull(caller, r["collection"] as string, r["after"],
+                                          r["limit"]);
+      return { value: page, contents: contentsOf(page.rows) };
+    }, (page, windows) => {
+      const rows = page.rows.length === 0 ? [] : fitPage(
+        jsonBytes({ cursor: page.cursor, rows: [] }), windowedAll(page.rows, windows),
+        ({ item, window }, room, first) => bodied(item, window, room, first));
+      return { cursor: rows.length === page.rows.length ? page.cursor : rows.at(-1)!.seq,
+               rows: rows as Row[] };
+    });
+  },
+  async collectionHistory(o: OwnerState, door: Door<HistoryRequest>): Promise<History> {
+    return o.reading(() => {
+      const { account: { caller }, r } = door.check();
+      const offset = bodyOffset(r["body_offset"]);
+      const kept = o.collections.history(caller, r["collection"] as string,
+                                             r["row_id"] as string, r["before_revision"] ?? null);
+      const newest = kept.entries.at(-1)?.content_id;
+      return { value: { kept, offset }, contents: contentsOf(kept.entries),
+               offsetOf: (contentId) => contentId === newest ? offset : 0 };
+    }, ({ kept, offset }, windows) => {
+      const fitted = kept.entries.length === 0 ? [] : fitPage(
+        jsonBytes({ entries: [], more: true, before_revision: kept.before_revision }),
+        windowedAll([...kept.entries].reverse(), windows, offset),
+        ({ item, window }, room, first) => bodied(item, window, room, first));
+      const entries = (fitted as HistoryEntry[]).reverse();
+      return entries.length === kept.entries.length ? { ...kept, entries }
+        : { entries, more: true, before_revision: entries[0]!.revision };
+    });
+  },
+  async collectionWrite(o: OwnerState, door: Door<WriteRequest>):
+      Promise<{ row: WrittenRow } | Conflicted> {
+    return o.placing(() => {
+      const { account, r } = door.check();
+      return { body: checkBody(r["body"]), writer: filerOf(account) };
+    }, (placed) => {
+      const { account, r } = door.check();
+      const collection = r["collection"] as string;
+      const before = o.collections.clock();
+      const written = conflicted(() => ({
+        row: writtenRow(o.collections.write(account.owner, account.caller, collection,
+                                                r["row_id"] as string, r["body"],
+                                                r["expected_etag"], r["private"],
+                                                "history_op" in r ? r["history_op"] : "write",
+                                                placed, filerOf(account))),
+      }));
+      ring(o, account, collection, before);
+      return written;
+    }, { shown: conflictShown(), synced: true });
+  },
+  async collectionDelete(o: OwnerState, door: Door<DeleteRequest>):
+      Promise<{ deleted: number } | Conflicted> {
+    return o.reading(() => {
+      const { account, r } = door.check();
+      const before = o.collections.clock();
+      const value = conflicted(() => o.collections.delete(
+        account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
+      ));
+      ring(o, account, r["collection"] as string, before);
+      return { value, contents: conflictShown<typeof value>().contents(value) };
+    }, conflictShown<{ deleted: number } | Conflicted>().fill, true);
+  },
+  collectionClear(o: OwnerState, { account, r }: Call<ClearRequest>): { deleted: number } {
+    const before = o.collections.clock();
+    const cleared = o.collections.clear(account.caller, r["collection"] as string,
+                                            r["writer"]);
+    ring(o, account, r["collection"] as string, before);
+    return cleared;
+  },
+});

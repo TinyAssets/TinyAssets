@@ -23,6 +23,8 @@ import type { RunCapability } from "../../contract/src/capabilities";
 import { HEX64 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { codePoints, isPrintable } from "../../contract/src/text";
+import type { Account } from "./owner-do";
+import { sha256Hex } from "../../contract/src/digest";
 
 
 /** The need of what only the owner itself may do, whatever grant a client holds. */
@@ -248,4 +250,20 @@ export class Authority {
     }
     throw first ?? new Refusal("not_granted", NOT_GRANTED);
   }
+}
+
+/** The agent a scoped client acts as when its call names none. */
+export const MAIN_AGENT = "main";
+
+/**
+ * Whose files scope a door's rows count in (ADR-035): the owner's, an outside client's
+ * (`client:<id>`), or a visiting owner's own, `client:` and its principal's hash, so a
+ * visitor is held to the owner's `client_share` as a client is.
+ */
+export function filerOf(account: Account): string {
+  if (account.origin !== null) {
+    return `client:${account.origin.client}`;
+  }
+  return account.caller === account.owner ? "owner"
+    : `client:${sha256Hex(`visitor\n${account.caller}`)}`;
 }

@@ -20,7 +20,8 @@
  */
 import type { GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
-import { apiKeyOrigin, type Bound, installationOf, loopback, mcpClient } from "./binder";
+import { type Bound, installationOf, loopback, mcpClient } from "./binder";
+import { apiKeyOrigin } from "../../contract/src/binding";
 import { type DoorsEnv, MCP_RESOURCE } from "./config";
 import { deleteKey } from "./directory";
 import { authorizationServer } from "./oauth";

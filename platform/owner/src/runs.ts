@@ -68,15 +68,16 @@ import { sha256Hex } from "../../contract/src/digest";
 import { bundledSources } from "../../sources/src/catalog";
 import type { CredentialKind } from "../../sources/src/schema";
 import {
-  type EngineEvents, type Frame, FRAME_VERSION, readEvent,
+  type EngineEvents, EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, type Frame, FRAME_UNITS_MAX,
+  FRAME_VERSION, readEvent,
 } from "../../contract/src/run-events";
 
 import { AGENT_DISABLED, type AgentFile, AUTO } from "./agent-file";
 import type { RunCapability } from "../../contract/src/capabilities";
 import { AUTHORITY_CHANGED, may, type StandingGrant, type Stamped } from "./authority";
 import {
-  CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, LEASE_TTL_S, MAX_LIST, QUEUE_BYTES, QUEUE_ROWS,
-  RESULT_BYTES,
+  CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, LEASE_TTL_S, MAX_LIST, PLACE_BYTES, QUEUE_BYTES,
+  QUEUE_ROWS, RESULT_BYTES,
 } from "../../contract/src/limits";
 import { OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
@@ -90,6 +91,15 @@ import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF, switchedOn } from "./signins";
 import { TIER_RUNS, type TierName, tierNumbers, type Tiers } from "./tier";
 import { utf8Bytes } from "../../contract/src/text";
+import type {
+  Account, Call, Door, OwnerState,
+} from "./owner-do";
+import type { Binding, Origin } from "../../contract/src/binding";
+import type { Placed } from "./bodies";
+import { clock } from "./clock";
+import { fittedRun } from "./pages";
+import { placedAs } from "./bodies";
+import { fields } from "../../contract/src/doors";
 
 /**
  * Settled runs kept as receipts, the newest first: an older run's status is gone, never
@@ -1614,3 +1624,298 @@ export function mailConversation(agent: string, thread: string, client: string |
     string {
   return "cv_" + sha256Hex(`tinyassets-mail-conversation\0${agent}\0${thread}\0${client ?? ""}`).slice(0, 32);
 }
+
+/**
+ * The longest a run door waits for its run to settle before it answers the run as it
+ * stands, in ms: a call's own bound (a convention; the run itself has no deadline).
+ */
+export const RUN_WAIT_MS = 60_000;
+
+/** A run's input: well-formed text, at least a character; its size is the door's bound. */
+export function runText(value: unknown, what: string): string {
+  if (typeof value !== "string" || value.length === 0 || /\p{Cs}/u.test(value)) {
+    throw new Refusal("invalid", `${what} is well-formed text`);
+  }
+  return value;
+}
+
+export function waitOf(value: unknown): number {
+  if (value === undefined) {
+    return 0;
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0
+      || value > RUN_WAIT_MS) {
+    throw new Refusal("invalid", `wait_ms is 0 to ${RUN_WAIT_MS}`);
+  }
+  return value;
+}
+
+export const SEND_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** A request's retry key: the caller and its send id, hashed, so a retry is the same run. */
+export function requestKey(client: string | null, sendId: unknown): string {
+  if (typeof sendId !== "string" || !SEND_ID.test(sendId)) {
+    throw new Refusal("invalid", "client_send_id is 1 to 128 letters, digits, - and _");
+  }
+  return sha256Hex(`${client ?? "owner"}\0${sendId}`);
+}
+
+/** The runner's report, exactly: frames numbered from 1 and rising, and an optional end. */
+export function eventsRequest(r: Record<string, unknown>): {
+  frames: PostedFrame[]; end: { exit_code: number | null } | null } {
+  const frames = r["frames"];
+  if (!Array.isArray(frames)) {
+    throw new Refusal("invalid", "invalid run events");
+  }
+  if (!eventsBounded(r)) {
+    throw new Refusal("invalid", `a post is at most ${EVENT_FRAMES_MAX} frames, each at most ` +
+                      `${FRAME_UNITS_MAX} units of JSON`);
+  }
+  let last = 0;
+  for (const frame of frames) {
+    const f = fields(frame, ["seq", "at", "event"], [], "invalid run events");
+    if (typeof f["seq"] !== "number" || !Number.isSafeInteger(f["seq"]) || f["seq"] <= last
+        || typeof f["at"] !== "number" || !Number.isFinite(f["at"])) {
+      throw new Refusal("invalid", "a frame's seq rises from 1, and its at is a time");
+    }
+    last = f["seq"];
+  }
+  let end: { exit_code: number | null } | null = null;
+  if (r["end"] !== undefined) {
+    const e = fields(r["end"], ["exit_code"], [], "invalid run events");
+    const code = e["exit_code"];
+    if (code !== null && (typeof code !== "number" || !Number.isSafeInteger(code))) {
+      throw new Refusal("invalid", "an end's exit_code is a whole number, or null");
+    }
+    end = { exit_code: code as number | null };
+  }
+  return { frames: frames as PostedFrame[], end };
+}
+
+/** A message to an agent: a run in a conversation, new or continued (`agentSubmit`). */
+export interface SubmitRequest {
+  readonly message: string;
+  readonly client_send_id: string;
+  readonly agent_id?: string;
+  readonly conversation_id?: string;
+  readonly wait_ms?: number;
+}
+/** A launch of an agent: now, at a time, or on a cron (`agentRun`). */
+export interface LaunchRequest {
+  readonly agent: string;
+  readonly input: string;
+  readonly at?: number;
+  readonly cron?: string;
+}
+/** A run or a schedule, by its id, exactly one of the two (`agentStatus`, `agentCancel`). */
+export interface RunRequest {
+  readonly run_id?: string;
+  readonly schedule_id?: string;
+}
+/** What a run door answers: the run as it stands. */
+export type RunView = RunReceipt;
+/** The runner's report (`runEvents`): its new frames, and its end once the CLI exited. */
+export interface EventsRequest {
+  readonly frames: PostedFrame[];
+  readonly end?: { readonly exit_code: number | null };
+}
+export interface RunListRequest {
+  readonly before?: number;
+  readonly limit?: number;
+}
+/** A past run in the caller's list: its receipt without its result (its own door's). */
+export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
+
+// -- THE DOORS: the `runs` rows' handlers (`contract/doors.json`) ---------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/**
+ * Who starts a run: the owner, or a client, with its stamp and origin. A run's own launch
+ * is its initiator's: the owner's for an owner-started or scheduled run, else the stamp
+ * its client's run holds, for the agent it launches.
+ */
+function initiated(o: OwnerState, binding: Binding, account: Account, universe: string | null,
+                   agent: string):
+    { initiator: "owner" | "client"; stamp: Stamped | null; origin: Origin | null } {
+  if (account.run !== null) {
+    const stamp = account.run.stamp;
+    return stamp === null || account.origin === null
+      ? { initiator: "owner", stamp: null, origin: null }
+      : { initiator: "client", origin: account.origin, stamp: { ...stamp, universe, agent } };
+  }
+  if (account.origin === null || account.grant === null) {
+    return { initiator: "owner", stamp: null, origin: null };
+  }
+  return { initiator: "client", origin: account.origin,
+           stamp: { client: account.origin.client, generation: account.grant.generation,
+                    authenticated_at: binding.authenticated_at ?? null, universe, agent } };
+}
+
+/** The `runs` doors' handlers, by door. */
+export const runsDoors = Object.freeze({
+  /** A message to an agent, its call checked in its units (`agentSubmit`). */
+  async agentSubmit(o: OwnerState, door: Door<SubmitRequest>): Promise<RunView> {
+    const asked = await o.door(() => {
+      const { account, r, agent } = door.check();
+      const client = account.origin?.client ?? null;
+      return { agent, client, prompt: runText(r["message"], "a message"),
+               waitMs: waitOf(r["wait_ms"]),
+               conversation: (r["conversation_id"] ?? null) as string | null,
+               request: requestKey(client, r["client_send_id"]) };
+    });
+    await o.launcher.seeded();
+    const read = await o.launcher.readAgent(asked.agent);
+    const run = await o.launcher.launch(read, () => {
+      const { account, universe } = door.check();
+      return { ...initiated(o, door.binding, account, universe, asked.agent),
+               agent: asked.agent, conversation: asked.conversation, request: asked.request,
+               tiers: tierNumbers(o.storage, door.binding.tiers, clock()), unattended: false,
+               prompt: asked.prompt, mail: null };
+    });
+    return fittedRun(await o.launcher.settledWithin(run, asked.waitMs, asked.client));
+  },
+  /** A launch of an agent, its call checked in its units (`agentRun`). */
+  async agentRun(o: OwnerState, door: Door<LaunchRequest>): Promise<RunView | RunSchedule> {
+    const asked = await o.synced(() => {
+      const { account, r, agent, universe } = door.check();
+      const input = runText(r["input"], "an input");
+      const client = account.origin?.client ?? null;
+      const at = r["at"] ?? null;
+      const cron = r["cron"] ?? null;
+      if (at !== null && (typeof at !== "number" || !Number.isFinite(at))) {
+        throw new Refusal("invalid", "at is a time in seconds since the epoch");
+      }
+      if (cron !== null && typeof cron !== "string") {
+        throw new Refusal("invalid", "cron is a cron expression");
+      }
+      if (at === null && cron === null) {
+        return { now: true as const, agent, input, client };
+      }
+      if (door.binding.tiers !== undefined) {
+        tierNumbers(o.storage, door.binding.tiers, clock());  // kept for the lane's runs
+      }
+      const { stamp, origin } = initiated(o, door.binding, account, universe, agent);
+      return { now: false as const, schedule: o.runs.schedule({
+        agent, input, at: at as number | null, cron: cron as string | null, stamp, origin },
+                                                                  clock()) };
+    });
+    if (!asked.now) {
+      return asked.schedule;
+    }
+    await o.launcher.seeded();
+    const read = await o.launcher.readAgent(asked.agent);
+    const run = await o.launcher.launch(read, () => {
+      const { account, universe } = door.check();
+      // A run's own launch has no person at it: unattended, as a schedule's run is.
+      return { ...initiated(o, door.binding, account, universe, asked.agent),
+               agent: asked.agent, conversation: null, request: null,
+               tiers: tierNumbers(o.storage, door.binding.tiers, clock()),
+               unattended: account.run !== null, prompt: asked.input, mail: null };
+    });
+    return fittedRun(await o.launcher.settledWithin(run, 0, asked.client));
+  },
+  agentStatus(o: OwnerState, { account, r }: Call<RunRequest>): RunView | RunSchedule {
+    const client = account.origin?.client ?? null;
+    if (("run_id" in r) === ("schedule_id" in r)) {
+      throw new Refusal("invalid", "a status names a run_id or a schedule_id");
+    }
+    return "run_id" in r ? fittedRun(o.runs.receipt(r["run_id"], client))
+      : o.runs.scheduleView(r["schedule_id"], client);
+  },
+  async agentCancel(o: OwnerState, door: Door<RunRequest>):
+      Promise<RunView | { schedule_id: string; cancelled: true }> {
+    const found = await o.synced(() => {
+      const { account, r } = door.check();
+      const client = account.origin?.client ?? null;
+      if (("run_id" in r) === ("schedule_id" in r)) {
+        throw new Refusal("invalid", "a cancel names a run_id or a schedule_id");
+      }
+      if ("schedule_id" in r) {
+        return { schedule: o.runs.unschedule(r["schedule_id"], client).schedule_id };
+      }
+      const run = o.runs.receipt(r["run_id"], client).run_id;
+      if (o.env.SANDBOX === undefined && o.runs.grant(run) !== null) {
+        throw new Refusal("sandbox_absent",
+                          SANDBOX_ABSENT);  // no CLI could be stopped: refused, loudly
+      }
+      return { run, client, live: o.runs.cancel(run, clock()) };
+    });
+    if ("schedule" in found) {
+      return { schedule_id: found.schedule, cancelled: true };
+    }
+    if (found.live !== null) {
+      await o.launcher.cancel(found.live);
+    }
+    return o.door(() => fittedRun(o.runs.receipt(found.run, found.client)));
+  },
+  /** A runner's report, its call checked in each unit (`runEvents`). */
+  async runEvents(o: OwnerState, door: Door<EventsRequest>):
+      Promise<{ accepted: number; settled: string | null }> {
+    // A reply this batch's settle would post, past `PLACE_BYTES`, is placed in R2 first, in
+    // the gate's own first unit (ADR-035): the settle's unit then posts it by reference, so a
+    // crash between leaves only an orphan upload for the sweep, never a lost reply.
+    const placing = await o.door(() => {
+      // At most `EVENTS_IN_FLIGHT` posts held at once, whatever the tier: one more is
+      // refused before anything is written, and its runner posts it again.
+      o.posts.enter();
+      try {
+        const call = door.check();
+        const lease = call.lease!;
+        const r = eventsRequest(call.r);
+        const reply = o.runs.answering(door.binding.run as string, lease, r.frames, r.end);
+        return reply === null || utf8Bytes(reply.result) <= PLACE_BYTES ? null
+          : { placing: o.launcher.beginReply(reply) };
+      } catch (error) {
+        o.posts.leave();
+        throw error;
+      }
+    });
+    let placed: Placed | null = null;
+    try {
+      placed = placing?.placing == null ? null : await o.bodies.send(placing.placing);
+      const done = await o.door(() => {
+        const call = door.check();
+        const lease = call.lease!;
+        const r = eventsRequest(call.r);
+        // Another batch landed between the units (a runner's retry): the reply this settle
+        // would post is not the one placed, so the batch is posted again, never dropped. A
+        // reply whose writer's files refused it (no placing) settles with a notice instead.
+        const reply = o.runs.answering(door.binding.run as string, lease, r.frames, r.end);
+        if (reply !== null && utf8Bytes(reply.result) > PLACE_BYTES
+            && !placedAs(placed, reply.result)
+            && !(placing !== null && placing.placing === null)) {
+          throw new Refusal("events_raced", EVENTS_RACED);
+        }
+        return o.launcher.withReply(placed, () =>
+          o.runs.events(door.binding.run as string, lease, r.frames, r.end, clock()));
+      });
+      o.relay.relay(done.conversation, done.frames);
+      if (done.settled !== null) {
+        o.relay.settled(door.binding.run as string);
+        await o.sync();
+      }
+      return { accepted: done.frames.length, settled: done.settled };
+    } finally {
+      await o.bodies.release(placed);
+      o.posts.leave();
+    }
+  },
+  runList(o: OwnerState, { account, r }: Call<RunListRequest>):
+      { runs: RunListed[]; next: number | null } {
+    return o.runs.list(account.origin?.client ?? null, r["before"], r["limit"]);
+  },
+  async sandboxRung(o: OwnerState, door: Door<undefined>): Promise<{ waiting: number }> {
+    if (o.gone()) {
+      return { waiting: 0 };
+    }
+    const waiting = await o.door(() => o.runs.sandboxRung());
+    if (waiting === 0) {
+      await o.env.SANDBOX?.unwait(o.owner());
+    }
+    await o.sync();
+    return { waiting };
+  },
+});

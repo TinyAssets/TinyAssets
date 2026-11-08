@@ -25,6 +25,11 @@ import { KEY_NAME_MAX, MAX_KEYS } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
+import type {
+  Call, GrantRequest, OwnerState,
+} from "./owner-do";
+import { apiKeyOrigin } from "../../contract/src/binding";
+import { clock } from "./clock";
 
 /** How stale a key's `last_used_at` may be before a call marks it again. */
 export const USE_INTERVAL_S = 60;
@@ -122,3 +127,41 @@ export class Keys {
       "SELECT key_id FROM owner_keys WHERE client = ?", client).toArray()[0]?.key_id ?? null;
   }
 }
+
+/** A key's mint (`keyMint`): its id, name and scopes, and an agent's held request. */
+export interface KeyMintRequest {
+  readonly key_id: string;
+  readonly name: string;
+  readonly scopes: unknown;
+  readonly proposal?: { readonly request_id: string; readonly digest: string };
+}
+
+// -- THE DOORS: the `keys` rows' handlers (`contract/doors.json`) ---------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `keys` doors' handlers, by door. */
+export const keysDoors = Object.freeze({
+  keyMint(o: OwnerState, { session: id, r }: Call<KeyMintRequest>): ApiKey & { scopes: GrantRequest["scopes"];
+      revision: number } {
+    const key = keyId(r["key_id"]);
+    const name = keyName(r["name"]);
+    const now = Math.floor(clock());  // whole seconds: the directory entry's mint time
+    return o.storage.transactionSync(() => {
+      const row = o.keys.add(key, apiKeyOrigin(key).client, name, now);
+      const set = o.grants.set(id, {
+        client: apiKeyOrigin(key).client, source: "api_key", mode: "scoped",
+        scopes: r["scopes"] as GrantRequest["scopes"], expected_revision: 0, name,
+      } as unknown as GrantRequest, now);
+      if (r["proposal"] !== undefined) {
+        o.policy.applyKeyRequest(r["proposal"], set.scopes, now);
+      }
+      return { ...row, scopes: set.scopes, revision: set.revision };
+    });
+  },
+  keyList(o: OwnerState, _call: Call<undefined>): { keys: ApiKey[] } {
+    return { keys: o.keys.list() };
+  },
+});

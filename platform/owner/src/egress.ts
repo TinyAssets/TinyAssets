@@ -86,6 +86,8 @@ import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress
 import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
+import type { Call, Door, OwnerState } from "./owner-do";
+import { clock } from "./clock";
 
 
 /**
@@ -820,3 +822,71 @@ export class Egress {
     }
   }
 }
+
+// -- THE DOORS: the `egress` rows' handlers (`contract/doors.json`) -------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `egress` doors' handlers, by door. */
+export const egressDoors = Object.freeze({
+  /** A sandbox request admitted at open, its call checked in each unit (`egressOpen`). */
+  async egressOpen(o: OwnerState, door: Door<unknown>): Promise<EgressOpened | EgressRefusal> {
+    const { r, live } = await o.door(() => {
+      door.check();
+      const checked = egressRequest(door.request);
+      const lease = o.egress.lease(sandboxBinding(door.binding.sandbox), clock());
+      // Only the live lease's own run connection is ever refreshed for it.
+      const sandbox = sandboxBinding(door.binding.sandbox);
+      return { r: checked, live: lease !== null && sandbox.kind === "egress"
+        && o.runs.grantFor(checked.run, sandbox.secret, lease)?.connection
+          === checked.connection };
+    });
+    // Only a live lease's call may refresh its connection's OAuth credential.
+    if (live) {
+      try {
+        await o.connections.fresh(r.connection);
+      } catch {
+        // A refresh that failed leaves the credential as it was: the open below refuses it
+        // if it has expired, and uses it while it has not.
+      }
+    }
+    return o.door(() => {
+      door.check();
+      return o.egress.open(sandboxBinding(door.binding.sandbox), r, clock());
+    });
+  },
+  egressReserve(o: OwnerState, { binding, request }: Call<unknown>):
+      EgressReserved | EgressRefusal {
+    return o.egress.reserve(sandboxBinding(binding.sandbox), reserveRequest(request),
+                              clock());
+  },
+  egressBeat(o: OwnerState, { binding, request }: Call<{ reservation: string }>):
+      { beat: boolean } {
+    return { beat: o.egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
+                                   clock()) };
+  },
+  egressSettle(o: OwnerState, { binding, request }: Call<Record<string, unknown>>):
+      { settled: boolean } {
+    const { resealed, ...rest } = request ?? {};
+    const settled = o.egress.settle(sandboxBinding(binding.sandbox),
+                                        settleRequest(rest), clock());
+    if (settled.settled && resealed !== undefined) {
+      try {
+        o.connections.resealed(settled.connection, settled.version, resealed, Date.now());
+      } catch (error) {
+        if (!(error instanceof Refusal && error.invalid)) {
+          throw error;
+        }
+        // A malformed reseal is the gateway's bug: the call still settles, and the
+        // gateway reseals again at the next one.
+        console.error("a resealed blob the egress door handed back was malformed");
+      }
+    }
+    return { settled: settled.settled };
+  },
+  egressReceipts(o: OwnerState, _call: Call<undefined>): { receipts: EgressReceipt[] } {
+    return { receipts: o.egress.receipts() };
+  },
+});

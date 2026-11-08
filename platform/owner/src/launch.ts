@@ -35,7 +35,9 @@ import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./age
 import type { Stamped, StandingGrant } from "./authority";
 import type { Placed, Placing } from "./bodies";
 import { OWNER_AUTHORITY, type Lease } from "./files";
-import { clock, type Delivery, type MailAuthority, mailInput, nativeId } from "./ledger";
+import { type Delivery, type MailAuthority, mailInput } from "./ledger";
+import { nativeId } from "../../contract/src/binding";
+import { clock } from "./clock";
 import { type EgressPolicy, networkDocument, type NetworkPlan } from "./network";
 import type { OwnerState } from "./owner-do";
 import {

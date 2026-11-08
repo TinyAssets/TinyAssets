@@ -44,6 +44,9 @@
  */
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
+import type {
+  Call, Door, OwnerState,
+} from "./owner-do";
 
 /**
  * How long after the wipe an erasure is complete: a SQLite Durable Object can be restored
@@ -137,3 +140,52 @@ export function markErasing(storage: OwnerStorage, now: number): void {
   storage.sql.exec("INSERT INTO owner_erasure (only, started_at) VALUES (1, ?) " +
                      "ON CONFLICT (only) DO NOTHING", now);
 }
+
+/** An erasure door's refusal when no erasure is under way. */
+export const NO_ERASURE = "no erasure of this owner is under way";
+
+/** What the owner types to erase its account. */
+export const ERASE_CONFIRM = "erase my account";
+
+export function erasureConfirmed(r: Record<string, unknown>): void {
+  if (r["confirm"] !== ERASE_CONFIRM) {
+    throw new Refusal("invalid", `an erasure is confirmed by ${JSON.stringify(ERASE_CONFIRM)}`);
+  }
+}
+
+export interface EraseRequest {
+  readonly confirm: string;
+}
+
+// -- THE DOORS: the `erasure` rows' handlers (`contract/doors.json`) ------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `erasure` doors' handlers, by door. */
+export const erasureDoors = Object.freeze({
+  async ownerErase(o: OwnerState, door: Door<EraseRequest>): Promise<{ erasing: true }> {
+    const confirmed = await o.door(() => door.within(({ r }) => {
+      erasureConfirmed(r);
+      return true;
+    }));
+    if (!confirmed) {
+      throw new Error("an erasure's widening returned without confirming it");
+    }
+    await o.erasure.begin();
+    return { erasing: true as const };
+  },
+  erasureOutside(o: OwnerState, { erased }: Call<undefined>):
+      { keys: string[]; routes: string[] } | null {
+    return erased ? null : { keys: o.keys.ids(), routes: o.inbound.routes() };
+  },
+  erasureOutsideDone(o: OwnerState, { erased }: Call<undefined>): { confirmed: true } {
+    if (erased) {
+      return { confirmed: true } as const;
+    }
+    markOutside(o.storage);
+    o.erasure.resume();
+    return { confirmed: true };
+  },
+});

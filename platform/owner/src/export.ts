@@ -72,6 +72,8 @@
 import { HEX16 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { CURSOR_CHARS } from "../../contract/src/limits";
+import type { Call, Door, OwnerState } from "./owner-do";
+import { clock } from "./clock";
 
 export const EXPORT_FORMAT = "tinyassets-export";
 export const EXPORT_VERSION = 3;
@@ -466,3 +468,74 @@ export function chunkLine(chunk: { sha256: string; size: number }): string {
 export function endLine(at: number, seq: number): string {
   return JSON.stringify({ t: "end", at, seq });
 }
+
+// -- THE DOORS: the `export` rows' handlers (`contract/doors.json`) -------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `export` doors' handlers, by door. */
+export const exportDoors = Object.freeze({
+  /** The export's next object, its call checked in its first unit. */
+  async ownerExport(o: OwnerState, door: Door<{ cursor?: string | null; export_id?: string }>):
+      Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
+    const asked = await o.quiet(() => {
+      door.check();
+      const now = clock();
+      const first = door.request.cursor === null || door.request.cursor === undefined;
+      const open = first ? o.openExports.open(now, o.backups.forExport(now))
+        : o.openExports.named(door.request.export_id, now);
+      const at = first ? { gen: open.gen, index: 0 } : decodeExportCursor(door.request.cursor);
+      if (at.gen !== open.gen) {
+        throw new Refusal("invalid", "an export cursor is one a page handed out");
+      }
+      return { open, index: at.index, first };
+    });
+    const { open, index } = asked;
+    if (asked.first) {
+      await o.sync();  // a generation begun or joined goes on at once
+    }
+    const { ns, key } = await o.files.space();
+    const root = o.backups.finished(open.gen)
+      ? await o.env.FILES.getManifestRoot(ns, open.gen) : null;
+    const object = o.backups.object(open.gen, index, root);
+    const answer = (lines: string[], next: string | null, pending = false) =>
+      ({ export_id: open.export_id, lines, next, pending });
+    if (object === null) {
+      throw new Refusal("invalid", "this export is not open: begin it again");
+    }
+    if (object.kind === "pending") {
+      return answer([], encodeExportCursor(open.gen, index), true);
+    }
+    if (object.kind === "end") {
+      return answer([object.line], null);
+    }
+    const bytes = object.kind === "part"
+      ? await o.env.FILES.getManifestPart(ns, root?.key ?? key, open.gen, object.part,
+                                             object.sha256)
+      : await o.env.FILES.getManifestSegment(ns, root?.key ?? key, open.gen, object.a,
+                                                object.b, object.sha256);
+    return answer(new TextDecoder().decode(bytes).trimEnd().split("\n"),
+                  encodeExportCursor(open.gen, index + 1));
+  },
+  async exportChunks(o: OwnerState, door: Door<{ export_id: string; sha256s: string[] }>):
+      Promise<{ chunks: { sha256: string; data: string }[] }> {
+    const wanted = await o.door(() => {
+      door.check();
+      if (!Array.isArray(door.request.sha256s) || door.request.sha256s.length < 1
+          || door.request.sha256s.length > 2) {
+        throw new Refusal("invalid",
+                          "an export's chunks are its export_id and one or two sha256s");
+      }
+      o.openExports.named(door.request.export_id, clock());
+      return o.files.storedChunks(door.request.sha256s);
+    });
+    const bytes = await o.files.fetch(wanted.map((sha256) => ({ sha256 })));
+    return { chunks: wanted.map((sha256, at) => ({
+      sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
+  },
+  exportEnd(o: OwnerState, { request }: Call<{ export_id: string }>): { ended: boolean } {
+    return { ended: o.openExports.end(request?.export_id) };
+  },
+});

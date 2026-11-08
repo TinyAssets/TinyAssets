@@ -19,7 +19,9 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { doorRow, type Tool } from "../../contract/src/doors";
+import {
+  doorRow, profileNames, takesRequest, type Tool, toolsNamed,
+} from "../../contract/src/doors";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { PAGE_BYTES } from "./pages";
 
@@ -27,6 +29,11 @@ import {
   type CodemodeRemote, type CodemodeRemoteExchange, type CodemodeRemoteRequest,
   RemoteCodemodeSandbox,
 } from "@earendil-works/pi-codemode/portable";
+import type { Account, Call, Door, OwnerState } from "./owner-do";
+import type { Binding } from "../../contract/src/binding";
+import type { Gate } from "./control-gate";
+import type { ProfileName } from "../../contract/src/doors";
+import { Refusal } from "../../contract/src/refusal";
 
 /** The tools a script calls, as pi-codemode's sandbox takes them. */
 export type CodemodeTools = NonNullable<
@@ -247,3 +254,90 @@ export async function runScript(parts: ScriptParts): Promise<CodeResult> {
     await sandbox.close();
   }
 }
+
+// -- THE DOORS: the `codemode` rows' handlers (`contract/doors.json`) -----------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/**
+ * The tools a caller is served: a run's, the `run` profile; an outside client's, its grant's
+ * (`custom`: the owner's policy's choice); the owner's own, `custom`. `code` only while the
+ * owner's policy turns code mode on.
+ */
+function profile(o: OwnerState, account: Account):
+    { profile: ProfileName; tools: readonly string[] } {
+  const profile: ProfileName = account.run !== null ? "run"
+    : account.grant?.profile ?? "custom";
+  const names = profile === "custom" ? o.policy.customTools() : profileNames(profile);
+  return { profile, tools: o.policy.codemode() ? names
+    : names.filter((n) => n !== codeTool()) };
+}
+
+/** One tool call of a script: rechecked as `codeRun` says, then the tool's own door. */
+async function scripted(o: OwnerState, binding: Binding, tool: Tool, args: unknown,
+                        gate: () => Promise<string | null>): Promise<unknown> {
+  try {
+    const closed = await gate();
+    if (closed !== null) {
+      throw new Refusal("refused", closed);
+    }
+    await o.door(() => {
+      const { tools } = profile(o, o.accountAt("toolProfile", binding));
+      if (!o.policy.codemode()) {
+        throw new Refusal("code_mode_off", CODE_MODE_OFF);
+      }
+      if (!tools.includes(codeTool()) || !tools.includes(tool.name)) {
+        throw new Refusal("tool_not_served", CODE_NOT_SERVED);
+      }
+    });
+    // The tool's own door, by its row: admitted again, as any call of it is.
+    const row = doorRow(tool.door);
+    return await o.invoke(row.door, takesRequest(row) ? [binding, args] : [binding]);
+  } catch (error) {
+    if (!(error instanceof Refusal)) {
+      console.error(`code mode's ${tool.name} call failed`, error);
+      throw new Error("internal error");
+    }
+    throw new Error(error.message);
+  }
+}
+
+/** The `codemode` doors' handlers, by door. */
+export const codemodeDoors = Object.freeze({
+  /** A script's run (`codeRun`), its call checked in its first unit. */
+  async codeRun(o: OwnerState, door: Door<CodeRequest>): Promise<CodeResult> {
+    const { owner, script, tools, gate } = await o.door(() => {
+      const { account, r } = door.check();
+      if (typeof r["script"] !== "string" || r["script"].trim() === "") {
+        throw new Refusal("invalid", "a script is text");
+      }
+      if (!o.policy.codemode()) {
+        throw new Refusal("code_mode_off", CODE_MODE_OFF);
+      }
+      const { tools: names } = profile(o, account);
+      if (!names.includes(codeTool())) {
+        throw new Refusal("tool_not_served", CODE_NOT_SERVED);
+      }
+      // The gate its door read: every `/mcp` and `/api` binding carries the client's origin,
+      // the owner's own MCP clients' too, so they take the outside gate; a run (the egress
+      // door) and the owner's app (no origin) the maintenance gate.
+      const gate: Gate = account.origin !== null && account.run === null ? "outside" : "owner";
+      return { owner: account.owner, script: r["script"],
+               tools: toolsNamed(names.filter((name) => name !== codeTool())), gate };
+    });
+    const control = o.control();
+    const closed = await control.refusal(gate, owner);
+    if (closed !== null) {
+      throw new Refusal("refused", closed);
+    }
+    return runScript({ bounds: o.codemode, service: () => o.env.HOOKS, owner, script,
+                       tools, call: (tool, args) => scripted(o,
+                         door.binding, tool, args, () => control.refusal(gate, owner)) });
+  },
+  toolProfile(o: OwnerState, { account }: Call<undefined>):
+      { profile: ProfileName; tools: readonly string[] } {
+    return profile(o, account);
+  },
+});

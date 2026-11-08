@@ -21,7 +21,8 @@ import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S } from "
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
-import { clock, Ledger } from "../src/ledger";
+import { Ledger } from "../src/ledger";
+import { clock } from "../src/clock";
 import { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { Policy } from "../src/policy";

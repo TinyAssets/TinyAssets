@@ -8,10 +8,10 @@ import { createHash } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { apiKeyOrigin } from "../../owner/src/ledger";
+import { apiKeyOrigin } from "../../contract/src/binding";
 import {
-  apiKeyOrigin as doorsKeyOrigin, bindApiKey, bindKeyRegistration, bindMcp, bindOwner,
-  bindSignIn, installationOf, mcpClient, mcpOrigin, ownerOf,
+  bindApiKey, bindKeyRegistration, bindMcp, bindOwner, bindSignIn, installationOf, mcpClient,
+  mcpOrigin, ownerOf,
 } from "../src/binder";
 import { type DoorsEnv, MCP_RESOURCE, WEB_CLIENT } from "../src/config";
 import { APP_RESOURCE } from "../../contract/src/identity";
@@ -136,14 +136,6 @@ describe("an MCP binding", () => {
 });
 
 describe("the other bindings", () => {
-  it("derives an API key's origin exactly as the object does", () => {
-    for (let i = 0; i < 50; i++) {
-      const keyId = [...crypto.getRandomValues(new Uint8Array(8))]
-        .map((b) => b.toString(16).padStart(2, "0")).join("");
-      expect(doorsKeyOrigin(keyId)).toEqual(apiKeyOrigin(keyId));
-    }
-  });
-
   it("an API key: the entry's owner, the key's origin and its mint time", () => {
     const { binding } = bindApiKey(doorsEnv, "0123456789abcdef",
                                    { o: "alice", h: "f".repeat(64), c: 1_700_000_000 });

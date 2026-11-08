@@ -12,8 +12,7 @@ import { bodied } from "../src/pages";
 
 import { escapedBytes, fitted, jsonBytes, RESULT_CHARS, unitAt } from "../../contract/src/encoded";
 import { utf8Bytes } from "../../contract/src/text";
-import type { Row } from "../src/collections";
-import type { WrittenRow } from "../src/owner-do";
+import type { Row, WrittenRow } from "../src/collections";
 import { MUSE, rig } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import { failure, ownerObject } from "./support";

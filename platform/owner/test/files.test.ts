@@ -13,7 +13,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
-import { apiKeyOrigin } from "../src/ledger";
+import { apiKeyOrigin } from "../../contract/src/binding";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, laneAt, ownerObject, sqlIn, text } from "./support";
 

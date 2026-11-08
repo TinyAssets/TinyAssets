@@ -23,7 +23,8 @@ import {
 import { EGRESS_DEADLINE_S, SPEND_KEPT } from "../../contract/src/limits";
 import type { Binding } from "../../contract/src/binding";
 import { apiRules } from "../../contract/src/api-rules";
-import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
+import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY } from "../src/owner-do";
+import { SYNC_FENCED } from "../src/files";
 import { priced } from "../src/usage";
 import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,

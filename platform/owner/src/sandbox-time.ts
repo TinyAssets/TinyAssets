@@ -38,6 +38,8 @@
 import { createHash } from "node:crypto";
 
 import type { OwnerStorage, Write } from "./gate";
+import type { Call, Door, OwnerState } from "./owner-do";
+import { Refusal } from "../../contract/src/refusal";
 
 /**
  * The runs' side of the meter, which only `runs.ts` reads and writes (the policy-boundary
@@ -389,3 +391,28 @@ export function billedEvent(value: unknown): BilledEvent {
   return event as unknown as BilledEvent;
 }
 
+// -- THE DOORS: the `sandbox-time` rows' handlers (`contract/doors.json`) -------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `sandbox-time` doors' handlers, by door. */
+export const sandboxTimeDoors = Object.freeze({
+  async sandboxBilled(o: OwnerState, door: Door<BilledEvent>): Promise<{ counted: boolean }> {
+    if (o.gone()) {
+      return { counted: false };
+    }
+    const checked = billedEvent(door.request);
+    return o.door(() => ({ counted: o.sandboxTime.billed(checked, Date.now()) }));
+  },
+  sandboxDays(o: OwnerState, { request }: Call<{ days?: number }>): {
+    days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
+            gb_seconds: number; unverified_executions: number }[] } {
+    const days = request?.days ?? 31;
+    if (typeof days !== "number" || !Number.isSafeInteger(days) || days < 1 || days > 400) {
+      throw new Refusal("invalid", "days is 1 to 400");
+    }
+    return { days: o.sandboxTime.days(days) };
+  },
+});

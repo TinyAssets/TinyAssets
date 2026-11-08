@@ -19,7 +19,8 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM_CALLER } from "../src/admission";
 import { WriteGate } from "../src/gate";
-import { clock, WAKE_LEASE_S } from "../src/ledger";
+import { WAKE_LEASE_S } from "../src/ledger";
+import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { checkKinds, wakeKinds } from "../../contract/src/wake-records";

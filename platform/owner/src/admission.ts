@@ -40,6 +40,10 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { ADMISSION_TABLE } from "./schema";
 import { type TierName, tierName } from "./tier";
+import type {
+  Door, OwnerState,
+} from "./owner-do";
+import { clock } from "./clock";
 
 /** The reserved caller only the platform's admin path sends: `admissionSet`'s alone. */
 export const PLATFORM_CALLER = "platform";
@@ -203,3 +207,38 @@ export function writeTombstone(sql: Pick<SqlStorage, "exec">): void {
   sql.exec(ADMISSION_TABLE);
   sql.exec("INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'erased', '[]')");
 }
+
+/**
+ * The platform's change of the owner's admission (`admission.ts`): its admit at sign-up, or
+ * a suspension's reason and whether it holds.
+ */
+export type AdmissionRequest =
+  | { readonly admit: true }
+  | { readonly reason: string; readonly suspended: boolean };
+
+// -- THE DOORS: the `admission` rows' handlers (`contract/doors.json`) ----------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `admission` doors' handlers, by door. */
+export const admissionDoors = Object.freeze({
+  async admissionSet(o: OwnerState, door: Door<AdmissionRequest>): Promise<Admission> {
+    const set = await o.synced(() => {
+      door.check();
+      return setAdmission(o.storage, door.request);
+    });
+    if (set.state === "suspended") {
+      // The prompt stop: its streams, and its runs' CLIs (each settles from its runner).
+      await o.door(() => {
+        o.egress.end("admission");
+        o.launcher.stop(o.runs.endAll(clock()));
+      });
+    }
+    if (doorRefusal(set, "read") !== null) {
+      o.relay.closeAll("suspended");  // reads refused: an abuse suspension
+    }
+    return set;
+  },
+});

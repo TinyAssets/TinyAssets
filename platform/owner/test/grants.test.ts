@@ -11,7 +11,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { GRANT_LIMITS, Grants } from "../src/grants";
-import { apiKeyOrigin, clock, Ledger } from "../src/ledger";
+import { Ledger } from "../src/ledger";
+import { apiKeyOrigin } from "../../contract/src/binding";
+import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy, POLICY_LIMITS, policyDigest } from "../src/policy";

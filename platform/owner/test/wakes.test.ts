@@ -13,8 +13,9 @@ import { describe, expect, it } from "vitest";
 
 import { WriteGate } from "../src/gate";
 import {
-  clock, HOUR_S, type Ledger, type Outcome, outcome, retryAfter, WAKE_LEASE_S, type WakeTarget,
+  HOUR_S, type Ledger, type Outcome, outcome, retryAfter, WAKE_LEASE_S, type WakeTarget,
 } from "../src/ledger";
+import { clock } from "../src/clock";
 import { LANE_HUNG_S, LANE_PASS_S } from "../src/schedule";
 import {
   runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM,

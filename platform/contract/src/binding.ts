@@ -5,6 +5,7 @@
  * owner's object reads it (`owner/src/owner-do.ts`), so it is the contract's.
  */
 import type { Vendor } from "./apps";
+import { sha256Hex } from "./digest";
 
 /** A verified outside client: what the binder resolved the caller's credential to. */
 export interface Origin {
@@ -110,3 +111,20 @@ export type InboundAnswer =
   | { readonly state: "admitted"; readonly receipt: string; readonly deduped: boolean }
   | { readonly state: "refused"; readonly error: string; readonly retry?: true }
   | { readonly state: "no_op"; readonly error: string };
+
+/**
+ * The outside identity an API key resolves to, by its key id alone (the Python's
+ * `api_keys._client` and `_family`, byte for byte): the binder binds a key's call to it, and
+ * the object re-derives it wherever it matters (`registrant`).
+ */
+export function apiKeyOrigin(keyId: string): Origin {
+  return {
+    client: sha256Hex("tinyassets-api-key-client\0" + keyId),
+    family: sha256Hex("tinyassets-api-key-family\0" + keyId),
+  };
+}
+
+/** The ledger id of the owner's agent `agent`: `ta_` and its name's digest, 16 hex. */
+export function nativeId(agent: string): string {
+  return "ta_" + sha256Hex(`tinyassets-native-agent\0${agent}`).slice(0, 16);
+}

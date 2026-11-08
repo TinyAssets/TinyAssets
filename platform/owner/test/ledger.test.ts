@@ -9,9 +9,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  apiKeyOrigin, displayName, MAX_BODY_BYTES, OWNER, WAKE_DEFAULTS,
-} from "../src/ledger";
+import { displayName, MAX_BODY_BYTES, OWNER } from "../src/ledger";
+import { apiKeyOrigin } from "../../contract/src/binding";
 import { policyDigest } from "../src/policy";
 import { DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
 import { failure } from "./support";

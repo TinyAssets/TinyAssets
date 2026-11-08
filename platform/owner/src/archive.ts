@@ -23,8 +23,9 @@ import type { Files } from "./files";
 import type { OwnerStorage } from "./gate";
 import {
   type ArchivedMail, archivedHead, archivedMail, archivedRecipients, keptRecord, type MailParts,
-  recordHead, type ChainMail, clock, type Fence, Ledger, STORAGE_BUSY,
+  recordHead, type ChainMail, type Fence, Ledger, STORAGE_BUSY,
 } from "./ledger";
+import { clock } from "./clock";
 import type { Notices } from "./notices";
 import {
   chunkReads, type Content as Stored, joined, lineAt, makeChunk, MOVE_BYTES, MOVE_RECORDS,

@@ -55,8 +55,15 @@ import { ownerTails } from "./holds";
 import type { Frame } from "../../contract/src/run-events";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SHAPE_HEADERS, SOCKET_FAILED, SOCKET_URL, SOCKET_VERSION,
-  TICKET_HEADER,
+  TICKET_HEADER, TICKET_REFUSED,
 } from "../../contract/src/socket-shape";
+import type {
+  Call, Door, OwnerState,
+} from "./owner-do";
+import { Tickets } from "./tickets";
+import { clock } from "./clock";
+import { mintToken } from "../../contract/src/routing-mac";
+import { signinOwned } from "./signins";
 
 type Connection = Parameters<NonNullable<WebSocketHandlers["onConnect"]>>[0];
 
@@ -413,3 +420,51 @@ export class Relay extends LifecycleCapability {
     return [...this.capability.getConnections()].length;
   }
 }
+
+export interface ConversationRequest {
+  readonly conversation_id: string;
+}
+
+// -- THE DOORS: the `relay` rows' handlers (`contract/doors.json`) --------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `relay` doors' handlers, by door. */
+export const relayDoors = Object.freeze({
+  socketTicket(o: OwnerState, { r, binding }: Call<ConversationRequest>):
+      { ticket: string; conversation_id: string; expires_at: number } {
+    const conversation = r["conversation_id"];
+    if (!o.runs.owns(conversation, null) && !signinOwned(o, conversation)) {
+      throw new Refusal("ticket_refused", TICKET_REFUSED);
+    }
+    const grant = binding.grant;
+    const tokenExpires = binding.expires_at;
+    if (typeof grant !== "string" || typeof tokenExpires !== "number") {
+      throw new Refusal("invalid", "a socket ticket is bound to its token's grant and expiry");
+    }
+    const now = clock();
+    const expires = Tickets.expiry(now, tokenExpires);
+    if (expires <= now) {
+      throw new Refusal("ticket_refused", TICKET_REFUSED);
+    }
+    const minted = mintToken(o.env.ROUTING_MAC_KEY, "socket", o.owner(), expires);
+    return { ticket: minted.token, conversation_id: conversation as string,
+             expires_at: o.tickets.mint(minted.hash, conversation as string, grant,
+                                            tokenExpires, now) };
+  },
+  async socketsEnd(o: OwnerState, door: Door<undefined>): Promise<{ grant: string; ended: true }> {
+    const grant = await o.door(() => {
+      door.check();
+      const held = door.binding.grant;
+      if (typeof held !== "string" || held === "" || held.length > 128) {
+        throw new Refusal("invalid", "a grant id");
+      }
+      o.tickets.endGrant(held);
+      return held;
+    });
+    o.relay.endGrant(grant);
+    return { grant, ended: true as const };
+  },
+});

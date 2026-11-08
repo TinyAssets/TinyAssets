@@ -54,6 +54,8 @@ import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import type { OwnerStorage } from "./gate";
 import { costMicros, largestFitting, periods } from "./money";
+import type { Call, OwnerState } from "./owner-do";
+import { clock } from "./clock";
 
 export { costMicros, largestFitting, periods };
 
@@ -365,3 +367,16 @@ export class Usage {
       }));
   }
 }
+
+// -- THE DOORS: the `usage` rows' handlers (`contract/doors.json`) --------------------------------
+//
+// Each door's body, which the object's runner (`owner-do.ts`, `#run` and `#units`) hands
+// the object's state once the row's steps held: the bind, the account, the scope and the
+// fields.
+
+/** The `usage` doors' handlers, by door. */
+export const usageDoors = Object.freeze({
+  usageReceipts(o: OwnerState, _call: Call<undefined>): { receipts: UsageReceipt[] } {
+    return { receipts: o.usage.receipts(clock()) };
+  },
+});
