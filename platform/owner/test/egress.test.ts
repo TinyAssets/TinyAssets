@@ -33,7 +33,8 @@ import { signedIn } from "./ledger-support";
 import { failure, TIERS } from "./support";
 import type { SandboxRun } from "../src/launch";
 import type { NetworkPlan } from "../src/network";
-import { hashed, ownerRun, secretOf } from "./runs-support";
+import { defineAgent, hashed, ownerRun, secretOf } from "./runs-support";
+import { SANDBOX_WAITING } from "../src/sandbox";
 import { bundledSources } from "../../sources/src/catalog";
 import { RUN_BASICS, runEnv } from "../../sources/src/run-env";
 import type { FauxOwnerDO } from "./worker";
@@ -1144,6 +1145,41 @@ describe("a change that ends egress", () => {
     expect((await rows(r)).at(-1)).toMatchObject({ ended: "run" });
     expect(await r.stub.agentStatus(r.bind(), { run_id: last.run }))
       .toMatchObject({ state: "unknown", code: "lost" });
+  });
+});
+
+describe("a lease given back (untangle A2, review F5)", () => {
+  it("ends its streams: a start the sandbox has no room for gives its lease back", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await capped(r, ROOMY);
+    await defineAgent(r.stub, r.bind(), "main", { ...onKey(connection), scopes: [] });
+    // While the start is out (the run queued, its lease and grant live), the run's process
+    // opens a model call on its lease; then the sandbox answers it has no room.
+    const opened = await r.in(async (instance) => {
+      let call: EgressOpened | EgressRefusal | null = null;
+      instance.recorder.answer = { started: false, code: SANDBOX_WAITING };
+      instance.recorder.beforeAnswer = async (start) => {
+        await instance.sandbox.networkApplied({ lease_id: start.lease.lease_id,
+                                                epoch: start.lease.epoch,
+                                                generation: start.network!.generation });
+        call = await instance.egressOpen({
+          owner: r.name, caller: r.name, origin: null, sandbox: {
+            kind: "egress", token: hashOf("egress", start.tokens!.egress_token),
+            generation: start.network!.generation, secret: hashed(secretOf(start)) } },
+          { run: start.run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
+      };
+      return { instance, wait: () => call };
+    });
+    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+                                         { message: "go", client_send_id: "q-1" });
+    expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+    const call = opened.wait() as EgressOpened | EgressRefusal | null;
+    expect(call).toMatchObject({ ok: true });
+    // Its run never started, so no run's end ended the stream: the lease's did.
+    expect(await ended(call as EgressOpened)).toBe(true);
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    expect((await rows(r)).at(-1)).toMatchObject({ ended: "lease" });
   });
 });
 

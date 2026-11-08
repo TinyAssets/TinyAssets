@@ -301,6 +301,53 @@ export function ungatedDoors(source: string,
   return found;
 }
 
+/** The state's members that hold no storage: the app's sockets and the events posts' count. */
+const NOT_STORED: ReadonlySet<string> = new Set(["relay", "posts"]);
+
+/**
+ * Each statement of a units door handler (`<module>Doors`, an `async` member) that calls the
+ * state's stores outside a unit and leaves its call unawaited, as `file:line: what`: every
+ * statement, not only the first. A call awaited is an outside call that makes its own units
+ * (`Files.write`, the bodies' sends); one in a unit's arrow is the unit's; a store that holds
+ * no storage (`NOT_STORED`) is the sockets' own. Any other is a write outside the gate.
+ */
+export function strayCalls(fileName: string, source: string): string[] {
+  const file = parse(fileName, source);
+  const problems: string[] = [];
+  const report = reporter(file, problems);
+  const inUnit = (node: ts.Node): boolean => {
+    for (let up: ts.Node | undefined = node.parent; up !== undefined; up = up.parent) {
+      if ((ts.isArrowFunction(up) || ts.isFunctionExpression(up)) && ts.isCallExpression(up.parent)
+          && ENTRIES.has(up.parent.expression.getText(file))) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const handler = (node: ts.Node): boolean => ts.isMethodDeclaration(node)
+    && ts.isObjectLiteralExpression(node.parent) && ts.isCallExpression(node.parent.parent)
+    && ts.isVariableDeclaration(node.parent.parent.parent)
+    && node.parent.parent.parent.name.getText(file).endsWith("Doors") && isAsync(node);
+  const visit = (node: ts.Node): void => {
+    if (handler(node)) {
+      const walk = (n: ts.Node): void => {
+        if (ts.isExpressionStatement(n) && ts.isCallExpression(n.expression)) {
+          const callee = n.expression.expression.getText(file);
+          const store = /^o\.(\w+)\./.exec(callee)?.[1];
+          if (store !== undefined && !NOT_STORED.has(store) && !inUnit(n)) {
+            report(n, `${callee}() is outside a unit of the gate`);
+          }
+        }
+        ts.forEachChild(n, walk);
+      };
+      ts.forEachChild(node, walk);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return problems;
+}
+
 /** The bodies of `OwnerDO`'s gate helpers, by name. */
 function helpers(source: string): Record<string, string> {
   const file = parse("owner-do.ts", source);
@@ -411,6 +458,24 @@ describe("write-gate guard", () => {
     expect(handed.length).toBeGreaterThan(100);
     expect(new Set(handed).size).toBe(handed.length);
     expect(handlers.size).toBe(handed.length);
+  });
+
+  it("holds every statement of a door's handler in the gate, not only its first", () => {
+    const handlers = [...sources].filter(([path, source]) => path.startsWith("owner/src/")
+      && source.includes("Doors = Object.freeze({"));
+    expect(handlers.length).toBeGreaterThan(20);
+    expect(handlers.flatMap(([path, source]) => strayCalls(path, source))).toEqual([]);
+  });
+
+  it.each([
+    ["a ledger write after the first unit",
+     "const xDoors = Object.freeze({ async d(o: S, door: D) { await o.door(() => 1); " +
+       "o.ledger.settled(1, 2); } });", 1],
+    ["a write in a unit, an awaited outside call and the sockets' own",
+     "const xDoors = Object.freeze({ async d(o: S, door: D) { await o.door(() => { " +
+       "o.ledger.settled(1, 2); }); await o.files.write(1); o.relay.settled(1); } });", 0],
+  ])("sees %s", (_what, source, found) => {
+    expect(strayCalls("probe.ts", source)).toHaveLength(found);
   });
 
   it("names the owner's storage only to make the gate, and no SQLite adapter", () => {

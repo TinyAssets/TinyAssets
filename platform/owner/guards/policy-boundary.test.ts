@@ -20,13 +20,22 @@
  * (`export.ts`, slice P), which reads everything the owner holds for the owner alone. Its
  * source is held to SQL that only reads (`READ_ONLY`): no statement but `SELECT`, and no
  * policy module imported.
+ *
+ * The doors' handlers sit in their modules and reach these stores through the state the
+ * object hands them (`OwnerState`), so the import lists alone no longer hold who widens
+ * (untangle A2, review F3). A widening member of the state (`WIDENS`) is named only inside
+ * a door's handler (`<module>Doors`) whose row's caller is one the member allows: the
+ * owner's session, or the platform's reserved line. Every other member of those stores the
+ * state's holders name is a read, a narrowing or a proposal (`OTHERS`), and a new one fails
+ * until it is put in one list or the other.
  */
 import { posix } from "node:path";
 
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { workerSources } from "../../ci/kit/sources";
+import { type CallerKind, doorRow } from "../../contract/src/doors";
+import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
 /** The owner export: it names tables only to read them (held below). */
@@ -72,6 +81,99 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   sandbox_leases: Object.freeze(["owner/src/files.ts", SCHEMA]),
   engine_signins: Object.freeze(["owner/src/runs.ts", SCHEMA]),
 });
+
+/** The stores the state hands that keep policy, grants, sessions, cards and keys. */
+const STORES: ReadonlySet<string> = new Set(["grants", "sessions", "policy", "registrations",
+                                             "keys"]);
+/** What names the state: a handler's `o`, the launcher's `this.#o`, the runner's parts. */
+const ROOTS = /^(?:o|state|this\.#o|this\.#state|this\.#parts)$/;
+const SIGNED: readonly CallerKind[] = Object.freeze(["session", "reserved"]);
+const OWNED: readonly CallerKind[] = Object.freeze(["owner", "session", "reserved"]);
+/** The state's widening members, and the row callers whose doors' handlers may name each. */
+const WIDENS: Readonly<Record<string, readonly CallerKind[]>> = Object.freeze({
+  "grants.set": SIGNED,
+  "keys.add": SIGNED,
+  "policy.write": SIGNED,
+  "policy.changed": SIGNED,
+  "policy.applyKeyRequest": SIGNED,
+  "registrations.take": SIGNED,
+  // A session is opened and extended by the owner's own binding: the session doors' rows.
+  "sessions.open": OWNED,
+  "sessions.extend": OWNED,
+  setTier: Object.freeze(["reserved"] as const),
+});
+/**
+ * The rest the state's holders name: reads; narrowings (a revoke, a forget, an eviction, a
+ * close); a receipt; and proposals, which only the owner's session accepts (`WIDENS`).
+ */
+const OTHERS: ReadonlySet<string> = new Set([
+  "grants.apps", "grants.full", "grants.list", "grants.live", "grants.name", "grants.reads",
+  "grants.standing", "grants.revoke", "grants.forgetKey", "grants.forgetRevoked",
+  "grants.evictRevoked",
+  "keys.forgotten", "keys.ids", "keys.list", "keys.revoked",
+  "policy.codemode", "policy.customTools", "policy.egressGeneration", "policy.held",
+  "policy.models", "policy.projection", "policy.read", "policy.receipt", "policy.receipts",
+  "policy.refusal", "policy.propose",
+  "registrations.card", "registrations.endClient", "registrations.file",
+  "sessions.close", "sessions.closeAll", "sessions.id", "sessions.live",
+]);
+
+/** The door whose handler (a member of a `<module>Doors` object) holds `node`, if one does. */
+function handlerOf(node: ts.Node, file: ts.SourceFile): string | null {
+  for (let up: ts.Node | undefined = node.parent; up !== undefined; up = up.parent) {
+    if (ts.isMethodDeclaration(up) && ts.isObjectLiteralExpression(up.parent)
+        && ts.isCallExpression(up.parent.parent)
+        && ts.isVariableDeclaration(up.parent.parent.parent)
+        && up.parent.parent.parent.name.getText(file).endsWith("Doors")) {
+      return up.name.getText(file);
+    }
+  }
+  return null;
+}
+
+/**
+ * Each naming of the state's policy stores in `source` that the rule above refuses, as
+ * `file:line: what`: a widening member outside a door's handler, or in one whose row's
+ * caller it does not allow; a member in neither list; a store named whole, not a member.
+ */
+export function widenings(fileName: string, source: string): string[] {
+  const file = parse(fileName, source);
+  const problems: string[] = [];
+  const report = reporter(file, problems);
+  const held = (node: ts.Node, member: string): void => {
+    const callers = WIDENS[member];
+    if (callers === undefined) {
+      if (!OTHERS.has(member)) {
+        report(node, `${member} is neither a widening nor a read`);
+      }
+      return;
+    }
+    const door = handlerOf(node, file);
+    if (door === null) {
+      report(node, `${member} is named outside a door's handler`);
+    } else if (!callers.includes(doorRow(door).caller)) {
+      report(node, `${member} is named in ${door}, whose caller is ${doorRow(door).caller}`);
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) && ROOTS.test(node.expression.getText(file))) {
+      const name = node.name.text;
+      if (STORES.has(name)) {
+        const parent = node.parent;
+        if (!ts.isPropertyAccessExpression(parent) || parent.expression !== node) {
+          report(node, `${node.getText(file)} is named whole, not by a member`);
+        } else {
+          held(parent, `${name}.${parent.name.text}`);
+        }
+      } else if (name === "setTier") {
+        held(node, name);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return problems;
+}
 
 /**
  * Tables whose name is a plain word the sources use, held by the SQL that names one: a
@@ -156,6 +258,37 @@ describe("policy-boundary guard", () => {
     ['"CREATE TABLE connections (id TEXT)"', "sql:connections"],
   ])("sees %s", (line, name) => {
     expect(reach(new Map([["owner/src/probe.ts", line]]))[name]).toEqual(["owner/src/probe.ts"]);
+  });
+
+  it("names each widening of the state only in a door its row's caller may widen", () => {
+    const found = [...workerSources()].filter(([path]) => path.startsWith("owner/src/"))
+      .flatMap(([path, source]) => widenings(path, source));
+    expect(found).toEqual([]);
+  });
+
+  it.each([
+    ["a grant set in a door any account calls",
+     "const xDoors = Object.freeze({ agentSubmit(o: S) { o.grants.set(1, 2, 3); } });",
+     "grants.set is named in agentSubmit, whose caller is account"],
+    ["a grant set in a helper",
+     "function widen(o: S) { o.grants.set(1, 2, 3); }",
+     "grants.set is named outside a door's handler"],
+    ["the tier set in the owner's session door",
+     "const xDoors = Object.freeze({ grantSet(o: S) { o.setTier(1); } });",
+     "setTier is named in grantSet, whose caller is session"],
+    ["a member in neither list",
+     "const xDoors = Object.freeze({ grantSet(o: S) { o.sessions.grow(); } });",
+     "sessions.grow is neither a widening nor a read"],
+    ["a store named whole", "const g = this.#o.grants;",
+     "this.#o.grants is named whole, not by a member"],
+  ])("sees %s", (_what, source, problem) => {
+    expect(widenings("probe.ts", source)).toEqual([`probe.ts:1: ${problem}`]);
+  });
+
+  it("lets the owner's session set a grant, and anyone read one", () => {
+    expect(widenings("probe.ts", "const xDoors = Object.freeze({ grantSet(o: S) { " +
+      "o.grants.set(1, 2, 3); }, agentSubmit(o: S) { o.grants.standing(1); } });"))
+      .toEqual([]);
   });
 
   it("leaves the plain word alone", () => {

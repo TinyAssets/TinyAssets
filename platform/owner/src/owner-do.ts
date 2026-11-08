@@ -107,7 +107,7 @@ import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
   admission, type Admission, admissionDoors, type DoorClass, doorRefusal, OWNER_ERASED, ownerTier,
-  PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED, setAdmission, setTier, tombstoned,
+  PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned,
   workRefusal, writeTombstone,
 } from "./admission";
 import {
@@ -501,10 +501,6 @@ export interface OwnerState {
   tier(): TierName;
   /** The platform's setting of the owner's tier (`admission.ts`). */
   setTier(request: unknown): { tier: TierName };
-  /** The platform's change of the owner's admission (`admission.ts`). */
-  setAdmission(request: unknown): Admission;
-  /** Whether the owner's admission refuses `door`'s class (`admission.ts`), or null. */
-  refusal(admission: Admission, door: DoorClass): Refusal | null;
   /** Whether the owner is erased or being erased: its doors with no binding do nothing. */
   gone(): boolean;
   /** The tier numbers a door's binding handed, kept for the runs the lane starts. */
@@ -905,8 +901,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       unadmitted: () => workRefusal(admission(storage)),
       tier: () => ownerTier(storage),
       setTier: (request: unknown) => setTier(storage, request),
-      setAdmission: (request: unknown) => setAdmission(storage, request),
-      refusal: (held: Admission, door: DoorClass) => doorRefusal(held, door),
       gone: () => object.#tombstone || object.#erasure.erased || erasing(storage),
       keepTiers: (binding: Binding) => object.#keepTiers(binding),
       scope: (account: Account, capability: RunCapability, center?: unknown, agent?: string) =>

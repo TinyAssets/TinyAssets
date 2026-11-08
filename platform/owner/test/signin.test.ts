@@ -174,6 +174,29 @@ describe("a sign-in", () => {
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
   });
 
+  it("keeps the lease a run leaves while it still holds it, and lets it go at its own end",
+     async () => {
+    const r = await gated();
+    const { id } = await r.stub.signinStart(r.bind(), { engine: "claude-code" }) as { id: string };
+    const signin = await lastSignin(r);
+    const runner = runnerOfSignin(r, signin);
+    await defineAgent(r.stub, r.bind(), "main", { engine: "auto", scopes: [] });
+    await r.connect("sk-ant-x");
+    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message: "go",
+                                                                     client_send_id: "k-1" });
+    const start = await startOf(r.stub, run.run_id);
+    expect(start.lease.lease_id).toBe(signin.lease.lease_id);
+    // The run ends first: the sign-in still holds its sandbox, so the lease stays.
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases"))
+      .toEqual([{ lease_id: signin.lease.lease_id }]);
+    expect((await recorder(r.stub)).releases).toEqual([]);
+    await r.stub.signinEvents(runner, { id, frames: [
+      frame(1, { state: "cancelled" })], end: { exit_code: 1 } });
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+  });
+
   it("is stopped by the owner, and ends with no sandbox to start in", async () => {
     const r = await gated();
     const { id } = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
