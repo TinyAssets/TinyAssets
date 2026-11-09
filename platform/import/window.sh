@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
-# The cutover import window's host side: run as root on the droplet by
-# .github/workflows/import-window.yml, from a private stage that also holds the job's bundle
-# (import.mjs) and the control record's tiers (control.json). import_research.md §1 (the copy),
-# §3 (where the job runs) and §4 (the rehearsal); tasks.md §9 item 7. Deleted at the cutover
-# with platform/import/.
+# The cutover import window's host side: run as root on the run's import host (a disposable
+# Droplet, tinyassets-import-<run>, that .github/workflows/import-window.yml makes at the
+# run's census and destroys after its clean: platform/import/host.py), from a private stage
+# that also holds the job's bundle (import.mjs) and the control record's tiers (control.json).
+# import_research.md §1 (the copy), §3 (where the job runs) and §4 (the rehearsal);
+# import_host_research.md (the import host); tasks.md §9 item 7. Deleted at the cutover with
+# platform/import/.
 #
 #   window.sh <mode> <run> <rehearsal|window> [delete]
 #
-# - The copy (census, when the run has none): the newest manifest on the backup remote, read
-#   with the droplet's own rclone and BACKUP_DEST (/etc/tinyassets/env, as the backup writes it),
-#   held to its shape by the job (`copy plan`); the free disk checked before the download and
-#   again before the images are decompressed, each time keeping the disk watch's 20% free; the
-#   archive and each pinned snapshot copied, each image decompressed sparse; every digest held to
-#   the manifest (`copy digests`); then the shared layer extracted. All of it in a 0700 work
-#   folder of the run's, ta-import-<run> under /var/tmp, never a live volume.
-# - One Node for the whole run: the census that makes the copy pulls node:22 once and keeps
-#   its registry digest in the work folder (`image`); every later mode of the run runs that
-#   digest alone, and refuses a copy that names none.
+# - The host: refused unless its marker (/etc/tinyassets-import-host, which the import host's
+#   cloud-init writes) holds this run's id, and refused on any host that holds the old stack
+#   (/var/lib/boxhostd or /etc/tinyassets/env). So it never runs on the production droplet,
+#   whatever points it there.
+# - The copy (census, when the run has none): the newest manifest on the primary backup store
+#   (SOURCE, the bucket the nightly backup writes), read with a read-only Spaces key handed on
+#   stdin and held in rclone's environment alone, never a file; held to its shape by the job
+#   (`copy plan`); the free disk checked before the download and again before the images are
+#   decompressed, each time keeping a margin free; the archive and each pinned snapshot
+#   copied, each image decompressed sparse; every digest held to the manifest
+#   (`copy digests`); then the shared layer extracted. All of it in a 0700 work folder of the
+#   run's, ta-import-<run> under /var/tmp, never a live volume.
+# - One Node for the whole run: the census that makes the copy pulls node:22 once, prints its
+#   registry digest (public, so the rehearsal's and the window's can be compared) and keeps it
+#   in the work folder (`image`); every later mode of the run runs that digest alone, and
+#   refuses a copy that names none.
 # - Each job in `docker run --rm`, one folder writable for the step's output. The jobs without
 #   network see the work folder read-only at its own path (so the kernel's loop devices name
 #   its images); the modes that reach R2 and Queues see the bundles alone (bundle/out), never
@@ -24,19 +32,27 @@
 #   mount each pinned image read-only (MOUNT_OPTIONS, backup.ts's) for the job, and unmount it
 #   after; census first runs every copied store through `integrity_check` (`copy stores`), and
 #   bundle first checks the disk has room for as many bytes again as the images hold.
+# - The off-site copy (offsite, the real window alone): the objects the window's copy was made
+#   from (its manifest, which must still be the store's newest, its archive and every pinned
+#   snapshot) copied from SOURCE to the R2 bucket tinyassets-final-backup, then each read back
+#   from R2 and held to the copy's manifest (`copy digests`), the read-back deleted after. It
+#   only reads SOURCE. Its keys reach rclone's environment alone, and no job is networked.
 # - Output: the job's stdout and stderr kept 0600 in the work folder, and let out only through
 #   `copy release` (no principal, no owner key, no path of the copy). The host tools' own
 #   messages go to the work folder's host.private.log; this script prints fixed words and counts.
-# - Credentials (stage, verify, wipe, admit, dlq) arrive on stdin, one a line, in
-#   CREDENTIALS' order, and reach only the job, piped to its stdin (`docker run -i`), so they
-#   are in no argument, no container config (`docker inspect`), no environment and no file;
-#   the exclusion list (bundle) is stdin whole, piped to the job the same way.
+# - Credentials arrive on stdin, one a line: the source key (census, offsite) in
+#   SOURCE_CREDENTIALS' order, then the off-site key (offsite) in OFFSITE_CREDENTIALS'; the
+#   job's (stage, verify, wipe, admit, dlq) in CREDENTIALS' order, which reach only the job,
+#   piped to its stdin (`docker run -i`), so they are in no argument, no container config
+#   (`docker inspect`), no environment and no file. The exclusion list (bundle) is stdin
+#   whole, piped to the job the same way.
 # - The work folder is this host's own: root's, 0700, refused otherwise (/var/tmp is anyone's).
 # - One run at a time on this host (a lock), and a copy made for a rehearsal is never run as
 #   the window, nor the other way round.
 #
-# TA_IMPORT_ROOT, TA_IMPORT_ENV and TA_IMPORT_LOCK default to the droplet's places; the
-# workflow sets none of them (its test points them at a scratch folder).
+# TA_IMPORT_ROOT, TA_IMPORT_LOCK and TA_IMPORT_HOST_ROOT (put before the marker's path and the
+# old stack's, which are checked at / as well) default to the host's own places; the workflow
+# sets none of them (its test points them at a scratch folder).
 set -euo pipefail
 umask 077
 
@@ -47,12 +63,23 @@ readonly DIGEST='^node@sha256:[0-9a-f]{64}$'
 image=""
 # node:sqlite still warns that it is experimental on every start: nothing for the log.
 readonly NODE_FLAGS=(--disable-warning=ExperimentalWarning)
-# The disk watch warns past 80% used (DISK_WARN_PCT, tinyassets-disk-watch.service), and its
-# auto-prune starts at 85%: the copy never takes the disk past the warning.
+# A margin the copy leaves free on the import host's disk (160 GB, the run's alone), so a copy
+# that would fill it stops loudly before it starts (Fact 8) rather than part-way through.
 readonly KEEP_FREE_PERCENT=20
 # The job's credential inputs (cli.ts STAGE_INPUTS), in the order stdin hands them.
 readonly CREDENTIALS=(CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
                       CLOUDFLARE_API_TOKEN IMPORT_KEY)
+# The primary backup store's read-only Spaces key (census, offsite), in stdin's order.
+readonly SOURCE_CREDENTIALS=(SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY)
+# The off-site bucket's R2 key (offsite), after the source's, in stdin's order.
+readonly OFFSITE_CREDENTIALS=(CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY)
+# The primary backup store: the bucket and prefix the nightly backup writes (BACKUP_DEST,
+# install-host-services.yml), on its region's Spaces endpoint. Neither is a secret.
+readonly SOURCE="tasrc:workflow-backups-jonnyton-sfo3/workflow-backups"
+readonly SOURCE_ENDPOINT="sfo3.digitaloceanspaces.com"
+# The off-site copy of the window's final backup: the same layout under the same prefix.
+readonly OFFSITE="taoff:tinyassets-final-backup/workflow-backups"
+readonly MANIFEST_NAME='^tinyassets-platform-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]json$'
 
 say() { printf '%s\n' "$*"; }
 refuse() { say "refused: $*"; exit 2; }
@@ -62,7 +89,7 @@ run="${2:-}"
 kind="${3:-}"
 extra="${4:-}"
 case "$mode" in
-  census|bundle|stage|verify|wipe|admit|dlq|clean) ;;
+  census|bundle|stage|verify|wipe|admit|dlq|offsite|clean) ;;
   *) refuse "no such mode" ;;
 esac
 [[ "$run" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] \
@@ -70,12 +97,22 @@ esac
 [[ "$kind" == rehearsal || "$kind" == window ]] || refuse "a run is a rehearsal or the window"
 [[ -z "$extra" || ( "$mode" == dlq && "$extra" == delete ) ]] \
   || refuse "only dlq takes a fourth word, delete"
+[[ "$mode" != offsite || "$kind" == window ]] \
+  || refuse "offsite copies the real window's final backup alone, never a rehearsal's"
+
+# The host: this run's import host, and never one that holds the old stack.
+host_root="${TA_IMPORT_HOST_ROOT:-}"
+for path in /var/lib/boxhostd /etc/tinyassets/env; do
+  [[ ! -e "$path" && ! -e "$host_root$path" ]] \
+    || refuse "this host holds the old stack (${path}): the window runs on its import host alone"
+done
+[[ "$(cat "$host_root/etc/tinyassets-import-host" 2>/dev/null)" == "$run" ]] \
+  || refuse "this host is not this run's import host (its marker does not name the run)"
 
 stage="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 job_file="$stage/import.mjs"
 control="$stage/control.json"
 root="${TA_IMPORT_ROOT:-/var/tmp}"
-env_file="${TA_IMPORT_ENV:-/etc/tinyassets/env}"
 lock="${TA_IMPORT_LOCK:-/run/lock/tinyassets-import-window.lock}"
 [[ "$root" == /* && -d "$root" && ! -L "$root" ]] || refuse "the work root is no folder"
 work="$root/ta-import-$run"
@@ -84,17 +121,24 @@ log="$work/host.private.log"
 exec 9>"$lock"
 flock -n 9 || refuse "another import window run holds this host"
 
+# take <name>...: each from stdin's next line, into this shell alone (never exported).
+take() {
+  local name value
+  for name in "$@"; do
+    value=""
+    IFS= read -r value || true
+    [[ -n "$value" ]] || refuse "the run was handed no ${name}"
+    printf -v "$name" '%s' "$value"
+  done
+}
+
 network=none
 case "$mode" in
+  census) take "${SOURCE_CREDENTIALS[@]}" ;;
+  offsite) take "${SOURCE_CREDENTIALS[@]}" "${OFFSITE_CREDENTIALS[@]}" ;;
   stage|verify|wipe|admit|dlq)
     network=bridge
-    for name in "${CREDENTIALS[@]}"; do
-      value=""
-      IFS= read -r value || true
-      [[ -n "$value" ]] || refuse "the run was handed no ${name}"
-      printf -v "$name" '%s' "$value"
-    done
-    unset value
+    take "${CREDENTIALS[@]}"
     ;;
 esac
 
@@ -118,10 +162,10 @@ job() {
   fi
   local status=0
   if [[ "$network" != none ]]; then
-    # The credentials on the job's stdin, one a line (printf is a builtin: no argument holds one).
+    # The credentials on the job's stdin, one a line, in CREDENTIALS' own order (printf is a
+    # builtin: no argument holds one).
     args+=(-i)
-    printf '%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" \
-        "$CLOUDFLARE_API_TOKEN" "$IMPORT_KEY" \
+    for name in "${CREDENTIALS[@]}"; do printf '%s\n' "${!name}"; done \
       | docker "${args[@]}" "$image" node "${NODE_FLAGS[@]}" "$job_file" "$@" \
         > "$work/job.out.private" 2> "$work/job.err.private" || status=$?
   else
@@ -151,6 +195,7 @@ record_image() {
   image="$(docker image inspect -f '{{index .RepoDigests 0}}' "$NODE_TAG" 2>> "$log")" || true
   [[ "$image" =~ $DIGEST ]] || refuse "the job's image has no registry digest"
   printf '%s\n' "$image" > "$work/image"
+  say "the job's Node is ${image}"
 }
 
 # Every later mode: the run's own Node, by its digest, or refused.
@@ -173,65 +218,93 @@ room() {  # <bytes> <what>: refused unless the disk keeps KEEP_FREE_PERCENT free
   fi
 }
 
-remote_size() {  # <remote object>: its bytes
+# The remotes, each defined in one rclone's environment for that call alone (never exported,
+# never a file): the primary store with its read-only key, the off-site bucket with its own.
+# Neither makes or checks a bucket (no_check_bucket), so neither key needs to.
+source_rclone() {
+  RCLONE_CONFIG_TASRC_TYPE=s3 RCLONE_CONFIG_TASRC_PROVIDER=DigitalOcean \
+  RCLONE_CONFIG_TASRC_ENDPOINT="$SOURCE_ENDPOINT" \
+  RCLONE_CONFIG_TASRC_ACCESS_KEY_ID="$SPACES_ACCESS_KEY_ID" \
+  RCLONE_CONFIG_TASRC_SECRET_ACCESS_KEY="$SPACES_SECRET_ACCESS_KEY" \
+  RCLONE_CONFIG_TASRC_NO_CHECK_BUCKET=true \
+    command rclone "$@"
+}
+offsite_rclone() {
+  RCLONE_CONFIG_TAOFF_TYPE=s3 RCLONE_CONFIG_TAOFF_PROVIDER=Cloudflare \
+  RCLONE_CONFIG_TAOFF_ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+  RCLONE_CONFIG_TAOFF_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+  RCLONE_CONFIG_TAOFF_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+  RCLONE_CONFIG_TAOFF_NO_CHECK_BUCKET=true \
+    command rclone "$@"
+}
+both_rclone() {  # one call that reads the source and writes the off-site bucket
+  RCLONE_CONFIG_TASRC_TYPE=s3 RCLONE_CONFIG_TASRC_PROVIDER=DigitalOcean \
+  RCLONE_CONFIG_TASRC_ENDPOINT="$SOURCE_ENDPOINT" \
+  RCLONE_CONFIG_TASRC_ACCESS_KEY_ID="$SPACES_ACCESS_KEY_ID" \
+  RCLONE_CONFIG_TASRC_SECRET_ACCESS_KEY="$SPACES_SECRET_ACCESS_KEY" \
+  RCLONE_CONFIG_TASRC_NO_CHECK_BUCKET=true \
+  RCLONE_CONFIG_TAOFF_TYPE=s3 RCLONE_CONFIG_TAOFF_PROVIDER=Cloudflare \
+  RCLONE_CONFIG_TAOFF_ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+  RCLONE_CONFIG_TAOFF_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+  RCLONE_CONFIG_TAOFF_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+  RCLONE_CONFIG_TAOFF_NO_CHECK_BUCKET=true \
+    command rclone "$@"
+}
+
+remote_size() {  # <rclone> <remote object>: its bytes
   local bytes
-  bytes="$(rclone size --json "$1" 2>> "$log" \
+  bytes="$("$1" size --json "$2" 2>> "$log" \
            | sed -n 's/.*"bytes":[[:space:]]*\([0-9][0-9]*\).*/\1/p')" || true
   [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$bytes"
 }
 
-copy_backup() (
-  if [[ -f "$env_file" ]]; then
-    # As restore-credentials.sh reads it: a bad line in the env file must not stop the read.
-    set +e
-    set -a
-    # shellcheck disable=SC1090
-    . "$env_file" > /dev/null 2>&1
-    set +a
-    set -e
-  fi
-  [[ -n "${BACKUP_DEST:-}" ]] || refuse "BACKUP_DEST is not set (/etc/tinyassets/env)"
-  local dest="${BACKUP_DEST%/}" manifest archive bytes need total n uid sid
-  manifest="$(rclone lsf --files-only "$dest/platform" 2>> "$log" \
-    | grep -E '^tinyassets-platform-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z\.json$' \
-    | sort | tail -n 1)" || true
-  [[ -n "$manifest" ]] || refuse "the backup remote lists no platform manifest"
-  rclone cat "$dest/platform/$manifest" > "$work/manifest.json" 2>> "$log" \
-    || refuse "the newest manifest could not be read"
-  plan "$manifest" || refuse "the newest manifest is no platform manifest of its own name"
+# newest: the newest manifest's name on the primary store, or refused.
+newest_manifest() {
+  newest="$(source_rclone lsf --files-only "$SOURCE/platform" 2>> "$log" \
+    | grep -E "$MANIFEST_NAME" | sort | tail -n 1)" || true
+  [[ -n "$newest" ]] || refuse "the backup remote lists no platform manifest"
+}
+
+# fetch <rclone> <remote> <folder>: plan.private's archive and images from the remote into the
+# folder, each stage after its room is checked, each image decompressed sparse; then held to
+# the folder's manifest.json by the job (`copy digests`).
+fetch() {
+  local rc="$1" from="$2" dir="$3" archive bytes need total n uid sid
   archive="$(sed -n 's/^archive //p' "$work/plan.private")"
   local images=()
   mapfile -t images < <(sed -n 's/^image //p' "$work/plan.private")
   total="${#images[@]}"
 
-  need="$(remote_size "$dest/$archive")" || refuse "the archive's size could not be read"
+  need="$(remote_size "$rc" "$from/$archive")" || refuse "the archive's size could not be read"
   n=0
   for each in "${images[@]}"; do
     read -r uid sid <<< "$each"
     n=$((n + 1))
-    bytes="$(remote_size "$dest/$uid/$sid.img.gz")" \
+    bytes="$(remote_size "$rc" "$from/$uid/$sid.img.gz")" \
       || refuse "image $n of $total's snapshot is not on the remote"
     need=$((need + bytes))
   done
   room "$need" "the download"
 
-  rclone copyto "$dest/$archive" "$work/$archive" 2>> "$log" \
+  "$rc" copyto "$from/$archive" "$dir/$archive" 2>> "$log" \
     || refuse "the archive could not be copied"
   n=0
   for each in "${images[@]}"; do
     read -r uid sid <<< "$each"
     n=$((n + 1))
-    rclone copyto "$dest/$uid/$sid.img.gz" "$work/$uid.img.gz" 2>> "$log" \
+    "$rc" copyto "$from/$uid/$sid.img.gz" "$dir/$uid.img.gz" 2>> "$log" \
       || refuse "image $n of $total's snapshot could not be copied"
   done
 
-  need="$(gzip -dc "$work/$archive" 2>> "$log" | wc -c)" || refuse "the archive is no gzip"
+  # The images' apparent bytes. Each is written sparse below, so this over-counts what the
+  # disk gives them; on the import host's 160 GB the over-count binds nothing.
+  need="$(gzip -dc "$dir/$archive" 2>> "$log" | wc -c)" || refuse "the archive is no gzip"
   n=0
   for each in "${images[@]}"; do
     read -r uid _ <<< "$each"
     n=$((n + 1))
-    bytes="$(gzip -dc "$work/$uid.img.gz" 2>> "$log" | wc -c)" \
+    bytes="$(gzip -dc "$dir/$uid.img.gz" 2>> "$log" | wc -c)" \
       || refuse "image $n of $total's snapshot is no gzip"
     need=$((need + bytes))
   done
@@ -243,17 +316,68 @@ copy_backup() (
     n=$((n + 1))
     # cp reads the pipe through /dev/stdin, writing each run of zeros as a hole.
     # shellcheck disable=SC2216
-    gzip -dc "$work/$uid.img.gz" 2>> "$log" \
-      | cp --sparse=always /dev/stdin "$work/$uid.img" 2>> "$log" \
+    gzip -dc "$dir/$uid.img.gz" 2>> "$log" \
+      | cp --sparse=always /dev/stdin "$dir/$uid.img" 2>> "$log" \
       || refuse "image $n of $total could not be decompressed"
-    rm -f -- "$work/$uid.img.gz"
+    rm -f -- "$dir/$uid.img.gz"
   done
-  job - copy digests "$work" || exit $?
+  job - copy digests "$dir" || exit $?
+}
+
+copy_backup() (
+  newest_manifest
+  manifest="$newest"
+  source_rclone cat "$SOURCE/platform/$manifest" > "$work/manifest.json" 2>> "$log" \
+    || refuse "the newest manifest could not be read"
+  plan "$manifest" || refuse "the newest manifest is no platform manifest of its own name"
+  printf '%s\n' "$manifest" > "$work/manifest.name"
+  fetch source_rclone "$SOURCE" "$work"
+  archive="$(sed -n 's/^archive //p' "$work/plan.private")"
   mkdir -m 700 "$work/data"
   tar -xzf "$work/$archive" -C "$work/data" --no-same-owner 2>> "$log" \
     || refuse "the archive could not be extracted whole"
   : > "$work/copy.done"
-  say "the copy holds the archive and ${total} images"
+  say "the copy holds the archive and $(grep -c '^image ' "$work/plan.private") images"
+)
+
+# The window's final backup copied off-site, then read back and held to the copy's manifest.
+offsite_copy() (
+  manifest="$(cat "$work/manifest.name" 2>/dev/null)" || true
+  [[ "$manifest" =~ $MANIFEST_NAME ]] \
+    || refuse "this run's copy names no manifest: run clean, then census"
+  newest_manifest
+  [[ "$newest" == "$manifest" ]] \
+    || refuse "the backup remote's newest manifest is not the one this run's copy was made from"
+  archive="$(sed -n 's/^archive //p' "$work/plan.private")"
+  images=()
+  mapfile -t images < <(sed -n 's/^image //p' "$work/plan.private")
+  total="${#images[@]}"
+
+  both_rclone copyto "$SOURCE/platform/$manifest" "$OFFSITE/platform/$manifest" 2>> "$log" \
+    || refuse "the manifest could not be copied off-site"
+  both_rclone copyto "$SOURCE/$archive" "$OFFSITE/$archive" 2>> "$log" \
+    || refuse "the archive could not be copied off-site"
+  n=0
+  for each in "${images[@]}"; do
+    read -r uid sid <<< "$each"
+    n=$((n + 1))
+    both_rclone copyto "$SOURCE/$uid/$sid.img.gz" "$OFFSITE/$uid/$sid.img.gz" 2>> "$log" \
+      || refuse "image $n of $total's snapshot could not be copied off-site"
+  done
+
+  # Read back from the off-site bucket alone, into a folder of its own, and held to the
+  # manifest the copy was made from.
+  back="$work/offsite"
+  rm -rf -- "$back"
+  mkdir -m 700 "$back"
+  offsite_rclone cat "$OFFSITE/platform/$manifest" > "$back/manifest.json" 2>> "$log" \
+    || refuse "the off-site manifest could not be read back"
+  cmp -s "$back/manifest.json" "$work/manifest.json" \
+    || refuse "the off-site manifest read back is not the copy's"
+  fetch offsite_rclone "$OFFSITE" "$back"
+  rm -rf -- "$back"
+  say "the off-site copy holds the manifest, the archive and ${total} images, each read back" \
+      "and held to the manifest's digests"
 )
 
 # --- The images' mounts, for one job ------------------------------------------------------
@@ -338,6 +462,11 @@ case "$mode" in
     mkdir -m 700 "$work/census"
     job "$work/census" census "$work" --tiers "$control" \
       --table "$work/census/census.private.tsv"
+    ;;
+  offsite)
+    has_copy
+    use_image
+    offsite_copy
     ;;
   bundle)
     has_copy

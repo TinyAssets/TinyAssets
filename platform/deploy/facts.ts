@@ -79,9 +79,11 @@ function named(field: (config: Config) => readonly string[]): readonly string[] 
   return Object.freeze([...new Set(WORKERS.flatMap((worker) => field(configOf(worker))))]);
 }
 
-/** The R2 buckets the Workers bind. */
-export const BUCKETS = named((config) =>
-  ((config["r2_buckets"] ?? []) as { bucket_name: string }[]).map((bucket) => bucket.bucket_name));
+/** The R2 buckets the kit makes: the ones the Workers bind, then the unbound (`platform.json`). */
+export const BUCKETS: readonly string[] = Object.freeze([...new Set([
+  ...named((config) =>
+    ((config["r2_buckets"] ?? []) as { bucket_name: string }[]).map((bucket) => bucket.bucket_name)),
+  ...platform.buckets.unbound])]);
 
 /**
  * The queues the kit makes: the ones the Workers send to (their producers'; a consumer only
