@@ -144,10 +144,4 @@ export class SandboxSlots extends DurableObject<SlotsEnv> {
                      "waiting ORDER BY seq LIMIT 1)");
     await this.#ring();
   }
-
-  /** How the line stands, for tests and the founder's look: owners in order. */
-  async line(): Promise<string[]> {
-    return this.#sql.exec<{ owner: string }>("SELECT owner FROM waiting ORDER BY seq")
-      .toArray().map((row) => row.owner);
-  }
 }

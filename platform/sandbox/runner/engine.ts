@@ -144,9 +144,6 @@ export interface Invocation {
 export function invocation(record: SourceRecord, start: StartDoc,
                            inherited: Readonly<Record<string, string | undefined>>,
                            options: { readonly continued: boolean; readonly prompt?: string;
-                                      readonly resume?: boolean;
-                                      /** A prefix of every path: none in the sandbox. */
-                                      readonly root?: string;
                                       /** The run's own home and system directory. */
                                       readonly home: string; readonly system: string;
                                       /** A `continue_in_cwd` conversation's own cwd. */
@@ -156,14 +153,13 @@ export function invocation(record: SourceRecord, start: StartDoc,
       || !cli.credential.includes(start.credential)) {
     throw new Error(`engine ${record.id} does not run on ${start.credential}`);
   }
-  const root = options.root ?? "";
   const home = options.home;
   const system = options.system;
-  const agentDir = `${root}${AGENTS_DIR}/${start.agent}`;
+  const agentDir = `${AGENTS_DIR}/${start.agent}`;
   const mcp = "unsupported" in cli.mcp ? null : cli.mcp;
   const secretInHeader = mcp?.template?.includes("{run_secret}") === true;
   const values: Record<string, string> = {
-    bin: `${root}${binPath(record)}`, home, system, agent: start.agent,
+    bin: binPath(record), home, system, agent: start.agent,
     mcp_url: secretInHeader ? start.urls.mcp_bare : start.urls.mcp,
     run_secret: runSecret(start.urls.mcp),
   };
@@ -201,8 +197,8 @@ export function invocation(record: SourceRecord, start: StartDoc,
     throw new Error("a run's HOME is its engine home");
   }
   // Which invocation: a resume by session id, a continued cwd, or a new conversation.
-  const resumed = options.resume !== false && (cli.engine.resume === "session_id"
-    ? start.session_id !== null : options.continued);
+  const resumed = cli.engine.resume === "session_id" ? start.session_id !== null
+    : options.continued;
   const base = resumed ? cli.engine.resume_argv : cli.engine.argv;
   const prompt = options.prompt ?? start.prompt;
   const promptValues = { ...values, prompt };

@@ -23,16 +23,16 @@ export interface Identity {
   readonly gid: number;
 }
 
-/** The template's users, by name, from its `/etc/passwd` (under the runner's root). */
-export function users(root: string): Identity[] {
-  return readFileSync(`${root}/etc/passwd`, "utf8").split("\n").flatMap((line) => {
+/** The template's users, by name, from its `/etc/passwd`. */
+export function users(): Identity[] {
+  return readFileSync("/etc/passwd", "utf8").split("\n").flatMap((line) => {
     const [name, , uid, gid] = line.split(":");
     return name && uid && gid ? [{ name, uid: Number(uid), gid: Number(gid) }] : [];
   });
 }
 
-export function group(root: string, name: string): number {
-  for (const line of readFileSync(`${root}/etc/group`, "utf8").split("\n")) {
+export function group(name: string): number {
+  for (const line of readFileSync("/etc/group", "utf8").split("\n")) {
     const [found, , gid] = line.split(":");
     if (found === name) {
       return Number(gid);
@@ -41,8 +41,8 @@ export function group(root: string, name: string): number {
   throw new Error(`the template has no group ${name}`);
 }
 
-export function user(root: string, name: string): Identity {
-  const found = users(root).find((each) => each.name === name);
+export function user(name: string): Identity {
+  const found = users().find((each) => each.name === name);
   if (found === undefined) {
     throw new Error(`the template has no user ${name}`);
   }
@@ -56,10 +56,10 @@ export const POOL_PREFIX = "ta-run-";
  * directory, one a pool user; a lock whose holder is gone is taken over (its holder died).
  * Every process the user still has is killed first.
  */
-export function take(root: string, state: string): Identity {
+export function take(state: string): Identity {
   const dir = `${state}/pool`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const candidate of users(root).filter((each) => each.name.startsWith(POOL_PREFIX))) {
+  for (const candidate of users().filter((each) => each.name.startsWith(POOL_PREFIX))) {
     if (!tryLock(`${dir}/${candidate.name}`)) {
       continue;  // a live run's
     }

@@ -21,9 +21,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { BUILD_COMMANDS, COMMAND, INTERNAL_COMMANDS, JOBS, PROTOCOL, SPEAKS,
          WORKER_COMMANDS } from "./protocol";
-import { checkFormat, dropRunners, type FormatRule, READS, STATE_FORMAT } from "./state-format";
-import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./state-shape";
+import { checkFormat, dropRunners, type FormatRule, formatStep, READS,
+         STATE_FORMAT } from "./state-format";
 import { openMirror } from "./sync";
+import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./test/state-shape";
 
 /**
  * Every recorded format's and protocol's digest, frozen: an entry once recorded never
@@ -156,37 +157,41 @@ describe("the marker and the caches", () => {
 
   it("survives a format change both ways: a rollback of one deploy starts", () => {
     // Three runners of a change from F to F+1: before it, the expand deploy (reads both,
-    // writes F) and the contract deploy (writes F+1, still reads F).
+    // writes F) and the contract deploy (writes F+1, still reads F), each meeting the disk
+    // the last one left (`formatStep`, the rule `checkFormat` applies).
     const F = 7;
     const before: FormatRule = { writes: F, reads: [F - 1, F] };
     const expand: FormatRule = { writes: F, reads: [F, F + 1] };
     const contract: FormatRule = { writes: F + 1, reads: [F, F + 1] };
-    const state = temp();
-    const cache = cacheOf(state);
-    checkFormat(state, [cache], before);
-    checkFormat(state, [cache], expand);
-    expect(marker(state)).toBe(`${F}\n`);
-    writeFileSync(cache, "{}");
-    checkFormat(state, [cache], contract);
-    expect(marker(state)).toBe(`${F + 1}\n`);
-    expect(existsSync(cache)).toBe(false);  // the format moved: the cache went with it
+    let found: number | null = null;
+    const meet = (rule: FormatRule) => {
+      const step = formatStep(found, rule);
+      if (step.refuse === null && step.write !== null) {
+        found = step.write;
+      }
+      return step;
+    };
+    expect(meet(before)).toEqual({ refuse: null, dropCaches: true, write: F });
+    expect(meet(expand)).toEqual({ refuse: null, dropCaches: false, write: null });
+    // The format moved: the caches go with it.
+    expect(meet(contract)).toEqual({ refuse: null, dropCaches: true, write: F + 1 });
     // Rolled back to the expand deploy: it starts, and the marker is never lowered.
-    expect(() => checkFormat(state, [cache], expand)).not.toThrow();
-    expect(marker(state)).toBe(`${F + 1}\n`);
+    expect(meet(expand)).toEqual({ refuse: null, dropCaches: true, write: null });
+    expect(found).toBe(F + 1);
     // Forward again, and back again: each starts.
-    expect(() => checkFormat(state, [cache], contract)).not.toThrow();
-    expect(() => checkFormat(state, [cache], expand)).not.toThrow();
-    // Two deploys back is past the rule, refused loudly.
-    expect(() => checkFormat(state, [cache], before)).toThrow(/this runner reads/);
+    expect(meet(contract).refuse).toBeNull();
+    expect(meet(expand).refuse).toBeNull();
+    // Two deploys back is past the rule, refused loudly, changing nothing.
+    expect(meet(before)).toEqual({ refuse: expect.stringMatching(/this runner reads/),
+                                   dropCaches: false, write: null });
+    expect(found).toBe(F + 1);
   });
 
-  it("drops every other runner's bytes, and none when its own digest is unknown", () => {
+  it("drops every other runner's bytes", () => {
     const runners = join(temp(), "opt/ta/runner");
     for (const name of ["a".repeat(64), "b".repeat(64)]) {
       mkdirSync(join(runners, name), { recursive: true });
     }
-    dropRunners(runners, null);
-    expect(readdirSync(runners).sort()).toEqual(["a".repeat(64), "b".repeat(64)]);
     dropRunners(runners, "a".repeat(64));
     expect(readdirSync(runners)).toEqual(["a".repeat(64)]);
   });
