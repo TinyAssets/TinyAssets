@@ -340,3 +340,93 @@ def test_the_workflow_runs_the_canary_by_hand_and_nothing_else():
         "TINYASSETS_WIKI_CANARY_TOKEN": "${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}",
         "TA_PROBE_KEY": "${{ secrets.TA_PROBE_KEY }}",
     }
+
+
+# --- the real senders under the timed wrappers ----------------------------------------
+
+import inspect  # noqa: E402
+import urllib.error  # noqa: E402
+
+
+@pytest.mark.parametrize("fault, sends", [
+    (TimeoutError("The read operation timed out"), 2),             # a read timeout
+    (urllib.error.URLError(TimeoutError("timed out")), 2),          # a connect timeout
+    (urllib.error.URLError(ConnectionRefusedError(111, "refused")), 1),
+    (urllib.error.HTTPError(URL, 502, "Bad Gateway", {}, None), 1),
+])
+@pytest.mark.parametrize("send", ["_post", "_get_json"])
+def test_only_a_timeout_of_the_real_senders_is_sent_again(monkeypatch, fault, sends, send):
+    timeouts: list[float] = []
+
+    def urlopen(request, timeout=None, context=None):
+        timeouts.append(timeout)
+        raise fault
+
+    monkeypatch.setattr(public.urllib.request, "urlopen", urlopen)
+    args = ((URL, public._INIT_PAYLOAD, 30.0) if send == "_post" else (METADATA, 30.0))
+    with canary._timing(False, retry=True), pytest.raises(public.CanaryError):
+        getattr(public, send)(*args)
+    assert timeouts == [30.0] * sends
+
+
+def _bound(fn, args, kwargs):
+    bound = inspect.signature(fn).bind(*args, **kwargs)
+    bound.apply_defaults()
+    return dict(bound.arguments)
+
+
+def test_the_timed_senders_change_nothing_about_the_call(monkeypatch):
+    post, get_json = public._post, public._get_json
+    seen: list[dict] = []
+    monkeypatch.setattr(public, "_post", lambda *a, **k: seen.append(_bound(post, a, k))
+                        or (200, {}, b"body"))
+    monkeypatch.setattr(public, "_get_json", lambda *a, **k: seen.append(_bound(get_json, a, k))
+                        or {"doc": 1})
+    calls = [(post, "_post", (URL, {"method": "tools/list"}, 30.0, "s1"),
+              {"accepted_http_statuses": frozenset({403}), "bearer": "b"}),
+             (post, "_post", (URL, public._INIT_PAYLOAD, 30.0), {}),
+             (get_json, "_get_json", (METADATA, 30.0), {})]
+    with canary._timing(False, retry=True):
+        answers = [getattr(public, name)(*a, **k) for _, name, a, k in calls]
+    assert seen == [_bound(fn, a, k) for fn, _, a, k in calls]
+    assert answers == [(200, {}, b"body"), (200, {}, b"body"), {"doc": 1}]
+
+
+@pytest.mark.parametrize("side", ["old", "new"])
+def test_the_senders_are_put_back_even_on_a_failure(monkeypatch, side):
+    Doors(monkeypatch, side=side)
+    senders = (public._post, public._get_json)
+    inside: list[bool] = []
+
+    def boom(*_):
+        inside.append((public._post, public._get_json) != senders)
+        raise RuntimeError("an uncaught failure inside the block")
+
+    monkeypatch.setattr(public, "main", boom)
+    monkeypatch.setattr(canary, "assert_new_challenge", boom)
+    with pytest.raises(RuntimeError):
+        canary.run(side, URL, 30.0, False, unkeyed=side == "new")
+    assert inside == [True]
+    assert (public._post, public._get_json) == senders
+
+
+@pytest.mark.parametrize("kind", ["post", "get"])
+def test_the_doors_challenge_is_never_sent_again(monkeypatch, kind):
+    # The side is read (an initialize, the document), then the doors' own challenge (an
+    # initialize, the document): the second of ``kind`` times out, and is sent once.
+    Doors(monkeypatch)
+    senders = {"post": public._post, "get": public._get_json}
+    sent: list[str] = []
+
+    def slow(name):
+        def send(url, *args, **kwargs):
+            sent.append(name)
+            if name == kind and sent.count(name) == 2:
+                _timeout(url)
+            return senders[name](url, *args, **kwargs)
+        return send
+
+    monkeypatch.setattr(public, "_post", slow("post"))
+    monkeypatch.setattr(public, "_get_json", slow("get"))
+    assert canary.run("new", URL, 30.0, False, unkeyed=True) == 2
+    assert sent.count(kind) == 2
