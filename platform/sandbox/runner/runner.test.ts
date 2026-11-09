@@ -10,6 +10,7 @@
  * a home's settings outliving its run). Cancel, `events_busy`, the renewal's held posts and
  * resume, the projection and big files are here too.
  */
+import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:net";
 import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readdirSync,
          readFileSync, rmSync, statSync, symlinkSync,
@@ -22,7 +23,7 @@ import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
 import { readEvent } from "../../contract/src/run-events";
-import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
+import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
 
 import { invocation } from "./engine";
 import { lineEvent } from "./frames";
@@ -30,8 +31,8 @@ import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from ".
 import { SCRATCH_ENV } from "./scratch";
 import { JOB_FILES, PROTOCOL, type StartDoc } from "./protocol";
 import { READS, STATE_FORMAT } from "./state-format";
-import { Doors, POOL_UIDS, runnerBundle, Sandbox, simulated, startDoc, SYNC_UID,
-         TA_GID } from "./test/harness";
+import { Doors, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
+         SYNC_UID, TA_GID } from "./test/harness";
 import { NODE } from "./test/layout";
 import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
@@ -587,7 +588,7 @@ describe("the vendor's own sign-in", () => {
   it("is checked at every template build up to its prompt, its shape the record's", () => {
     box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
                                                  code: true } });
-    const probe = box.runner("login-probe", "claude-code");
+    const probe = box.probe("login-probe", "claude-code");
     expect(probe.code).toBe(0);
     expect(JSON.parse(probe.out)).toEqual({ engine: "claude-code", region: null, ok: true,
                                             reason: null, host: "claude.com",
@@ -596,17 +597,35 @@ describe("the vendor's own sign-in", () => {
     box.cli("claude-code", { lines: [], login: { lines: [CLAUDE_PAGE.replace(
       "https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback",
       "http%3A%2F%2Flocalhost%3A5454")], code: true } });
-    const local = box.runner("login-probe", "claude-code");
+    const local = box.probe("login-probe", "claude-code");
     expect(local.code).toBe(3);
     expect(JSON.parse(local.out)).toMatchObject({ ok: false,
                                                   reason: expect.stringMatching(/localhost/) });
     // A CLI version whose page moved (another host) fails the build, in plain words.
     box.cli("claude-code", { lines: [], login: { lines: [CLAUDE_PAGE.replace(
       "https://claude.com/cai/", "https://claude.ai/")], code: true } });
-    const moved = box.runner("login-probe", "claude-code");
+    const moved = box.probe("login-probe", "claude-code");
     expect(moved.code).toBe(3);
     expect(JSON.parse(moved.out)).toMatchObject({
       ok: false, reason: "it showed a link that is not the vendor's own sign-in page" });
+  });
+
+  it("is checked by the probes alone, and they run only beside the runner built with them",
+     () => {
+    box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
+                                                 code: true } });
+    // The runner takes no probe command: the probes are a bundle of their own.
+    for (const command of ["login-probe", "route-probe", "matcher-probe"]) {
+      const refused = box.runner(command, "claude-code");
+      expect(refused.code, refused.why).toBe(2);
+      expect(refused.err).toContain(`no command ${command}`);
+    }
+    // With their runner gone from the sandbox, the probes refuse loudly.
+    expect(box.exec(["rm", "-rf", `/opt/ta/runner/${box.digest}`]).status).toBe(0);
+    const alone = box.probe("login-probe", "claude-code");
+    expect(alone.code, alone.why).toBe(1);
+    expect(alone.err).toContain(`the runner ${box.digest} the probes were built beside is not ` +
+                                "installed here");
   });
 
   it("relays nothing credential-shaped, and ends the sign-in refused", async () => {
@@ -1009,6 +1028,24 @@ describe("an API-key run's base URL (codexurl_research.md)", () => {
   });
 });
 
+describe("the matcher probe", () => {
+  it("times the sync-ignore automaton's step in the sandbox, judged against STEP_NS", () => {
+    const probed = box.probe("matcher-probe");
+    const found = JSON.parse(probed.out) as { step_ns: number; ceiling_ns: number; ok: boolean };
+    expect(found.ceiling_ns).toBe(STEP_NS);
+    expect(found.step_ns).toBeGreaterThan(0);
+    expect(found.ok).toBe(found.step_ns <= STEP_NS);
+    expect(probed.code, probed.why).toBe(found.ok ? 0 : 3);
+  });
+});
+
+/** The probes' plan's route steps (`probes.ts` `plan`), as the template's checks run them. */
+const ROUTE_STEPS = (JSON.parse(execFileSync(process.execPath, [probesBundle(), "plan"],
+                                             { encoding: "utf8" })) as
+  { sandboxes: { steps: { check: string; argv: string[] }[] }[] }).sandboxes
+  .flatMap((each) => each.steps).filter((step) => step.check === "route")
+  .map((step) => step.argv);
+
 describe("the route probe (codexurl_research.md Q4)", () => {
   it("passes a path under the door's prefix only", () => {
     expect(underPrefix("/r/x/c/y/v1/responses", "/r/x/c/y/v1")).toBe(true);
@@ -1137,8 +1174,14 @@ describe("the route probe (codexurl_research.md Q4)", () => {
   type Probed = { engine: string; provider: string; ok: boolean; reason: string | null;
                   turns: { exit: number; answered: boolean; resumed: boolean }[];
                   compacted: boolean | null; requests: string[] };
+  /** Every route step of the probes' plan, run in order: its lines, and 3 if any failed. */
+  const routes = () => {
+    const ran = ROUTE_STEPS.map((argv) => box.probe(...argv));
+    return { code: ran.every((each) => each.code === 0) ? 0 : 3,
+             out: ran.map((each) => each.out.trim()).join("\n") };
+  };
   const probe = () => {
-    const probed = box.runner("route-probe", "1.1.1.1");
+    const probed = routes();
     return { code: probed.code, lines: probed.out.trim().split("\n").map((line) =>
       JSON.parse(line) as Probed) };
   };
@@ -1210,7 +1253,7 @@ describe("the route probe (codexurl_research.md Q4)", () => {
     honest();
     box.cli("codex", { lines: [], requests: [{ url: "http://192.0.2.1:9/v1/responses",
                                                headers: { authorization: "Bearer x" } }] });
-    const probed = box.runner("route-probe", "1.1.1.1");
+    const probed = routes();
     expect(probed.code).toBe(3);
     const codex = probed.out.trim().split("\n").map((line) => JSON.parse(line) as
       { engine: string; ok: boolean; reason: string }).find((line) => line.engine === "codex")!;

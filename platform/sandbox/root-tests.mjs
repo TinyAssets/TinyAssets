@@ -94,7 +94,7 @@ function boxNode() {
   let suite = null;
   let node = "a temp dir";
   try {
-    suite = mkdtempSync(join(tmpdir(), "ta-suite-"));
+    suite = mkdtempSync(join(tmpdir(), `ta-suite-${process.pid}-`));
     node = join(suite, "node");
     copyFileSync(process.execPath, node);
     chownSync(node, 0, 0);
@@ -112,6 +112,29 @@ function boxNode() {
   return { suite, node };
 }
 
+/**
+ * What suites killed outright left (their temp dir outlives them, its Node copy about 118 MB),
+ * removed before this one makes its own: each is named by its suite's pid (`boxNode`), and one
+ * whose suite no longer runs is gone. Another suite's that still runs is kept.
+ */
+function sweep() {
+  for (const name of readdirSync(tmpdir())) {
+    const found = /^ta-suite-([0-9]+)-[A-Za-z0-9]{6}$/.exec(name);
+    if (found === null || Number(found[1]) === process.pid) {
+      continue;
+    }
+    try {
+      process.kill(Number(found[1]), 0);
+      continue;  // its suite runs
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        continue;
+      }
+    }
+    rmSync(join(tmpdir(), name), { recursive: true, force: true });
+  }
+}
+
 function giveBack(path, uid, gid) {
   const stat = lstatSync(path);
   if (stat.uid === 0) {
@@ -125,6 +148,7 @@ function giveBack(path, uid, gid) {
 }
 
 if (process.getuid() === 0) {
+  sweep();
   const made = boxNode();
   const refused = made.refused ?? preflight();
   const suite = made.suite;

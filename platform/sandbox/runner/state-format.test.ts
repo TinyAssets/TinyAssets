@@ -19,7 +19,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { BUILD_COMMANDS, COMMAND, INTERNAL_COMMANDS, JOBS, PROTOCOL, SPEAKS,
+import { COMMAND, INTERNAL_COMMANDS, JOBS, PROTOCOL, RETIRED_IN_1, SPEAKS,
          WORKER_COMMANDS } from "./protocol";
 import { checkFormat, dropRunners, type FormatRule, formatStep, READS,
          STATE_FORMAT } from "./state-format";
@@ -201,10 +201,14 @@ describe("the Worker's protocol with the runner", () => {
   it("names every command the runner takes, as its protocol's record says", () => {
     const named = Object.values(COMMAND);
     expect(new Set(named).size).toBe(named.length);
-    expect([...named].sort()).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
-    // Each is the Worker's, the runner's own, or the template build's: one of them alone.
-    expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS, ...BUILD_COMMANDS].sort())
-      .toEqual([...named].sort());
+    // Each the runner takes is the Worker's or the runner's own: one of them alone.
+    expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS].sort()).toEqual([...named].sort());
+    // Protocol 1 records those and the retired probe commands, which the runner takes none
+    // of (`probes.ts` runs them, its own table): every other is in its record.
+    expect(RETIRED_IN_1.filter((command) => (named as readonly string[]).includes(command)))
+      .toEqual([]);
+    expect([...named, ...(PROTOCOL === 1 ? RETIRED_IN_1 : [])].sort())
+      .toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
   });
 
   it("has the Worker send only commands every protocol it speaks records", () => {

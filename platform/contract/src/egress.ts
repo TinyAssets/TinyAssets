@@ -43,6 +43,31 @@ export const EGRESS_ORIGIN = `https://${EGRESS_HOST}`;
  * §5.4.1); 8b's live probe checks that the sandbox resolves through it and nothing else.
  */
 export const DNS_SERVERS: readonly string[] = Object.freeze(["1.1.1.1"]);
+/** E2B's `ALL_TRAFFIC`: every address, what a sandbox's `denyOut` names. */
+export const ALL_TRAFFIC = "0.0.0.0/0";
+
+/**
+ * A sandbox's `allowOut` for `hosts`: each once, sorted, then the egress door, last and
+ * always (the owner's network document, the Worker's widening for a sign-in, and the
+ * template's checks all list it so).
+ */
+export function allowList(hosts: Iterable<string>): string[] {
+  const names = new Set(hosts);
+  names.delete(EGRESS_HOST);
+  return [...[...names].sort(), EGRESS_HOST];
+}
+
+/**
+ * A network that lets out only `hosts` and the egress door, denies everything else, and
+ * pins the resolvers; no transform rules (the owner's network document adds the door's).
+ */
+export function closedNetwork(hosts: Iterable<string>): {
+  allowOut: string[]; denyOut: string[]; dnsServers: string[];
+  rules: Record<string, readonly unknown[]>;
+} {
+  return { allowOut: allowList(hosts), denyOut: [ALL_TRAFFIC], dnsServers: [...DNS_SERVERS],
+           rules: {} };
+}
 
 /** The header E2B's transform sets to the sandbox's egress token. */
 export const SANDBOX_HEADER = "x-ta-sandbox";

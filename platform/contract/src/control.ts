@@ -41,9 +41,7 @@ export type TierName = (typeof TIER_NAMES)[number];
 /**
  * The most live runs any tier record may give: what the owner-bound guard costs the owner's
  * database for. A frozen bound, which the owner's schema spells (the frozen-bounds guard holds
- * them equal). `owner/src/tier.ts` spells it again as text for the sandbox template's tag
- * (`sandbox/template/build.py`), held to this one by the template guard, until fix A6 splits
- * that build.
+ * them equal). The sandbox template's run pool is this many users (`sandbox/template/image.ts`).
  */
 export const RUNS_CEILING = 1000;
 /**
