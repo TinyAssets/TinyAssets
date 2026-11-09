@@ -2223,11 +2223,11 @@ describe("platform-deploy.yml", () => {
     expect(pair!.needs).toBe("plan");
     expect(pair!.environment).toBe("production");
     expect(pair!.env).toBeUndefined();
+    // No Python: the checks are checks.ts, on the E2B client (image.py's SDK builds alone).
     expect(invoked(pair!, {})).toEqual([
       { argv: "npm ci", env: [] },
-      { argv: "python3 -m pip install --require-hashes -r " +
-              "platform/sandbox/template/requirements.txt", env: [] },
       { argv: `${KIT} --mode pair`, env: ["E2B_API_KEY"] }]);
+    expect(JSON.stringify(pair)).not.toMatch(/setup-python|pip install/);
     // The modes whose rows deploy Workers are the ones the pair job runs for.
     const deploying = (Object.keys(MODES) as Mode[]).filter((mode) =>
       MODES[mode].applies && MODES[mode].steps.some((each) => each.name === "workers"));
