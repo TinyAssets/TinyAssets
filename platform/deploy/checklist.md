@@ -507,10 +507,13 @@ newer manifest than the copy's is on the store, and that run's final backup is t
 no one (census a new run first).
 
 **A host that fails is still cleaned.** `clean` destroys the run's Droplet once it is held to
-its name and tags, even when its set-up never finished, its key tag is not one, or it lost the
-reserved IP: that host is never reached, and its disk (the copy) goes with it. It destroys
+its name, tags and kind, even when its set-up never finished, its key tag is not one, or it lost
+the reserved IP: that host is never reached, and its disk (the copy) goes with it. It destroys
 nothing when the host's own clean refuses, nor any Droplet not so held: delete such a one by
-hand (DigitalOcean → Droplets → the `import-window` tag), as the summary names it.
+hand (DigitalOcean → Droplets → the `import-window` tag), as the summary names it. The kind is
+census's tag `ta-kind-rehearsal` or `ta-kind-window`: clean the window's run with `rehearsal`
+false and its confirm, as it was made; a rehearsal-kind dispatch is refused before the host is
+reached or destroyed.
 
 **After the admit, before `routes`,** delete the doors' copy
 (`npx wrangler secret delete IMPORT_KEY --name tinyassets-doors`), since a replayed admit is

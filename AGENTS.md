@@ -59,5 +59,5 @@ Python-stack sandbox, filesystem or process-limit work needs
 `npm run test:memory -w owner`. A skip is not a pass. Secrets: `set -a; source
 scripts/load_secrets.sh; set +a`; platform secrets are the GitHub `production`
 environment's (the Cloudflare token is a repository secret; the account id is not a secret:
-it is the repository variable `CLOUDFLARE_ACCOUNT_ID`, and the deploy kit reads it from the
-token's zone).
+`import-window.yml` reads the repository variable `CLOUDFLARE_ACCOUNT_ID`, and the deploy kit
+resolves it from the token's zone).
