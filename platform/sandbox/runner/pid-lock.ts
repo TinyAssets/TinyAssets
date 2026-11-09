@@ -4,13 +4,13 @@
  * its name and linked into place, so no lock is ever seen half made. A lock is taken over
  * once its holder is gone: its process dead, or of another boot (a pid repeats after a
  * reboot, which a lock on disk outlives). A wait sleeps, so the waiter's event loop goes on
- * (a run's heartbeats), backing off from `FIRST_MS` to `MOST_MS`, and fails loudly past its
- * bound.
+ * (a run's heartbeats), at `FIRST_MS` and backing off to at most its caller's longest
+ * sleep, and fails loudly past its bound.
  */
 import { randomBytes } from "node:crypto";
 import { closeSync, linkSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 
-/** A wait's first sleep, and its longest: the runner's flush cadence, four times over. */
+/** A wait's first sleep, and by default its longest: the runner's flush cadence, four times. */
 const FIRST_MS = 20;
 const MOST_MS = 1_000;
 
@@ -88,12 +88,13 @@ export function unlock(path: string): void {
 
 /**
  * `act` run holding the lock at `path`, waited for at most `waitMs` (unbounded: `Infinity`);
- * past it, `refused` is thrown.
+ * past it, `refused` is thrown. Each sleep doubles from `FIRST_MS` to `mostMs` (`FIRST_MS`
+ * itself: a flat retry).
  */
 export async function withLock<T>(path: string, waitMs: number, refused: () => Error,
-                                  act: () => T | Promise<T>): Promise<T> {
+                                  act: () => T | Promise<T>, mostMs = MOST_MS): Promise<T> {
   const until = Date.now() + waitMs;
-  for (let wait = FIRST_MS; !tryLock(path); wait = Math.min(wait * 2, MOST_MS)) {
+  for (let wait = FIRST_MS; !tryLock(path); wait = Math.min(wait * 2, mostMs)) {
     if (Date.now() >= until) {
       throw refused();
     }

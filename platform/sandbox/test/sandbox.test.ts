@@ -200,8 +200,12 @@ describe("a start", () => {
   it("answers signin_required, and launches nothing, where no login is in that sandbox", async () => {
     const who = owner();
     expect(await stub(who).start(who, start())).toEqual({ started: false, code: CODES.signin });
-    expect((await seen()).commands.map((command) => command.argv[1]))
+    const state = await seen();
+    expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "signin-check"]);
+    // The check comes first: no start document waits in the inbox for a run refused.
+    expect(Object.keys(state.files).filter((path) => path.includes("/var/lib/ta/inbox/")))
+      .toEqual([]);
   });
 
   it("runs an API-key run with no sign-in check and no vendor hosts", async () => {

@@ -21,7 +21,7 @@ import { bundledSources } from "../../sources/src/catalog";
 
 import { binPath } from "./engine";
 import { tryLock } from "./pid-lock";
-import type { StartDoc } from "./protocol";
+import { inboxDoc, LEASE_FILE, type LeaseFile, type SigninDoc, type StartDoc } from "./protocol";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 let bundled: string | null = null;
@@ -548,23 +548,25 @@ export class Sandbox {
 
   /** A run's start and the lease's secrets, as the sandbox Worker leaves them. */
   start(start: StartDoc, authority = "owner"): void {
-    writeFileSync(this.path(`/var/lib/ta/inbox/${start.run}.json`), JSON.stringify(start));
-    writeFileSync(this.path("/var/lib/ta/lease.json"), JSON.stringify({
-      lease: start.lease, authority,
-      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } }));
+    writeFileSync(this.path(inboxDoc(start.run)), JSON.stringify(start));
+    const lease: LeaseFile = { lease: start.lease, authority,
+      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } };
+    writeFileSync(this.path(LEASE_FILE), JSON.stringify(lease));
   }
 
   /** A sign-in's document and the lease's secrets, as the sandbox Worker leaves them. */
   login(doc: { id: string; engine: string; region?: string | null; mode?: "in" | "out";
                authority?: string }, doors: Doors): void {
-    writeFileSync(this.path(`/var/lib/ta/inbox/${doc.id}.json`), JSON.stringify({
+    const signin: SigninDoc = {
       id: doc.id, engine: doc.engine, region: doc.region ?? null, mode: doc.mode ?? "in",
       authority: doc.authority ?? "owner",
       urls: { events: `${doors.origin}/signin/${doc.id}/events`,
-              signin: `${doors.origin}/signin` } }));
-    writeFileSync(this.path("/var/lib/ta/lease.json"), JSON.stringify({
-      lease: { lease_id: "b".repeat(32), epoch: 1 }, authority: doc.authority ?? "owner",
-      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } }));
+              signin: `${doors.origin}/signin` } };
+    writeFileSync(this.path(inboxDoc(doc.id)), JSON.stringify(signin));
+    const lease: LeaseFile = { lease: { lease_id: "b".repeat(32), epoch: 1 },
+      authority: doc.authority ?? "owner",
+      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } };
+    writeFileSync(this.path(LEASE_FILE), JSON.stringify(lease));
   }
 
   remove(): void {

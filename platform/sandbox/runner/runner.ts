@@ -288,8 +288,6 @@ function cancelJob(kind: JobKind, id: string): number {
 /** A message on a job's channel: its verb, then what it carries. */
 const VERB = Object.freeze({ renewing: "renewing", renewed: "renewed", code: "code" } as const);
 type Verb = (typeof VERB)[keyof typeof VERB];
-/** What a job answers a message it acted on. */
-const DONE = "done\n";
 
 /** A job's channel, the socket its runner listens on while it runs. */
 function channelOf(kind: JobKind, id: string): string {
@@ -314,42 +312,36 @@ function send(channel: string, verb: Verb, payload: string):
 
 /**
  * A message to a live job's runner on its channel, sent whatever the time, and its answer
- * (`DONE`) waited for until `deadline`; a runner not listening yet (just started) is asked
- * again at a fifth of the flush cadence while it lives, until `deadline`. Whether it
- * answered.
+ * waited for until `deadline`: the job closes the connection once it acted (or once it
+ * died). A runner not listening yet (just started) is asked again at a fifth of the flush
+ * cadence while it lives, until `deadline`.
  */
 async function tell(kind: JobKind, id: string, pid: number, verb: Verb,
-                    deadline: number): Promise<boolean> {
+                    deadline: number): Promise<void> {
   const channel = channelOf(kind, id);
   for (;;) {
-    const told = await new Promise<boolean | null>((resolve) => {
-      let reply = "";
+    const listening = await new Promise<boolean>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
       const connection = createConnection(channel, () => {
         connection.end(`${verb}\n`, () => {
           timer = setTimeout(() => connection.destroy(), Math.max(0, deadline - Date.now()));
         });
       });
-      connection.on("data", (data: Buffer) => {
-        reply += data.toString("utf8");
-      });
+      connection.resume();  // what the job sends back is not read: its close is the answer
       connection.on("error", (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
-          resolve(null);  // not listening yet
+          resolve(false);  // not listening yet
         }
       });
       connection.on("close", () => {
         if (timer !== null) {
           clearTimeout(timer);
         }
-        resolve(reply === DONE);
+        resolve(true);
       });
     });
-    if (told !== null) {
-      return told;
-    }
-    if (Date.now() >= deadline || !alive(pid)) {
-      return false;
+    if (listening || Date.now() >= deadline || !alive(pid)) {
+      return;
     }
     await new Promise((resolve) => setTimeout(resolve, FLUSH_MS / 5));
   }
@@ -360,7 +352,7 @@ async function tell(kind: JobKind, id: string, pid: number, verb: Verb,
  * process group and killed after its grace; its frames posted (`Poster`), a first heartbeat
  * then one at the flush cadence; and its channel, a socket in its root-only directory that
  * the runner's commands reach it by (`tell`): one message a connection, its verb on its
- * first line, answered `DONE` once acted on.
+ * first line, answered by its close once acted on.
  */
 class Job {
   readonly dir: string;
@@ -431,10 +423,9 @@ class Job {
 
   /**
    * Its channel open: each message to `act`, by its verb and what it carries (cut at `most`
-   * characters), answered `DONE` once `act` says it acted.
+   * characters), answered by the connection's close once `act` is done.
    */
-  listen(most: number, act: (verb: string, payload: string) => boolean | Promise<boolean>):
-      void {
+  listen(most: number, act: (verb: string, payload: string) => void | Promise<void>): void {
     const path = `${this.dir}/${JOB_FILES.socket}`;
     remove(path);  // one a runner before a reboot left
     this.#channel = createServer({ allowHalfOpen: true }, (socket) => {
@@ -447,8 +438,8 @@ class Job {
         const [verb, payload] = at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)];
         text = "";
         void (async () => {
-          const acted = await act(verb, payload);
-          socket.end(acted ? DONE : "");
+          await act(verb, payload);
+          socket.end();  // the answer: acted on
         })();
       });
       socket.on("error", () => undefined);
@@ -502,6 +493,8 @@ function sortedWalk(dir: string, skip?: (rel: string) => boolean): Generator<str
 
 /** How long a store's lock is waited for: one command's bound, then the call fails loudly. */
 const LOCK_WAIT_MS = COMMAND_MS;
+/** A store's lock is asked again every 20 ms, flat: every hold is short. */
+const STORE_RETRY_MS = 20;
 
 /**
  * The engine's store held by this process alone while `act` runs (a home copied from it, a
@@ -513,8 +506,10 @@ const LOCK_WAIT_MS = COMMAND_MS;
 async function withStore<T>(rec: SourceRecord, act: () => T): Promise<T> {
   const locks = `${STATE}/locks`;
   safeDirs(TOP, locks, 0o700);
-  return withLock(`${locks}/${rec.id}`, LOCK_WAIT_MS, () => new Error(
-    `the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`), act);
+  // `.lock`: a name no earlier runner's lock (a directory at `<id>`) ever had, so neither
+  // form is read by the other's runner, across an adoption or a rollback.
+  return withLock(`${locks}/${rec.id}.lock`, LOCK_WAIT_MS, () => new Error(
+    `the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`), act, STORE_RETRY_MS);
 }
 
 /**
@@ -1065,7 +1060,7 @@ async function syncAgent(job: SyncJob):
 /** The sync agent's own side (as `ta-sync`), one at a time in the sandbox by its lock. */
 async function syncCommand(): Promise<number> {
   const job = JSON.parse(readFileSync(0, "utf8")) as SyncJob;
-  return withLock(`${SYNC_HOME}/lock`, Number.POSITIVE_INFINITY,
+  return withLock(`${SYNC_HOME}/sync.lock`, Number.POSITIVE_INFINITY,
                   () => new Error("the sync agent's lock is held"), () => syncLocked(job));
 }
 
@@ -1412,17 +1407,13 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       await poster.drain();
       state.renewing = true;
       save();
-      return true;
-    }
-    if (verb === VERB.renewed) {
+    } else if (verb === VERB.renewed) {
       poster.holding = false;
       state.renewing = false;
       renewed = work.child !== null && work.child.exitCode === null;
       outbox.push({ type: "ta.renewed" });
       save();
-      return true;
     }
-    return false;
   });
   if (work.cancelled()) {
     work.stop();  // cancelled before its runner was up
@@ -1863,11 +1854,10 @@ async function loginRun(id: string): Promise<number> {
           if (verb !== VERB.code || login.accepts_code !== true
               || (shown.url === null && shown.code === null)
               || code === "" || code.length > SIGNIN_PASTE_MAX || /[\r\n]/.test(code)) {
-            return false;
+            return;
           }
           child.stdin!.write(`${code}\n`);
           outbox.push({ type: "ta.signin", state: "code_sent" });
-          return false;
         });
         // The vendor's code's lifetime (`expires`, cited), past which its prompt is dead.
         expiry = setTimeout(() => {
