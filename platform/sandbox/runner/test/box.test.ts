@@ -8,7 +8,8 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
+         writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -136,6 +137,10 @@ describe("the suite", () => {
       ], { env: { ...process.env, PATH: `${shims}:${process.env["PATH"]}` }, encoding: "utf8" });
       expect(done.status, done.stderr).toBe(2);
       expect(done.stderr).toMatch(/^root-tests: the runner's test sandboxes cannot be made on this host: a box of the preflight's own/);
+      // However the host refused, the preflight's probes wrote nothing of the host's.
+      for (const tree of ["/etc", "/usr"]) {
+        expect(readdirSync(tree).filter((name) => name.startsWith(".ta-")), tree).toEqual([]);
+      }
     } finally {
       rmSync(shims, { recursive: true, force: true });
     }
@@ -245,52 +250,31 @@ describe("a test sandbox's /etc", () => {
     expect(done.stdout).toMatch(/1 passed/);
   });
 
-  // A host whose /etc holds a large file another user may write (a CI image's toolchains):
-  // `prepare` makes it root's alone in the box, as it does a sandbox's, copying none of its
-  // bytes (the overlay's `metacopy`), and the host's stays as it was.
-  it("is the box's own where the host's /etc holds a large file anyone may write: prepare " +
-     "takes the write away in the box alone", () => {
-    const done = simulated('mkdir -p "$SIM/etc/skel/.toolchain" && ' +
-                           'head -c 100M /dev/zero > "$SIM/etc/skel/.toolchain/big" && ' +
-                           'chmod 0666 "$SIM/etc/skel/.toolchain/big"',
-                           { file: "runner/runner.test.ts", title: "prepare, at",
-                             after: 'echo "host mode $(stat -c %a /etc/skel/.toolchain/big)"' });
+  // A host as GitHub's runner's is: its /etc holding a large file anyone may write (its
+  // toolchains), its /usr a tree and a large file anyone may write (its JDKs, `/usr/lib/jvm`),
+  // its Node another user's and writable by others (`setup-node`, in `/opt/hostedtoolcache`).
+  // In one walk (`prepare`'s test, run there: its cost is the host's tree, so it is large, as
+  // `runner.test.ts`'s own is), `prepare` takes every write away in the box alone, as it does
+  // in a sandbox, copying no bytes (the overlays' `metacopy`, the suite's root-owned Node),
+  // and the host's modes stay as they were.
+  it("is the box's own where the host's /etc, /usr and Node are writable by others: prepare " +
+     "takes every write away in the box alone", { tags: ["large"] }, () => {
+    const done = simulated([
+      'mkdir -p "$SIM/etc/skel/.toolchain" "$SIM/usr/lib/jvm-sim/lib" "$SIM/toolcache/bin"',
+      'head -c 100M /dev/zero > "$SIM/etc/skel/.toolchain/big"',
+      'head -c 100M /dev/zero > "$SIM/usr/lib/jvm-sim/lib/modules"',
+      'chmod 0666 "$SIM/etc/skel/.toolchain/big" "$SIM/usr/lib/jvm-sim/lib/modules"',
+      'chmod 0777 "$SIM/usr/lib/jvm-sim" "$SIM/usr/lib/jvm-sim/lib"',
+      'cp "$NODE_BIN" "$SIM/toolcache/bin/node"',
+      'chown 1001:1001 "$SIM/toolcache/bin/node"',
+      'chmod 0777 "$SIM/toolcache/bin/node"',
+      'NODE_BIN="$SIM/toolcache/bin/node"',
+    ].join(" && "), { file: "runner/runner.test.ts", title: "prepare, at",
+                      after: 'echo host modes $(stat -c %a /etc/skel/.toolchain/big ' +
+                             '/usr/lib/jvm-sim /usr/lib/jvm-sim/lib ' +
+                             '/usr/lib/jvm-sim/lib/modules) $(stat -c "%u %a" "$NODE_BIN")' });
     expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
     expect(done.stdout).toMatch(/1 passed/);
-    expect(done.stdout).toMatch(/^host mode 666$/m);
-  });
-
-  // A host whose /usr holds a tree and a large file anyone may write (GitHub's runner's JDKs,
-  // `/usr/lib/jvm`): `prepare` takes the write away in the box, as it does a sandbox's own
-  // files, copying none of the bytes, and the host's stay as they were.
-  it("is the box's own where the host's /usr holds a tree anyone may write: prepare takes " +
-     "the write away in the box alone", () => {
-    const done = simulated('mkdir -p "$SIM/usr/lib/jvm-sim/lib" && ' +
-                           'head -c 100M /dev/zero > "$SIM/usr/lib/jvm-sim/lib/modules" && ' +
-                           'chmod 0777 "$SIM/usr/lib/jvm-sim" "$SIM/usr/lib/jvm-sim/lib" && ' +
-                           'chmod 0666 "$SIM/usr/lib/jvm-sim/lib/modules"',
-                           { file: "runner/runner.test.ts", title: "prepare, at",
-                             after: 'echo host modes $(stat -c %a /usr/lib/jvm-sim ' +
-                                    '/usr/lib/jvm-sim/lib /usr/lib/jvm-sim/lib/modules)' });
-    expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
-    expect(done.stdout).toMatch(/1 passed/);
-    expect(done.stdout).toMatch(/^host modes 777 777 666$/m);
-  });
-
-  // A host whose Node is another user's, and writable by others (GitHub's `setup-node`, in
-  // `/opt/hostedtoolcache`, the runner's user's): the box's Node is root's alone, as the
-  // template's is, the same bytes, so `prepare` passes, and the host's stays as it was.
-  it("is the box's own where the host's Node is another user's, writable by others: prepare " +
-     "passes, the host's untouched", () => {
-    const done = simulated('mkdir -p "$SIM/toolcache/bin" && ' +
-                           'cp "$NODE_BIN" "$SIM/toolcache/bin/node" && ' +
-                           'chown 1001:1001 "$SIM/toolcache/bin/node" && ' +
-                           'chmod 0777 "$SIM/toolcache/bin/node" && ' +
-                           'NODE_BIN="$SIM/toolcache/bin/node"',
-                           { file: "runner/runner.test.ts", title: "prepare, at",
-                             after: 'echo host node $(stat -c "%u %a" "$NODE_BIN")' });
-    expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
-    expect(done.stdout).toMatch(/1 passed/);
-    expect(done.stdout).toMatch(/^host node 1001 777$/m);
+    expect(done.stdout).toMatch(/^host modes 666 777 777 666 1001 777$/m);
   });
 });

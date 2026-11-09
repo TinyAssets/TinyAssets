@@ -1603,8 +1603,14 @@ describe("the posts", () => {
 });
 
 describe("prepare, at the sandbox's real paths", () => {
+  // Large: `prepare` walks the whole of `/` (`lockDown`'s `find /`), here the host's /etc and
+  // /usr beneath the box's overlays, so its cost is the host's tree, not the code. Measured on
+  // GitHub's `ubuntu-26.04` image (tens of GB of toolchains in /usr): 8.3 s with the tree
+  // cached, 35-71 s cold, 144-147 s cold with other walks beside it (runs 42652506363,
+  // 42654769214, 42658221560, 42670631102); the large class's budget is set from the worst
+  // of them (`ci/budgets.json`).
   it("pins the resolvers, hides /proc, leaves nothing writable, lets no one but root sudo, " +
-     "and keeps only its own runner", () => {
+     "and keeps only its own runner", { tags: ["large"] }, () => {
     const hostSudoers = readFileSync("/etc/sudoers", "utf8");
     // As E2B boots it: its user put back in `sudo`, a grant and an include for it, a file
     // every user may write, and one group ta may; another runner's bytes; a code at rest.
