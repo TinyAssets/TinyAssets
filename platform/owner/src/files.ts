@@ -77,6 +77,7 @@
  * the files Worker.
  */
 import { HEX32, HEX64, randomHex } from "../../contract/src/ids";
+import type { SyncOp } from "../../contract/src/owner";
 
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
@@ -350,12 +351,6 @@ function leaseOf(row: LeaseRow): SandboxLease {
 
 /** A lease's row, and its tokens, are live while its renewal has not lapsed. */
 const LIVE_LEASE = "lease_expires > ?";
-
-/** A sync op: what the sandbox's scan found, against the version it last synced. */
-export type SyncOp =
-  | { readonly op: "write"; readonly path: string; readonly base: number | null;
-      readonly mode?: number; readonly inline?: Uint8Array; readonly intent_id?: string }
-  | { readonly op: "mkdir" | "remove"; readonly path: string; readonly base: number | null };
 
 export type SyncOutcome =
   | { readonly path: string; readonly outcome: "committed"; readonly entry: Entry | null }

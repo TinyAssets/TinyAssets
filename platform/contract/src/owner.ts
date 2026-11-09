@@ -10,7 +10,9 @@
  * - where the row lists the fields, exactly them (`Asked`: `DoorRequests`, which
  *   `requests.ts` writes from the table), or, where the doors hand a parsed body on as it
  *   came, that body (`Handed`, `JsonBody`), so `tsc` holds every request the doors build,
- *   and the object's handler, to the row's fields;
+ *   and the object's handler, to the row's fields; where the doors build the request, also
+ *   the value each field takes (`Asked<door, { … }>`), the owner's own request type's, since
+ *   the row names most fields alone;
  * - where its module reads it whole (`loose`), the type its module takes, spelled once here
  *   (`AdmissionRequest`, the connections', the inbound bindings', the egress door's).
  *
@@ -87,10 +89,15 @@ export interface EgressRefusal {
 export type JsonBody =
   Readonly<Record<string, unknown>> & { readonly "parsed by jsonObject": true };
 
-/** A door's request, by its row's fields (`requests.ts`, written from the table). */
-type Asked<Door extends keyof DoorRequests> = DoorRequests[Door];
-/** A door's request by its row's fields, or a parsed body the doors hand on. */
-type Handed<Door extends keyof DoorRequests> = DoorRequests[Door] | JsonBody;
+/**
+ * A door's request, by its row's fields (`requests.ts`, written from the table), and the
+ * types of their values (`Values`), which the row's names alone do not give.
+ */
+type Asked<Door extends keyof DoorRequests, Values extends object = object> =
+  DoorRequests[Door] & Values;
+/** A door's request by its row's fields and their values, or a parsed body handed on. */
+type Handed<Door extends keyof DoorRequests, Values extends object = object> =
+  (DoorRequests[Door] & Values) | JsonBody;
 
 /**
  * The platform's change of the owner's admission (`admission.ts`): its admit at sign-up, or
@@ -182,6 +189,12 @@ export interface ReserveRequest {
   readonly tier: string | null;
 }
 
+/** A sync op: what the sandbox's scan found, against the version it last synced. */
+export type SyncOp =
+  | { readonly op: "write"; readonly path: string; readonly base: number | null;
+      readonly mode?: number; readonly inline?: Uint8Array; readonly intent_id?: string }
+  | { readonly op: "mkdir" | "remove"; readonly path: string; readonly base: number | null };
+
 /** A streaming call's beat, which keeps its reservation open. */
 export interface BeatRequest {
   readonly reservation: string;
@@ -214,7 +227,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   sessionClose(binding: Binding): Promise<{ readonly closed: number }>;
   socketsEnd(binding: Binding): Promise<object>;
   socketTicket(binding: Binding, request: Handed<"socketTicket">): Promise<object>;
-  ownerErase(binding: Binding, request: Asked<"ownerErase">): Promise<{ readonly erasing: true }>;
+  ownerErase(binding: Binding, request: Asked<"ownerErase", { readonly confirm: string }>):
+    Promise<{ readonly erasing: true }>;
   erasureOutside(binding: Binding):
     Promise<{ readonly keys: readonly string[]; readonly routes: readonly string[] } | null>;
   erasureOutsideDone(binding: Binding): Promise<object>;
@@ -224,25 +238,37 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
     Promise<{ readonly profile: ProfileName; readonly tools: readonly string[] }>;
   wakeEvents(binding: Binding, commandCenter?: string):
     Promise<{ readonly events: readonly Events[] }>;
-  wakeSubscribe(binding: Binding, request: Asked<"wakeSubscribe">): Promise<object>;
-  wakeUnsubscribe(binding: Binding, request: Asked<"wakeUnsubscribe">): Promise<object>;
+  wakeSubscribe(binding: Binding, request: Asked<"wakeSubscribe", {
+    readonly subscription_id: string; readonly name: string;
+    readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
+                          readonly rooms?: readonly string[] };
+    readonly blob: string; readonly kid: string; readonly version: number;
+    readonly expires_at: number | null }>): Promise<object>;
+  wakeUnsubscribe(binding: Binding,
+                  request: Asked<"wakeUnsubscribe", { readonly subscription_id: string }>):
+    Promise<object>;
 
   // API keys and outside clients (`api-keys.ts`, `revoke.ts`, `app.ts`).
-  keyMint(binding: Binding, request: Asked<"keyMint">):
+  keyMint(binding: Binding, request: Asked<"keyMint", {
+    readonly key_id: string; readonly name: string; readonly scopes: unknown;
+    /** As the caller sent it: the object checks it (`request_id`, `digest`). */
+    readonly proposal?: unknown }>):
     Promise<{ readonly name: string; readonly created_at: number;
               readonly scopes: readonly object[] }>;
   keyList(binding: Binding): Promise<{ readonly keys: readonly { readonly key_id: string }[] }>;
-  grantRevoke(binding: Binding, request: Asked<"grantRevoke">):
+  grantRevoke(binding: Binding, request: Asked<"grantRevoke", { readonly client: string }>):
     Promise<{ readonly client: string; readonly revoked: boolean; readonly generation: number;
               readonly revision: number }>;
-  grantForget(binding: Binding, request: Asked<"grantForget">):
+  grantForget(binding: Binding, request: Asked<"grantForget", { readonly client: string }>):
     Promise<{ readonly forgotten: boolean }>;
   grantSet(binding: Binding, request: Handed<"grantSet">): Promise<object>;
   grantList(binding: Binding): Promise<object>;
   registerAgent(binding: Binding, request: Handed<"registerAgent">): Promise<object>;
 
   // Inbound events and their bindings (`inbound.ts`).
-  inboundAccept(binding: Binding, request: Asked<"inboundAccept">): Promise<InboundAnswer>;
+  inboundAccept(binding: Binding, request: Asked<"inboundAccept", {
+    readonly event_id: string; readonly event_at: number; readonly body: Uint8Array;
+    readonly headers: Readonly<Record<string, string>> }>): Promise<InboundAnswer>;
   inboundCreate(binding: Binding, request: InboundCreateRequest | JsonBody):
     Promise<InboundRoute>;
   inboundSet(binding: Binding, request: InboundSetRequest | JsonBody): Promise<InboundRoute>;
@@ -266,16 +292,23 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   // The owner surface (`app.ts`): its own routes, and each door a route names.
   tierRead(binding: Binding): Promise<{ readonly tier: TierName }>;
   fileUsage(binding: Binding): Promise<object>;
-  fileRead(binding: Binding, request: Handed<"fileRead">):
+  fileRead(binding: Binding,
+           request: Handed<"fileRead", { readonly path: string; readonly etag?: string }>):
     Promise<{ readonly entry: object; readonly inline?: Uint8Array }>;
-  fileWrite(binding: Binding, request: Asked<"fileWrite">): Promise<object>;
-  ownerExport(binding: Binding, request: Handed<"ownerExport">):
+  fileWrite(binding: Binding, request: Asked<"fileWrite", {
+    readonly path: string; readonly expected_etag: string | null;
+    readonly content: string | Uint8Array; readonly mode?: number }>): Promise<object>;
+  ownerExport(binding: Binding, request: Handed<"ownerExport", {
+    readonly cursor?: string | null; readonly export_id?: string }>):
     Promise<{ readonly export_id: string; readonly lines: readonly string[];
               readonly next: string | null; readonly pending: boolean }>;
   exportChunks(binding: Binding, request: Asked<"exportChunks">): Promise<object>;
   exportEnd(binding: Binding, request: { readonly export_id: string }): Promise<object>;
   storageUsage(binding: Binding): Promise<object>;
-  agentDoorbell(binding: Binding, request: Asked<"agentDoorbell">): Promise<object>;
+  agentDoorbell(binding: Binding, request: Asked<"agentDoorbell", {
+    readonly agent_id: string; readonly kind: string; readonly subscription_id: string;
+    readonly board: boolean; readonly rooms: readonly string[]; readonly blob: string;
+    readonly kid: string; readonly version: number }>): Promise<object>;
   agentDoorbellEnd(binding: Binding, request: Asked<"agentDoorbellEnd">): Promise<object>;
   policyWakeLimits(binding: Binding, request: Asked<"policyWakeLimits">): Promise<object>;
   noticeList(binding: Binding): Promise<object>;
@@ -295,24 +328,35 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   signinList(binding: Binding): Promise<object>;
 
   // An upload's bytes (`file-bytes.ts`).
-  fileUploadTarget(binding: Binding, request: Asked<"fileUploadTarget">):
+  fileUploadTarget(binding: Binding,
+                   request: Asked<"fileUploadTarget", { readonly intent_id: string }>):
     Promise<{ readonly namespace: string; readonly key: string;
               readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
               readonly pending: readonly string[] }>;
-  fileUploadStored(binding: Binding, request: Asked<"fileUploadStored">): Promise<object>;
+  fileUploadStored(binding: Binding, request: Asked<"fileUploadStored", {
+    readonly intent_id: string; readonly chunks: readonly string[] }>): Promise<object>;
 
   // The cutover's import consumer (`import.ts`), at its import binding (`bindImport`).
-  importNotice(binding: Binding, request: Asked<"importNotice">): Promise<object>;
-  importRows(binding: Binding, request: Asked<"importRows">): Promise<object>;
-  importFiles(binding: Binding, request: Asked<"importFiles">): Promise<object>;
-  importFileBegin(binding: Binding, request: Asked<"importFileBegin">):
+  importNotice(binding: Binding, request: Asked<"importNotice", { readonly detail: string }>):
+    Promise<object>;
+  importRows(binding: Binding, request: Asked<"importRows", { readonly rows: readonly unknown[] }>):
+    Promise<object>;
+  importFiles(binding: Binding,
+              request: Asked<"importFiles", { readonly entries: readonly unknown[] }>):
+    Promise<object>;
+  importFileBegin(binding: Binding, request: Asked<"importFileBegin", {
+    readonly path: string; readonly size: number; readonly mode: 0 | 1;
+    readonly content_id: string; readonly chunks: readonly string[] }>):
     Promise<{ readonly skipped: true }
             | { readonly skipped: false; readonly intent_id: string; readonly namespace: string;
                 readonly key: string;
                 readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
                 readonly pending: readonly string[] }>;
-  importFileStored(binding: Binding, request: Asked<"importFileStored">): Promise<object>;
-  importFileCommit(binding: Binding, request: Asked<"importFileCommit">): Promise<object>;
+  importFileStored(binding: Binding, request: Asked<"importFileStored", {
+    readonly intent_id: string; readonly chunks: readonly string[] }>): Promise<object>;
+  importFileCommit(binding: Binding, request: Asked<"importFileCommit", {
+    readonly intent_id: string; readonly path: string; readonly mode: 0 | 1;
+    readonly content_id: string }>): Promise<object>;
 
   // The egress host (`egress.ts`): a model call, a run's events, a sign-in's, and sync.
   egressOpen(binding: Binding, request: EgressRequest): Promise<EgressOpened | EgressRefusal>;
@@ -327,10 +371,14 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   fileList(binding: Binding, request: Handed<"fileList">): Promise<object>;
   fileReadChunks(binding: Binding, request: Handed<"fileReadChunks">):
     Promise<{ readonly chunks: readonly Uint8Array[] }>;
-  fileSyncCommit(binding: Binding, request: Handed<"fileSyncCommit">): Promise<object>;
+  fileSyncCommit(binding: Binding, request: Handed<"fileSyncCommit", {
+    readonly lease_id: string; readonly epoch: number; readonly ops: readonly SyncOp[] }>):
+    Promise<object>;
   fileSyncUploadBegin(binding: Binding, request: Handed<"fileSyncUploadBegin">):
     Promise<object>;
-  fileSyncUploadChunks(binding: Binding, request: Handed<"fileSyncUploadChunks">):
+  fileSyncUploadChunks(binding: Binding, request: Handed<"fileSyncUploadChunks", {
+    readonly lease_id: string; readonly epoch: number; readonly intent_id: string;
+    readonly chunks: readonly { readonly sha256: string; readonly bytes: Uint8Array }[] }>):
     Promise<object>;
   fileSyncUploadAbort(binding: Binding, request: Handed<"fileSyncUploadAbort">):
     Promise<object>;

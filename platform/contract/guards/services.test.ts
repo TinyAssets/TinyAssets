@@ -150,7 +150,8 @@ export function ownerDoors(source: string): [string, number, string | null][] {
 
 /**
  * Why a door the contract names breaks its row, or null: a row, the binding, a request, and
- * a row's field list as the request's type (`Asked` or `Handed` of the door itself).
+ * a row's field list as the request's type (`Asked` or `Handed` of the door itself, with its
+ * value types where the doors build the request: `Asked<"door", { … }>`).
  */
 export function doorProblem(door: string, parameters: number, request: string | null = null):
     string | null {
@@ -165,7 +166,8 @@ export function doorProblem(door: string, parameters: number, request: string | 
     return `${door}: takes ${parameters} arguments, its row ${expected}`;
   }
   const listed = typeof row.args === "object";
-  return !listed || request === null || [`Asked<"${door}">`, `Handed<"${door}">`].includes(request)
+  const ownFields = new RegExp(`^(?:Asked|Handed)<"${door}"(?:,[\\s\\S]*)?>$`);
+  return !listed || request === null || ownFields.test(request)
     ? null : `${door}: takes ${request}, not its row's fields (Asked<"${door}"> or Handed)`;
 }
 
@@ -231,6 +233,10 @@ describe("the services' contracts", () => {
     expect(doorProblem("grantRevoke", 2, "object"))
       .toBe('grantRevoke: takes object, not its row\'s fields (Asked<"grantRevoke"> or Handed)');
     expect(doorProblem("grantRevoke", 2, 'Asked<"grantForget">')).not.toBeNull();
+    expect(doorProblem("grantRevoke", 2, 'Asked<"grantRevoke", { readonly client: string }>'))
+      .toBeNull();
+    expect(doorProblem("grantRevoke", 2, 'Asked<"grantForget", { readonly client: string }>'))
+      .not.toBeNull();
     expect(doorProblem("fileProbe", 2)).toBe("fileProbe: no row of the door table");
     expect(doorProblem("sessionOpen", 2)).toBe("sessionOpen: takes 2 arguments, its row 1");
     expect(doorProblem("sandboxRung", 1)).toBe("sandboxRung: takes 1 arguments, its row 0");
@@ -242,5 +248,14 @@ describe("the services' contracts", () => {
       .toBe(requestsSource(doorTable()));
     expect(requestsSource(doorTable())).toContain(
       '  readonly grantRevoke: DoorFields<"client">;\n');
+  });
+
+  it("let only the doors' body parser make a JsonBody: no source spells its mark or casts to it",
+     () => {
+    const MARK = ["parsed by", "jsonObject"].join(" ");
+    expect([...sources].filter(([path, source]) =>
+      (path !== "contract/src/owner.ts" && source.includes(MARK))
+      || (path !== "doors/src/body.ts" && /\bas\s+JsonBody\b/.test(source)))
+      .map(([path]) => path)).toEqual([]);
   });
 });
