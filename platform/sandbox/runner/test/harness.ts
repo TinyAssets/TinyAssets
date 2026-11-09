@@ -42,8 +42,13 @@ export const BOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
  * disk with no room for it and takes its real "no room" path, as a full sandbox would.
  */
 const BOX_BYTES = "384m";
-/** The room for a box's own writes to its `/etc` (the template's users, sudoers, runs). */
-const ETC_BYTES = "64m";
+/** The room for a box's own writes to its `/etc` and `/usr` (its users, sudoers, modes). */
+const WRITES_BYTES = "64m";
+/**
+ * The host's trees a box sees as its own: each an overlay of the host's, its writes the box's
+ * (`#layout`). The rest of the host's system directories are bound read-only (`box.sh`).
+ */
+const OVERLAID: readonly string[] = Object.freeze(["/etc", "/usr"]);
 /** How long a box may take to come up before its making fails loudly. */
 const READY_MS = 15_000;
 const UNSHARE = ["--mount", "--pid", "--fork", "--kill-child", "--uts", "--propagation",
@@ -135,8 +140,8 @@ export class Box {
   readonly base = mkdtempSync(join(tmpdir(), "ta-box-"));
   /** The box's `/`, as the test (outside the box) sees it. */
   readonly root = join(this.base, "root");
-  /** Where its `/etc`'s own writes go (an overlay's upper and work), outside its root. */
-  readonly etcWrites = join(this.base, "etc");
+  /** Where its `/etc`'s and `/usr`'s own writes go (each overlay's upper), outside its root. */
+  readonly writes = join(this.base, "writes");
   /** The host's pid of the box's init: killing it ends every process in the box. */
   readonly init: number;
   /** The harness's end of the init's stdin: the box ends when it closes. */
@@ -155,22 +160,31 @@ export class Box {
     }
   }
 
-  /** The template's users, groups and directories (`layout.ts`), and `/etc` (a copy). */
+  /** Where an overlaid tree's writes go in the box (`/etc`: `<writes>/etc/upper`). */
+  upperOf(tree: string): string {
+    return join(this.writes, tree, "upper");
+  }
+
+  /** The template's users, groups and directories (`layout.ts`), on the host's trees. */
   #layout(): void {
-    // The host's `/etc` (a trimmed one breaks `sudo -l`), as an overlay: the host's read-only
-    // beneath, every write the box's own, above, on a disk of the box's (outside its root).
-    // So nothing of it is copied (a CI host's holds gigabytes of toolchains, in /etc/skel),
-    // and no write reaches the host's. `metacopy`: a change of mode or owner (`prepare`'s
-    // `chmod go-w` of a host file another user may write) copies up the file's metadata
-    // alone, never its bytes, however large the file.
-    mkdirSync(this.etcWrites);
-    must(["mount", "-t", "tmpfs", "-o", `size=${ETC_BYTES},mode=0700`, "tmpfs", this.etcWrites]);
-    mkdirSync(join(this.etcWrites, "upper"));
-    mkdirSync(join(this.etcWrites, "work"));
-    mkdirSync(this.path("/etc"));
-    must(["mount", "-t", "overlay", "overlay", "-o", `lowerdir=/etc,upperdir=${
-      join(this.etcWrites, "upper")},workdir=${join(this.etcWrites, "work")},metacopy=on`,
-          this.path("/etc")]);
+    // The host's `/etc` (a trimmed one breaks `sudo -l`) and `/usr`, each as an overlay: the
+    // host's beneath, never written, every write the box's own, above, on a disk of the
+    // box's (outside its root). So nothing of them is copied (a CI host's /etc/skel holds
+    // gigabytes of toolchains), no write reaches the host's, and `prepare` takes another
+    // user's write away from a host file as it does a sandbox's own (a CI host's JDKs, in
+    // /usr/lib/jvm, are writable by others), in the box alone. `metacopy`: a change of mode
+    // or owner copies up the file's metadata alone, never its bytes, however large the file.
+    mkdirSync(this.writes);
+    must(["mount", "-t", "tmpfs", "-o", `size=${WRITES_BYTES},mode=0700`, "tmpfs", this.writes]);
+    for (const tree of OVERLAID) {
+      const upper = this.upperOf(tree);
+      const work = join(dirname(upper), "work");
+      mkdirSync(upper, { recursive: true });
+      mkdirSync(work);
+      mkdirSync(this.path(tree));
+      must(["mount", "-t", "overlay", "overlay", "-o",
+            `lowerdir=${tree},upperdir=${upper},workdir=${work},metacopy=on`, this.path(tree)]);
+    }
     // The template's users, each file made anew, never written through: the host's may be a
     // link (a systemd-resolved host's resolv.conf), which a write would follow onto the host.
     const own = (path: string, text: string, mode = 0o644) => {
@@ -321,7 +335,7 @@ export class Box {
     if (process.env["TA_KEEP_ROOT"] !== undefined) {
       return;
     }
-    for (const mount of [this.path("/etc"), this.root, this.etcWrites]) {
+    for (const mount of [...OVERLAID.map((tree) => this.path(tree)), this.root, this.writes]) {
       spawnSync("umount", ["-l", mount], { stdio: "ignore" });
     }
     const left = mountsOf("self").filter((mount) => mount.target === this.base

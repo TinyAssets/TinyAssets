@@ -34,25 +34,28 @@ describe("a test sandbox", () => {
     const mounts = box.mounts();
     const hosts = mounts.filter((mount) => host.has(mount.device));
     expect(hosts.map((mount) => mount.target)).toEqual(expect.arrayContaining(
-      ["/usr", "/usr/local/bin/node"]));
+      ["/usr/local/bin/node"]));
     expect(hosts.filter((mount) => !mount.options.includes("ro"))
       .map((mount) => mount.target)).toEqual([]);
     // What is not the host's is the box's own: its root (and so its /tmp, /var/tmp), its
-    // /etc, /usr/local, /dev, /dev/pts, /dev/shm and /proc.
+    // /etc and /usr overlays, /usr/local, /dev, /dev/pts, /dev/shm and /proc.
     expect(mounts.filter((mount) => !host.has(mount.device)).map((mount) => mount.target)
       .filter((target) => target !== "/proc/sysrq-trigger")
       .sort()).toEqual(["/", "/dev", "/dev/pts", "/dev/shm", "/etc", "/proc", "/proc/sys",
-                        "/usr/local"]);
+                        "/usr", "/usr/local"]);
     expect(mounts.find((mount) => mount.target === "/")!.device).toBe(root.device);
-    // Its /etc is an overlay: the host's read-only beneath, its writes on a disk of the box's
-    // own above, outside its root. A write there lands above, never in the host's.
-    const etc = mounts.find((mount) => mount.target === "/etc")!;
-    expect(etc.type).toBe("overlay");
-    expect(etc.super).toContain("lowerdir=/etc");
-    expect(etc.super).toContain(`upperdir=${join(box.etcWrites, "upper")}`);
-    expect(box.exec(["touch", "/etc/.ta-guard"]).status).toBe(0);
-    expect(existsSync(join(box.etcWrites, "upper", ".ta-guard"))).toBe(true);
-    expect(existsSync("/etc/.ta-guard")).toBe(false);
+    // Its /etc and /usr are overlays: the host's beneath, never written, its writes on a disk
+    // of the box's own above, outside its root. A write there lands above, never in the
+    // host's; the overlays copy up metadata alone (`metacopy`).
+    for (const tree of ["/etc", "/usr"]) {
+      const overlay = mounts.find((mount) => mount.target === tree)!;
+      expect(overlay.type, tree).toBe("overlay");
+      expect(overlay.super, tree).toEqual(expect.arrayContaining([
+        `lowerdir=${tree}`, `upperdir=${box.upperOf(tree)}`, "metacopy=on"]));
+      expect(box.exec(["touch", `${tree}/.ta-guard`]).status, tree).toBe(0);
+      expect(existsSync(join(box.upperOf(tree), ".ta-guard")), tree).toBe(true);
+      expect(existsSync(`${tree}/.ta-guard`), tree).toBe(false);
+    }
     // Its /etc's files are its own: regular files, never a link out of the copy.
     for (const file of ["passwd", "group", "gshadow", "resolv.conf"]) {
       expect(box.exec(["/bin/sh", "-c", '[ -f "$0" ] && [ ! -L "$0" ]', `/etc/${file}`]).status,
@@ -153,9 +156,9 @@ describe("a test sandbox's /etc", () => {
                       "vitest.mjs");
 
   /**
-   * A host's /etc simulated in a mount namespace of its own: an overlay of the real one (so
-   * the simulation copies nothing, and writes nothing to it), `shape` making it the host's to
-   * simulate, bound over /etc there alone. A test of `file` matching `title` (the guard's, by
+   * A host's /etc and /usr simulated in a mount namespace of its own: each an overlay of the
+   * real one (so the simulation copies nothing, and writes nothing to it), `shape` making them
+   * the host's to simulate (`$1/etc`, `$1/usr`), bound over /etc and /usr there alone. A test of `file` matching `title` (the guard's, by
    * default), run in it (a vitest of its own), makes a box; `after` then runs there. The
    * namespace's run: the vitest's, then `after`'s output.
    */
@@ -166,10 +169,14 @@ describe("a test sandbox's /etc", () => {
     try {
       const script = [
         'mount -t tmpfs -o size=1g tmpfs "$1"',
-        'mkdir "$1/upper" "$1/work" "$1/etc"',
-        'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/upper,workdir=$1/work" "$1/etc"',
+        'mkdir "$1/etc-upper" "$1/etc-work" "$1/etc" "$1/usr-upper" "$1/usr-work" "$1/usr"',
+        'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/etc-upper,workdir=$1/etc-work" ' +
+          '"$1/etc"',
+        'mount -t overlay overlay -o "lowerdir=/usr,upperdir=$1/usr-upper,workdir=$1/usr-work" ' +
+          '"$1/usr"',
         shape,
         'mount --bind "$1/etc" /etc',
+        'mount --bind "$1/usr" /usr',
         '{ "$2" "$3" run --project runner "$4" -t "$5"; ran=$?; }',
         `{ ${after}; }`,
         'exit "$ran"',
@@ -226,5 +233,22 @@ describe("a test sandbox's /etc", () => {
     expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
     expect(done.stdout).toMatch(/1 passed/);
     expect(done.stdout).toMatch(/^host mode 666$/m);
+  });
+
+  // A host whose /usr holds a tree and a large file anyone may write (GitHub's runner's JDKs,
+  // `/usr/lib/jvm`): `prepare` takes the write away in the box, as it does a sandbox's own
+  // files, copying none of the bytes, and the host's stay as they were.
+  it("is the box's own where the host's /usr holds a tree anyone may write: prepare takes " +
+     "the write away in the box alone", () => {
+    const done = simulated('mkdir -p "$1/usr/lib/jvm-sim/lib" && ' +
+                           'head -c 100M /dev/zero > "$1/usr/lib/jvm-sim/lib/modules" && ' +
+                           'chmod 0777 "$1/usr/lib/jvm-sim" "$1/usr/lib/jvm-sim/lib" && ' +
+                           'chmod 0666 "$1/usr/lib/jvm-sim/lib/modules"', [],
+                           { file: "runner/runner.test.ts", title: "prepare, at",
+                             after: 'echo host modes $(stat -c %a /usr/lib/jvm-sim ' +
+                                    '/usr/lib/jvm-sim/lib /usr/lib/jvm-sim/lib/modules)' });
+    expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
+    expect(done.stdout).toMatch(/1 passed/);
+    expect(done.stdout).toMatch(/^host modes 777 777 666$/m);
   });
 });

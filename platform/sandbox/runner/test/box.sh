@@ -2,7 +2,8 @@
 # One test sandbox's root (`harness.ts`, `Box`): run as root under
 #   unshare --mount --pid --fork --uts --propagation private -- /bin/sh box.sh \
 #     <root> <ready> <loader> <loader at> <node> <node at> <ca at>
-# it binds the host's system directories into <root> read-only, gives the box a /usr/local,
+# (its /etc and /usr already the harness's overlays of the host's, `harness.ts`), it binds
+# the host's other system directories into <root> read-only, gives the box a /usr/local,
 # a /dev and a /proc of its own (the template's Node, loader and CA at the layout's paths,
 # `layout.ts`), then pivots into <root>, so the runner runs at the sandbox's real paths and
 # no host path it can see is writable. Its host pid is written to <ready> once the box is
@@ -20,7 +21,7 @@ CA_AT=$7
 exec 9>"$READY"
 # This shell's pid as the host's /proc names it (its own /proc is not mounted yet).
 read -r HOST_PID _ < /proc/self/stat
-for dir in bin lib lib32 lib64 libx32 sbin usr; do
+for dir in bin lib lib32 lib64 libx32 sbin; do
   if [ -L "/$dir" ]; then
     ln -s "$(readlink "/$dir")" "$ROOT/$dir"
   elif [ -d "/$dir" ]; then

@@ -23,8 +23,8 @@ const args = [vitest, "run", "--project", "runner", ...process.argv.slice(2)];
 
 /**
  * What a test sandbox needs of the host, tried in a box of the preflight's own: mount, pid
- * and uts namespaces, a tmpfs, a read-only bind, an overlay of /etc whose writes stay above
- * it, a /proc of the namespace's own, `nsenter` into them, `pivot_root`, and perl (each box's
+ * and uts namespaces, a tmpfs, a read-only bind, an overlay of /etc and of /usr whose writes
+ * stay above them, a /proc of the namespace's own, `nsenter` into them, `pivot_root`, and perl (each box's
  * init). Why it cannot, or null.
  */
 function preflight() {
@@ -40,16 +40,25 @@ function preflight() {
   try {
     const box = [
       'mount -t tmpfs -o size=1m,mode=0755 tmpfs "$1"',
-      'mkdir "$1/proc" "$1/usr" "$1/old" "$1/upper" "$1/work" "$1/etc"',
-      'mount --bind /usr "$1/usr"',
-      'mount -o remount,bind,ro "$1/usr"',
-      '{ ! touch "$1/usr/.ta-preflight" 2>/dev/null || ' +
-        '{ echo "a read-only bind of /usr took a write" >&2; false; }; }',
-      'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/upper,workdir=$1/work,metacopy=on" ' +
-        '"$1/etc"',
-      'touch "$1/etc/.ta-preflight"',
-      '{ [ ! -e /etc/.ta-preflight ] || ' +
-        '{ echo "an overlay of /etc wrote to /etc" >&2; false; }; }',
+      'mkdir "$1/proc" "$1/own" "$1/ro" "$1/old" "$1/etc" "$1/usr"',
+      'mkdir -p "$1/w/etc/upper" "$1/w/etc/work" "$1/w/usr/upper" "$1/w/usr/work"',
+      // A read-only bind, of a directory of its own: a bind that takes a write anyway never
+      // writes the host's.
+      'mount --bind "$1/own" "$1/ro"',
+      'mount -o remount,bind,ro "$1/ro"',
+      '{ ! touch "$1/ro/.ta-preflight" 2>/dev/null || ' +
+        '{ echo "a read-only bind took a write" >&2; false; }; }',
+      // An overlay of /etc and of /usr, each written above, never beneath.
+      'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/w/etc/upper,' +
+        'workdir=$1/w/etc/work,metacopy=on" "$1/etc"',
+      'mount -t overlay overlay -o "lowerdir=/usr,upperdir=$1/w/usr/upper,' +
+        'workdir=$1/w/usr/work,metacopy=on" "$1/usr"',
+      // Its write, by a name of this run's own, is above each, and not in the host's.
+      'mark=".ta-preflight.$$.$(date +%s%N)"',
+      'touch "$1/etc/$mark" "$1/usr/$mark"',
+      '{ [ -e "$1/w/etc/upper/$mark" ] && [ -e "$1/w/usr/upper/$mark" ] && ' +
+        '[ ! -e "/etc/$mark" ] && [ ! -e "/usr/$mark" ] || ' +
+        '{ echo "an overlay of /etc or /usr wrote to the host" >&2; false; }; }',
       'mount -t proc proc "$1/proc"',
       // This shell, by the host's pid (the host's /proc is still at /proc), entered.
       "read -r self _ < /proc/self/stat",
@@ -63,7 +72,7 @@ function preflight() {
                            { encoding: "utf8" });
     if (done.status !== 0 || done.stdout.trim() !== "ready") {
       return "a box of the preflight's own (`unshare --mount --pid --fork --uts`, a tmpfs, a " +
-        "read-only bind of /usr, an overlay of /etc, its own /proc, `nsenter`, `pivot_root`) " +
+        "read-only bind, overlays of /etc and /usr, its own /proc, `nsenter`, `pivot_root`) " +
         "failed " +
         `(${done.error?.message ?? `exit ${done.status}`}): ${done.stdout}${done.stderr}`.trim();
     }
