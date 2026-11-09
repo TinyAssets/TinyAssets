@@ -13,13 +13,12 @@ import {
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ADMIN_CALLER } from "../../admin/src/caller";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
 import { ERASING } from "../../contract/src/refusal";
 import { BREAKER_FAILURES, INSTALL_PROOF } from "../../owner/src/inbound";
 import { NO_ERASURE } from "../../owner/src/erasure";
 import { LEDGER_LIMITS } from "../../owner/src/ledger";
-import type { Binding } from "../../contract/src/binding";
 import { defineAgent } from "../../owner/test/runs-support";
 import { failure } from "../../owner/test/support";
 import { API_BODY_MAX, ERASURE_QUEUE, INBOUND_BODY_MAX, MCP_RESOURCE, now } from "../src/config";
@@ -94,7 +93,7 @@ describe("sign-up", () => {
   it("never lifts a suspension when the owner signs in again", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    await env.OWNER.getByName(who).admissionSet({ owner: who, caller: ADMIN_CALLER, origin: null },
+    await env.OWNER.getByName(who).admissionSet({ owner: who, caller: PLATFORM_CALLER, origin: null },
                                                 { reason: "billing", suspended: true });
     await env.DIRECTORY.delete(`o:${who}`);  // as if the record were lost
     await appCallback({ owner: who });
@@ -105,7 +104,7 @@ describe("sign-up", () => {
   it("is refused for an admit the platform's reserved caller sends at any other door", async () => {
     const who = owner();
     await signInApp({ owner: who });
-    expect((await failure(() => env.OWNER.getByName(who).grantList({ owner: who, caller: ADMIN_CALLER,
+    expect((await failure(() => env.OWNER.getByName(who).grantList({ owner: who, caller: PLATFORM_CALLER,
                                                       origin: null }))).message).toMatch(/reaches no owner door/);
   });
 });

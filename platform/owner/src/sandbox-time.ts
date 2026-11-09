@@ -39,7 +39,9 @@ import { createHash } from "node:crypto";
 
 import type { OwnerStorage, Write } from "./gate";
 import type { Call, Door, OwnerState } from "./owner-do";
+import type { BilledEvent } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
+import { METER_BATCH, type MeterEvent } from "../../contract/src/sandbox";
 
 /**
  * The runs' side of the meter, which only `runs.ts` reads and writes (the policy-boundary
@@ -92,33 +94,6 @@ export const LIVE_KEPT = 2_001;
 function digest(executionId: string): ArrayBuffer {
   return Uint8Array.from(createHash("sha256").update(executionId).digest().subarray(0, 8))
     .buffer;
-}
-
-/** One execution E2B billed, from its signed lifecycle event (`doors/src/e2b-hooks.ts`). */
-export interface BilledEvent {
-  /** The event's id, and the execution's and sandbox's, E2B's own. */
-  readonly id: string;
-  readonly execution_id: string;
-  readonly sandbox_id: string;
-  /** The event's own time, ms. */
-  readonly at: number;
-  readonly authority: string;
-  readonly kind: "paused" | "killed";
-  readonly started_at: number;
-  readonly execution_ms: number;
-  readonly vcpu: number;
-  readonly memory_mb: number;
-}
-/** The most log entries one read takes. */
-export const METER_BATCH = 1000;
-
-/** One entry of the sandbox Worker's log. */
-export interface MeterEvent {
-  readonly seq: number;
-  readonly authority: string;
-  readonly kind: "start" | "resume" | "pause" | "kill";
-  /** When it happened, in ms. */
-  readonly at: number;
 }
 
 const KINDS = Object.freeze(["start", "resume", "pause", "kill"]);

@@ -19,11 +19,12 @@
  * (`AGENT_UNDEFINED`, `invalid`), never a stand-in.
  */
 import { CONNECTION_ID } from "../../contract/src/ids";
-import { CREDENTIAL_KINDS, type CredentialKind } from "../../sources/src/schema";
+import { CREDENTIAL_KINDS } from "../../sources/src/schema";
 
 import { RUN_CAPABILITIES, type RunCapability } from "../../contract/src/capabilities";
 import { Refusal } from "../../contract/src/refusal";
 import { isPrintable } from "../../contract/src/text";
+import type { CredentialKind } from "../../contract/src/sandbox";
 
 export const AUTO = "auto";
 export const AGENT_UNDEFINED = "agent_undefined: the agent has no agent.json";

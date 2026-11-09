@@ -76,6 +76,9 @@ function source(module: string): string {
   return readFileSync(join(SRC, `${module}.ts`), "utf8");
 }
 
+/** The migration mechanism's source, whose own two tables every object keeps. */
+const MIGRATE = readFileSync(join(PLATFORM, "contract", "src", "migrate.ts"), "utf8");
+
 /** The owner's schema: its migrations' SQL, every statement in order, as the object runs it. */
 const SCHEMA = MIGRATIONS.flat().join("\n");
 
@@ -683,9 +686,9 @@ export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<stri
 /**
  * Every table the owner's schema makes, by its final name: its statements in order, a
  * rename moving a table and a drop taking one away. The migration mechanism's own two
- * (`migrate.ts`) are the owner's too.
+ * (`contract/src/migrate.ts`) are the owner's too.
  */
-export function ownerTables(schema = `${source("migrate")}\n${SCHEMA}`): string[] {
+export function ownerTables(schema = `${MIGRATE}\n${SCHEMA}`): string[] {
   const tables = new Set<string>();
   const statements = /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?([a-zA-Z_0-9]+)|ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)|DROP TABLE (?:IF EXISTS )?([a-zA-Z_0-9]+)/g;
   for (const [, made, from, to, dropped] of schema.matchAll(statements)) {

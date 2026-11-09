@@ -5,10 +5,16 @@
  * The contract is the vocabulary every Worker speaks (ids and grammars, limits, the egress
  * wire, slots, wake records, run events, the source grammar), so it depends on nothing that
  * depends on it: it imports nothing but its own sources, its wake kinds' file and the plain
- * standard modules the Workers runtime and Node both have (`node:crypto`), and its data files. It is pure: no
- * binding, no storage, no network and no state of its own (the module-state guard walks it
- * as every Worker's source, `owner/guards/module-state.test.ts`), so no name of the runtime's
- * I/O appears in it.
+ * standard modules the Workers runtime and Node both have (`node:crypto`), and its data
+ * files. It is pure: no binding, no storage, no network and no state of its own (the
+ * module-state guard walks it as every Worker's source, `owner/guards/module-state.test.ts`),
+ * so no name of the runtime's I/O appears in it.
+ *
+ * One exception, by design: a module may be handed the I/O it does, as a parameter typed by
+ * the contract's own interface, never a binding it opens. `readControl` takes its store
+ * (`ControlStore`) and `migrate` an object's (`MigrationStorage`). That parameter is named
+ * `store`, since `storage` is a banned name; the rename is this exception's, not a way round
+ * the ban, which still refuses any reach of the runtime's own storage.
  *
  * The source records (`platform/sources/src/`: their schema, checker, catalog, run
  * environment and sign-in shapes) are a contract module beside their files: as pure, held

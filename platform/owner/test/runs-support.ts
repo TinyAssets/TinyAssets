@@ -13,10 +13,10 @@ import { verifyToken } from "../../contract/src/routing-mac";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { RunReceipt } from "../src/runs";
-import type { SandboxStart } from "../src/sandbox";
 import type { RecordingSandbox } from "./sandbox-fake";
 
 import { TIERS } from "./support";
+import type { SandboxStart } from "../../contract/src/sandbox";
 
 export { TIERS };
 

@@ -44,6 +44,9 @@ import type {
   Call, Door, OwnerState,
 } from "./owner-do";
 import type { InboundAnswer } from "../../contract/src/binding";
+import type {
+  BindingRequest, InboundCreateRequest, InboundSetRequest,
+} from "../../contract/src/owner";
 import { nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
 import { codePoints } from "../../contract/src/text";
@@ -295,22 +298,6 @@ export function ownerProof(row: Row): { profile: Profile; secret: string | null 
 
 export type { Row as InboundRow };
 
-export interface InboundCreateRequest {
-  readonly kind: "capability" | "shared";
-  readonly agent: string;
-  readonly route: string;
-  readonly profile?: unknown;
-  readonly secret?: string;
-}
-export interface InboundSetRequest {
-  readonly binding_id: string;
-  readonly expected_revision: number;
-  readonly enabled?: boolean;
-  readonly agent?: string;
-}
-export interface BindingRequest {
-  readonly binding_id: string;
-}
 /** An inbound event as the binder hands it: its id and time, its raw bytes, its headers. */
 export interface InboundEvent {
   readonly event_id: string;

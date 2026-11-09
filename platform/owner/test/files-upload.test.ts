@@ -11,10 +11,11 @@ import { describe, expect, it } from "vitest";
 
 import { CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import {
-  type ChunkStore, DELETE_FLOOR_MS, type Entry, HOUSEKEEPING_SLACK_S, INTENT_TTL_S,
+  DELETE_FLOOR_MS, type Entry, HOUSEKEEPING_SLACK_S, INTENT_TTL_S,
   MAX_HELD_CHUNKS, MAX_OPEN_INTENTS, WHOLE_BYTES,
 } from "../src/files";
 import { chunkedId, inlineId } from "../../contract/src/content";
+import type { ChunkStore } from "../../contract/src/files";
 import { sha256Hex } from "../../contract/src/digest";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";

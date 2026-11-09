@@ -49,7 +49,8 @@ import {
   type Lines,
   readPage,
 } from "./export";
-import type { ChunkSpace, ChunkStore } from "./files";
+import type { ChunkStore } from "../../contract/src/files";
+import type { ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 import { BURST_GATHER_BYTES, BURST_UNITS, ownerSlots, SHIP_UNITS } from "./holds";
 import { isSlotBusy, type Slot, slotBusy, type SlotPool } from "../../contract/src/slots";

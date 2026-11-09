@@ -10,7 +10,6 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import type { SandboxSignin } from "../../owner/src/sandbox";
 import { type DoorsEnv, E2B_HOOK_PATH } from "../src/config";
 import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
 import { HOOK_BODY_MAX, lifecycleEvent, signed } from "../src/e2b-hooks";
@@ -19,6 +18,7 @@ import type { OwnerDO } from "./entry";
 import {
   admitOwner, appPost, call, doorsEnv, OPEN, serveFirstPartyDocument, setControl, signInApp, url,
 } from "./support";
+import type { SandboxSignin } from "../../contract/src/sandbox";
 
 const SECRET = "test-e2b-webhook-signature-secret";
 

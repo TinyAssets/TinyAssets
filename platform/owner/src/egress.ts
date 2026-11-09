@@ -83,6 +83,10 @@ import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, largestFitting, periods } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
+import type { MeterOutcome } from "../../contract/src/gateway";
+import type {
+  EgressOpened, EgressRefusal, EgressRequest, EgressReserved, ReserveRequest,
+} from "../../contract/src/owner";
 import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
@@ -130,84 +134,13 @@ export interface LiveStream {
 }
 
 
-export interface EgressRequest {
-  /** The run the call's path names (`/r/<run>/c/<connection>/...`). */
-  readonly run: string;
-  readonly connection: string;
-  readonly method: string;
-  /** The path (and query) after `/c/<connection>`, as the provider's API names it. */
-  readonly path: string;
-  /** The request body's declared length, or null. */
-  readonly bytes_hint: number | null;
-}
-
-/**
- * An admitted model call's reserve, as the gateway's one parse of its body read it: the
- * model the body (or the path) names, and its tier option's value, or null when absent.
- */
-export interface ReserveRequest {
-  readonly reservation: string;
-  readonly model: string;
-  readonly tier: string | null;
-}
-
-/**
- * What a model call is held to: the output cap its charge leaves, which the gateway clamps
- * the call to; the body length it was admitted by, which the gateway refuses past; and the
- * model and tier it was reserved for.
- */
-export interface EgressMetering {
-  readonly max_output_tokens: number;
-  readonly input_bytes: number;
-  readonly model: string;
-  readonly tier: string | null;
-}
-
-/** A reserved model call: its metering. */
-export interface EgressReserved {
-  readonly ok: true;
-  readonly metering: EgressMetering;
-}
-
-/** An admitted call: what the door forwards with, and the object's end signal. */
-export interface EgressOpened {
-  readonly ok: true;
-  readonly reservation: string;
-  readonly connection: string;
-  readonly blob: string;
-  readonly version: number;
-  readonly generation: number;
-  /**
-   * Whether it is a model call, its charge then reserved once the gateway parsed its body
-   * (`reserve`); false for a free call (a read), which the gateway sends unmetered.
-   */
-  readonly metered: boolean;
-  /** Closed (or errored) when the object ends the stream; the door watches it. */
-  readonly ended: ReadableStream<Uint8Array>;
-}
-
-export interface EgressRefusal {
-  readonly ok: false;
-  readonly code: EgressCode;
-  /** The refusal's receipt row; null past the minute's refusal receipts. */
-  readonly receipt: string | null;
-}
-
-/** How the gateway's meter saw a call end, as the model reservation settles. */
-export type SpendOutcome =
-  | { readonly state: "succeeded"; readonly tokens: number; readonly cost: number;
-      /** The model the answer says served it, when other than the one the call named. */
-      readonly served?: string }
-  | { readonly state: "failed" }
-  | { readonly state: "unknown" };
-
 export interface SettleRequest {
   readonly reservation: string;
   readonly outcome: Outcome;
   readonly status: number | null;
   readonly bytes: number;
   /** The gateway's metered outcome; the cost in dollars, as pi-ai reports it. */
-  readonly spend: SpendOutcome;
+  readonly spend: MeterOutcome;
 }
 
 /** What one reservation row shows its owner. */
@@ -421,7 +354,7 @@ export function sandboxBinding(value: unknown): SandboxBinding {
   throw new Refusal("invalid", "invalid sandbox binding");
 }
 
-function spendOutcome(value: unknown): SpendOutcome {
+function spendOutcome(value: unknown): MeterOutcome {
   if (plain(value, "state") && (value["state"] === "failed" || value["state"] === "unknown")) {
     return { state: value["state"] };
   }

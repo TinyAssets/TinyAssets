@@ -19,7 +19,6 @@ import {
 import { nativeId } from "../../contract/src/binding";
 import type { Binding } from "../../contract/src/binding";
 import { mailConversation, type RunReceipt, UNATTENDED_REFUSED } from "../src/runs";
-import type { SandboxStart } from "../src/sandbox";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
@@ -28,6 +27,7 @@ import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { OWNER_WAITERS, ownerSlots } from "../src/holds";
 import { writeControl } from "../../ci/fixtures";
 import { drainDue, failure } from "./support";
+import type { SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",

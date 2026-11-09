@@ -6,7 +6,7 @@ import { sqlIn } from "../../ci/workerd";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
 import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
-import { type ChunkStore, type FileLimits, Files, type Full } from "../src/files";
+import { type FileLimits, Files, type Full } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
 import {
   CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
@@ -17,6 +17,7 @@ import type { Binding } from "../../contract/src/binding";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { SCHEDULE } from "../src/schedule";
 import { storageFull, storageFullRefusal } from "../src/storage-full";
+import type { ChunkStore } from "../../contract/src/files";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 

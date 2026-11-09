@@ -107,8 +107,8 @@ test, cutover.
   admit**: a fresh object is `pending` (migration 10's row; the admission guard's pin
   updated in place, nothing deployed) and every door and lane refuses it
   (`owner_unadmitted`) until `admissionSet {admit: true}` from the reserved caller, which
-  the sign-in callback sends (`binder.ts`'s `bindPlatform`, the admin path's one constant,
-  `admin/src/caller.ts`) when the directory holds no `o:` record of the owner, then writes
+  the sign-in callback sends (`binder.ts`'s `bindPlatform`, the contract's `PLATFORM_CALLER`,
+  `contract/src/binding.ts`) when the directory holds no `o:` record of the owner, then writes
   `o:<owner>` admitted. An owner marked erasing or erased refuses the admit, and the
   callback refuses the sign-in. Owners migrated at cutover are admitted by the import
   (task 9): it admits each imported owner's object through the platform caller and writes
@@ -173,7 +173,7 @@ test, cutover.
   and by every lane with `require_work` semantics, an erasure tombstone so a stale
   `getByName` never recreates an erased owner, and a new door `admissionSet` taken only
   from a reserved `platform` caller, with a guard keeping that name out of every source
-  but `platform/admin`. Built with F1 (tasks 5); the erasure door stays slice 10's. This **reverses** the earlier wording here ("the binder refuses
+  but its one constant (`PLATFORM_CALLER`, `contract/src/binding.ts`). Built with F1 (tasks 5); the erasure door stays slice 10's. This **reverses** the earlier wording here ("the binder refuses
   an unadmitted owner before it reaches the object, from the directory's admission
   state"), because the object is strongly consistent and already on every path (no
   extra read, no 60 s lag), the alarm reads it locally, and erasure needs an object
@@ -1272,7 +1272,7 @@ R, S, M and W.
     ids are random; `r2-no-prune-wait`: the settle's prune bounds the table alone;
     `r3-header-unchecked-shape`: a malformed header's hash never matches). The 12 the
     round-1 review found untested (M-6) each have their test.
-- [x] Slice S builds against the `SANDBOX` interface (`owner/src/sandbox.ts`), and only it:
+- [x] Slice S builds against the `SANDBOX` interface (`contract/src/sandbox.ts`), and only it:
   - the `tinyassets-sandbox` Worker as `SandboxService`: `start(owner, SandboxStart)`
     answers `{started: true}` or `{started: false, code}` (a fixed code) at once, the runner
     in the background; `cancel(owner, {run, lease_id})` sends SIGTERM, then a kill;

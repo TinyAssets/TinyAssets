@@ -14,10 +14,10 @@ import { Refusal } from "../../contract/src/refusal";
 import { guarded } from "../src/failure";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
-import { type Metering, type Reserve } from "../src/forward";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { open } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, sealed } from "./support";
+import type { Metering, Reserve } from "../../contract/src/gateway";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
 

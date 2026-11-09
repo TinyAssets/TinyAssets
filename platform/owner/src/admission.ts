@@ -29,8 +29,8 @@
  *   `OWNER_ERASED`, so nothing ever makes owner state there again.
  *
  * Only the platform sets admission (`admissionSet`), as the reserved caller
- * `PLATFORM_CALLER`, which no owner may be named and which reaches no other door; a guard
- * keeps the name out of every source but this one's constant and `platform/admin`
+ * `PLATFORM_CALLER` (`contract/src/binding.ts`), which no owner may be named and which
+ * reaches no other door; a guard keeps the name out of every source but that constant
  * (`admission-caller.test.ts`). A suspension adds a reason, a resumption takes one away,
  * and an erased owner is never set again.
  */
@@ -40,14 +40,13 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { ADMISSION_TABLE } from "./schema";
 import type { TierName } from "../../contract/src/control";
+import type { AdmissionRequest } from "../../contract/src/owner";
 import { tierName } from "./tier";
 import type {
   Door, OwnerState,
 } from "./owner-do";
 import { clock } from "./clock";
 
-/** The reserved caller only the platform's admin path sends: `admissionSet`'s alone. */
-export const PLATFORM_CALLER = "platform";
 /** Why the platform suspends an owner. */
 export const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]);
 
@@ -218,14 +217,6 @@ export function writeTombstone(sql: Pick<SqlStorage, "exec">): void {
   sql.exec(ADMISSION_TABLE);
   sql.exec("INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'erased', '[]')");
 }
-
-/**
- * The platform's change of the owner's admission (`admission.ts`): its admit at sign-up, or
- * a suspension's reason and whether it holds.
- */
-export type AdmissionRequest =
-  | { readonly admit: true }
-  | { readonly reason: string; readonly suspended: boolean };
 
 // -- THE DOORS: the `admission` rows' handlers (`contract/doors.json`) ----------------------------
 //

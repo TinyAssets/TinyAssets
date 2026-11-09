@@ -14,18 +14,17 @@ import { Refusal } from "../../contract/src/refusal";
 import { verifyToken } from "../../contract/src/routing-mac";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
-import { PLATFORM_CALLER } from "../src/admission";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
 import { WriteGate } from "../src/gate";
 import { AUTHORITY_CHANGED } from "../src/authority";
-import type { Binding } from "../../contract/src/binding";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, type RunHost, Runs, SIGNIN_LAPSED,
          UNATTENDED_REFUSED } from "../src/runs";
-import { SANDBOX_ABSENT, type SandboxStart } from "../src/sandbox";
+import { SANDBOX_ABSENT } from "../src/sandbox";
 import { keepTiers, PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
@@ -35,6 +34,7 @@ import {
 } from "./runs-support";
 import { drainDue, failure, sqlIn } from "./support";
 import type { GatedOwnerDO } from "./worker";
+import type { SandboxStart } from "../../contract/src/sandbox";
 
 /** The owner's run of Claude Code on its own sign-in: no key, no connection. */
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",

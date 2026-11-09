@@ -99,6 +99,7 @@ import { jsonObject } from "./body";
 import { APP_BODY_MAX, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE } from "./config";
 import { APP_RESOURCE } from "../../contract/src/identity";
 import type { ControlRead } from "../../contract/src/control";
+import type { JsonBody } from "../../contract/src/owner";
 import { ownerGate, ownerRead } from "./control";
 import {
   deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
@@ -170,7 +171,7 @@ export function bearer(request: Request): string | null {
 interface Served {
   readonly env: DoorsEnv;
   readonly owner: Bound;
-  readonly body: Record<string, unknown>;
+  readonly body: JsonBody;
   readonly presented: string;
   readonly token: ValidatedAccessToken<unknown>;
   readonly request: Request;
@@ -244,7 +245,7 @@ const grantSet: Route = async ({ owner: { binding, stub }, body: request }) => {
   if (request["mode"] === "revoked") {
     return failure(400, "a revoke goes by grants/revoke, which also ends the client's tokens");
   }
-  return json(200, await stub.grantSet(binding, request as never));
+  return json(200, await stub.grantSet(binding, request));
 };
 
 /** `files/read` `{path}`: one file as UTF-8 text, or why it is not shown as text. */
@@ -331,8 +332,7 @@ async function exportStream({ owner: { binding, stub }, body: request }: Served)
   if (Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
     return failure(400, "an export request is at most its cursor and its export_id");
   }
-  let page = await stub.ownerExport(binding, request as { cursor?: string | null;
-                                                          export_id?: string });
+  let page = await stub.ownerExport(binding, request);
   const exportId = page.export_id;
   let pages = 0;
   const encoder = new TextEncoder();
@@ -409,7 +409,7 @@ async function socketTicket({ env, token, presented, body: request }: Served):
     return failure(401, "sign in required");
   }
   const { binding, stub } = bindOwnerGrant(env, token, unwrapped.grantId);
-  return json(200, await stub.socketTicket(binding, request as never));
+  return json(200, await stub.socketTicket(binding, request));
 }
 
 /**
@@ -455,7 +455,7 @@ async function registering({ env, owner, body, token }: Served): Promise<Respons
   const { key_id: id, ...register } = body;
   const { keyId, entry } = await registeringEntry(env, owner.binding.owner, id);
   const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, owner.binding.session);
-  return json(200, await stub.registerAgent(binding, register as never));
+  return json(200, await stub.registerAgent(binding, register));
 }
 
 /** A route that answers a binder module's sequence's value as JSON. */

@@ -1,10 +1,10 @@
 /**
- * The sandbox Worker's two objects' migrations, applied on wake (`migrate`, the owner's
- * mechanism) and held by their locks (`migrations/<class>.json`, `guards/migrations.test.ts`).
+ * The sandbox Worker's two objects' migrations, applied on wake (`migrate`, the contract's
+ * mechanism, the owner's too) and held by their locks (`migrations/<class>.json`, `guards/migrations.test.ts`).
  * Migration 1 is each object's schema as it was frozen before the Worker's first deploy;
  * a change from here on is a new migration after it, never an edit.
  */
-import type { Migration } from "../../owner/src/migrate";
+import type { Migration } from "../../contract/src/migrate";
 
 /** `SandboxControl`'s, one object an owner. */
 export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([

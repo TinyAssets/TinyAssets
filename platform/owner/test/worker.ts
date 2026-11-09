@@ -9,14 +9,14 @@
  */
 import type { ChainStep } from "../src/archive";
 import { OPEN_GATES } from "../../ci/fixtures";
-import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
 import type { SandboxLeases } from "../src/launch";
 import { type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO } from "../src/owner-do";
 import { RecordingErasures } from "./erasure-fake";
 import { RecordingSandbox } from "./sandbox-fake";
-import { PLATFORM_CALLER } from "../src/admission";
+import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { LEDGER_LIMITS } from "../src/ledger";
+import type { GatewayService, Resealed } from "../../contract/src/gateway";
 
 /**
  * The owner object as production builds it but with no starter package, so the tests of

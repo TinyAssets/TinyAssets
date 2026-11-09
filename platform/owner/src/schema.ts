@@ -24,7 +24,7 @@
  * reference on the content, so the files plane's quota, garbage collection and erasure
  * cover the placed bytes.
  */
-import type { Migration } from "./migrate";
+import type { Migration } from "../../contract/src/migrate";
 
 /**
  * The owner's admission row (`admission.ts`): one row, `admitted`, `suspended` for one or

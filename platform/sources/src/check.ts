@@ -16,11 +16,11 @@ import { forbids, SOURCE_ID } from "../../contract/src/text";
 
 import { RUN_BASICS } from "./run-env";
 import {
-  type ApiKeyEnv, type CliSpec, type ConnectMethod, type CredentialKind, type Engine,
-  type HostedUse, type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec,
-  type PerCredential, type Region, type Rfc6749, type SourceRecord, SourceRecordError,
-  type ToolFilter, type Unattended,
+  type ApiKeyEnv, type CliSpec, type ConnectMethod, type Engine, type HostedUse, type Install,
+  type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential, type Region,
+  type Rfc6749, type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
 } from "./schema";
+import type { CredentialKind } from "../../contract/src/sandbox";
 
 const FLOW_PARAMS: readonly string[] = Object.freeze([
   "response_type", "client_id", "redirect_uri", "state", "code_challenge",

@@ -32,14 +32,15 @@ import { builtinCatalog } from "./catalog";
 import { type Credential } from "./credential";
 import { secret, source } from "../../contract/src/egress-scope";
 import {
-  type RingAnswer, ringDoorbell, sealDoorbell, verifyDoorbell, type Verified as Rung,
-} from "./doorbell";
+  type ConnectService, type DoorbellVerified, type EgressService, type Exchanged,
+  type GatewayService, type MeterOutcome, outcomeLine, type Refreshed, type Resealed,
+  type Reserve, type Revoked, type RingAnswer, type Sealed, type Verified,
+} from "../../contract/src/gateway";
+import { ringDoorbell, sealDoorbell, verifyDoorbell } from "./doorbell";
 import { codeOf, failureResponse, guarded } from "./failure";
-import { forward, forwardMetered, forwardRead, type MeterOutcome, type Reserve,
-         type Verified, verify } from "./forward";
-import { binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
-import { type Exchanged, exchange, type Refreshed, refresh, type Revoked,
-         revokeAtProvider } from "./oauth";
+import { forward, forwardMetered, forwardRead, verify } from "./forward";
+import { binding, type KeyringEnv, open, reseal, seal } from "./keyring";
+import { exchange, refresh, revokeAtProvider } from "./oauth";
 
 /** The gateway's one binding: its keyring secret (`wrangler.jsonc`). */
 export type GatewayEnv = KeyringEnv;
@@ -72,7 +73,7 @@ function verifySealed(env: GatewayEnv, owner: string, connection: string, versio
  * egress, refresh, reseal or revoke, and the keyring stays here (doors research §7.2,
  * `doors/guards/config.test.ts`).
  */
-export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
+export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> implements ConnectService {
   /** Seals a pasted API key for the connection, with its source record's values. */
   async seal(owner: string, connection: string, version: number, key: string,
              record: unknown): Promise<Sealed> {
@@ -99,7 +100,7 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
 
   /** Verifies an MCP Events callback with a signed challenge, then seals it. */
   async verifyDoorbell(owner: string, subscription: string, version: number,
-                       input: unknown): Promise<Rung> {
+                       input: unknown): Promise<DoorbellVerified> {
     return guarded(() => verifyDoorbell(this.env, owner, subscription, version, input));
   }
 }
@@ -110,7 +111,7 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
  * admitted the request under and hands the blob the object returned; the seal holds the
  * call to them, and the sealed endpoints to where it may go.
  */
-export class EgressGateway extends WorkerEntrypoint<GatewayEnv> {
+export class EgressGateway extends WorkerEntrypoint<GatewayEnv> implements EgressService {
   /**
    * Forwards one admitted sandbox call under the sealed endpoints: a model call metered
    * (`forwardMetered`), its reservation made through `reserve`, the door's callback, once
@@ -136,12 +137,13 @@ export class EgressGateway extends WorkerEntrypoint<GatewayEnv> {
     const { readable, writable } = new IdentityTransformStream();
     const writer = writable.getWriter();
     void sent.outcome.then((outcome) => writer.write(new TextEncoder().encode(
-      `${JSON.stringify(outcome)}\n`)).then(() => writer.close())).catch(() => undefined);
+      outcomeLine(outcome))).then(() => writer.close())).catch(() => undefined);
     return { response: sent.response, outcome: readable };
   }
 }
 
-export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
+export default class Gateway extends WorkerEntrypoint<GatewayEnv>
+    implements GatewayService {
   /** No model call is served over HTTP (ADR-034 decision 13): egress is the model path. */
   override async fetch(): Promise<Response> {
     return failureResponse("not_found");

@@ -14,9 +14,9 @@ import { Lifecycle } from "agents/lifecycle";
 import { describe, expect, it } from "vitest";
 
 import {
-  OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
-  tombstoned, writeTombstone,
+  OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_ONLY, PLATFORM_RESERVED, tombstoned, writeTombstone,
 } from "../src/admission";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S } from "../src/erasure";
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
@@ -24,7 +24,6 @@ import { Grants } from "../src/grants";
 import { Ledger } from "../src/ledger";
 import { clock } from "../src/clock";
 import { OwnerDO } from "../src/owner-do";
-import type { Binding } from "../../contract/src/binding";
 import { doorTable } from "../../contract/src/doors";
 import { Policy } from "../src/policy";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";

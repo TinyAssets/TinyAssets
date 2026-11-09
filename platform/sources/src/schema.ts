@@ -43,6 +43,7 @@
  */
 import type { Endpoint, Upstream } from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
+import type { CredentialKind } from "../../contract/src/sandbox";
 
 export type ConnectMethod = "api_key" | "oauth" | "cli";
 
@@ -73,8 +74,7 @@ export interface UserKey {
 
 export type OAuthSpec = Rfc6749 | UserKey;
 
-/** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
-export type CredentialKind = "vendor_login_in_sandbox" | "api_key";
+/** Every credential an engine runs on (`CredentialKind`). */
 export const CREDENTIAL_KINDS: readonly CredentialKind[] = Object.freeze([
   "vendor_login_in_sandbox", "api_key"]);
 

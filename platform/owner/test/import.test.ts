@@ -16,9 +16,9 @@ import {
   IMPORT_ROWS, NO_ROWS, rehearsalName, rowLeaf, rowsSum,
 } from "../../contract/src/import-message";
 import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
-import type { Binding } from "../../contract/src/binding";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
-  DISCARDED, IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, PLATFORM_CALLER,
+  DISCARDED, IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY,
 } from "../src/admission";
 import { MAX_OPEN_INTENTS } from "../src/files";
 import { IMPORT_NOTICE, type ImportCheckAnswer } from "../src/import";

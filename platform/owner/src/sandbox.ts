@@ -1,7 +1,8 @@
 /**
- * The `SANDBOX` interface (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3): what the
- * owner's object asks of the `tinyassets-sandbox` Worker (`platform/sandbox`, slice S), the
- * only holder of the E2B key, over a service binding. Slice R defined it; slice S built the
+ * The `SANDBOX` interface (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3; its types
+ * the contract's, `contract/src/sandbox.ts`): what the owner's object asks of the
+ * `tinyassets-sandbox` Worker (`platform/sandbox`, slice S), the only holder of the E2B key,
+ * over a service binding. Slice R defined it; slice S built the
  * Worker, bound it (`wrangler.jsonc`) and held it in the owner config guard's `SERVICES`
  * (a Worker that reaches nothing but E2B, with one class of its own per owner that
  * serializes that owner's E2B calls and renews each sandbox before its runtime ceiling).
@@ -41,75 +42,9 @@
  * Absent, nothing reaches `running`: admission refuses before it writes anything
  * (`SANDBOX_ABSENT`). Tests put a recording fake behind the interface, in tests only.
  */
-import type { CredentialKind } from "../../sources/src/schema";
-
-import type { NetworkPlan } from "./network";
-import type { MeterEvent } from "./sandbox-time";
+import type { Started } from "../../contract/src/sandbox";
 
 export const SANDBOX_ABSENT = "sandbox_absent: no sandbox is bound, so no run can start";
-
-/** A run's environment, as the lease's config gives it (`SandboxLeases.config`). */
-export interface RunConfig {
-  readonly generation: number;
-  readonly egress: { readonly mode: string;
-                     readonly destinations: readonly { host: string; port: number }[] };
-  readonly env: Readonly<Record<string, string>>;
-  readonly inherit: readonly string[];
-}
-
-export interface SandboxStart {
-  readonly run: string;
-  readonly agent: string;
-  readonly conversation: string;
-  /** The CLI record the runner invokes, and the credential it runs on. */
-  readonly engine: string;
-  readonly credential: CredentialKind;
-  readonly model: string | null;
-  /** The engine's session id to resume (`resume_argv`), or null for a new conversation. */
-  readonly session_id: string | null;
-  /** The input, on the engine's stdin or its prompt argument (the record says which). */
-  readonly prompt: string;
-  /** A run no one waits on: the record's `unattended_argv` applies. */
-  readonly unattended: boolean;
-  /**
-   * Whose sandbox the run runs in: the owner's own work's (`owner`), or one outside
-   * client's id. One sandbox an authority (slice R's review H-1): runs of different
-   * authority never share a VM, and a client's sandbox syncs only what that client may.
-   */
-  readonly authority: string;
-  readonly lease: { readonly lease_id: string; readonly epoch: number };
-  /**
-   * The lease's tokens, only when this start opened it: the egress token (E2B's transform),
-   * the sync token (the sync agent) and the runner's own secret (`x-ta-runner` on its event
-   * and sign-in posts), which the runner keeps where no CLI can read it.
-   */
-  readonly tokens: { readonly egress_token: string; readonly sync_token: string;
-                     readonly runner_token: string } | null;
-  /** The owner's network, its transform carrying the egress token, with `tokens` only. */
-  readonly network: NetworkPlan | null;
-  readonly config: RunConfig;
-  /**
-   * The run's MCP door (the record's `{mcp_url}`, carrying the run's own secret), its event
-   * door and the sign-in door (both the runner's, by its secret). A record whose MCP
-   * template carries `{run_secret}` (a header, `x-ta-run`) takes `mcp_bare` as its
-   * `{mcp_url}`, the secret in the header and out of the URL.
-   */
-  /**
-   * Whose sandbox this is, sealed for E2B's metadata (`sealRoute`, slice P): E2B echoes it on
-   * its signed lifecycle events, which the doors open to reach this owner's object.
-   */
-  readonly route: string;
-  readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
-                   readonly signin: string };
-}
-
-/**
- * The start's answer. A start on the vendor's own sign-in (`credential`
- * `vendor_login_in_sandbox`) first runs the record's `status_argv` inside that sandbox, and
- * answers `{started: false, code: "signin_required"}` when no login is there: a login is
- * never copied between sandboxes, so the owner signs in inside it (the vendor's own flow).
- */
-export type Started = { readonly started: true } | { readonly started: false; readonly code: string };
 
 /**
  * The start's answer when the E2B team runs as many sandboxes as its plan allows (the
@@ -119,66 +54,6 @@ export type Started = { readonly started: true } | { readonly started: false; re
  * and the `runs` lane then starts it again, admitted whole (slice S).
  */
 export const SANDBOX_WAITING = "sandbox_waiting";
-
-/**
- * The vendor's own sign-in started in a sandbox (slice SIGNIN; `signins.ts`), or its sign-out:
- * the record's `cli.login` run there by the runner as a user of its own (`ta-runner
- * login-launch`), under the sandbox's lease, which a start that opened it configures
- * (`tokens`, `network`) as a run's would. `region` is the owner's choice among the record's
- * `cli.regions` (its hosts let out), `urls.events` the sign-in's own event door and
- * `urls.signin` the presence report's.
- */
-export interface SandboxSignin {
-  readonly id: string;
-  readonly engine: string;
-  readonly region: string | null;
-  readonly mode: "in" | "out";
-  readonly authority: string;
-  readonly lease: { readonly lease_id: string; readonly epoch: number };
-  readonly tokens: SandboxStart["tokens"];
-  readonly network: NetworkPlan | null;
-  /**
-   * Whose sandbox this is, sealed for E2B's metadata, as a start's (`SandboxStart.route`): a
-   * sandbox a sign-in first makes costs as any other, and its lifecycle events reach this
-   * owner's object by it.
-   */
-  readonly route: string;
-  readonly urls: { readonly events: string; readonly signin: string };
-}
-
-/** The sandbox Worker, as the owner's object binds it (`SANDBOX`). */
-export interface SandboxService {
-  /** A sign-in started in the authority's sandbox (`SandboxSignin`); the start's answer. */
-  signin(owner: string, signin: SandboxSignin): Promise<Started>;
-  /** A pasted code to the live sign-in's CLI's stdin; whether it was live to take it. */
-  signinInput(owner: string, request: { readonly authority: string; readonly id: string;
-                                        readonly code: string }):
-    Promise<{ readonly delivered: boolean }>;
-  /** A live sign-in stopped. */
-  signinCancel(owner: string, request: { readonly authority: string; readonly id: string }):
-    Promise<{ readonly cancelled: boolean }>;
-  start(owner: string, start: SandboxStart): Promise<Started>;
-  cancel(owner: string, request: { readonly run: string; readonly lease_id: string }):
-    Promise<{ readonly cancelled: boolean }>;
-  status(owner: string, request: { readonly run: string; readonly lease_id: string }):
-    Promise<{ readonly state: "running" | "exited" | "gone" }>;
-  /**
-   * The lease is over: no run lives under it. The sandbox Worker pauses that sandbox at
-   * once unless a run started in it since (ADR-026's zero idle tail; a paused sandbox costs
-   * nothing and keeps its memory, files and sign-ins). The Worker keeps asking E2B until
-   * the pause lands, and reaps on its own a sandbox idle for a lease's TTL (a release that
-   * never reached it), so an idle sandbox is never left to its ceiling.
-   */
-  release(owner: string, request: { readonly lease_id: string }):
-    Promise<{ readonly paused: boolean }>;
-  /** The owner waits for a sandbox no more: out of the platform's line. */
-  unwait(owner: string): Promise<void>;
-  /** The owner erased: each of their sandboxes killed, the Worker's state of them deleted. */
-  erase(owner: string): Promise<{ readonly killed: number }>;
-  /** The log after `after`: at most `METER_BATCH` entries, and the cursor past them. */
-  meter(owner: string, request: { readonly after: number }):
-    Promise<{ readonly events: readonly MeterEvent[]; readonly next: number }>;
-}
 
 /** A start's answer, checked: a refusal's code is a fixed code, never prose. */
 export function started(value: unknown): Started {

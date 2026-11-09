@@ -21,7 +21,7 @@ import { open } from "../../gateway/src/keyring";
 import { CONNECTION_LIMITS } from "../src/connections";
 import { MODELS_JSON_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
-import type { EgressOpened, EgressRefusal } from "../src/egress";
+import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
 import type { Binding } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";

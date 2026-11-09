@@ -32,8 +32,9 @@ import {
 } from "./ledger";
 import { inTime, type Lane, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
 import {
-  type Change, type DoorbellRequest, doorbellRequest, type WakeContent,
+  type Change, doorbellRequest, type WakeContent,
 } from "../../contract/src/wake-kinds";
+import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
 import { kindNamed } from "../../contract/src/wake-records";
 
 /** At most this many rows per pass per lane run; a run with more due runs again at once. */
@@ -146,18 +147,10 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
   return accepted;
 }
 
-/** The gateway's answer to one ring (`gateway/src/doorbell.ts`). */
-export type RingAnswer =
-  | { readonly state: "answered"; readonly status: number; readonly retry_after: string | null;
-      readonly resealed?: { readonly blob: string; readonly kid: string;
-                            readonly version: number } }
-  | { readonly state: "refused" }
-  | { readonly state: "unknown" };
-
 /** One subscription's send through the gateway: its sealed blob, and the object's request. */
 export type Ring = (subscription: string, version: number, blob: string,
                     previous: { readonly version: number; readonly blob: string } | null,
-                    request: DoorbellRequest) => Promise<RingAnswer>;
+                    request: RingRequest) => Promise<RingAnswer>;
 
 /** What the doorbell reads and calls: the object's, handed in by the object. */
 export interface DoorbellDeps {
@@ -295,7 +288,7 @@ export class Doorbell implements WakeSender, Lane {
     if (typeof found === "string") {
       return { state: "suppressed", reason: found };
     }
-    let requests: { callback: LiveCallback; request: DoorbellRequest }[];
+    let requests: { callback: LiveCallback; request: RingRequest }[];
     try {
       requests = found.map((callback) => {
         const kind = kindNamed(callback.kind);
