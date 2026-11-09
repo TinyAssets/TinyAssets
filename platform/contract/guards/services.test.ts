@@ -255,7 +255,7 @@ describe("the services' contracts", () => {
     const MARK = ["parsed by", "jsonObject"].join(" ");
     expect([...sources].filter(([path, source]) =>
       (path !== "contract/src/owner.ts" && source.includes(MARK))
-      || (path !== "doors/src/body.ts" && /\bas\s+JsonBody\b/.test(source)))
+      || (path !== "doors/src/body.ts" && /\bas\s+JsonBody\b|<\s*JsonBody\s*>/.test(source)))
       .map(([path]) => path)).toEqual([]);
   });
 });
