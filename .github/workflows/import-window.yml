@@ -1,0 +1,217 @@
+name: Import window (manual)
+
+# The cutover importer's runner (import_research.md §1, §3 and §4; tasks.md §9 item 7): one
+# step of the import window, run on the droplet against one verified backup copy a run, by
+# platform/import/window.sh as root, the job (platform/import/, bundled here) in
+# `docker run --rm node:22`. Deleted at the cutover with platform/import/.
+#
+# - mode: census (makes the run's copy when it has none, then counts), bundle, stage, verify,
+#   wipe, admit, dlq, or clean (unmount and delete the run's copy).
+# - run: the run's id, which keys its work folder on the droplet and its staging prefix, so
+#   census -> bundle -> stage -> verify -> wipe run against one copy over several dispatches.
+# - rehearsal: true by default, and then every owner is imported under its
+#   `rehearsal-<run>-...` name. A real window run needs rehearsal false and confirm equal to
+#   `window-<run>`; without both, the first step refuses before any other.
+#
+# Output: counts and owner ordinals alone, to the log and the job summary. The job's own
+# output is let out only through its release check (no principal, no owner key, no path of
+# the copy); the per-owner table and the window's record stay 0600 on the droplet.
+#
+# Secrets (`production`; platform/deploy/checklist.md, "The import window's credentials"):
+# DO_DROPLET_HOST, DO_SSH_USER and DO_SSH_KEY for every mode; IMPORT_EXCLUSION_LIST for bundle;
+# CLOUDFLARE_ACCOUNT_ID (a repository secret), IMPORT_R2_ACCESS_KEY_ID,
+# IMPORT_R2_SECRET_ACCESS_KEY, IMPORT_CLOUDFLARE_API_TOKEN and IMPORT_KEY for stage, verify,
+# wipe, admit and dlq. Each reaches the droplet on the SSH session's stdin and the job on its
+# own stdin (`docker run -i`): never an argument, an environment, a container's config
+# (`docker inspect`), a file or a log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'census | bundle | stage | verify | wipe | admit | dlq | clean'
+        required: true
+        default: census
+        type: choice
+        options: [census, bundle, stage, verify, wipe, admit, dlq, clean]
+      run:
+        description: "The run's id (lowercase letters, digits and dashes): its copy and staging"
+        required: true
+        type: string
+      rehearsal:
+        description: 'A rehearsal, under rehearsal- names (false only for the real window)'
+        required: false
+        default: true
+        type: boolean
+      confirm:
+        description: 'A real window run only: window-<run>'
+        required: false
+        default: ''
+        type: string
+      delete_dead_letters:
+        description: 'dlq only: delete the dead letters it reads'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# Every mode takes its own group. None changes the live host: census, bundle and clean write
+# only the run's own copy under /var/tmp, and the rest reach Cloudflare from a container. A
+# census can run for hours (it downloads, decompresses and digests every image), and so can a
+# verify (up to 30 minutes an owner): on the host-mutation lock that would hold deploy-prod and
+# p0-outage-triage off the live old stack through a rehearsal, and on the observation lock it
+# would hold the outage diagnostics (fetch-prod-logs.yml, diagnose-prod-startup.yml), GitHub's
+# one pending run a group letting them displace each other. On the host, a lock lets one
+# import window run at a time (window.sh).
+concurrency:
+  group: import-window
+  cancel-in-progress: false
+
+env:
+  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+
+jobs:
+  window:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 345
+    steps:
+      - name: Refuse a run this dispatch may not make
+        env:
+          MODE: ${{ inputs.mode }}
+          RUN_ID: ${{ inputs.run }}
+          REHEARSAL: ${{ inputs.rehearsal }}
+          CONFIRM: ${{ inputs.confirm }}
+          DELETE_DEAD_LETTERS: ${{ inputs.delete_dead_letters }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          IMPORT_EXCLUSION_LIST: ${{ secrets.IMPORT_EXCLUSION_LIST }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          IMPORT_R2_ACCESS_KEY_ID: ${{ secrets.IMPORT_R2_ACCESS_KEY_ID }}
+          IMPORT_R2_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_R2_SECRET_ACCESS_KEY }}
+          IMPORT_CLOUDFLARE_API_TOKEN: ${{ secrets.IMPORT_CLOUDFLARE_API_TOKEN }}
+          IMPORT_KEY: ${{ secrets.IMPORT_KEY }}
+        run: |
+          set -euo pipefail
+          refuse() { echo "::error::refused: $*"; exit 1; }
+          case "${MODE}" in
+            census|bundle|stage|verify|wipe|admit|dlq|clean) ;;
+            *) refuse "no such mode" ;;
+          esac
+          [[ "${RUN_ID}" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] \
+            || refuse "a run's id is lowercase letters, digits and dashes, at most 64"
+          if [ "${REHEARSAL}" = "true" ]; then
+            [ -z "${CONFIRM}" ] || refuse "confirm is for a real window run alone (rehearsal false)"
+          elif [ "${CONFIRM}" != "window-${RUN_ID}" ]; then
+            refuse "a real window run needs rehearsal false and confirm window-<run>"
+          fi
+          if [ "${DELETE_DEAD_LETTERS}" = "true" ] && [ "${MODE}" != dlq ]; then
+            refuse "delete_dead_letters is for dlq alone"
+          fi
+          needed=(DO_DROPLET_HOST DO_SSH_USER DO_SSH_KEY)
+          case "${MODE}" in
+            bundle) needed+=(IMPORT_EXCLUSION_LIST) ;;
+            stage|verify|wipe|admit|dlq)
+              needed+=(CLOUDFLARE_ACCOUNT_ID IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY
+                       IMPORT_CLOUDFLARE_API_TOKEN IMPORT_KEY) ;;
+          esac
+          missing=()
+          for name in "${needed[@]}"; do
+            [ -n "${!name:-}" ] || missing+=("${name}")
+          done
+          [ "${#missing[@]}" -eq 0 ] \
+            || refuse "mode ${MODE} needs the secret(s) ${missing[*]}, which the environment does not hold"
+          echo "mode ${MODE}, run ${RUN_ID}, $([ "${REHEARSAL}" = true ] && echo rehearsal || echo 'the real window')"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Bundle the job
+        working-directory: platform
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build -w import
+          node --experimental-strip-types --input-type=module -e \
+            "import { DARK_CONTROL } from './deploy/deploy.ts'; process.stdout.write(JSON.stringify({ tiers: DARK_CONTROL.tiers }));" \
+            > "${RUNNER_TEMP}/control.json"
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${SSH_KEY}" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "${DO_DROPLET_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run the step on the droplet
+        env:
+          MODE: ${{ inputs.mode }}
+          RUN_ID: ${{ inputs.run }}
+          REHEARSAL: ${{ inputs.rehearsal }}
+          DELETE_DEAD_LETTERS: ${{ inputs.delete_dead_letters }}
+          IMPORT_EXCLUSION_LIST: ${{ secrets.IMPORT_EXCLUSION_LIST }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          IMPORT_R2_ACCESS_KEY_ID: ${{ secrets.IMPORT_R2_ACCESS_KEY_ID }}
+          IMPORT_R2_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_R2_SECRET_ACCESS_KEY }}
+          IMPORT_CLOUDFLARE_API_TOKEN: ${{ secrets.IMPORT_CLOUDFLARE_API_TOKEN }}
+          IMPORT_KEY: ${{ secrets.IMPORT_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "${DO_SSH_USER}" =~ ^[A-Za-z0-9._-]+$ ]]
+          kind=rehearsal
+          [ "${REHEARSAL}" = true ] || kind=window
+          words=("${MODE}" "${RUN_ID}" "${kind}")
+          [ "${DELETE_DEAD_LETTERS}" != true ] || words+=(delete)
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                mktemp -d /tmp/tinyassets-import-window.XXXXXX
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-import-window[.][A-Za-z0-9]+$ ]]
+          cleanup() {
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "rm -rf -- $(printf '%q' "${remote_stage}")" || true
+          }
+          trap cleanup EXIT
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              platform/import/dist/import.mjs platform/import/window.sh "${RUNNER_TEMP}/control.json" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
+          # Each secret on the session's stdin (printf is a builtin: no argument holds one).
+          handed() {
+            case "${MODE}" in
+              bundle) printf '%s\n' "${IMPORT_EXCLUSION_LIST}" ;;
+              stage|verify|wipe|admit|dlq)
+                printf '%s\n' "${CLOUDFLARE_ACCOUNT_ID}" "${IMPORT_R2_ACCESS_KEY_ID}" \
+                  "${IMPORT_R2_SECRET_ACCESS_KEY}" "${IMPORT_CLOUDFLARE_API_TOKEN}" "${IMPORT_KEY}" ;;
+            esac
+          }
+          set +e
+          handed | timeout 335m ssh -i ~/.ssh/do_deploy \
+              -o BatchMode=yes -o ConnectTimeout=10 \
+              -o ServerAliveInterval=30 -o ServerAliveCountMax=50 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash $(printf '%q' "${remote_stage}")/window.sh $(printf '%q ' "${words[@]}")" \
+            | tee "${RUNNER_TEMP}/step.out"
+          status=$?
+          set -e
+          {
+            echo "### Import window: ${MODE}, run ${RUN_ID} (${kind}), exit ${status}"
+            echo '```'
+            cat "${RUNNER_TEMP}/step.out"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::the ${MODE} step ended ${status} (3: it does not hold yet; see its counts)"
+            exit 1
+          fi
