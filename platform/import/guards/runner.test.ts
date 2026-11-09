@@ -661,7 +661,7 @@ describe("the off-site copy of the window's final backup, on a fake import host"
   const tree = (dir: string): Record<string, string> => Object.fromEntries(
     execFileSync("find", [dir, "-type", "f"], { encoding: "utf8" }).split("\n").filter(Boolean)
       .sort().map((path) => [path.slice(dir.length),
-                             execFileSync("sha256sum", [path], { encoding: "utf8" }).split(" ")[0]]));
+                             execFileSync("sha256sum", [path], { encoding: "utf8" }).slice(0, 64)]));
 
   it("refuses a rehearsal before anything else", () => {
     const h = host();
