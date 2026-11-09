@@ -2314,8 +2314,9 @@ R, S, M and W.
 ## 9. Cutover window
 
 - [ ] **The importer** (`import_research.md`): every existing owner's stores and files carried
-  into the new platform by a job in `platform/import/` (Node, run on the droplet from the
-  verified backup copy), which reads the contract and no Worker's `src` (its isolation guard).
+  into the new platform by a job in `platform/import/` (Node, run on each run's disposable
+  import host from the verified backup copy), which reads the contract and no Worker's `src`
+  (its isolation guard).
   It is deleted in the cutover's deletion change, with everything of the import window:
   the owner's import doors (`owner/src/import.ts`, their eight `import` rows in
   `contract/doors.json`, the `import` class and the `import` and `discard` callers,
@@ -2328,10 +2329,16 @@ R, S, M and W.
   `doors/wrangler.jsonc` (`IMPORT_STAGING`, the `IMPORTS` producer, the consumer and its
   dead-letter queue), the account's `tinyassets-import` and `tinyassets-import-dlq` queues and
   `tinyassets-import-staging` bucket, and the doors' `IMPORT_KEY` secret. So is the window's
-  runner: `.github/workflows/import-window.yml`, the job's `copy.ts` and the host's
-  `window.sh`, its `production` secrets (`IMPORT_EXCLUSION_LIST`, `IMPORT_R2_ACCESS_KEY_ID`,
-  `IMPORT_R2_SECRET_ACCESS_KEY`, `IMPORT_CLOUDFLARE_API_TOKEN` and `IMPORT_KEY`) with both
-  Cloudflare tokens revoked, and each run's work folder on the droplet (mode `clean`).
+  runner: `.github/workflows/import-window.yml`, the job's `copy.ts`, the host's `window.sh`
+  and the import host's `host.py`; its `production` secrets (`IMPORT_EXCLUSION_LIST`,
+  `IMPORT_R2_ACCESS_KEY_ID`, `IMPORT_R2_SECRET_ACCESS_KEY`, `IMPORT_CLOUDFLARE_API_TOKEN`,
+  `IMPORT_KEY`, `IMPORT_DO_TOKEN`, `IMPORT_RESERVED_IP`, `IMPORT_SPACES_ACCESS_KEY_ID` and
+  `IMPORT_SPACES_SECRET_ACCESS_KEY`), with both Cloudflare tokens, the DigitalOcean token and
+  the Spaces read key revoked and the reserved IP released; and each run's import host (mode
+  `clean` deletes its copy, then destroys it), so no `import-window` Droplet remains. The R2
+  bucket `tinyassets-final-backup` (the off-site copy, below) is not deleted with them: it is
+  kept through the 14-day hold, then deleted with the old stack's final backup, and only on
+  the founder's word.
   - [x] 1. The census (`census.ts`): §1's counts and the per-owner table, rule 0 (`rules.ts`:
     a reviewed rule for every old store, table and entry, held to the old stack's own DDL by
     `guards/old-tables.json`, an unknown one stopping its owner loudly), every fleet row
@@ -2412,18 +2419,32 @@ R, S, M and W.
   - [ ] 7. A dark rehearsal under `rehearsal-` names, measured, verified and wiped (the founder
     approved it on real data, 2026-11-07). Its runner is built (slice 7a): **Import window
     (manual)** (`import-window.yml`), one mode a dispatch (`census`, `bundle`, `stage`,
-    `verify`, `wipe`, `admit`, `dlq`, `clean`) against one copy a run id. `window.sh` makes
-    the copy on the droplet from the newest manifest (every digest, the free disk, every
-    store's `integrity_check`, room for the bundles), mounts the images read-only for each
-    job, and runs the job in one `node:22` digest a run (the census's), its credentials on its
-    stdin, a networked job seeing the bundles alone, its output let out through
-    `copy release` alone, which fails closed. A rehearsal is the default; a
-    real run takes `rehearsal: false` and `confirm: window-<run>`. It also owes
-    (`rvimport5_report.md`):
+    `verify`, `wipe`, `admit`, `dlq`, `offsite`, `clean`) against one copy a run id. Each run
+    runs on its own import host (`host.py`, `import_host_research.md`; the founder approved
+    the spend, 2026-11-09): a Droplet, `tinyassets-import-<run>` in `sfo3`, that `census`
+    makes (none while another `import-window` Droplet exists) and `clean` destroys after
+    deleting the copy, held to its name and tags first. Its host key is made on the runner
+    and pinned from its tag on every dispatch, never from `ssh-keyscan`. Its egress is checked
+    from a bridge container to be the reserved IP both tokens are pinned to, before any copy
+    and before every mode that hands it a credential. Every dispatch names each import host
+    and its age, and warns past 7 days. `window.sh` refuses any host whose marker is not the
+    run's, or that holds the old stack, and makes the copy from the newest manifest on the
+    primary backup store, read with a read-only Spaces key that reaches rclone's environment
+    alone (every digest, the free disk, every store's `integrity_check`, room for the
+    bundles). It mounts the images read-only for each job, and runs the job in one `node:22`
+    digest a run (the census's, which it prints, so the rehearsal's and the window's
+    compare), its credentials on its stdin in `CREDENTIALS`' order, a networked job seeing
+    the bundles alone, its output let out through `copy release` alone, which fails closed.
+    The Cloudflare account id is resolved from the repository's token, as the deploy kit
+    resolves it. A rehearsal is the default; a real run takes `rehearsal: false` and
+    `confirm: window-<run>`. It also owes (`rvimport5_report.md`):
     - the time a discarded object takes to be evicted, measured, with that wait written into
       the window's steps, since a re-import before then answers `busy`;
-    - the window's credentials minted as a founder step (`platform/deploy/checklist.md`, "The
-      import window's credentials": their names and scopes). Revoke them after the window;
+    - the window's credentials made as a founder step (`platform/deploy/checklist.md`, "The
+      import window's credentials": their names and scopes; the reserved IP first, both
+      Cloudflare tokens minted against it with an end date, then `IMPORT_DO_TOKEN` and the
+      Spaces read key). After the window, revoke them all, release the reserved IP and confirm
+      no `import-window` Droplet remains;
     - `IMPORT_KEY` removed before `routes`, because a replayed admit is accepted by design;
     - the dead-letter reader's limit noted: its lease returns a message about 100 times
       before the pull consumer's `max_retries` drops it.
@@ -2443,14 +2464,28 @@ R, S, M and W.
     it, so the census cannot withhold that owner; any such owner is discarded from the
     import (still `pending`) and withheld, as the census withholds `erasure_pending` owners,
     before any owner is admitted.
+  - [ ] **The off-site copy of the final backup** (the founder, 2026-11-09): today every copy
+    is in one bucket, in one region, with one provider. In the window, after its census, mode
+    `offsite` copies the final backup the window's copy was made from (the newest verified
+    manifest, its archive and every pinned image) from the primary bucket to the R2 bucket
+    `tinyassets-final-backup`, reads each back and holds its SHA-256 to the manifest, and
+    changes nothing in the primary bucket. It refuses on a rehearsal. The deploy kit's `dark`
+    makes the bucket (`deploy/platform.json` `buckets`), and the R2 key gains Item Write on it.
+    The bucket is kept through the 14-day hold, then deleted with the old stack's final
+    backup, and only on the founder's word.
+    - The DR drill is disabled (2026-11-09, founder) because its off-region store was never
+      built; the rehearsal's census is the recorded restore proof until the cutover deletes
+      the drill (`dr-drill.yml`) with the old stack.
 
 - [ ] Full backup; each owner's broker stores imported into their object and each
   volume into object storage, each imported owner admitted (`admissionSet` from the
   platform caller, and its `o:` record), as sign-up admits one; DNS switched; the droplet
-  paths deleted, and `platform/import/` with them, and the import window's doors, bindings,
-  queues, bucket and `IMPORT_KEY` (the importer above lists each). The droplet is
+  paths deleted, with the old stack's workflows (`dr-drill.yml` among them), and
+  `platform/import/` with them, and the import window's doors, bindings, queues, bucket,
+  import hosts and `IMPORT_KEY` (the importer above lists each). The droplet is
   stopped, not destroyed, through a hold of 14 days after the cutover, and the founder is
-  told before it and the final backup are destroyed (the founder, 2026-11-07). S36 reads
+  told before it and the final backup are destroyed, the off-site copy
+  (`tinyassets-final-backup`) with it (the founder, 2026-11-07 and 2026-11-09). S36 reads
   converged.
   The route switch, in this order (the handback, slice 6 above):
   1. **Record.** Mode `routes` keeps its route record before any change. Its job summary

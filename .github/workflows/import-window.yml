@@ -1,41 +1,54 @@
 name: Import window (manual)
 
-# The cutover importer's runner (import_research.md §1, §3 and §4; tasks.md §9 item 7): one
-# step of the import window, run on the droplet against one verified backup copy a run, by
-# platform/import/window.sh as root, the job (platform/import/, bundled here) in
-# `docker run --rm node:22`. Deleted at the cutover with platform/import/.
+# The cutover importer's runner (import_research.md §1, §3 and §4; import_host_research.md;
+# tasks.md §9 item 7): one step of the import window a dispatch, run on the run's own import
+# host against one verified backup copy a run, by platform/import/window.sh as root, the job
+# (platform/import/, bundled here) in `docker run --rm node:22`. Deleted at the cutover with
+# platform/import/.
 #
-# - mode: census (makes the run's copy when it has none, then counts), bundle, stage, verify,
-#   wipe, admit, dlq, or clean (unmount and delete the run's copy).
-# - run: the run's id, which keys its work folder on the droplet and its staging prefix, so
+# - The import host: a disposable Droplet a run, tinyassets-import-<run> in sfo3, which
+#   census makes (none while another import host is up) and clean destroys after deleting
+#   the copy (platform/import/host.py). It leaves for Cloudflare through one reserved IP
+#   (IMPORT_RESERVED_IP), which the R2 and API tokens are pinned to, and it is checked to
+#   before any copy and before any mode that hands it a credential. Its host key is made
+#   here, recorded as a tag and pinned on every dispatch. Nothing reaches the production
+#   droplet: the copy is read from the primary backup store with a read-only key.
+# - mode: census (makes the run's host and copy when it has none, then counts), bundle,
+#   stage, verify, wipe, admit, dlq, offsite (the real window alone: its final backup copied
+#   to R2's tinyassets-final-backup and read back), or clean (unmount and delete the run's
+#   copy, then destroy its host).
+# - run: the run's id, which keys its host, its work folder and its staging prefix, so
 #   census -> bundle -> stage -> verify -> wipe run against one copy over several dispatches.
 # - rehearsal: true by default, and then every owner is imported under its
 #   `rehearsal-<run>-...` name. A real window run needs rehearsal false and confirm equal to
 #   `window-<run>`; without both, the first step refuses before any other.
 #
-# Output: counts and owner ordinals alone, to the log and the job summary. The job's own
-# output is let out only through its release check (no principal, no owner key, no path of
-# the copy); the per-owner table and the window's record stay 0600 on the droplet.
+# Output: counts and owner ordinals alone, to the log and the job summary, with every
+# import-window Droplet and its age. The job's own output is let out only through its release
+# check (no principal, no owner key, no path of the copy); the per-owner table and the
+# window's record stay 0600 on the import host.
 #
 # Secrets (`production`; platform/deploy/checklist.md, "The import window's credentials"):
-# DO_DROPLET_HOST, DO_SSH_USER and DO_SSH_KEY for every mode; IMPORT_EXCLUSION_LIST for bundle;
-# CLOUDFLARE_ACCOUNT_ID (a repository secret), IMPORT_R2_ACCESS_KEY_ID,
-# IMPORT_R2_SECRET_ACCESS_KEY, IMPORT_CLOUDFLARE_API_TOKEN and IMPORT_KEY for stage, verify,
-# wipe, admit and dlq. Each reaches the droplet on the SSH session's stdin and the job on its
-# own stdin (`docker run -i`): never an argument, an environment, a container's config
-# (`docker inspect`), a file or a log.
+# DO_SSH_KEY, IMPORT_DO_TOKEN and IMPORT_RESERVED_IP for every mode;
+# IMPORT_SPACES_ACCESS_KEY_ID and IMPORT_SPACES_SECRET_ACCESS_KEY for census and offsite;
+# IMPORT_EXCLUSION_LIST for bundle; IMPORT_R2_ACCESS_KEY_ID and IMPORT_R2_SECRET_ACCESS_KEY for
+# stage, verify, wipe, admit, dlq and offsite, with IMPORT_CLOUDFLARE_API_TOKEN and IMPORT_KEY
+# for the first five. The Cloudflare account id is resolved from the repository's
+# CLOUDFLARE_API_TOKEN (the zone's account) for those six, on the runner. Each credential
+# reaches the host on the SSH session's stdin and the job on its own stdin (`docker run -i`):
+# never an argument, an environment, a container's config (`docker inspect`), a file or a log.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'census | bundle | stage | verify | wipe | admit | dlq | clean'
+        description: 'census | bundle | stage | verify | wipe | admit | dlq | offsite | clean'
         required: true
         default: census
         type: choice
-        options: [census, bundle, stage, verify, wipe, admit, dlq, clean]
+        options: [census, bundle, stage, verify, wipe, admit, dlq, offsite, clean]
       run:
-        description: "The run's id (lowercase letters, digits and dashes): its copy and staging"
+        description: "The run's id (lowercase letters, digits and dashes): its host, copy and staging"
         required: true
         type: string
       rehearsal:
@@ -57,21 +70,12 @@ on:
 permissions:
   contents: read
 
-# Every mode takes its own group. None changes the live host: census, bundle and clean write
-# only the run's own copy under /var/tmp, and the rest reach Cloudflare from a container. A
-# census can run for hours (it downloads, decompresses and digests every image), and so can a
-# verify (up to 30 minutes an owner): on the host-mutation lock that would hold deploy-prod and
-# p0-outage-triage off the live old stack through a rehearsal, and on the observation lock it
-# would hold the outage diagnostics (fetch-prod-logs.yml, diagnose-prod-startup.yml), GitHub's
-# one pending run a group letting them displace each other. On the host, a lock lets one
-# import window run at a time (window.sh).
+# One group for every mode: a run's modes share one import host and one copy, and the
+# reserved IP is on one host at a time. Nothing here reaches the production droplet, so the
+# host-mutation and observation locks stay free for the old stack's deploys and diagnostics.
 concurrency:
   group: import-window
   cancel-in-progress: false
-
-env:
-  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
-  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 
 jobs:
   window:
@@ -88,8 +92,12 @@ jobs:
           CONFIRM: ${{ inputs.confirm }}
           DELETE_DEAD_LETTERS: ${{ inputs.delete_dead_letters }}
           DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          IMPORT_DO_TOKEN: ${{ secrets.IMPORT_DO_TOKEN }}
+          IMPORT_RESERVED_IP: ${{ secrets.IMPORT_RESERVED_IP }}
+          IMPORT_SPACES_ACCESS_KEY_ID: ${{ secrets.IMPORT_SPACES_ACCESS_KEY_ID }}
+          IMPORT_SPACES_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_SPACES_SECRET_ACCESS_KEY }}
           IMPORT_EXCLUSION_LIST: ${{ secrets.IMPORT_EXCLUSION_LIST }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           IMPORT_R2_ACCESS_KEY_ID: ${{ secrets.IMPORT_R2_ACCESS_KEY_ID }}
           IMPORT_R2_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_R2_SECRET_ACCESS_KEY }}
           IMPORT_CLOUDFLARE_API_TOKEN: ${{ secrets.IMPORT_CLOUDFLARE_API_TOKEN }}
@@ -98,7 +106,7 @@ jobs:
           set -euo pipefail
           refuse() { echo "::error::refused: $*"; exit 1; }
           case "${MODE}" in
-            census|bundle|stage|verify|wipe|admit|dlq|clean) ;;
+            census|bundle|stage|verify|wipe|admit|dlq|offsite|clean) ;;
             *) refuse "no such mode" ;;
           esac
           [[ "${RUN_ID}" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] \
@@ -111,12 +119,19 @@ jobs:
           if [ "${DELETE_DEAD_LETTERS}" = "true" ] && [ "${MODE}" != dlq ]; then
             refuse "delete_dead_letters is for dlq alone"
           fi
-          needed=(DO_DROPLET_HOST DO_SSH_USER DO_SSH_KEY)
+          if [ "${MODE}" = offsite ] && [ "${REHEARSAL}" = "true" ]; then
+            refuse "offsite copies the real window's final backup alone, never a rehearsal's"
+          fi
+          needed=(DO_SSH_KEY IMPORT_DO_TOKEN IMPORT_RESERVED_IP)
           case "${MODE}" in
+            census) needed+=(IMPORT_SPACES_ACCESS_KEY_ID IMPORT_SPACES_SECRET_ACCESS_KEY) ;;
             bundle) needed+=(IMPORT_EXCLUSION_LIST) ;;
             stage|verify|wipe|admit|dlq)
-              needed+=(CLOUDFLARE_ACCOUNT_ID IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY
+              needed+=(CLOUDFLARE_API_TOKEN IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY
                        IMPORT_CLOUDFLARE_API_TOKEN IMPORT_KEY) ;;
+            offsite)
+              needed+=(IMPORT_SPACES_ACCESS_KEY_ID IMPORT_SPACES_SECRET_ACCESS_KEY
+                       CLOUDFLARE_API_TOKEN IMPORT_R2_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY) ;;
           esac
           missing=()
           for name in "${needed[@]}"; do
@@ -129,6 +144,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+
+      - name: Name every import host and its age
+        env:
+          DO_TOKEN: ${{ secrets.IMPORT_DO_TOKEN }}
+        run: python3 platform/import/host.py hosts --summary "${GITHUB_STEP_SUMMARY}"
 
       - uses: actions/setup-node@v4
         with:
@@ -148,60 +168,109 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           printf '%s\n' "${SSH_KEY}" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
-          ssh-keyscan -t ed25519,rsa "${DO_DROPLET_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keygen -y -f ~/.ssh/do_deploy > "${RUNNER_TEMP}/do_deploy.pub"
 
-      - name: Run the step on the droplet
+      - name: Find or make the run's import host
+        id: host
+        env:
+          DO_TOKEN: ${{ secrets.IMPORT_DO_TOKEN }}
+          IMPORT_RESERVED_IP: ${{ secrets.IMPORT_RESERVED_IP }}
+          MODE: ${{ inputs.mode }}
+          RUN_ID: ${{ inputs.run }}
+        run: |
+          python3 platform/import/host.py ensure --run "${RUN_ID}" --mode "${MODE}" \
+            --deploy-key "${RUNNER_TEMP}/do_deploy.pub" --output "${GITHUB_OUTPUT}"
+
+      - name: Pin its host key
+        if: steps.host.outputs.id != ''
+        env:
+          IMPORT_RESERVED_IP: ${{ secrets.IMPORT_RESERVED_IP }}
+          RUN_ID: ${{ inputs.run }}
+          HOSTKEY: ${{ steps.host.outputs.hostkey }}
+        run: |
+          python3 platform/import/host.py pin --run "${RUN_ID}" --hostkey "${HOSTKEY}" \
+            --known-hosts "${RUNNER_TEMP}/import_known_hosts" --identity ~/.ssh/do_deploy
+
+      - name: Check its egress is the reserved IP
+        if: >-
+          steps.host.outputs.id != '' &&
+          contains(fromJSON('["census","stage","verify","wipe","admit","dlq","offsite"]'), inputs.mode)
+        env:
+          IMPORT_RESERVED_IP: ${{ secrets.IMPORT_RESERVED_IP }}
+        run: |
+          python3 platform/import/host.py egress \
+            --known-hosts "${RUNNER_TEMP}/import_known_hosts" --identity ~/.ssh/do_deploy
+
+      - name: Resolve the Cloudflare account
+        if: contains(fromJSON('["stage","verify","wipe","admit","dlq","offsite"]'), inputs.mode)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python3 platform/import/host.py account --env-file "${GITHUB_ENV}"
+
+      - name: Run the step on the import host
+        if: steps.host.outputs.id != ''
         env:
           MODE: ${{ inputs.mode }}
           RUN_ID: ${{ inputs.run }}
           REHEARSAL: ${{ inputs.rehearsal }}
           DELETE_DEAD_LETTERS: ${{ inputs.delete_dead_letters }}
+          ADDRESS: ${{ steps.host.outputs.address }}
+          IMPORT_SPACES_ACCESS_KEY_ID: ${{ secrets.IMPORT_SPACES_ACCESS_KEY_ID }}
+          IMPORT_SPACES_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_SPACES_SECRET_ACCESS_KEY }}
           IMPORT_EXCLUSION_LIST: ${{ secrets.IMPORT_EXCLUSION_LIST }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           IMPORT_R2_ACCESS_KEY_ID: ${{ secrets.IMPORT_R2_ACCESS_KEY_ID }}
           IMPORT_R2_SECRET_ACCESS_KEY: ${{ secrets.IMPORT_R2_SECRET_ACCESS_KEY }}
           IMPORT_CLOUDFLARE_API_TOKEN: ${{ secrets.IMPORT_CLOUDFLARE_API_TOKEN }}
           IMPORT_KEY: ${{ secrets.IMPORT_KEY }}
         run: |
           set -euo pipefail
-          [[ "${DO_SSH_USER}" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "${ADDRESS}" =~ ^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$ ]]
           kind=rehearsal
           [ "${REHEARSAL}" = true ] || kind=window
           words=("${MODE}" "${RUN_ID}" "${kind}")
           [ "${DELETE_DEAD_LETTERS}" != true ] || words+=(delete)
+          # Every session checks the host key pinned from the host's tag, and no other.
+          opts=(-i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes
+                -o "UserKnownHostsFile=${RUNNER_TEMP}/import_known_hosts")
           remote_stage="$(
-            ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            ssh "${opts[@]}" -o ConnectTimeout=10 "root@${ADDRESS}" \
                 mktemp -d /tmp/tinyassets-import-window.XXXXXX
           )"
           [[ "${remote_stage}" =~ ^/tmp/tinyassets-import-window[.][A-Za-z0-9]+$ ]]
           cleanup() {
-            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "rm -rf -- $(printf '%q' "${remote_stage}")" || true
+            # The stage's path, quoted here, on purpose.
+            # shellcheck disable=SC2029
+            ssh "${opts[@]}" "root@${ADDRESS}" "rm -rf -- $(printf '%q' "${remote_stage}")" || true
           }
           trap cleanup EXIT
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+          scp "${opts[@]}" \
               platform/import/dist/import.mjs platform/import/window.sh "${RUNNER_TEMP}/control.json" \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
-          # Each secret on the session's stdin (printf is a builtin: no argument holds one).
+              "root@${ADDRESS}:${remote_stage}/"
+          # Each secret on the session's stdin, in window.sh's order (printf is a builtin: no
+          # argument holds one).
           handed() {
             case "${MODE}" in
+              census)
+                printf '%s\n' "${IMPORT_SPACES_ACCESS_KEY_ID}" "${IMPORT_SPACES_SECRET_ACCESS_KEY}" ;;
               bundle) printf '%s\n' "${IMPORT_EXCLUSION_LIST}" ;;
               stage|verify|wipe|admit|dlq)
                 printf '%s\n' "${CLOUDFLARE_ACCOUNT_ID}" "${IMPORT_R2_ACCESS_KEY_ID}" \
                   "${IMPORT_R2_SECRET_ACCESS_KEY}" "${IMPORT_CLOUDFLARE_API_TOKEN}" "${IMPORT_KEY}" ;;
+              offsite)
+                printf '%s\n' "${IMPORT_SPACES_ACCESS_KEY_ID}" "${IMPORT_SPACES_SECRET_ACCESS_KEY}" \
+                  "${CLOUDFLARE_ACCOUNT_ID}" "${IMPORT_R2_ACCESS_KEY_ID}" \
+                  "${IMPORT_R2_SECRET_ACCESS_KEY}" ;;
             esac
           }
           set +e
-          handed | timeout 335m ssh -i ~/.ssh/do_deploy \
-              -o BatchMode=yes -o ConnectTimeout=10 \
-              -o ServerAliveInterval=30 -o ServerAliveCountMax=50 \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash $(printf '%q' "${remote_stage}")/window.sh $(printf '%q ' "${words[@]}")" \
+          handed | timeout 300m ssh "${opts[@]}" \
+              -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=50 \
+              "root@${ADDRESS}" \
+              "bash $(printf '%q' "${remote_stage}")/window.sh $(printf '%q ' "${words[@]}")" \
             | tee "${RUNNER_TEMP}/step.out"
           status=$?
           set -e
@@ -215,3 +284,14 @@ jobs:
             echo "::error::the ${MODE} step ended ${status} (3: it does not hold yet; see its counts)"
             exit 1
           fi
+
+      - name: Destroy the run's import host
+        if: inputs.mode == 'clean' && steps.host.outputs.id != ''
+        env:
+          DO_TOKEN: ${{ secrets.IMPORT_DO_TOKEN }}
+          RUN_ID: ${{ inputs.run }}
+          DROPLET_ID: ${{ steps.host.outputs.id }}
+        run: |
+          set -euo pipefail
+          python3 platform/import/host.py destroy --run "${RUN_ID}" --id "${DROPLET_ID}" \
+            | tee -a "${GITHUB_STEP_SUMMARY}"

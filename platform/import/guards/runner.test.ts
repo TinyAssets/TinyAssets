@@ -1,14 +1,18 @@
 /**
  * The import window's runner (`.github/workflows/import-window.yml`, `window.sh`, `copy.ts`),
  * driven as the workflow drives it, against a fake remote: a synthetic backup in the
- * fixture's shape (`fixture.ts`) behind a fake `rclone`, with the droplet's other tools faked
- * (`fake-host.sh`) and the job bundled as it ships. It holds the dispatch's gate (a real run
- * only with rehearsal false and its confirm; a missing secret named, its value never shown),
- * the run step's words and stdin (the kind its rehearsal input says, no secret in an
- * argument), the copy's refusals (a digest that is not the manifest's, a disk without room
- * for the copy or the bundles, a work folder not the host's own), the run's one Node, what a
- * networked job sees, the host's lock, and the output's discipline (counts alone: no
- * principal, no owner key, no path of the copy, and a withheld output never printed).
+ * fixture's shape (`fixture.ts`) behind a fake `rclone`, with the import host's other tools
+ * faked (`fake-host.sh`) and the job bundled as it ships. It holds the dispatch's gate (a real
+ * run only with rehearsal false and its confirm; offsite never on a rehearsal; a missing
+ * secret named, its value never shown), the run step's words and stdin (the kind its
+ * rehearsal input says, no secret in an argument, the host key pinned), the host guard (the
+ * run's marker, never the old stack's host), the source's read-only key (on stdin, in
+ * rclone's environment alone), the copy's refusals (a digest that is not the manifest's, a
+ * disk without room for the copy or the bundles, a work folder not the host's own), the run's
+ * one Node, what a networked job sees, the host's lock, the off-site copy (the window's alone,
+ * read back and held to the manifest, the primary store unchanged), and the output's
+ * discipline (counts alone: no principal, no owner key, no path of the copy, and a withheld
+ * output never printed).
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
@@ -24,6 +28,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { MOUNT_OPTIONS } from "../backup";
+import { STAGE_INPUTS } from "../cli";
 import { checkStores, copyMain, forbidden, released } from "../copy";
 import {
   ALICE, ARCHIVE, BOB, DORA, ERASED, ERASING, fixture, FOUNDER, keyOf, NEWBIE, TIERS, UIDS,
@@ -36,6 +41,11 @@ const PRINCIPALS = [ALICE, BOB, FOUNDER, DORA, NEWBIE, ERASED, ...Object.values(
 const MANIFEST = "tinyassets-platform-2026-11-07T03-00-00Z.json";
 const CREDENTIALS = ["CLOUDFLARE_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
                      "CLOUDFLARE_API_TOKEN", "IMPORT_KEY"];
+/** The source key's stdin, census's and offsite's first two lines. */
+const SOURCE_KEY = "spaces-id-value\nspaces-secret-value\n";
+/** The primary store's prefix (`window.sh` SOURCE), and the off-site bucket's, as folders. */
+const SOURCE_PATH = join("tasrc", "workflow-backups-jonnyton-sfo3", "workflow-backups");
+const OFFSITE_PATH = join("taoff", "tinyassets-final-backup", "workflow-backups");
 /** The one Node the fake registry names (`fake-host.sh`). */
 const DIGEST = `node@sha256:${"7a".repeat(32)}`;
 const WORKFLOW = parse(readFileSync(join(REPO, ".github", "workflows", "import-window.yml"),
@@ -62,7 +72,8 @@ beforeAll(() => {
   bin = join(stage, "bin");
   mkdirSync(bin);
   chmodSync(join(HERE, "fake-host.sh"), 0o755);
-  for (const tool of ["rclone", "docker", "mount", "umount", "losetup", "df", "ssh", "scp"]) {
+  for (const tool of ["rclone", "docker", "mount", "umount", "losetup", "df", "ssh", "scp",
+                      "ssh-keyscan", "ssh-keygen"]) {
     symlinkSync(join(HERE, "fake-host.sh"), join(bin, tool));
   }
 });
@@ -73,14 +84,20 @@ afterAll(() => {
   }
 });
 
-/** A droplet: its backup remote made from a fresh fixture, its work root, its env file. */
+/**
+ * An import host: its backup remote (the primary store's folder) made from a fresh fixture,
+ * its work root, and its own root for the marker and the old stack's paths.
+ */
 function host() {
   const f = fixture();
   const dir = mkdtempSync(join(tmpdir(), "ta-window-host-"));
   temps.push(f.work, dir);
-  const remote = join(dir, "remote");
+  const remotes = join(dir, "remote");
+  const remote = join(remotes, SOURCE_PATH);
   const root = join(dir, "var-tmp");
+  const hostRoot = join(dir, "host-root");
   mkdirSync(join(remote, "platform"), { recursive: true });
+  mkdirSync(join(hostRoot, "etc"), { recursive: true });
   mkdirSync(root);
   const manifest = JSON.parse(readFileSync(join(f.work, "manifest.json"), "utf8")) as
     { snapshots: { uid: number; snapshot_id: string }[]; sha256: string };
@@ -100,24 +117,34 @@ function host() {
     writeFileSync(join(remote, String(pin.uid), `${pin.snapshot_id}.img.gz`),
                   gzipSync(readFileSync(join(f.work, `${pin.uid}.img`))));
   }
-  writeFileSync(join(dir, "env"), "BACKUP_DEST=fake:\nNOT A SHELL LINE\n");
   const log = join(dir, "calls.log");
   writeFileSync(log, "");
   const disk = { size: 1_000_000_000_000, avail: 900_000_000_000 };
   const work = (run: string) => join(root, `ta-import-${run}`);
-  /** `window.sh <args...>`, as the workflow's SSH session runs it, `input` its stdin. */
+  /**
+   * `window.sh <args...>`, as the workflow's SSH session runs it, `input` its stdin (census's
+   * source key unless given), on a host whose marker names the run unless `marker` says.
+   */
   const lock = join(dir, "lock");
-  const window = (args: readonly string[], input = "") => {
+  const window = (args: readonly string[], input?: string,
+                  options: { marker?: string | null; flip?: string } = {}) => {
+    const marker = join(hostRoot, "etc", "tinyassets-import-host");
+    rmSync(marker, { force: true });
+    const named = options.marker === undefined ? args[1] : options.marker;
+    if (named !== null && named !== undefined) {
+      writeFileSync(marker, `${named}\n`);
+    }
     const result = spawnSync("bash", [join(stage, "window.sh"), ...args], {
-      encoding: "utf8", input,
+      encoding: "utf8", input: input ?? (args[0] === "census" ? SOURCE_KEY : ""),
       env: { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, TA_IMPORT_ROOT: root,
-             TA_IMPORT_ENV: join(dir, "env"), TA_IMPORT_LOCK: lock,
-             FAKE_REMOTE: remote, FAKE_LOG: log, FAKE_DF_SIZE: String(disk.size),
-             FAKE_DF_AVAIL: String(disk.avail), FAKE_DIGEST: DIGEST } });
+             TA_IMPORT_LOCK: lock, TA_IMPORT_HOST_ROOT: hostRoot,
+             FAKE_REMOTE: remotes, FAKE_LOG: log, FAKE_DF_SIZE: String(disk.size),
+             FAKE_DF_AVAIL: String(disk.avail), FAKE_DIGEST: DIGEST,
+             ...(options.flip === undefined ? {} : { FAKE_FLIP: options.flip }) } });
     return { status: result.status, out: result.stdout + result.stderr };
   };
   const calls = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
-  return { f, remote, manifest, publish, disk, work, window, calls, lock };
+  return { f, remote, remotes, hostRoot, manifest, publish, disk, work, window, calls, lock };
 }
 
 /** Text that names no owner of the fixture, by principal or key, and no path of `work`. */
@@ -132,9 +159,12 @@ function countsOnly(text: string, work: string): void {
 describe("the dispatch's gate, the workflow's first step", () => {
   const workflow = WORKFLOW;
   const steps = workflow.jobs.window.steps;
-  const SECRETS = { DO_DROPLET_HOST: "host.example", DO_SSH_USER: "deploy",
-                    DO_SSH_KEY: "ssh-key-value-1", IMPORT_EXCLUSION_LIST: "exclusion-value-2",
-                    CLOUDFLARE_ACCOUNT_ID: "account-value-3",
+  const SECRETS = { DO_SSH_KEY: "ssh-key-value-1", IMPORT_DO_TOKEN: "do-token-value-8",
+                    IMPORT_RESERVED_IP: "203.0.113.7",
+                    IMPORT_SPACES_ACCESS_KEY_ID: "spaces-id-value-9",
+                    IMPORT_SPACES_SECRET_ACCESS_KEY: "spaces-secret-value-10",
+                    IMPORT_EXCLUSION_LIST: "exclusion-value-2",
+                    CLOUDFLARE_API_TOKEN: "cf-deploy-token-value-3",
                     IMPORT_R2_ACCESS_KEY_ID: "r2-id-value-4",
                     IMPORT_R2_SECRET_ACCESS_KEY: "r2-secret-value-5",
                     IMPORT_CLOUDFLARE_API_TOKEN: "token-value-6", IMPORT_KEY: "key-value-7" };
@@ -168,6 +198,10 @@ describe("the dispatch's gate, the workflow's first step", () => {
     expect(gate({ RUN_ID: "R1;rm" }).status).toBe(1);
     expect(gate({ MODE: "dlq", DELETE_DEAD_LETTERS: "true" }).status).toBe(0);
     expect(gate({ MODE: "wipe", DELETE_DEAD_LETTERS: "true" }).status).toBe(1);
+    // The off-site copy is the real window's final backup alone.
+    expect(gate({ MODE: "offsite" }).out)
+      .toContain("offsite copies the real window's final backup alone, never a rehearsal's");
+    expect(gate({ MODE: "offsite", REHEARSAL: "false", CONFIRM: "window-r1" }).status).toBe(0);
   });
 
   it("names a mode's missing secret, never a value", () => {
@@ -178,11 +212,34 @@ describe("the dispatch's gate, the workflow's first step", () => {
     expect(stage.out).toContain("IMPORT_R2_ACCESS_KEY_ID IMPORT_KEY");
     const bundle = gate({ MODE: "bundle" }, without("IMPORT_EXCLUSION_LIST"));
     expect(bundle.out).toContain("needs the secret(s) IMPORT_EXCLUSION_LIST");
-    // census and clean need no credential; bundle no Cloudflare one.
-    expect(gate({ MODE: "census" }, without("IMPORT_KEY", "IMPORT_EXCLUSION_LIST")).status).toBe(0);
+    // census takes the source's read-only key and no Cloudflare one; clean the host's alone;
+    // bundle no Cloudflare one; every mode the host's three.
+    const census = gate({ MODE: "census" }, without("IMPORT_SPACES_SECRET_ACCESS_KEY"));
+    expect(census.out).toContain("needs the secret(s) IMPORT_SPACES_SECRET_ACCESS_KEY,");
+    expect(gate({ MODE: "census" }, without("IMPORT_KEY", "IMPORT_EXCLUSION_LIST",
+                                            "CLOUDFLARE_API_TOKEN", "IMPORT_R2_ACCESS_KEY_ID"))
+      .status).toBe(0);
+    expect(gate({ MODE: "clean" }, without("IMPORT_KEY", "IMPORT_EXCLUSION_LIST",
+                                           "IMPORT_SPACES_ACCESS_KEY_ID",
+                                           "IMPORT_SPACES_SECRET_ACCESS_KEY",
+                                           "CLOUDFLARE_API_TOKEN")).status).toBe(0);
     expect(gate({ MODE: "bundle" }, without("IMPORT_KEY")).status).toBe(0);
-    expect(gate({ MODE: "verify" }, without("DO_SSH_KEY")).out).toContain("DO_SSH_KEY");
-    for (const run of [stage, bundle]) {
+    for (const name of ["DO_SSH_KEY", "IMPORT_DO_TOKEN", "IMPORT_RESERVED_IP"]) {
+      for (const mode of ["census", "bundle", "verify", "clean"]) {
+        expect(gate({ MODE: mode }, without(name)).out).toContain(`needs the secret(s) ${name},`);
+      }
+    }
+    // The account is resolved from the repository's token, never a secret of its own.
+    expect(gate({ MODE: "verify" }, without("CLOUDFLARE_API_TOKEN")).out)
+      .toContain("needs the secret(s) CLOUDFLARE_API_TOKEN,");
+    expect(steps[0]!.run).not.toContain("CLOUDFLARE_ACCOUNT_ID");
+    const offsite = gate({ MODE: "offsite", REHEARSAL: "false", CONFIRM: "window-r1" },
+                         without("IMPORT_SPACES_ACCESS_KEY_ID", "IMPORT_R2_SECRET_ACCESS_KEY"));
+    expect(offsite.out).toContain(
+      "needs the secret(s) IMPORT_SPACES_ACCESS_KEY_ID IMPORT_R2_SECRET_ACCESS_KEY,");
+    expect(gate({ MODE: "offsite", REHEARSAL: "false", CONFIRM: "window-r1" },
+                without("IMPORT_KEY", "IMPORT_CLOUDFLARE_API_TOKEN")).status).toBe(0);
+    for (const run of [stage, bundle, census, offsite]) {
       for (const value of Object.values(SECRETS)) {
         expect(run.out).not.toContain(value);
       }
@@ -191,10 +248,13 @@ describe("the dispatch's gate, the workflow's first step", () => {
 });
 
 describe("the run step, its ssh faked", () => {
-  const step = WORKFLOW.jobs.window.steps.find((each) => each.name === "Run the step on the droplet")!;
+  const step = WORKFLOW.jobs.window.steps.find((each) =>
+    each.name === "Run the step on the import host")!;
   const SECRETS = { CLOUDFLARE_ACCOUNT_ID: "acct-v", IMPORT_R2_ACCESS_KEY_ID: "r2id-v",
                     IMPORT_R2_SECRET_ACCESS_KEY: "r2sec-v", IMPORT_CLOUDFLARE_API_TOKEN: "tok-v",
-                    IMPORT_KEY: "key-v", IMPORT_EXCLUSION_LIST: "excl-v" };
+                    IMPORT_KEY: "key-v", IMPORT_EXCLUSION_LIST: "excl-v",
+                    IMPORT_SPACES_ACCESS_KEY_ID: "spid-v",
+                    IMPORT_SPACES_SECRET_ACCESS_KEY: "spsec-v" };
   const run = (inputs: Record<string, string>) => {
     const dir = mkdtempSync(join(tmpdir(), "ta-window-step-"));
     temps.push(dir);
@@ -204,8 +264,8 @@ describe("the run step, its ssh faked", () => {
     const result = spawnSync("bash", ["-c", step.run!], {
       encoding: "utf8", cwd: dir,
       env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, RUNNER_TEMP: dir,
-             GITHUB_STEP_SUMMARY: summary, FAKE_LOG: log, DO_DROPLET_HOST: "host.example",
-             DO_SSH_USER: "deploy", MODE: "stage", RUN_ID: "r1", REHEARSAL: "true",
+             GITHUB_STEP_SUMMARY: summary, FAKE_LOG: log, ADDRESS: "203.0.113.7",
+             MODE: "stage", RUN_ID: "r1", REHEARSAL: "true",
              DELETE_DEAD_LETTERS: "false", ...SECRETS, ...inputs } });
     const calls = readFileSync(log, "utf8");
     return { status: result.status, out: result.stdout + result.stderr + readFileSync(summary, "utf8"),
@@ -222,7 +282,17 @@ describe("the run step, its ssh faked", () => {
       .toMatch(/window\.sh dlq r1 rehearsal delete\s*$/m);
     expect(rehearsal.stdin).toContain("STDIN acct-v\nr2id-v\nr2sec-v\ntok-v\nkey-v");
     expect(run({ MODE: "bundle" }).stdin).toContain("STDIN excl-v");
-    expect(run({ MODE: "census" }).stdin).toMatch(/STDIN \n/);
+    expect(run({ MODE: "census" }).stdin).toContain("STDIN spid-v\nspsec-v\n");
+    expect(run({ MODE: "offsite", REHEARSAL: "false" }).stdin)
+      .toContain("STDIN spid-v\nspsec-v\nacct-v\nr2id-v\nr2sec-v\n");
+    expect(run({ MODE: "clean" }).stdin).toMatch(/STDIN \n/);
+    // root on the import host by its reserved IP, its key pinned, never the droplet's sudo.
+    for (const line of rehearsal.args.split("\n")) {
+      expect(line).toContain("-o StrictHostKeyChecking=yes");
+      expect(line).toMatch(/-o UserKnownHostsFile=\S+\/import_known_hosts /);
+      expect(line).toContain("root@203.0.113.7");
+      expect(line).not.toContain("sudo");
+    }
     for (const value of Object.values(SECRETS)) {
       expect(rehearsal.args).not.toContain(value);
       expect(rehearsal.out).not.toContain(value);
@@ -258,8 +328,16 @@ describe("the copy, on a fake droplet", () => {
     expect(existsSync(join(work, "copy.done"))).toBe(true);
     // The run's one Node: node:22 pulled once, its digest kept, and every job run by it.
     expect(readFileSync(join(work, "image"), "utf8")).toBe(`${DIGEST}\n`);
+    // The digest it pinned, printed (public): the rehearsal's and the window's compare.
+    expect(run.out).toContain(`the job's Node is ${DIGEST}`);
     const calls = h.calls();
-    expect(calls).toContain(`rclone cat fake:/platform/${MANIFEST}`);
+    expect(calls).toContain(
+      `rclone cat tasrc:workflow-backups-jonnyton-sfo3/workflow-backups/platform/${MANIFEST}`);
+    // The source's key in rclone's environment alone (docker refuses one in its own), its
+    // value in no call.
+    expect(calls.filter((call) => call.startsWith("rclone-keys")).every((call) =>
+      call === "rclone-keys TASRC ")).toBe(true);
+    expect(calls.join("\n")).not.toContain("spaces-secret-value");
     // Each image mounted read-only for the job, with the research's line, and unmounted after.
     expect(readFileSync(join(stage, "window.sh"), "utf8"))
       .toContain(`readonly MOUNT_OPTIONS="${MOUNT_OPTIONS}"`);
@@ -530,5 +608,165 @@ describe("the copy's checks", () => {
     expect(() => forbidden(f.work)).toThrow();
     expect(release).toThrow();
     expect(printed.join("\n")).not.toContain(ALICE);
+  });
+});
+
+describe("the host guard, on a fake import host", () => {
+  it("runs on this run's import host alone: its marker names the run", () => {
+    const h = host();
+    for (const marker of [null, "r2", "r1-other", ""]) {
+      const run = h.window(["census", "r1", "rehearsal"], undefined, { marker });
+      expect(run.status).toBe(2);
+      expect(run.out).toContain(
+        "refused: this host is not this run's import host (its marker does not name the run)");
+    }
+    // Refused before the lock, any stdin or any tool.
+    expect(h.calls()).toEqual([]);
+    expect(existsSync(h.work("r1"))).toBe(false);
+    expect(h.window(["clean", "r1", "rehearsal"]).status).toBe(0);
+  });
+
+  it("refuses any host that holds the old stack, whatever its marker says", () => {
+    for (const path of [["var", "lib", "boxhostd"], ["etc", "tinyassets", "env"]]) {
+      const h = host();
+      mkdirSync(join(h.hostRoot, ...path.slice(0, -1)), { recursive: true });
+      if (path[0] === "var") {
+        mkdirSync(join(h.hostRoot, ...path));
+      } else {
+        writeFileSync(join(h.hostRoot, ...path), "BACKUP_DEST=spaces:anything\n");
+      }
+      for (const mode of ["census", "clean", "stage"]) {
+        const run = h.window([mode, "r1", "rehearsal"]);
+        expect(run.status).toBe(2);
+        expect(run.out).toContain(`refused: this host holds the old stack (/${path.join("/")})`);
+      }
+      expect(h.calls()).toEqual([]);
+    }
+  });
+
+  it("takes the source's read-only key on census's stdin, and refuses a census without it", () => {
+    const h = host();
+    const none = h.window(["census", "k1", "rehearsal"], "spaces-id-value\n");
+    expect(none.status).toBe(2);
+    expect(none.out).toContain("refused: the run was handed no SPACES_SECRET_ACCESS_KEY");
+    expect(h.calls()).toEqual([]);
+    // The script reads no env file: the droplet's own BACKUP_DEST is nothing to it.
+    expect(readFileSync(join(stage, "window.sh"), "utf8")).not.toMatch(/BACKUP_DEST=|TA_IMPORT_ENV/);
+  });
+});
+
+describe("the off-site copy of the window's final backup, on a fake import host", () => {
+  const OFFSITE_KEY = `${SOURCE_KEY}${"a".repeat(32)}\nr2-id-value\nr2-secret-value\n`;
+  /** Every file under `dir`, by its path, with its bytes' digest. */
+  const tree = (dir: string): Record<string, string> => Object.fromEntries(
+    execFileSync("find", [dir, "-type", "f"], { encoding: "utf8" }).split("\n").filter(Boolean)
+      .sort().map((path) => [path.slice(dir.length),
+                             execFileSync("sha256sum", [path], { encoding: "utf8" }).split(" ")[0]]));
+
+  it("refuses a rehearsal before anything else", () => {
+    const h = host();
+    h.window(["census", "o1", "rehearsal"]);
+    const before = h.calls().length;
+    const run = h.window(["offsite", "o1", "rehearsal"], OFFSITE_KEY);
+    expect(run.status).toBe(2);
+    expect(run.out).toContain(
+      "refused: offsite copies the real window's final backup alone, never a rehearsal's");
+    expect(h.calls().length).toBe(before);
+    expect(existsSync(join(h.remotes, "taoff"))).toBe(false);
+  });
+
+  it("copies the copy's manifest, archive and every pin to R2, each read back and held to " +
+     "the manifest, and changes nothing in the primary store", () => {
+    const h = host();
+    h.window(["census", "o2", "window"]);
+    const primary = tree(h.remote);
+    const run = h.window(["offsite", "o2", "window"], OFFSITE_KEY);
+    expect(run.status).toBe(0);
+    expect(run.out).toContain("the archive and 4 images match the manifest's digests");
+    expect(run.out).toContain("the off-site copy holds the manifest, the archive and 4 images, " +
+                              "each read back and held to the manifest's digests");
+    countsOnly(run.out, h.work("o2"));
+    // The same objects at the same keys: the manifest, its archive and every pinned snapshot.
+    const offsite = tree(join(h.remotes, OFFSITE_PATH));
+    expect(Object.keys(offsite).sort()).toEqual([
+      `/${ARCHIVE}`,
+      ...h.manifest.snapshots.map((pin) => `/${pin.uid}/${pin.snapshot_id}.img.gz`),
+      `/platform/${MANIFEST}`].sort());
+    for (const [path, digest] of Object.entries(offsite)) {
+      expect(primary[path]).toBe(digest);
+    }
+    expect(tree(h.remote)).toEqual(primary);
+    // The read-back is gone; the copy stays as it was.
+    expect(existsSync(join(h.work("o2"), "offsite"))).toBe(false);
+    expect(existsSync(join(h.work("o2"), "copy.done"))).toBe(true);
+    // Each key in rclone's environment alone: the source's listing holds its own, the copy
+    // both, the read-back R2's alone.
+    const calls = h.calls();
+    const from = calls.findIndex((call) => call.startsWith("rclone copyto tasrc:")
+                                           && call.includes(" taoff:"));
+    expect(from).toBeGreaterThan(-1);
+    expect(calls.slice(0, from).filter((call) => call.startsWith("rclone-keys")).at(-1))
+      .toBe("rclone-keys TASRC ");
+    const keys = new Set(calls.slice(from).filter((call) => call.startsWith("rclone-keys")));
+    expect([...keys].sort()).toEqual(["rclone-keys TAOFF ", "rclone-keys TAOFF TASRC "]);
+    expect(calls.filter((call) => call.startsWith("rclone cat taoff:"))).toEqual(
+      [`rclone cat taoff:tinyassets-final-backup/workflow-backups/platform/${MANIFEST}`]);
+    expect(calls.join("\n")).not.toMatch(/r2-secret-value|spaces-secret-value/);
+    // No job of it is networked.
+    expect(calls.filter((call) => call.startsWith("docker run") && call.includes("bridge")))
+      .toEqual([]);
+  });
+
+  it("fails on an object whose read-back is not the manifest's", () => {
+    const h = host();
+    h.window(["census", "o3", "window"]);
+    const second = h.manifest.snapshots[1]!;
+    const image = h.window(["offsite", "o3", "window"], OFFSITE_KEY,
+                           { flip: `${second.uid}/${second.snapshot_id}.img.gz` });
+    expect(image.status).toBe(2);
+    expect(image.out).toContain("refused: image 2 of 4's SHA-256 is not its pin");
+    expect(image.out).not.toContain("the off-site copy holds");
+    const archive = h.window(["offsite", "o3", "window"], OFFSITE_KEY, { flip: ARCHIVE });
+    expect(archive.status).toBe(2);
+    expect(archive.out).toContain("refused: the archive's SHA-256 is not the manifest's");
+    const manifest = h.window(["offsite", "o3", "window"], OFFSITE_KEY, { flip: MANIFEST });
+    expect(manifest.status).toBe(2);
+    expect(manifest.out).toContain("refused: the off-site manifest read back is not the copy's");
+    // Copied again unflipped, it holds.
+    expect(h.window(["offsite", "o3", "window"], OFFSITE_KEY).status).toBe(0);
+  });
+
+  it("refuses when the store's newest manifest is not the copy's, or the key is short", () => {
+    const h = host();
+    h.window(["census", "o4", "window"]);
+    expect(h.window(["offsite", "o4", "window"], `${SOURCE_KEY}${"a".repeat(32)}\nr2-id\n`).out)
+      .toContain("refused: the run was handed no R2_SECRET_ACCESS_KEY");
+    writeFileSync(join(h.remote, "platform", "tinyassets-platform-2026-11-08T03-00-00Z.json"),
+                  JSON.stringify(h.manifest));
+    const newer = h.window(["offsite", "o4", "window"], OFFSITE_KEY);
+    expect(newer.status).toBe(2);
+    expect(newer.out).toContain(
+      "refused: the backup remote's newest manifest is not the one this run's copy was made from");
+    expect(existsSync(join(h.remotes, "taoff"))).toBe(false);
+  });
+});
+
+describe("the job's credentials, in window.sh's own order", () => {
+  it("are CREDENTIALS, which is STAGE_INPUTS, and verify, wipe and admit take them on stdin", () => {
+    const sh = readFileSync(join(stage, "window.sh"), "utf8");
+    const listed = /readonly CREDENTIALS=\(([^)]*)\)/.exec(sh)![1]!.split(/\s+/).filter(Boolean);
+    expect(listed).toEqual(Object.values(STAGE_INPUTS));
+    expect(listed).toEqual(CREDENTIALS);
+    // The job's pipe is made from the list, never a second hard-coded order.
+    expect(sh).toContain("for name in \"${CREDENTIALS[@]}\"; do printf '%s\\n' \"${!name}\"; done");
+    const record = mkdtempSync(join(tmpdir(), "ta-window-record-"));
+    temps.push(record);
+    for (const step of ["verify", "wipe", "admit"]) {
+      const run = spawnSync(process.execPath, [join(stage, "import.mjs"), step, tmpdir(),
+                                               "--run", "r1", "--record", join(record, "r")],
+                            { input: "not-hex\nb\nc\nd\ne\n", encoding: "utf8",
+                              env: { PATH: process.env["PATH"] } });
+      expect(run.stderr).toContain("the account is 32 hex");
+    }
   });
 });

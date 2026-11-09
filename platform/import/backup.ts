@@ -1,8 +1,8 @@
 /**
  * Reading a backup copy, and only reading it (`import_research.md` §1, §5).
  *
- * A backup copy is the private work folder the research's §1 commands make, on a disposable
- * host or root-private on the droplet:
+ * A backup copy is the private work folder the research's §1 commands make, on the run's
+ * import host (`window.sh`, `host.py`):
  * - `manifest.json`, the newest verified platform manifest (`platform_backup.py`);
  * - its archive, `tinyassets-data-<ts>.tar.gz`, extracted at `data/` (the shared layer,
  *   `data/_data/`);
