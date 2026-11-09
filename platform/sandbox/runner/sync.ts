@@ -88,13 +88,13 @@ export class SyncRefused extends Error {
  */
 export class SyncClient {
   constructor(readonly origin: string, readonly token: string, readonly firstMs: number,
-              readonly ceilingMs: number, readonly fetcher: typeof fetch = fetch) {}
+              readonly ceilingMs: number) {}
 
   async post(door: string, body: unknown): Promise<Record<string, unknown>> {
     for (let wait = this.firstMs; ; wait = Math.min(wait * 2, this.ceilingMs)) {
       let response: Response;
       try {
-        response = await this.fetcher(`${this.origin}/sync/${door}`, {
+        response = await fetch(`${this.origin}/sync/${door}`, {
           method: "POST", body: JSON.stringify(body),
           headers: { "content-type": "application/json", [SYNC_HEADER]: this.token } });
       } catch {
@@ -160,40 +160,6 @@ export interface Mirror {
   unseen(after: string, limit: number): string[];
   resetEnd(): void;
   close(): void;
-}
-
-/** A mirror in memory, for tests and tools: its rows on `files`. */
-export function memoryMirror(init: { cursor?: number; files?: Record<string, Known> } = {}):
-    Mirror & { readonly files: Record<string, Known> } {
-  let cursor = init.cursor ?? 0;
-  const files: Record<string, Known> = init.files ?? {};
-  let seenSet: Set<string> | null = null;
-  const sorted = () => Object.keys(files).sort();
-  return {
-    files,
-    cursor: () => cursor,
-    setCursor: (next) => { cursor = next; },
-    get: (path) => files[path],
-    put: (path, known) => { files[path] = known; },
-    drop: (path) => { delete files[path]; },
-    dropUnder: (path) => {
-      for (const known of Object.keys(files)) {
-        if (known === path || known.startsWith(`${path}/`)) {
-          delete files[known];
-        }
-      }
-    },
-    knowsUnder: (path) => Object.keys(files).some((known) =>
-      known === path || known.startsWith(`${path}/`)),
-    page: (after, limit) => sorted().filter((path) => path > after).slice(0, limit),
-    batch: (work) => work(),
-    resetBegin: () => { seenSet = new Set(); },
-    seen: (path) => { seenSet!.add(path); },
-    unseen: (after, limit) => sorted().filter((path) => path > after && !seenSet!.has(path))
-      .slice(0, limit),
-    resetEnd: () => { seenSet = null; },
-    close: () => undefined,
-  };
 }
 
 /**

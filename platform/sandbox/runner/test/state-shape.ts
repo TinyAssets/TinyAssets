@@ -23,9 +23,9 @@ export interface Protocol {
   readonly state: readonly string[];
 }
 
-export const FORMATS = JSON.parse(readFileSync(join(import.meta.dirname, "state-format.json"),
+export const FORMATS = JSON.parse(readFileSync(join(import.meta.dirname, "..", "state-format.json"),
                                                "utf8")) as Record<string, Format>;
-export const PROTOCOLS = JSON.parse(readFileSync(join(import.meta.dirname, "protocol.json"),
+export const PROTOCOLS = JSON.parse(readFileSync(join(import.meta.dirname, "..", "protocol.json"),
                                                  "utf8")) as Record<string, Protocol>;
 
 function typeOf(value: unknown): string {

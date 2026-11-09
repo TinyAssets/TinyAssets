@@ -98,41 +98,26 @@ import {
 } from "./sync";
 import { type Command, COMMAND, EXIT, inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS,
          INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer, type RenewAnswer,
-         RUNNERS as LOADED, type SigninDoc, type StartDoc, type StateAnswer,
+         RUNNERS, type SigninDoc, type StartDoc, type StateAnswer,
          STATE_DIR } from "./protocol";
 import { checkFormat, dropRunners } from "./state-format";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
-/** Every path the runner touches is under this root: `/` in the sandbox, a temp dir in tests. */
-const ROOT = process.env["TA_RUNNER_ROOT"] ?? "";
-const TOP = ROOT === "" ? "/" : ROOT;
-const STATE = `${ROOT}${STATE_DIR}`;
+const STATE = STATE_DIR;
 const STORE = `${STATE}/store`;
 /** The sync agent's own directory (`ta-sync`, 0700): its mirror, sessions in and out. */
-const SYNC_HOME = `${ROOT}/var/lib/ta-sync`;
-const CONVERSATIONS = `${ROOT}/var/lib/ta-conv`;
-const LOCAL_WORKSPACE = `${ROOT}${WORKSPACE}`;
-/** The agents' scratch (`scratch.ts`): kept between runs, never synced, never counted. */
-const LOCAL_SCRATCH = `${ROOT}${SCRATCH}`;
+const SYNC_HOME = "/var/lib/ta-sync";
+const CONVERSATIONS = "/var/lib/ta-conv";
 /** Each agent's stamp of its scratch's last use (`scratch.ts`), and the runner's reserve. */
 const SCRATCH_INDEX = `${STATE}/scratch-used`;
 const RESERVE = `${STATE}/reserve`;
 /** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
 const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
-/** The runners installed by digest (`template/ta-runner`): `<sha256>/runner.mjs` each. */
-const RUNNERS = `${ROOT}${LOADED}`;
 /** What the runner keeps that is a cache alone, discarded when its format changes. */
 const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
-/** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
-const RESERVE_SIZE = ROOT === "" ? RESERVE_BYTES : 1024 * 1024;
 
-/**
- * The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). A
- * test's root alone may shorten it (`TA_HEARTBEAT_MS`), so a test of a sync-out longer than
- * a heartbeat is seconds long; the sandbox's root (`/`) never reads it.
- */
-export const HEARTBEAT_MS = ROOT !== "" && process.env["TA_HEARTBEAT_MS"] !== undefined
-  ? Number(process.env["TA_HEARTBEAT_MS"]) : 20_000;
+/** The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). */
+export const HEARTBEAT_MS = 20_000;
 /** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
 const FLUSH_MS = 250;
 /**
@@ -214,7 +199,7 @@ function jobDir(kind: JobKind, id: string): string {
   if (!KINDS[kind].id.test(id)) {
     throw new Error(KINDS[kind].refused);
   }
-  return `${ROOT}${JOBS[kind].dir}/${id}`;
+  return `${JOBS[kind].dir}/${id}`;
 }
 
 function jobState<T extends JobState>(kind: JobKind, id: string): T | null {
@@ -229,7 +214,7 @@ function living(state: JobState | null): state is JobState {
 
 /** The jobs of a kind whose runners still run. */
 function liveJobs<T extends JobState>(kind: JobKind): { id: string; state: T }[] {
-  const dir = `${ROOT}${JOBS[kind].dir}`;
+  const dir = JOBS[kind].dir;
   if (!existsSync(dir)) {
     return [];
   }
@@ -256,7 +241,7 @@ function livingJobs(): number {
 function launchJob(kind: JobKind, id: string): number {
   const dir = jobDir(kind, id);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  renameSync(`${ROOT}${inboxDoc(id)}`, `${dir}/${JOB_FILES.start}`);
+  renameSync(inboxDoc(id), `${dir}/${JOB_FILES.start}`);
   return startJob(kind, id, []);
 }
 
@@ -455,7 +440,7 @@ class Job {
 }
 
 function shared(): number {
-  return group(ROOT, "ta");
+  return group("ta");
 }
 
 /** The engine's record variables, filled for a home (its status check's environment). */
@@ -477,10 +462,6 @@ function engineEnv(rec: SourceRecord, home: string): Record<string, string> {
   }
   env["HOME"] = home;
   return env;
-}
-
-function binOf(rec: SourceRecord): string {
-  return `${ROOT}${binPath(rec)}`;
 }
 
 /** A tree's files in a walk's sorted order, each directory read whole before it is offered. */
@@ -505,7 +486,7 @@ const STORE_RETRY_MS = 20;
  */
 async function withStore<T>(rec: SourceRecord, act: () => T): Promise<T> {
   const locks = `${STATE}/locks`;
-  safeDirs(TOP, locks, 0o700);
+  safeDirs("/", locks, 0o700);
   // `.lock`: a name no earlier runner's lock (a directory at `<id>`) ever had, so neither
   // form is read by the other's runner, across an adoption or a rollback.
   return withLock(`${locks}/${rec.id}.lock`, LOCK_WAIT_MS, () => new Error(
@@ -524,7 +505,7 @@ function generation(rec: SourceRecord): number {
 }
 
 function nextGeneration(rec: SourceRecord): void {
-  safeDirs(TOP, `${STATE}/generations`, 0o700);
+  safeDirs("/", `${STATE}/generations`, 0o700);
   writeFileSync(`${STATE}/generations/${rec.id}`, String(generation(rec) + 1), { mode: 0o600 });
 }
 
@@ -558,9 +539,8 @@ function dropHome(home: string): void {
  * CLI can send them anywhere (codexurl_research.md; the route probe proves it live).
  */
 async function makeHome(name: string, rec: SourceRecord, signedIn = true): Promise<string> {
-  const homes = `${ROOT}${HOMES}`;
-  safeDirs(TOP, homes, 0o711);
-  const home = `${homes}/${name}`;
+  safeDirs("/", HOMES, 0o711);
+  const home = `${HOMES}/${name}`;
   remove(home);
   mkdirSync(home, { mode: 0o700 });
   const store = `${STORE}/${rec.id}`;
@@ -581,7 +561,7 @@ async function makeHome(name: string, rec: SourceRecord, signedIn = true): Promi
     }
     return generation(rec);
   });
-  safeDirs(TOP, `${STATE}/kept`, 0o700);
+  safeDirs("/", `${STATE}/kept`, 0o700);
   const snapshot: Snapshot = { generation: made, secrets: copied, signedIn };
   safeWrite(`${STATE}/kept`, snapshotOf(home),
             new TextEncoder().encode(JSON.stringify(snapshot)), 0o600);
@@ -616,7 +596,7 @@ function giveTree(path: string, as: Identity): void {
  */
 async function keepHome(home: string, rec: SourceRecord, signin = false): Promise<void> {
   const store = `${STORE}/${rec.id}`;
-  safeDirs(TOP, store, 0o700);
+  safeDirs("/", store, 0o700);
   const { secrets, sessions } = keptPaths(rec);
   const path = snapshotOf(home);
   const snapshot = existsSync(path) ? readJson<Snapshot>(path) : null;
@@ -694,7 +674,7 @@ function importSessions(): void {
     if (!existsSync(target)) {
       const bytes = safeRead(staged, join(staged, rel));
       if (bytes !== null) {
-        safeDirs(TOP, store, 0o700);
+        safeDirs("/", store, 0o700);
         safeWrite(store, target, bytes, 0o600);
       }
     }
@@ -736,12 +716,12 @@ export async function signedIn(rec: SourceRecord): Promise<boolean> {
     });
   }
   const name = `check-${rec.id}-${process.pid}`;
-  const as = take(ROOT, STATE);
+  const as = take(STATE);
   const home = await makeHome(name, rec);
   try {
     giveTree(home, as);
     const argv = asUser(as, [shared()], login.status_argv.map((arg) =>
-      arg.replaceAll("{bin}", binOf(rec)).replaceAll("{home}", home)));
+      arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home)));
     const done = spawnSync(argv[0]!, argv.slice(1), {
       env: engineEnv(rec, home), cwd: home, timeout: COMMAND_MS, encoding: "utf8" });
     if (done.status !== 0) {
@@ -770,7 +750,7 @@ function prepare(servers: readonly string[]): number {
     .test(server))) {
     throw new Error("prepare takes the network's resolvers, IPv4");
   }
-  writeFileSync(`${ROOT}/etc/resolv.conf`,
+  writeFileSync("/etc/resolv.conf",
                 `${servers.map((server) => `nameserver ${server}`).join("\n")}\n`);
   const done = spawnSync("mount", ["-o", "remount,hidepid=2", "/proc"], { encoding: "utf8" });
   const mounts = readFileSync("/proc/mounts", "utf8");
@@ -783,10 +763,10 @@ function prepare(servers: readonly string[]): number {
   mkdirSync(STATE, { recursive: true, mode: 0o700 });
   checkFormat(STATE, CACHES);
   dropOtherRunners();
-  keepReserve(RESERVE, RESERVE_SIZE);
+  keepReserve(RESERVE);
   // A pasted code is never left at rest (review L1): one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
-  const inbox = `${ROOT}${INBOX}`;
+  const inbox = INBOX;
   for (const name of existsSync(inbox) ? readdirSync(inbox) : []) {
     if (name.endsWith(".code")) {
       remove(`${inbox}/${name}`);
@@ -874,10 +854,13 @@ function lockDown(): void {
   }
 }
 
-/** The digest the loader ran this runner by, or null (not run by the loader: a test's). */
-function ownDigest(): string | null {
+/** The digest the loader ran this runner by: every command is run by the loader. */
+function ownDigest(): string {
   const own = process.env["TA_RUNNER_DIGEST"];
-  return own !== undefined && HEX64.test(own) ? own : null;
+  if (own === undefined || !HEX64.test(own)) {
+    throw new Error("the runner is run by the loader, which names the runner's digest");
+  }
+  return own;
 }
 
 /**
@@ -900,9 +883,7 @@ function dropOtherRunners(): void {
  * must stay. The other runners' bytes go at this runner's `prepare`, once the row names it.
  */
 function adopt(): number {
-  if (ownDigest() === null) {
-    throw new Error("adopt is run by the loader, which names the runner's digest");
-  }
+  ownDigest();
   if (livingJobs() > 0) {
     process.stderr.write("ta-runner: a run or a sign-in lives; its runner stays\n");
     return NO;
@@ -979,14 +960,14 @@ async function renewWait(deadline: number): Promise<number> {
 }
 
 async function recover(): Promise<number> {
-  const dir = `${ROOT}${JOBS.run.dir}`;
+  const dir = JOBS.run.dir;
   for (const run of existsSync(dir) ? readdirSync(dir).filter((each) => RUN_ID.test(each)) : []) {
     const state = jobState<RunState>("run", run);
     if (state !== null && !state.ended && !alive(state.pid)) {
       // The rebooted run's home: its kept paths into the store first (its processes died
       // with the boot), so its session resumes from where it was.
       const start = readJson<StartDoc>(`${jobDir("run", run)}/${JOB_FILES.start}`);
-      const home = `${ROOT}${HOMES}/${run}`;
+      const home = `${HOMES}/${run}`;
       if (existsSync(home)) {
         await keepHome(home, record(start.engine));
         dropHome(home);
@@ -1020,11 +1001,11 @@ interface SyncJob {
  */
 async function syncAgent(job: SyncJob):
     Promise<{ report: Record<string, unknown> | null; code: number }> {
-  const as = user(ROOT, "ta-sync");
+  const as = user("ta-sync");
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
                                        process.argv[1]!, COMMAND.sync]);
   const env: Record<string, string> = {};
-  for (const name of [...RUN_BASICS, "TA_RUNNER_ROOT"]) {
+  for (const name of RUN_BASICS) {
     if (process.env[name] !== undefined) {
       env[name] = process.env[name]!;
     }
@@ -1068,7 +1049,7 @@ async function syncCommand(): Promise<number> {
 async function syncLocked(job: SyncJob): Promise<number> {
   try {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
-    const place = { local: LOCAL_WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
+    const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
                     sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
                     records: RECORDS };
     safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
@@ -1086,7 +1067,7 @@ async function syncLocked(job: SyncJob): Promise<number> {
         await syncIn(client, place, mirror);
         const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
         const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
-        const made = project(LOCAL_WORKSPACE, job.agent, record(job.engine).cli!.skills_paths,
+        const made = project(WORKSPACE, job.agent, record(job.engine).cli!.skills_paths,
                              previous);
         safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
         process.stdout.write(JSON.stringify({ ok: true }));
@@ -1336,7 +1317,7 @@ function envFiles(home: string, cwd: string): { home: Map<string, string>;
         out.above.set(`${dir}/${rel}`, text);
       }
     }
-    if (dir === dirname(dir) || dir === TOP) {
+    if (dir === dirname(dir)) {
       break;
     }
   }
@@ -1346,7 +1327,7 @@ function envFiles(home: string, cwd: string): { home: Map<string, string>;
 /** Files a run's user left in the shared scratch directories, removed (links as links). */
 function cleanScratch(uid: number): void {
   for (const dir of ["/tmp", "/var/tmp", "/dev/shm"]) {
-    spawnSync("find", [`${ROOT}${dir}`, "-xdev", "-mindepth", "1", "-user", String(uid),
+    spawnSync("find", [dir, "-xdev", "-mindepth", "1", "-user", String(uid),
                        "-delete"], { stdio: "ignore" });
   }
 }
@@ -1359,8 +1340,8 @@ function cleanScratch(uid: number): void {
  */
 function scratchFor(start: StartDoc, run: string):
     { dir: string; notice: ScratchCleared | null } {
-  const dir = `${LOCAL_SCRATCH}/${start.agent}`;
-  safeDirs(TOP, LOCAL_SCRATCH, 0o755);
+  const dir = `${SCRATCH}/${start.agent}`;
+  safeDirs("/", SCRATCH, 0o755);
   const live = new Set([start.agent, ...liveRuns().filter((each) => each.id !== run)
     .flatMap((each) => {
       try {
@@ -1370,18 +1351,18 @@ function scratchFor(start: StartDoc, run: string):
       }
     })]);
   const index = readIndex(SCRATCH_INDEX);
-  const pruned = pruneScratch(LOCAL_SCRATCH, index, Date.now(),
+  const pruned = pruneScratch(SCRATCH, index, Date.now(),
                               start.scratch_retention_days ?? null, live);
-  safeDirs(LOCAL_SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
+  safeDirs(SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
   writeOrRelease(() => markUsed(index, start.agent, Date.now()), RESERVE);
-  keepReserve(RESERVE, RESERVE_SIZE);
+  keepReserve(RESERVE);
   return { dir, notice: scratchCleared(pruned) };
 }
 
 async function runCommand(run: string, recovering: boolean): Promise<number> {
   const dir = jobDir("run", run);
   const start = readJson<StartDoc>(`${dir}/${JOB_FILES.start}`);
-  const lease = readJson<LeaseFile>(`${ROOT}${LEASE_FILE}`);
+  const lease = readJson<LeaseFile>(LEASE_FILE);
   const rec = record(start.engine);
   const cli = rec.cli!;
   const prior = jobState<RunState>("run", run);
@@ -1424,7 +1405,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   let exitCode = 1;
   let as: Identity | null = null;
   let home: string | null = null;
-  const system = `${ROOT}${SYSTEM}/${run}`;
+  const system = `${SYSTEM}/${run}`;
   const job = (direction: SyncJob["direction"], secrets: readonly string[] = []): SyncJob => ({
     direction, origin: new URL(start.urls.events).origin, token: lease.tokens.sync_token,
     lease: lease.lease, authority: start.authority, agent: start.agent, engine: start.engine,
@@ -1440,13 +1421,13 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
     synced = true;
     importSessions();
-    as = take(ROOT, STATE);
+    as = take(STATE);
     home = await makeHome(run, rec, start.credential === "vendor_login_in_sandbox");
-    safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
+    safeDirs("/", SYSTEM, 0o755);
     remove(system);
     mkdirSync(system, { mode: 0o750 });
     chownSync(system, 0, as.gid);
-    const agentDir = `${ROOT}${AGENTS_DIR}/${start.agent}`;
+    const agentDir = `${AGENTS_DIR}/${start.agent}`;
     if (!existsSync(`${agentDir}/agent.json`)) {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);
     }
@@ -1459,13 +1440,13 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     if (cli.engine.resume === "continue_in_cwd") {
       conversationDir = `${CONVERSATIONS}/${rec.id}/${start.conversation}`;
       continued = existsSync(conversationDir);
-      safeDirs(TOP, conversationDir, 0o700);
+      safeDirs("/", conversationDir, 0o700);
       lchownSync(conversationDir, as.uid, as.gid);
     }
     let call = invocation(rec, start, process.env, {
-      continued, root: ROOT, home, system,
+      continued, home, system,
       ...(conversationDir === undefined ? {} : { conversationDir }),
-      ...(recovering ? { prompt: CONTINUE_PROMPT, resume: true } : {}) });
+      ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
     if (recovering && !call.resumed) {
       throw new RunRefused("recover_unresumable: the run's session is unknown, so the " +
                            "rebooted sandbox cannot continue it");
@@ -1546,7 +1527,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       }
       killAll(as.uid);
       call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
-        continued: true, root: ROOT, home, system, prompt: CONTINUE_PROMPT,
+        continued: true, home, system, prompt: CONTINUE_PROMPT,
         ...(conversationDir === undefined ? {} : { conversationDir }) });
       if (!call.resumed) {
         break;
@@ -1566,7 +1547,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       // what follows copies the run's changed sessions back and stages the unsent ones, and
       // the sync agent is its own user, so the runner's reserve goes first when the disk is
       // short of it, and both have their room (`scratch.ts`).
-      if (diskOf(STATE).free_bytes < RESERVE_SIZE) {
+      if (diskOf(STATE).free_bytes < RESERVE_BYTES) {
         rmSync(RESERVE, { force: true });
       }
       if (as !== null) {
@@ -1714,7 +1695,7 @@ async function safeSignedIn(rec: SourceRecord): Promise<boolean> {
  */
 async function loginInput(id: string): Promise<number> {
   const state = jobState("signin", id);
-  const inbox = `${ROOT}${inboxCode(id)}`;
+  const inbox = inboxCode(id);
   if (!living(state)) {
     remove(inbox);
     return NO;
@@ -1731,7 +1712,7 @@ async function loginInput(id: string): Promise<number> {
 /** A pasted code the Worker left that was never handed over, gone (review L1). */
 function loginDrop(id: string): number {
   jobDir("signin", id);  // its id checked
-  remove(`${ROOT}${inboxCode(id)}`);
+  remove(inboxCode(id));
   return OK;
 }
 
@@ -1745,7 +1726,7 @@ function loginDrop(id: string): number {
 async function loginRun(id: string): Promise<number> {
   const dir = jobDir("signin", id);
   const doc = readJson<SigninDoc>(`${dir}/${JOB_FILES.start}`);
-  const lease = readJson<LeaseFile>(`${ROOT}${LEASE_FILE}`);
+  const lease = readJson<LeaseFile>(LEASE_FILE);
   const rec = record(doc.engine);
   const login = rec.cli!.login;
   const work = new Job("signin", id, doc.urls.events, lease, 0);
@@ -1774,11 +1755,11 @@ async function loginRun(id: string): Promise<number> {
       // The vendor's own sign-out first, which may revoke the login on the vendor's side.
       const logout = login.logout_argv;
       if (logout !== undefined) {
-        as = take(ROOT, STATE);
+        as = take(STATE);
         home = await makeHome(id, rec);
         giveTree(home, as);
         const madeHome = home;
-        const argv = asUser(as, [shared()], logout.map((arg) => arg.replaceAll("{bin}", binOf(rec))
+        const argv = asUser(as, [shared()], logout.map((arg) => arg.replaceAll("{bin}", binPath(rec))
           .replaceAll("{home}", madeHome)));
         spawnSync(argv[0]!, argv.slice(1), { env: engineEnv(rec, madeHome), cwd: madeHome,
                                              timeout: COMMAND_MS, stdio: "ignore" });
@@ -1794,7 +1775,7 @@ async function loginRun(id: string): Promise<number> {
       });
       end = "signed_out";
     } else {
-      as = take(ROOT, STATE);
+      as = take(STATE);
       home = await makeHome(id, rec);
       const madeHome = home;
       const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
@@ -1803,7 +1784,7 @@ async function loginRun(id: string): Promise<number> {
                   0o600);
       }
       giveTree(madeHome, as);
-      const command = loginArgv(login, binOf(rec), doc.region);
+      const command = loginArgv(login, binPath(rec), doc.region);
       // Always on a terminal of its own: some CLIs prompt only on one.
       const argv = asUser(as, [shared()], onTerminal(command));
       const secrets = atoms();
@@ -1905,7 +1886,7 @@ async function loginRun(id: string): Promise<number> {
       clearInterval(watch);
     }
     // A pasted code that came after the login ended is never left at rest.
-    remove(`${ROOT}${inboxCode(id)}`);
+    remove(inboxCode(id));
     if (as !== null) {
       try {
         killAll(as.uid);
@@ -1941,7 +1922,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
     throw new Error(`engine ${engine} has no vendor sign-in`);
   }
   const name = `probe-${rec.id}-${process.pid}`;
-  const as = take(ROOT, STATE);
+  const as = take(STATE);
   const home = await makeHome(name, rec);
   let shown: Prompt = { url: null, code: null };
   try {
@@ -1950,7 +1931,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
       safeWrite(home, path.replaceAll("{home}", home), new TextEncoder().encode(text), 0o600);
     }
     giveTree(home, as);
-    const argv = asUser(as, [shared()], onTerminal(loginArgv(login, binOf(rec), region)));
+    const argv = asUser(as, [shared()], onTerminal(loginArgv(login, binPath(rec), region)));
     await new Promise<void>((resolve) => {
       const child = spawn(argv[0]!, argv.slice(1), { env: engineEnv(rec, home), cwd: home,
                                                      detached: true,
@@ -2116,7 +2097,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
     const concrete = rel.split("/").map((part) => part === "*" ? "probe" : part).join("/");
     const path = join(store, concrete.endsWith("/") ? `${concrete}probe.json` : concrete);
     if (!existsSync(path)) {
-      safeDirs(TOP, dirname(path), 0o700);
+      safeDirs("/", dirname(path), 0o700);
       safeWrite(store, path, new TextEncoder().encode(JSON.stringify({
         access_token: marker, refresh_token: marker, id_token: marker,
         tokens: { access_token: marker, refresh_token: marker },
@@ -2125,8 +2106,8 @@ async function probeRoute(rec: SourceRecord, provider: string,
     }
   }
   const name = `route-${rec.id}-${process.pid}`;
-  const system = `${ROOT}${SYSTEM}/${name}`;
-  const agentDir = `${ROOT}${AGENTS_DIR}/${first.agent}`;
+  const system = `${SYSTEM}/${name}`;
+  const agentDir = `${AGENTS_DIR}/${first.agent}`;
   const conversationDir = cli.engine.resume === "continue_in_cwd"
     ? `${CONVERSATIONS}/${rec.id}/${first.conversation}` : undefined;
   const turns: ProbeTurn[] = [];
@@ -2134,7 +2115,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
   /** One turn, as one run runs: its own user and home, then its home kept and dropped. */
   const turn = async (start: StartDoc, resumed: boolean,
                       extra: readonly string[]): Promise<ProbeTurn> => {
-    const as = take(ROOT, STATE);
+    const as = take(STATE);
     const trace = `${STATE}/route-${name}.trace`;
     let home: string | null = null;
     let exit = 1;
@@ -2153,11 +2134,11 @@ async function probeRoute(rec: SourceRecord, provider: string,
       chownSync(system, 0, as.gid);
       giveTree(agentDir, as);
       if (conversationDir !== undefined) {
-        safeDirs(TOP, conversationDir, 0o700);
+        safeDirs("/", conversationDir, 0o700);
         giveTree(conversationDir, as);
       }
       const call = invocation(rec, start, process.env, {
-        continued: resumed, root: ROOT, home, system,
+        continued: resumed, home, system,
         ...(conversationDir === undefined ? {} : { conversationDir }) });
       if (call.resumed !== resumed) {
         throw new Error(resumed ? "the second turn does not resume the first"
@@ -2234,9 +2215,9 @@ async function probeRoute(rec: SourceRecord, provider: string,
     if (spawnSync("strace", ["-V"], { encoding: "utf8" }).status !== 0) {
       throw new Error("strace is not installed in the probe's sandbox");
     }
-    safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
+    safeDirs("/", SYSTEM, 0o755);
     remove(agentDir);
-    safeDirs(TOP, agentDir, 0o755);
+    safeDirs("/", agentDir, 0o755);
     writeFileSync(`${agentDir}/agent.json`, JSON.stringify({ engine: rec.id, scopes: [] }));
     writeFileSync(`${agentDir}/AGENTS.md`, "# Route probe\n\nReply with the word OK.\n");
     const one = await turn(first, false, []);
@@ -2371,8 +2352,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   return HANDLERS[command as Command](args);
 }
 
-if (process.argv[1] !== undefined && /runner\.(?:mjs|ts|js)$/.test(process.argv[1])
-    && process.env["TA_RUNNER_IMPORTED"] === undefined) {
+if (process.argv[1] !== undefined && /runner\.(?:mjs|ts|js)$/.test(process.argv[1])) {
   main(process.argv.slice(2)).then((code) => process.exit(code), (error: unknown) => {
     process.stderr.write(`ta-runner: ${String(error)}\n`);
     process.exit(1);
