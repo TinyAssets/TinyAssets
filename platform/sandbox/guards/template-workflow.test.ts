@@ -50,7 +50,14 @@ const envelope = (message, flags = 0) => {
   head.writeUInt32BE(body.length, 1);
   return Buffer.concat([head, body]);
 };
+// E2B_LIE: a failed step that exits 3 yet prints ok ("exit"), or exits 0 yet prints not ok.
 const answer = (argv) => {
+  const [code, out] = answered(argv);
+  const lie = process.env.E2B_LIE;
+  if (lie === undefined || code !== 3) return [code, out];
+  return lie === "answer" ? [0, out] : [3, out.replace('"ok":false', '"ok":true')];
+};
+const answered = (argv) => {
   const [, digest, command, ...rest] = argv;
   if (digest === "install") return [0, ""];
   if (argv[0] !== "${LOADER}") return [0, ""];
@@ -236,6 +243,17 @@ describe("the template's checks", () => {
       const made = ran.calls.filter((call) => call.startsWith("create ")).length;
       expect(made).toBeGreaterThan(0);
       expect(ran.calls.filter((call) => call.startsWith("kill "))).toHaveLength(made);
+      expect(ran.calls.some((call) => call.startsWith("tag "))).toBe(false);
+      expect(ran.record).toBe("[]\n");
+    });
+
+  it.each([
+    ["exits 3 though it printed ok", "exit"],
+    ["prints not ok though it exited 0", "answer"],
+  ])(
+    "record and tag nothing when a step %s", (_what, lie) => {
+      const ran = checks("pair", { E2B_FAIL: "login-probe", E2B_LIE: lie });
+      expect(ran.status).toBe(1);
       expect(ran.calls.some((call) => call.startsWith("tag "))).toBe(false);
       expect(ran.record).toBe("[]\n");
     });

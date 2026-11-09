@@ -131,8 +131,28 @@ function sweep() {
         continue;
       }
     }
-    rmSync(join(tmpdir(), name), { recursive: true, force: true });
+    // Its vitest outlives a suite killed outright (`unshare` execs it, a child of the
+    // suite's): a dir whose Node a process still has as its boxes' is in use.
+    if (!boxesOf(join(tmpdir(), name, "node"))) {
+      rmSync(join(tmpdir(), name), { recursive: true, force: true });
+    }
   }
+}
+
+/** Whether a process runs with `node` as its boxes' Node (`TA_BOX_NODE`). */
+function boxesOf(node) {
+  const named = `TA_BOX_NODE=${node}`;
+  for (const pid of readdirSync("/proc")) {
+    try {
+      if (/^[0-9]+$/.test(pid)
+          && readFileSync(`/proc/${pid}/environ`, "latin1").split("\0").includes(named)) {
+        return true;
+      }
+    } catch {
+      // gone since, or a kernel thread's
+    }
+  }
+  return false;
 }
 
 function giveBack(path, uid, gid) {

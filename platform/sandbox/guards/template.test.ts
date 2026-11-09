@@ -249,6 +249,21 @@ describe("the image", () => {
     }
   });
 
+  it("is versioned by each staged file's mode as git holds it, never the checkout's umask",
+     () => {
+    const copy = copied();
+    const image = `${NAME}:${tag()}`;
+    const lock = join(copy, "sources", "locks", "codex", "package.json");
+    try {
+      chmodSync(lock, 0o664);  // an umask-002 checkout's
+      expect(tagOf(copy)).toBe(image);
+      chmodSync(lock, 0o755);  // git's executable bit: a new mode in the image
+      expect(tagOf(copy)).not.toBe(image);
+    } finally {
+      chmodSync(lock, 0o644);
+    }
+  });
+
   it("is versioned by nothing else: the runner, the probes, the checks, the tag's own code",
      async () => {
     const copy = copied();

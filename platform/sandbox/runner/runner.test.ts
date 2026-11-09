@@ -620,6 +620,13 @@ describe("the vendor's own sign-in", () => {
       expect(refused.code, refused.why).toBe(2);
       expect(refused.err).toContain(`no command ${command}`);
     }
+    // With other bytes at their runner's path, the probes refuse loudly.
+    expect(box.exec(["sh", "-c", `echo >> /opt/ta/runner/${box.digest}/runner.mjs`]).status)
+      .toBe(0);
+    const other = box.probe("login-probe", "claude-code");
+    expect(other.code, other.why).toBe(1);
+    expect(other.err).toContain(`the runner ${box.digest} the probes were built beside is not ` +
+                                "installed here");
     // With their runner gone from the sandbox, the probes refuse loudly.
     expect(box.exec(["rm", "-rf", `/opt/ta/runner/${box.digest}`]).status).toBe(0);
     const alone = box.probe("login-probe", "claude-code");
