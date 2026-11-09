@@ -8,18 +8,28 @@
  * rules allow, anywhere or in one file alone; absolute specifiers, dynamic `import()`,
  * `require` and type imports by path are refused. A name the rules ban (an identifier, a
  * private name or any string, template parts included) is refused outside where they allow
- * it. Every rule holds over the import closure: each module a source reaches through
- * relative imports, however deep, is checked as the Worker's own source is. A job (`job`, a
+ * it. Every rule holds over the import closure: each module a source reaches by a relative
+ * specifier (an import or re-export, a type imported by path, `import()`, `require()` or
+ * `/// <reference path>`), however deep, is checked as the Worker's own source is, a module
+ * outside every Worker's `src/` on the way (a test's helper) read from disk. A job (`job`, a
  * workspace run in Node rather than deployed) is held the same way from its own folder.
+ *
+ * No Worker imports another Worker's `src` (`decisions.md` A1): whatever a workspace's rules
+ * list, an import that lands in another Worker's source is refused (`workerOf`), and a
+ * Worker's rules may name only the contract's modules and the source records'
+ * (`outsideProblems`). `ci/guards/isolation.test.ts` holds both for every Worker, with rules
+ * or without: no Worker's closure reaches another Worker's source (`foreignReach`).
  *
  * Tripwires for our own code (a split spelling such as `env["GATEWAY_" + "KEYRING"]` is not
  * seen), not proof against deliberate evasion.
  */
-import { posix } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, posix } from "node:path";
 
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import { PLATFORM } from "../paths.ts";
 import { parse, reporter, scriptsIn, workerSources } from "./sources.ts";
 
 export interface BannedName {
@@ -57,6 +67,41 @@ export function resolved(path: string, specifier: string): string {
     .replace(/\.(?:[cm]?[jt]s|tsx|jsx)$/, "");
 }
 
+/**
+ * The Worker whose own source `path` (from `platform/`, with or without its extension) is:
+ * `<folder>/src/...` of a folder that holds a Worker's config. Null for any other module: the
+ * contract's, the source records', a job's, a test's.
+ */
+export function workerOf(path: string): string | null {
+  const folder = /^([^/]+)\/src(?:\/|$)/.exec(path)?.[1];
+  return folder !== undefined && existsSync(join(PLATFORM, folder, "wrangler.jsonc")) ? folder
+    : null;
+}
+
+/** The modules outside a Worker's own source its rules may name: the contract's, the records'. */
+const SHARED = /^(?:contract|sources)\//;
+
+/**
+ * Each module `rules`' list of modules outside its source names that no Worker may reach:
+ * another Worker's source, or, for a Worker, anything but the contract and the source records.
+ */
+export function outsideProblems(rules: ImportRules): string[] {
+  return (rules.outside ?? []).flatMap((at) => {
+    const other = workerOf(at);
+    if (other !== null && other !== rules.worker) {
+      return [`${rules.worker} may reach ${at}, the ${other} Worker's source`];
+    }
+    return rules.job === undefined && !SHARED.test(at)
+      ? [`${rules.worker} may reach ${at}, neither the contract nor the source records`] : [];
+  });
+}
+
+/** Each source of a closure (`reached`, paths from `platform/`) in another Worker's `src`. */
+export function foreignReach(worker: string, reached: Iterable<string>): string[] {
+  return [...reached].filter((path) => ![null, worker].includes(workerOf(path)))
+    .map((path) => `${worker} reaches ${path}, the ${workerOf(path)} Worker's source`);
+}
+
 /** Whether the source at `path` (from `platform/`) is one of the workspace's own. */
 export function owns(rules: ImportRules, path: string): boolean {
   return rules.job === undefined ? path.startsWith(`${rules.worker}/src/`)
@@ -71,7 +116,14 @@ export function importProblem(rules: ImportRules, path: string, specifier: strin
   }
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
     const at = resolved(path, specifier);
-    return owns(rules, at) || (rules.outside ?? []).includes(at)
+    if (owns(rules, at)) {
+      return null;
+    }
+    const other = workerOf(at);
+    if (other !== null) {
+      return `imports ${specifier} (${at}), the ${other} Worker's source`;
+    }
+    return (rules.outside ?? []).includes(at)
       ? null : `imports ${specifier} (${at}), outside ${rules.called}`;
   }
   if ((rules.packages ?? []).some((name) => specifier === name || specifier.startsWith(`${name}/`))) {
@@ -121,24 +173,46 @@ export function isolationProblems(rules: ImportRules, path: string, source: stri
   return problems;
 }
 
-/** The relative specifiers `source` imports or re-exports. */
+/**
+ * The relative specifiers `source` reaches: imports and re-exports, a type imported by path
+ * (`import("…").T`), `import()` and `require()` of a literal, and `/// <reference path>`.
+ */
 function relativeImports(path: string, source: string): string[] {
-  const found: string[] = [];
+  const file = parse(path, source);
+  const found = file.referencedFiles.map((each) => each.fileName);
   const visit = (node: ts.Node): void => {
+    let specifier: ts.Node | undefined;
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
-        && node.moduleSpecifier !== undefined && ts.isStringLiteralLike(node.moduleSpecifier)
-        && node.moduleSpecifier.text.startsWith(".")) {
-      found.push(node.moduleSpecifier.text);
+        && node.moduleSpecifier !== undefined) {
+      specifier = node.moduleSpecifier;
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      specifier = node.argument.literal;
+    } else if (ts.isCallExpression(node)
+               && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+                   || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
+      specifier = node.arguments[0];
+    }
+    if (specifier !== undefined && ts.isStringLiteralLike(specifier)) {
+      found.push(specifier.text);
     }
     ts.forEachChild(node, visit);
   };
-  visit(parse(path, source));
-  return found;
+  visit(file);
+  return found.filter((specifier) => specifier.startsWith("."));
+}
+
+/** A module outside every Worker's `src/` (a test's helper, a guard), read from disk. */
+function onDisk(path: string): string | undefined {
+  const full = join(PLATFORM, path);
+  return !/^[^/]+\/src\//.test(path) && !path.split("/").includes("node_modules")
+    && existsSync(full) ? readFileSync(full, "utf8") : undefined;
 }
 
 /**
- * Every source `worker`'s own reach through relative imports, however deep, with its own:
- * what its bundle holds of ours. A data file (`.json`) is checked by its import's path alone.
+ * Every source `worker`'s own reach by relative specifiers (`relativeImports`), however
+ * deep, with its own: what its bundle holds of ours, and any module outside a Worker's `src/`
+ * on the way. A data file (`.json`) is checked by its import's path alone, and one in a
+ * Worker's `src/` is in the closure, so another Worker's is seen.
  */
 export function closure(worker: string,
                         all: ReadonlyMap<string, string> = workerSources()): Map<string, string> {
@@ -157,18 +231,26 @@ export function reach(rules: ImportRules): Map<string, string> {
   return walk(all, [...all.keys()].filter((path) => owns(rules, path)));
 }
 
+/** The extensions a script is imported without (`resolved` drops them), as a bundler tries. */
+const SCRIPTS = Object.freeze([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
+
 function walk(all: ReadonlyMap<string, string>, queue: string[]): Map<string, string> {
   const reached = new Map<string, string>();
   while (queue.length) {
     const path = queue.pop()!;
-    const source = all.get(path);
+    const source = all.get(path) ?? onDisk(path);
     if (reached.has(path) || source === undefined) {
       continue;
     }
     reached.set(path, source);
     for (const specifier of relativeImports(path, source)) {
       const at = resolved(path, specifier);
-      queue.push(...[`${at}.ts`, `${at}/index.ts`].filter((next) => all.has(next)));
+      if (/\.[^/.]+$/.test(at) && workerOf(at) !== null
+          && (all.has(at) || existsSync(join(PLATFORM, at)))) {
+        reached.set(at, "");  // a Worker's data file (`.json`): reached, never read as a script
+      }
+      queue.push(...[...SCRIPTS.map((extension) => `${at}${extension}`), `${at}/index.ts`]
+        .filter((next) => all.has(next) || onDisk(next) !== undefined));
     }
   }
   return reached;

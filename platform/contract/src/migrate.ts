@@ -1,7 +1,8 @@
 /**
  * How a Durable Object's schema migrates on wake, for every object that keeps tables (the
- * owner's, `schema.ts`; the sandbox Worker's two, `sandbox/src/schema.ts`). Pure: it imports
- * nothing of any object, so a Worker takes it without the owner's storage modules.
+ * owner's, `owner/src/schema.ts`; the sandbox Worker's two, `sandbox/src/schema.ts`): a
+ * stateless library more than one Worker runs, so it is the contract's. It holds no state
+ * and reaches no binding: each object hands it its own store (`MigrationStorage`).
  *
  * `schema_version` holds one row: how many of the object's migrations it has applied. The
  * rest are applied in order, each in its own transaction with its version bump, so a crash
@@ -11,7 +12,7 @@
  * A migration is append-only from its Worker's first deploy: a new shape is a new entry at
  * the end, held by the Worker's migration lock and its migrations guard.
  */
-import { sha256Hex } from "../../contract/src/digest";
+import { sha256Hex } from "./digest";
 
 export type Migration = readonly string[];
 
@@ -39,8 +40,8 @@ export const MIGRATION_UNPINNED = "an applied migration has no digest; refusing 
  * first deploy) stops the object loudly before anything runs, whatever the repo's guard
  * missed; so does one whose digest row is gone (Fact 8: the check never passes by default).
  */
-export function migrate(storage: MigrationStorage, migrations: readonly Migration[]): number {
-  const sql = storage.sql;
+export function migrate(store: MigrationStorage, migrations: readonly Migration[]): number {
+  const sql = store.sql;
   sql.exec(
     "CREATE TABLE IF NOT EXISTS schema_version " +
       "(only INTEGER PRIMARY KEY CHECK (only = 1), version INTEGER NOT NULL)",
@@ -68,7 +69,7 @@ export function migrate(storage: MigrationStorage, migrations: readonly Migratio
   }
   for (let version = current + 1; version <= migrations.length; version++) {
     const statements = migrations[version - 1] ?? [];
-    storage.transactionSync(() => {
+    store.transactionSync(() => {
       for (const statement of statements) {
         sql.exec(statement);
       }

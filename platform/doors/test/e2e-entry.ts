@@ -9,8 +9,8 @@
  * agents, whether the starter's own files are there, and each failure it was told.
  */
 import type { DoorsEnv } from "../src/config";
-import type { SandboxSignin, SandboxStart } from "../../owner/src/sandbox";
 import worker, { OwnerDO as TestOwnerDO } from "./entry";
+import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 
 export class OwnerDO extends TestOwnerDO {
   /** What the recording sandbox was asked to start, in order. */

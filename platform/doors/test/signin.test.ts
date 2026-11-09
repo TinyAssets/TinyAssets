@@ -9,10 +9,10 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { EGRESS_ORIGIN, GENERATION_HEADER, SANDBOX_HEADER } from "../../contract/src/egress";
-import type { SandboxSignin } from "../../owner/src/sandbox";
 import { bundledRecords, catalogOf } from "../../sources/src/catalog";
 import type { OwnerDO } from "./entry";
 import { appPost, call, OPEN, serveFirstPartyDocument, setControl, signInApp } from "./support";
+import type { SandboxSignin } from "../../contract/src/sandbox";
 
 let restore: () => void = () => undefined;
 

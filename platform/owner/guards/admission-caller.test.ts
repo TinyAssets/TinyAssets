@@ -1,17 +1,17 @@
 /**
  * The platform's reserved caller (tasks 2, "Owner admission and erasure"; F1): the owner's
- * object takes `admissionSet` only from the caller named `PLATFORM_CALLER`
- * (`admission.ts`), and refuses that name at every other door and as an owner. So no
- * source may spell the name but where it is defined, and the platform's admin path
- * (`platform/admin`), whose one constant the binder sends (the sign-up's explicit admit,
- * slice L); no other source may.
+ * object takes `admissionSet` only from the caller named `PLATFORM_CALLER` (the contract's,
+ * `contract/src/binding.ts`), and refuses that name at every other door and as an owner. So
+ * no source may spell the name but where it is defined, and no source but the binder, which
+ * sends it (the sign-up's explicit admit, slice L), and the owner's object, which reads it,
+ * may name the constant; the platform's admin path (`admin/`, none today) may too.
  *
  * In every Worker source, this guard finds the name spelled as a string (a literal, a
  * template with no substitution, or the obvious split spellings: literals joined by `+`, a
  * template whose every part is literal, an array of literals `join`ed), and the constant's
- * identifier. The name is spelled once, in its definition in `admission.ts`; the constant
- * is named only there and in `owner-do.ts`, whose binding check and `admissionSet` read it.
- * A tripwire for our own code's mistakes, as the alarm guard is.
+ * identifier. The name is spelled once, in its definition in the contract; the constant is
+ * named only there, in `owner-do.ts`, whose binding check and `admissionSet` read it, and in
+ * the binder. A tripwire for our own code's mistakes, as the alarm guard is.
  *
  * And the doors the caller reaches, by class (`contract/doors.json`): the platform's own
  * (`admission`, the reserved and erasure callers'), and the cutover's import doors (`import`,
@@ -32,12 +32,11 @@ import { parse, reporter, workerSources } from "../../ci/kit/sources";
 const NAME = ["plat", "form"].join("");
 /** The constant that holds it, its one definition, and the one source that reads it. */
 const CONSTANT = "PLATFORM_CALLER";
-const DEFINED = "owner/src/admission.ts";
+const DEFINED = "contract/src/binding.ts";
 const READER = "owner/src/owner-do.ts";
-/** The platform's admin sources, which may send it: its one constant, which the binder sends. */
-const ADMIN = "admin/";
-const ADMIN_SOURCE = "admin/src/caller.ts";
+/** The binder, which sends it, and the platform's admin sources, which may (none today). */
 const SENDER = "doors/src/binder.ts";
+const ADMIN = "admin/";
 
 /** A string expression's value when every part of it is literal, else undefined. */
 function literal(node: ts.Node): string | undefined {
@@ -73,6 +72,17 @@ function literal(node: ts.Node): string | undefined {
   return undefined;
 }
 
+/** Whether `source` names the constant's identifier anywhere. */
+function names(fileName: string, source: string): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    found ||= ts.isIdentifier(node) && node.text === CONSTANT;
+    ts.forEachChild(node, visit);
+  };
+  visit(parse(fileName, source));
+  return found;
+}
+
 /** Each place `source` spells the reserved caller or names its constant out of place. */
 export function callerReach(fileName: string, source: string): string[] {
   const file = parse(fileName, source);
@@ -96,8 +106,8 @@ export function callerReach(fileName: string, source: string): string[] {
       }
     }
     if (ts.isIdentifier(node) && node.text === CONSTANT && fileName !== DEFINED
-        && fileName !== READER) {
-      report(node, `names ${CONSTANT}, which only the object reads`);
+        && fileName !== READER && fileName !== SENDER) {
+      report(node, `names ${CONSTANT}, which only the object reads and the binder sends`);
     }
     ts.forEachChild(node, visit);
   };
@@ -114,12 +124,9 @@ describe("admission caller guard", () => {
     expect([...sources.keys()]).toContain(DEFINED);
     expect([...sources].flatMap(([path, source]) => callerReach(path, source))).toEqual([]);
     expect(sources.get(DEFINED)).toContain(`export const ${CONSTANT} = "${NAME}";`);
-    // The admin path is its one constant, and only the binder sends it (the sign-up's admit).
-    expect([...sources.keys()].filter((path) => path.startsWith(ADMIN))).toEqual([ADMIN_SOURCE]);
-    expect(sources.get(ADMIN_SOURCE)).toContain(`export const ADMIN_CALLER = "${NAME}";`);
-    expect([...sources].filter(([path, source]) => !path.startsWith(ADMIN)
-                                                 && source.includes("admin/src/caller"))
-      .map(([path]) => path)).toEqual([SENDER]);
+    // The object reads the constant, and the binder sends it (the sign-up's admit).
+    expect([...sources].filter(([path, source]) => path !== DEFINED && names(path, source))
+      .map(([path]) => path).sort()).toEqual([SENDER, READER]);
   });
 
   it.each([
@@ -159,7 +166,7 @@ describe("admission caller guard", () => {
       'export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMARY KEY " +\n' +
       '  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN (\'pending\', \'admitted\', " +\n' +
       '  "\'suspended\', \'erased\')), reasons TEXT NOT NULL CHECK (reasons IN (\'[]\', " +\n');
-    const admission = readFileSync(join(PLATFORM, DEFINED), "utf8");
+    const admission = readFileSync(join(PLATFORM, "owner", "src", "admission.ts"), "utf8");
     expect(admission).toContain('sql.exec<{ state: string }>("SELECT state FROM owner_admission")');
     expect(admission).toContain("INSERT INTO owner_admission (only, state, reasons) VALUES " +
                                 "(1, 'erased', '[]')");

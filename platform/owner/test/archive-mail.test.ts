@@ -30,7 +30,7 @@ import {
   type Source,
 } from "../src/segments";
 import { exported } from "../src/export";
-import type { ChunkStore } from "../src/files";
+import type { ChunkStore } from "../../contract/src/files";
 import { digest, generate, replay } from "./generation-support";
 import { DOT, ledgerOn, MUSE, rig } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";

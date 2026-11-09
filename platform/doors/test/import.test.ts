@@ -14,11 +14,10 @@ import { beforeAll, describe, expect, inject, it } from "vitest";
 
 import { inlineId } from "../../contract/src/content";
 import { canonical } from "../../contract/src/policy-document";
-import type { Binding } from "../../contract/src/binding";
+import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
   answerName, doneName, importMac, type ImportMessage, NO_ROWS, rehearsalName, rowsSum,
 } from "../../contract/src/import-message";
-import { ADMIN_CALLER } from "../../admin/src/caller";
 import { type Answers, clean, differences, expectedOf } from "../../import/check";
 import type { DoorsEnv } from "../src/config";
 import { putOwner, readOwner } from "../src/directory";
@@ -534,7 +533,7 @@ describe("the import's check, through the consumer, held to the bundle by the jo
 
 /** The import's binding for `owner`, as the consumer makes it. */
 function bindImportFor(owner: string, bundle: string) {
-  return { binding: { owner, caller: ADMIN_CALLER, origin: null, import: { bundle },
+  return { binding: { owner, caller: PLATFORM_CALLER, origin: null, import: { bundle },
                       tiers: TIERS } as Binding,
            stub: stubOf(owner) as unknown as DurableObjectStub<OwnerDO> };
 }

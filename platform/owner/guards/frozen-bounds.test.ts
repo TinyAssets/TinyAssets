@@ -33,7 +33,7 @@ import {
   CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES, HISTORY_BYTES,
   OWNER_SCOPE, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
-import type { Migration } from "../src/migrate";
+import type { Migration } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
 import { SEGMENT_LEAST_BYTES } from "../src/segments";
 import { RUNS_CEILING } from "../../contract/src/control";

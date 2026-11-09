@@ -27,7 +27,9 @@ import { bearer, type Credential } from "./credential";
 import {
   type EgressScope, egressTarget, type Meter, meteredCall, meteredModel,
 } from "../../contract/src/egress-scope";
-import type { ModelRecord } from "../../contract/src/model-record";
+import type {
+  Metering, MeterOutcome, Resealed, Reservation, Reserve, Verified,
+} from "../../contract/src/gateway";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import { codeOf, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
@@ -36,7 +38,7 @@ import {
   tierMultiplier, unpricedOption, valueAt,
 } from "../../contract/src/api-rules";
 import { clamped, learnMeter, meteredRecord, meteredUsage } from "./meter";
-import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
+import { type Binding, type KeyringEnv, open, type Opened } from "./keyring";
 import { heldCode, heldDeadlineMs, Hold, raced, weighedBody, weightSlots } from "./held";
 import { RESEALED_HEADER } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract/src/limits";
@@ -229,34 +231,6 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
                               deadlineMs: number = FORWARD_DEADLINE_MS): Promise<Response> {
   return (await send(env, bound, blob, request, deadlineMs, null, null)).response;
 }
-
-/**
- * What a metered call is held to: the output cap its reservation leaves, its body's size,
- * and the model and tier (its tier option's value, or null) it was reserved for.
- */
-export interface Metering {
-  readonly max_output_tokens: number;
-  readonly input_bytes: number;
-  readonly model: string;
-  readonly tier: string | null;
-}
-
-/** How a metered call ended, as the owner's object settles it. */
-export type MeterOutcome =
-  | { readonly state: "succeeded"; readonly tokens: number; readonly cost: number;
-      readonly served?: string }
-  | { readonly state: "failed" }
-  | { readonly state: "unknown" };
-
-/** What the owner's object answered a reserve: the call's metering, or its refusal's code. */
-export type Reservation = { readonly metering: Metering } | { readonly refused: string };
-
-/**
- * The egress door's callback (over RPC, a stub to the door): the owner's object reserves the
- * admitted call for the model and tier its body names, as the gateway's one parse read them.
- */
-export type Reserve = (call: { readonly model: string; readonly tier: string | null }) =>
-  Promise<Reservation>;
 
 /** A model id or tier as the owner's object takes one: visible ASCII. */
 const NAMED = /^[\x21-\x7e]{1,256}$/;
@@ -636,17 +610,6 @@ function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
 function scopeOf(credential: Credential, meter: Meter | null = null): EgressScope {
   return Object.freeze({ api: credential.upstream.api, base_url: credential.upstream.base_url,
                          endpoints: credential.endpoints, meter });
-}
-
-/**
- * What a setup check found: the credential works, the models it can be asked for, and
- * where sandbox egress may forward it (`egress`, its sealed base URL and endpoints), which
- * the owner's object keeps to refuse an endpoint not sealed before any forward (G4).
- */
-export interface Verified {
-  readonly models: readonly ModelRecord[];
-  readonly egress: EgressScope;
-  readonly resealed?: Resealed;
 }
 
 /**

@@ -212,6 +212,11 @@ export const GATEWAY_CODES = Object.freeze([
 ] as const satisfies readonly RefusalCode[]);
 export type GatewayCode = (typeof GATEWAY_CODES)[number];
 
+/** Whether `code` is one of the gateway's codes. */
+export function isGatewayCode(code: unknown): code is GatewayCode {
+  return (GATEWAY_CODES as readonly unknown[]).includes(code);
+}
+
 /** The egress door's codes, each answered with the object's receipt (`doors/src/egress.ts`). */
 export const EGRESS_CODES = Object.freeze([
   "egress_token_missing", "egress_token_unknown", "egress_token_expired",

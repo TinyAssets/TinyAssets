@@ -41,12 +41,14 @@ export const CONFIG: ConfigRules = Object.freeze({
  * Its source names no binding of the owner's world (`OWNER`, `FILES`, `GATEWAY`, `BLOBS`)
  * or `HOOKS` (it is never bound to itself), nor `storage` (its objects never use their
  * storage, so a script leaves nothing behind), nor `process`. It imports only its own
- * sources, `cloudflare:workers` and pi's code mode (`/cloudflare` in `codemode.ts` alone,
- * which bundles QuickJS; `/portable` for its types).
+ * sources, its RPC contract (`contract/src/hooks.ts`, types alone), `cloudflare:workers` and
+ * pi's code mode (`/cloudflare` in `codemode.ts` alone, which bundles QuickJS; `/portable`
+ * for its types).
  */
 export const IMPORTS: ImportRules = Object.freeze({
   worker: "hooks",
   called: "the hooks Worker",
+  outside: Object.freeze(["contract/src/hooks"]),
   bare: Object.freeze({
     "cloudflare:workers": null,
     "@earendil-works/pi-codemode/cloudflare": "hooks/src/codemode.ts",

@@ -14,12 +14,12 @@ import {
 } from "@earendil-works/pi-codemode/portable";
 import { describe, expect, it } from "vitest";
 
-import { CODEMODE_TIMEOUT_MS, codemodeSandbox, type HooksService } from "../src/codemode";
+import { CODEMODE_TIMEOUT_MS, type CodemodeService, codemodeSandbox } from "../src/codemode";
 import { HOOK_DEFAULTS, validate } from "../../contract/src/policy-document";
 import { hookSettings } from "../src/policy";
 
 /** The hooks Worker, each execution's name recorded on `names`. */
-function named(names: string[]): HooksService {
+function named(names: string[]): CodemodeService {
   return {
     codemodeExecute: (name, request, exchange) => {
       names.push(name);

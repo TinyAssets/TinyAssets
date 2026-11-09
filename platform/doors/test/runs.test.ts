@@ -16,7 +16,6 @@ import {
   EGRESS_ORIGIN, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import type { Binding } from "../../contract/src/binding";
-import type { SandboxStart } from "../../owner/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { RUN_INSTRUCTIONS } from "../src/mcp";
@@ -29,6 +28,7 @@ import {
   setControl, signInApp, sqlIn, type Tokens, url,
   answerOf,
 } from "./support";
+import type { SandboxStart } from "../../contract/src/sandbox";
 
 /** The run doors' tools: what a run's own MCP door never serves. */
 const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph", "run_status",

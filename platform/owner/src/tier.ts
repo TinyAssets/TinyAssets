@@ -29,6 +29,7 @@
  * so a record past it is malformed.
  */
 import { parseTiers, TIER_NAMES, type TierName, type Tiers } from "../../contract/src/control";
+import type { TierRequest } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import type {
@@ -107,10 +108,6 @@ export function keptTiers(storage: OwnerStorage): Tiers | null {
   const kept = storage.sql.exec<{ tiers: string }>("SELECT tiers FROM platform_tiers")
     .toArray()[0];
   return kept === undefined ? null : parseTiers(JSON.parse(kept.tiers));
-}
-
-export interface TierRequest {
-  readonly tier: TierName;
 }
 
 // -- THE DOORS: the `tier` rows' handlers (`contract/doors.json`) ---------------------------------

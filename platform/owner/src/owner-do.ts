@@ -111,7 +111,6 @@ import type { RunCapability } from "../../contract/src/capabilities";
 import {
   admission, type Admission, admissionDoors, DISCARDED, type DoorClass, doorRefusal,
   IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, ownerTier,
-  PLATFORM_CALLER,
   PLATFORM_ONLY, PLATFORM_RESERVED, setTier, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import {
@@ -120,7 +119,8 @@ import {
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
 import { RUN_ENDED, Runs, type RunSchedule, runsDoors } from "./runs";
 import { PostGate } from "../../contract/src/run-events";
-import { SANDBOX_ABSENT, type SandboxService } from "./sandbox";
+import { SANDBOX_ABSENT } from "./sandbox";
+import type { SandboxService } from "../../contract/src/sandbox";
 import { TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { Tickets } from "./tickets";
 import { type ApiKey, Keys, keysDoors } from "./keys";
@@ -131,11 +131,13 @@ import { Bodies, type Located, type Placed, type Placing, type Window } from "./
 import { type Heads, PAGE_BYTES, type Shown, type Wants } from "./pages";
 import { Collections, collectionsDoors, type History, type Page, type Row } from "./collections";
 import {
-  Connections, connectionsDoors, type ConnectionView, type GatewayService, type Prepared,
+  Connections, connectionsDoors, type ConnectionView, type Prepared,
 } from "./connections";
+import type { ChunkStore } from "../../contract/src/files";
+import type { GatewayService, RingAnswer } from "../../contract/src/gateway";
 import { ERASING, Refusal } from "../../contract/src/refusal";
 import {
- type Change as FileChange, type ChunkRef, type ChunkStore, type Entry, fileChanged, Files,
+ type Change as FileChange, type ChunkRef, type Entry, fileChanged, Files,
  filesDoors, OWNER_AUTHORITY, type SandboxLease, SYNC_FENCED, type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, WriteGate } from "./gate";
@@ -143,14 +145,16 @@ import {
   type Client, type ConnectedApp, type Grant, Grants, grantsDoors, type Scope,
 } from "./grants";
 import {
- type CodemodeBounds, codemodeDoors, type CodeRequest, type CodeResult, type HooksService,
+ type CodemodeBounds, codemodeDoors, type CodemodeService, type CodeRequest, type CodeResult,
 } from "./codemode";
 import {
   type Agent, type ChainMail, Ledger, ledgerDoors, type LedgerLimits, type MailPage,
   type NativeAgent, outsideOrigin, type Posted, READ_TRIES, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
-import type { Binding, InboundAnswer, Origin } from "../../contract/src/binding";
+import {
+  type Binding, type InboundAnswer, type Origin, PLATFORM_CALLER,
+} from "../../contract/src/binding";
 import { type Notice, Notices, noticesDoors } from "./notices";
 import {
   type ImportCheckAnswer, type ImportCheckRequest, type Imported, importDoors,
@@ -170,16 +174,21 @@ import { Schedule } from "./schedule";
 import { ABILITY_TREES, AGENTS_DIR, within } from "../../contract/src/paths";
 import { Launcher, type SandboxLeases } from "./launch";
 import {
- Egress, egressDoors, type EgressOpened, type EgressReceipt, type EgressRefusal,
- type EgressReserved, sandboxBinding,
+ Egress, egressDoors, type EgressReceipt, sandboxBinding,
 } from "./egress";
 import { exportDoors } from "./export";
-import { type BilledEvent, SandboxTime, sandboxTimeDoors } from "./sandbox-time";
+import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
+import type {
+  AdmissionRequest, BeatRequest, BilledEvent, BindingRequest, ConnectionCommitRequest,
+  ConnectionPrepareRequest, ConnectionRequest, EgressOpened, EgressRefusal, EgressReserved,
+  FlowFinishRequest, InboundCreateRequest, InboundSetRequest, OwnerDoors, SigninEventsRequest,
+  TierRequest,
+} from "../../contract/src/owner";
 import { Sessions, sessionsDoors } from "./sessions";
 import { signinOwned, Signins, signinsDoors, type SigninView, switchedOn } from "./signins";
 import { starterDoors } from "./starter";
 import { priced, Usage as ModelUsage, usageDoors, type UsageReceipt } from "./usage";
-import { migrate } from "./migrate";
+import { migrate } from "../../contract/src/migrate";
 import { Archive, type ArchiveMoveSeen, type ChainStep } from "./archive";
 import { MIGRATIONS } from "./schema";
 import { Backups, MANIFEST_PROTECT_S } from "./backup";
@@ -189,7 +198,7 @@ import { carried, type Receipt as StarterReceipt, Starter, type StarterPackage }
   from "./starter";
 import { CONTROL_FRESH_MS, ControlGate } from "./control-gate";
 import { storageFull, storageFullRefusal } from "./storage-full";
-import { Doorbell, type RingAnswer, type WakeSender } from "./wakes";
+import { Doorbell, type WakeSender } from "./wakes";
 import { type Events } from "../../contract/src/wake-records";
 import type {
   BoardDigestRequest, ClearRequest, Conflicted, DeleteRequest, GetRequest, HistoryRequest,
@@ -200,10 +209,7 @@ import type {
   DisableRequest, InboxDigestRequest, PostRequest, ReadRequest, SubscribeRequest,
   UnsubscribeRequest, WakeLimitsRequest,
 } from "./ledger";
-import type { AdmissionRequest } from "./admission";
-import type {
-  BindingRequest, InboundCreateRequest, InboundEvent, InboundSetRequest,
-} from "./inbound";
+import type { InboundEvent } from "./inbound";
 import type { CardRequest, PolicyWriteRequest, ProposeRequest } from "./policy";
 import type {
   ChangesRequest, FetchMetadata, FileAppendRequest, FileChunksRequest, FileConflicted,
@@ -214,9 +220,6 @@ import type {
   UploadChunksRequest, UploadCommitRequest, UploadStoredRequest, VersionRequest,
 } from "./files";
 import type { ClientRequest, ForgetRequest } from "./grants";
-import type {
-  ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
-} from "./connections";
 import type { ConversationRequest } from "./relay";
 import type { EraseRequest } from "./erasure";
 import type {
@@ -225,9 +228,8 @@ import type {
 import type { KeyMintRequest } from "./keys";
 import type { RegistrationCardRequest } from "./registrations";
 import type {
-  SigninCodeRequest, SigninEventsRequest, SigninRequest, SigninRequestById, SigninStartRequest,
+  SigninCodeRequest, SigninRequest, SigninRequestById, SigninStartRequest,
 } from "./signins";
-import type { TierRequest } from "./tier";
 
 /** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
 export const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
@@ -262,7 +264,7 @@ export interface GrantRequest {
 export interface OwnerEnv {
   readonly FILES: ChunkStore;
   readonly GATEWAY: GatewayService;
-  readonly HOOKS: HooksService;
+  readonly HOOKS: CodemodeService;
   /**
    * The platform's control record alone (`c:control`, the doors' too), read by code mode's
    * calls for the gates the door read (`control-gate.ts`); never written here.
@@ -546,7 +548,7 @@ export interface OwnerState {
   invoke(door: string, args: readonly unknown[]): Promise<unknown>;
 }
 
-export class OwnerDO extends DurableObject<OwnerEnv> {
+export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** The one write gate: every owner write is one synchronous unit. */
   readonly #gate: WriteGate;
   /** The storage as the modules see it: the gate's view. */
@@ -2926,7 +2928,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A streaming call's beat from its door (`EGRESS_BEAT_S`): the open reservation its egress
    * token opened is still its door's, so it is not settled lost.
    */
-  egressBeat(binding: Binding, request: { reservation: string }): Promise<{ beat: boolean }> {
+  egressBeat(binding: Binding, request: BeatRequest): Promise<{ beat: boolean }> {
     return this.#run("egressBeat", binding, request, egressDoors.egressBeat);
   }
 

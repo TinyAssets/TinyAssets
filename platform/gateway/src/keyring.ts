@@ -29,6 +29,7 @@ import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
 import { principal, utf8Decoder } from "../../contract/src/text";
 
 import { type Credential, credential } from "./credential";
+import type { Resealed, Sealed } from "../../contract/src/gateway";
 import { Refusal } from "../../contract/src/refusal";
 
 /** The one secret this Worker holds, as its config declares it. */
@@ -40,17 +41,6 @@ export interface KeyringEnv {
 export interface Binding {
   readonly owner: string;
   readonly connection: string;
-  readonly version: number;
-}
-
-/** A sealed blob and the kid it is under. */
-export interface Sealed {
-  readonly blob: string;
-  readonly kid: string;
-}
-
-/** A credential resealed under the active kid, for the owner object to store. */
-export interface Resealed extends Sealed {
   readonly version: number;
 }
 

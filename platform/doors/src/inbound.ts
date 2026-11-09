@@ -30,6 +30,7 @@ import { sha256Hex } from "../../contract/src/digest";
 
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
 import type { InboundAnswer } from "../../contract/src/binding";
+import type { JsonBody } from "../../contract/src/owner";
 import { refusalOf } from "../../contract/src/refusal";
 
 import apps from "../shared-apps.json" with { type: "json" };
@@ -286,23 +287,23 @@ export async function serveInbound(request: Request, env: DoorsEnv, sources: Sou
  * - `hooks/list`: the owner's bindings, never a secret or a token.
  */
 export const HOOK_ROUTES: Readonly<Record<string, (env: DoorsEnv, bound: Bound,
-                                                   request: Record<string, unknown>) =>
+                                                   request: JsonBody) =>
                                                    Promise<unknown>>> = Object.freeze({
   "hooks/create": async (env, { binding, stub }, request) => {
     const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
     const route = `h:${sha256(token)}`;
     const made = await stub.inboundCreate(binding, { ...request, kind: "capability",
-                                                     route } as never);
+                                                     route });
     await putRoute(env, made.route, { o: binding.owner, b: made.binding_id, r: made.revision });
     return { ...made, url: `${PUBLIC_ORIGIN}${INBOUND_PATH}${token}` };
   },
   "hooks/set": async (env, { binding, stub }, request) => {
-    const set = await stub.inboundSet(binding, request as never);
+    const set = await stub.inboundSet(binding, request);
     await putRoute(env, set.route, { o: binding.owner, b: set.binding_id, r: set.revision });
     return set;
   },
   "hooks/revoke": async (env, { binding, stub }, request) => {
-    const gone = await stub.inboundRevoke(binding, request as never);
+    const gone = await stub.inboundRevoke(binding, request);
     if (gone.route !== null) {
       await deleteRoute(env, gone.route);
     }

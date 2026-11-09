@@ -17,22 +17,22 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM_CALLER } from "../src/admission";
+import { type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
 import { WriteGate } from "../src/gate";
 import { WAKE_LEASE_S } from "../src/ledger";
 import { clock } from "../src/clock";
-import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { checkKinds, wakeKinds } from "../../contract/src/wake-records";
 import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
 import { subscriptionId } from "../../contract/src/wake-kinds";
-import { CLOSED, Doorbell, type RingAnswer, retryAfterOf, runWakes } from "../src/wakes";
+import { CLOSED, Doorbell, retryAfterOf, runWakes } from "../src/wakes";
 import raw from "../../contract/wake-kinds.json" with { type: "json" };
 import { DOT, EVENT, ledgerOn, ledgerSubscription, MCP, MUSE, rig, type Rig, WHSEC }
   from "./ledger-support";
 import { writeControl } from "../../ci/fixtures";
 import { failure } from "./support";
 import type { Rang, RungOwnerDO } from "./worker";
+import type { RingAnswer } from "../../contract/src/gateway";
 
 const TOKEN = "sk-ant-oat01-" + "t".repeat(40);
 const KEY = Buffer.from(WHSEC.slice("whsec_".length), "base64");

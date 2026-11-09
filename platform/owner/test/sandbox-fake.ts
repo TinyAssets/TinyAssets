@@ -5,8 +5,9 @@
  * sets it. Nothing is started: slice S's sandbox Worker (`platform/sandbox`) is the real
  * one, tested against a fake E2B in its own package.
  */
-import type { SandboxService, SandboxSignin, SandboxStart, Started } from "../src/sandbox";
-import type { MeterEvent } from "../src/sandbox-time";
+import type {
+  MeterEvent, SandboxService, SandboxSignin, SandboxStart, Started,
+} from "../../contract/src/sandbox";
 
 export class RecordingSandbox implements SandboxService {
   readonly starts: SandboxStart[] = [];

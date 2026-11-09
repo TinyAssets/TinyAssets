@@ -44,13 +44,16 @@
  * other door: the other doors serve `tinyassets.io` alone, and the object refuses the
  * sandbox binding at every door but the egress doors.
  */
-import type { Reservation } from "../../gateway/src/forward";
+import {
+  type MeterOutcome, outcomeOf, type Reservation,
+} from "../../contract/src/gateway";
 import {
   EGRESS_BEAT_S, EGRESS_ORIGIN, EVENTS_DOOR, GENERATION_HEADER, MCP_DOOR,
   MODEL_DOOR, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
   SIGNIN_DOOR, SIGNIN_EVENTS_DOOR, SYNC_DOOR, SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
+import type { SettleSent } from "../../contract/src/owner";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SYNC_BODY_MAX } from "../../contract/src/limits";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../contract/src/run-events";
 import { faultOf, type Refusal, REFUSALS, refusalOf } from "../../contract/src/refusal";
@@ -77,10 +80,6 @@ const LENGTH = /^[0-9]{1,15}$/;
 export const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 /** How long a completed answer's metered outcome is waited for before it is `unknown`. */
 const OUTCOME_WAIT_MS = 10_000;
-
-type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string }
-  | { state: "failed" }
-  | { state: "unknown" };
 
 /**
  * A refusal in the gateway's own error shape, so a provider SDK shows its code. A 429 or 503
@@ -114,23 +113,20 @@ function codeOf(refusal: Refusal): string {
   return refusal.named ? refusal.code : "egress_refused";
 }
 
-/** The gateway's metered outcome, read from its one line, or `unknown`. */
-async function spendOf(outcome: ReadableStream<Uint8Array> | null): Promise<Spend> {
+/** The gateway's metered outcome, read from its one line (`outcomeOf`), or `unknown`. */
+async function spendOf(outcome: ReadableStream<Uint8Array> | null): Promise<MeterOutcome> {
   if (outcome === null) {
     return { state: "unknown" };
   }
-  const read = new Response(outcome).text().then((text): Spend => {
-    const parsed = JSON.parse(text) as Spend;
-    return parsed.state === "succeeded" || parsed.state === "failed" ? parsed
-      : { state: "unknown" };
-  }, (): Spend => ({ state: "unknown" }));
-  const late = new Promise<Spend>((resolve) =>
+  const read = new Response(outcome).text().then(outcomeOf,
+                                                 (): MeterOutcome => ({ state: "unknown" }));
+  const late = new Promise<MeterOutcome>((resolve) =>
     setTimeout(() => resolve({ state: "unknown" }), OUTCOME_WAIT_MS));
-  return Promise.race([read, late]).catch((): Spend => ({ state: "unknown" }));
+  return Promise.race([read, late]).catch((): MeterOutcome => ({ state: "unknown" }));
 }
 
 /** Settle through the stub that opened the call, then once more through a fresh one. */
-async function settleOnce(env: DoorsEnv, bound: Bound, request: Record<string, unknown>):
+async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
     Promise<void> {
   try {
     await bound.stub.egressSettle(bound.binding, request);
@@ -220,7 +216,7 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
     return refused("events_too_large", 413);
   }
   try {
-    return Response.json(await bound.stub.runEvents(bound.binding, body as never),
+    return Response.json(await bound.stub.runEvents(bound.binding, body),
                          { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const answer = refusalOf(error);
@@ -304,7 +300,7 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
     return body;
   }
   try {
-    return Response.json(await bound.stub.signinReport(bound.binding, body as never),
+    return Response.json(await bound.stub.signinReport(bound.binding, body),
                          { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const answer = refusalOf(error);
@@ -404,28 +400,28 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
   try {
     switch (door) {
       case "changes":
-        return answer(await stub.fileChanges(binding, body as never));
+        return answer(await stub.fileChanges(binding, body));
       case "list":
-        return answer(await stub.fileList(binding, body as never));
+        return answer(await stub.fileList(binding, body));
       case "read": {
-        const read = await stub.fileRead(binding, body as never);
+        const read = await stub.fileRead(binding, body);
         return answer({ ...read, ...(read.inline === undefined ? {}
           : { inline: base64(read.inline) }) });
       }
       case "chunks": {
-        const read = await stub.fileReadChunks(binding, body as never);
+        const read = await stub.fileReadChunks(binding, body);
         return answer({ chunks: read.chunks.map(base64) });
       }
       case "commit":
         return answer(await stub.fileSyncCommit(binding, {
-          ...body, ops: decodedOps(body["ops"]) } as never));
+          ...body, ops: decodedOps(body["ops"]) }));
       case "upload_begin":
-        return answer(await stub.fileSyncUploadBegin(binding, body as never));
+        return answer(await stub.fileSyncUploadBegin(binding, body));
       case "upload_chunks":
         return answer(await stub.fileSyncUploadChunks(binding, {
-          ...body, chunks: decodedChunks(body["chunks"]) } as never));
+          ...body, chunks: decodedChunks(body["chunks"]) }));
       case "upload_abort":
-        return answer(await stub.fileSyncUploadAbort(binding, body as never));
+        return answer(await stub.fileSyncUploadAbort(binding, body));
     }
   } catch (error) {
     const fault = faultOf(error);
@@ -543,7 +539,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
       // Only a completed answer's meter can be read; any other end may have cost anything up
       // to the reservation, which `unknown` keeps whole.
       settled = (end === "complete" ? spendOf(outcome)
-        : Promise.resolve<Spend>({ state: "unknown" }))
+        : Promise.resolve<MeterOutcome>({ state: "unknown" }))
         .then((spend) => settleOnce(env, bound, {
           reservation, outcome: end, status, bytes, spend,
           ...(resealed === undefined ? {} : { resealed }) }))

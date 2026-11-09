@@ -51,10 +51,8 @@
  * dropped silently.
  */
 import { secret } from "../../contract/src/egress-scope";
-import {
-  GATEWAY_CODES, type GatewayCode, REFUSALS, refusalOf,
-} from "../../contract/src/refusal";
-import type { Verified } from "../../gateway/src/forward";
+import type { Verified } from "../../contract/src/gateway";
+import { type GatewayCode, isGatewayCode, REFUSALS, refusalOf } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
 import { navigation } from "./authorize";
@@ -147,8 +145,7 @@ function revocable(oauth: OAuthSpec | undefined): boolean {
 /** The gateway's refusal `error` is, by its own codes alone; null for anything else. */
 function gatewayRefusal(error: unknown): GatewayCode | null {
   const code = refusalOf(error)?.code;
-  return code !== undefined && (GATEWAY_CODES as readonly string[]).includes(code)
-    ? code as GatewayCode : null;
+  return isGatewayCode(code) ? code : null;
 }
 
 /**

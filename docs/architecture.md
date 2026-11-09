@@ -27,7 +27,7 @@ Why: [ADR-032](decisions/ADR-032-clean-sheet-platform.md),
 | `platform/sandbox/` | The E2B Worker and the in-VM runner; each engine runs there, unmodified. |
 | `platform/hooks/` | Code mode's VMs only (ADR-034 decision 12). |
 | `platform/sources/`, `platform/starter/` | Engine and source records as data, with their schema, checker and catalog (`sources/src/`, a contract module); the bubble agent's files. |
-| `platform/plugins/`, `platform/deploy/`, `platform/admin/` | Directory plugins, the deploy kit, the admin caller. |
+| `platform/plugins/`, `platform/deploy/` | Directory plugins, the deploy kit. |
 
 Everything below is the **retiring stack** (`tinyassets/`, `deploy/`, the
 droplet): fixes only, no new feature, deleted at the cutover.

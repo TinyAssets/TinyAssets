@@ -11,7 +11,6 @@ import { describe, expect, it } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
-import type { SandboxSignin, SandboxStart } from "../src/sandbox";
 import { WriteGate } from "../src/gate";
 import { NO_CODE_WANTED, SIGNIN_LIVE, SIGNIN_OFF, Signins } from "../src/signins";
 import { gated, type Gated } from "./gateway-support";
@@ -19,6 +18,7 @@ import { MCP, MUSE, signedIn } from "./ledger-support";
 import { defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, startOf,
          TIERS } from "./runs-support";
 import { drainDue, failure } from "./support";
+import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
 const CLAUDE_PAGE = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +

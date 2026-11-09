@@ -155,6 +155,8 @@ const config = readWrangler(DOORS);
 const platform = platformConfigs();
 const gatewaySource = readFileSync(join(PLATFORM, "gateway", "src", "index.ts"), "utf8");
 const FILES_SOURCE = readFileSync(join(PLATFORM, "files", "src", "index.ts"), "utf8");
+/** The upload entrypoint's head, whatever contract it implements. */
+const UPLOAD_HEAD = /export class FilesUpload extends WorkerEntrypoint<FilesEnv>[^{]*\{/;
 
 configTests(CONFIG, {
   refused: ["routes", "route", "env", "migrations", "ratelimits", "d1_databases",
@@ -293,7 +295,8 @@ describe("doors Worker config", () => {
     ["the egress entrypoint", "EgressGateway", "a seal", "seal() { return 1; }"],
     ["the egress entrypoint", "EgressGateway", "a refresh", "async refresh() { return 1; }"],
   ])("sees %s grow %s", (_where, entrypoint, _what, member) => {
-    const head = `export class ${entrypoint} extends WorkerEntrypoint<GatewayEnv> {`;
+    const head = new RegExp(`export class ${entrypoint} extends WorkerEntrypoint<GatewayEnv>[^{]*\\{`)
+      .exec(gatewaySource)![0];
     const grown = gatewaySource.replace(head, `${head}\n  ${member}`);
     expect(grown).not.toBe(gatewaySource);
     expect(doorsConfigProblems(config, platform, grown)).not.toEqual([]);
@@ -304,7 +307,7 @@ describe("doors Worker config", () => {
     ["a generation's read", "async getManifestPart() { return 1; }"],
     ["a key call", "rewrapKey = () => 1;"],
   ])("sees the upload entrypoint grow %s (review M5-1)", (_what, member) => {
-    const head = "export class FilesUpload extends WorkerEntrypoint<FilesEnv> {";
+    const head = UPLOAD_HEAD.exec(FILES_SOURCE)![0];
     const grown = FILES_SOURCE.replace(head, `${head}\n  ${member}`);
     expect(grown).not.toBe(FILES_SOURCE);
     expect(doorsConfigProblems(config, platform, gatewaySource, grown)).not.toEqual([]);
@@ -312,7 +315,7 @@ describe("doors Worker config", () => {
 
   it("sees the upload entrypoint inherit the whole service, its own members unchanged " +
      "(review L6-1)", () => {
-    const head = "export class FilesUpload extends WorkerEntrypoint<FilesEnv> {";
+    const head = UPLOAD_HEAD.exec(FILES_SOURCE)![0];
     expect(FILES_SOURCE.includes(head)).toBe(true);
     expect(extendsOf(FILES_SOURCE, "FilesUpload")).toBe("WorkerEntrypoint");
     const inherits = FILES_SOURCE.replace(head, "export class FilesUpload extends FilesService {");

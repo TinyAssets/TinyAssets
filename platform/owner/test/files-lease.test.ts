@@ -6,7 +6,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { type Entry, type Lease, type SyncOp } from "../src/files";
+import { type Entry, type Lease } from "../src/files";
+import type { SyncOp } from "../../contract/src/owner";
 import { INLINE_BYTES } from "../../contract/src/limits";
 import { sha256Hex } from "../../contract/src/digest";
 import { OwnerDO } from "../src/owner-do";

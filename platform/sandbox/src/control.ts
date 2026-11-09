@@ -68,9 +68,10 @@ import { readControl, type SandboxCeilings } from "../../contract/src/control";
 import { bundledSources } from "../../sources/src/catalog";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { DNS_SERVERS, EGRESS_HOST } from "../../contract/src/egress";
-import type { SandboxSignin, SandboxStart, Started } from "../../owner/src/sandbox";
-import { migrate } from "../../owner/src/migrate";
-import { METER_BATCH, type MeterEvent } from "../../owner/src/sandbox-time";
+import { migrate } from "../../contract/src/migrate";
+import {
+  METER_BATCH, type MeterEvent, type SandboxSignin, type SandboxStart, type Started,
+} from "../../contract/src/sandbox";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
 import { SPEAKS } from "../runner/protocol";

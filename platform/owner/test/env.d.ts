@@ -10,12 +10,12 @@ declare namespace Cloudflare {
   type TestNamespaceBindings = { [Binding in keyof TestNamespaces]: TestNamespace<Binding> };
 
   interface Env extends TestNamespaceBindings {
-    SANDBOX: import("../src/sandbox").SandboxService;
+    SANDBOX: import("../../contract/src/sandbox").SandboxService;
     /** The gateway's connect entrypoint, test-only: a test seals a doorbell's token as the doors do. */
-    CONNECT: import("../../doors/src/config").ConnectService;
-    FILES: import("../src/files").ChunkStore;
+    CONNECT: import("../../contract/src/gateway").ConnectService;
+    FILES: import("../../contract/src/files").ChunkStore;
     GATEWAY: Service<import("../../gateway/src/index").default>;
-    HOOKS: import("../src/codemode").HooksService;
+    HOOKS: import("../src/codemode").CodemodeService;
     CONTROL: KVNamespace;
     TEST_KEYRING: string;
     /** The files Worker's ring, test-only: a test wraps a data key under its older kid. */

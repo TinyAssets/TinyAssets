@@ -7,6 +7,15 @@
 import type { Vendor } from "./apps";
 import { sha256Hex } from "./digest";
 
+/**
+ * The reserved caller only the platform's admin path sends (the binder's `bindPlatform`, the
+ * sign-up's explicit admit): `admissionSet`'s alone. The owner's object takes it at that
+ * door and refuses it at every other door and as an owner (`owner/src/admission.ts`); a
+ * guard keeps the name out of every source but this constant
+ * (`owner/guards/admission-caller.test.ts`).
+ */
+export const PLATFORM_CALLER = "platform";
+
 /** A verified outside client: what the binder resolved the caller's credential to. */
 export interface Origin {
   readonly client: string;

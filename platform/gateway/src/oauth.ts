@@ -31,7 +31,8 @@ import {
 } from "../../contract/src/egress-scope";
 import { nativeFetch, within } from "./egress";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
-import { type Binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
+import type { Exchanged, Refreshed, Revoked } from "../../contract/src/gateway";
+import { type Binding, type KeyringEnv, open, reseal, seal } from "./keyring";
 
 /** How long one token-endpoint call may take (pi-ai's own refresh bound). */
 export const TOKEN_DEADLINE_MS = 15 * 1000;
@@ -41,22 +42,6 @@ const CODE = /^[\x21-\x7e]{1,2048}$/;
 /** RFC 7636 §4.1. */
 const VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 const SCOPE = /^[\x20-\x7e]{0,4096}$/;
-
-/** What the browser's callback brought back, and the flow's PKCE verifier. */
-export interface AuthorizationGrant {
-  readonly code: string;
-  readonly verifier: string;
-  readonly redirect_uri: string;
-}
-
-export interface Exchanged extends Sealed {
-  readonly expires_at: number | null;
-  readonly scope?: string;
-}
-
-export interface Refreshed extends Resealed {
-  readonly expires_at: number | null;
-}
 
 interface TokenAnswer {
   readonly access: string;
@@ -341,11 +326,6 @@ export async function refresh(env: KeyringEnv, bound: Binding, blob: unknown,
   };
   const resealed = await reseal(env, bound, { ...credential, oauth: next });
   return Object.freeze({ ...resealed, expires_at: next.expires_at });
-}
-
-/** Whether the provider was asked to revoke: false for an API key or a source with no endpoint. */
-export interface Revoked {
-  readonly revoked: boolean;
 }
 
 /** RFC 7009 revocation at the provider, for a connection being removed. */
