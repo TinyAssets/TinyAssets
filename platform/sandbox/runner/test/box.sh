@@ -59,6 +59,13 @@ ln -s /proc/self/fd/2 "$ROOT/dev/stderr"
 # This pid namespace's own /proc, then the pivot: the host's tree is gone from the box.
 mkdir -p "$ROOT/proc" "$ROOT/.oldroot"
 mount -t proc -o nosuid,nodev,noexec proc "$ROOT/proc"
+# Its kernel knobs are the host's: read-only in the box.
+for knob in sys sysrq-trigger; do
+  if [ -e "$ROOT/proc/$knob" ]; then
+    mount --bind "$ROOT/proc/$knob" "$ROOT/proc/$knob"
+    mount -o remount,bind,ro "$ROOT/proc/$knob"
+  fi
+done
 cd "$ROOT"
 pivot_root . .oldroot
 umount -l /.oldroot
@@ -66,4 +73,7 @@ rmdir /.oldroot
 cd /
 echo "$HOST_PID" >&9
 exec 9>&-
-exec perl -e 'while (1) { 1 while waitpid(-1, 1) > 0; select(undef, undef, undef, 0.05) }'
+# It also ends, and so its box, when the harness's end of its stdin closes (the harness died).
+exec perl -e 'my $in = ""; vec($in, 0, 1) = 1;
+  while (1) { 1 while waitpid(-1, 1) > 0;
+              if (select(my $r = $in, undef, undef, 0.05) > 0) { exit 0 if !sysread(STDIN, my $b, 64) } }'

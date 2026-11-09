@@ -42,7 +42,8 @@ function preflight() {
       'mkdir "$1/proc" "$1/usr" "$1/old"',
       'mount --bind /usr "$1/usr"',
       'mount -o remount,bind,ro "$1/usr"',
-      '! touch "$1/usr/.ta-preflight" 2>/dev/null',
+      '{ ! touch "$1/usr/.ta-preflight" 2>/dev/null || ' +
+        '{ echo "a read-only bind of /usr took a write" >&2; false; }; }',
       'mount -t proc proc "$1/proc"',
       // This shell, by the host's pid (the host's /proc is still at /proc), entered.
       "read -r self _ < /proc/self/stat",

@@ -134,8 +134,8 @@ export class Box {
   readonly root = join(this.base, "root");
   /** The host's pid of the box's init: killing it ends every process in the box. */
   readonly init: number;
-  /** Variables given to every command in the box, past its PATH. */
-  env: Record<string, string> = {};
+  /** The harness's end of the init's stdin: the box ends when it closes. */
+  lifeline: NodeJS.WritableStream | null = null;
 
   constructor() {
     try {
@@ -154,13 +154,19 @@ export class Box {
   #layout(): void {
     // The host's `/etc`, copied (a trimmed one breaks `sudo -l`), with the template's users.
     must(["cp", "-a", "/etc", this.path("/etc")]);
-    writeFileSync(this.path("/etc/passwd"), USERS.map((each) =>
+    // Each made anew, never written through: the host's may be a link out of the copy (a
+    // systemd-resolved host's resolv.conf), which a write would follow onto the host.
+    const own = (path: string, text: string, mode = 0o644) => {
+      rmSync(this.path(path), { force: true });
+      writeFileSync(this.path(path), text, { mode, flag: "wx" });
+    };
+    own("/etc/passwd", USERS.map((each) =>
       `${each.name}:x:${each.uid}:${each.gid}::${each.home}:${each.shell}\n`).join(""));
-    writeFileSync(this.path("/etc/group"), GROUPS.map((each) =>
+    own("/etc/group", GROUPS.map((each) =>
       `${each.name}:x:${each.gid}:${each.members.join(",")}\n`).join(""));
-    writeFileSync(this.path("/etc/gshadow"), GROUPS.map((each) =>
-      `${each.name}:!::${each.members.join(",")}\n`).join(""), { mode: 0o640 });
-    writeFileSync(this.path("/etc/resolv.conf"), "");
+    own("/etc/gshadow", GROUPS.map((each) =>
+      `${each.name}:!::${each.members.join(",")}\n`).join(""), 0o640);
+    own("/etc/resolv.conf", "");
     const id = (name: string, of: readonly { name: string }[], key: "uid" | "gid") =>
       (of.find((each) => each.name === name) as Record<string, unknown> | undefined)?.[key];
     for (const dir of DIRS) {
@@ -177,9 +183,13 @@ export class Box {
     const log = openSync(join(this.base, "box.log"), "w");
     const child = spawn("unshare", [...UNSHARE, "--", "/bin/sh", BOX, this.root, ready,
                                     SHIPPED_LOADER, LOADER, process.execPath, NODE, EGRESS_CA],
-                        { stdio: ["ignore", log, log], detached: true });
+                        { stdio: ["pipe", log, log], detached: true });
     closeSync(log);
     child.unref();
+    // The box's lifeline: its init ends at this pipe's end, so a test process killed outright
+    // (no exit hook runs) leaves no box behind.
+    (child.stdin as unknown as { unref(): void }).unref();
+    this.lifeline = child.stdin!;
     for (const until = Date.now() + READY_MS; ;) {
       let text = "";
       try {
@@ -218,7 +228,7 @@ export class Box {
   /** `argv` run in the box, as root, to its end. */
   exec(argv: readonly string[], input?: string): SpawnSyncReturns<string> {
     return spawnSync("nsenter", [...this.#enter(), ...argv], {
-      env: { PATH: BOX_PATH, ...this.env }, encoding: "utf8",
+      env: { PATH: BOX_PATH }, encoding: "utf8",
       ...(input === undefined ? {} : { input }) });
   }
 
@@ -226,7 +236,7 @@ export class Box {
   execAsync(argv: readonly string[]): Promise<number> {
     return new Promise((resolve) => {
       spawn("nsenter", [...this.#enter(), ...argv], {
-        env: { PATH: BOX_PATH, ...this.env }, stdio: "ignore" })
+        env: { PATH: BOX_PATH }, stdio: "ignore" })
         .on("close", (code) => resolve(code ?? 1));
     });
   }

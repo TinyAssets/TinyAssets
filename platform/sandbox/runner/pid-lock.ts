@@ -16,7 +16,9 @@ const FIRST_MS = 20;
 const MOST_MS = 1_000;
 /**
  * The longest a takeover's claim stands: a taker holds it for a few calls, so one older is a
- * taker's that died inside its takeover, and is let go.
+ * taker's that died inside its takeover, and is let go. The residual: a taker stalled longer
+ * than this inside its takeover (stopped, or its VM frozen) can let the lock be held twice,
+ * since another may take it over meanwhile and the stalled one then removes it.
  */
 const CLAIM_MS = 10_000;
 

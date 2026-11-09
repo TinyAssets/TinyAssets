@@ -116,13 +116,8 @@ const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
 /** What the runner keeps that is a cache alone, discarded when its format changes. */
 const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
 
-/**
- * The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s).
- * `TA_HEARTBEAT_MS` shortens it, for a test of the renewal's held posts; the Worker's
- * commands carry no variable of their own (`e2b.ts`), so a sandbox's runner never reads one.
- */
-export const HEARTBEAT_MS = process.env["TA_HEARTBEAT_MS"] !== undefined
-  ? Number(process.env["TA_HEARTBEAT_MS"]) : 20_000;
+/** The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). */
+export const HEARTBEAT_MS = 20_000;
 /** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
 const FLUSH_MS = 250;
 /**

@@ -134,4 +134,34 @@ describe("the runner's lock", () => {
     // No claim is left beside the locks.
     expect(readdirSync(join(base, "..")).filter((name) => name.endsWith(".gone"))).toEqual([]);
   });
+
+  it("is never kept by a taker killed inside its takeover: its claim is let go once stale",
+     { tags: ["large"] }, async () => {
+    const lock = lockPath();
+    writeFileSync(lock, `${String(deadPid())} ${bootId()}`);
+    // A taker SIGKILLed just after it made its claim (a second name for the gone lock).
+    const taker = `
+      import { createRequire, syncBuiltinESMExports } from "node:module";
+      const fs = createRequire(import.meta.url)("node:fs");
+      const link = fs.linkSync;
+      fs.linkSync = (from, to) => {
+        link(from, to);
+        if (to.endsWith(".gone")) { process.kill(process.pid, "SIGKILL"); }
+      };
+      syncBuiltinESMExports();
+      const { tryLock } = await import(process.argv[1]);
+      tryLock(process.argv[2]);`;
+    const killed = spawnSync(process.execPath, ["--input-type=module", "-e", taker,
+                                                join(import.meta.dirname, "pid-lock.ts"), lock]);
+    expect(killed.signal).toBe("SIGKILL");
+    expect(readdirSync(join(lock, "..")).filter((name) => name.endsWith(".gone"))).toHaveLength(1);
+    expect(tryLock(lock)).toBe(false);  // its claim stands while it may still be taking
+    const began = Date.now();
+    while (!tryLock(lock)) {
+      expect(Date.now() - began).toBeLessThan(15_000);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(readFileSync(lock, "utf8")).toBe(`${process.pid} ${bootId()}`);
+    expect(readdirSync(join(lock, "..")).filter((name) => name.endsWith(".gone"))).toEqual([]);
+  });
 });

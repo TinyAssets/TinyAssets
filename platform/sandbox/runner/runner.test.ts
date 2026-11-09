@@ -1790,7 +1790,7 @@ describe("renewal", () => {
   });
 
   it("posts renewing when quiet, holds its posts, then renewed; a CLI that failed across it " +
-     "is resumed", async () => {
+     "is resumed", { tags: ["large"] }, async () => {
     // The CLI is still running at `renewed` and fails just after, as a model call the pause
     // cut does: by an event (its release, once `renewed` returned), never by a 3 s guess a
     // loaded host could outrun before the renewal began.
@@ -1800,13 +1800,7 @@ describe("renewal", () => {
                              holdUntil: release, exit: 1 });
     const start = startDoc(doors, "claude-code", { config: config("claude-code") });
     box.start(start);
-    // A heartbeat of half a second, so a post the pause did not hold shows within it.
-    box.env = { TA_HEARTBEAT_MS: "500" };
-    try {
-      box.runner("launch", start.run);
-    } finally {
-      box.env = {};
-    }
+    box.runner("launch", start.run);
     await waitFor(() => box.runner("state").out.includes("\"quiet\":true")
       && box.ran("claude-code").length > 0);
     // The doors answer from this process: the command runs beside it, not blocking it. They
@@ -1822,7 +1816,8 @@ describe("renewal", () => {
     expect(jobEntries(start.run)).toEqual([JOB_FILES.log, JOB_FILES.socket, JOB_FILES.start,
                                            JOB_FILES.state].sort());
     const held = doors.events().length;
-    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    // Past a whole heartbeat (the runner's own, 20 s): one the pause did not hold shows.
+    await new Promise((resolve) => setTimeout(resolve, HEARTBEAT_MS + 1_600));
     expect(doors.events().length).toBe(held);  // nothing posted while paused, no heartbeat
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
     expect(box.runner("renewed").code).toBe(0);
