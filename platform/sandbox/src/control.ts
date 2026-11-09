@@ -74,17 +74,13 @@ import {
 } from "../../contract/src/sandbox";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
-import { SPEAKS } from "../runner/protocol";
+import { COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL, type JobKind, JOBS,
+         LEASE_FILE, type LeaseFile, LOADER, type QuietAnswer, type SigninDoc, SPEAKS,
+         type StartDoc, type StateAnswer, type WorkerCommand } from "../runner/protocol";
 
 import { runnerBytes, runnerDigest } from "./runner-bytes";
 import { CONTROL_MIGRATIONS } from "./schema";
 import { SLOTS, type SandboxSlots } from "./slots";
-
-/** The runner's loader in the template, and its root-only state directory. */
-export const RUNNER = "/usr/local/bin/ta-runner";
-export const STATE_DIR = "/var/lib/ta";
-/** Where a runner's bytes are uploaded for the loader to install (root-only). */
-export const INCOMING = `${STATE_DIR}/incoming`;
 
 /** The start's fixed answers, beside `started: true`. */
 export const CODES = Object.freeze({
@@ -95,14 +91,14 @@ export const CODES = Object.freeze({
 } as const);
 
 /** The runner's exit codes: done, "no" (not signed in, not live), and anything else a fault. */
-const OK = 0;
-const NO = 3;
+const OK = EXIT.ok;
+const NO = EXIT.no;
 /** The loader's: no runner of that digest in the sandbox; its bytes are not their digest. */
-export const ABSENT = 24;
-export const MISMATCH = 25;
+const ABSENT = EXIT.absent;
+const MISMATCH = EXIT.mismatch;
 
 /** A runner command that did not answer 0 or 3: its exit code kept. */
-export class RunnerFailed extends Error {
+class RunnerFailed extends Error {
   override readonly name = "RunnerFailed";
   constructor(readonly exitCode: number, message: string) {
     super(message);
@@ -114,7 +110,7 @@ export class RunnerFailed extends Error {
  * digest (`sandbox_runner_mismatch`), or it speaks a protocol this Worker does not
  * (`sandbox_runner_protocol`). Nothing runs on it; an adoption never hides it.
  */
-export class RunnerRefused extends Error {
+class RunnerRefused extends Error {
   override readonly name = "RunnerRefused";
 }
 
@@ -125,7 +121,7 @@ export class RunnerRefused extends Error {
  */
 const COMMAND_MS = LEASE_TTL_S * 1000;
 /** Measured: the longest pause, 705 ms (`e2b-resume-measurement.md`, 40 cycles). */
-export const PAUSE_MAX_MS = 705;
+const PAUSE_MAX_MS = 705;
 /** Measured: the longest resume call, 895 ms to the first byte (the same 40 cycles). */
 const RESUME_MAX_MS = 895;
 /** Measured: `ta-runner renewing` with a live run, 252 ms (`sandbox-probe.md`). */
@@ -287,10 +283,44 @@ function httpsDoors(urls: Readonly<Record<string, string>>): boolean {
  * The start's document as the runner reads it: everything but the lease's own secrets, and
  * the control record's scratch retention (`scratch_retention_days`, null when it names none).
  */
-function startDocument(start: SandboxStart, retentionDays: number | null): unknown {
+function startDocument(start: SandboxStart, retentionDays: number | null): StartDoc {
   const { tokens: _tokens, network: _network, route: _route, ...rest } = start;
   return { ...rest, scratch_retention_days: retentionDays };
 }
+
+/** A sign-in's document as the runner reads it: everything but the lease and its secrets. */
+function signinDocument(signin: SandboxSignin): SigninDoc {
+  const { tokens: _tokens, network: _network, lease: _lease, route: _route, ...doc } = signin;
+  return doc;
+}
+
+/** What a start or a sign-in hands its job's launch (`#launch`). */
+interface Launch {
+  readonly kind: JobKind;
+  readonly id: string;
+  readonly request: SandboxStart | SandboxSignin;
+  /** The vendor hosts its network is widened by. */
+  readonly hosts: () => readonly string[];
+  /** Its document for the runner. */
+  readonly document: StartDoc | SigninDoc;
+  /** What it does in its sandbox before its document goes in: a refusal, or null to go on. */
+  readonly ready?: (handle: Box) => Promise<Started | null>;
+}
+
+/** A runner's answer: its JSON, held to the fields the protocol says it has. */
+function answerOf<T>(out: string, fields: Readonly<Record<keyof T, "number" | "boolean">>): T {
+  const parsed = JSON.parse(out) as Record<string, unknown>;
+  for (const [field, type] of Object.entries(fields)) {
+    if (typeof parsed[field] !== type) {
+      throw new Error("the runner's state is out of shape");
+    }
+  }
+  return Object.fromEntries(Object.keys(fields).map((field) => [field, parsed[field]])) as T;
+}
+
+/** `quiet-wait`'s answer, and the live and quiet of `state`'s. */
+const QUIET: Readonly<Record<keyof QuietAnswer, "number" | "boolean">> =
+  Object.freeze({ live: "number", quiet: "boolean" });
 
 /** A hex SHA-256 of `text`, its first 32 characters: an opaque name in E2B's metadata. */
 async function opaque(text: string): Promise<string> {
@@ -437,12 +467,12 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * Worker's digest has it installed and is asked again, once; any other digest absent, or
    * bytes that are not their digest, are thrown.
    */
-  async #run(box: Box, argv: readonly string[], timeoutMs = COMMAND_MS):
+  async #run(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
       Promise<{ code: number; out: string }> {
-    let done = await this.#e2b().exec(box, [RUNNER, box.runner, ...argv], { timeoutMs });
+    let done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
     if (done.exitCode === ABSENT && box.runner === await this.#digest) {
       await this.#install(box);
-      done = await this.#e2b().exec(box, [RUNNER, box.runner, ...argv], { timeoutMs });
+      done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
     }
     if (done.exitCode === MISMATCH) {
       const message = `sandbox_runner_mismatch: the runner ${box.runner} in sandbox ${
@@ -461,8 +491,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async #install(handle: Handle): Promise<void> {
     const digest = await this.#digest;
     const e2b = this.#e2b();
-    await e2b.upload(handle, `${INCOMING}/${digest}`, runnerBytes());
-    const done = await e2b.exec(handle, [RUNNER, "install", digest], { timeoutMs: COMMAND_MS });
+    await e2b.upload(handle, incoming(digest), runnerBytes());
+    const done = await e2b.exec(handle, [LOADER, INSTALL, digest], { timeoutMs: COMMAND_MS });
     if (done.exitCode !== OK) {
       throw new Error(`the runner ${digest} was not installed (${done.exitCode}): ${
         done.stderr}`);
@@ -498,7 +528,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       const adopted = { ...box, runner: digest };
       await this.#install(adopted);
-      if ((await this.#run(adopted, ["adopt"])).code !== OK) {
+      if ((await this.#run(adopted, [COMMAND.adopt])).code !== OK) {
         return { box, adopted: false };  // something began living since the look
       }
       this.#sql.exec("UPDATE sandboxes SET runner = ? WHERE authority = ?", digest, authority);
@@ -516,7 +546,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /** A sandbox just running: its resolver pinned, `/proc` hidden, its lockdown re-checked. */
   async #prepare(box: Box, network: E2bNetwork): Promise<void> {
     const servers = network.dnsServers.length > 0 ? network.dnsServers : DNS_SERVERS;
-    await this.#run(box, ["prepare", ...servers]);
+    await this.#run(box, [COMMAND.prepare, ...servers]);
   }
 
   /**
@@ -546,9 +576,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
     await this.#prepare(handle, network ?? e2bNetwork(found.network));
     if (found.pauseMode === "filesystem") {
-      await this.#run(handle, ["recover"]);  // rebooted: its runs restart from disk
+      await this.#run(handle, [COMMAND.recover]);  // rebooted: its runs restart from disk
     } else if (row.renewing === 1) {
-      await this.#run(handle, ["renewed"]);
+      await this.#run(handle, [COMMAND.renewed]);
     }
     const after = await e2b.info(resumed.sandboxID);
     if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
@@ -667,55 +697,22 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (ceilings === null) {
       return { started: false, code: CODES.unconfigured };
     }
-    return this.#serial(async () => {
-      const e2b = this.#e2b();
-      const network = start.network === null ? null : e2bNetwork(start.network.network);
-      const hosts = vendorHosts(start);
-      const first = network === null ? null : widened(network, hosts) ?? network;
-      const got = await this.#ensure(owner, start.authority, first, ceilings, start.route);
-      if (got === "waiting") {
-        return { started: false, code: CODES.waiting };
-      }
-      if (got === "lost") {
-        return { started: false, code: CODES.lost };
-      }
-      const { handle } = got;
-      if (start.tokens !== null) {
-        await e2b.upload(handle, `${STATE_DIR}/lease.json`, json({
-          lease: start.lease, authority: start.authority, tokens: start.tokens }));
-        this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0 WHERE authority = ?",
-                       start.lease.lease_id, start.authority);
-      } else if (hosts.length > 0) {
-        // A joining run on another engine's sign-in: its vendor's hosts added to the live
-        // network (read back whole, its transform with it, and replaced whole).
-        const live = await e2b.info(handle.sandboxID);
-        const more = live === null ? null : widened(e2bNetwork(live.network), hosts);
-        if (more !== null) {
-          await e2b.network(handle.sandboxID, more);
+    return this.#launch(owner, ceilings, {
+      kind: "run", id: start.run, request: start, hosts: () => vendorHosts(start),
+      document: startDocument(start, retention),
+      ready: async (handle) => {
+        if (start.credential === "vendor_login_in_sandbox") {
+          const signedIn = await this.#run(handle, [COMMAND.signinCheck, start.engine]);
+          if (signedIn.code === NO) {
+            return { started: false, code: CODES.signin };
+          }
         }
-      }
-      if (start.credential === "vendor_login_in_sandbox") {
-        const signedIn = await this.#run(handle, ["signin-check", start.engine]);
-        if (signedIn.code === NO) {
-          return { started: false, code: CODES.signin };
+        if (fresh) {
+          this.#sql.exec("INSERT INTO known_retention (only, days) VALUES (1, ?) ON CONFLICT " +
+                           "(only) DO UPDATE SET days = excluded.days", retention);
         }
-      }
-      if (fresh) {
-        this.#sql.exec("INSERT INTO known_retention (only, days) VALUES (1, ?) ON CONFLICT " +
-                         "(only) DO UPDATE SET days = excluded.days", retention);
-      }
-      await e2b.upload(handle, `${STATE_DIR}/inbox/${start.run}.json`,
-                       json(startDocument(start, retention)));
-      const launched = await this.#run(handle, ["launch", start.run]);
-      if (launched.code !== OK) {
-        throw new Error(`the runner did not launch run ${start.run}`);
-      }
-      this.#sql.exec("INSERT OR REPLACE INTO launched (run, authority, lease_id) VALUES (?, ?, ?)",
-                     start.run, start.authority, start.lease.lease_id);
-      this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL WHERE " +
-                       "authority = ?", start.authority);
-      await this.#arm();
-      return { started: true };
+        return null;
+      },
     });
   }
 
@@ -739,11 +736,26 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (ceilings === null) {
       return { started: false, code: CODES.unconfigured };
     }
+    return this.#launch(owner, ceilings, { kind: "signin", id: signin.id, request: signin,
+                                           hosts: () => hosts,
+                                           document: signinDocument(signin) });
+  }
+
+  /**
+   * A job launched in its authority's sandbox, a run's or a sign-in's, on the serial chain:
+   * the sandbox found, resumed or made (`#ensure`), its network widened by the job's vendor
+   * hosts; a start that opened the lease hands the runner its secrets (`LEASE_FILE`); then
+   * what the job does first (`ready`), its document into the inbox, and the runner's launch
+   * of it, detached, which holds the lease until it is released.
+   */
+  async #launch(owner: string, ceilings: SandboxCeilings, job: Launch): Promise<Started> {
+    const { request } = job;
     return this.#serial(async () => {
       const e2b = this.#e2b();
-      const network = signin.network === null ? null : e2bNetwork(signin.network.network);
+      const network = request.network === null ? null : e2bNetwork(request.network.network);
+      const hosts = job.hosts();
       const first = network === null ? null : widened(network, hosts) ?? network;
-      const got = await this.#ensure(owner, signin.authority, first, ceilings, signin.route);
+      const got = await this.#ensure(owner, request.authority, first, ceilings, request.route);
       if (got === "waiting") {
         return { started: false, code: CODES.waiting };
       }
@@ -751,38 +763,49 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return { started: false, code: CODES.lost };
       }
       const { handle } = got;
-      if (signin.tokens !== null) {
-        await e2b.upload(handle, `${STATE_DIR}/lease.json`, json({
-          lease: signin.lease, authority: signin.authority, tokens: signin.tokens }));
+      if (request.tokens !== null) {
+        const lease: LeaseFile = { lease: request.lease, authority: request.authority,
+                                   tokens: request.tokens };
+        await e2b.upload(handle, LEASE_FILE, json(lease));
         this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0 WHERE authority = ?",
-                       signin.lease.lease_id, signin.authority);
-      } else {
+                       request.lease.lease_id, request.authority);
+      } else if (hosts.length > 0) {
+        // A joining job on another engine's sign-in: its vendor's hosts added to the live
+        // network (read back whole, its transform with it, and replaced whole).
         const live = await e2b.info(handle.sandboxID);
         const more = live === null ? null : widened(e2bNetwork(live.network), hosts);
         if (more !== null) {
           await e2b.network(handle.sandboxID, more);
         }
       }
-      const { tokens: _tokens, network: _network, lease: _lease, route: _route, ...doc } = signin;
-      await e2b.upload(handle, `${STATE_DIR}/inbox/${signin.id}.json`, json(doc));
-      const launched = await this.#run(handle, ["login-launch", signin.id]);
+      const refused = job.ready === undefined ? null : await job.ready(handle);
+      if (refused !== null) {
+        return refused;
+      }
+      await e2b.upload(handle, inboxDoc(job.id), json(job.document));
+      const launched = await this.#run(handle, [JOBS[job.kind].launch, job.id]);
       if (launched.code !== OK) {
-        throw new Error(`the runner did not launch sign-in ${signin.id}`);
+        throw new Error(`the runner did not launch ${job.kind === "run" ? "run" : "sign-in"} ${
+          job.id}`);
       }
       this.#sql.exec("INSERT OR REPLACE INTO launched (run, authority, lease_id) VALUES (?, ?, ?)",
-                     signin.id, signin.authority, signin.lease.lease_id);
+                     job.id, request.authority, request.lease.lease_id);
       this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL WHERE " +
-                       "authority = ?", signin.authority);
+                       "authority = ?", request.authority);
       await this.#arm();
       return { started: true };
     });
   }
 
+  /** A row's sandbox as E2B has it now (null: gone), and its handle (null: not running). */
+  async #find(row: Row | null): Promise<{ found: SandboxInfo | null; handle: Box | null }> {
+    const found = row === null ? null : await this.#e2b().info(row.sandbox_id);
+    return { found, handle: found === null ? null : handleOf(found, row!) };
+  }
+
   /** The authority's running sandbox, or null (none, or paused). */
   async #running(authority: string): Promise<Box | null> {
-    const row = this.#row(authority);
-    const found = row === null ? null : await this.#e2b().info(row.sandbox_id);
-    return found === null ? null : handleOf(found, row!);
+    return (await this.#find(this.#row(authority))).handle;
   }
 
   /**
@@ -803,12 +826,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (handle === null) {
         return { delivered: false };
       }
-      await this.#e2b().upload(handle, `${STATE_DIR}/inbox/${request.id}.code`,
+      await this.#e2b().upload(handle, inboxCode(request.id),
                                new TextEncoder().encode(request.code));
       try {
-        return { delivered: (await this.#run(handle, ["login-input", request.id])).code === OK };
+        return { delivered: (await this.#run(handle, [COMMAND.loginInput, request.id])).code
+          === OK };
       } catch (error) {
-        await this.#run(handle, ["login-drop", request.id]).catch(() => undefined);
+        await this.#run(handle, [COMMAND.loginDrop, request.id]).catch(() => undefined);
         throw error;
       }
     });
@@ -823,20 +847,15 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     return this.#serial(async () => {
       const handle = await this.#running(request.authority);
       return { cancelled: handle !== null
-        && (await this.#run(handle, ["login-cancel", request.id])).code === OK };
+        && (await this.#run(handle, [JOBS.signin.cancel, request.id])).code === OK };
     });
   }
 
-  /** The running sandbox a run is in, or null (gone, or paused: its runner is not running). */
-  async #live(run: string): Promise<Box | null> {
+  /** The sandbox a run was launched in, as E2B has it now (`#find`). */
+  async #launchedIn(run: string): Promise<{ found: SandboxInfo | null; handle: Box | null }> {
     const at = this.#sql.exec<{ authority: string }>(
       "SELECT authority FROM launched WHERE run = ?", run).toArray()[0];
-    const row = at === undefined ? null : this.#row(at.authority);
-    if (row === null) {
-      return null;
-    }
-    const found = await this.#e2b().info(row.sandbox_id);
-    return found === null ? null : handleOf(found, row);
+    return this.#find(at === undefined ? null : this.#row(at.authority));
   }
 
   async cancel(_owner: string, request: { run: string; lease_id: string }):
@@ -845,12 +864,12 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       throw new Error("a cancel names its run");
     }
     return this.#serial(async () => {
-      const handle = await this.#live(request.run);
+      const { handle } = await this.#launchedIn(request.run);
       if (handle === null) {
         return { cancelled: false };
       }
       // SIGTERM to the CLI, then a kill after its grace; the runner then syncs and ends.
-      return { cancelled: (await this.#run(handle, ["cancel", request.run])).code === OK };
+      return { cancelled: (await this.#run(handle, [JOBS.run.cancel, request.run])).code === OK };
     });
   }
 
@@ -860,18 +879,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       throw new Error("a status names its run");
     }
     return this.#serial(async () => {
-      const at = this.#sql.exec<{ authority: string }>(
-        "SELECT authority FROM launched WHERE run = ?", request.run).toArray()[0];
-      const row = at === undefined ? null : this.#row(at.authority);
-      const found = row === null ? null : await this.#e2b().info(row.sandbox_id);
+      const { found, handle } = await this.#launchedIn(request.run);
       if (found === null) {
         return { state: "gone" };
       }
-      const handle = await this.#live(request.run);
       if (handle === null) {
         return { state: "exited" };
       }
-      return { state: (await this.#run(handle, ["status", request.run])).code === OK
+      return { state: (await this.#run(handle, [COMMAND.status, request.run])).code === OK
         ? "running" : "exited" };
     });
   }
@@ -959,9 +974,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /** The runner's state, from a runner speaking a protocol this Worker speaks. */
-  async #runnerState(handle: Box): Promise<{ live: number; quiet: boolean }> {
-    const out = (await this.#run(handle, ["state"])).out;
-    const protocol = (JSON.parse(out) as { protocol?: unknown }).protocol;
+  async #runnerState(handle: Box): Promise<QuietAnswer> {
+    const out = (await this.#run(handle, [COMMAND.state])).out;
+    const protocol = (JSON.parse(out) as Partial<Record<keyof StateAnswer, unknown>>).protocol;
     if (typeof protocol !== "number" || !SPEAKS.includes(protocol)) {
       const message = `sandbox_runner_protocol: the runner ${handle.runner} in sandbox ${
         handle.sandboxID} speaks protocol ${String(protocol)}; this Worker speaks ${
@@ -969,15 +984,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       console.error(message);
       throw new RunnerRefused(message);
     }
-    return this.#shape(out);
-  }
-
-  #shape(out: string): { live: number; quiet: boolean } {
-    const parsed = JSON.parse(out) as { live?: unknown; quiet?: unknown };
-    if (typeof parsed.live !== "number" || typeof parsed.quiet !== "boolean") {
-      throw new Error("the runner's state is out of shape");
-    }
-    return { live: parsed.live, quiet: parsed.quiet };
+    return answerOf<QuietAnswer>(out, QUIET);
   }
 
   /**
@@ -1068,8 +1075,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (row.renewing === 1 || row.releasing === 1 || row.paused === 1) {
         return;
       }
-      const found = await e2b.info(row.sandbox_id);
-      const handle = found === null ? null : handleOf(found, row);
+      const { found, handle } = await this.#find(row);
       if (handle === null || Date.now() < Date.parse(found!.endAt) - windowMs) {
         return;
       }
@@ -1077,7 +1083,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const until = Math.min(Date.parse(found!.endAt) - RENEW_EDGE_MS, lookEnd);
       let out: string;
       try {
-        ({ out } = await this.#run(handle, ["quiet-wait", String(Math.floor(until))],
+        ({ out } = await this.#run(handle, [COMMAND.quietWait, String(Math.floor(until))],
                                    Math.max(0, until - Date.now()) + COMMAND_MS));
       } catch (error) {
         // A start on the chain adopted another runner meanwhile, and its `prepare` dropped
@@ -1088,7 +1094,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         }
         throw error;
       }
-      quiet.set(row.authority, this.#shape(out).quiet);
+      quiet.set(row.authority, answerOf<QuietAnswer>(out, QUIET).quiet);
     }));
     return this.#serial(async () => {
       let soonest = Number.POSITIVE_INFINITY;
@@ -1206,7 +1212,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async #renew(row: Row, handle: Box, endAt: number, ceilings: SandboxCeilings):
       Promise<void> {
     const e2b = this.#e2b();
-    await this.#run(handle, ["renew-wait", String(Date.now())]);
+    await this.#run(handle, [COMMAND.renewWait, String(Date.now())]);
     await this.#slots().reserve(handle.sandboxID);
     this.#sql.exec("UPDATE sandboxes SET renewing = 1 WHERE authority = ?", row.authority);
     const paused = await this.#pause(handle.sandboxID, endAt);
@@ -1235,7 +1241,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * The meter's log after `after` (slice P, `owner/src/sandbox-time.ts`): at most
+   * The meter's log after `after` (slice P; the owner's object reads it): at most
    * `METER_BATCH` entries and the cursor past them. What the cursor passed is dropped: the
    * owner's object read it.
    */

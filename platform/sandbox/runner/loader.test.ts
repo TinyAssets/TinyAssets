@@ -16,6 +16,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { EXIT, INCOMING, INSTALL, RUNNERS } from "./protocol";
+
 const LOADER = join(import.meta.dirname, "..", "template", "ta-runner");
 const RUNNER = "console.log(JSON.stringify({ argv: process.argv.slice(2), " +
   "digest: process.env.TA_RUNNER_DIGEST }));\n";
@@ -80,6 +82,16 @@ describe("the loader", () => {
       .toMatch(/^platform\/sandbox\/template\/ta-runner text eol=lf$/m);
   });
 
+  it("answers the protocol's exit codes, from the protocol's paths", () => {
+    // The loader is shell, so its text is read: each line the protocol names, once.
+    const lines = readFileSync(LOADER, "utf8").split("\n");
+    for (const line of [`ABSENT=${EXIT.absent}`, `MISMATCH=${EXIT.mismatch}`,
+                        `RUNNERS=${RUNNERS}`, `INCOMING=${INCOMING}`,
+                        `if [ "\${1:-}" = ${INSTALL} ]; then`]) {
+      expect(lines.filter((each) => each === line), line).toHaveLength(1);
+    }
+  });
+
   it("installs a runner whose bytes are its digest, root's alone to write", () => {
     box();
     upload(RUNNER);
@@ -101,18 +113,18 @@ describe("the loader", () => {
   it("refuses bytes that are not their digest, installing nothing", () => {
     box();
     upload(`${RUNNER}// changed\n`);
-    expect(loader("install", SHA).code).toBe(25);
+    expect(loader("install", SHA).code).toBe(EXIT.mismatch);
     expect(readdirSync(join(root, "opt/ta/runner"))).toEqual([]);
     expect(readdirSync(join(root, "var/lib/ta/incoming"))).toEqual([]);
   });
 
   it("answers absent for a runner never uploaded, and refuses a name that is no digest", () => {
     box();
-    expect(loader("install", SHA).code).toBe(24);
-    expect(loader(SHA, "state").code).toBe(24);
-    expect(loader("install", "../../etc").code).toBe(2);
-    expect(loader("0".repeat(63), "state").code).toBe(2);
-    expect(loader(`${"0".repeat(63)}G`, "state").code).toBe(2);
+    expect(loader("install", SHA).code).toBe(EXIT.absent);
+    expect(loader(SHA, "state").code).toBe(EXIT.absent);
+    expect(loader("install", "../../etc").code).toBe(EXIT.usage);
+    expect(loader("0".repeat(63), "state").code).toBe(EXIT.usage);
+    expect(loader(`${"0".repeat(63)}G`, "state").code).toBe(EXIT.usage);
   });
 
   it("runs the runner of its digest, hashed again first, its digest in its environment", () => {
@@ -125,7 +137,7 @@ describe("the loader", () => {
     // Its bytes changed after the install: nothing runs.
     writeFileSync(join(root, "opt/ta/runner", SHA, "runner.mjs"), `${RUNNER}process.exit(7);\n`);
     const refused = loader(SHA, "launch", "run_1");
-    expect(refused).toEqual({ code: 25, out: "" });
+    expect(refused).toEqual({ code: EXIT.mismatch, out: "" });
   });
 
   it("installs again over a runner of the same digest, never half of one", () => {
