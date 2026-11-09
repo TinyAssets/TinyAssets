@@ -3,8 +3,9 @@
  * shipped by the sandbox Worker (`src/runner-bytes.ts`) and run as root through envd by the
  * template's loader (`template/ta-runner`), which names it by its SHA-256 and checks its
  * bytes before every command (`/opt/ta/runner/<sha256>/runner.mjs`, `TA_RUNNER_DIGEST` set).
- * Its on-disk format and the rule that keeps a rollback one deploy deep are
- * `state-format.ts`'s. Root never follows a path another user controls (slice S review
+ * Its commands, exit codes, state paths and documents are the protocol's (`protocol.ts`),
+ * and its on-disk format and the rule that keeps a rollback one deploy deep are
+ * `state-format.ts`'s. A run and a sign-in are each a job (`Job`). Root never follows a path another user controls (slice S review
  * H-1 to H-3): every file it writes or reads in a tree another user can write goes through
  * `fsafe.ts` (no link followed, owner and mode set on the descriptor), the sync agent runs
  * as its own user (`ta-sync`), and each run as a user of its own from the template's pool
@@ -35,8 +36,8 @@
  *   show) or `until`, then the live runs and whether they are quiet (`{live, quiet}`): the
  *   renewal's look for a quiet moment, signalling nothing.
  * - `renew-wait <deadline_ms>`: until every live CLI is quiet or the deadline, then each
- *   run's runner posts `ta.renewing` and holds its posts; `renewed`: each posts
- *   `ta.renewed` and goes on.
+ *   run's runner, told on its channel (`tell`), posts `ta.renewing` and holds its posts;
+ *   `renewed`: each posts `ta.renewed` and goes on.
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
@@ -53,7 +54,8 @@
  *   runs, runs the vendor's logout, deletes the engine's `secret_paths` from the store and
  *   reports the same. `login-cancel <id>` stops it. `login-probe <engine> [region]`: the
  *   template build's standing check, the login run up to its prompt and stopped, its shape
- *   checked.
+ *   checked; `route-probe` and `matcher-probe` the build's others (build-only, the
+ *   protocol's `BUILD_COMMANDS`).
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
@@ -63,7 +65,7 @@ import { chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, ope
          readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createServer as createHttpServer, type IncomingMessage } from "node:http";
-import { createConnection, createServer } from "node:net";
+import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
 import type { EgressScope } from "../../contract/src/egress-scope";
@@ -75,10 +77,11 @@ import { EGRESS_ORIGIN, egressBaseUrl, RUNNER_HEADER, sandboxEnv } from "../../c
 import { LEASE_TTL_S, SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
-import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
+import { AGENTS_DIR, binPath, HOMES, invocation, isKept, keptPaths, SYSTEM,
          WORKSPACE } from "./engine";
 import { lineEvent, Outbox } from "./frames";
-import { remove, safeDirs, safeRead, safeWalk, safeWrite, walkFiles } from "./fsafe";
+import { remove, safeDirs, safeRead, safeWrite, type Walk, walkFiles } from "./fsafe";
+import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
 import { project } from "./project";
@@ -93,14 +96,17 @@ import { AUTOMATON_STATES, LIST_BYTES, stepNanos } from "../../contract/src/sync
 import {
   openMirror, RACY_MS, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport,
 } from "./sync";
-import { PROTOCOL } from "./protocol";
+import { type Command, COMMAND, EXIT, inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS,
+         INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer, type RenewAnswer,
+         RUNNERS as LOADED, type SigninDoc, type StartDoc, type StateAnswer,
+         STATE_DIR } from "./protocol";
 import { checkFormat, dropRunners } from "./state-format";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
 /** Every path the runner touches is under this root: `/` in the sandbox, a temp dir in tests. */
 const ROOT = process.env["TA_RUNNER_ROOT"] ?? "";
 const TOP = ROOT === "" ? "/" : ROOT;
-const STATE = `${ROOT}/var/lib/ta`;
+const STATE = `${ROOT}${STATE_DIR}`;
 const STORE = `${STATE}/store`;
 /** The sync agent's own directory (`ta-sync`, 0700): its mirror, sessions in and out. */
 const SYNC_HOME = `${ROOT}/var/lib/ta-sync`;
@@ -114,7 +120,7 @@ const RESERVE = `${STATE}/reserve`;
 /** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
 const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
 /** The runners installed by digest (`template/ta-runner`): `<sha256>/runner.mjs` each. */
-const RUNNERS = `${ROOT}/opt/ta/runner`;
+const RUNNERS = `${ROOT}${LOADED}`;
 /** What the runner keeps that is a cache alone, discarded when its format changes. */
 const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
 /** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
@@ -137,13 +143,13 @@ export const CANCEL_GRACE_MS = HEARTBEAT_MS;
 /** The lease's TTL, the object's (`LEASE_TTL_S`). */
 export const LEASE_TTL_MS = LEASE_TTL_S * 1000;
 /**
- * The longest a status check, or the wait for a runner's ack, may take: the lease's TTL,
+ * The longest a status check, or the wait for a runner's answer, may take: the lease's TTL,
  * past which a start's run is lost anyway (a run with no post within it is settled lost).
  */
 const COMMAND_MS = LEASE_TTL_MS;
-const OK = 0;
-const NO = 3;
-const FENCED = 4;
+const OK = EXIT.ok;
+const NO = EXIT.no;
+const FENCED = EXIT.fenced;
 /** The input a run resumed after a renewal or a reboot is continued with. */
 export const CONTINUE_PROMPT = "The sandbox paused to renew its runtime and your last step " +
   "was interrupted. Continue the task where you left off.";
@@ -166,56 +172,286 @@ function readJson<T>(path: string): T {
 
 /** A file of root's own state directory (no other user reaches it). */
 function writeJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(`${path}.tmp`, JSON.stringify(value), { mode: 0o600 });
-  renameSync(`${path}.tmp`, path);
+  safeWrite(STATE, path, new TextEncoder().encode(JSON.stringify(value)), 0o600);
 }
 
-function runDir(run: string): string {
-  if (!RUN_ID.test(run)) {
-    throw new Error("a run id is run_ and 32 hex");
-  }
-  return `${STATE}/runs/${run}`;
+// -- jobs: a run, or a sign-in ----------------------------------------------------------
+
+/** What a job's state holds of either kind. */
+interface JobState {
+  pid: number;
+  ended: boolean;
 }
 
 /** A run's live state on disk, which outlives a reboot of the sandbox. */
-interface RunState {
-  pid: number;
+interface RunState extends JobState {
   cli_pid: number | null;
   seq: number;
   session_id: string | null;
   last_kind: string | null;
-  ended: boolean;
   renewing: boolean;
 }
 
-function readState(run: string): RunState | null {
-  const path = `${runDir(run)}/state.json`;
-  return existsSync(path) ? readJson<RunState>(path) : null;
+/** Each kind's id and the state its runner starts with, as `state-format.json` records. */
+const KINDS = Object.freeze({
+  run: {
+    id: RUN_ID,
+    refused: "a run id is run_ and 32 hex",
+    started: (prior: () => JobState | null, pid: number | undefined): unknown => ({
+      ...((prior() as RunState | null) ?? { seq: 0, session_id: null, last_kind: null,
+                                            cli_pid: null }),
+      pid, ended: false, renewing: false }),
+  },
+  signin: {
+    id: SIGNIN_ID,
+    refused: "a sign-in id is si_ and 32 hex",
+    started: (_prior: () => JobState | null, pid: number | undefined): unknown => ({
+      pid, ended: false }),
+  },
+});
+
+function jobDir(kind: JobKind, id: string): string {
+  if (!KINDS[kind].id.test(id)) {
+    throw new Error(KINDS[kind].refused);
+  }
+  return `${ROOT}${JOBS[kind].dir}/${id}`;
 }
 
-function alive(pid: number | null): boolean {
-  if (pid === null || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+function jobState<T extends JobState>(kind: JobKind, id: string): T | null {
+  const path = `${jobDir(kind, id)}/${JOB_FILES.state}`;
+  return existsSync(path) ? readJson<T>(path) : null;
 }
 
-/** The runs whose runners still run. */
-function liveRuns(): { run: string; state: RunState }[] {
-  const dir = `${STATE}/runs`;
+/** Whether a job's runner still runs. */
+function living(state: JobState | null): state is JobState {
+  return state !== null && !state.ended && alive(state.pid);
+}
+
+/** The jobs of a kind whose runners still run. */
+function liveJobs<T extends JobState>(kind: JobKind): { id: string; state: T }[] {
+  const dir = `${ROOT}${JOBS[kind].dir}`;
   if (!existsSync(dir)) {
     return [];
   }
-  return readdirSync(dir).filter((run) => RUN_ID.test(run)).flatMap((run) => {
-    const state = readState(run);
-    return state !== null && !state.ended && alive(state.pid) ? [{ run, state }] : [];
+  return readdirSync(dir).filter((id) => KINDS[kind].id.test(id)).flatMap((id) => {
+    const state = jobState<T>(kind, id);
+    return living(state) ? [{ id, state }] : [];
   });
+}
+
+/** The runs whose runners still run. */
+function liveRuns(): { id: string; state: RunState }[] {
+  return liveJobs<RunState>("run");
+}
+
+/** How many jobs of either kind live. */
+function livingJobs(): number {
+  return liveRuns().length + liveJobs("signin").length;
+}
+
+/**
+ * The job's document taken from the inbox into its own directory, and its runner started
+ * detached (`JOBS[kind].own`); 0 once it runs.
+ */
+function launchJob(kind: JobKind, id: string): number {
+  const dir = jobDir(kind, id);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  renameSync(`${ROOT}${inboxDoc(id)}`, `${dir}/${JOB_FILES.start}`);
+  return startJob(kind, id, []);
+}
+
+/** The job's runner started detached, its log beside its state. */
+function startJob(kind: JobKind, id: string, extra: readonly string[]): number {
+  const dir = jobDir(kind, id);
+  const log = openSync(`${dir}/${JOB_FILES.log}`, "a", 0o600);
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, JOBS[kind].own,
+                                         id, ...extra],
+                      { detached: true, stdio: ["ignore", log, log], env: process.env });
+  closeSync(log);
+  child.unref();
+  writeJson(`${dir}/${JOB_FILES.state}`, KINDS[kind].started(() => jobState(kind, id),
+                                                                  child.pid));
+  return OK;
+}
+
+/** SIGTERM to a live job's runner, its cancel marked first; 3 when not live. */
+function cancelJob(kind: JobKind, id: string): number {
+  const state = jobState(kind, id);
+  if (!living(state)) {
+    return NO;
+  }
+  writeFileSync(`${jobDir(kind, id)}/${JOB_FILES.cancel}`, "");
+  process.kill(state.pid, "SIGTERM");
+  return OK;
+}
+
+/** A message on a job's channel: its verb, then what it carries. */
+const VERB = Object.freeze({ renewing: "renewing", renewed: "renewed", code: "code" } as const);
+type Verb = (typeof VERB)[keyof typeof VERB];
+
+/** A job's channel, the socket its runner listens on while it runs. */
+function channelOf(kind: JobKind, id: string): string {
+  return `${jobDir(kind, id)}/${JOB_FILES.socket}`;
+}
+
+/**
+ * One message sent on a job's channel: `sent` once written (the job's answer not waited
+ * for), `none` when nothing listens there (not yet, or no more), `failed` otherwise.
+ */
+function send(channel: string, verb: Verb, payload: string):
+    Promise<"sent" | "none" | "failed"> {
+  return new Promise((resolve) => {
+    const connection = createConnection(channel, () => {
+      connection.end(`${verb}\n${payload}`, () => resolve("sent"));
+    });
+    connection.on("error", (error: NodeJS.ErrnoException) => {
+      resolve(error.code === "ENOENT" || error.code === "ECONNREFUSED" ? "none" : "failed");
+    });
+  });
+}
+
+/**
+ * A message to a live job's runner on its channel, sent whatever the time, and its answer
+ * waited for until `deadline`: the job closes the connection once it acted (or once it
+ * died). A runner not listening yet (just started) is asked again at a fifth of the flush
+ * cadence while it lives, until `deadline`.
+ */
+async function tell(kind: JobKind, id: string, pid: number, verb: Verb,
+                    deadline: number): Promise<void> {
+  const channel = channelOf(kind, id);
+  for (;;) {
+    const listening = await new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const connection = createConnection(channel, () => {
+        connection.end(`${verb}\n`, () => {
+          timer = setTimeout(() => connection.destroy(), Math.max(0, deadline - Date.now()));
+        });
+      });
+      connection.resume();  // what the job sends back is not read: its close is the answer
+      connection.on("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
+          resolve(false);  // not listening yet
+        }
+      });
+      connection.on("close", () => {
+        if (timer !== null) {
+          clearTimeout(timer);
+        }
+        resolve(true);
+      });
+    });
+    if (listening || Date.now() >= deadline || !alive(pid)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, FLUSH_MS / 5));
+  }
+}
+
+/**
+ * The job's own side (its detached runner): the CLI it runs, stopped by SIGTERM to its
+ * process group and killed after its grace; its frames posted (`Poster`), a first heartbeat
+ * then one at the flush cadence; and its channel, a socket in its root-only directory that
+ * the runner's commands reach it by (`tell`): one message a connection, its verb on its
+ * first line, answered by its close once acted on.
+ */
+class Job {
+  readonly dir: string;
+  readonly outbox: Outbox;
+  readonly poster: Poster;
+  child: ChildProcess | null = null;
+  stopped = false;
+  #kill: ReturnType<typeof setTimeout> | null = null;
+  #pump: ReturnType<typeof setInterval> | null = null;
+  #channel: Server | null = null;
+
+  constructor(kind: JobKind, id: string, events: string, lease: LeaseFile, seq: number) {
+    this.dir = jobDir(kind, id);
+    this.outbox = new Outbox(seq);
+    this.poster = new Poster(events, lease.tokens.runner_token, this.outbox, () => this.stop());
+    process.on("SIGTERM", () => this.stop());
+  }
+
+  /** SIGTERM to the CLI's process group, then a kill after its grace. */
+  stop(): void {
+    this.stopped = true;
+    const child = this.child;
+    if (child !== null && child.exitCode === null && child.pid !== undefined) {
+      const pid = child.pid;
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        child.kill("SIGTERM");
+      }
+      this.#kill ??= setTimeout(() => {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }, CANCEL_GRACE_MS);
+    }
+  }
+
+  /** The CLI closed: its group gone, so no late kill may reach a group that reused its id. */
+  closed(): void {
+    if (this.#kill !== null) {
+      clearTimeout(this.#kill);
+      this.#kill = null;
+    }
+  }
+
+  /** Whether the job was cancelled (`cancelJob`'s mark). */
+  cancelled(): boolean {
+    return existsSync(`${this.dir}/${JOB_FILES.cancel}`);
+  }
+
+  /** Its first heartbeat, before anything slow, then a post at the flush cadence. */
+  async begin(): Promise<void> {
+    await this.poster.tick();
+    this.#pump = setInterval(() => {
+      void this.poster.tick();
+    }, FLUSH_MS);
+  }
+
+  /** Every frame, then the end with the last of them, the cadence's posts stopped. */
+  async finish(exitCode: number): Promise<void> {
+    if (this.#pump !== null) {
+      clearInterval(this.#pump);
+    }
+    await this.poster.finish(exitCode);
+  }
+
+  /**
+   * Its channel open: each message to `act`, by its verb and what it carries (cut at `most`
+   * characters), answered by the connection's close once `act` is done.
+   */
+  listen(most: number, act: (verb: string, payload: string) => void | Promise<void>): void {
+    const path = `${this.dir}/${JOB_FILES.socket}`;
+    remove(path);  // one a runner before a reboot left
+    this.#channel = createServer({ allowHalfOpen: true }, (socket) => {
+      let text = "";
+      socket.on("data", (data: Buffer) => {
+        text = (text + data.toString("utf8")).slice(0, most);
+      });
+      socket.on("end", () => {
+        const at = text.indexOf("\n");
+        const [verb, payload] = at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)];
+        text = "";
+        void (async () => {
+          await act(verb, payload);
+          socket.end();  // the answer: acted on
+        })();
+      });
+      socket.on("error", () => undefined);
+    });
+    this.#channel.listen(path);
+  }
+
+  /** Its channel closed: no message reaches it after. */
+  unlisten(): void {
+    this.#channel?.close();
+    this.#channel = null;
+  }
 }
 
 function shared(): number {
@@ -244,77 +480,36 @@ function engineEnv(rec: SourceRecord, home: string): Record<string, string> {
 }
 
 function binOf(rec: SourceRecord): string {
-  const install = rec.cli!.install;
-  return install.manager === "npm"
-    ? `${ROOT}/opt/ta/engines/${rec.id}/node_modules/.bin/${install.bin}`
-    : `${ROOT}/opt/ta/engines/${rec.id}/bin/${install.bin}`;
+  return `${ROOT}${binPath(rec)}`;
+}
+
+/** A tree's files in a walk's sorted order, each directory read whole before it is offered. */
+function sortedWalk(dir: string, skip?: (rel: string) => boolean): Generator<string> {
+  const walk: Walk = skip === undefined ? { sorted: true } : { sorted: true, skip };
+  return walkFiles(dir, walk);
 }
 
 // -- homes and the engines' stores ----------------------------------------------------
 
-/** This boot's id: a pid names a process only within the boot it was taken in. */
-function bootId(): string {
-  try {
-    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-  } catch {
-    return "";
-  }
-}
-
 /** How long a store's lock is waited for: one command's bound, then the call fails loudly. */
 const LOCK_WAIT_MS = COMMAND_MS;
+/** A store's lock is asked again every 20 ms, flat: every hold is short. */
+const STORE_RETRY_MS = 20;
 
 /**
  * The engine's store held by this process alone while `act` runs (a home copied from it, a
- * run's secrets written back, a sign-in's or sign-out's generation): a lock directory naming
- * its holder as its pid and its boot (review N3). It is taken over once that holder is gone:
- * its process dead, or of another boot (a pid repeats after a reboot, which a lock on disk
- * outlives), or never named and older than a command's bound. The wait sleeps, so the
- * runner's heartbeats go on, and it is bounded (`LOCK_WAIT_MS`): past it the call fails
- * loudly. Every hold is short and synchronous, and none is nested.
+ * run's secrets written back, a sign-in's or sign-out's generation), by its lock
+ * (`pid-lock.ts`, review N3). The wait sleeps, so the runner's heartbeats go on, and it is
+ * bounded (`LOCK_WAIT_MS`): past it the call fails loudly. Every hold is short and
+ * synchronous, and none is nested.
  */
 async function withStore<T>(rec: SourceRecord, act: () => T): Promise<T> {
   const locks = `${STATE}/locks`;
   safeDirs(TOP, locks, 0o700);
-  const lock = `${locks}/${rec.id}`;
-  const boot = bootId();
-  const until = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      mkdirSync(lock, { mode: 0o700 });
-      writeFileSync(`${lock}/holder`, `${process.pid} ${boot}`, { mode: 0o600 });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-      let gone: boolean;
-      try {
-        const [pid, of] = readFileSync(`${lock}/holder`, "utf8").split(" ");
-        gone = of !== boot || !alive(Number(pid));
-      } catch {
-        // its holder has not named itself yet, or it died before it could
-        try {
-          gone = lstatSync(lock).mtimeMs + COMMAND_MS < Date.now();
-        } catch {
-          gone = false;  // let go meanwhile: the next pass takes it
-        }
-      }
-      if (gone) {
-        remove(lock);
-        continue;
-      }
-      if (Date.now() >= until) {
-        throw new Error(`the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-  try {
-    return act();
-  } finally {
-    remove(lock);
-  }
+  // `.lock`: a name no earlier runner's lock (a directory at `<id>`) ever had, so neither
+  // form is read by the other's runner, across an adoption or a rollback.
+  return withLock(`${locks}/${rec.id}.lock`, LOCK_WAIT_MS, () => new Error(
+    `the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`), act, STORE_RETRY_MS);
 }
 
 /**
@@ -372,14 +567,14 @@ async function makeHome(name: string, rec: SourceRecord, signedIn = true): Promi
   const { secrets, sessions } = keptPaths(rec);
   const copied: Record<string, string> = {};
   const made = await withStore(rec, () => {
-    for (const rel of safeWalk(store)) {
+    for (const rel of sortedWalk(store)) {
       if (isKept(signedIn ? [...secrets, ...sessions] : sessions, rel)
           && (signedIn || !isKept(secrets, rel))) {
         const bytes = safeRead(store, join(store, rel));
         if (bytes !== null) {
           safeWrite(home, join(home, rel), bytes, 0o600);
           if (isKept(secrets, rel)) {
-            copied[rel] = digest(bytes);
+            copied[rel] = sha256Hex(bytes);
           }
         }
       }
@@ -397,10 +592,6 @@ async function makeHome(name: string, rec: SourceRecord, signedIn = true): Promi
   }
   mkdirSync(join(home, "tmp"), { mode: 0o700 });
   return home;
-}
-
-function digest(bytes: Uint8Array): string {
-  return sha256Hex(bytes);
 }
 
 /** Every entry of a tree root just made given to `as`, links as links. */
@@ -432,7 +623,7 @@ async function keepHome(home: string, rec: SourceRecord, signin = false): Promis
   await withStore(rec, () => {
     const current = generation(rec);
     let renewed = false;
-    for (const rel of safeWalk(home)) {
+    for (const rel of sortedWalk(home)) {
       if (!isKept([...secrets, ...sessions], rel)) {
         continue;
       }
@@ -443,13 +634,13 @@ async function keepHome(home: string, rec: SourceRecord, signin = false): Promis
       if (isKept(secrets, rel)) {
         const base = snapshot?.secrets[rel] ?? null;
         const stored = safeRead(store, join(store, rel));
-        if (digest(bytes) === base) {
+        if (sha256Hex(bytes) === base) {
           continue;  // unchanged: never written back
         }
         // A key run's home carried none, so it writes none back (it never had the login).
         if (!signin && (snapshot === null || snapshot.signedIn !== true
                         || snapshot.generation !== current
-                        || (stored === null ? null : digest(stored)) !== base)) {
+                        || (stored === null ? null : sha256Hex(stored)) !== base)) {
           continue;
         }
         renewed ||= signin;
@@ -457,7 +648,7 @@ async function keepHome(home: string, rec: SourceRecord, signin = false): Promis
         // A session the store holds as it is is not written again, so its change time
         // stands and it is not hashed again (`SESSIONS_SEEN`).
         const stored = safeRead(store, join(store, rel));
-        if (stored !== null && digest(stored) === digest(bytes)) {
+        if (stored !== null && sha256Hex(stored) === sha256Hex(bytes)) {
           continue;
         }
       }
@@ -491,7 +682,7 @@ function readSeen(): Record<string, SeenSession> {
 /** The engines' sessions the sync agent took from the feed, into each store it lacks. */
 function importSessions(): void {
   const staged = `${SYNC_HOME}/in`;
-  for (const rel of safeWalk(staged)) {
+  for (const rel of sortedWalk(staged)) {
     const [engine, ...rest] = rel.split("/");
     const rec = RECORDS.get(engine ?? "");
     const inHome = rest.join("/");
@@ -515,7 +706,7 @@ function atoms(): string[] {
   const found: string[] = [];
   for (const rec of RECORDS.values()) {
     const store = `${STORE}/${rec.id}`;
-    for (const rel of safeWalk(store)) {
+    for (const rel of sortedWalk(store)) {
       if (isKept(keptPaths(rec).secrets, rel)) {
         const bytes = safeRead(store, join(store, rel));
         if (bytes !== null) {
@@ -545,7 +736,7 @@ export async function signedIn(rec: SourceRecord): Promise<boolean> {
     });
   }
   const name = `check-${rec.id}-${process.pid}`;
-  const as = take(ROOT, STATE, name);
+  const as = take(ROOT, STATE);
   const home = await makeHome(name, rec);
   try {
     giveTree(home, as);
@@ -595,7 +786,7 @@ function prepare(servers: readonly string[]): number {
   keepReserve(RESERVE, RESERVE_SIZE);
   // A pasted code is never left at rest (review L1): one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
-  const inbox = `${STATE}/inbox`;
+  const inbox = `${ROOT}${INBOX}`;
   for (const name of existsSync(inbox) ? readdirSync(inbox) : []) {
     if (name.endsWith(".code")) {
       remove(`${inbox}/${name}`);
@@ -697,7 +888,7 @@ function ownDigest(): string | null {
  * that are gone.
  */
 function dropOtherRunners(): void {
-  if (liveRuns().length + liveLogins().length === 0) {
+  if (livingJobs() === 0) {
     dropRunners(RUNNERS, ownDigest());
   }
 }
@@ -712,7 +903,7 @@ function adopt(): number {
   if (ownDigest() === null) {
     throw new Error("adopt is run by the loader, which names the runner's digest");
   }
-  if (liveRuns().length + liveLogins().length > 0) {
+  if (livingJobs() > 0) {
     process.stderr.write("ta-runner: a run or a sign-in lives; its runner stays\n");
     return NO;
   }
@@ -723,41 +914,8 @@ function adopt(): number {
 
 // -- launch, cancel, status, state, renewal ------------------------------------------
 
-function launch(run: string): number {
-  const dir = runDir(run);
-  const inbox = `${STATE}/inbox/${run}.json`;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  renameSync(inbox, `${dir}/start.json`);
-  return detach(run, []);
-}
-
-function detach(run: string, extra: readonly string[]): number {
-  const dir = runDir(run);
-  const log = openSync(`${dir}/runner.log`, "a", 0o600);
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "run", run,
-                                         ...extra],
-                      { detached: true, stdio: ["ignore", log, log], env: process.env });
-  closeSync(log);
-  child.unref();
-  writeJson(`${dir}/state.json`, { ...(readState(run) ?? { seq: 0, session_id: null,
-                                                            last_kind: null, cli_pid: null }),
-                                   pid: child.pid, ended: false, renewing: false });
-  return OK;
-}
-
-function cancel(run: string): number {
-  const state = readState(run);
-  if (state === null || state.ended || !alive(state.pid)) {
-    return NO;
-  }
-  writeFileSync(`${runDir(run)}/cancel`, "");
-  process.kill(state.pid, "SIGTERM");
-  return OK;
-}
-
 function status(run: string): number {
-  const state = readState(run);
-  return state !== null && !state.ended && alive(state.pid) ? OK : NO;
+  return living(jobState("run", run)) ? OK : NO;
 }
 
 /**
@@ -771,27 +929,22 @@ function quiet(state: RunState): boolean {
     || state.last_kind === "result" || state.last_kind === "usage";
 }
 
-function stateCommand(): number {
-  const live = liveRuns();
-  // A sign-in in progress keeps its sandbox from the idle reap; it is quiet (no model call).
-  process.stdout.write(JSON.stringify({ live: live.length + liveLogins().length,
-                                        quiet: live.every(({ state }) => quiet(state)),
-                                        protocol: PROTOCOL }));
+function answer(value: StateAnswer | QuietAnswer | RenewAnswer): number {
+  process.stdout.write(JSON.stringify(value));
   return OK;
 }
 
-/** Each live runner signalled, and its ack waited for while its runner lives. */
-async function signalled(signal: "SIGUSR1" | "SIGUSR2", ack: string,
-                         deadline: number): Promise<void> {
+function stateCommand(): number {
   const live = liveRuns();
-  for (const { run, state } of live) {
-    rmSync(`${runDir(run)}/${ack}`, { force: true });
-    process.kill(state.pid, signal);
-  }
-  while (Date.now() < deadline && !live.every(({ run, state }) =>
-    existsSync(`${runDir(run)}/${ack}`) || !alive(state.pid))) {
-    await new Promise((resolve) => setTimeout(resolve, FLUSH_MS / 5));
-  }
+  // A sign-in in progress keeps its sandbox from the idle reap; it is quiet (no model call).
+  return answer({ live: live.length + liveJobs("signin").length,
+                  quiet: live.every(({ state }) => quiet(state)), protocol: PROTOCOL });
+}
+
+/** Each live run's runner told `verb` on its channel, each answer waited for to `deadline`. */
+async function told(verb: Verb, deadline: number): Promise<void> {
+  await Promise.all(liveRuns().map(({ id, state }) => tell("run", id, state.pid, verb,
+                                                            deadline)));
 }
 
 async function quietWait(until: number): Promise<number> {
@@ -802,8 +955,7 @@ async function quietWait(until: number): Promise<number> {
     const live = liveRuns();
     const still = live.every(({ state }) => quiet(state));
     if (live.length === 0 || still || Date.now() >= until) {
-      process.stdout.write(JSON.stringify({ live: live.length, quiet: still }));
-      return OK;
+      return answer({ live: live.length, quiet: still });
     }
     await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
   }
@@ -816,44 +968,36 @@ async function renewWait(deadline: number): Promise<number> {
   for (;;) {
     const live = liveRuns();
     if (live.length === 0) {
-      process.stdout.write(JSON.stringify({ live: 0 }));
-      return OK;
+      return answer({ live: 0 });
     }
     if (live.every(({ state }) => quiet(state)) || Date.now() >= deadline) {
-      await signalled("SIGUSR1", "renewing-ack", deadline);
-      process.stdout.write(JSON.stringify({ live: live.length }));
-      return OK;
+      await told(VERB.renewing, deadline);
+      return answer({ live: live.length });
     }
     await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
   }
 }
 
 async function recover(): Promise<number> {
-  const dir = `${STATE}/runs`;
+  const dir = `${ROOT}${JOBS.run.dir}`;
   for (const run of existsSync(dir) ? readdirSync(dir).filter((each) => RUN_ID.test(each)) : []) {
-    const state = readState(run);
+    const state = jobState<RunState>("run", run);
     if (state !== null && !state.ended && !alive(state.pid)) {
       // The rebooted run's home: its kept paths into the store first (its processes died
       // with the boot), so its session resumes from where it was.
-      const start = readJson<StartDoc>(`${runDir(run)}/start.json`);
+      const start = readJson<StartDoc>(`${jobDir("run", run)}/${JOB_FILES.start}`);
       const home = `${ROOT}${HOMES}/${run}`;
       if (existsSync(home)) {
         await keepHome(home, record(start.engine));
         dropHome(home);
       }
-      detach(run, ["--recover"]);
+      startJob("run", run, [RECOVERING]);
     }
   }
   return OK;
 }
 
 // -- the sync agent, as its own user ---------------------------------------------------
-
-interface LeaseFile {
-  readonly lease: { readonly lease_id: string; readonly epoch: number };
-  readonly authority: string;
-  readonly tokens: { readonly runner_token: string; readonly sync_token: string };
-}
 
 interface SyncJob {
   /** In, out, or `known`: the mirror's hash of each of `paths`, read under the lock. */
@@ -878,7 +1022,7 @@ async function syncAgent(job: SyncJob):
     Promise<{ report: Record<string, unknown> | null; code: number }> {
   const as = user(ROOT, "ta-sync");
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
-                                       process.argv[1]!, "sync"]);
+                                       process.argv[1]!, COMMAND.sync]);
   const env: Record<string, string> = {};
   for (const name of [...RUN_BASICS, "TA_RUNNER_ROOT"]) {
     if (process.env[name] !== undefined) {
@@ -916,29 +1060,12 @@ async function syncAgent(job: SyncJob):
 /** The sync agent's own side (as `ta-sync`), one at a time in the sandbox by its lock. */
 async function syncCommand(): Promise<number> {
   const job = JSON.parse(readFileSync(0, "utf8")) as SyncJob;
-  const lock = `${SYNC_HOME}/lock`;
-  for (let wait = FLUSH_MS / 10; ; wait = Math.min(wait * 2, FLUSH_MS * 4)) {
-    try {
-      mkdirSync(lock, { mode: 0o700 });
-      writeFileSync(`${lock}/pid`, String(process.pid));
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-      let holder = 0;
-      try {
-        holder = Number(readFileSync(`${lock}/pid`, "utf8"));
-      } catch {
-        holder = 0;
-      }
-      if (holder !== 0 && !alive(holder)) {
-        remove(lock);  // its holder died
-        continue;
-      }
-      await new Promise((resolve) => setTimeout(resolve, wait));
-    }
-  }
+  return withLock(`${SYNC_HOME}/sync.lock`, Number.POSITIVE_INFINITY,
+                  () => new Error("the sync agent's lock is held"), () => syncLocked(job));
+}
+
+/** The sync agent's job, its lock held. */
+async function syncLocked(job: SyncJob): Promise<number> {
   try {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
     const place = { local: LOCAL_WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
@@ -977,8 +1104,6 @@ async function syncCommand(): Promise<number> {
       return FENCED;
     }
     throw error;
-  } finally {
-    remove(lock);
   }
 }
 
@@ -1187,7 +1312,7 @@ function envFiles(home: string, cwd: string): { home: Map<string, string>;
   const read = (base: string, rel: string) => safeRead(base, join(base, rel))?.toString("utf8");
   const out = { home: new Map<string, string>(), project: new Map<string, string>(),
                 above: new Map<string, string>() };
-  for (const rel of safeWalk(home)) {
+  for (const rel of sortedWalk(home)) {
     const text = homeEnvFile(rel) === null ? undefined : read(home, rel);
     if (text !== undefined) {
       out.home.set(rel, text);
@@ -1198,14 +1323,14 @@ function envFiles(home: string, cwd: string): { home: Map<string, string>;
     return parts.length > 2 || (parts.length === 2 && !parts[0]!.startsWith("."))
       || (parts.length === 1 && !parts[0]!.startsWith("."));
   };
-  for (const rel of safeWalk(cwd, depth)) {
+  for (const rel of sortedWalk(cwd, depth)) {
     const text = projectEnvFile(rel) === null ? undefined : read(cwd, rel);
     if (text !== undefined) {
       out.project.set(rel, text);
     }
   }
   for (let dir = dirname(cwd); ; dir = dirname(dir)) {
-    for (const rel of safeWalk(dir, depth)) {
+    for (const rel of sortedWalk(dir, depth)) {
       const text = ancestorEnvFile(rel) === null ? undefined : read(dir, rel);
       if (text !== undefined) {
         out.above.set(`${dir}/${rel}`, text);
@@ -1236,10 +1361,10 @@ function scratchFor(start: StartDoc, run: string):
     { dir: string; notice: ScratchCleared | null } {
   const dir = `${LOCAL_SCRATCH}/${start.agent}`;
   safeDirs(TOP, LOCAL_SCRATCH, 0o755);
-  const live = new Set([start.agent, ...liveRuns().filter((each) => each.run !== run)
+  const live = new Set([start.agent, ...liveRuns().filter((each) => each.id !== run)
     .flatMap((each) => {
       try {
-        return [readJson<StartDoc>(`${runDir(each.run)}/start.json`).agent];
+        return [readJson<StartDoc>(`${jobDir("run", each.id)}/${JOB_FILES.start}`).agent];
       } catch {
         return [];
       }
@@ -1254,79 +1379,48 @@ function scratchFor(start: StartDoc, run: string):
 }
 
 async function runCommand(run: string, recovering: boolean): Promise<number> {
-  const dir = runDir(run);
-  const start = readJson<StartDoc>(`${dir}/start.json`);
-  const lease = readJson<LeaseFile>(`${STATE}/lease.json`);
+  const dir = jobDir("run", run);
+  const start = readJson<StartDoc>(`${dir}/${JOB_FILES.start}`);
+  const lease = readJson<LeaseFile>(`${ROOT}${LEASE_FILE}`);
   const rec = record(start.engine);
   const cli = rec.cli!;
-  const prior = readState(run);
+  const prior = jobState<RunState>("run", run);
   const state: RunState = { pid: process.pid, cli_pid: null, seq: prior?.seq ?? 0,
                             session_id: prior?.session_id ?? start.session_id,
                             last_kind: null, ended: false, renewing: false };
   // A full disk never stops the runner: its reserve goes first, and a write that still
   // fails leaves the state in memory, the run going on and reporting its end.
   const save = () => {
-    writeOrRelease(() => writeJson(`${dir}/state.json`, state), RESERVE);
+    writeOrRelease(() => writeJson(`${dir}/${JOB_FILES.state}`, state), RESERVE);
   };
-  const mark = (name: string) => {
-    writeOrRelease(() => writeFileSync(`${dir}/${name}`, ""), RESERVE);
-  };
-  const outbox = new Outbox(state.seq);
-  const cli_: { child: ChildProcess | null; kill: ReturnType<typeof setTimeout> | null;
-                stopped: boolean; renewed: boolean } =
-    { child: null, kill: null, stopped: false, renewed: false };
-  // SIGTERM to the CLI's process group, then a kill after its grace.
-  const stop = () => {
-    cli_.stopped = true;
-    const child = cli_.child;
-    if (child !== null && child.exitCode === null && child.pid !== undefined) {
-      const pid = child.pid;
-      try {
-        process.kill(-pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-      cli_.kill ??= setTimeout(() => {
-        try {
-          process.kill(-pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      }, CANCEL_GRACE_MS);
-    }
-  };
-  const poster = new Poster(start.urls.events, lease.tokens.runner_token, outbox, stop);
-  // The signals first, so none arriving early takes its default (ending the runner).
-  process.on("SIGTERM", stop);
-  process.on("SIGUSR1", () => {
-    outbox.push({ type: "ta.renewing" });
-    // Held at once, so no post starts; the one in flight and what waits are posted, then
-    // the ack: nothing is in flight when the sandbox pauses.
-    poster.holding = true;
-    void (async () => {
+  const work = new Job("run", run, start.urls.events, lease, state.seq);
+  const { outbox, poster } = work;
+  /** Whether the CLI was running when the sandbox's renewal ended. */
+  let renewed = false;
+  // The channel first, so a renewal told early is heard.
+  work.listen(VERB.renewing.length + 1, async (verb) => {
+    if (verb === VERB.renewing) {
+      outbox.push({ type: "ta.renewing" });
+      // Held at once, so no post starts; the one in flight and what waits are posted, then
+      // the answer: nothing is in flight when the sandbox pauses.
+      poster.holding = true;
       await poster.drain();
       state.renewing = true;
       save();
-      mark("renewing-ack");
-    })();
+    } else if (verb === VERB.renewed) {
+      poster.holding = false;
+      state.renewing = false;
+      renewed = work.child !== null && work.child.exitCode === null;
+      outbox.push({ type: "ta.renewed" });
+      save();
+    }
   });
-  process.on("SIGUSR2", () => {
-    poster.holding = false;
-    state.renewing = false;
-    cli_.renewed = cli_.child !== null && cli_.child.exitCode === null;
-    outbox.push({ type: "ta.renewed" });
-    save();
-    mark("renewed-ack");
-  });
-  if (existsSync(`${dir}/cancel`)) {
-    stop();  // cancelled before its runner was up
+  if (work.cancelled()) {
+    work.stop();  // cancelled before its runner was up
   }
   // The run's first heartbeat, before anything slow: a run with no post within the lease's
   // TTL of its admission is settled lost.
-  await poster.tick();
-  const pump = setInterval(() => {
-    void poster.tick();
-  }, FLUSH_MS);
+  await work.begin();
   let exitCode = 1;
   let as: Identity | null = null;
   let home: string | null = null;
@@ -1346,7 +1440,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
     synced = true;
     importSessions();
-    as = take(ROOT, STATE, run);
+    as = take(ROOT, STATE);
     home = await makeHome(run, rec, start.credential === "vendor_login_in_sandbox");
     safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
     remove(system);
@@ -1396,11 +1490,11 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     configOwned(rec, home, system, call.files.keys(), as);
     const events = cli.engine.events;
     for (let attempt = 0; ; attempt += 1) {
-      cli_.renewed = false;
+      renewed = false;
       const argv = asUser(as, [shared()], call.argv);
       const runHome = home;
       exitCode = await new Promise<number>((resolve, reject) => {
-        if (cli_.stopped) {
+        if (work.stopped) {
           resolve(128 + 15);
           return;
         }
@@ -1409,7 +1503,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp"),
                                 ...scratchEnv(scratch.dir) }, detached: true,
           stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] });
-        cli_.child = child;
+        work.child = child;
         child.on("error", reject);
         state.cli_pid = child.pid ?? null;
         save();
@@ -1436,10 +1530,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           save();
         });
         child.on("close", (code, signal) => {
-          if (cli_.kill !== null) {
-            clearTimeout(cli_.kill);
-            cli_.kill = null;
-          }
+          work.closed();
           if (code !== 0 && stderr !== "") {
             outbox.push({ type: "ta.stderr", text: stderr });
           }
@@ -1450,8 +1541,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       save();
       // A CLI that failed across a renewal (its model call cut by the pause) is resumed
       // from its session, once; a cancel never is.
-      if (exitCode === 0 || attempt > 0 || cli_.stopped || existsSync(`${dir}/cancel`)
-          || !cli_.renewed) {
+      if (exitCode === 0 || attempt > 0 || work.stopped || work.cancelled() || !renewed) {
         break;
       }
       killAll(as.uid);
@@ -1501,7 +1591,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         // a secret's bytes is said once, until it or the secrets change.
         const seen = readSeen();
         const next: Record<string, SeenSession> = {};
-        const against = digest(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
+        const against = sha256Hex(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
         const sessions: { rec: SourceRecord; rel: string; path: string; digest: string }[] = [];
         for (const each of RECORDS.values()) {
           const store = `${STORE}/${each.id}`;
@@ -1520,7 +1610,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
               if (bytes === null) {
                 continue;
               }
-              sha = digest(bytes);
+              sha = sha256Hex(bytes);
             }
             next[path] = { size: stat.size, mtime_ms: stat.mtimeMs, sha256: sha,
                            ...(was?.sha256 === sha && was.refused !== undefined
@@ -1571,11 +1661,11 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         give(STATE, as);
       }
       // The heartbeat went on through sync-out, so a long sync kept its lease.
-      clearInterval(pump);
-      await poster.finish(exitCode);
+      await work.finish(exitCode);
       state.ended = true;
       state.seq = outbox.seq;
       save();
+      work.unlisten();
     }
   }
   return OK;
@@ -1618,62 +1708,14 @@ async function safeSignedIn(rec: SourceRecord): Promise<boolean> {
 // -- the vendor's own sign-in (slice SIGNIN) ------------------------------------------
 
 
-function signinDir(id: string): string {
-  if (!SIGNIN_ID.test(id)) {
-    throw new Error("a sign-in id is si_ and 32 hex");
-  }
-  return `${STATE}/signin/${id}`;
-}
-
-/** A sign-in's document, as the sandbox Worker leaves it: no secret. */
-interface SigninDoc {
-  readonly id: string;
-  readonly engine: string;
-  readonly region: string | null;
-  readonly mode: "in" | "out";
-  readonly authority: string;
-  readonly urls: { readonly events: string; readonly signin: string };
-}
-
-function loginState(id: string): { pid: number; ended: boolean } | null {
-  const path = `${signinDir(id)}/state.json`;
-  return existsSync(path) ? readJson<{ pid: number; ended: boolean }>(path) : null;
-}
-
-/** The sign-ins whose runners still run. */
-function liveLogins(): string[] {
-  const dir = `${STATE}/signin`;
-  if (!existsSync(dir)) {
-    return [];
-  }
-  return readdirSync(dir).filter((id) => SIGNIN_ID.test(id)).filter((id) => {
-    const state = loginState(id);
-    return state !== null && !state.ended && alive(state.pid);
-  });
-}
-
-function loginLaunch(id: string): number {
-  const dir = signinDir(id);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  renameSync(`${STATE}/inbox/${id}.json`, `${dir}/start.json`);
-  const log = openSync(`${dir}/runner.log`, "a", 0o600);
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "login-run", id],
-                      { detached: true, stdio: ["ignore", log, log], env: process.env });
-  closeSync(log);
-  child.unref();
-  writeJson(`${dir}/state.json`, { pid: child.pid, ended: false });
-  return OK;
-}
-
 /**
  * A pasted code the Worker left in the inbox: read once and deleted at once, then handed to
- * the live sign-in's runner over its socket, which writes it to the CLI's stdin alone.
+ * the live sign-in's runner on its channel, which writes it to the CLI's stdin alone.
  */
 async function loginInput(id: string): Promise<number> {
-  const dir = signinDir(id);
-  const state = loginState(id);
-  const inbox = `${STATE}/inbox/${id}.code`;
-  if (state === null || state.ended || !alive(state.pid)) {
+  const state = jobState("signin", id);
+  const inbox = `${ROOT}${inboxCode(id)}`;
+  if (!living(state)) {
     remove(inbox);
     return NO;
   }
@@ -1683,28 +1725,13 @@ async function loginInput(id: string): Promise<number> {
   } finally {
     remove(inbox);
   }
-  return new Promise<number>((resolve) => {
-    const socket = createConnection(`${dir}/input.sock`, () => {
-      socket.end(code, () => resolve(OK));
-    });
-    socket.on("error", () => resolve(NO));
-  });
+  return await send(channelOf("signin", id), VERB.code, code) === "sent" ? OK : NO;
 }
 
 /** A pasted code the Worker left that was never handed over, gone (review L1). */
 function loginDrop(id: string): number {
-  signinDir(id);  // its id checked
-  remove(`${STATE}/inbox/${id}.code`);
-  return OK;
-}
-
-function loginCancel(id: string): number {
-  const state = loginState(id);
-  if (state === null || state.ended || !alive(state.pid)) {
-    return NO;
-  }
-  writeFileSync(`${signinDir(id)}/cancel`, "");
-  process.kill(state.pid, "SIGTERM");
+  jobDir("signin", id);  // its id checked
+  remove(`${ROOT}${inboxCode(id)}`);
   return OK;
 }
 
@@ -1716,45 +1743,19 @@ function loginCancel(id: string): number {
  * URL and code, and a refusal's fixed reason (`SIGNIN_REFUSALS`): no text the VM chose.
  */
 async function loginRun(id: string): Promise<number> {
-  const dir = signinDir(id);
-  const doc = readJson<SigninDoc>(`${dir}/start.json`);
-  const lease = readJson<LeaseFile>(`${STATE}/lease.json`);
+  const dir = jobDir("signin", id);
+  const doc = readJson<SigninDoc>(`${dir}/${JOB_FILES.start}`);
+  const lease = readJson<LeaseFile>(`${ROOT}${LEASE_FILE}`);
   const rec = record(doc.engine);
   const login = rec.cli!.login;
-  const outbox = new Outbox(0);
-  const proc: { child: ChildProcess | null; kill: ReturnType<typeof setTimeout> | null;
-                stopped: boolean } = { child: null, kill: null, stopped: false };
-  const stop = () => {
-    proc.stopped = true;
-    const child = proc.child;
-    if (child !== null && child.exitCode === null && child.pid !== undefined) {
-      const pid = child.pid;
-      try {
-        process.kill(-pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-      proc.kill ??= setTimeout(() => {
-        try {
-          process.kill(-pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      }, CANCEL_GRACE_MS);
-    }
-  };
-  const poster = new Poster(doc.urls.events, lease.tokens.runner_token, outbox, stop);
-  process.on("SIGTERM", stop);
-  await poster.tick();  // the sign-in's first heartbeat: it holds the lease
-  const pump = setInterval(() => {
-    void poster.tick();
-  }, FLUSH_MS);
+  const work = new Job("signin", id, doc.urls.events, lease, 0);
+  const { outbox } = work;
+  await work.begin();  // the sign-in's first heartbeat: it holds the lease
   let end = "failed";
   let reason: SigninRefusal | null = null;
   let as: Identity | null = null;
   let home: string | null = null;
   let watch: ReturnType<typeof setInterval> | null = null;
-  let inbound: ReturnType<typeof createServer> | null = null;
   let expiry: ReturnType<typeof setTimeout> | null = null;
   let expired = false;
   try {
@@ -1765,15 +1766,15 @@ async function loginRun(id: string): Promise<number> {
       // The store's generation moved on first, so no run live now writes its secret back
       // afterwards; and each such run stopped, so none keeps using the login signed out.
       await withStore(rec, () => nextGeneration(rec));
-      for (const { run } of liveRuns()) {
-        if (readJson<StartDoc>(`${runDir(run)}/start.json`).engine === rec.id) {
-          cancel(run);
+      for (const { id: run } of liveRuns()) {
+        if (readJson<StartDoc>(`${jobDir("run", run)}/${JOB_FILES.start}`).engine === rec.id) {
+          cancelJob("run", run);
         }
       }
       // The vendor's own sign-out first, which may revoke the login on the vendor's side.
       const logout = login.logout_argv;
       if (logout !== undefined) {
-        as = take(ROOT, STATE, id);
+        as = take(ROOT, STATE);
         home = await makeHome(id, rec);
         giveTree(home, as);
         const madeHome = home;
@@ -1785,7 +1786,7 @@ async function loginRun(id: string): Promise<number> {
       // Its secrets gone from the store: no later run's home carries the sign-in.
       const store = `${STORE}/${rec.id}`;
       await withStore(rec, () => {
-        for (const rel of existsSync(store) ? safeWalk(store) : []) {
+        for (const rel of existsSync(store) ? sortedWalk(store) : []) {
           if (isKept(keptPaths(rec).secrets, rel)) {
             remove(join(store, rel));
           }
@@ -1793,7 +1794,7 @@ async function loginRun(id: string): Promise<number> {
       });
       end = "signed_out";
     } else {
-      as = take(ROOT, STATE, id);
+      as = take(ROOT, STATE);
       home = await makeHome(id, rec);
       const madeHome = home;
       const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
@@ -1813,7 +1814,7 @@ async function loginRun(id: string): Promise<number> {
         const child = spawn(argv[0]!, argv.slice(1), {
           env: engineEnv(rec, madeHome), cwd: madeHome, detached: true,
           stdio: ["pipe", "pipe", "pipe"] });
-        proc.child = child;
+        work.child = child;
         // Only the record's patterns' groups leave the VM, and none credential-shaped.
         const read = (data: Buffer) => {
           // Its tail, as much as one frame shows: a prompt is a line of it.
@@ -1829,7 +1830,7 @@ async function loginRun(id: string): Promise<number> {
               && credentialShaped(value, secrets)) ? "credential" : null);
           if (why !== null) {
             reason = why;
-            stop();
+            work.stop();
             return;
           }
           shown = next;
@@ -1840,54 +1841,43 @@ async function loginRun(id: string): Promise<number> {
         child.stderr!.on("data", read);
         child.stdin!.on("error", () => undefined);
         child.on("close", (code) => {
-          // Its group gone: no late kill may reach a group that reused its id.
-          if (proc.kill !== null) {
-            clearTimeout(proc.kill);
-            proc.kill = null;
-          }
+          work.closed();
           resolve(code ?? 128 + 15);
         });
         child.on("error", () => resolve(127));
-        // A pasted code comes over a socket in the sign-in's root-only directory, straight to
-        // the CLI's stdin: never on disk, never logged.
-        inbound = createServer((socket) => {
-          let pasted = "";
-          socket.on("data", (data: Buffer) => {
-            pasted = (pasted + data.toString("utf8")).slice(0, SIGNIN_PASTE_MAX + 2);
-          });
-          socket.on("end", () => {
-            const code = pasted.trim();
-            pasted = "";
-            // Only a sign-in that takes a pasted code, shown its prompt, gets one: one line,
-            // at most a terminal line's length.
-            if (login.accepts_code !== true || (shown.url === null && shown.code === null)
-                || code === "" || code.length > SIGNIN_PASTE_MAX || /[\r\n]/.test(code)) {
-              return;
-            }
-            child.stdin!.write(`${code}\n`);
-            outbox.push({ type: "ta.signin", state: "code_sent" });
-          });
+        // A pasted code comes on the sign-in's channel, a socket in its root-only directory,
+        // straight to the CLI's stdin: never on disk, never logged. Open while the CLI runs.
+        work.listen(VERB.code.length + 1 + SIGNIN_PASTE_MAX + 2, (verb, pasted) => {
+          const code = pasted.trim();
+          // Only a sign-in that takes a pasted code, shown its prompt, gets one: one line,
+          // at most a terminal line's length.
+          if (verb !== VERB.code || login.accepts_code !== true
+              || (shown.url === null && shown.code === null)
+              || code === "" || code.length > SIGNIN_PASTE_MAX || /[\r\n]/.test(code)) {
+            return;
+          }
+          child.stdin!.write(`${code}\n`);
+          outbox.push({ type: "ta.signin", state: "code_sent" });
         });
-        inbound.listen(`${dir}/input.sock`);
         // The vendor's code's lifetime (`expires`, cited), past which its prompt is dead.
         expiry = setTimeout(() => {
           expired = true;
-          stop();
+          work.stop();
         }, login.expires.s * 1000);
         watch = setInterval(() => {
-          if (existsSync(`${dir}/cancel`)) {
-            stop();
+          if (work.cancelled()) {
+            work.stop();
           }
           if (login.complete_on_state === true && !complete && statesHold(login, (path) =>
             safeRead(madeHome, path.replaceAll("{home}", madeHome))?.toString("utf8") ?? null)) {
             complete = true;  // signed in: a CLI that stays up after is stopped
-            stop();
+            work.stop();
           }
         }, FLUSH_MS);
       });
       clearInterval(watch!);
       watch = null;
-      (inbound as ReturnType<typeof createServer> | null)?.close();
+      work.unlisten();
       if (expiry !== null) {
         clearTimeout(expiry);
       }
@@ -1895,13 +1885,13 @@ async function loginRun(id: string): Promise<number> {
       // Only a sign-in that completed keeps what it wrote, as the owner's new login (which
       // moves the store's generation on); one refused, stopped, expired or failed keeps
       // nothing, so it never discards a live run's refresh (review N2).
-      const stopped = reason !== null || (existsSync(`${dir}/cancel`) && !complete)
+      const stopped = reason !== null || (work.cancelled() && !complete)
         || (expired && !complete);
       if (!stopped && (exit === 0 || complete)) {
         await keepHome(madeHome, rec, true);
       }
       end = reason !== null ? "refused"
-        : existsSync(`${dir}/cancel`) && !complete ? "cancelled"
+        : work.cancelled() && !complete ? "cancelled"
           : expired && !complete ? "expired"
             : (exit === 0 || complete) && await safeSignedIn(rec) ? "signed_in" : "failed";
     }
@@ -1915,7 +1905,7 @@ async function loginRun(id: string): Promise<number> {
       clearInterval(watch);
     }
     // A pasted code that came after the login ended is never left at rest.
-    remove(`${STATE}/inbox/${id}.code`);
+    remove(`${ROOT}${inboxCode(id)}`);
     if (as !== null) {
       try {
         killAll(as.uid);
@@ -1931,9 +1921,8 @@ async function loginRun(id: string): Promise<number> {
                                                signed_in: await safeSignedIn(rec) }]);
   outbox.push({ type: "ta.signin", state: end,
                 ...(end === "refused" && reason !== null ? { reason } : {}) });
-  clearInterval(pump);
-  await poster.finish(end === "signed_in" || end === "signed_out" ? 0 : 1);
-  writeJson(`${dir}/state.json`, { pid: process.pid, ended: true });
+  await work.finish(end === "signed_in" || end === "signed_out" ? 0 : 1);
+  writeJson(`${dir}/${JOB_FILES.state}`, { pid: process.pid, ended: true });
   return OK;
 }
 
@@ -1952,7 +1941,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
     throw new Error(`engine ${engine} has no vendor sign-in`);
   }
   const name = `probe-${rec.id}-${process.pid}`;
-  const as = take(ROOT, STATE, name);
+  const as = take(ROOT, STATE);
   const home = await makeHome(name, rec);
   let shown: Prompt = { url: null, code: null };
   try {
@@ -2112,7 +2101,8 @@ async function probeRoute(rec: SourceRecord, provider: string,
     prompt: `Remember the word ${nonce}. Reply with the word OK.`, unattended: false,
     authority: "owner",
     lease: { lease_id: hex(16), epoch: 1 },
-    config: { generation: 1, env, inherit: engine.inherit },
+    config: { generation: 1, egress: { mode: "open", destinations: [] }, env,
+              inherit: engine.inherit },
     urls: { mcp: `${origin}/r/${run}/${secret}/mcp`, mcp_bare: `${origin}/r/${run}/mcp`,
             events: `${origin}/r/${run}/events`, signin: `${origin}/signin` } };
   // A fake sign-in in each of the store's secret paths: if any of it reaches a request, a
@@ -2120,7 +2110,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
   const store = `${STORE}/${rec.id}`;
   // What the store held before the probe: only what the probe adds (its fake sign-in, its
   // turns' sessions) goes at its end.
-  const had = new Set(existsSync(store) ? safeWalk(store) : []);
+  const had = new Set(existsSync(store) ? sortedWalk(store) : []);
   const seeded: string[] = [];
   for (const rel of keptPaths(rec).secrets) {
     const concrete = rel.split("/").map((part) => part === "*" ? "probe" : part).join("/");
@@ -2144,7 +2134,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
   /** One turn, as one run runs: its own user and home, then its home kept and dropped. */
   const turn = async (start: StartDoc, resumed: boolean,
                       extra: readonly string[]): Promise<ProbeTurn> => {
-    const as = take(ROOT, STATE, name);
+    const as = take(ROOT, STATE);
     const trace = `${STATE}/route-${name}.trace`;
     let home: string | null = null;
     let exit = 1;
@@ -2154,7 +2144,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
     let stderr = "";
     try {
       home = await makeHome(name, rec, false);
-      const carried = safeWalk(home).filter((rel) => isKept(keptPaths(rec).secrets, rel));
+      const carried = [...sortedWalk(home)].filter((rel) => isKept(keptPaths(rec).secrets, rel));
       if (carried.length > 0) {
         throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
       }
@@ -2295,7 +2285,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
     if (conversationDir !== undefined) {
       remove(conversationDir);
     }
-    for (const rel of existsSync(store) ? safeWalk(store) : []) {
+    for (const rel of existsSync(store) ? sortedWalk(store) : []) {
       if (!had.has(rel)) {
         remove(join(store, rel));  // the probe's own sessions and its fake sign-in
       }
@@ -2336,58 +2326,49 @@ async function routeProbe(resolvers: readonly string[]): Promise<number> {
 
 // -- main -----------------------------------------------------------------------------
 
+/** What a run's runner restarted after a reboot (`recover`) is started with. */
+const RECOVERING = "--recover";
+
+/** Each protocol command's handler, by its name: one for every command, and no other. */
+type Handler = (args: readonly string[]) => number | Promise<number>;
+const HANDLERS: { readonly [C in Command]: Handler } = {
+  [COMMAND.prepare]: (args) => prepare(args),
+  [COMMAND.adopt]: () => adopt(),
+  [COMMAND.signinCheck]: async (args) => await signedIn(record(args[0] ?? "")) ? OK : NO,
+  [COMMAND.launch]: (args) => launchJob("run", args[0] ?? ""),
+  [COMMAND.cancel]: (args) => cancelJob("run", args[0] ?? ""),
+  [COMMAND.status]: (args) => status(args[0] ?? ""),
+  [COMMAND.state]: () => stateCommand(),
+  [COMMAND.quietWait]: (args) => quietWait(Number(args[0])),
+  [COMMAND.renewWait]: (args) => renewWait(Number(args[0])),
+  [COMMAND.renewed]: async () => {
+    await told(VERB.renewed, Date.now() + COMMAND_MS);
+    return OK;
+  },
+  [COMMAND.recover]: () => recover(),
+  [COMMAND.loginLaunch]: (args) => launchJob("signin", args[0] ?? ""),
+  [COMMAND.loginInput]: (args) => loginInput(args[0] ?? ""),
+  [COMMAND.loginDrop]: (args) => loginDrop(args[0] ?? ""),
+  [COMMAND.loginCancel]: (args) => cancelJob("signin", args[0] ?? ""),
+  [COMMAND.run]: (args) => runCommand(args[0] ?? "", args[1] === RECOVERING),
+  [COMMAND.loginRun]: (args) => loginRun(args[0] ?? ""),
+  [COMMAND.sync]: () => syncCommand(),
+  [COMMAND.loginProbe]: (args) => loginProbe(args[0] ?? "", args[1] ?? null),
+  [COMMAND.routeProbe]: (args) => routeProbe(args),
+  [COMMAND.matcherProbe]: () => {
+    // The sync-ignore automaton's step, timed here (the template build's standing check).
+    process.stdout.write(`${JSON.stringify({ step_ns: stepNanos() })}\n`);
+    return OK;
+  },
+};
+
 export async function main(argv: readonly string[]): Promise<number> {
   const [command, ...args] = argv;
-  switch (command) {
-    case "prepare":
-      return prepare(args);
-    case "login-launch":
-      return loginLaunch(args[0] ?? "");
-    case "login-run":
-      return loginRun(args[0] ?? "");
-    case "login-input":
-      return loginInput(args[0] ?? "");
-    case "login-drop":
-      return loginDrop(args[0] ?? "");
-    case "login-cancel":
-      return loginCancel(args[0] ?? "");
-    case "login-probe":
-      return loginProbe(args[0] ?? "", args[1] ?? null);
-    case "route-probe":
-      return routeProbe(args);
-    case "matcher-probe":
-      // The sync-ignore automaton's step, timed here (the template build's standing check).
-      process.stdout.write(`${JSON.stringify({ step_ns: stepNanos() })}\n`);
-      return OK;
-    case "signin-check":
-      return await signedIn(record(args[0] ?? "")) ? OK : NO;
-    case "launch":
-      return launch(args[0] ?? "");
-    case "run":
-      return runCommand(args[0] ?? "", args[1] === "--recover");
-    case "cancel":
-      return cancel(args[0] ?? "");
-    case "status":
-      return status(args[0] ?? "");
-    case "state":
-      return stateCommand();
-    case "adopt":
-      return adopt();
-    case "quiet-wait":
-      return quietWait(Number(args[0]));
-    case "renew-wait":
-      return renewWait(Number(args[0]));
-    case "renewed":
-      await signalled("SIGUSR2", "renewed-ack", Date.now() + COMMAND_MS);
-      return OK;
-    case "recover":
-      return recover();
-    case "sync":
-      return syncCommand();
-    default:
-      process.stderr.write(`ta-runner: no command ${String(command)}\n`);
-      return 2;
+  if (command === undefined || !Object.hasOwn(HANDLERS, command)) {
+    process.stderr.write(`ta-runner: no command ${String(command)}\n`);
+    return EXIT.usage;
   }
+  return HANDLERS[command as Command](args);
 }
 
 if (process.argv[1] !== undefined && /runner\.(?:mjs|ts|js)$/.test(process.argv[1])

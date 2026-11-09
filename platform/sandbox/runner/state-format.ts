@@ -7,7 +7,7 @@
  * What the runner keeps on the sandbox's disk is mostly durable, never thrown away: the
  * engines' sign-ins (`/var/lib/ta/store`) and their generations, the agents' scratch and its
  * stamps, the conversations, each run's and each sign-in's state (`state.json`, which
- * `liveRuns`, `liveLogins` and so `adopt` read), and the sync mirror, which is each path's
+ * `liveJobs` and so `adopt` read), and the sync mirror, which is each path's
  * base version (a sync with no mirror row writes with no base, and a path the owner has is a
  * conflict). Only true caches are discarded when the format changes: `sessions-seen.json`,
  * the engines' sessions as last hashed, rebuilt by the next run.

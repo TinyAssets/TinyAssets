@@ -829,16 +829,16 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   };
   const unnamed: string[] = [];
   let unnamedCount = 0;
-  for (const rel of walkFiles(place.local, (each, isDir) => {
+  for (const rel of walkFiles(place.local, { skip: (each, isDir) => {
     const name = each.split("/").at(-1)!;
     return each === ".sessions" || name.startsWith(".ta-")
       || out(each.split("\\").join("/"), isDir);
-  }, place.local, (rel) => {
+  }, unnamed: (rel) => {
     unnamedCount += 1;
     if (unnamed.length < LISTED) {
       unnamed.push(`/workspace/${rel}`);
     }
-  })) {
+  } })) {
     const path = `/workspace/${rel.split("\\").join("/")}`;
     if (place.authority !== "owner" && clientReadOnly(path)) {
       continue;

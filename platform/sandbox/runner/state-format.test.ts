@@ -19,7 +19,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { PROTOCOL, SPEAKS } from "./protocol";
+import { BUILD_COMMANDS, COMMAND, INTERNAL_COMMANDS, JOBS, PROTOCOL, SPEAKS,
+         WORKER_COMMANDS } from "./protocol";
 import { checkFormat, dropRunners, type FormatRule, READS, STATE_FORMAT } from "./state-format";
 import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./state-shape";
 import { openMirror } from "./sync";
@@ -192,30 +193,26 @@ describe("the marker and the caches", () => {
 });
 
 describe("the Worker's protocol with the runner", () => {
-  const source = (path: string) => readFileSync(join(import.meta.dirname, path), "utf8");
-
-  it("is the runner's commands, as its protocol's record says", () => {
-    const main = source("runner.ts").slice(source("runner.ts")
-      .indexOf("export async function main("));
-    const commands = [...main.matchAll(/case "([a-z-]+)":/g)].map((found) => found[1]).sort();
-    expect(commands).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
+  it("names every command the runner takes, as its protocol's record says", () => {
+    const named = Object.values(COMMAND);
+    expect(new Set(named).size).toBe(named.length);
+    expect([...named].sort()).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
+    // Each is the Worker's, the runner's own, or the template build's: one of them alone.
+    expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS, ...BUILD_COMMANDS].sort())
+      .toEqual([...named].sort());
   });
 
-  it("sends only commands every protocol it speaks records", () => {
-    const control = source("../src/control.ts");
-    const sent = [...new Set([...control.matchAll(/#run\([^,]+, \["([a-z-]+)"/g)]
-      .map((found) => found[1]!))].sort();
-    expect(sent.length).toBeGreaterThan(10);
+  it("has the Worker send only commands every protocol it speaks records", () => {
     for (const protocol of SPEAKS) {
-      expect(sent.filter((command) =>
+      expect(WORKER_COMMANDS.filter((command) =>
         !PROTOCOLS[String(protocol)]!.commands.includes(command))).toEqual([]);
     }
   });
 
-  it("reads back the state its runner's protocol records", () => {
-    const state = source("runner.ts").slice(source("runner.ts").indexOf("function stateCommand("));
-    const answer = /JSON\.stringify\(\{([^]*?)\}\)\);/.exec(state)![1]!;
-    const keys = [...answer.matchAll(/([a-z_]+):/g)].map((found) => found[1]).sort();
-    expect(keys).toEqual([...PROTOCOLS[String(PROTOCOL)]!.state].sort());
+  it("launches and cancels each kind of job by a command the Worker sends", () => {
+    for (const job of Object.values(JOBS)) {
+      expect(WORKER_COMMANDS).toEqual(expect.arrayContaining([job.launch, job.cancel]));
+      expect(INTERNAL_COMMANDS).toContain(job.own);
+    }
   });
 });

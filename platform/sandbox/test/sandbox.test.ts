@@ -19,8 +19,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
-import { backoff, CODES, INCOMING, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
-import { PROTOCOL, SPEAKS } from "../runner/protocol";
+import { backoff, CODES, ownerTag, RENEW_EDGE_MS, widened } from "../src/control";
+import { INCOMING, PROTOCOL, SPEAKS } from "../runner/protocol";
 import { runnerBytes, runnerDigest } from "../src/runner-bytes";
 import { CONTROL_MIGRATIONS, SLOTS_MIGRATIONS } from "../src/schema";
 import { SLOTS } from "../src/slots";
@@ -200,8 +200,12 @@ describe("a start", () => {
   it("answers signin_required, and launches nothing, where no login is in that sandbox", async () => {
     const who = owner();
     expect(await stub(who).start(who, start())).toEqual({ started: false, code: CODES.signin });
-    expect((await seen()).commands.map((command) => command.argv[1]))
+    const state = await seen();
+    expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "signin-check"]);
+    // The check comes first: no start document waits in the inbox for a run refused.
+    expect(Object.keys(state.files).filter((path) => path.includes("/var/lib/ta/inbox/")))
+      .toEqual([]);
   });
 
   it("runs an API-key run with no sign-in check and no vendor hosts", async () => {

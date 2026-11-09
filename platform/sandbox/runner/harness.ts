@@ -9,8 +9,8 @@
  * (`template/bundle.mjs`), run as its own processes, as root.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, chownSync, closeSync, constants, mkdirSync, mkdtempSync, openSync,
-         readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, chownSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
+         unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -19,7 +19,9 @@ import { fileURLToPath } from "node:url";
 import { EVENTS_DOOR, SIGNIN_EVENTS_DOOR } from "../../contract/src/egress";
 import { bundledSources } from "../../sources/src/catalog";
 
-import { binPath, type StartDoc } from "./engine";
+import { binPath } from "./engine";
+import { tryLock } from "./pid-lock";
+import { inboxDoc, LEASE_FILE, type LeaseFile, type SigninDoc, type StartDoc } from "./protocol";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 let bundled: string | null = null;
@@ -39,41 +41,13 @@ const ID_BASE = 40_000;
 const ID_BLOCK = 8;
 const ID_BLOCKS = 512;
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 function claimIds(): number {
   mkdirSync(ID_LOCKS, { recursive: true, mode: 0o755 });
   for (let block = 0; block < ID_BLOCKS; block += 1) {
     const lock = join(ID_LOCKS, String(block));
-    let fd: number;
-    try {
-      fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
-    } catch {
-      let holder = Number.NaN;
-      try {
-        holder = Number(readFileSync(lock, "utf8"));
-      } catch {
-        // given back meanwhile: the next pass takes it
-      }
-      if (Number.isInteger(holder) && holder > 0 && !alive(holder)) {
-        try {
-          unlinkSync(lock);
-        } catch {
-          // another suite took it back first
-        }
-        block -= 1;  // try this block again
-      }
-      continue;
+    if (!tryLock(lock)) {
+      continue;  // a live suite's
     }
-    writeSync(fd, String(process.pid));
-    closeSync(fd);
     process.on("exit", () => {
       try {
         unlinkSync(lock);
@@ -574,23 +548,25 @@ export class Sandbox {
 
   /** A run's start and the lease's secrets, as the sandbox Worker leaves them. */
   start(start: StartDoc, authority = "owner"): void {
-    writeFileSync(this.path(`/var/lib/ta/inbox/${start.run}.json`), JSON.stringify(start));
-    writeFileSync(this.path("/var/lib/ta/lease.json"), JSON.stringify({
-      lease: start.lease, authority,
-      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } }));
+    writeFileSync(this.path(inboxDoc(start.run)), JSON.stringify(start));
+    const lease: LeaseFile = { lease: start.lease, authority,
+      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } };
+    writeFileSync(this.path(LEASE_FILE), JSON.stringify(lease));
   }
 
   /** A sign-in's document and the lease's secrets, as the sandbox Worker leaves them. */
   login(doc: { id: string; engine: string; region?: string | null; mode?: "in" | "out";
                authority?: string }, doors: Doors): void {
-    writeFileSync(this.path(`/var/lib/ta/inbox/${doc.id}.json`), JSON.stringify({
+    const signin: SigninDoc = {
       id: doc.id, engine: doc.engine, region: doc.region ?? null, mode: doc.mode ?? "in",
       authority: doc.authority ?? "owner",
       urls: { events: `${doors.origin}/signin/${doc.id}/events`,
-              signin: `${doors.origin}/signin` } }));
-    writeFileSync(this.path("/var/lib/ta/lease.json"), JSON.stringify({
-      lease: { lease_id: "b".repeat(32), epoch: 1 }, authority: doc.authority ?? "owner",
-      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } }));
+              signin: `${doors.origin}/signin` } };
+    writeFileSync(this.path(inboxDoc(doc.id)), JSON.stringify(signin));
+    const lease: LeaseFile = { lease: { lease_id: "b".repeat(32), epoch: 1 },
+      authority: doc.authority ?? "owner",
+      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } };
+    writeFileSync(this.path(LEASE_FILE), JSON.stringify(lease));
   }
 
   remove(): void {
@@ -621,7 +597,8 @@ export function startDoc(doors: Doors, engine: string, over: Partial<StartDoc> =
     run, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
     model: null, session_id: null, prompt: "do the thing", unattended: false,
     authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
-    config: { generation: 1, env: { HOME: "{home}", ...rec.cli!.home_env, ...rec.cli!.env },
+    config: { generation: 1, egress: { mode: "open", destinations: [] },
+              env: { HOME: "{home}", ...rec.cli!.home_env, ...rec.cli!.env },
               inherit: ["PATH", "LANG"] },
     urls: { mcp: `${doors.origin}/r/${run}/${"e".repeat(64)}/mcp`,
             mcp_bare: `${doors.origin}/r/${run}/mcp`, events: `${doors.origin}/r/${run}/events`,
