@@ -106,6 +106,22 @@ export function mountsOf(pid: number | "self"):
  * it left in `TA_HOST_MOUNTS`), or a loud failure: a box's root is mounted there, never on
  * the host's.
  */
+/**
+ * The suite's one Node for its boxes (`root-tests.mjs` `boxNode`: a root-owned, 0755 copy of
+ * the host's, the same bytes), or a loud failure: a box binds it, never the host's own.
+ */
+function boxNode(): string {
+  const node = process.env["TA_BOX_NODE"];
+  const made = node === undefined ? null : statSync(node, { throwIfNoEntry: false });
+  if (node === undefined || made === undefined || made === null || made.uid !== 0
+      || (made.mode & 0o7777) !== 0o755) {
+    throw new Error("a test sandbox binds the suite's root-owned copy of Node (TA_BOX_NODE): " +
+                    "run the runner's tests through root-tests.mjs (`npm run test:root -w " +
+                    "sandbox`)");
+  }
+  return node;
+}
+
 function suiteNamespace(): void {
   const host = process.env["TA_HOST_MOUNTS"];
   if (host === undefined || host === readlinkSync("/proc/self/ns/mnt")) {
@@ -213,7 +229,7 @@ export class Box {
     const ready = join(this.base, "ready");
     const log = openSync(join(this.base, "box.log"), "w");
     const child = spawn("unshare", [...UNSHARE, "--", "/bin/sh", BOX, this.root, ready,
-                                    SHIPPED_LOADER, LOADER, process.execPath, NODE, EGRESS_CA],
+                                    SHIPPED_LOADER, LOADER, boxNode(), NODE, EGRESS_CA],
                         { stdio: ["pipe", log, log], detached: true });
     closeSync(log);
     child.unref();

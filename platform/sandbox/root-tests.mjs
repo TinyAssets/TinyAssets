@@ -8,8 +8,9 @@
 // loudly. Under `sudo`, what vitest writes in the package (its cache) is given back to the
 // invoking user, so a later run as that user is not refused its own tree.
 import { spawnSync } from "node:child_process";
-import { chownSync, existsSync, lstatSync, mkdtempSync, readdirSync, readlinkSync,
-         rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, chownSync, copyFileSync, existsSync, lstatSync, mkdtempSync, readdirSync,
+         readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -82,6 +83,35 @@ function preflight() {
   return null;
 }
 
+/**
+ * The suite's one Node for its boxes, made before any box: a copy of this Node, root's alone
+ * (`root:root`, 0755), its bytes checked the same, in the suite's own temp dir on the disk.
+ * Every box binds it read-only at the template's path, as the template's own Node is root's
+ * (the host's may be another user's, writable by others: GitHub's `setup-node`). The host's
+ * own Node is never changed. Its path, or why it cannot be made.
+ */
+function boxNode() {
+  let suite = null;
+  let node = "a temp dir";
+  try {
+    suite = mkdtempSync(join(tmpdir(), "ta-suite-"));
+    node = join(suite, "node");
+    copyFileSync(process.execPath, node);
+    chownSync(node, 0, 0);
+    chmodSync(node, 0o755);
+    const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+    const made = statSync(node);
+    if (made.uid !== 0 || made.gid !== 0 || (made.mode & 0o7777) !== 0o755
+        || digest(node) !== digest(process.execPath)) {
+      return { suite, refused: `a root-owned copy of Node (${node}) is not root's 0755 copy ` +
+                               `of ${process.execPath}, byte for byte` };
+    }
+  } catch (error) {
+    return { suite, refused: `a root-owned copy of Node could not be made in ${node}: ${error}` };
+  }
+  return { suite, node };
+}
+
 function giveBack(path, uid, gid) {
   const stat = lstatSync(path);
   if (stat.uid === 0) {
@@ -95,21 +125,27 @@ function giveBack(path, uid, gid) {
 }
 
 if (process.getuid() === 0) {
-  const refused = preflight();
+  const made = boxNode();
+  const refused = made.refused ?? preflight();
+  const suite = made.suite;
   if (refused !== null) {
+    if (suite !== null) {
+      rmSync(suite, { recursive: true, force: true });
+    }
     process.stderr.write(
       "root-tests: the runner's test sandboxes cannot be made on this host: " +
       `${refused}. They need root's mount, pid and uts namespaces, tmpfs, read-only binds, ` +
-      "overlayfs, nsenter and pivot_root (util-linux) and perl. They are not skipped: a skip is not a " +
-      "pass.\n");
+      "overlayfs, nsenter and pivot_root (util-linux), perl, and a root-owned copy of Node. " +
+      "They are not skipped: a skip is not a pass.\n");
     process.exit(2);
   }
-  // The suite's own mount namespace; the harness is told the one it left.
+  // The suite's own mount namespace; the harness is told the one it left, and its boxes' Node.
   const run = spawnSync("unshare", ["--mount", "--propagation", "private", "--",
                                     process.execPath, ...args],
                         { cwd: here, stdio: "inherit",
-                          env: { ...process.env,
+                          env: { ...process.env, TA_BOX_NODE: made.node,
                                  TA_HOST_MOUNTS: readlinkSync("/proc/self/ns/mnt") } });
+  rmSync(suite, { recursive: true, force: true });
   const uid = Number(process.env.SUDO_UID);
   const gid = Number(process.env.SUDO_GID);
   if (Number.isInteger(uid) && uid > 0 && Number.isInteger(gid)) {

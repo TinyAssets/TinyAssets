@@ -7,14 +7,15 @@
  * host where a sandbox cannot be made (`root-tests.mjs`).
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { Box, mountsOf } from "./harness";
+import { NODE } from "./layout";
 
 let box: Box | null = null;
 afterEach(() => {
@@ -35,6 +36,10 @@ describe("a test sandbox", () => {
     const hosts = mounts.filter((mount) => host.has(mount.device));
     expect(hosts.map((mount) => mount.target)).toEqual(expect.arrayContaining(
       ["/usr/local/bin/node"]));
+    // Its Node is root's alone, as the template's is, read-only, the host's own bytes.
+    expect(box.exec(["stat", "-c", "%u %g %a", NODE]).stdout.trim()).toBe("0 0 755");
+    expect(box.exec(["sha256sum", NODE]).stdout.split(" ")[0])
+      .toBe(createHash("sha256").update(readFileSync(process.execPath)).digest("hex"));
     expect(hosts.filter((mount) => !mount.options.includes("ro"))
       .map((mount) => mount.target)).toEqual([]);
     // What is not the host's is the box's own: its root (and so its /tmp, /var/tmp), its
@@ -96,6 +101,23 @@ describe("the suite", () => {
     }
   });
 
+  it("refuses loudly, exit 2 with its reason, where its boxes' root-owned Node cannot be made",
+     () => {
+    // A temp dir no one may write (a read-only bind of an empty one, in a namespace of its
+    // own): the suite's copy of Node has nowhere to go.
+    const done = spawnSync("unshare", ["--mount", "--propagation", "private", "--", "/bin/sh",
+                                       "-c", 'd=$(mktemp -d) && mount --bind "$d" "$d" && ' +
+                                       'mount -o remount,bind,ro "$d" && { TMPDIR="$d" "$0" ' +
+                                       '"$1" runner/no-such-file.test.ts; s=$?; umount "$d"; ' +
+                                       'rmdir "$d"; exit "$s"; }', process.execPath,
+                                       join(import.meta.dirname, "..", "..", "root-tests.mjs")],
+                           { encoding: "utf8" });
+    expect(done.status, done.stderr).toBe(2);
+    expect(done.stderr).toMatch(new RegExp("^root-tests: the runner's test sandboxes cannot " +
+                                           "be made on this host: a root-owned copy of Node " +
+                                           "could not be made"));
+  });
+
   // A host whose tools run but refuse one step of a box: the tool answers its probe, then
   // refuses its real use (or, for the read-only bind, does nothing and answers 0).
   it.each([
@@ -152,39 +174,41 @@ describe("a test sandbox's teardown", () => {
 
 describe("a test sandbox's /etc", () => {
   const SANDBOX = join(import.meta.dirname, "..", "..");
-  const VITEST = join(dirname(createRequire(import.meta.url).resolve("vitest/package.json")),
-                      "vitest.mjs");
 
   /**
-   * A host's /etc and /usr simulated in a mount namespace of its own: each an overlay of the
+   * A host simulated in a mount namespace of its own: its /etc and /usr each an overlay of the
    * real one (so the simulation copies nothing, and writes nothing to it), `shape` making them
-   * the host's to simulate (`$1/etc`, `$1/usr`), bound over /etc and /usr there alone. A test of `file` matching `title` (the guard's, by
-   * default), run in it (a vitest of its own), makes a box; `after` then runs there. The
-   * namespace's run: the vitest's, then `after`'s output.
+   * the host's to simulate (`$SIM/etc`, `$SIM/usr`; `$NODE_BIN` the host's Node, which it may
+   * replace; `$ARG` the caller's), bound over /etc and /usr there alone. The suite's own
+   * command (`root-tests.mjs`, by that Node) runs the test of `file` matching `title` (the
+   * guard's, by default) there, which makes a box; `after` then runs there. The namespace's
+   * run: the suite's, then `after`'s output.
    */
-  function simulated(shape: string, args: readonly string[] = [],
-                     { file = "runner/test/box.test.ts", title = "sees no host path",
-                       after = "true" } = {}) {
+  function simulated(shape: string, { arg = "", file = "runner/test/box.test.ts",
+                                      title = "sees no host path", after = "true" } = {}) {
     const scratch = mkdtempSync(join(tmpdir(), "ta-etc-"));
     try {
       const script = [
-        'mount -t tmpfs -o size=1g tmpfs "$1"',
-        'mkdir "$1/etc-upper" "$1/etc-work" "$1/etc" "$1/usr-upper" "$1/usr-work" "$1/usr"',
-        'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/etc-upper,workdir=$1/etc-work" ' +
-          '"$1/etc"',
-        'mount -t overlay overlay -o "lowerdir=/usr,upperdir=$1/usr-upper,workdir=$1/usr-work" ' +
-          '"$1/usr"',
+        'mount -t tmpfs -o size=1g tmpfs "$SIM"',
+        'mkdir "$SIM/etc-upper" "$SIM/etc-work" "$SIM/etc" "$SIM/usr-upper" "$SIM/usr-work" ' +
+          '"$SIM/usr"',
+        'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$SIM/etc-upper,' +
+          'workdir=$SIM/etc-work" "$SIM/etc"',
+        'mount -t overlay overlay -o "lowerdir=/usr,upperdir=$SIM/usr-upper,' +
+          'workdir=$SIM/usr-work" "$SIM/usr"',
         shape,
-        'mount --bind "$1/etc" /etc',
-        'mount --bind "$1/usr" /usr',
-        '{ "$2" "$3" run --project runner "$4" -t "$5"; ran=$?; }',
+        'mount --bind "$SIM/etc" /etc',
+        'mount --bind "$SIM/usr" /usr',
+        '{ "$NODE_BIN" root-tests.mjs "$FILE" -t "$TITLE"; ran=$?; }',
         `{ ${after}; }`,
         'exit "$ran"',
       ].join(" && ");
       mkdirSync(join(scratch, "sim"));
       return spawnSync("unshare", ["--mount", "--propagation", "private", "--", "/bin/sh", "-c",
-                                   script, "etc", join(scratch, "sim"), process.execPath, VITEST,
-                                   file, title, ...args], { cwd: SANDBOX, encoding: "utf8" });
+                                   script], {
+        cwd: SANDBOX, encoding: "utf8",
+        env: { ...process.env, SIM: join(scratch, "sim"), NODE_BIN: process.execPath, ARG: arg,
+               FILE: file, TITLE: title } });
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
@@ -199,8 +223,8 @@ describe("a test sandbox's /etc", () => {
       const victim = join(scratch, "victim");
       writeFileSync(victim, "nameserver 192.0.2.1\n");
       const target = kind === "relative" ? "../run/systemd/resolve/stub-resolv.conf" : victim;
-      const done = simulated('ln -sfn "$6" "$1/etc/resolv.conf" && [ -L "$1/etc/resolv.conf" ]',
-                             [target]);
+      const done = simulated('ln -sfn "$ARG" "$SIM/etc/resolv.conf" && ' +
+                             '[ -L "$SIM/etc/resolv.conf" ]', { arg: target });
       expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
       expect(done.stdout).toMatch(/1 passed/);
       expect(readFileSync(victim, "utf8")).toBe("nameserver 192.0.2.1\n");
@@ -214,8 +238,9 @@ describe("a test sandbox's /etc", () => {
   it("is the box's own where the host's /etc is larger than the box's disk, and the box works",
      () => {
     // 480 MiB of real (not sparse) bytes, past a box's 384 MiB.
-    const done = simulated('mkdir -p "$1/etc/skel/.toolchain" && for n in 1 2 3; do ' +
-                           'head -c 160M /dev/zero > "$1/etc/skel/.toolchain/$n" || exit 1; done');
+    const done = simulated('mkdir -p "$SIM/etc/skel/.toolchain" && for n in 1 2 3; do ' +
+                           'head -c 160M /dev/zero > "$SIM/etc/skel/.toolchain/$n" || exit 1; ' +
+                           'done');
     expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
     expect(done.stdout).toMatch(/1 passed/);
   });
@@ -225,9 +250,9 @@ describe("a test sandbox's /etc", () => {
   // bytes (the overlay's `metacopy`), and the host's stays as it was.
   it("is the box's own where the host's /etc holds a large file anyone may write: prepare " +
      "takes the write away in the box alone", () => {
-    const done = simulated('mkdir -p "$1/etc/skel/.toolchain" && ' +
-                           'head -c 100M /dev/zero > "$1/etc/skel/.toolchain/big" && ' +
-                           'chmod 0666 "$1/etc/skel/.toolchain/big"', [],
+    const done = simulated('mkdir -p "$SIM/etc/skel/.toolchain" && ' +
+                           'head -c 100M /dev/zero > "$SIM/etc/skel/.toolchain/big" && ' +
+                           'chmod 0666 "$SIM/etc/skel/.toolchain/big"',
                            { file: "runner/runner.test.ts", title: "prepare, at",
                              after: 'echo "host mode $(stat -c %a /etc/skel/.toolchain/big)"' });
     expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
@@ -240,15 +265,32 @@ describe("a test sandbox's /etc", () => {
   // files, copying none of the bytes, and the host's stay as they were.
   it("is the box's own where the host's /usr holds a tree anyone may write: prepare takes " +
      "the write away in the box alone", () => {
-    const done = simulated('mkdir -p "$1/usr/lib/jvm-sim/lib" && ' +
-                           'head -c 100M /dev/zero > "$1/usr/lib/jvm-sim/lib/modules" && ' +
-                           'chmod 0777 "$1/usr/lib/jvm-sim" "$1/usr/lib/jvm-sim/lib" && ' +
-                           'chmod 0666 "$1/usr/lib/jvm-sim/lib/modules"', [],
+    const done = simulated('mkdir -p "$SIM/usr/lib/jvm-sim/lib" && ' +
+                           'head -c 100M /dev/zero > "$SIM/usr/lib/jvm-sim/lib/modules" && ' +
+                           'chmod 0777 "$SIM/usr/lib/jvm-sim" "$SIM/usr/lib/jvm-sim/lib" && ' +
+                           'chmod 0666 "$SIM/usr/lib/jvm-sim/lib/modules"',
                            { file: "runner/runner.test.ts", title: "prepare, at",
                              after: 'echo host modes $(stat -c %a /usr/lib/jvm-sim ' +
                                     '/usr/lib/jvm-sim/lib /usr/lib/jvm-sim/lib/modules)' });
     expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
     expect(done.stdout).toMatch(/1 passed/);
     expect(done.stdout).toMatch(/^host modes 777 777 666$/m);
+  });
+
+  // A host whose Node is another user's, and writable by others (GitHub's `setup-node`, in
+  // `/opt/hostedtoolcache`, the runner's user's): the box's Node is root's alone, as the
+  // template's is, the same bytes, so `prepare` passes, and the host's stays as it was.
+  it("is the box's own where the host's Node is another user's, writable by others: prepare " +
+     "passes, the host's untouched", () => {
+    const done = simulated('mkdir -p "$SIM/toolcache/bin" && ' +
+                           'cp "$NODE_BIN" "$SIM/toolcache/bin/node" && ' +
+                           'chown 1001:1001 "$SIM/toolcache/bin/node" && ' +
+                           'chmod 0777 "$SIM/toolcache/bin/node" && ' +
+                           'NODE_BIN="$SIM/toolcache/bin/node"',
+                           { file: "runner/runner.test.ts", title: "prepare, at",
+                             after: 'echo host node $(stat -c "%u %a" "$NODE_BIN")' });
+    expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
+    expect(done.stdout).toMatch(/1 passed/);
+    expect(done.stdout).toMatch(/^host node 1001 777$/m);
   });
 });
