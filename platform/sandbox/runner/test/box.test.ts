@@ -155,10 +155,13 @@ describe("a test sandbox's /etc", () => {
   /**
    * A host's /etc simulated in a mount namespace of its own: an overlay of the real one (so
    * the simulation copies nothing, and writes nothing to it), `shape` making it the host's to
-   * simulate, bound over /etc there alone. The guard's test, run in it (a vitest of its own),
-   * makes a box: its run, and the namespace's.
+   * simulate, bound over /etc there alone. A test of `file` matching `title` (the guard's, by
+   * default), run in it (a vitest of its own), makes a box; `after` then runs there. The
+   * namespace's run: the vitest's, then `after`'s output.
    */
-  function simulated(shape: string, ...args: string[]) {
+  function simulated(shape: string, args: readonly string[] = [],
+                     { file = "runner/test/box.test.ts", title = "sees no host path",
+                       after = "true" } = {}) {
     const scratch = mkdtempSync(join(tmpdir(), "ta-etc-"));
     try {
       const script = [
@@ -167,12 +170,14 @@ describe("a test sandbox's /etc", () => {
         'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/upper,workdir=$1/work" "$1/etc"',
         shape,
         'mount --bind "$1/etc" /etc',
-        'exec "$2" "$3" run --project runner runner/test/box.test.ts -t "sees no host path"',
+        '{ "$2" "$3" run --project runner "$4" -t "$5"; ran=$?; }',
+        `{ ${after}; }`,
+        'exit "$ran"',
       ].join(" && ");
       mkdirSync(join(scratch, "sim"));
       return spawnSync("unshare", ["--mount", "--propagation", "private", "--", "/bin/sh", "-c",
                                    script, "etc", join(scratch, "sim"), process.execPath, VITEST,
-                                   ...args], { cwd: SANDBOX, encoding: "utf8" });
+                                   file, title, ...args], { cwd: SANDBOX, encoding: "utf8" });
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
@@ -187,8 +192,8 @@ describe("a test sandbox's /etc", () => {
       const victim = join(scratch, "victim");
       writeFileSync(victim, "nameserver 192.0.2.1\n");
       const target = kind === "relative" ? "../run/systemd/resolve/stub-resolv.conf" : victim;
-      const done = simulated('ln -sfn "$4" "$1/etc/resolv.conf" && [ -L "$1/etc/resolv.conf" ]',
-                             target);
+      const done = simulated('ln -sfn "$6" "$1/etc/resolv.conf" && [ -L "$1/etc/resolv.conf" ]',
+                             [target]);
       expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
       expect(done.stdout).toMatch(/1 passed/);
       expect(readFileSync(victim, "utf8")).toBe("nameserver 192.0.2.1\n");
@@ -206,5 +211,20 @@ describe("a test sandbox's /etc", () => {
                            'head -c 160M /dev/zero > "$1/etc/skel/.toolchain/$n" || exit 1; done');
     expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
     expect(done.stdout).toMatch(/1 passed/);
+  });
+
+  // A host whose /etc holds a large file another user may write (a CI image's toolchains):
+  // `prepare` makes it root's alone in the box, as it does a sandbox's, copying none of its
+  // bytes (the overlay's `metacopy`), and the host's stays as it was.
+  it("is the box's own where the host's /etc holds a large file anyone may write: prepare " +
+     "takes the write away in the box alone", () => {
+    const done = simulated('mkdir -p "$1/etc/skel/.toolchain" && ' +
+                           'head -c 100M /dev/zero > "$1/etc/skel/.toolchain/big" && ' +
+                           'chmod 0666 "$1/etc/skel/.toolchain/big"', [],
+                           { file: "runner/runner.test.ts", title: "prepare, at",
+                             after: 'echo "host mode $(stat -c %a /etc/skel/.toolchain/big)"' });
+    expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
+    expect(done.stdout).toMatch(/1 passed/);
+    expect(done.stdout).toMatch(/^host mode 666$/m);
   });
 });

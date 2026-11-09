@@ -116,7 +116,8 @@ async function run(engine: string, over: Parameters<typeof startDoc>[2] = {},
                    authority = "owner") {
   const start = startDoc(doors, engine, { config: config(engine), ...over });
   box.start(start, authority);
-  expect(box.runner("launch", start.run).code).toBe(0);
+  const launched = box.runner("launch", start.run);
+  expect(launched.code, launched.why).toBe(0);
   const end = await doors.ended_(25_000, start.run);
   return { start, end: end.body["end"] as { exit_code: number } };
 }
@@ -1611,7 +1612,8 @@ describe("prepare, at the sandbox's real paths", () => {
                   "user ALL=(ALL:ALL) NOPASSWD: ALL\n@includedir /etc/sudoers.d\n");
     box.write("/etc/sudoers.d/90-user", "user ALL=(ALL) NOPASSWD:ALL\n");
     chmodSync(box.path("/etc/sudoers.d/90-user"), 0o440);
-    expect(box.exec(["sudo", "-l", "-U", "user"]).stdout).toMatch(/NOPASSWD/);
+    const before = box.exec(["sudo", "-l", "-U", "user"]);
+    expect(before.stdout, `${before.stdout}${before.stderr}`).toMatch(/NOPASSWD/);
     box.write("/opt/ta/anyone", "x");
     chmodSync(box.path("/opt/ta/anyone"), 0o666);
     box.write("/etc/group-ta", "x");
@@ -1620,7 +1622,8 @@ describe("prepare, at the sandbox's real paths", () => {
     const other = "a".repeat(64);
     box.write(`/opt/ta/runner/${other}/runner.mjs`, "// another runner");
     box.write("/var/lib/ta/inbox/si_x.code", "left at rest");
-    expect(box.runner("prepare", "8.8.8.8", "1.1.1.1").code).toBe(0);
+    const prepared = box.runner("prepare", "8.8.8.8", "1.1.1.1");
+    expect(prepared.code, prepared.why).toBe(0);
     expect(readFileSync(box.path("/etc/resolv.conf"), "utf8"))
       .toBe("nameserver 8.8.8.8\nnameserver 1.1.1.1\n");
     expect(box.exec(["cat", "/proc/mounts"]).stdout)
@@ -1632,7 +1635,9 @@ describe("prepare, at the sandbox's real paths", () => {
     expect(readFileSync(box.path("/etc/group"), "utf8")).toMatch(/^sudo:x:27:$/m);
     expect(readdirSync(box.path("/etc/sudoers.d"))).toEqual([]);
     for (const name of ["user", "ta-sync", "ta-run-0"]) {
-      expect(box.exec(["sudo", "-l", "-U", name]).stdout).toMatch(/is not allowed to run sudo/);
+      const listed = box.exec(["sudo", "-l", "-U", name]);
+      expect(listed.stdout, `sudo -l -U ${name}: ${listed.stdout}${listed.stderr}`)
+        .toMatch(/is not allowed to run sudo/);
     }
     expect(statSync(box.path("/opt/ta/anyone")).mode & 0o777).toBe(0o644);
     expect(statSync(box.path("/etc/group-ta")).mode & 0o777).toBe(0o644);

@@ -45,7 +45,8 @@ function preflight() {
       'mount -o remount,bind,ro "$1/usr"',
       '{ ! touch "$1/usr/.ta-preflight" 2>/dev/null || ' +
         '{ echo "a read-only bind of /usr took a write" >&2; false; }; }',
-      'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/upper,workdir=$1/work" "$1/etc"',
+      'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$1/upper,workdir=$1/work,metacopy=on" ' +
+        '"$1/etc"',
       'touch "$1/etc/.ta-preflight"',
       '{ [ ! -e /etc/.ta-preflight ] || ' +
         '{ echo "an overlay of /etc wrote to /etc" >&2; false; }; }',

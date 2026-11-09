@@ -160,14 +160,17 @@ export class Box {
     // The host's `/etc` (a trimmed one breaks `sudo -l`), as an overlay: the host's read-only
     // beneath, every write the box's own, above, on a disk of the box's (outside its root).
     // So nothing of it is copied (a CI host's holds gigabytes of toolchains, in /etc/skel),
-    // and no write reaches the host's.
+    // and no write reaches the host's. `metacopy`: a change of mode or owner (`prepare`'s
+    // `chmod go-w` of a host file another user may write) copies up the file's metadata
+    // alone, never its bytes, however large the file.
     mkdirSync(this.etcWrites);
     must(["mount", "-t", "tmpfs", "-o", `size=${ETC_BYTES},mode=0700`, "tmpfs", this.etcWrites]);
     mkdirSync(join(this.etcWrites, "upper"));
     mkdirSync(join(this.etcWrites, "work"));
     mkdirSync(this.path("/etc"));
     must(["mount", "-t", "overlay", "overlay", "-o", `lowerdir=/etc,upperdir=${
-      join(this.etcWrites, "upper")},workdir=${join(this.etcWrites, "work")}`, this.path("/etc")]);
+      join(this.etcWrites, "upper")},workdir=${join(this.etcWrites, "work")},metacopy=on`,
+          this.path("/etc")]);
     // The template's users, each file made anew, never written through: the host's may be a
     // link (a systemd-resolved host's resolv.conf), which a write would follow onto the host.
     const own = (path: string, text: string, mode = 0o644) => {
@@ -764,9 +767,9 @@ export class Sandbox extends Box {
   }
 
   /** The runner, one command, to its end: `ta-runner <sha> <command>`, as the Worker runs it. */
-  runner(...argv: string[]): { code: number; out: string } {
+  runner(...argv: string[]): Ran {
     const done = this.exec([LOADER, this.digest, ...argv]);
-    return { code: done.status ?? -1, out: done.stdout };
+    return ran(argv, done.status ?? -1, done.stdout, done.stderr);
   }
 
   /** The runner, one command, to its end, the test's own event loop free meanwhile. */
@@ -796,6 +799,22 @@ export class Sandbox extends Box {
       tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } };
     writeFileSync(this.path(LEASE_FILE), JSON.stringify(lease));
   }
+}
+
+/**
+ * A runner command's end: its exit code, what it printed, and `why`, the command with its
+ * code, stdout and stderr, for an assertion's message (a failed `prepare` says why there).
+ */
+export interface Ran {
+  readonly code: number;
+  readonly out: string;
+  readonly err: string;
+  readonly why: string;
+}
+
+function ran(argv: readonly string[], code: number, out: string, err: string): Ran {
+  return { code, out, err,
+           why: `ta-runner ${argv.join(" ")} exited ${code}\nstdout: ${out}\nstderr: ${err}` };
 }
 
 /** A start document for `engine`, its URLs on the fake doors. */
