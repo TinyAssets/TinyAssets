@@ -10,10 +10,14 @@
  * it runs: the runner works only in trees no agent's process can write (each run's own uid
  * is stopped before its home is read), and the sync agent's own uid can reach no file
  * outside the workspace a planted link could name.
+ *
+ * One way of each: one write path (`safeStream`, of which `safeWrite` is the one-piece
+ * case), one read path (`openRegular`, under `safeReadHead`, `safeRead` and `safePieces`),
+ * and one walker (`walkFiles`).
  */
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, type Dir, fchmodSync, fchownSync, fstatSync, lstatSync, mkdirSync,
-         opendirSync, openSync, readdirSync, readSync, renameSync, rmSync, unlinkSync,
+         opendirSync, openSync, readSync, renameSync, rmSync, unlinkSync,
          writeSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
@@ -85,51 +89,81 @@ export function safeDirs(base: string, dir: string, mode: number,
 }
 
 /**
- * `bytes` written whole at `path` (under `base`): its directories made as `safeDirs` makes
- * them, a fresh file created `O_EXCL | O_NOFOLLOW` beside it, its mode and owner set on the
- * descriptor, then renamed over whatever is there (a link at the name is replaced, never
- * written through).
+ * A regular file written a piece at a time at `path` (under `base`), with no link followed
+ * on its path: its directories made as `safeDirs` makes them, a fresh file created under a
+ * random name beside it (`O_EXCL | O_NOFOLLOW`), each piece appended as it comes, then its
+ * mode and owner set on the descriptor and renamed over whatever is there (a link at the
+ * name is replaced, never written through). What it holds at once is the piece in hand,
+ * whatever the file's size; a failure, or `abort`, removes what was written.
  */
-export function safeWrite(base: string, path: string, bytes: Uint8Array, mode: number,
-                          owner?: { uid: number; gid: number }, dirMode = 0o700): void {
+export function safeStream(base: string, path: string, mode: number,
+                           owner?: { uid: number; gid: number }, dirMode = 0o700):
+    { append(piece: Uint8Array): void; commit(): void; abort(): void } {
   const segments = below(base, path);
   const parent = segments.length === 1 ? base : join(base, ...segments.slice(0, -1));
   safeDirs(base, parent, dirMode, owner);
   const temp = join(parent, `.ta-${randomBytes(12).toString("hex")}`);
   const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
                       | constants.O_NOFOLLOW, mode);
-  try {
-    for (let at = 0; at < bytes.byteLength;) {
-      at += writeSync(fd, bytes, at, bytes.byteLength - at);
+  let open = true;
+  const close = () => {
+    if (open) {
+      open = false;
+      closeSync(fd);
     }
-    fchmodSync(fd, mode);
-    if (owner !== undefined) {
-      fchownSync(fd, owner.uid, owner.gid);
-    }
-  } catch (error) {
-    closeSync(fd);
+  };
+  const failed = (error: unknown): never => {
+    close();
     unlinkSync(temp);
     throw error;
-  }
-  closeSync(fd);
-  if (kind(path) === "dir") {
-    unlinkSync(temp);
-    throw new LinkRefused(`${path} is a directory`);
-  }
-  renameSync(temp, path);
+  };
+  return {
+    append(piece) {
+      try {
+        for (let at = 0; at < piece.byteLength;) {
+          at += writeSync(fd, piece, at, piece.byteLength - at);
+        }
+      } catch (error) {
+        failed(error);
+      }
+    },
+    commit() {
+      try {
+        fchmodSync(fd, mode);
+        if (owner !== undefined) {
+          fchownSync(fd, owner.uid, owner.gid);
+        }
+      } catch (error) {
+        failed(error);
+      }
+      close();
+      if (kind(path) === "dir") {
+        unlinkSync(temp);
+        throw new LinkRefused(`${path} is a directory`);
+      }
+      renameSync(temp, path);
+    },
+    abort() {
+      close();
+      rmSync(temp, { force: true });
+    },
+  };
 }
 
-/** A regular file's bytes, read with no link followed on its path; null when not one. */
-export function safeRead(base: string, path: string): Buffer | null {
-  return safeReadHead(base, path, Number.POSITIVE_INFINITY)?.bytes ?? null;
+/** `bytes` written whole at `path` (under `base`): `safeStream`'s file, in one piece. */
+export function safeWrite(base: string, path: string, bytes: Uint8Array, mode: number,
+                          owner?: { uid: number; gid: number }, dirMode = 0o700): void {
+  const out = safeStream(base, path, mode, owner, dirMode);
+  out.append(bytes);
+  out.commit();
 }
 
 /**
- * A regular file's first `max` bytes at most, and its whole size, read with no link
- * followed on its path; null when not one.
+ * A regular file at `path` (under `base`) opened for reading with no link followed on its
+ * path (each directory on it `lstat`ed, the file itself `O_NOFOLLOW`): its descriptor, or
+ * null when it is not a regular file this user may read.
  */
-export function safeReadHead(base: string, path: string, max: number):
-    { bytes: Buffer; size: number } | null {
+function openRegular(base: string, path: string): number | null {
   const segments = below(base, path);
   let at = base;
   for (const segment of segments.slice(0, -1)) {
@@ -144,21 +178,44 @@ export function safeReadHead(base: string, path: string, max: number):
   } catch {
     return null;  // a link (ELOOP), a missing file, or one this user may not read
   }
+  let regular = false;
   try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) {
-      return null;
+    regular = fstatSync(fd).isFile();
+  } finally {
+    if (!regular) {
+      closeSync(fd);
     }
-    const want = Math.min(stat.size, max);
+  }
+  return regular ? fd : null;
+}
+
+/** A regular file's bytes, read with no link followed on its path; null when not one. */
+export function safeRead(base: string, path: string): Buffer | null {
+  return safeReadHead(base, path, Number.POSITIVE_INFINITY)?.bytes ?? null;
+}
+
+/**
+ * A regular file's first `max` bytes at most, and its whole size, read with no link
+ * followed on its path; null when not one.
+ */
+export function safeReadHead(base: string, path: string, max: number):
+    { bytes: Buffer; size: number } | null {
+  const fd = openRegular(base, path);
+  if (fd === null) {
+    return null;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const want = Math.min(size, max);
     const out = Buffer.alloc(want);
     for (let read = 0; read < want;) {
       const got = readSync(fd, out, read, want - read, read);
       if (got === 0) {
-        return { bytes: out.subarray(0, read), size: stat.size };
+        return { bytes: out.subarray(0, read), size };
       }
       read += got;
     }
-    return { bytes: out, size: stat.size };
+    return { bytes: out, size };
   } finally {
     closeSync(fd);
   }
@@ -173,24 +230,11 @@ export function safeReadHead(base: string, path: string, max: number):
 export async function safePieces(base: string, path: string, pieceBytes: number,
                                  each: (piece: Buffer, index: number) => void | Promise<void>):
     Promise<boolean> {
-  const segments = below(base, path);
-  let at = base;
-  for (const segment of segments.slice(0, -1)) {
-    at = join(at, segment);
-    if (kind(at) !== "dir") {
-      return false;
-    }
-  }
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch {
+  const fd = openRegular(base, path);
+  if (fd === null) {
     return false;
   }
   try {
-    if (!fstatSync(fd).isFile()) {
-      return false;
-    }
     const piece = Buffer.alloc(pieceBytes);
     for (let index = 0, offset = 0; ; index += 1) {
       let filled = 0;
@@ -215,50 +259,74 @@ export async function safePieces(base: string, path: string, pieceBytes: number,
   }
 }
 
+/** How a walk goes: what it skips, what it is told of a name that is not UTF-8, its order. */
+export interface Walk {
+  /** An entry kept out (a directory with its whole tree), by its path from the walk's top. */
+  readonly skip?: (rel: string, isDir: boolean) => boolean;
+  /** A name that is not UTF-8, which no path names: told, its bytes escaped. */
+  readonly unnamed?: (rel: string) => void;
+  /**
+   * Each directory's entries in their names' byte order, that directory read whole and
+   * closed before any is offered, so the tree may change as it is walked; otherwise as the
+   * directory lists them, one entry at a time.
+   */
+  readonly sorted?: boolean;
+}
+
 /**
- * Every regular file under `dir`, by path from it, by `lstat` alone (links never entered),
- * one at a time: each directory is read entry by entry (`opendir`), so what the walk holds is
- * one open directory a level of depth, never the tree's paths, however many there are.
+ * Every regular file under `dir`, by path from it, by `lstat` alone (links never entered).
+ * What the walk holds is one directory a level of depth, never the tree's paths, however
+ * many there are: unsorted, one open directory read entry by entry (`opendir`).
  */
-export function* walkFiles(dir: string,
-                           skip: (rel: string, isDir: boolean) => boolean = () => false,
-                           base = dir, unnamed: (rel: string) => void = () => {}):
-    Generator<string> {
+export function* walkFiles(dir: string, walk: Walk = {}, base = dir): Generator<string> {
   if (kind(dir) !== "dir") {
     return;
   }
+  for (const raw of entries(dir, walk.sorted === true)) {
+    // Read by its bytes: a name that is not UTF-8 has no path a string can name, so it is
+    // told (`unnamed`, its bytes escaped), never silently missed.
+    const name = raw.toString("utf8");
+    if (!Buffer.from(name, "utf8").equals(raw)) {
+      walk.unnamed?.(join(relative(base, dir), escapedName(raw)));
+      continue;
+    }
+    const path = join(dir, name);
+    const rel = relative(base, path);
+    const found = kind(path);
+    if (walk.skip?.(rel, found === "dir") === true) {
+      continue;
+    }
+    if (found === "dir") {
+      yield* walkFiles(path, walk, base);
+    } else if (found === "file") {
+      yield rel;
+    }
+  }
+}
+
+/** A directory's entries' names, as bytes: read whole and sorted, or one at a time. */
+function* entries(dir: string, sorted: boolean): Generator<Buffer> {
   let handle: Dir;
   try {
     // Buffer names (Node takes `buffer` here, though its types say only text encodings).
     handle = opendirSync(dir, { encoding: "buffer" as BufferEncoding });
   } catch {
-    return;  // one this user may not list: its contents are not ours to sync
+    return;  // one this user may not list: its contents are not ours to walk
   }
+  const all: Buffer[] = [];
   try {
     for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
-      // Read by its bytes: a name that is not UTF-8 has no path a string can name, so it is
-      // told (`unnamed`, its bytes escaped), never silently missed.
       const raw = entry.name as unknown as Buffer;
-      const name = raw.toString("utf8");
-      if (!Buffer.from(name, "utf8").equals(raw)) {
-        unnamed(join(relative(base, dir), escapedName(raw)));
-        continue;
-      }
-      const path = join(dir, name);
-      const rel = relative(base, path);
-      const found = kind(path);
-      if (skip(rel, found === "dir")) {
-        continue;
-      }
-      if (found === "dir") {
-        yield* walkFiles(path, skip, base, unnamed);
-      } else if (found === "file") {
-        yield rel;
+      if (sorted) {
+        all.push(raw);
+      } else {
+        yield raw;
       }
     }
   } finally {
     handle.closeSync();
   }
+  yield* all.sort(Buffer.compare);
 }
 
 /**
@@ -270,90 +338,6 @@ export function escapedName(raw: Buffer): string {
   for (const b of raw) {
     out += b === 92 ? "\\\\" : b >= 32 && b < 127 ? String.fromCharCode(b)
       : `\\x${b.toString(16).padStart(2, "0")}`;
-  }
-  return out;
-}
-
-/**
- * A regular file written a piece at a time, with no link followed on its path: made under a
- * random name beside it (`O_EXCL | O_NOFOLLOW`), each piece appended as it comes, then its
- * mode and owner set on the descriptor and renamed into place. What it holds at once is the
- * piece in hand, whatever the file's size; `abort` removes what was written.
- */
-export function safeStream(base: string, path: string, mode: number,
-                           owner?: { uid: number; gid: number }, dirMode = 0o700):
-    { append(piece: Uint8Array): void; commit(): void; abort(): void } {
-  const segments = below(base, path);
-  const parent = segments.length === 1 ? base : join(base, ...segments.slice(0, -1));
-  safeDirs(base, parent, dirMode, owner);
-  const temp = join(parent, `.ta-${randomBytes(12).toString("hex")}`);
-  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-                      | constants.O_NOFOLLOW, mode);
-  let open = true;
-  const close = () => {
-    if (open) {
-      open = false;
-      closeSync(fd);
-    }
-  };
-  return {
-    append(piece) {
-      try {
-        for (let at = 0; at < piece.byteLength;) {
-          at += writeSync(fd, piece, at, piece.byteLength - at);
-        }
-      } catch (error) {
-        close();
-        unlinkSync(temp);
-        throw error;
-      }
-    },
-    commit() {
-      try {
-        fchmodSync(fd, mode);
-        if (owner !== undefined) {
-          fchownSync(fd, owner.uid, owner.gid);
-        }
-      } finally {
-        close();
-      }
-      if (kind(path) === "dir") {
-        unlinkSync(temp);
-        throw new LinkRefused(`${path} is a directory`);
-      }
-      renameSync(temp, path);
-    },
-    abort() {
-      close();
-      rmSync(temp, { force: true });
-    },
-  };
-}
-
-/** Every regular file under `dir`, by path from it, by `lstat` alone: links never entered. */
-export function safeWalk(dir: string, skip: (rel: string) => boolean = () => false,
-                         out: string[] = [], base = dir): string[] {
-  if (kind(dir) !== "dir") {
-    return out;
-  }
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return out;  // one this user may not list: its contents are not ours to sync
-  }
-  for (const name of entries) {
-    const path = join(dir, name);
-    const rel = relative(base, path);
-    if (skip(rel)) {
-      continue;
-    }
-    const found = kind(path);
-    if (found === "dir") {
-      safeWalk(path, skip, out, base);
-    } else if (found === "file") {
-      out.push(rel);
-    }
   }
   return out;
 }

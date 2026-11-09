@@ -12,9 +12,10 @@
  * the root runner, which Node's own `uid` option cannot do (it drops every supplementary
  * group).
  */
-import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync,
-         unlinkSync, writeSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+
+import { tryLock, unlock } from "./pid-lock";
 
 export interface Identity {
   readonly name: string;
@@ -50,40 +51,18 @@ export function user(root: string, name: string): Identity {
 
 export const POOL_PREFIX = "ta-run-";
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * A pool user taken for `owner` (a run id, or a sign-in check's name): its lock file made
- * `O_EXCL` in the root-only state directory, holding the taker's pid; a lock whose pid is
- * gone is taken over (its holder died). Every process the user still has is killed first.
+ * A pool user taken by this process: its lock (`pid-lock.ts`) in the root-only state
+ * directory, one a pool user; a lock whose holder is gone is taken over (its holder died).
+ * Every process the user still has is killed first.
  */
-export function take(root: string, state: string, owner: string): Identity {
+export function take(root: string, state: string): Identity {
   const dir = `${state}/pool`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const candidate of users(root).filter((each) => each.name.startsWith(POOL_PREFIX))) {
-    const lock = `${dir}/${candidate.name}`;
-    if (existsSync(lock)) {
-      const [pid] = readFileSync(lock, "utf8").split(" ");
-      if (alive(Number(pid))) {
-        continue;
-      }
-      unlinkSync(lock);
+    if (!tryLock(`${dir}/${candidate.name}`)) {
+      continue;  // a live run's
     }
-    let fd: number;
-    try {
-      fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-    } catch {
-      continue;  // taken by another run between the look and the take
-    }
-    writeSync(fd, `${process.pid} ${owner}`);
-    closeSync(fd);
     killAll(candidate.uid);
     return candidate;
   }
@@ -93,11 +72,7 @@ export function take(root: string, state: string, owner: string): Identity {
 /** The user given back, once every process of it is gone. */
 export function give(state: string, taken: Identity): void {
   killAll(taken.uid);
-  try {
-    unlinkSync(`${state}/pool/${taken.name}`);
-  } catch {
-    // given back already
-  }
+  unlock(`${state}/pool/${taken.name}`);
 }
 
 /** The pids whose real uid is `uid`, read from `/proc` (root sees every one). */

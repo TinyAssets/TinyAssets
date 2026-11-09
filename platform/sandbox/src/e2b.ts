@@ -83,7 +83,7 @@ export interface Handle {
   readonly envdAccessToken: string;
 }
 
-/** E2B's network document (`SandboxNetworkConfig`), as `owner/src/network.ts` makes it. */
+/** E2B's network document (`SandboxNetworkConfig`), as the owner's network plan makes it. */
 export interface E2bNetwork {
   readonly allowOut: readonly string[];
   readonly denyOut: readonly string[];

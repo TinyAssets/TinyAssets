@@ -23,30 +23,7 @@ import { envStem, MCP_DOOR } from "../../contract/src/egress";
 import { forbids } from "../../contract/src/text";
 import type { CredentialKind } from "../../contract/src/sandbox";
 
-/** A start as the sandbox Worker hands it to the runner: no lease secrets in it. */
-export interface StartDoc {
-  readonly run: string;
-  readonly agent: string;
-  readonly conversation: string;
-  readonly engine: string;
-  readonly credential: CredentialKind;
-  readonly model: string | null;
-  readonly session_id: string | null;
-  readonly prompt: string;
-  readonly unattended: boolean;
-  readonly authority: string;
-  readonly lease: { readonly lease_id: string; readonly epoch: number };
-  readonly config: { readonly generation: number; readonly env: Readonly<Record<string, string>>;
-                     readonly inherit: readonly string[] };
-  readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
-                   readonly signin: string };
-  /**
-   * How long an agent's scratch may go unused before it is deleted (`scratch.ts`): the
-   * control record's `scratch_retention_days`, handed by the sandbox Worker; absent or null
-   * when the record names none, and then only the disk's own pressure lets scratch go.
-   */
-  readonly scratch_retention_days?: number | null;
-}
+import type { StartDoc } from "./protocol";
 
 export const WORKSPACE = "/workspace";
 export const AGENTS_DIR = "/workspace/agents";

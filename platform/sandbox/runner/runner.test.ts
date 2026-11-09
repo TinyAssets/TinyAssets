@@ -11,11 +11,12 @@
  * resume, the projection and big files are here too.
  */
 import { spawn } from "node:child_process";
+import { createServer, type Server } from "node:net";
 import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync,
          readFileSync, rmSync, statSync, symlinkSync,
          writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -25,13 +26,13 @@ import { sandboxEnv } from "../../contract/src/egress";
 import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 
-import { invocation, type StartDoc } from "./engine";
+import { invocation } from "./engine";
 import { lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { SCRATCH_ENV } from "./scratch";
-import { PROTOCOL } from "./protocol";
+import { JOB_FILES, PROTOCOL, type StartDoc } from "./protocol";
 import { READS, STATE_FORMAT } from "./state-format";
-import { FORMATS, sample, shapeProblems } from "./state-shape";
+import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./state-shape";
 import { processesOf } from "./users";
 import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./harness";
 
@@ -107,7 +108,7 @@ afterEach(() => {
 function config(engine: string) {
   const credential = sources.get(engine)!.cli!.credential[0]!;
   const made = runEnv(sources, engine, credential);
-  return { generation: 1, inherit: ["PATH", "LANG"],
+  return { generation: 1, egress: { mode: "open", destinations: [] }, inherit: ["PATH", "LANG"],
            env: credential === "api_key" ? { ...made.env,
              ANTHROPIC_BASE_URL: `${doors.origin}/r/x/c/c${"0".repeat(24)}/`,
              ANTHROPIC_API_KEY: "ta_ph_placeholder" } : made.env };
@@ -840,9 +841,23 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
   });
 
   it("takes over a lock a pid of another boot names: a reused pid never holds it", async () => {
-    const lock = box.path("/var/lib/ta/locks/kimi");
-    mkdirSync(lock, { recursive: true });
-    writeFileSync(`${lock}/holder`, "1 a-boot-before-this-one");  // pid 1: always alive
+    const lock = box.path("/var/lib/ta/locks/kimi.lock");
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, "1 a-boot-before-this-one");  // pid 1: always alive
+    const start = await liveKimi(0, {});
+    const end = await doors.ended_(25_000, start.run);
+    expect(end.body["end"]).toEqual({ exit_code: 0 });
+    expect(box.ran("kimi")).toHaveLength(1);
+  });
+
+  it("runs past the store and sync locks an earlier runner left, its holder gone", async () => {
+    // The earlier runner's forms: a directory naming its holder (`holder`, `pid`).
+    mkdirSync(box.path("/var/lib/ta/locks/kimi"), { recursive: true });
+    writeFileSync(box.path("/var/lib/ta/locks/kimi/holder"), "999999 a-boot-before-this-one");
+    mkdirSync(box.path("/var/lib/ta-sync/lock"));
+    writeFileSync(box.path("/var/lib/ta-sync/lock/pid"), "999999");
+    chownSync(box.path("/var/lib/ta-sync/lock"), SYNC_UID, SYNC_UID);
+    chownSync(box.path("/var/lib/ta-sync/lock/pid"), SYNC_UID, SYNC_UID);
     const start = await liveKimi(0, {});
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 0 });
@@ -851,10 +866,10 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
 
   it("waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly",
      { tags: ["large"] }, async () => {
-    const lock = box.path("/var/lib/ta/locks/kimi");
-    mkdirSync(lock, { recursive: true });
+    const lock = box.path("/var/lib/ta/locks/kimi.lock");
+    mkdirSync(dirname(lock), { recursive: true });
     const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    writeFileSync(`${lock}/holder`, `${process.pid} ${boot}`);  // this test: alive, this boot
+    writeFileSync(lock, `${process.pid} ${boot}`);  // this test: alive, this boot
     const start = await liveKimi(0, {});
     const end = await doors.ended_(90_000, start.run);
     expect((end.body["end"] as { exit_code: number }).exit_code).not.toBe(0);
@@ -882,7 +897,8 @@ describe("an API-key run's base URL (codexurl_research.md)", () => {
     return { run: RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
              model: null, session_id: null, prompt: "p", unattended: false, authority: "owner",
              lease: { lease_id: "b".repeat(32), epoch: 1 },
-             config: { generation: 1, env: { ...made.env, ...keyed }, inherit: ["PATH"] },
+             config: { generation: 1, egress: { mode: "open", destinations: [] },
+                       env: { ...made.env, ...keyed }, inherit: ["PATH"] },
              urls: { mcp: `https://egress.tinyassets.io/r/${RUN}/${SECRET}/mcp`,
                      mcp_bare: `https://egress.tinyassets.io/r/${RUN}/mcp`,
                      events: `https://egress.tinyassets.io/r/${RUN}/events`,
@@ -1612,7 +1628,11 @@ describe("cancel and the runner's state", () => {
           files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleepers[0]!.pid, ended: false })));
         box.write(`/var/lib/ta/signin/${id}/state.json`, JSON.stringify(sample(
           files["var/lib/ta/signin/<id>/state.json"]!, { pid: sleepers[1]!.pid, ended: false })));
-        expect(JSON.parse(box.runner("state").out)).toMatchObject({ live: 2 });
+        const answer = JSON.parse(box.runner("state").out) as Record<string, unknown>;
+        expect(answer).toMatchObject({ live: 2 });
+        // The answer is the one the runner's protocol records, field for field.
+        expect(Object.keys(answer).sort())
+          .toEqual([...PROTOCOLS[String(PROTOCOL)]!.state].sort());
         process.env["TA_RUNNER_DIGEST"] = "a".repeat(64);
         try {
           expect(box.runner("adopt").code).toBe(3);  // both read as living
@@ -1642,6 +1662,50 @@ describe("cancel and the runner's state", () => {
 });
 
 describe("renewal", () => {
+  /** A run's directory's entries, but a state write in flight (`fsafe.ts`'s `.ta-` names). */
+  const jobEntries = (run: string) => readdirSync(box.path(`/var/lib/ta/runs/${run}`))
+    .filter((name) => !name.startsWith(".ta-")).sort();
+  const runState = (run: string) => JSON.parse(readFileSync(
+    box.path(`/var/lib/ta/runs/${run}/state.json`), "utf8")) as Record<string, unknown>;
+
+  it("tells a run its renewal once it listens, on its channel, and waits for its answer",
+     async () => {
+    // A live run's runner (a process of the test's) that is not listening yet.
+    const sleeper = spawn("sleep", ["30"], { stdio: "ignore" });
+    const run = `run_${"7".repeat(32)}`;
+    const files = FORMATS[String(STATE_FORMAT)]!.files;
+    box.write(`/var/lib/ta/runs/${run}/state.json`, JSON.stringify(sample(
+      files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleeper.pid, ended: false })));
+    const heard: string[] = [];
+    let server: Server | null = null;
+    // It begins listening a while after the renewal is asked, and answers each message.
+    const listening = setTimeout(() => {
+      server = createServer({ allowHalfOpen: true }, (socket) => {
+        let text = "";
+        socket.on("data", (data: Buffer) => { text += data.toString("utf8"); });
+        socket.on("end", () => {
+          heard.push(text);
+          setTimeout(() => socket.end("done\n"), 300);  // acting takes a while
+        });
+      });
+      server.listen(box.path(`/var/lib/ta/runs/${run}/job.sock`));
+    }, 600);
+    try {
+      const began = Date.now();
+      expect(await box.runnerAsync("renew-wait", String(Date.now() + 8_000))).toBe(0);
+      expect(heard).toEqual(["renewing\n"]);
+      // It came back on the answer, not at its deadline, and not before the answer.
+      expect(Date.now() - began).toBeGreaterThanOrEqual(900);
+      expect(Date.now() - began).toBeLessThan(6_000);
+      expect(await box.runnerAsync("renewed")).toBe(0);
+      expect(heard).toEqual(["renewing\n", "renewed\n"]);
+    } finally {
+      clearTimeout(listening);
+      (server as Server | null)?.close();
+      sleeper.kill();
+    }
+  });
+
   it("posts renewing when quiet, holds its posts, then renewed; a CLI that failed across it " +
      "is resumed", async () => {
     // The CLI is still running at `renewed` and fails just after, as a model call the pause
@@ -1653,16 +1717,35 @@ describe("renewal", () => {
                              holdUntil: release, exit: 1 });
     const start = startDoc(doors, "claude-code", { config: config("claude-code") });
     box.start(start);
-    box.runner("launch", start.run);
+    // A heartbeat of half a second, so a post the pause did not hold shows within it.
+    process.env["TA_HEARTBEAT_MS"] = "500";
+    try {
+      box.runner("launch", start.run);
+    } finally {
+      delete process.env["TA_HEARTBEAT_MS"];
+    }
     await waitFor(() => box.runner("state").out.includes("\"quiet\":true")
       && box.ran("claude-code").length > 0);
-    // The doors answer from this process: the command runs beside it, not blocking it.
+    // The doors answer from this process: the command runs beside it, not blocking it. They
+    // answer the next posts busy, so the run's acting takes a while (a second, retried).
+    doors.busy = 2;
     expect(await box.runnerAsync("renew-wait", String(Date.now() + 10_000))).toBe(0);
+    // Answered once the run acted: its renewing posted (nothing in flight at the pause) and
+    // its state saying so, both before `renew-wait` returned.
+    expect(doors.frames().map((event) => event["type"])).toContain("ta.renewing");
+    expect(runState(start.run).renewing).toBe(true);
+    // Told on the run's channel and answered there: its directory holds what the protocol
+    // names (`JOB_FILES`), and no acknowledgement on disk.
+    expect(jobEntries(start.run)).toEqual([JOB_FILES.log, JOB_FILES.socket, JOB_FILES.start,
+                                           JOB_FILES.state].sort());
     const held = doors.events().length;
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    expect(doors.events().length).toBe(held);  // nothing posted while paused
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    expect(doors.events().length).toBe(held);  // nothing posted while paused, no heartbeat
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
     expect(box.runner("renewed").code).toBe(0);
+    expect(runState(start.run).renewing).toBe(false);
+    expect(jobEntries(start.run)).toEqual([JOB_FILES.log, JOB_FILES.socket, JOB_FILES.start,
+                                           JOB_FILES.state].sort());
     writeFileSync(release, "");
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 0 });
