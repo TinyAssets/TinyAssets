@@ -90,13 +90,6 @@ export const CODES = Object.freeze({
   lost: "sandbox_lost",
 } as const);
 
-/** The runner's exit codes: done, "no" (not signed in, not live), and anything else a fault. */
-const OK = EXIT.ok;
-const NO = EXIT.no;
-/** The loader's: no runner of that digest in the sandbox; its bytes are not their digest. */
-const ABSENT = EXIT.absent;
-const MISMATCH = EXIT.mismatch;
-
 /** A runner command that did not answer 0 or 3: its exit code kept. */
 class RunnerFailed extends Error {
   override readonly name = "RunnerFailed";
@@ -470,17 +463,17 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async #run(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
       Promise<{ code: number; out: string }> {
     let done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
-    if (done.exitCode === ABSENT && box.runner === await this.#digest) {
+    if (done.exitCode === EXIT.absent && box.runner === await this.#digest) {
       await this.#install(box);
       done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
     }
-    if (done.exitCode === MISMATCH) {
+    if (done.exitCode === EXIT.mismatch) {
       const message = `sandbox_runner_mismatch: the runner ${box.runner} in sandbox ${
         box.sandboxID} is not its digest; nothing runs on it`;
       console.error(message);
       throw new RunnerRefused(message);
     }
-    if (done.exitCode !== OK && done.exitCode !== NO) {
+    if (done.exitCode !== EXIT.ok && done.exitCode !== EXIT.no) {
       throw new RunnerFailed(done.exitCode, `ta-runner ${argv[0]} failed (${done.exitCode}): ${
         done.stderr}`);
     }
@@ -493,7 +486,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const e2b = this.#e2b();
     await e2b.upload(handle, incoming(digest), runnerBytes());
     const done = await e2b.exec(handle, [LOADER, INSTALL, digest], { timeoutMs: COMMAND_MS });
-    if (done.exitCode !== OK) {
+    if (done.exitCode !== EXIT.ok) {
       throw new Error(`the runner ${digest} was not installed (${done.exitCode}): ${
         done.stderr}`);
     }
@@ -518,7 +511,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       try {
         live = (await this.#runnerState(box)).live;
       } catch (error) {
-        if (!(error instanceof RunnerFailed) || error.exitCode !== ABSENT) {
+        if (!(error instanceof RunnerFailed) || error.exitCode !== EXIT.absent) {
           throw error;
         }
         live = 0;  // its own runner gone from the disk: nothing can live on it
@@ -528,7 +521,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       const adopted = { ...box, runner: digest };
       await this.#install(adopted);
-      if ((await this.#run(adopted, [COMMAND.adopt])).code !== OK) {
+      if ((await this.#run(adopted, [COMMAND.adopt])).code !== EXIT.ok) {
         return { box, adopted: false };  // something began living since the look
       }
       this.#sql.exec("UPDATE sandboxes SET runner = ? WHERE authority = ?", digest, authority);
@@ -703,7 +696,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       ready: async (handle) => {
         if (start.credential === "vendor_login_in_sandbox") {
           const signedIn = await this.#run(handle, [COMMAND.signinCheck, start.engine]);
-          if (signedIn.code === NO) {
+          if (signedIn.code === EXIT.no) {
             return { started: false, code: CODES.signin };
           }
         }
@@ -784,7 +777,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       await e2b.upload(handle, inboxDoc(job.id), json(job.document));
       const launched = await this.#run(handle, [JOBS[job.kind].launch, job.id]);
-      if (launched.code !== OK) {
+      if (launched.code !== EXIT.ok) {
         throw new Error(`the runner did not launch ${job.kind === "run" ? "run" : "sign-in"} ${
           job.id}`);
       }
@@ -830,7 +823,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                                new TextEncoder().encode(request.code));
       try {
         return { delivered: (await this.#run(handle, [COMMAND.loginInput, request.id])).code
-          === OK };
+          === EXIT.ok };
       } catch (error) {
         await this.#run(handle, [COMMAND.loginDrop, request.id]).catch(() => undefined);
         throw error;
@@ -847,7 +840,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     return this.#serial(async () => {
       const handle = await this.#running(request.authority);
       return { cancelled: handle !== null
-        && (await this.#run(handle, [JOBS.signin.cancel, request.id])).code === OK };
+        && (await this.#run(handle, [JOBS.signin.cancel, request.id])).code === EXIT.ok };
     });
   }
 
@@ -869,7 +862,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return { cancelled: false };
       }
       // SIGTERM to the CLI, then a kill after its grace; the runner then syncs and ends.
-      return { cancelled: (await this.#run(handle, [JOBS.run.cancel, request.run])).code === OK };
+      return { cancelled: (await this.#run(handle, [JOBS.run.cancel, request.run])).code
+        === EXIT.ok };
     });
   }
 
@@ -886,7 +880,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (handle === null) {
         return { state: "exited" };
       }
-      return { state: (await this.#run(handle, [COMMAND.status, request.run])).code === OK
+      return { state: (await this.#run(handle, [COMMAND.status, request.run])).code === EXIT.ok
         ? "running" : "exited" };
     });
   }
@@ -1088,7 +1082,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       } catch (error) {
         // A start on the chain adopted another runner meanwhile, and its `prepare` dropped
         // this one's bytes: no quiet moment read here, and nothing failed.
-        if (error instanceof RunnerFailed && error.exitCode === ABSENT
+        if (error instanceof RunnerFailed && error.exitCode === EXIT.absent
             && this.#row(row.authority)?.runner !== handle.runner) {
           return;
         }
