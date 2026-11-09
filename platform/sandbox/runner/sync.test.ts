@@ -15,6 +15,7 @@
 import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -22,14 +23,14 @@ import { fileURLToPath } from "node:url";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
   AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SANDBOX_HEAP, wildcard,
 } from "../../contract/src/sync-ignore";
 import { CHUNK_BYTES, INLINE_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX } from "../../contract/src/limits";
 import {
-  INTENT_ID_CHARS, memoryMirror, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut,
+  INTENT_ID_CHARS, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut,
 } from "./sync";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -44,15 +45,54 @@ afterAll(() => {
   }
 });
 
-function client(handler: Handler, log: string[] = []): SyncClient {
-  const fetcher = (async (url: string, init: { body: string }) => {
-    const door = url.split("/sync/")[1]!;
-    log.push(door);
-    const got = await handler(door, JSON.parse(init.body) as Record<string, unknown>);
-    return new Response(JSON.stringify(got.body), { status: got.status });
-  }) as unknown as typeof fetch;
-  return new SyncClient("https://egress.test", "tok", 1, 2, fetcher);
+const servers: Server[] = [];
+const keptServers: Server[] = [];
+const close = (list: Server[]) => {
+  for (const server of list.splice(0)) {
+    server.closeAllConnections();
+    server.close();
+  }
+};
+afterEach(() => close(servers));
+afterAll(() => close(keptServers));
+
+/** What a stand-in door answers one call: its door's name and its body as sent. */
+type Answer = (door: string, raw: string) =>
+  { status: number; text: string } | Promise<{ status: number; text: string }>;
+
+/**
+ * A stand-in sync door on loopback, answering each call by `answer`; its client. It is closed
+ * after the test, unless it is `kept` (closed after the file).
+ */
+async function serve(answer: Answer, kept = false): Promise<SyncClient> {
+  const server = createServer((request, response) => {
+    const parts: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => { parts.push(chunk); });
+    request.on("end", () => {
+      void (async () => {
+        const got = await answer((request.url ?? "").split("/sync/")[1]!,
+                                 Buffer.concat(parts).toString("utf8"));
+        response.writeHead(got.status, { "content-type": "application/json" });
+        response.end(got.text);
+      })();
+    });
+  });
+  (kept ? keptServers : servers).push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  return new SyncClient(`http://127.0.0.1:${port}`, "tok", 1, 2);
 }
+
+function client(handler: Handler, log: string[] = []): Promise<SyncClient> {
+  return serve(async (door, raw) => {
+    log.push(door);
+    const got = await handler(door, JSON.parse(raw) as Record<string, unknown>);
+    return { status: got.status, text: JSON.stringify(got.body) };
+  });
+}
+
+/** A mirror of the sync agent's own kind (`openMirror`), in memory. */
+const mirrorOf = () => openMirror(":memory:");
 
 let version = 100;
 function commitAll(body: Record<string, unknown>, sent?: string[]) {
@@ -85,8 +125,8 @@ describe("a refusal of one file", () => {
     writeFileSync(join(local, "small.txt"), "small");
     writeFileSync(join(local, "big.bin"), Buffer.alloc(10_000, 7));
     const sent: string[] = [];
-    const mirror = memoryMirror();
-    const report = await syncOut(client((door, body) => {
+    const mirror = mirrorOf();
+    const report = await syncOut(await client((door, body) => {
       if (door === "upload_begin") {
         return { status: 507, body: { error: { code: "storage_full", message: FULL } } };
       }
@@ -104,16 +144,16 @@ describe("a refusal of one file", () => {
     const { place: p, local } = place();
     writeFileSync(join(local, "big.bin"), Buffer.alloc(10_000, 7));
     const quota = "file_quota: too many uploads are open; commit or abort one first";
-    const report = await syncOut(client((door, body) => door === "upload_begin"
+    const report = await syncOut(await client((door, body) => door === "upload_begin"
       ? { status: 403, body: { error: { code: "file_quota", message: quota } } }
       : door === "commit" ? commitAll(body) : { status: 404, body: {} }),
-                                 p, memoryMirror(), LEASE, []);
+                                 p, mirrorOf(), LEASE, []);
     expect(report.refused).toEqual([{ path: "/workspace/big.bin", reason: quota,
                                       code: "file_quota" }]);
     // A lost lease still is a fence.
-    await expect(syncOut(client(() => ({ status: 403, body: { error: {
+    await expect(syncOut(await client(() => ({ status: 403, body: { error: {
       code: "sync_fenced", message: "sync_fenced: the sync lease was lost" } } })),
-                         p, memoryMirror(), LEASE, [])).rejects.toBeInstanceOf(SyncFenced);
+                         p, mirrorOf(), LEASE, [])).rejects.toBeInstanceOf(SyncFenced);
   });
 });
 
@@ -122,8 +162,8 @@ describe("the mirror, from each file's identity when it was offered", () => {
     const { place: p, local } = place();
     writeFileSync(join(local, "a.txt"), "aaaa");
     writeFileSync(join(local, "b.txt"), "bbbb");
-    const mirror = memoryMirror();
-    const report = await syncOut(client((door, body) => {
+    const mirror = mirrorOf();
+    const report = await syncOut(await client((door, body) => {
       if (door === "commit") {
         rmSync(join(local, "a.txt"), { force: true });
         return commitAll(body);
@@ -133,7 +173,7 @@ describe("the mirror, from each file's identity when it was offered", () => {
     expect(report.committed).toBeGreaterThanOrEqual(2);
     // Gone now: the next sync removes it from the owner's files.
     const sent: string[] = [];
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body, sent)
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, sent)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(sent).toContain("/workspace/a.txt");
     expect(mirror.get("/workspace/a.txt")).toBeUndefined();
@@ -144,8 +184,8 @@ describe("the mirror, from each file's identity when it was offered", () => {
     const file = join(local, "notes.md");
     writeFileSync(file, "version-1");
     let changed = false;
-    const mirror = memoryMirror();
-    await syncOut(client((door, body) => {
+    const mirror = mirrorOf();
+    await syncOut(await client((door, body) => {
       if (door === "commit" && !changed) {
         changed = true;
         writeFileSync(file, "version-2");  // the same size, by a concurrent run
@@ -155,7 +195,7 @@ describe("the mirror, from each file's identity when it was offered", () => {
       return door === "commit" ? commitAll(body) : { status: 404, body: {} };
     }), p, mirror, LEASE, []);
     const sent: string[] = [];
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body, sent)
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, sent)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(statSync(file).size).toBe(9);
     expect(sent).toContain("/workspace/notes.md");
@@ -168,7 +208,7 @@ describe("the mirror, from each file's identity when it was offered", () => {
     writeFileSync(file, Buffer.alloc(10_000, 1));
     const aborted: string[] = [];
     const committed: string[] = [];
-    const report = await syncOut(client((door, body) => {
+    const report = await syncOut(await client((door, body) => {
       if (door === "upload_begin") {
         writeFileSync(file, Buffer.alloc(10_000, 2));  // the file changes mid-sync
         return { status: 200, body: { intent_id: "1".repeat(INTENT_ID_CHARS),
@@ -184,7 +224,7 @@ describe("the mirror, from each file's identity when it was offered", () => {
         return commitAll(body);
       }
       return { status: 200, body: {} };
-    }), p, memoryMirror(), LEASE, []);
+    }), p, mirrorOf(), LEASE, []);
     expect(aborted).toEqual(["1".repeat(INTENT_ID_CHARS)]);
     expect(committed).toEqual([]);
     expect(report.skipped.map((each) => each.path)).toEqual(["/workspace/log.bin"]);
@@ -197,7 +237,7 @@ describe("the mirror, from each file's identity when it was offered", () => {
     }
     const mirror = openMirror(join(root, "mirror.db"));
     let commits = 0;
-    await expect(syncOut(client((door, body) => {
+    await expect(syncOut(await client((door, body) => {
       if (door === "commit" && ++commits === 2) {
         return { status: 500, body: { error: { code: "boom", message: "the door failed" } } };
       }
@@ -222,8 +262,8 @@ describe("the sync-ignore", () => {
     writeFileSync(join(local, ".ta", "sync-ignore"), "*\n");
     writeFileSync(join(local, "report.md"), "the work the owner asked for");
     const sent: string[] = [];
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body, sent)
-      : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, sent)
+      : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
     expect(sent).toEqual(["/workspace/.ta/sync-ignore"]);
   });
 
@@ -232,10 +272,10 @@ describe("the sync-ignore", () => {
     mkdirSync(join(local, "build"), { recursive: true });
     writeFileSync(join(local, "build", "kept.txt"), "v1");
     writeFileSync(join(local, "build", "new.txt"), "new");
-    const mirror = memoryMirror({ files: { "/workspace/build/kept.txt": {
-      version: 1, size: 1, mtime_ms: 0, sha256: "x" } } });
+    const mirror = mirrorOf();
+    mirror.put("/workspace/build/kept.txt", { version: 1, size: 1, mtime_ms: 0, sha256: "x" });
     const sent: string[] = [];
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body, sent)
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, sent)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(sent).toContain("/workspace/build/kept.txt");
     expect(sent).not.toContain("/workspace/build/new.txt");
@@ -277,6 +317,15 @@ describe("memory, whatever the tree holds", () => {
     const usage = process.memoryUsage();
     return usage.heapUsed + usage.arrayBuffers;
   };
+  // One door for every measurement, its answer each run's: the client's own state for its
+  // door (its connection) is made once, before any measurement, never inside one.
+  let answer: Answer = () => ({ status: 404, text: "{}" });
+  let shared: SyncClient | null = null;
+  const door = async (next: Answer): Promise<SyncClient> => {
+    shared ??= await serve((name, raw) => answer(name, raw), true);
+    answer = next;
+    return shared;
+  };
 
   /**
    * Sync-in of one file of `chunks` chunks from a stand-in door, sampled at every call: the
@@ -288,22 +337,20 @@ describe("memory, whatever the tree holds", () => {
     const { place: p, local } = place();
     const piece = Buffer.alloc(CHUNK_BYTES, 3).toString("base64");
     const kept: string[] = [];
-    const mirror = memoryMirror();
+    const mirror = mirrorOf();
     let open = 0;
     let inFlight = 0;
     let reply = 0;
     let peak = 0;
-    const base = live();
-    const fetcher = (async (url: string, init: { body: string }) => {
+    const answered = await door(async (name, raw) => {
       open += 1;
       inFlight = Math.max(inFlight, open);
       await new Promise((resolve) => setImmediate(resolve));
       peak = Math.max(peak, live() - base);
-      const door = url.split("/sync/")[1]!;
-      const body = JSON.parse(init.body) as Record<string, unknown>;
-      const text = JSON.stringify(door === "changes"
+      const body = JSON.parse(raw) as Record<string, unknown>;
+      const text = JSON.stringify(name === "changes"
         ? { cursor: 5, changes: [{ path: "/workspace/video.bin", kind: "file", version: 1 }] }
-        : door === "read"
+        : name === "read"
         ? { entry: { version: 1, mode: 0, kind: "file" },
             chunks: Array.from({ length: chunks }, (_, i) => ({
               sha256: i.toString(16).padStart(64, "0"), size: CHUNK_BYTES })) }
@@ -313,9 +360,10 @@ describe("memory, whatever the tree holds", () => {
         kept.push(text);
       }
       open -= 1;
-      return new Response(text, { status: 200 });
-    }) as unknown as typeof fetch;
-    await syncIn(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p, mirror);
+      return { status: 200, text };
+    });
+    const base = live();
+    await syncIn(answered, p, mirror);
     expect(statSync(join(local, "video.bin")).size).toBe(CHUNK_BYTES * chunks);
     expect(mirror.get("/workspace/video.bin")!.size).toBe(CHUNK_BYTES * chunks);
     rmSync(join(local, "video.bin"));
@@ -372,27 +420,25 @@ describe("memory, whatever the tree holds", () => {
     let ops = 0;
     let body = 0;
     let peak = 0;
-    const base = live();
-    const fetcher = (async (url: string, init: { body: string }) => {
+    const answered = await door(async (name, raw) => {
       open += 1;
       inFlight = Math.max(inFlight, open);
       await new Promise((resolve) => setImmediate(resolve));
       peak = Math.max(peak, live() - base);
-      body = Math.max(body, init.body.length);
-      const door = url.split("/sync/")[1]!;
-      const sent = JSON.parse(init.body) as Record<string, unknown>;
+      body = Math.max(body, raw.length);
+      const sent = JSON.parse(raw) as Record<string, unknown>;
       open -= 1;
-      if (door !== "commit") {
-        return new Response("{}", { status: 404 });
+      if (name !== "commit") {
+        return { status: 404, text: "{}" };
       }
       ops = Math.max(ops, (sent["ops"] as unknown[]).length);
       if (keep) {
         kept.push(...(sent["ops"] as unknown[]));
       }
-      return new Response(JSON.stringify(commitAll(sent).body), { status: 200 });
-    }) as unknown as typeof fetch;
-    await syncOut(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p, mirror,
-                  LEASE, []);
+      return { status: 200, text: JSON.stringify(commitAll(sent).body) };
+    });
+    const base = live();
+    await syncOut(answered, p, mirror, LEASE, []);
     mirror.close();
     rmSync(local, { recursive: true, force: true });
     return { peak, inFlight, ops, body };
@@ -448,15 +494,15 @@ describe("verification round 2", () => {
     const { place: p, local } = place();
     mkdirSync(join(local, "src"), { recursive: true });
     writeFileSync(join(local, "src", "app.ts"), "v1");
-    const mirror = memoryMirror();
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body)
+    const mirror = mirrorOf();
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(mirror.get("/workspace/src/app.ts")).toBeDefined();
     // A run adds a line of its own, then changes the kept file and leaves another as it was.
     writeFileSync(join(local, ".ta", "sync-ignore"), "src\n");
     writeFileSync(join(local, "src", "app.ts"), "v2, the run's work");
     const sent: string[] = [];
-    const report = await syncOut(client((door, body) => door === "commit"
+    const report = await syncOut(await client((door, body) => door === "commit"
       ? commitAll(body, sent) : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(sent).toEqual(["/workspace/.ta/sync-ignore"]);
     expect(report.skipped).toEqual([{ path: "/workspace/src/app.ts", code: "held_back" }]);
@@ -471,8 +517,8 @@ describe("verification round 2", () => {
     const mtime = Math.floor(Date.now() / 1000);  // whole seconds: restored exactly
     utimesSync(file, mtime, mtime);
     let changed = false;
-    const mirror = memoryMirror();
-    await syncOut(client((door, body) => {
+    const mirror = mirrorOf();
+    await syncOut(await client((door, body) => {
       if (door === "commit" && !changed) {
         changed = true;
         writeFileSync(file, "{\"n\":2}");
@@ -481,17 +527,17 @@ describe("verification round 2", () => {
       return door === "commit" ? commitAll(body) : { status: 404, body: {} };
     }), p, mirror, LEASE, []);
     const sent: string[] = [];
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body, sent)
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, sent)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(sent).toContain("/workspace/state.json");
     // Once its change time is settled, an unchanged file is never read again.
     const settled = Math.floor(Date.now() / 1000) - 60;
     utimesSync(file, settled, settled);
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body) : { status: 404,
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body) : { status: 404,
       body: {} }), p, mirror, LEASE, []);
     expect(mirror.get("/workspace/state.json")!.mtime_ms).toBe(settled * 1000);
     const again: string[] = [];
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body, again)
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, again)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(again).toEqual([]);
   });
@@ -504,13 +550,13 @@ describe("the list's own write carries what it holds back", () => {
     mkdirSync(join(local, "src"), { recursive: true });
     writeFileSync(join(local, "src", "a.ts"), "a");
     writeFileSync(join(local, "src", "b.ts"), "b");
-    const mirror = memoryMirror();
-    await syncOut(client((door, body) => door === "commit" ? commitAll(body)
+    const mirror = mirrorOf();
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
     writeFileSync(join(local, ".ta", "sync-ignore"), "src\n");
     writeFileSync(join(local, "src", "a.ts"), "a, changed");
     const ops: Record<string, unknown>[] = [];
-    await syncOut(client((door, body) => {
+    await syncOut(await client((door, body) => {
       if (door === "commit") {
         ops.push(...(body["ops"] as Record<string, unknown>[]));
         return commitAll(body);
@@ -526,8 +572,8 @@ describe("the sync-ignore's ceilings, at sync-out", () => {
   it("says how long matching took in the sync's report", async () => {
     const { place: p, local } = place();
     writeFileSync(join(local, "a.txt"), "a");
-    const report = await syncOut(client((door, body) => door === "commit" ? commitAll(body)
-      : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    const report = await syncOut(await client((door, body) => door === "commit" ? commitAll(body)
+      : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
     expect(typeof report.match_ms).toBe("number");
   });
 
@@ -541,8 +587,8 @@ describe("the sync-ignore's ceilings, at sync-out", () => {
     writeFileSync(join(local, ".ta", "sync-ignore"), `${[...filler, "*?log"].join("\n")}\n`);
     writeFileSync(join(local, "run.log"), "kept syncing");
     const sent: string[] = [];
-    const report = await syncOut(client((door, body) => door === "commit"
-      ? commitAll(body, sent) : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    const report = await syncOut(await client((door, body) => door === "commit"
+      ? commitAll(body, sent) : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
     expect(sent).toContain("/workspace/run.log");
     // Said in file order, each with its ceiling: the first listed, all counted.
     expect(report.unapplied[0]).toMatchObject({ reason: "states" });
@@ -559,8 +605,8 @@ describe("the sync-ignore's ceilings, at sync-out", () => {
                   `${Array.from({ length: count }, (_, i) => `${line}${i}`).join("\n")}\nlast.txt\n`);
     writeFileSync(join(local, "last.txt"), "named past the cut: kept syncing");
     const sent: string[] = [];
-    const report = await syncOut(client((door, body) => door === "commit"
-      ? commitAll(body, sent) : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    const report = await syncOut(await client((door, body) => door === "commit"
+      ? commitAll(body, sent) : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
     expect(sent).toContain("/workspace/last.txt");
     expect(report.list_bytes_past).toBeGreaterThan(0);
   });
@@ -575,8 +621,8 @@ describe("names that are not UTF-8", () => {
                   "a name a string cannot hold");
     mkdirSync(Buffer.concat([Buffer.from(`${local}/`), Buffer.from([0xc3, 0x28])]));
     const sent: string[] = [];
-    const report = await syncOut(client((door, body) => door === "commit"
-      ? commitAll(body, sent) : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    const report = await syncOut(await client((door, body) => door === "commit"
+      ? commitAll(body, sent) : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
     expect(sent).toContain("/workspace/src/ok.txt");
     expect([...report.unnamed].sort()).toEqual(["/workspace/\\xc3(", "/workspace/src/f\\xffo"]);
     expect(report.unnamed_count).toBe(2);
@@ -602,19 +648,28 @@ describe("a list larger than the sandbox's heap would hold whole", () => {
     const require = createRequire(join(HERE, "..", "..", "package.json"));
     (require("esbuild") as { buildSync: (options: unknown) => void }).buildSync({
       stdin: { contents: `
-        import { memoryMirror, SyncClient, syncOut } from ${JSON.stringify(join(HERE, "sync.ts"))};
-        const fetcher = async (_url, init) => {
-          const body = JSON.parse(init.body);
-          // Every door at once: an upload's begin (all its chunks held), and a commit's.
-          return new Response(JSON.stringify({ intent_id: "0".repeat(32), missing: [],
-            outcomes: (body.ops ?? []).map((op) => ({
-              path: op.path, outcome: "committed", entry: { version: 1 } })) }),
-                              { status: 200 });
-        };
-        const report = await syncOut(new SyncClient("https://egress.test", "t", 1, 2, fetcher),
+        import { createServer } from "node:http";
+        import { openMirror, SyncClient, syncOut } from ${JSON.stringify(join(HERE, "sync.ts"))};
+        const server = createServer((request, response) => {
+          const parts = [];
+          request.on("data", (chunk) => parts.push(chunk));
+          request.on("end", () => {
+            const body = JSON.parse(Buffer.concat(parts).toString("utf8"));
+            // Every door at once: an upload's begin (all its chunks held), and a commit's.
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(JSON.stringify({ intent_id: "0".repeat(32), missing: [],
+              outcomes: (body.ops ?? []).map((op) => ({
+                path: op.path, outcome: "committed", entry: { version: 1 } })) }));
+          });
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const origin = "http://127.0.0.1:" + server.address().port;
+        const report = await syncOut(new SyncClient(origin, "t", 1, 2),
           { local: ${JSON.stringify(local)}, sessionsIn: ${JSON.stringify(join(root, "in"))},
             sessionsOut: ${JSON.stringify(join(root, "out"))}, authority: "owner",
-            records: new Map() }, memoryMirror(), { lease_id: "l", epoch: 1 }, []);
+            records: new Map() }, openMirror(":memory:"), { lease_id: "l", epoch: 1 }, []);
+        server.closeAllConnections();
+        server.close();
         process.stdout.write(JSON.stringify({ committed: report.committed,
                                               past: report.list_bytes_past }));
       `, resolveDir: HERE, loader: "ts" },
@@ -652,17 +707,15 @@ describe("a commit's body", () => {
     }
     const bodies: number[] = [];
     const sent: string[] = [];
-    const fetcher = (async (url: string, init: { body: string }) => {
-      const door = url.split("/sync/")[1]!;
+    const answered = await serve((door, raw) => {
       if (door !== "commit") {
-        return new Response("{}", { status: 404 });
+        return { status: 404, text: "{}" };
       }
-      bodies.push(Buffer.byteLength(init.body, "utf8"));
-      return new Response(JSON.stringify(commitAll(JSON.parse(init.body) as
-        Record<string, unknown>, sent).body), { status: 200 });
-    }) as unknown as typeof fetch;
-    await syncOut(new SyncClient("https://egress.test", "tok", 1, 2, fetcher), p,
-                  memoryMirror(), LEASE, []);
+      bodies.push(Buffer.byteLength(raw, "utf8"));
+      return { status: 200, text: JSON.stringify(commitAll(JSON.parse(raw) as
+        Record<string, unknown>, sent).body) };
+    });
+    await syncOut(answered, p, mirrorOf(), LEASE, []);
     expect(sent.filter((path) => path.includes("/file-"))).toHaveLength(MAX_SYNC_OPS);
     expect(bodies.reduce((sum, each) => sum + each, 0)).toBeGreaterThan(SYNC_BODY_MAX);
     expect(Math.max(...bodies)).toBeLessThanOrEqual(SYNC_BODY_MAX);
@@ -672,10 +725,10 @@ describe("a commit's body", () => {
     const { place: p, local } = place();
     writeFileSync(join(local, "big.bin"), Buffer.alloc(10_000, 7));
     for (const id of ["i1", "1".repeat(INTENT_ID_CHARS + 1), 7]) {
-      await expect(syncOut(client((door, body) => door === "upload_begin"
+      await expect(syncOut(await client((door, body) => door === "upload_begin"
         ? { status: 200, body: { intent_id: id, missing: body["chunks"] } }
         : door === "commit" ? commitAll(body) : { status: 200, body: {} }),
-                           p, memoryMirror(), LEASE, []))
+                           p, mirrorOf(), LEASE, []))
         .rejects.toThrow(`intent id is not ${INTENT_ID_CHARS} characters`);
     }
   });

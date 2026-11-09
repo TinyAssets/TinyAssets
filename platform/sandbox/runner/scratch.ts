@@ -76,10 +76,10 @@ export function diskOf(path: string): Disk {
  * When each agent's scratch was last used: one stamp file an agent in the runner's own state
  * directory (`dir`), its modification time the last use. Each runner writes its own agent's
  * stamp alone, so runners at once never lose each other's (no file read, changed and written
- * back). Without a `dir` (a test's) it lives in memory.
+ * back).
  */
 export interface ScratchIndex {
-  readonly dir?: string;
+  readonly dir: string;
   used: Record<string, number>;
 }
 
@@ -100,18 +100,14 @@ export function readIndex(dir: string): ScratchIndex {
 /** `agent`'s scratch used at `now`: its stamp alone written. */
 export function markUsed(index: ScratchIndex, agent: string, now: number): void {
   index.used[agent] = now;
-  if (index.dir !== undefined) {
-    const stamp = join(index.dir, agent);
-    writeFileSync(stamp, "", { mode: 0o600 });
-    utimesSync(stamp, now / 1000, now / 1000);
-  }
+  const stamp = join(index.dir, agent);
+  writeFileSync(stamp, "", { mode: 0o600 });
+  utimesSync(stamp, now / 1000, now / 1000);
 }
 
 function forget(index: ScratchIndex, agent: string): void {
   delete index.used[agent];
-  if (index.dir !== undefined) {
-    rmSync(join(index.dir, agent), { force: true });
-  }
+  rmSync(join(index.dir, agent), { force: true });
 }
 
 export interface Pruned {
@@ -130,8 +126,7 @@ export interface Pruned {
  * has never seen counts as used now (its scratch came before the index did).
  */
 export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
-                             retentionDays: number | null, live: ReadonlySet<string>,
-                             disk: (path: string) => Disk = diskOf): Pruned {
+                             retentionDays: number | null, live: ReadonlySet<string>): Pruned {
   const agents = existsSync(scratch) ? readdirSync(scratch) : [];
   for (const agent of agents) {
     if (index.used[agent] === undefined) {
@@ -143,7 +138,7 @@ export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
       forget(index, known);
     }
   }
-  const before = disk(scratch);
+  const before = diskOf(scratch);
   const expired: string[] = [];
   const evicted: string[] = [];
   const drop = (agent: string) => {
@@ -162,13 +157,13 @@ export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
   const oldest = Object.entries(index.used).filter(([agent]) => !live.has(agent))
     .sort(([, a], [, b]) => a - b).map(([agent]) => agent);
   for (const agent of oldest) {
-    if (!low(disk(scratch))) {
+    if (!low(diskOf(scratch))) {
       break;
     }
     drop(agent);
     evicted.push(agent);
   }
-  const after = disk(scratch);
+  const after = diskOf(scratch);
   return { expired, evicted, freed_bytes: Math.max(0, after.free_bytes - before.free_bytes),
            disk: after };
 }
@@ -199,12 +194,12 @@ export function scratchCleared(pruned: Pruned): ScratchCleared | null {
 }
 
 /** The ballast that keeps the runner's own room: made when there is room for it and more. */
-export function keepReserve(path: string, bytes = RESERVE_BYTES,
-                            disk: (path: string) => Disk = diskOf): boolean {
+export function keepReserve(path: string): boolean {
+  const bytes = RESERVE_BYTES;
   if (existsSync(path)) {
     return true;
   }
-  if (disk(dirname(path)).free_bytes < 2 * bytes) {
+  if (diskOf(dirname(path)).free_bytes < 2 * bytes) {
     return false;
   }
   const block = new Uint8Array(1024 * 1024);

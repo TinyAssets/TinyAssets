@@ -1,7 +1,7 @@
 /**
  * The runner (`runner.ts`, as the template carries it bundled), as root, against fake CLIs
  * that print each record's own event shapes and a fake doors server, its users an
- * unprivileged pool (`harness.ts`): the first post is an empty heartbeat; the frames rise
+ * unprivileged pool, in a test sandbox of its own (`test/harness.ts`): the first post is an empty heartbeat; the frames rise
  * from 1 and read by the record's matchers as the object reads them; each run runs as a
  * user of its own on a home of its own, on the run's allow-list alone, from the record's
  * argv; and every refusal holds: a project, home or ancestor env file, a secret's bytes in a
@@ -10,13 +10,11 @@
  * a home's settings outliving its run). Cancel, `events_busy`, the renewal's held posts and
  * resume, the projection and big files are here too.
  */
-import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:net";
-import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync,
+import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readdirSync,
          readFileSync, rmSync, statSync, symlinkSync,
          writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -32,13 +30,13 @@ import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from ".
 import { SCRATCH_ENV } from "./scratch";
 import { JOB_FILES, PROTOCOL, type StartDoc } from "./protocol";
 import { READS, STATE_FORMAT } from "./state-format";
-import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./state-shape";
-import { processesOf } from "./users";
-import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./harness";
+import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./test/harness";
+import { NODE } from "./test/layout";
+import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
 const sources = bundledSources();
-/** The runner's heartbeat in the heartbeat test (`TA_HEARTBEAT_MS`, a test root's alone). */
-const HEARTBEAT_MS = 2_000;
+/** The runner's heartbeat (`runner.ts`, which `guards/config.test.ts` holds), as it runs. */
+const HEARTBEAT_MS = 20_000;
 
 /** Each record's own event shapes: a session id, a tool call, the final text, usage. */
 const SHAPES: Record<string, { lines: unknown[]; session: string | null; text: string;
@@ -222,13 +220,13 @@ describe.each(Object.keys(SHAPES))("a run of %s", (engine) => {
     expect(POOL_UIDS).toContain(seen.uid);
     expect(seen.gid).toBe(seen.uid);
     expect(seen.groups).toContain(TA_GID);
-    expect(seen.env["HOME"]).toBe(box.path(`/var/lib/ta-homes/${start.run}`));
+    expect(seen.env["HOME"]).toBe(`/var/lib/ta-homes/${start.run}`);
+    // The runner's own environment is the command's (a PATH alone): LANG is not in it.
     expect(Object.keys(seen.env).sort()).toEqual(
       [...new Set([...Object.keys(start.config.env), "PATH", "TMPDIR",
-                   ...Object.keys(SCRATCH_ENV),
-                   ...(process.env["LANG"] === undefined ? [] : ["LANG"])])].sort());
+                   ...Object.keys(SCRATCH_ENV)])].sort());
     // Its working files and its tools' caches go to its agent's scratch, kept between runs.
-    expect(seen.env["TA_SCRATCH"]).toBe(box.path(`/scratch/${start.agent}`));
+    expect(seen.env["TA_SCRATCH"]).toBe(`/scratch/${start.agent}`);
     const record = sources.get(engine)!.cli!;
     if (record.engine.stdin !== undefined) {
       expect(seen.stdin).toBe("do the thing");
@@ -236,15 +234,14 @@ describe.each(Object.keys(SHAPES))("a run of %s", (engine) => {
       expect(seen.argv).toContain("--prompt=do the thing");
     }
     expect(seen.cwd).toBe(record.engine.resume === "continue_in_cwd"
-      ? box.path(`/var/lib/ta-conv/${engine}/${start.conversation}`)
-      : box.path("/workspace/agents/main"));
+      ? `/var/lib/ta-conv/${engine}/${start.conversation}` : "/workspace/agents/main");
     // The owner's files were synced in, by the sync agent's own user.
     expect(readFileSync(box.path("/workspace/agents/main/AGENTS.md"), "utf8")).toBe("# main");
     expect(statSync(box.path("/workspace/agents/main/AGENTS.md")).uid).toBe(SYNC_UID);
     // The run's home and system directory are gone, its user given back.
     expect(() => lstatSync(box.path(`/var/lib/ta-homes/${start.run}`))).toThrow();
     expect(() => lstatSync(box.path(`/etc/ta/runs/${start.run}`))).toThrow();
-    expect(processesOf(seen.uid)).toEqual([]);
+    expect(box.processesOf(seen.uid)).toEqual([]);
   });
 });
 
@@ -268,14 +265,12 @@ describe("the invocation", () => {
   it("gives Gemini its system settings in a root-owned run directory outside its home, " +
      "with folder trust", async () => {
     const start = startDoc(doors, "gemini", { config: config("gemini") });
-    box.cli("gemini", { lines: SHAPES["gemini"]!.lines,
-                        dumps: [box.path(`/etc/ta/runs/${start.run}/gemini-settings.json`)],
-                        owners: [box.path(`/etc/ta/runs/${start.run}/gemini-settings.json`)] });
+    const path = `/etc/ta/runs/${start.run}/gemini-settings.json`;
+    box.cli("gemini", { lines: SHAPES["gemini"]!.lines, dumps: [path], owners: [path] });
     box.start(start);
     box.runner("launch", start.run);
     await doors.ended_(25_000, start.run);
     const seen = box.ran("gemini").at(-1)!;
-    const path = box.path(`/etc/ta/runs/${start.run}/gemini-settings.json`);
     expect(seen.env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"]).toBe(path);
     const settings = JSON.parse(seen.dumps[path]!);
     expect(settings.security).toEqual({ folderTrust: { enabled: false } });
@@ -340,27 +335,46 @@ describe("the env files a CLI would load", () => {
   });
 });
 
+describe("the env files' order", () => {
+  // Made in one order, then (a sandbox of its own) the other: a walk in the disk's own order
+  // names the file made first (or last) in one of the two, never `.env.a` in both.
+  it.each([[".env.b", ".env.a"], [".env.a", ".env.b"]])(
+    "is their names' byte order, whatever order the disk lists them in (made %s, then %s): " +
+    "the refusal names the first", async (...made) => {
+    for (const [i, name] of made.entries()) {
+      doors.files.set(`/workspace/agents/main/${name}`,
+                      { text: "ANTHROPIC_API_KEY=sk-x\n", version: 10 + i });
+    }
+    box.cli("gemini", { lines: SHAPES["gemini"]!.lines });
+    const { end } = await run("gemini");
+    expect(end).toEqual({ exit_code: 1 });
+    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
+      .toMatchObject({ code: "project_env_refused", path: ".env.a" });
+  });
+});
+
 describe("root never follows a link another user planted (slice S review)", () => {
   it("A1: a link left in a run's home never hands its target to that user", async () => {
-    const victims = mkdtempSync(join(tmpdir(), "rvs-victim-"));
-    const victim = join(victims, "root-owned-binary");
-    writeFileSync(victim, "#!/bin/sh\necho root\n", { mode: 0o755 });
+    // Root's own file in the sandbox, outside every tree a run's user reaches.
+    const victim = "/victims/root-owned-binary";
+    box.write(victim, "#!/bin/sh\necho root\n");
+    chmodSync(box.path(victim), 0o755);
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
                              links: { "~/innocent-looking": victim,
                                       "~/.claude/projects/main/x.jsonl": victim,
                                       "~/.claude/.credentials.json": victim } });
     await run("claude-code");
     await run("claude-code");
-    expect(statSync(victim).uid).toBe(0);
-    expect(statSync(victim).mode & 0o777).toBe(0o755);
+    expect(statSync(box.path(victim)).uid).toBe(0);
+    expect(statSync(box.path(victim)).mode & 0o777).toBe(0o755);
     // Nothing of the victim was read into the store or synced: the links were links.
     expect(JSON.stringify(doors.ops())).not.toContain(Buffer.from("echo root").toString("base64"));
   });
 
   it("A2: sync-in never writes through a link planted in the workspace", async () => {
-    const victims = mkdtempSync(join(tmpdir(), "rvs-victim-"));
-    const victim = join(victims, "etc-something");
-    writeFileSync(victim, "ROOT ONLY\n", { mode: 0o644 });
+    const victim = "/victims/etc-something";
+    box.write(victim, "ROOT ONLY\n");
+    chmodSync(box.path(victim), 0o644);
     // As the run's user would: its directories in the workspace are group ta's.
     for (const dir of ["/workspace/agents", "/workspace/agents/main"]) {
       mkdirSync(box.path(dir), { recursive: true });
@@ -370,9 +384,9 @@ describe("root never follows a link another user planted (slice S review)", () =
     symlinkSync(victim, box.path("/workspace/agents/main/AGENTS.md.ta-sync"));
     symlinkSync(victim, box.path("/workspace/agents/main/AGENTS.md"));
     await run("claude-code");
-    expect(readFileSync(victim, "utf8")).toBe("ROOT ONLY\n");
-    expect(statSync(victim).mode & 0o777).toBe(0o644);
-    expect(statSync(victim).gid).not.toBe(TA_GID);
+    expect(readFileSync(box.path(victim), "utf8")).toBe("ROOT ONLY\n");
+    expect(statSync(box.path(victim)).mode & 0o777).toBe(0o644);
+    expect(statSync(box.path(victim)).gid).not.toBe(TA_GID);
     // The workspace file is the owner's, a file, the link replaced, not written through.
     expect(lstatSync(box.path("/workspace/agents/main/AGENTS.md")).isSymbolicLink()).toBe(false);
     expect(readFileSync(box.path("/workspace/agents/main/AGENTS.md"), "utf8")).toBe("# main");
@@ -662,7 +676,7 @@ describe("the vendor's own sign-in", () => {
     expect(signinFrames(id).at(-1)).toMatchObject({ state: "cancelled" });
     const seen = box.ran("claude-code").find((each) => !each.argv.includes("status"));
     if (seen !== undefined) {
-      expect(processesOf(seen.uid)).toEqual([]);
+      expect(box.processesOf(seen.uid)).toEqual([]);
     }
     expect(box.runner("login-cancel", id).code).toBe(3);  // nothing live to cancel
   });
@@ -843,7 +857,7 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
   it("takes over a lock a pid of another boot names: a reused pid never holds it", async () => {
     const lock = box.path("/var/lib/ta/locks/kimi.lock");
     mkdirSync(dirname(lock), { recursive: true });
-    writeFileSync(lock, "1 a-boot-before-this-one");  // pid 1: always alive
+    writeFileSync(lock, "1 a-boot-before-this-one");  // pid 1, the box's init: always alive
     const start = await liveKimi(0, {});
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 0 });
@@ -864,12 +878,46 @@ describe("the store's generation and its lock (review round 2: N2, N3)", () => {
     expect(box.ran("kimi")).toHaveLength(1);
   });
 
+  it("asks for a store's lock again every 20 ms, flat: a lock let go is taken at once",
+     async () => {
+    const lock = box.path("/var/lib/ta/locks/kimi.lock");
+    mkdirSync(dirname(lock), { recursive: true });
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    const holder = box.live();
+    writeFileSync(lock, `${holder} ${boot}`);  // a process of the box's: alive, this boot
+    const start = await liveKimi(0, {});
+    const poll = async (check: () => boolean) => {
+      for (const until = Date.now() + 20_000; !check();) {
+        if (Date.now() > until) {
+          throw new Error("timed out");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    };
+    try {
+      // The run's home is made just before its store's lock is asked for.
+      await poll(() => existsSync(box.path(`/var/lib/ta-homes/${start.run}`)));
+      // Held past where a backed-off wait asks a second apart (20 ms doubling to 1 s: it
+      // asks at 1.26 s and next at 2.26 s), then let go.
+      await new Promise((resolve) => setTimeout(resolve, 1_300));
+      rmSync(lock);
+      const freed = Date.now();
+      // The home's snapshot is written as soon as the lock was taken.
+      await poll(() => existsSync(box.path(`/var/lib/ta/kept/${start.run}.json`)));
+      expect(Date.now() - freed).toBeLessThan(400);
+      const end = await doors.ended_(25_000, start.run);
+      expect(end.body["end"]).toEqual({ exit_code: 0 });
+    } finally {
+      box.kill(holder);
+    }
+  });
+
   it("waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly",
      { tags: ["large"] }, async () => {
     const lock = box.path("/var/lib/ta/locks/kimi.lock");
     mkdirSync(dirname(lock), { recursive: true });
     const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    writeFileSync(lock, `${process.pid} ${boot}`);  // this test: alive, this boot
+    writeFileSync(lock, `${box.live()} ${boot}`);  // a process of the box's: alive, this boot
     const start = await liveKimi(0, {});
     const end = await doors.ended_(90_000, start.run);
     expect((end.body["end"] as { exit_code: number }).exit_code).not.toBe(0);
@@ -1172,10 +1220,10 @@ describe("the route probe (codexurl_research.md Q4)", () => {
 describe("each run's own user", () => {
   it("is not the next run's: its processes and its files are gone", async () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, daemon: true,
-                             writes: { [box.path("/tmp/left-behind")]: "x" } });
+                             writes: { "/tmp/left-behind": "x" } });
     await run("claude-code");
     const first = box.ran("claude-code").at(-1)!;
-    expect(processesOf(first.uid)).toEqual([]);  // the daemon it left was killed
+    expect(box.processesOf(first.uid)).toEqual([]);  // the daemon it left was killed
     expect(() => lstatSync(box.path("/tmp/left-behind"))).toThrow();  // its scratch removed
   });
 
@@ -1183,7 +1231,7 @@ describe("each run's own user", () => {
      async () => {
     // Each CLI waits for the release, so both runs are live together however slowly the
     // host starts them (a 1.5 s sleep once let the first end before the second took a user).
-    const release = box.path("/release");
+    const release = "/release";
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, holdUntil: release,
                              dumps: ["~/run/mcp.json"] });
     const a = startDoc(doors, "claude-code", { config: config("claude-code") });
@@ -1193,7 +1241,7 @@ describe("each run's own user", () => {
     box.start(b);
     box.runner("launch", b.run);
     await waitFor(() => box.ran("claude-code").length === 2);
-    writeFileSync(release, "");
+    box.write(release, "");
     await doors.ended_(25_000, a.run);
     await doors.ended_(25_000, b.run);
     const seen = box.ran("claude-code");
@@ -1286,15 +1334,16 @@ describe("the sync", () => {
   });
 
   it("keeps posting its heartbeat through a sync-out longer than a heartbeat, so a long " +
-     "sync keeps its lease (verification round 3, R3-1)", async () => {
-    // The commit answered after more than a heartbeat's wait: the run's lease is renewed by
-    // its event posts alone, so a sync-out that stopped them would lose it.
+     "sync keeps its lease (verification round 3, R3-1)", { tags: ["large"] }, async () => {
+    // The commit answered after more than a heartbeat's wait (the runner's own, 20 s): the
+    // run's lease is renewed by its event posts alone, so a sync-out that stopped them would
+    // lose it.
     doors.commitDelayMs = HEARTBEAT_MS + 3_000;
     box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "notes.md": "long sync" } });
-    process.env["TA_HEARTBEAT_MS"] = String(HEARTBEAT_MS);
-    const { start } = await run("codex").finally(() => {
-      delete process.env["TA_HEARTBEAT_MS"];
-    });
+    const start = startDoc(doors, "codex", { config: config("codex") });
+    box.start(start);
+    expect(box.runner("launch", start.run).code).toBe(0);
+    await doors.ended_(HEARTBEAT_MS * 3, start.run);
     const commit = doors.posts.find((post) => post.path === "/sync/commit")!;
     const during = doors.posts.filter((post) => post.path === `/r/${start.run}/events`
       && post.at > commit.at + 1_000 && post.at < commit.at + HEARTBEAT_MS + 3_000);
@@ -1309,17 +1358,17 @@ describe("the sync", () => {
       box.write(`/var/lib/ta/store/claude-code/.claude/projects/main/${
         `s-${i}`.padEnd(100, "x")}.jsonl`, "{}\n");
     }
-    const release = box.path("/release");
+    const release = "/release";
     box.cli("codex", { lines: SHAPES["codex"]!.lines, holdUntil: release });
     const start = startDoc(doors, "codex", { config: config("codex") });
     box.start(start, "owner");
     expect(box.runner("launch", start.run).code).toBe(0);
     await waitFor(() => box.ran("codex").length === 1);
     // The sync agent's user can no longer read the runner: it dies before reading its job.
-    const bundle = runnerBundle();
+    const bundle = box.runnerFile();
     chmodSync(bundle, 0o600);
     try {
-      writeFileSync(release, "");
+      box.write(release, "");
       const end = await doors.ended_(25_000, start.run);
       expect((end.body["end"] as { exit_code: number }).exit_code).toBe(1);
       expect(String(doors.frames().find((frame) => frame["type"] === "ta.runner_error")
@@ -1508,7 +1557,7 @@ describe("the scratch area", () => {
     expect(readFileSync(box.path(`/scratch/${start.agent}/repo/README.md`), "utf8"))
       .toBe("a cloned repository");
     const seen = box.ran("codex").at(-1)!;
-    expect(seen.env["XDG_CACHE_HOME"]).toBe(box.path(`/scratch/${start.agent}/.cache`));
+    expect(seen.env["XDG_CACHE_HOME"]).toBe(`/scratch/${start.agent}/.cache`);
     // Group ta's, so every run user of the sandbox works in it.
     const dir = statSync(box.path(`/scratch/${start.agent}`));
     expect([dir.uid, dir.gid, dir.mode & 0o7777]).toEqual([0, TA_GID, 0o2775]);
@@ -1552,6 +1601,50 @@ describe("the posts", () => {
   });
 });
 
+describe("prepare, at the sandbox's real paths", () => {
+  it("pins the resolvers, hides /proc, leaves nothing writable, lets no one but root sudo, " +
+     "and keeps only its own runner", () => {
+    const hostSudoers = readFileSync("/etc/sudoers", "utf8");
+    // As E2B boots it: its user put back in `sudo`, a grant and an include for it, a file
+    // every user may write, and one group ta may; another runner's bytes; a code at rest.
+    writeFileSync(box.path("/etc/sudoers"), `${readFileSync(box.path("/etc/sudoers"), "utf8")}` +
+                  "user ALL=(ALL:ALL) NOPASSWD: ALL\n@includedir /etc/sudoers.d\n");
+    box.write("/etc/sudoers.d/90-user", "user ALL=(ALL) NOPASSWD:ALL\n");
+    chmodSync(box.path("/etc/sudoers.d/90-user"), 0o440);
+    expect(box.exec(["sudo", "-l", "-U", "user"]).stdout).toMatch(/NOPASSWD/);
+    box.write("/opt/ta/anyone", "x");
+    chmodSync(box.path("/opt/ta/anyone"), 0o666);
+    box.write("/etc/group-ta", "x");
+    chownSync(box.path("/etc/group-ta"), 0, TA_GID);
+    chmodSync(box.path("/etc/group-ta"), 0o664);
+    const other = "a".repeat(64);
+    box.write(`/opt/ta/runner/${other}/runner.mjs`, "// another runner");
+    box.write("/var/lib/ta/inbox/si_x.code", "left at rest");
+    expect(box.runner("prepare", "8.8.8.8", "1.1.1.1").code).toBe(0);
+    expect(readFileSync(box.path("/etc/resolv.conf"), "utf8"))
+      .toBe("nameserver 8.8.8.8\nnameserver 1.1.1.1\n");
+    expect(box.exec(["cat", "/proc/mounts"]).stdout)
+      .toMatch(/ \/proc proc [^ ]*hidepid=(?:2|invisible)/);
+    // Its defaults and root's line alone, no include, no member of `sudo`, no file beside.
+    const sudoers = readFileSync(box.path("/etc/sudoers"), "utf8");
+    expect(sudoers).not.toMatch(/^\s*(?:user|@include|#include)/m);
+    expect(sudoers).toMatch(/^root\s/m);
+    expect(readFileSync(box.path("/etc/group"), "utf8")).toMatch(/^sudo:x:27:$/m);
+    expect(readdirSync(box.path("/etc/sudoers.d"))).toEqual([]);
+    for (const name of ["user", "ta-sync", "ta-run-0"]) {
+      expect(box.exec(["sudo", "-l", "-U", name]).stdout).toMatch(/is not allowed to run sudo/);
+    }
+    expect(statSync(box.path("/opt/ta/anyone")).mode & 0o777).toBe(0o644);
+    expect(statSync(box.path("/etc/group-ta")).mode & 0o777).toBe(0o644);
+    expect(readFileSync(box.path("/var/lib/ta/format"), "utf8")).toBe(`${STATE_FORMAT}\n`);
+    expect(readdirSync(box.path("/opt/ta/runner"))).toEqual([box.digest]);
+    expect(existsSync(box.path("/var/lib/ta/inbox/si_x.code"))).toBe(false);
+    // The host's own are untouched: its sudoers, and its /proc.
+    expect(readFileSync("/etc/sudoers", "utf8")).toBe(hostSudoers);
+    expect(readFileSync("/proc/mounts", "utf8")).not.toMatch(/ \/proc proc [^ ]*hidepid/);
+  });
+});
+
 describe("cancel and the runner's state", () => {
   it("sends the CLI SIGTERM, and its end goes to the object", async () => {
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
@@ -1572,11 +1665,11 @@ describe("cancel and the runner's state", () => {
 
   it("adopts this runner only when nothing lives: its format held, nothing deleted",
      async () => {
-    const own = "a".repeat(64);
+    // The runner the loader installed is this one (`TA_RUNNER_DIGEST`, the loader's); an
+    // older one's bytes are beside it.
+    const own = box.digest;
     const old = "b".repeat(64);
-    for (const digest of [own, old]) {
-      box.write(`/opt/ta/runner/${digest}/runner.mjs`, "// a runner");
-    }
+    box.write(`/opt/ta/runner/${old}/runner.mjs`, "// a runner");
     box.write("/var/lib/ta/sessions-seen.json", "{}");
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
                              sleepMs: 20_000 });
@@ -1596,55 +1689,45 @@ describe("cancel and the runner's state", () => {
                                                    "utf8")),
                            format.files["var/lib/ta/kept/<home>.json"]!)).toEqual([]);
     }
-    process.env["TA_RUNNER_DIGEST"] = own;
-    try {
-      // A run lives: its runner stays, and nothing changes.
-      expect(box.runner("adopt").code).toBe(3);
-      box.runner("cancel", start.run);
-      await doors.ended_(25_000, start.run);
-      await waitFor(() => JSON.parse(box.runner("state").out).live === 0);
-      expect(box.runner("adopt").code).toBe(0);
-      expect(readFileSync(box.path("/var/lib/ta/format"), "utf8")).toBe(`${STATE_FORMAT}\n`);
-      // A new marker: the one cache gone with it; the durable state kept. No runner's bytes
-      // go at `adopt`: its `prepare` drops them once the row names it.
-      expect(existsSync(box.path("/var/lib/ta/sessions-seen.json"))).toBe(false);
-      expect(readdirSync(box.path("/opt/ta/runner")).sort()).toEqual([own, old]);
-    } finally {
-      delete process.env["TA_RUNNER_DIGEST"];
-    }
+    // A run lives: its runner stays, and nothing changes.
+    expect(box.runner("adopt").code).toBe(3);
+    box.runner("cancel", start.run);
+    await doors.ended_(25_000, start.run);
+    await waitFor(() => JSON.parse(box.runner("state").out).live === 0);
+    expect(box.runner("adopt").code).toBe(0);
+    expect(readFileSync(box.path("/var/lib/ta/format"), "utf8")).toBe(`${STATE_FORMAT}\n`);
+    // A new marker: the one cache gone with it; the durable state kept. No runner's bytes
+    // go at `adopt`: its `prepare` drops them once the row names it.
+    expect(existsSync(box.path("/var/lib/ta/sessions-seen.json"))).toBe(false);
+    expect(readdirSync(box.path("/opt/ta/runner")).sort()).toEqual([own, old].sort());
     // Run by no loader (no digest named), it refuses.
-    expect(box.runner("adopt").code).toBe(1);
+    expect(box.exec([NODE, `/opt/ta/runner/${own}/runner.mjs`, "adopt"]).status).toBe(1);
   });
 
   it("reads every format's run and sign-in state it reads, as each was recorded", () => {
-    // Live processes of the test's own, as a run's runner and a sign-in's would be.
-    const sleepers = [0, 1].map(() => spawn("sleep", ["30"], { stdio: "ignore" }));
+    // Live processes of the box's own, as a run's runner and a sign-in's would be.
+    const sleepers = [box.live(), box.live()];
     try {
       for (const format of READS) {
         const files = FORMATS[String(format)]!.files;
         const run = `run_${String(format).padStart(32, "0")}`;
         const id = `si_${String(format).padStart(32, "0")}`;
         box.write(`/var/lib/ta/runs/${run}/state.json`, JSON.stringify(sample(
-          files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleepers[0]!.pid, ended: false })));
+          files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleepers[0]!, ended: false })));
         box.write(`/var/lib/ta/signin/${id}/state.json`, JSON.stringify(sample(
-          files["var/lib/ta/signin/<id>/state.json"]!, { pid: sleepers[1]!.pid, ended: false })));
+          files["var/lib/ta/signin/<id>/state.json"]!, { pid: sleepers[1]!, ended: false })));
         const answer = JSON.parse(box.runner("state").out) as Record<string, unknown>;
         expect(answer).toMatchObject({ live: 2 });
         // The answer is the one the runner's protocol records, field for field.
         expect(Object.keys(answer).sort())
           .toEqual([...PROTOCOLS[String(PROTOCOL)]!.state].sort());
-        process.env["TA_RUNNER_DIGEST"] = "a".repeat(64);
-        try {
-          expect(box.runner("adopt").code).toBe(3);  // both read as living
-        } finally {
-          delete process.env["TA_RUNNER_DIGEST"];
-        }
+        expect(box.runner("adopt").code).toBe(3);  // both read as living
         rmSync(box.path(`/var/lib/ta/runs/${run}`), { recursive: true, force: true });
         rmSync(box.path(`/var/lib/ta/signin/${id}`), { recursive: true, force: true });
       }
     } finally {
       for (const sleeper of sleepers) {
-        sleeper.kill();
+        box.kill(sleeper);
       }
     }
   });
@@ -1670,12 +1753,12 @@ describe("renewal", () => {
 
   it("tells a run its renewal once it listens, on its channel, and waits for its answer",
      async () => {
-    // A live run's runner (a process of the test's) that is not listening yet.
-    const sleeper = spawn("sleep", ["30"], { stdio: "ignore" });
+    // A live run's runner (a process of the box's) that is not listening yet.
+    const sleeper = box.live();
     const run = `run_${"7".repeat(32)}`;
     const files = FORMATS[String(STATE_FORMAT)]!.files;
     box.write(`/var/lib/ta/runs/${run}/state.json`, JSON.stringify(sample(
-      files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleeper.pid, ended: false })));
+      files["var/lib/ta/runs/<run>/state.json"]!, { pid: sleeper, ended: false })));
     const heard: string[] = [];
     let server: Server | null = null;
     // It begins listening a while after the renewal is asked, and answers each message.
@@ -1702,7 +1785,7 @@ describe("renewal", () => {
     } finally {
       clearTimeout(listening);
       (server as Server | null)?.close();
-      sleeper.kill();
+      box.kill(sleeper);
     }
   });
 
@@ -1711,18 +1794,18 @@ describe("renewal", () => {
     // The CLI is still running at `renewed` and fails just after, as a model call the pause
     // cut does: by an event (its release, once `renewed` returned), never by a 3 s guess a
     // loaded host could outrun before the renewal began.
-    const release = box.path("/release-renewal");
+    const release = "/release-renewal";
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "cs-r" },
                                      { type: "assistant", message: { content: [] } }],
                              holdUntil: release, exit: 1 });
     const start = startDoc(doors, "claude-code", { config: config("claude-code") });
     box.start(start);
     // A heartbeat of half a second, so a post the pause did not hold shows within it.
-    process.env["TA_HEARTBEAT_MS"] = "500";
+    box.env = { TA_HEARTBEAT_MS: "500" };
     try {
       box.runner("launch", start.run);
     } finally {
-      delete process.env["TA_HEARTBEAT_MS"];
+      box.env = {};
     }
     await waitFor(() => box.runner("state").out.includes("\"quiet\":true")
       && box.ran("claude-code").length > 0);
@@ -1746,7 +1829,7 @@ describe("renewal", () => {
     expect(runState(start.run).renewing).toBe(false);
     expect(jobEntries(start.run)).toEqual([JOB_FILES.log, JOB_FILES.socket, JOB_FILES.start,
                                            JOB_FILES.state].sort());
-    writeFileSync(release, "");
+    box.write(release, "");
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 0 });
     const types = doors.frames().map((event) => event["type"]);
@@ -1757,7 +1840,7 @@ describe("renewal", () => {
 
   it("waits for a quiet moment, and renews at its deadline regardless", async () => {
     // A CLI that never goes quiet: it is held running until the renewal is over, by an event.
-    const release = box.path("/release-deadline");
+    const release = "/release-deadline";
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
                              holdUntil: release });
     const start = startDoc(doors, "claude-code", { config: config("claude-code") });
@@ -1768,7 +1851,7 @@ describe("renewal", () => {
     expect(await box.runnerAsync("renew-wait", String(Date.now() + 1500))).toBe(0);
     expect(Date.now() - began).toBeGreaterThanOrEqual(1400);
     box.runner("renewed");
-    writeFileSync(release, "");
+    box.write(release, "");
     await doors.ended_(25_000, start.run);
   });
 });

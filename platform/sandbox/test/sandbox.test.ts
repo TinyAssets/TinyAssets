@@ -98,7 +98,10 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
 
 const owner = () => `user_${crypto.randomUUID().replace(/-/g, "")}`;
 const stub = (who: string) => env.SANDBOXES.getByName(who);
-const line = () => env.SLOTS.getByName(SLOTS).line();
+/** How the line stands: its owners in order, read from the object's own table. */
+const line = () => runInDurableObject(env.SLOTS.getByName(SLOTS), (_instance, state) =>
+  state.storage.sql.exec<{ owner: string }>("SELECT owner FROM waiting ORDER BY seq").toArray()
+    .map((row) => row.owner));
 const alarmOf = (who: string) => runInDurableObject(stub(who), (_instance, state) =>
   state.storage.getAlarm());
 

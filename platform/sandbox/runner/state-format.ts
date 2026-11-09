@@ -39,7 +39,7 @@ import { remove, safeWrite } from "./fsafe";
 export const STATE_FORMAT = 1;
 /** The formats it reads: its own, the one before, and (an expand deploy) the one after. */
 export const READS: readonly number[] = Object.freeze([1]);
-/** What a runner writes and reads: by default, this one's. */
+/** What a runner writes and reads. */
 export interface FormatRule {
   readonly writes: number;
   readonly reads: readonly number[];
@@ -47,14 +47,8 @@ export interface FormatRule {
 
 const THIS: FormatRule = Object.freeze({ writes: STATE_FORMAT, reads: READS });
 
-/**
- * Every runner's bytes in `runners` (`/opt/ta/runner`) but `own`'s gone; none when `own` is
- * not known (a runner the loader did not name).
- */
-export function dropRunners(runners: string, own: string | null): void {
-  if (own === null) {
-    return;
-  }
+/** Every runner's bytes in `runners` (`/opt/ta/runner`) but `own`'s gone. */
+export function dropRunners(runners: string, own: string): void {
   for (const name of existsSync(runners) ? readdirSync(runners) : []) {
     if (name !== own) {
       remove(join(runners, name));
@@ -62,27 +56,47 @@ export function dropRunners(runners: string, own: string | null): void {
   }
 }
 
+/** What a runner does on meeting a disk's format: refuse it, drop the caches, raise the marker. */
+export interface FormatStep {
+  /** Why it refuses the disk (a format it does not read), or null. */
+  readonly refuse: string | null;
+  readonly dropCaches: boolean;
+  /** The marker written, or null (left as found). */
+  readonly write: number | null;
+}
+
 /**
- * The sandbox's state directory held to a runner's format (`rule`, this runner's by
- * default): none recorded (a new sandbox) or one it reads. The caches (`caches`) are
- * discarded when the disk's format is not the one it writes, and the marker is raised to
- * it when it is newer, never lowered; a format it does not read throws, changing nothing.
+ * The rule, for a runner of `rule` meeting a disk of format `found` (null: none recorded, a
+ * new sandbox): one it does not read is refused; the caches go when the disk's format is not
+ * the one it writes; the marker is raised to it when it is newer, never lowered.
  */
-export function checkFormat(state: string, caches: readonly string[],
-                            rule: FormatRule = THIS): void {
+export function formatStep(found: number | null, rule: FormatRule): FormatStep {
+  if (found !== null && !rule.reads.includes(found)) {
+    return { refuse: `this sandbox's state is format ${String(found)}; this runner reads ` +
+                     `${rule.reads.join(" and ")}: a runner more than one deploy away, or a ` +
+                     "format change shipped in one deploy", dropCaches: false, write: null };
+  }
+  return { refuse: null, dropCaches: found !== rule.writes,
+           write: found === null || rule.writes > found ? rule.writes : null };
+}
+
+/**
+ * The sandbox's state directory held to this runner's format (`formatStep`): a format it
+ * does not read throws, changing nothing.
+ */
+export function checkFormat(state: string, caches: readonly string[]): void {
   const marker = `${state}/format`;
   const found = existsSync(marker) ? Number(readFileSync(marker, "utf8").trim()) : null;
-  if (found !== null && !rule.reads.includes(found)) {
-    throw new Error(`this sandbox's state is format ${String(found)}; this runner reads ` +
-                    `${rule.reads.join(" and ")}: a runner more than one deploy away, or a ` +
-                    "format change shipped in one deploy");
+  const step = formatStep(found, THIS);
+  if (step.refuse !== null) {
+    throw new Error(step.refuse);
   }
-  if (found !== rule.writes) {
+  if (step.dropCaches) {
     for (const cache of caches) {
       remove(cache);
     }
   }
-  if (found === null || rule.writes > found) {
-    safeWrite(state, marker, new TextEncoder().encode(`${rule.writes}\n`), 0o600);
+  if (step.write !== null) {
+    safeWrite(state, marker, new TextEncoder().encode(`${step.write}\n`), 0o600);
   }
 }

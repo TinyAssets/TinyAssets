@@ -1,9 +1,9 @@
 /**
  * The runner's one lock (`pid-lock.ts`): held by a live holder of this boot alone; taken
- * over from a holder that is gone (dead, or of another boot); waited for, sleeping, and
- * refused loudly past the wait's bound.
+ * over from a holder that is gone (dead, or of another boot), by one taker alone however
+ * many race for it; waited for, sleeping, and refused loudly past the wait's bound.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,5 +81,57 @@ describe("the runner's lock", () => {
       took = Date.now();
     }, 20);
     expect(took - freed).toBeLessThan(200);
+  });
+
+  it("is taken over by one taker alone, however many race for a gone holder's lock",
+     async () => {
+    // Takers in processes of their own, each told the round at once (a byte on its stdin),
+    // every round a lock of its own whose holder is dead: a taker that read the dead holder
+    // never removes the lock another took since. Each taker lives to the end, so a lock it
+    // took stays held.
+    const TAKERS = 4;
+    const ROUNDS = 300;
+    const base = lockPath();
+    for (let round = 0; round < ROUNDS; round += 1) {
+      writeFileSync(`${base}.${round}`, `${String(deadPid())} ${bootId()}`);
+    }
+    const taker = `
+      import { readSync, writeSync } from "node:fs";
+      const { tryLock } = await import(process.argv[1]);
+      const byte = Buffer.alloc(1);
+      for (let round = 0; ; round += 1) {
+        let read = 0;
+        for (;;) {
+          try { read = readSync(0, byte, 0, 1, null); break; }
+          catch (error) { if (error.code !== "EAGAIN") { throw error; } }
+        }
+        if (read === 0) { break; }
+        writeSync(1, tryLock(process.argv[2] + "." + round) ? "1" : "0");
+      }`;
+    const takers = Array.from({ length: TAKERS }, () => {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", taker,
+                                             join(import.meta.dirname, "pid-lock.ts"), base],
+                          { stdio: ["pipe", "pipe", "inherit"] });
+      const said = { text: "", child };
+      child.stdout.on("data", (data: Buffer) => { said.text += data.toString("utf8"); });
+      return said;
+    });
+    const winners: number[] = [];
+    for (let round = 0; round < ROUNDS; round += 1) {
+      for (const each of takers) {
+        each.child.stdin.write("x");
+      }
+      while (takers.some((each) => each.text.length <= round)) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      winners.push(takers.filter((each) => each.text[round] === "1").length);
+    }
+    await Promise.all(takers.map((each) => new Promise((resolve) => {
+      each.child.on("close", resolve);
+      each.child.stdin.end();
+    })));
+    expect(winners.filter((count) => count !== 1)).toEqual([]);
+    // No claim is left beside the locks.
+    expect(readdirSync(join(base, "..")).filter((name) => name.endsWith(".gone"))).toEqual([]);
   });
 });
