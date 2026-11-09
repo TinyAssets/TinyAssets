@@ -81,6 +81,7 @@ import type { SyncOp } from "../../contract/src/owner";
 
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
+import { KEEP_CEILING } from "../../contract/src/file-defaults";
 import {
   BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, GC_GRACE_S, INLINE_BYTES, INTENT_ID_BYTES, LEASE_TTL_S,
   MAX_INTENT_CHUNKS, MAX_LIST, MAX_PATH_BYTES, MAX_SYNC_OPS,
@@ -162,8 +163,6 @@ export const HOUSEKEEPING_BATCH = 500;
 /** Open upload intents, and the chunks they hold in all. */
 export const MAX_OPEN_INTENTS = 64;
 export const MAX_HELD_CHUNKS = 20_000;
-/** The most versions policy can keep of a path (`FILE_SETTINGS.keep_versions`). */
-export const KEEP_CEILING = 1000;
 
 
 /** The owner's files settings the object enforces (owner policy's `files` table). */
@@ -525,6 +524,20 @@ export function conflictName(name: string, epoch: number, n: number): string {
     points.pop();
   }
   return points.join("") + suffix;
+}
+
+/**
+ * A write's mtime as its caller gives it (the cutover's import keeps each file's, `import.ts`),
+ * a whole number of milliseconds, or null for the write's own time.
+ */
+function mtimeOf(value: unknown): number | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Refusal("invalid", "a file's mtime is a whole number of milliseconds");
+  }
+  return value;
 }
 
 export class Files {
@@ -1141,15 +1154,15 @@ export class Files {
   }
 
   #upsert(path: string, kind: FileKind, version: number, contentId: string | null, size: number,
-          mode: number, writer: string, now: number): StoredEntry {
+          mode: number, writer: string, now: number, mtimeMs: number | null = null): StoredEntry {
     return this.#sql.exec<StoredEntry>(
       "INSERT INTO file_entries (parent, name, kind, version, content_id, size, mode, " +
         "mtime_ms, writer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (parent, name) DO " +
         "UPDATE SET kind = excluded.kind, version = excluded.version, " +
         "content_id = excluded.content_id, size = excluded.size, mode = excluded.mode, " +
         "mtime_ms = excluded.mtime_ms, writer = excluded.writer RETURNING *",
-      parentOf(path), nameOf(path), kind, version, contentId, size, mode, Math.floor(now * 1000),
-      writer,
+      parentOf(path), nameOf(path), kind, version, contentId, size, mode,
+      mtimeMs ?? Math.floor(now * 1000), writer,
     ).one();
   }
 
@@ -1190,7 +1203,8 @@ export class Files {
 
   /** Commit content as `path`'s next version, inside the caller's transaction. */
   #commit(path: string, expected: string | null, contentId: string, size: number,
-          wanted: number | null, writer: string, op: string, parents: boolean, now: number): Entry {
+          wanted: number | null, writer: string, op: string, parents: boolean, now: number,
+          mtimeMs: number | null = null): Entry {
     if (isRoot(path)) {
       throw new FileFault("is_directory", "a root is a directory");
     }
@@ -1206,7 +1220,8 @@ export class Files {
     this.#parents(path, parents, writer, now);
     const mode = wanted ?? current?.mode ?? 0;
     const version = this.#record(path, op, "file", contentId, size, mode, writer, now);
-    return shown(this.#upsert(path, "file", version, contentId, size, mode, writer, now));
+    return shown(this.#upsert(path, "file", version, contentId, size, mode, writer, now,
+                              mtimeMs));
   }
 
   /**
@@ -1244,9 +1259,11 @@ export class Files {
 
   /** Write small content (at most 4 KiB) in one transaction. */
   #writeInline(path: string, bytes: Uint8Array, expected: string | null, mode: number | null,
-               writer: string, parents: boolean, op: string): Entry {
+               writer: string, parents: boolean, op: string, mtimeMs: number | null = null):
+      Entry {
     return this.#change(writer, (now) => this.#commit(
-      path, expected, this.#inline(bytes), bytes.byteLength, mode, writer, op, parents, now));
+      path, expected, this.#inline(bytes), bytes.byteLength, mode, writer, op, parents, now,
+      mtimeMs));
   }
 
   /**
@@ -1255,12 +1272,14 @@ export class Files {
    * writes exactly over what it read (`fileAppend`'s small case, which can never lose).
    */
   writeSmall(path: unknown, bytes: Uint8Array,
-             options: { expected: unknown; mode?: unknown; writer: string }): Entry {
+             options: { expected: unknown; mode?: unknown; writer: string;
+                        mtime_ms?: number }): Entry {
     if (bytes.byteLength > INLINE_BYTES) {
       throw new Refusal("invalid", `a small write is at most ${INLINE_BYTES} bytes`);
     }
     return this.#writeInline(storedPath(path), bytes, expectedEtag(options.expected),
-                             modeOf(options.mode), options.writer, true, "write");
+                             modeOf(options.mode), options.writer, true, "write",
+                             mtimeOf(options.mtime_ms));
   }
 
   /**
@@ -1441,6 +1460,32 @@ export class Files {
     const sent = new Set(chunks as string[]);
     this.#recordStored(sent, intentId as string);
     return { stored: sent.size };
+  }
+
+  /**
+   * A read for the cutover's check (`import.ts`, `importCheck`): `limit` entries from the
+   * `offset`th, in key order, each as the files plane lists it (its mtime too).
+   */
+  entriesPage(offset: number, limit: number): { path: string; kind: FileKind; size: number;
+                                               mode: 0 | 1; content_id: string | null;
+                                               mtime_ms: number }[] {
+    return this.#sql.exec<StoredEntry>(
+      "SELECT * FROM file_entries ORDER BY parent, name LIMIT ? OFFSET ?", limit, offset)
+      .toArray().map((row) => ({
+        path: row.parent === "/" ? `/${row.name}` : `${row.parent}/${row.name}`, kind: row.kind,
+        size: row.size, mode: row.mode === 1 ? 1 : 0, content_id: row.content_id,
+        mtime_ms: row.mtime_ms }));
+  }
+
+  /**
+   * A read for the cutover's check (`importCheck`): `limit` of the chunks the owner's contents
+   * name (its files' and its placed bodies'), from the `offset`th by hash, with their sizes.
+   */
+  chunksPage(offset: number, limit: number): { sha256: string; size: number }[] {
+    return this.#sql.exec<{ sha256: string; size: number }>(
+      "SELECT DISTINCT c.sha256, k.size FROM file_content_chunks c JOIN file_chunks k " +
+        "ON k.sha256 = c.sha256 ORDER BY c.sha256 LIMIT ? OFFSET ?", limit, offset)
+      .toArray();
   }
 
   /**
@@ -1733,14 +1778,16 @@ export class Files {
 
   /** Commit an upload as `path`'s next version; the intent ends with it. */
   commit(intentId: unknown, path: unknown, request: { expected: unknown; mode?: unknown;
-         writer: string; parents?: boolean; op?: "write" | "starter" }): Entry {
+         writer: string; parents?: boolean; op?: "write" | "starter"; mtime_ms?: number }):
+      Entry {
     const at = storedPath(path);
     const expected = expectedEtag(request.expected);
     const mode = modeOf(request.mode);
     return this.#change(request.writer, (now) => {
       const { contentId, size } = this.#fromIntent(this.#intent(intentId, now));
       const entry = this.#commit(at, expected, contentId, size, mode, request.writer,
-                                 request.op ?? "write", request.parents ?? true, now);
+                                 request.op ?? "write", request.parents ?? true, now,
+                                 mtimeOf(request.mtime_ms));
       this.#release(intentId as string);
       return entry;
     });

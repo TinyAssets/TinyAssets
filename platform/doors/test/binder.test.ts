@@ -228,6 +228,7 @@ describe("the owner a sign-in names", () => {
   it.each([
     ["the owner namespace's prefix", "iss-0123-user"],
     ["a colon", "user:1"],
+    ["a rehearsal's name", "rehearsal-r1-0123456789abcdef01234567"],
     ["blank", ""],
   ])("refuses an owner issuer's subject holding %s", async (_what, subject) => {
     await expect(ownerOf(doorsEnv, FAKE_ISSUER, subject)).rejects.toThrow();

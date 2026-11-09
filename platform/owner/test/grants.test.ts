@@ -16,7 +16,8 @@ import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
-import { Policy, POLICY_LIMITS, policyDigest } from "../src/policy";
+import { POLICY_LIMITS, policyDigest } from "../../contract/src/policy-document";
+import { Policy } from "../src/policy";
 import { DOT, MCP, MUSE, rig, type Rig, signedIn, subscription } from "./ledger-support";
 import { failure } from "./support";
 

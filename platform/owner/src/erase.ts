@@ -66,6 +66,11 @@ export interface ErasureParts {
   readonly outside: () => Promise<boolean>;
   /** The object's whole database deleted, and the tombstone left (`WriteGate.wipe`). */
   readonly wipe: () => Promise<void>;
+  /**
+   * The cutover's discard's wipe (`discard`): the whole database deleted, and nothing left, no
+   * tombstone (`WriteGate.wipe` with none).
+   */
+  readonly bare: () => Promise<void>;
   /** How long a refused door waits after the last attempt before it resumes the erasure. */
   readonly retryMs: number;
 }
@@ -187,6 +192,25 @@ export class Erasure extends LifecycleCapability {
     await wipe();
     this.#erased = true;
     await blobsAgain(ns);
+  }
+
+  /**
+   * The cutover's discard of an owner the import put here (`import.ts`, `importDiscard`): this
+   * erasure's own R2 step (every object under the namespace's prefix, once every put this
+   * instance began has landed) and its wipe, Lifecycle's alarm disabled first, then the prefix
+   * deleted once more. It is not an erasure: no mark, no outside record (no erased record in
+   * the directory, no issuer's deletion), no grace and no tombstone, so the name is no one's
+   * and its next object starts afresh, `pending`. `wiping` is told the namespace just before
+   * the wipe. Repeatable until the wipe; the namespace it deleted.
+   */
+  async discard(wiping: (ns: string | null) => void): Promise<string | null> {
+    const { blobs, blobsAgain, lifecycle, bare } = this.#parts;
+    const ns = await blobs();
+    await lifecycle.disableAlarms();
+    wiping(ns);
+    await bare();
+    await blobsAgain(ns);
+    return ns;
   }
 
   /** The erasure's job is due: an erasure a crash cut short, resumed. */

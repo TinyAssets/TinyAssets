@@ -48,6 +48,7 @@ import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
 import { Refusal } from "../../contract/src/refusal";
 import { CHUNK_BYTES, SLOT_WAIT_MS } from "../../contract/src/limits";
+import { chunkedId, cut } from "../../contract/src/content";
 import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { OwnerDO, type OwnerEnv } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/pages";
@@ -614,6 +615,39 @@ function owner(name: string): Binding {
     unknown as Binding;
 }
 
+/** The doors' import binding for `name` (`bindImport`): the platform, a bundle, the tiers. */
+function importing(name: string): Binding {
+  return { owner: name, caller: PLATFORM_CALLER, origin: null,
+           import: { bundle: "b".repeat(64) }, tiers: TIERS } as unknown as Binding;
+}
+
+/**
+ * A pending owner's object holding one chunked file of `bytes` distinct letters, put through
+ * the import's own doors (`owner/src/import.ts`), its chunks to the store as the doors put them.
+ */
+async function imported(env: LegEnv, name: string, seed: number, bytes: number): Promise<void> {
+  const stub = env.OWNER.getByName(name);
+  const data = letters(seed, bytes);
+  const pieces = cut(data);
+  const request = { path: "/workspace/imported/f.bin", size: data.byteLength, mode: 0 as const,
+                    content_id: chunkedId(data.byteLength, pieces.map((piece) => piece.sha256)),
+                    chunks: pieces.map((piece) => piece.sha256) };
+  const begun = await stub.importFileBegin(importing(name), request);
+  if (begun.skipped) {
+    throw new Error("the leg's import found its file there already");
+  }
+  for (const piece of pieces) {
+    // Its own bytes: a view of the file's buffer would carry the whole buffer over the RPC.
+    await env.STORE.putChunks(begun.namespace, begun.key, [{ sha256: piece.sha256,
+                                                             bytes: piece.bytes.slice() }]);
+    await stub.importFileStored(importing(name), { intent_id: begun.intent_id,
+                                                   chunks: [piece.sha256] });
+  }
+  await stub.importFileCommit(importing(name), { intent_id: begun.intent_id,
+                                                 path: request.path, mode: 0,
+                                                 content_id: request.content_id, mtime_ms: 0 });
+}
+
 /** A fresh owner's object, admitted as sign-up admits it. */
 async function object(env: LegEnv, name: string): Promise<DurableObjectStub<LegOwner>> {
   const stub = env.OWNER.getByName(name);
@@ -676,6 +710,12 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
     : "";
   for (let index = 0; index < n; index++) {
     const name = `leg-${path}-${mib}-${n}-${index}-${LEG.runs}`;
+    if (path === "check") {
+      // The cutover's check of a pending owner (`importCheck`): its object is never admitted.
+      await imported(env, name, LEG.runs * 100 + index, mib * MIB);
+      LEG.ready.push({ name, who: importing(name) });
+      continue;
+    }
     const stub = await object(env, name);
     const who = owner(name);
     const seed = LEG.runs * 100 + index;
@@ -851,6 +891,20 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
       }
       if (path === "window") {
         return await stub.legWindow(content!, offset!);
+      }
+      if (path === "check") {
+        // Every chunk read back through the store, a page at a time: how many were proved.
+        let proved = 0;
+        for (let page = 0; ; page += 1) {
+          const read = await stub.importCheck(who, { part: "chunks", page });
+          if (read.part !== "chunks") {
+            throw new Error("the check answered another part");
+          }
+          proved += read.chunks.filter((chunk) => chunk.read === chunk.sha256).length;
+          if (!read.more) {
+            return proved;
+          }
+        }
       }
       return await stub.legHoard(mib);
     } finally {

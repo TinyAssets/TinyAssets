@@ -14,7 +14,8 @@
  *   the value each field takes (`Asked<door, { … }>`), the owner's own request type's, since
  *   the row names most fields alone;
  * - where its module reads it whole (`loose`), the type its module takes, spelled once here
- *   (`AdmissionRequest`, the connections', the inbound bindings', the egress door's).
+ *   (`AdmissionRequest`, `TierRequest`, the connections', the inbound bindings', the egress
+ *   door's).
  *
  * An answer is what the doors read of it, or `object` where they pass it on as it came (as
  * JSON, or as an RPC result). A tool's door is called by its row's name alone
@@ -28,6 +29,7 @@ import type { Binding, InboundAnswer } from "./binding";
 import type { TierName } from "./control";
 import type { ProfileName } from "./doors";
 import type { Outcome } from "./egress";
+import type { CheckPart } from "./import-message";
 import type { Metering, MeterOutcome } from "./gateway";
 import type { DoorRequests } from "./requests";
 import type { EgressCode } from "./refusal";
@@ -106,6 +108,11 @@ type Handed<Door extends keyof DoorRequests, Values extends object = object> =
 export type AdmissionRequest =
   | { readonly admit: true }
   | { readonly reason: string; readonly suspended: boolean };
+
+/** The platform's setting of the owner's tier (`tier.ts`; the import's admit step). */
+export interface TierRequest {
+  readonly tier: TierName;
+}
 
 /**
  * A connection to prepare: its source record's id, kind, display name and pi-ai provider,
@@ -222,6 +229,7 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
 
   // Sign-in and sign-up (`authorize.ts`), the owner's session (`app.ts`), erasure (`erase.ts`).
   admissionSet(binding: Binding, request: AdmissionRequest): Promise<{ readonly state: string }>;
+  tierSet(binding: Binding, request: TierRequest): Promise<{ readonly tier: TierName }>;
   sessionOpen(binding: Binding): Promise<{ readonly session: string }>;
   sessionExtend(binding: Binding): Promise<object>;
   sessionClose(binding: Binding): Promise<{ readonly closed: number }>;
@@ -356,7 +364,10 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
     readonly intent_id: string; readonly chunks: readonly string[] }>): Promise<object>;
   importFileCommit(binding: Binding, request: Asked<"importFileCommit", {
     readonly intent_id: string; readonly path: string; readonly mode: 0 | 1;
-    readonly content_id: string }>): Promise<object>;
+    readonly content_id: string; readonly mtime_ms: number }>): Promise<object>;
+  importCheck(binding: Binding, request: Asked<"importCheck", {
+    readonly part: CheckPart; readonly page: number }>): Promise<{ readonly more: boolean }>;
+  importDiscard(binding: Binding): Promise<{ readonly namespace: string | null }>;
 
   // The egress host (`egress.ts`): a model call, a run's events, a sign-in's, and sync.
   egressOpen(binding: Binding, request: EgressRequest): Promise<EgressOpened | EgressRefusal>;

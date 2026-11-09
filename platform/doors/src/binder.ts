@@ -15,6 +15,7 @@
  * builds a binding (`guards/binder.test.ts`). The object checks the owner again against
  * its own name and stored owner, so a bug here reaching the wrong object fails there.
  */
+import { rehearsalRun } from "../../contract/src/import-message";
 import { apiKeyOrigin, type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX16, HEX32, HEX64, RUN_ID } from "../../contract/src/ids";
@@ -127,7 +128,8 @@ export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): P
     throw new Error("a sign-in names its issuer and subject");
   }
   if (issuer === ownerIssuer(env)) {
-    if (subject.startsWith(FOREIGN) || subject.includes(":")) {
+    // A rehearsal's name is no one's to sign into (`rehearsalName`): its discard is no erasure.
+    if (subject.startsWith(FOREIGN) || subject.includes(":") || rehearsalRun(subject) !== null) {
       throw new Error("the owner issuer's subject is outside the owner namespace");
     }
     return principal(subject);

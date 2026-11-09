@@ -167,11 +167,13 @@ export function census(copy: Copy, tiers: Tiers): Census {
   const live = fleet.owners.filter((owner) => !withheld(owner));
   const fits = new Map<string, Fit>();
   const owned = new Map<string, Problem[]>();
+  let archivedPolicies = 0;
   for (const owner of live) {
     const problems = [...owner.tree.problems, ...admissionProblems(owner)];
     if (owner.tree.problems.length === 0) {
       const measured = measure(owner, copy, tiers, null);
       problems.push(...measured.problems);
+      archivedPolicies += measured.built?.policyArchived === true ? 1 : 0;
       if (measured.fit !== null) {
         fits.set(owner.key, measured.fit);
       }
@@ -233,7 +235,9 @@ export function census(copy: Copy, tiers: Tiers): Census {
       sqlite_in_user_files: sum((owner) => owner.tree.sqliteInUser),
       archived_stores: sum((owner) => owner.tree.archived.length),
     },
+    // A policy the platform's validator refuses: archived as a file, the default kept.
     rows: { policies: sum((owner) => owner.tree.rows.policy),
+            policies_archived: archivedPolicies,
             collection_rows: sum((owner) => owner.tree.rows.collection),
             body_bytes: sum((owner) => owner.tree.rows.body_bytes) },
     fit: {

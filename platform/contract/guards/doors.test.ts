@@ -73,6 +73,8 @@ describe("the door table", () => {
     ["an import door of another class", changed("importRows", { class: "work" })],
     ["an import door on the reserved line", changed("importRows", { caller: "reserved" })],
     ["an import door that binds nothing", changed("importFiles", { caller: "none", class: null })],
+    ["the discard's caller at an account door", changed("fileStat", { caller: "discard" })],
+    ["the discard of another class", changed("importDiscard", { class: "work" })],
     ["an unbound door that binds", changed("sandboxRung", { caller: "account", class: "work" })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);

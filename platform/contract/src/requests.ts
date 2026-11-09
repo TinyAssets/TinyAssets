@@ -102,6 +102,7 @@ export interface DoorRequests {
   readonly importFiles: DoorFields<"entries">;
   readonly importFileBegin: DoorFields<"path" | "size" | "mode" | "content_id" | "chunks">;
   readonly importFileStored: DoorFields<"intent_id" | "chunks">;
-  readonly importFileCommit: DoorFields<"intent_id" | "path" | "mode" | "content_id">;
+  readonly importFileCommit: DoorFields<"intent_id" | "path" | "mode" | "content_id" | "mtime_ms">;
   readonly importNotice: DoorFields<"detail">;
+  readonly importCheck: DoorFields<"part" | "page">;
 }
