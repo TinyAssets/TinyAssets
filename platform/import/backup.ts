@@ -7,7 +7,7 @@
  * - its archive, `tinyassets-data-<ts>.tar.gz`, extracted at `data/` (the shared layer,
  *   `data/_data/`);
  * - each pinned owner image, uncompressed, at `<uid>.img`, mounted read-only at `mnt/<uid>`
- *   (`mountArgs`, the line `diagnose_connected_sources.py` uses).
+ *   by the window's host script (`window.sh`, `MOUNT_OPTIONS`).
  *
  * Nothing here writes to it. A store is opened read-only and immutable, so SQLite takes no
  * lock and writes no sidecar; a file is opened `O_NOFOLLOW`; a tree is read by `lstat`, so a
@@ -39,7 +39,12 @@ export interface Manifest {
 /** The old stack's owner uids (`owner_identities.py`). */
 export const UID_FIRST = 300_001;
 export const UID_LAST = 399_999;
-/** The image mount's options, verbatim from `diagnose_connected_sources.py`. */
+/**
+ * The image mount's options: `diagnose_connected_sources.py`'s, with `nouuid`, since a copy's
+ * image holds its live volume's file system UUID, which XFS otherwise refuses to mount
+ * twice. The host script mounts with them (`window.sh`, held equal
+ * by its test), since the host has no Node.
+ */
 export const MOUNT_OPTIONS = "ro,norecovery,nosuid,nodev,loop,nouuid";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -229,9 +234,4 @@ export function loopBacking(device: string): string | null {
   } catch {
     return null;
   }
-}
-
-/** `mount`'s arguments for one owner image (run as root on the host, never on a live volume). */
-export function mountArgs(image: string, at: string): string[] {
-  return ["-t", "xfs", "-o", MOUNT_OPTIONS, image, at];
 }

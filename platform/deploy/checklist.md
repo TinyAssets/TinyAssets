@@ -362,6 +362,59 @@ It never counts as "absent".
   owner refuses an old door's open. It ships in the first deploy, where nothing serves yet; a
   later change of that kind takes the window.
 
+## The import window's credentials
+
+The importer's runner, **Import window (manual)** (`.github/workflows/import-window.yml`,
+tasks.md §9 item 7), reads these `production` secrets. `census` and `clean` need none,
+`bundle` needs the exclusion list alone, and `stage`, `verify`, `wipe`, `admit` and `dlq`
+need the other four and the repository secret `CLOUDFLARE_ACCOUNT_ID`. A mode that lacks one
+stops before any step and names it. **Mint them before the rehearsal, keep them through the
+window, and revoke them after it.**
+
+| `production` secret | What it is | Scope |
+|---|---|---|
+| `IMPORT_EXCLUSION_LIST` | Your principal and every canary owner's, one a line (`#` starts a comment). They start fresh: backed up, never imported. | none |
+| `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one R2 API token. | Object Read & Write on `tinyassets-import-staging`, Object Read on `tinyassets-files` |
+| `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token. | Account · Queues · Edit (send to `tinyassets-import`, add and use the HTTP pull consumer of `tinyassets-import-dlq`), Account · Workers KV Storage · Edit (list `tinyassets-directory` and delete a rehearsal's records) |
+| `IMPORT_KEY` | 32 random bytes, base64url. | The same value as the doors' Worker secret `IMPORT_KEY` |
+
+**Never give one of them a name another job reads.** An environment secret hides the
+repository secret of the same name in every `production` job, so a `production` secret named
+`CLOUDFLARE_API_TOKEN` would hand the import token to the platform deploy's apply job.
+
+The steps, on your own computer, with your own `gh` login. `gh secret set <name> --env
+production` asks for the value and does not show it, so no value enters the chat or a
+command line:
+
+1. **The exclusion list.** Read the principals from the old stack's records and
+   `docs/host-actions.md`, then `gh secret set IMPORT_EXCLUSION_LIST --env production`. An
+   empty list stops `bundle`.
+2. **The R2 token.** Dashboard → R2 → Manage R2 API Tokens → Create API token, named
+   `tinyassets-import-window`. Set Object Read & Write and the two buckets above. The form
+   gives one permission to every bucket it names, so the token can write `tinyassets-files`
+   too, though the job only lists that bucket (`window.ts`, `wipe`'s proof). Copy its Access
+   Key ID and Secret Access Key into `gh secret set IMPORT_R2_ACCESS_KEY_ID --env production`
+   and `gh secret set IMPORT_R2_SECRET_ACCESS_KEY --env production`. The form shows them once.
+3. **The API token.** My Profile → API Tokens → Create Token → Custom token, named
+   `tinyassets-import-window`. Account resources: this account only; the two permissions
+   above. Cloudflare scopes them to the account, not to one queue or namespace, so the job's
+   own filters are the guard (`wipe` deletes only the run's `o:rehearsal-<run>-` records).
+   Then `gh secret set IMPORT_CLOUDFLARE_API_TOKEN --env production`.
+4. **`IMPORT_KEY`, in both places from one value,** in Git Bash from `platform/`, with
+   wrangler's own Cloudflare login:
+   ```sh
+   k="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+   printf %s "$k" | gh secret set IMPORT_KEY --env production
+   printf %s "$k" | npx wrangler secret put IMPORT_KEY --name tinyassets-doors
+   unset k
+   ```
+   Without the doors' copy, the consumer drops every import message.
+
+**After the admit, before `routes`,** delete the doors' copy
+(`npx wrangler secret delete IMPORT_KEY --name tinyassets-doors`), since a replayed admit is
+accepted by design. **After the window,** delete the five `production` secrets
+(`gh secret delete <name> --env production`) and revoke both tokens in the dashboard.
+
 ## Registrations you make by hand at the providers
 
 The registrations are data in `platform/doors/redirect-registrations.json`, one per source.

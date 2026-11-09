@@ -2,11 +2,12 @@
  * The cutover importer's job, run in Node 22 (`npm run build -w import`, then
  * `node dist/import.mjs <command> <work> ...`) against a backup copy (`backup.ts`):
  *
- * - `mount <work>` / `unmount <work>`: as root on the host, each pinned image mounted
- *   read-only at `mnt/<uid>` (refused when a loop device already holds it), or let go;
+ * - `copy <plan|digests|stores|release> <work> ...`: the backup copy's own checks
+ *   (`copy.ts`), for the window's host script (`window.sh`), which makes the copy and mounts
+ *   each pinned image read-only at `mnt/<uid>` on the host, which has no Node;
  * - `census <work> --tiers <control.json> --table <file>`: the counts to stdout, the
  *   per-owner table to `<file>` (0600); exit 0 when the backup is ready to import, 3 when not;
- * - `bundle <work> --tiers <control.json> --exclude <list> --out <dir> --private <dir>`
+ * - `bundle <work> --tiers <control.json> --exclude <list|-> --out <dir> --private <dir>`
  *   (or `--dry-run`, which writes nothing): the bundles, the digests and billing ids in 0600
  *   files of the private folder, and counts alone on stdout;
  *   (`--rehearsal <run>`: each bundle under its rehearsal's name, `rehearsalName`);
@@ -24,13 +25,13 @@
  * (`/proc/self/mountinfo`), so a live or writable volume is never read. stdout holds counts
  * only (the lesson of `restore_credentials.py` and `diagnose_connected_sources.py`).
  */
-import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { layout, loopBacking, manifestOf, mountArgs, mountProblem } from "./backup";
+import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
 import { census, type Tiers } from "./census";
+import { copyMain } from "./copy";
 import { type Fetcher, type Inputs, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
 import { admit, CLOCK, type Clock, deadLetters, verify, wipe } from "./window";
@@ -117,6 +118,14 @@ function required(argv: readonly string[], name: string): string {
   return value;
 }
 
+/**
+ * Where the exclusion list is read: its file, or `-`, the job's stdin (fd 0, a pipe or a
+ * socket alike), so the window's list, a secret, never touches a file (`window.sh`).
+ */
+function exclusionFrom(given: string): string | number {
+  return given === "-" ? 0 : given;
+}
+
 /** The control record's tiers (`c:control`), each with its storage in bytes. */
 export function tiersOf(text: string): Tiers {
   const record = JSON.parse(text) as { tiers?: unknown };
@@ -156,56 +165,18 @@ export function copyAt(work: string, mountinfo: string, backing: Backing = loopB
   };
 }
 
-function run(command: string, args: readonly string[]): string {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error(`${command} failed (${result.status}): ${result.stderr.trim()}`);
-  }
-  return result.stdout;
-}
-
-function mount(work: string): void {
-  const where = layout(work);
-  const manifest = manifestOf(readFileSync(where.manifest, "utf8"));
-  for (const pin of manifest.snapshots) {
-    if (run("losetup", ["-j", where.image(pin.uid)]).trim() !== "") {
-      throw new Error(`image ${pin.uid} is already held by a loop device: refused`);
-    }
-    mkdirSync(where.mount(pin.uid), { recursive: true, mode: 0o700 });
-    run("mount", mountArgs(where.image(pin.uid), where.mount(pin.uid)));
-    const problem = mountProblem(readFileSync("/proc/self/mountinfo", "utf8"),
-                                 realpathSync(where.mount(pin.uid)), loopBacking,
-                                 realpathSync(where.image(pin.uid)));
-    if (problem !== null) {
-      throw new Error(`image ${pin.uid}'s mount ${problem}`);
-    }
-  }
-}
-
-function unmount(work: string): void {
-  const where = layout(work);
-  const manifest = manifestOf(readFileSync(where.manifest, "utf8"));
-  for (const pin of manifest.snapshots) {
-    run("umount", [where.mount(pin.uid)]);
-  }
-}
-
 /** The job: one command; returns the process's exit code. */
 export function main(argv: readonly string[], mountinfo: () => string,
                      backing: Backing = loopBacking): number {
   const [command, given] = argv;
   if (given === undefined) {
-    throw new Error("usage: <mount|unmount|census|bundle|stage> <work> [options]");
+    throw new Error("usage: <copy|census|bundle|stage> <work> [options]");
+  }
+  if (command === "copy") {
+    return copyMain(argv, (work) => copyAt(resolve(work), mountinfo(), backing),
+                    (line) => process.stdout.write(`${line}\n`));
   }
   const work = resolve(given);
-  if (command === "mount") {
-    mount(work);
-    return 0;
-  }
-  if (command === "unmount") {
-    unmount(work);
-    return 0;
-  }
   const tiers = tiersOf(readFileSync(required(argv, "--tiers"), "utf8"));
   const copy = copyAt(work, mountinfo(), backing);
   if (command === "census") {
@@ -226,7 +197,7 @@ export function main(argv: readonly string[], mountinfo: () => string,
     }
     const summary = buildBundles(copy, {
       out, private: privateDir, tiers,
-      exclude: exclusionList(readFileSync(required(argv, "--exclude"), "utf8")),
+      exclude: exclusionList(readFileSync(exclusionFrom(required(argv, "--exclude")), "utf8")),
       rehearsal: option(argv, "--rehearsal"),
     });
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);

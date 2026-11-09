@@ -6,9 +6,9 @@
  * platform's own, and no Worker's `src` (`decisions.md` A1: no Worker imports another
  * Worker's `src`; neither does this). It reads the starter's package to count what the
  * starter seeds. It runs each old policy through the platform's own validator
- * (`contract/src/policy-document.ts`). It is Node's: the file system, SQLite and the mount
- * tools, and, in its staging and window steps alone (`stage.ts`, slice 4; `window.ts`,
- * slice 5), the network: the staging and files buckets over R2's S3 API, the import queue
+ * (`contract/src/policy-document.ts`). It is Node's: the file system and SQLite, and no
+ * child process (the host script, `window.sh`, makes the copy and mounts its images), and, in
+ * its staging and window steps alone (`stage.ts`, slice 4; `window.ts`, slice 5), the network: the staging and files buckets over R2's S3 API, the import queue
  * and its dead-letter queue over the Queues HTTP API, and the directory over the KV API,
  * with the credentials the run is handed.
  */
@@ -29,7 +29,6 @@ export const IMPORTS: ImportRules = Object.freeze({
                           "starter/starter.json"]),
   bare: Object.freeze({
     "node:crypto": null, "node:fs": null, "node:os": null, "node:path": null, "node:sqlite": null,
-    "node:child_process": "import/cli.ts",
   }),
   banned: Object.freeze([{
     pattern: /^fetch$/,

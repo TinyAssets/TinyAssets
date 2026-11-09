@@ -2327,7 +2327,11 @@ R, S, M and W.
   (`doors/src/import.ts`, `putImportChunk`, `bindImport`, `importTiers`) and its bindings in
   `doors/wrangler.jsonc` (`IMPORT_STAGING`, the `IMPORTS` producer, the consumer and its
   dead-letter queue), the account's `tinyassets-import` and `tinyassets-import-dlq` queues and
-  `tinyassets-import-staging` bucket, and the doors' `IMPORT_KEY` secret.
+  `tinyassets-import-staging` bucket, and the doors' `IMPORT_KEY` secret. So is the window's
+  runner: `.github/workflows/import-window.yml`, the job's `copy.ts` and the host's
+  `window.sh`, its `production` secrets (`IMPORT_EXCLUSION_LIST`, `IMPORT_R2_ACCESS_KEY_ID`,
+  `IMPORT_R2_SECRET_ACCESS_KEY`, `IMPORT_CLOUDFLARE_API_TOKEN` and `IMPORT_KEY`) with both
+  Cloudflare tokens revoked, and each run's work folder on the droplet (mode `clean`).
   - [x] 1. The census (`census.ts`): §1's counts and the per-owner table, rule 0 (`rules.ts`:
     a reviewed rule for every old store, table and entry, held to the old stack's own DDL by
     `guards/old-tables.json`, an unknown one stopping its owner loudly), every fleet row
@@ -2406,12 +2410,18 @@ R, S, M and W.
     after `routes`. That read-only run is its rehearsal: an applied handback can only follow
     an applied `routes`, so its first applied run is the window's own.
   - [ ] 7. A dark rehearsal under `rehearsal-` names, measured, verified and wiped (the founder
-    approved it on real data, 2026-11-07). It also owes (`rvimport5_report.md`):
+    approved it on real data, 2026-11-07). Its runner is built (slice 7a): **Import window
+    (manual)** (`import-window.yml`), one mode a dispatch (`census`, `bundle`, `stage`,
+    `verify`, `wipe`, `admit`, `dlq`, `clean`) against one copy a run id. `window.sh` makes
+    the copy on the droplet from the newest manifest (every digest, the free disk, every
+    store's `integrity_check`), mounts the images read-only for each job, and runs the job in
+    `node:22`, its output let out through `copy release` alone. A rehearsal is the default; a
+    real run takes `rehearsal: false` and `confirm: window-<run>`. It also owes
+    (`rvimport5_report.md`):
     - the time a discarded object takes to be evicted, measured, with that wait written into
       the window's steps, since a re-import before then answers `busy`;
-    - the window's credentials minted as a founder step: an R2 key with read on
-      `tinyassets-files`, and a token with queue-consumer rights and KV read and delete on
-      `tinyassets-directory`. Revoke them after the window;
+    - the window's credentials minted as a founder step (`platform/deploy/checklist.md`, "The
+      import window's credentials": their names and scopes). Revoke them after the window;
     - `IMPORT_KEY` removed before `routes`, because a replayed admit is accepted by design;
     - the dead-letter reader's limit noted: its lease returns a message about 100 times
       before the pull consumer's `max_retries` drops it.

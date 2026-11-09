@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { mountArgs, mountProblem } from "../backup";
+import { mountProblem } from "../backup";
 import { main, tiersOf } from "../cli";
 import { ALICE, BOB, fixture, FOUNDER, keyOf, NEWBIE, TIERS, UIDS } from "./fixture";
 
@@ -49,9 +49,6 @@ describe("the read-only mount", () => {
       .toBe("is not its own image: its loop device's backing file is another");
     expect(mountProblem(line("/w/mnt/300001", "ro", "xfs", "/dev/sda1"), "/w/mnt/300001", backing,
                         "/w/300001.img")).toMatch(/not its own image/);
-    expect(mountArgs("/w/300001.img", "/w/mnt/300001"))
-      .toEqual(["-t", "xfs", "-o", "ro,norecovery,nosuid,nodev,loop,nouuid", "/w/300001.img",
-                "/w/mnt/300001"]);
   });
 
   it("takes the control record's tiers, each with its storage in bytes, or refuses", () => {
