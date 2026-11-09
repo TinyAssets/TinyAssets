@@ -17,10 +17,14 @@
  * - `copy release <work> <file>...`: the job's output let out only when it names no owner of
  *   the copy (a principal, or its key, `sha256(principal)[:16]`, which a rehearsal's name and
  *   every digest of it hold) and no path of the copy; else withheld, kept 0600 on the host.
+ *   An identities store it cannot read refuses the release whole. It is a list of exact
+ *   strings, a backstop to the job's own discipline, not a proof: a principal the output
+ *   escapes (JSON's `\"` or `\t`) or a path within an image, relative, is no string it holds.
+ *   The job prints neither: counts, ordinals and fixed words alone.
  *
  * Stdout holds counts and ordinals alone. Deleted at the cutover with the rest of the job.
  */
-import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
 import { sha256Hex } from "../contract/src/digest";
@@ -125,7 +129,9 @@ export function checkStores(copy: Copy): StoresCheck {
 
 /**
  * What the copy's output must never name: its path, and each owner's principal and key. A
- * principal is read from the shared layer's identities, when the copy has them yet.
+ * principal is read from the shared layer's identities. Before the shared layer is extracted
+ * (a copy refused at its digests) the path is all there is; once it is there, an identities
+ * store that cannot be read throws, so the release lets nothing out (Fact 8).
  */
 export function forbidden(work: string): string[] {
   const named = [work];
@@ -136,7 +142,7 @@ export function forbidden(work: string): string[] {
   }
   const identities = join(layout(work).shared, ".broker", "state", "owner-identities.db");
   let principals: string[] = [];
-  try {
+  if (existsSync(layout(work).shared)) {
     const db = openStore(identities);
     try {
       principals = db.prepare("SELECT principal FROM owner_identities").all()
@@ -144,8 +150,6 @@ export function forbidden(work: string): string[] {
     } finally {
       db.close();
     }
-  } catch {
-    // No shared layer yet (a copy refused before its extraction): nothing of an owner's.
   }
   for (const principal of principals) {
     named.push(principal, sha256Hex(principal).slice(0, 16));

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# The droplet's tools, faked for the window's test (window.test's `host`), by the name it is
-# linked as: rclone over a local folder (FAKE_REMOTE, the remote `fake:`), docker running the
-# job's command in plain Node, mount, umount and losetup that only record, and df saying
-# FAKE_DF_SIZE and FAKE_DF_AVAIL. Every call is recorded in FAKE_LOG.
+# The droplet's tools and the runner's SSH, faked for the window's test (runner.test's `host`
+# and `step`), by the name it is linked as: rclone over a local folder (FAKE_REMOTE, the remote
+# `fake:`); docker running the job's command in plain Node, its stdin passed on, and pulling and
+# naming one image (FAKE_DIGEST) without a registry; mount, umount and losetup that only record;
+# df saying FAKE_DF_SIZE and FAKE_DF_AVAIL; ssh answering the stage's mktemp and recording each
+# other call's stdin; scp doing nothing. Every call is recorded in FAKE_LOG.
 set -euo pipefail
 tool="$(basename "$0")"
 printf '%s %s\n' "$tool" "$*" >> "$FAKE_LOG"
@@ -31,14 +33,25 @@ case "$tool" in
     esac
     ;;
   docker)
-    [[ "$1" == pull ]] && exit 0
-    [[ "$1" == run ]] || exit 9
-    shift
+    case "$1" in
+      pull) [[ "$3" == node:22 || "$3" == "$FAKE_DIGEST" ]] || exit 9; exit 0 ;;
+      image)
+        if [[ "$3" == -f ]]; then
+          [[ "$5" == node:22 ]] || exit 9
+          printf '%s\n' "$FAKE_DIGEST"
+        else
+          [[ "$3" == "$FAKE_DIGEST" ]] || exit 1
+        fi
+        exit 0
+        ;;
+      run) shift ;;
+      *) exit 9 ;;
+    esac
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --rm|-i) shift ;;
         --network|-v|-e) shift 2 ;;
-        node:22) shift; break ;;
+        node@sha256:*) [[ "$1" == "$FAKE_DIGEST" ]] || exit 9; shift; break ;;
         *) exit 9 ;;
       esac
     done
@@ -46,5 +59,14 @@ case "$tool" in
     ;;
   mount|umount|losetup) ;;
   df) printf 'Size Avail\n%s %s\n' "$FAKE_DF_SIZE" "$FAKE_DF_AVAIL" ;;
+  ssh)
+    if [[ "${*: -3:1}" == mktemp ]]; then
+      echo /tmp/tinyassets-import-window.abc123
+      exit 0
+    fi
+    printf 'STDIN %s\n' "$(cat)" >> "$FAKE_LOG"
+    echo "the step ran"
+    ;;
+  scp) ;;
   *) exit 9 ;;
 esac

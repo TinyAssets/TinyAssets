@@ -4,13 +4,16 @@
  * fixture's shape (`fixture.ts`) behind a fake `rclone`, with the droplet's other tools faked
  * (`fake-host.sh`) and the job bundled as it ships. It holds the dispatch's gate (a real run
  * only with rehearsal false and its confirm; a missing secret named, its value never shown),
- * the copy's refusals (a digest that is not the manifest's, a disk without room), and the
- * output's discipline (counts alone: no principal, no owner key, no path of the copy).
+ * the run step's words and stdin (the kind its rehearsal input says, no secret in an
+ * argument), the copy's refusals (a digest that is not the manifest's, a disk without room
+ * for the copy or the bundles, a work folder not the host's own), the run's one Node, what a
+ * networked job sees, the host's lock, and the output's discipline (counts alone: no
+ * principal, no owner key, no path of the copy, and a withheld output never printed).
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
-  readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
+  readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,7 +24,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { MOUNT_OPTIONS } from "../backup";
-import { checkStores, forbidden, released } from "../copy";
+import { checkStores, copyMain, forbidden, released } from "../copy";
 import {
   ALICE, ARCHIVE, BOB, DORA, ERASED, ERASING, fixture, FOUNDER, keyOf, NEWBIE, TIERS, UIDS,
 } from "./fixture";
@@ -33,6 +36,14 @@ const PRINCIPALS = [ALICE, BOB, FOUNDER, DORA, NEWBIE, ERASED, ...Object.values(
 const MANIFEST = "tinyassets-platform-2026-11-07T03-00-00Z.json";
 const CREDENTIALS = ["CLOUDFLARE_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
                      "CLOUDFLARE_API_TOKEN", "IMPORT_KEY"];
+/** The one Node the fake registry names (`fake-host.sh`). */
+const DIGEST = `node@sha256:${"7a".repeat(32)}`;
+const WORKFLOW = parse(readFileSync(join(REPO, ".github", "workflows", "import-window.yml"),
+                                    "utf8")) as {
+  on: { workflow_dispatch: { inputs: Record<string, { default?: unknown }> } };
+  concurrency: { group: string };
+  jobs: { window: { environment: string; steps: { name?: string; run?: string }[] } };
+};
 
 const temps: string[] = [];
 let stage: string;
@@ -51,7 +62,7 @@ beforeAll(() => {
   bin = join(stage, "bin");
   mkdirSync(bin);
   chmodSync(join(HERE, "fake-host.sh"), 0o755);
-  for (const tool of ["rclone", "docker", "mount", "umount", "losetup", "df"]) {
+  for (const tool of ["rclone", "docker", "mount", "umount", "losetup", "df", "ssh", "scp"]) {
     symlinkSync(join(HERE, "fake-host.sh"), join(bin, tool));
   }
 });
@@ -95,17 +106,18 @@ function host() {
   const disk = { size: 1_000_000_000_000, avail: 900_000_000_000 };
   const work = (run: string) => join(root, `ta-import-${run}`);
   /** `window.sh <args...>`, as the workflow's SSH session runs it, `input` its stdin. */
+  const lock = join(dir, "lock");
   const window = (args: readonly string[], input = "") => {
     const result = spawnSync("bash", [join(stage, "window.sh"), ...args], {
       encoding: "utf8", input,
       env: { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, TA_IMPORT_ROOT: root,
-             TA_IMPORT_ENV: join(dir, "env"), TA_IMPORT_LOCK: join(dir, "lock"),
+             TA_IMPORT_ENV: join(dir, "env"), TA_IMPORT_LOCK: lock,
              FAKE_REMOTE: remote, FAKE_LOG: log, FAKE_DF_SIZE: String(disk.size),
-             FAKE_DF_AVAIL: String(disk.avail) } });
+             FAKE_DF_AVAIL: String(disk.avail), FAKE_DIGEST: DIGEST } });
     return { status: result.status, out: result.stdout + result.stderr };
   };
   const calls = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
-  return { f, remote, manifest, publish, disk, work, window, calls };
+  return { f, remote, manifest, publish, disk, work, window, calls, lock };
 }
 
 /** Text that names no owner of the fixture, by principal or key, and no path of `work`. */
@@ -118,11 +130,7 @@ function countsOnly(text: string, work: string): void {
 }
 
 describe("the dispatch's gate, the workflow's first step", () => {
-  const workflow = parse(readFileSync(join(REPO, ".github", "workflows", "import-window.yml"),
-                                      "utf8")) as {
-    on: { workflow_dispatch: { inputs: Record<string, { default?: unknown }> } };
-    jobs: { window: { environment: string; steps: { name?: string; run?: string }[] } };
-  };
+  const workflow = WORKFLOW;
   const steps = workflow.jobs.window.steps;
   const SECRETS = { DO_DROPLET_HOST: "host.example", DO_SSH_USER: "deploy",
                     DO_SSH_KEY: "ssh-key-value-1", IMPORT_EXCLUSION_LIST: "exclusion-value-2",
@@ -141,6 +149,8 @@ describe("the dispatch's gate, the workflow's first step", () => {
   it("comes before any other step, in production, and a rehearsal is the default", () => {
     expect(steps[0]!.name).toBe("Refuse a run this dispatch may not make");
     expect(workflow.jobs.window.environment).toBe("production");
+    // Every mode in its own group: the observation and host-mutation locks stay free.
+    expect(workflow.concurrency.group).toBe("import-window");
     expect(workflow.on.workflow_dispatch.inputs["rehearsal"]!.default).toBe(true);
     expect(workflow.on.workflow_dispatch.inputs["confirm"]!.default).toBe("");
     expect(gate({})).toMatchObject({ status: 0 });
@@ -180,6 +190,46 @@ describe("the dispatch's gate, the workflow's first step", () => {
   });
 });
 
+describe("the run step, its ssh faked", () => {
+  const step = WORKFLOW.jobs.window.steps.find((each) => each.name === "Run the step on the droplet")!;
+  const SECRETS = { CLOUDFLARE_ACCOUNT_ID: "acct-v", IMPORT_R2_ACCESS_KEY_ID: "r2id-v",
+                    IMPORT_R2_SECRET_ACCESS_KEY: "r2sec-v", IMPORT_CLOUDFLARE_API_TOKEN: "tok-v",
+                    IMPORT_KEY: "key-v", IMPORT_EXCLUSION_LIST: "excl-v" };
+  const run = (inputs: Record<string, string>) => {
+    const dir = mkdtempSync(join(tmpdir(), "ta-window-step-"));
+    temps.push(dir);
+    const log = join(dir, "calls.log");
+    writeFileSync(log, "");
+    const summary = join(dir, "summary");
+    const result = spawnSync("bash", ["-c", step.run!], {
+      encoding: "utf8", cwd: dir,
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, RUNNER_TEMP: dir,
+             GITHUB_STEP_SUMMARY: summary, FAKE_LOG: log, DO_DROPLET_HOST: "host.example",
+             DO_SSH_USER: "deploy", MODE: "stage", RUN_ID: "r1", REHEARSAL: "true",
+             DELETE_DEAD_LETTERS: "false", ...SECRETS, ...inputs } });
+    const calls = readFileSync(log, "utf8");
+    return { status: result.status, out: result.stdout + result.stderr + readFileSync(summary, "utf8"),
+             args: calls.split("\n").filter((line) => line.startsWith("ssh ")).join("\n"),
+             stdin: calls.split("\n").filter((line) => !line.startsWith("ssh ")).join("\n") };
+  };
+
+  it("hands the host the kind its rehearsal input says, and every secret on stdin alone", () => {
+    const rehearsal = run({ REHEARSAL: "true" });
+    expect(rehearsal.status).toBe(0);
+    expect(rehearsal.args).toMatch(/window\.sh stage r1 rehearsal\s*$/m);
+    expect(run({ REHEARSAL: "false" }).args).toMatch(/window\.sh stage r1 window\s*$/m);
+    expect(run({ MODE: "dlq", DELETE_DEAD_LETTERS: "true" }).args)
+      .toMatch(/window\.sh dlq r1 rehearsal delete\s*$/m);
+    expect(rehearsal.stdin).toContain("STDIN acct-v\nr2id-v\nr2sec-v\ntok-v\nkey-v");
+    expect(run({ MODE: "bundle" }).stdin).toContain("STDIN excl-v");
+    expect(run({ MODE: "census" }).stdin).toMatch(/STDIN \n/);
+    for (const value of Object.values(SECRETS)) {
+      expect(rehearsal.args).not.toContain(value);
+      expect(rehearsal.out).not.toContain(value);
+    }
+  });
+});
+
 describe("the copy, on a fake droplet", () => {
   it("is made from the newest manifest, checked, and its census leaves counts alone", () => {
     const h = host();
@@ -206,6 +256,8 @@ describe("the copy, on a fake droplet", () => {
       expect(existsSync(join(work, `${uid}.img.gz`))).toBe(false);
     }
     expect(existsSync(join(work, "copy.done"))).toBe(true);
+    // The run's one Node: node:22 pulled once, its digest kept, and every job run by it.
+    expect(readFileSync(join(work, "image"), "utf8")).toBe(`${DIGEST}\n`);
     const calls = h.calls();
     expect(calls).toContain(`rclone cat fake:/platform/${MANIFEST}`);
     // Each image mounted read-only for the job, with the research's line, and unmounted after.
@@ -223,6 +275,7 @@ describe("the copy, on a fake droplet", () => {
     for (const call of jobs) {
       expect(call).toContain("--network none");
       expect(call).toContain(`-v ${work}:${work}:ro`);
+      expect(call).toContain(` ${DIGEST} node `);
       expect(call).not.toMatch(/ -e /);
     }
     expect(jobs.filter((call) => call.includes(" census "))[0])
@@ -233,6 +286,13 @@ describe("the copy, on a fake droplet", () => {
     expect(again.status).toBe(3);
     expect(h.calls().filter((call) => call.startsWith("rclone copyto")))
       .toHaveLength(1 + Object.keys(UIDS).length);
+    expect(h.calls().filter((call) => call.startsWith("docker pull"))).toEqual(
+      ["docker pull -q node:22"]);
+    // A copy that names no Node is refused, never run by another.
+    renameSync(join(work, "image"), join(work, "image.gone"));
+    expect(h.window(["bundle", "r1", "rehearsal"], `${FOUNDER}\n`).out)
+      .toContain("this run's copy names no Node image: run clean, then census");
+    renameSync(join(work, "image.gone"), join(work, "image"));
     // A copy made for a rehearsal is never the window's, and clean deletes it.
     expect(h.window(["bundle", "r1", "window"], "user_founder\n").out)
       .toContain("this run's copy was not made for a window run");
@@ -299,7 +359,7 @@ describe("the copy, on a fake droplet", () => {
     const nocopy = h.window(["stage", "s1", "rehearsal"], `${values.join("\n")}\n`);
     expect(nocopy.out).toContain("this run has no copy: run census first");
     expect(h.calls().some((call) => call.startsWith("docker run"))).toBe(false);
-    // On a copy with bundles, the job takes them as its environment, by name alone, with the
+    // On a copy with bundles, the job takes them on its stdin, none in an argument, with the
     // network; this account is no account, so the job refuses before any request.
     h.window(["census", "s1", "rehearsal"]);
     mkdirSync(join(h.work("s1"), "bundle", "out"), { recursive: true });
@@ -309,7 +369,8 @@ describe("the copy, on a fake droplet", () => {
     const call = h.calls().filter((each) => each.startsWith("docker run")
                                             && each.includes(" stage "))[0]!;
     expect(call).toContain(`--network bridge -v ${stage}:${stage}:ro`);
-    expect(call).toContain(CREDENTIALS.map((name) => `-e ${name}`).join(" "));
+    expect(call).toContain(` -i ${DIGEST} node `);
+    expect(call).not.toMatch(/ -e /);
     expect(call).toContain("--rehearsal");
     for (const value of values) {
       expect(missing.out + nocopy.out + staged.out + h.calls().join("\n")).not.toContain(value);
@@ -343,6 +404,84 @@ describe("the copy, on a fake droplet", () => {
   });
 });
 
+describe("the runner's guards, on a fake droplet", () => {
+  it("refuses a bundle the disk has no room for, before any is written", () => {
+    const h = host();
+    h.window(["census", "f1", "rehearsal"]);
+    writeFileSync(join(h.work("f1"), "mnt", String(Object.values(UIDS)[0]), "a-file"),
+                  "x".repeat(4096));
+    h.disk.avail = h.disk.size * 0.2 + 1000;
+    const run = h.window(["bundle", "f1", "rehearsal"], `${FOUNDER}\n`);
+    expect(run.status).toBe(2);
+    expect(run.out).toMatch(/refused: the copy needs [0-9]+ bytes for the bundles/);
+    expect(existsSync(join(h.work("f1"), "bundle"))).toBe(false);
+    expect(h.calls().some((call) => call.includes(" bundle "))).toBe(false);
+  });
+
+  it("lets a networked job see the bundles alone, never the copy", () => {
+    const h = host();
+    h.window(["census", "f2", "rehearsal"]);
+    const work = h.work("f2");
+    mkdirSync(join(work, "bundle", "out"), { recursive: true });
+    for (const mode of ["stage", "verify", "dlq"]) {
+      h.window([mode, "f2", "rehearsal"], "a\nb\nc\nd\ne\n");
+    }
+    const networked = h.calls().filter((call) => call.startsWith("docker run")
+                                                 && call.includes("--network bridge"));
+    expect(networked).toHaveLength(3);
+    for (const call of networked) {
+      const mounts = [...call.matchAll(/-v (\S+)/g)].map((match) => match[1]);
+      expect(mounts.filter((each) => each !== `${stage}:${stage}:ro`
+                                     && each !== `${work}/window:${work}/window`))
+        .toEqual([`${work}/bundle/out:${work}/bundle/out:ro`]);
+      for (const hidden of ["data", "mnt", "bundle/private", "census", "manifest.json"]) {
+        expect(call).not.toContain(`${work}/${hidden}`);
+      }
+      expect(call).not.toContain(`-v ${work}:`);
+    }
+  });
+
+  it("withholds a job's output that names a path, and never prints it", () => {
+    const h = host();
+    h.window(["census", "f6", "rehearsal"]);
+    const work = h.work("f6");
+    rmSync(join(work, "manifest.json"));
+    const run = h.window(["census", "f6", "rehearsal"]);
+    expect(run.status).toBe(4);
+    expect(run.out).toContain("1 of the job's outputs withheld");
+    countsOnly(run.out, work);
+    expect(readFileSync(join(work, "job.err.private"), "utf8")).toContain(work);
+  });
+
+  it("runs one import window run at a time on the host", async () => {
+    const h = host();
+    const holder = spawn("flock", [h.lock, "sleep", "20"], { stdio: "ignore" });
+    try {
+      // Wait until the holder has the lock.
+      while (spawnSync("flock", ["-n", h.lock, "true"]).status === 0) {
+        await new Promise((done) => setTimeout(done, 20));
+      }
+      const run = h.window(["clean", "l1", "rehearsal"]);
+      expect(run.status).toBe(2);
+      expect(run.out).toContain("refused: another import window run holds this host");
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it("refuses a work folder that is not this host's own 0700 folder", () => {
+    const h = host();
+    h.window(["census", "f7", "rehearsal"]);
+    chmodSync(h.work("f7"), 0o755);
+    for (const mode of ["census", "clean"]) {
+      const run = h.window([mode, "f7", "rehearsal"]);
+      expect(run.status).toBe(2);
+      expect(run.out).toContain("this run's work folder is not this host's own 0700 folder");
+    }
+    expect(existsSync(h.work("f7"))).toBe(true);
+  });
+});
+
 describe("the copy's checks", () => {
   it("runs every store through integrity_check, an image's too, and counts one that fails", () => {
     const f = fixture();
@@ -368,5 +507,28 @@ describe("the copy's checks", () => {
     expect(released(`ENOENT, open '${f.work}/manifest.json'`, names)).toBeNull();
     // Before the shared layer is extracted, the copy's path alone.
     expect(forbidden(join(f.work, "none"))).toEqual([join(f.work, "none")]);
+  });
+
+  it("refuses the release whole when the shared layer's identities cannot be read", () => {
+    const f = fixture();
+    temps.push(f.work);
+    const store = join(f.work, "data", "_data", ".broker", "state", "owner-identities.db");
+    const out = join(f.work, "job.out.private");
+    writeFileSync(out, `owner ${ALICE} differs\n`);
+    const printed: string[] = [];
+    const release = () => copyMain(["copy", "release", f.work, out],
+                                   () => { throw new Error("unused"); },
+                                   (line) => printed.push(line));
+    expect(release()).toBe(4);
+    // The store's header gone: not a database.
+    const bytes = readFileSync(store);
+    writeFileSync(store, Buffer.concat([Buffer.alloc(100, 0x55), bytes.subarray(100)]));
+    expect(() => forbidden(f.work)).toThrow();
+    expect(release).toThrow();
+    // The store gone, the shared layer still there.
+    rmSync(store);
+    expect(() => forbidden(f.work)).toThrow();
+    expect(release).toThrow();
+    expect(printed.join("\n")).not.toContain(ALICE);
   });
 });

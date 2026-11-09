@@ -21,8 +21,9 @@ name: Import window (manual)
 # DO_DROPLET_HOST, DO_SSH_USER and DO_SSH_KEY for every mode; IMPORT_EXCLUSION_LIST for bundle;
 # CLOUDFLARE_ACCOUNT_ID (a repository secret), IMPORT_R2_ACCESS_KEY_ID,
 # IMPORT_R2_SECRET_ACCESS_KEY, IMPORT_CLOUDFLARE_API_TOKEN and IMPORT_KEY for stage, verify,
-# wipe, admit and dlq. Each reaches the droplet on the SSH session's stdin and the job as its
-# environment, never a file, an argument or a log.
+# wipe, admit and dlq. Each reaches the droplet on the SSH session's stdin and the job on its
+# own stdin (`docker run -i`): never an argument, an environment, a container's config
+# (`docker inspect`), a file or a log.
 
 on:
   workflow_dispatch:
@@ -56,15 +57,16 @@ on:
 permissions:
   contents: read
 
-# census, bundle and clean read the backup and write only the run's own copy under /var/tmp,
-# so they share the observation lock, as diagnose-connected-sources.yml does. stage, verify,
-# wipe, admit and dlq change nothing on the host: they reach Cloudflare from a container. On
-# the host-mutation lock, one verify (up to 30 minutes an owner) would hold deploy-prod and
-# p0-outage-triage off the live old stack through a rehearsal, and GitHub's one pending run a
-# group would let either displace the other. So they take their own group. On the host, a
-# lock lets one import window run at a time, whatever its group (window.sh).
+# Every mode takes its own group. None changes the live host: census, bundle and clean write
+# only the run's own copy under /var/tmp, and the rest reach Cloudflare from a container. A
+# census can run for hours (it downloads, decompresses and digests every image), and so can a
+# verify (up to 30 minutes an owner): on the host-mutation lock that would hold deploy-prod and
+# p0-outage-triage off the live old stack through a rehearsal, and on the observation lock it
+# would hold the outage diagnostics (fetch-prod-logs.yml, diagnose-prod-startup.yml), GitHub's
+# one pending run a group letting them displace each other. On the host, a lock lets one
+# import window run at a time (window.sh).
 concurrency:
-  group: ${{ (inputs.mode == 'census' || inputs.mode == 'bundle' || inputs.mode == 'clean') && 'production-host-observation' || 'import-window' }}
+  group: import-window
   cancel-in-progress: false
 
 env:

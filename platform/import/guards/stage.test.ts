@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { macHolds } from "../../contract/src/import-message";
 import { buildBundles } from "../bundle";
-import { STAGE_INPUTS, stageInputs, stageMain } from "../cli";
+import { credentialsFrom, STAGE_INPUTS, stageInputs, stageMain } from "../cli";
 import { type Fetcher, type Inputs, sigV4, stage, STAGING_BUCKET } from "../stage";
 import { ALICE, BOB, fixture, FOUNDER, keyOf, NEWBIE, TIERS } from "./fixture";
 
@@ -158,11 +158,16 @@ describe("the staging step", () => {
     expect(calls.filter((call) => call.method === "POST").length).toBe(3);
   });
 
-  it("takes its credentials from its environment alone, each required", async () => {
+  it("takes its credentials from its stdin alone, each required", async () => {
     expect(() => stageInputs({})).toThrow(Object.values(STAGE_INPUTS).join(", "));
     const env = Object.fromEntries(Object.entries(STAGE_INPUTS)
       .map(([input, name]) => [name, INPUTS[input as keyof Inputs]]));
     expect(stageInputs(env)).toEqual(INPUTS);
+    // As stdin hands them: one a line, in order; a short stdin names what it lacks.
+    const lines = Object.keys(STAGE_INPUTS).map((input) => INPUTS[input as keyof Inputs]);
+    expect(stageInputs(credentialsFrom(`${lines.join("\n")}\n`))).toEqual(INPUTS);
+    expect(() => stageInputs(credentialsFrom(lines.slice(0, 4).join("\n"))))
+      .toThrow("a staging run takes IMPORT_KEY from its stdin");
     const out = bundled();
     const { calls, fetcher } = apis();
     expect(await stageMain(["stage", out, "--run", "r1"], env, () => undefined, fetcher)).toBe(0);

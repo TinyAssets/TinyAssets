@@ -14,8 +14,8 @@
  * - `stage <out> --run <id>` (or `--dry-run`, which sends nothing and needs no credential;
  *   `--rehearsal`, for a rehearsal's bundles): every bundle checked whole, uploaded to the
  *   staging bucket and its message put on the import queue (`stage.ts`), the window's
- *   credentials read from the environment the operator runs it in (`STAGE_INPUTS`), never
- *   from a file; counts and ordinals on stdout;
+ *   credentials read once from the job's stdin, one a line in `STAGE_INPUTS`' order, never
+ *   from a file, an argument or the environment; counts and ordinals on stdout;
  * - `verify <out> --run <id> --record <file>`, `admit <out> --run <id> --record <file>`,
  *   `wipe <out> --run <id> --record <file>` and `dlq <out> --run <id> [--delete]`: the
  *   window's steps after staging (`window.ts`), with the same credentials; exit 0 when the
@@ -36,21 +36,32 @@ import { type Fetcher, type Inputs, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
 import { admit, CLOCK, type Clock, deadLetters, verify, wipe } from "./window";
 
-/** The environment variables a staging run takes its credentials from, by input. */
+/**
+ * A staging run's credentials, by input, each named as its stdin hands it: one a line, in this
+ * order (`credentialsFrom`). The host script pipes them to the job's container (`window.sh`),
+ * so they sit in no container config, environment or file.
+ */
 export const STAGE_INPUTS = Object.freeze({
   account: "CLOUDFLARE_ACCOUNT_ID", accessKeyId: "R2_ACCESS_KEY_ID",
   secretAccessKey: "R2_SECRET_ACCESS_KEY", apiToken: "CLOUDFLARE_API_TOKEN",
   importKey: "IMPORT_KEY",
 } as const);
 
-/** A staging run's credentials from `env`, each required, none printed. */
-export function stageInputs(env: Readonly<Record<string, string | undefined>>): Inputs {
-  const missing = Object.values(STAGE_INPUTS).filter((name) => (env[name] ?? "") === "");
+/** The credentials as stdin hands them, by name: one a line, in `STAGE_INPUTS`' order. */
+export function credentialsFrom(text: string): Record<string, string> {
+  const lines = text.split("\n");
+  return Object.fromEntries(Object.values(STAGE_INPUTS)
+    .map((name, n) => [name, (lines[n] ?? "").replace(/\r$/, "")]));
+}
+
+/** A staging run's credentials from `given` (`credentialsFrom`), each required, none printed. */
+export function stageInputs(given: Readonly<Record<string, string | undefined>>): Inputs {
+  const missing = Object.values(STAGE_INPUTS).filter((name) => (given[name] ?? "") === "");
   if (missing.length > 0) {
-    throw new Error(`a staging run takes ${missing.join(", ")} from its environment`);
+    throw new Error(`a staging run takes ${missing.join(", ")} from its stdin`);
   }
   return Object.fromEntries(Object.entries(STAGE_INPUTS)
-    .map(([input, name]) => [input, env[name]!])) as unknown as Inputs;
+    .map(([input, name]) => [input, given[name]!])) as unknown as Inputs;
 }
 
 /** `stage <out> --run <id> [--dry-run]`: its exit code once every bundle is sent. */
@@ -211,13 +222,15 @@ if (process.argv[1] !== undefined && /import\.mjs$|cli\.ts$/.test(process.argv[1
     process.stderr.write(`refused: ${(error as Error).message}\n`);
     process.exitCode = 2;
   };
+  // The credentials, read once from stdin; a dry run needs none, so reads nothing.
+  const credentials = () => credentialsFrom(readFileSync(0, "utf8"));
   if (process.argv[2] === "stage") {
-    stageMain(process.argv.slice(2), process.env,
+    stageMain(process.argv.slice(2), process.argv.includes("--dry-run") ? {} : credentials(),
               (line) => process.stdout.write(`${line}\n`)).then((code) => {
       process.exitCode = code;
     }, refuse);
   } else if ((WINDOW_STEPS as readonly string[]).includes(process.argv[2] ?? "")) {
-    windowMain(process.argv.slice(2), process.env,
+    windowMain(process.argv.slice(2), credentials(),
                (line) => process.stdout.write(`${line}\n`)).then((code) => {
       process.exitCode = code;
     }, refuse);

@@ -2414,8 +2414,10 @@ R, S, M and W.
     (manual)** (`import-window.yml`), one mode a dispatch (`census`, `bundle`, `stage`,
     `verify`, `wipe`, `admit`, `dlq`, `clean`) against one copy a run id. `window.sh` makes
     the copy on the droplet from the newest manifest (every digest, the free disk, every
-    store's `integrity_check`), mounts the images read-only for each job, and runs the job in
-    `node:22`, its output let out through `copy release` alone. A rehearsal is the default; a
+    store's `integrity_check`, room for the bundles), mounts the images read-only for each
+    job, and runs the job in one `node:22` digest a run (the census's), its credentials on its
+    stdin, a networked job seeing the bundles alone, its output let out through
+    `copy release` alone, which fails closed. A rehearsal is the default; a
     real run takes `rehearsal: false` and `confirm: window-<run>`. It also owes
     (`rvimport5_report.md`):
     - the time a discarded object takes to be evicted, measured, with that wait written into

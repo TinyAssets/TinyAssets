@@ -374,8 +374,8 @@ window, and revoke them after it.**
 | `production` secret | What it is | Scope |
 |---|---|---|
 | `IMPORT_EXCLUSION_LIST` | Your principal and every canary owner's, one a line (`#` starts a comment). They start fresh: backed up, never imported. | none |
-| `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one R2 API token. | Object Read & Write on `tinyassets-import-staging`, Object Read on `tinyassets-files` |
-| `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token. | Account · Queues · Edit (send to `tinyassets-import`, add and use the HTTP pull consumer of `tinyassets-import-dlq`), Account · Workers KV Storage · Edit (list `tinyassets-directory` and delete a rehearsal's records) |
+| `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one Cloudflare API token, made through the API (step 2). | Workers R2 Storage Bucket Item Write on `tinyassets-import-staging`, Workers R2 Storage Bucket Item Read on `tinyassets-files`: it can never write the live files bucket. The droplet's address only; an end date. |
+| `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token. | Account · Queues · Edit (send to `tinyassets-import`, add and use the HTTP pull consumer of `tinyassets-import-dlq`), Account · Workers KV Storage · Edit (list `tinyassets-directory` and delete a rehearsal's records). The droplet's address only; an end date. |
 | `IMPORT_KEY` | 32 random bytes, base64url. | The same value as the doors' Worker secret `IMPORT_KEY` |
 
 **Never give one of them a name another job reads.** An environment secret hides the
@@ -389,16 +389,63 @@ command line:
 1. **The exclusion list.** Read the principals from the old stack's records and
    `docs/host-actions.md`, then `gh secret set IMPORT_EXCLUSION_LIST --env production`. An
    empty list stops `bundle`.
-2. **The R2 token.** Dashboard → R2 → Manage R2 API Tokens → Create API token, named
-   `tinyassets-import-window`. Set Object Read & Write and the two buckets above. The form
-   gives one permission to every bucket it names, so the token can write `tinyassets-files`
-   too, though the job only lists that bucket (`window.ts`, `wipe`'s proof). Copy its Access
-   Key ID and Secret Access Key into `gh secret set IMPORT_R2_ACCESS_KEY_ID --env production`
-   and `gh secret set IMPORT_R2_SECRET_ACCESS_KEY --env production`. The form shows them once.
+2. **The R2 key, through Cloudflare's API.** The dashboard's R2 token form gives one
+   permission to every bucket it names, which would let the key write `tinyassets-files`, every
+   user's file chunks. One API token with two bucket-level policies cannot. You need:
+   - **A short-lived token that may make tokens.** My Profile → API Tokens → Create Token →
+     the "Create Additional Tokens" template (User · API Tokens · Edit), with a TTL ending
+     today. Delete it after this step.
+   - **Three values:**
+     - the account id (`CLOUDFLARE_ACCOUNT_ID`);
+     - the droplet's public IPv4. A job's container leaves through Docker's default bridge,
+       which has no IPv6, so Cloudflare sees that address;
+     - an end date just after the window, for example `2026-12-31T00:00:00Z`.
+
+   In Git Bash, `read -rs` takes the bootstrap token without showing it, and curl reads its
+   header from a file descriptor, so the token is in no command line:
+   ```sh
+   read -rs BOOT
+   acct='<account id>'; ip='<droplet IPv4>'; until='<end date>'
+   api=https://api.cloudflare.com/client/v4
+   auth() { printf 'Authorization: Bearer %s\n' "$BOOT"; }
+   groups="$(curl -sS -H @<(auth) "$api/user/tokens/permission_groups")"
+   group() { printf %s "$groups" | python -c "import json,sys; print(next(g['id'] for g in json.load(sys.stdin)['result'] if g['name'] == sys.argv[1]))" "$1"; }
+   write="$(group 'Workers R2 Storage Bucket Item Write')"
+   rd="$(group 'Workers R2 Storage Bucket Item Read')"
+   resp="$(python -c 'import json,sys
+   w, r, a, ip, t = sys.argv[1:]
+   b = "com.cloudflare.edge.r2.bucket." + a + "_default_"
+   print(json.dumps({"name": "tinyassets-import-window-r2", "expires_on": t,
+                     "condition": {"request_ip": {"in": [ip + "/32"]}},
+                     "policies": [
+                       {"effect": "allow", "permission_groups": [{"id": w}],
+                        "resources": {b + "tinyassets-import-staging": "*"}},
+                       {"effect": "allow", "permission_groups": [{"id": r}],
+                        "resources": {b + "tinyassets-files": "*"}}]}))' \
+     "$write" "$rd" "$acct" "$ip" "$until" \
+     | curl -sS -X POST -H @<(auth) -H 'Content-Type: application/json' --data @- \
+         "$api/user/tokens")"
+   printf %s "$resp" | python -c "import json,sys; d=json.load(sys.stdin); sys.stdout.write(d['result']['id'] if d.get('success') else sys.exit('refused: ' + str(d.get('errors'))))" \
+     | gh secret set IMPORT_R2_ACCESS_KEY_ID --env production
+   printf %s "$resp" | python -c "import hashlib,json,sys; sys.stdout.write(hashlib.sha256(json.load(sys.stdin)['result']['value'].encode()).hexdigest())" \
+     | gh secret set IMPORT_R2_SECRET_ACCESS_KEY --env production
+   unset BOOT resp
+   ```
+   **Confirm, as you mint it, how R2 derives the S3 pair from a token.** This step takes the
+   Access Key ID to be the token's `id`, and the Secret Access Key the SHA-256 (hex) of its
+   `value`, from R2's authentication docs as recalled. No session here could reach
+   developers.cloudflare.com to read them again. Check also that Bucket Item Write lists and
+   deletes as well as writes: `stage` puts, `verify` reads answers, and `wipe` lists and
+   deletes `<run>/`. If either is not so, stop and say so before the rehearsal. A wrong key
+   fails loudly at its first request, with nothing written.
 3. **The API token.** My Profile → API Tokens → Create Token → Custom token, named
    `tinyassets-import-window`. Account resources: this account only; the two permissions
    above. Cloudflare scopes them to the account, not to one queue or namespace, so the job's
-   own filters are the guard (`wipe` deletes only the run's `o:rehearsal-<run>-` records).
+   own filters are the guard (`wipe` deletes only the run's `o:rehearsal-<run>-` records). Narrow
+   it where the form allows:
+   - **Client IP Address Filtering:** Is in, the droplet's public IPv4;
+   - **TTL:** an end date just after the window.
+
    Then `gh secret set IMPORT_CLOUDFLARE_API_TOKEN --env production`.
 4. **`IMPORT_KEY`, in both places from one value,** in Git Bash from `platform/`, with
    wrangler's own Cloudflare login:
@@ -413,7 +460,8 @@ command line:
 **After the admit, before `routes`,** delete the doors' copy
 (`npx wrangler secret delete IMPORT_KEY --name tinyassets-doors`), since a replayed admit is
 accepted by design. **After the window,** delete the five `production` secrets
-(`gh secret delete <name> --env production`) and revoke both tokens in the dashboard.
+(`gh secret delete <name> --env production`) and revoke both tokens in the dashboard (My
+Profile → API Tokens), even though each also ends on its own date.
 
 ## Registrations you make by hand at the providers
 

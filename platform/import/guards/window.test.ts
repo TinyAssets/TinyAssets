@@ -316,7 +316,7 @@ describe("the window's verify", () => {
   });
 });
 
-/** The credentials as the operator's environment holds them (`STAGE_INPUTS`). */
+/** The credentials by their names (`STAGE_INPUTS`), as the job reads them from its stdin. */
 function envOf(): Record<string, string> {
   return { CLOUDFLARE_ACCOUNT_ID: INPUTS.account, R2_ACCESS_KEY_ID: INPUTS.accessKeyId,
            R2_SECRET_ACCESS_KEY: INPUTS.secretAccessKey, CLOUDFLARE_API_TOKEN: INPUTS.apiToken,

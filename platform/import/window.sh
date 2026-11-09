@@ -14,17 +14,24 @@
 #   archive and each pinned snapshot copied, each image decompressed sparse; every digest held to
 #   the manifest (`copy digests`); then the shared layer extracted. All of it in a 0700 work
 #   folder of the run's, ta-import-<run> under /var/tmp, never a live volume.
-# - Each job in `docker run --rm node:22`: the work folder bind-mounted read-only at its own
-#   path (so the kernel's loop devices name its images), one folder writable for the step's
-#   output, no network but for the modes that reach R2 and Queues. census and bundle mount each
-#   pinned image read-only (MOUNT_OPTIONS, backup.ts's) for the job, and unmount it after;
-#   census first runs every copied store through `integrity_check` (`copy stores`).
+# - One Node for the whole run: the census that makes the copy pulls node:22 once and keeps
+#   its registry digest in the work folder (`image`); every later mode of the run runs that
+#   digest alone, and refuses a copy that names none.
+# - Each job in `docker run --rm`, one folder writable for the step's output. The jobs without
+#   network see the work folder read-only at its own path (so the kernel's loop devices name
+#   its images); the modes that reach R2 and Queues see the bundles alone (bundle/out), never
+#   the shared layer, the images, the census table or the private bundles. census and bundle
+#   mount each pinned image read-only (MOUNT_OPTIONS, backup.ts's) for the job, and unmount it
+#   after; census first runs every copied store through `integrity_check` (`copy stores`), and
+#   bundle first checks the disk has room for as many bytes again as the images hold.
 # - Output: the job's stdout and stderr kept 0600 in the work folder, and let out only through
 #   `copy release` (no principal, no owner key, no path of the copy). The host tools' own
 #   messages go to the work folder's host.private.log; this script prints fixed words and counts.
 # - Credentials (stage, verify, wipe, admit, dlq) arrive on stdin, one a line, in
-#   CREDENTIALS' order, and reach only the job, as its environment; the exclusion list
-#   (bundle) is stdin whole, piped to the job. Neither touches a file or a log.
+#   CREDENTIALS' order, and reach only the job, piped to its stdin (`docker run -i`), so they
+#   are in no argument, no container config (`docker inspect`), no environment and no file;
+#   the exclusion list (bundle) is stdin whole, piped to the job the same way.
+# - The work folder is this host's own: root's, 0700, refused otherwise (/var/tmp is anyone's).
 # - One run at a time on this host (a lock), and a copy made for a rehearsal is never run as
 #   the window, nor the other way round.
 #
@@ -34,7 +41,10 @@ set -euo pipefail
 umask 077
 
 readonly MOUNT_OPTIONS="ro,norecovery,nosuid,nodev,loop,nouuid"
-readonly IMAGE="node:22"
+# The job's Node: this tag, pulled once a run, then that run's digest alone (`image`).
+readonly NODE_TAG="node:22"
+readonly DIGEST='^node@sha256:[0-9a-f]{64}$'
+image=""
 # node:sqlite still warns that it is experimental on every start: nothing for the log.
 readonly NODE_FLAGS=(--disable-warning=ExperimentalWarning)
 # The disk watch warns past 80% used (DISK_WARN_PCT, tinyassets-disk-watch.service), and its
@@ -95,7 +105,10 @@ esac
 job() {
   local writable="$1"
   shift
-  local args=(run --rm --network "$network" -v "$stage:$stage:ro" -v "$work:$work:ro")
+  # A job with the network and the credentials reads the bundles alone.
+  local readable="$work"
+  [[ "$network" == none ]] || readable="$work/bundle/out"
+  local args=(run --rm --network "$network" -v "$stage:$stage:ro" -v "$readable:$readable:ro")
   if [[ "$writable" != - ]]; then
     args+=(-v "$writable:$writable")
   fi
@@ -103,24 +116,20 @@ job() {
     args+=(-i)
     shift
   fi
-  if [[ "$network" != none ]]; then
-    for name in "${CREDENTIALS[@]}"; do
-      args+=(-e "$name")
-    done
-  fi
   local status=0
   if [[ "$network" != none ]]; then
-    CLOUDFLARE_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
-      R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
-      IMPORT_KEY="$IMPORT_KEY" \
-      docker "${args[@]}" "$IMAGE" node "${NODE_FLAGS[@]}" "$job_file" "$@" \
-      > "$work/job.out.private" 2> "$work/job.err.private" || status=$?
+    # The credentials on the job's stdin, one a line (printf is a builtin: no argument holds one).
+    args+=(-i)
+    printf '%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" \
+        "$CLOUDFLARE_API_TOKEN" "$IMPORT_KEY" \
+      | docker "${args[@]}" "$image" node "${NODE_FLAGS[@]}" "$job_file" "$@" \
+        > "$work/job.out.private" 2> "$work/job.err.private" || status=$?
   else
-    docker "${args[@]}" "$IMAGE" node "${NODE_FLAGS[@]}" "$job_file" "$@" \
+    docker "${args[@]}" "$image" node "${NODE_FLAGS[@]}" "$job_file" "$@" \
       > "$work/job.out.private" 2> "$work/job.err.private" || status=$?
   fi
   local released=0
-  docker run --rm --network none -v "$stage:$stage:ro" -v "$work:$work:ro" "$IMAGE" \
+  docker run --rm --network none -v "$stage:$stage:ro" -v "$work:$work:ro" "$image" \
     node "${NODE_FLAGS[@]}" "$job_file" copy release "$work" "$work/job.out.private" "$work/job.err.private" \
     2>> "$log" || released=$?
   if [[ "$released" -ne 0 ]]; then
@@ -132,8 +141,24 @@ job() {
 
 # The job's own word on the copy, for this script alone (never printed).
 plan() {
-  docker run --rm --network none -v "$stage:$stage:ro" -v "$work:$work:ro" "$IMAGE" \
+  docker run --rm --network none -v "$stage:$stage:ro" -v "$work:$work:ro" "$image" \
     node "${NODE_FLAGS[@]}" "$job_file" copy plan "$work" --name "$1" > "$work/plan.private" 2>> "$log"
+}
+
+# The census that makes the copy: node:22 pulled once, its digest kept as the run's Node.
+record_image() {
+  docker pull -q "$NODE_TAG" >> "$log" 2>&1 || refuse "the job's image could not be pulled"
+  image="$(docker image inspect -f '{{index .RepoDigests 0}}' "$NODE_TAG" 2>> "$log")" || true
+  [[ "$image" =~ $DIGEST ]] || refuse "the job's image has no registry digest"
+  printf '%s\n' "$image" > "$work/image"
+}
+
+# Every later mode: the run's own Node, by its digest, or refused.
+use_image() {
+  image="$(cat "$work/image" 2>/dev/null)" || true
+  [[ "$image" =~ $DIGEST ]] || refuse "this run's copy names no Node image: run clean, then census"
+  docker image inspect "$image" > /dev/null 2>&1 || docker pull -q "$image" >> "$log" 2>&1 \
+    || refuse "the run's Node image could not be pulled"
 }
 
 # --- The copy -----------------------------------------------------------------------------
@@ -260,8 +285,14 @@ mount_images() {
 
 # --- The modes ----------------------------------------------------------------------------
 
+own_folder() {
+  [[ "$(stat -c '%u %a' "$work")" == "$(id -u) 700" ]] \
+    || refuse "this run's work folder is not this host's own 0700 folder"
+}
+
 has_copy() {
   [[ -d "$work" && ! -L "$work" ]] || refuse "this run has no copy: run census first"
+  own_folder
   [[ -f "$work/copy.done" ]] || refuse "this run's copy was left unfinished: run clean, then census"
   [[ "$(cat "$work/kind" 2>/dev/null)" == "$kind" ]] \
     || refuse "this run's copy was not made for a ${kind} run"
@@ -273,6 +304,7 @@ if [[ "$mode" == clean ]]; then
     exit 0
   fi
   [[ -d "$work" && ! -L "$work" ]] || refuse "the run's work folder is no folder"
+  own_folder
   if [[ -f "$work/kind" && "$(cat "$work/kind")" != "$kind" ]]; then
     refuse "this run's copy was not made for a ${kind} run"
   fi
@@ -289,15 +321,15 @@ if [[ "$mode" == clean ]]; then
   exit 0
 fi
 
-docker pull -q "$IMAGE" >> /dev/null 2>&1 || refuse "the job's image could not be pulled"
-
 case "$mode" in
   census)
     if [[ -e "$work" ]]; then
       has_copy
+      use_image
     else
       mkdir -m 700 "$work"
       printf '%s\n' "$kind" > "$work/kind"
+      record_image
       copy_backup
     fi
     mount_images
@@ -309,9 +341,15 @@ case "$mode" in
     ;;
   bundle)
     has_copy
+    use_image
     [[ ! -e "$work/bundle" ]] || refuse "this run's bundles are made already, and stand as made"
-    mkdir -m 700 "$work/bundle"
     mount_images
+    # The bundles hold every imported owner's bytes again, and the private folder each excluded
+    # owner's: the images' file bytes (du crosses into their read-only mounts) bound them.
+    need="$(du -sbc "$work/mnt" 2>> "$log" | tail -n 1 | cut -f1)" \
+      || refuse "the images' bytes could not be read"
+    room "$need" "the bundles"
+    mkdir -m 700 "$work/bundle"
     flags=()
     if [[ "$kind" == rehearsal ]]; then
       flags=(--rehearsal "$run")
@@ -327,6 +365,7 @@ case "$mode" in
     ;;
   stage|verify|wipe|admit|dlq)
     has_copy
+    use_image
     [[ -d "$work/bundle/out" ]] || refuse "this run has no bundles: run bundle first"
     out="$work/bundle/out"
     record="$work/window/record.private.json"
