@@ -32,8 +32,9 @@ const I = "/workspace/imported";
 const bytesOf = (text: string) => new TextEncoder().encode(text);
 
 /** A fresh object as production makes one: pending (`admitted.ts` leaves `get` alone). */
-function pending(owner = `owner-${crypto.randomUUID()}`): { stub: Stub; owner: string } {
-  return { stub: env.OWNER.get(env.OWNER.idFromName(owner)) as unknown as Stub, owner };
+function pending(owner = `owner-${crypto.randomUUID()}`, namespace: DurableObjectNamespace =
+                   env.OWNER as unknown as DurableObjectNamespace): { stub: Stub; owner: string } {
+  return { stub: namespace.get(namespace.idFromName(owner)) as unknown as Stub, owner };
 }
 
 /** The mtime the import's files keep: the old stack's, never the write's own time. */
@@ -463,8 +464,8 @@ async function left(stub: Stub, ns: string): Promise<{ tables: string[]; objects
 }
 
 describe("the import's discard", () => {
-  async function imported(owner?: string) {
-    const made = pending(owner);
+  async function imported(owner?: string, namespace?: DurableObjectNamespace) {
+    const made = pending(owner, namespace);
     await made.stub.importFiles(importing(made.owner), { entries: [{ kind: "dir", path: I },
                                                                    inline(`${I}/a.md`, "a")] });
     await upload(made.stub, made.owner, `${I}/big.bin`, big());
@@ -475,12 +476,19 @@ describe("the import's discard", () => {
 
   it("deletes a pending owner's R2 objects and database, with no tombstone, and is repeatable",
      async () => {
-    const { stub, owner, ns } = await imported();
+    // The test Worker's object whose erasure queue and sandbox are recording fakes.
+    const { stub, owner, ns } = await imported(undefined,
+                                               env.AGENT as unknown as DurableObjectNamespace);
     expect((await left(stub, ns)).objects).toBeGreaterThan(0);
     expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
     // Nothing of the owner: no table (so no erased admission row), no object under its
     // namespace; the instance answers busy until the runtime starts the name afresh.
     expect(await left(stub, ns)).toEqual({ tables: [], objects: 0 });
+    // No erasure: nothing told the doors (whose outside record writes the erased record and
+    // deletes the identity at the issuer), and no sandbox erased.
+    expect(await runInDurableObject(stub, (instance: { erasures: { sent: unknown[] };
+                                                       recorder: { erasures: unknown[] } }) =>
+      [instance.erasures.sent, instance.recorder.erasures])).toEqual([[], []]);
     expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
     const busy = await failure(() => stub.importFiles(importing(owner), { entries: [{
       kind: "dir", path: I }] }));
