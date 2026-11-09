@@ -406,8 +406,10 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
   }
   const directory = await directoryId(window);
   const prefix = `o:rehearsal-${run}-`;
-  const records = (await directoryKeys(window, directory, prefix))
+  // The run's own records: a run whose id extends this one's (`r1-x` of `r1`) shares the prefix.
+  const runs = async () => (await directoryKeys(window, directory, prefix))
     .filter((key) => rehearsalRun(key.slice(2)) === run);
+  const records = await runs();
   for (let at = 0; at < records.length; at += 1000) {
     await api(window, `/storage/kv/namespaces/${directory}/bulk/delete`,
               { method: "POST", body: JSON.stringify(records.slice(at, at + 1000)) });
@@ -422,7 +424,7 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
   for (const ns of namespaces) {
     objects += (await listKeys(window, FILES_BUCKET, namespacePrefix(ns), 1)).length;
   }
-  const proof = { records: (await directoryKeys(window, directory, prefix)).length,
+  const proof = { records: (await runs()).length,
                   staged: (await listKeys(window, STAGING_BUCKET, `${run}/`, 1)).length,
                   namespaces: namespaces.length, objects };
   print(`the directory lists ${proof.records} rehearsal records of the run, the staging bucket ` +
@@ -461,10 +463,15 @@ export async function deadLetters(window: Window, out: string | null, run: strin
     .map((staged, n) => [staged.key, n + 1]));
   const seen = new Map<string, string>();
   const by: Record<string, number> = {};
+  // Every unacknowledged message, the ones an earlier read still leases too (a pull skips them).
+  let backlog = 0;
   for (;;) {
-    const pulled = await api<{ messages?: { id?: string; body?: unknown; lease_id?: string }[] }>(
+    const pulled = await api<{ message_backlog_count?: number;
+                               messages?: { id?: string; body?: unknown; lease_id?: string }[] }>(
       window, `/queues/${queue}/messages/pull`,
       { method: "POST", body: JSON.stringify({ batch_size: 100, visibility_timeout_ms: 60_000 }) });
+    backlog = Math.max(backlog, Number.isSafeInteger(pulled.message_backlog_count)
+      ? pulled.message_backlog_count! : 0);
     const fresh = (pulled.messages ?? []).filter((message) => !seen.has(message.id ?? ""));
     if (fresh.length === 0) {
       break;
@@ -473,8 +480,7 @@ export async function deadLetters(window: Window, out: string | null, run: strin
       seen.set(message.id ?? "", message.lease_id ?? "");
       let label = "out of shape";
       try {
-        const body = typeof message.body === "string" ? JSON.parse(message.body) : message.body;
-        const parsed = importMessage(body);
+        const parsed = importMessage(pulledBody(message.body));
         const [at, key] = parsed.prefix.split("/");
         label = run !== null && at !== run ? `another run, ${parsed.op}`
           : `bundle ${ordinals.get(key!) ?? "?"}, ${parsed.op}`;
@@ -496,7 +502,23 @@ export async function deadLetters(window: Window, out: string | null, run: strin
   for (const [label, count] of Object.entries(by).sort()) {
     print(`${label}: ${count} dead-lettered`);
   }
-  print(`${DEAD_LETTERS}: ${seen.size} messages, ${deleted} deleted` +
+  const messages = Math.max(seen.size, backlog);
+  print(`${DEAD_LETTERS}: ${messages} messages, ${deleted} deleted` +
         (remove ? "" : " (none is deleted without --delete)"));
-  return { messages: seen.size, by, deleted };
+  return { messages, by, deleted };
+}
+
+/**
+ * A pulled message's body: the pull API hands a `json` message base64-encoded (Cloudflare's
+ * pull consumers docs, "Content types"); plain JSON text is taken too.
+ */
+function pulledBody(body: unknown): unknown {
+  if (typeof body !== "string") {
+    return body;
+  }
+  try {
+    return JSON.parse(body);
+  } catch {
+    return JSON.parse(Buffer.from(body, "base64").toString("utf8"));
+  }
 }

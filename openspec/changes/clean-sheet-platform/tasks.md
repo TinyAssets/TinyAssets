@@ -2406,7 +2406,15 @@ R, S, M and W.
     after `routes`. That read-only run is its rehearsal: an applied handback can only follow
     an applied `routes`, so its first applied run is the window's own.
   - [ ] 7. A dark rehearsal under `rehearsal-` names, measured, verified and wiped (the founder
-    approved it on real data, 2026-11-07).
+    approved it on real data, 2026-11-07). It also owes (`rvimport5_report.md`):
+    - the time a discarded object takes to be evicted, measured, with that wait written into
+      the window's steps, since a re-import before then answers `busy`;
+    - the window's credentials minted as a founder step: an R2 key with read on
+      `tinyassets-files`, and a token with queue-consumer rights and KV read and delete on
+      `tinyassets-directory`. Revoke them after the window;
+    - `IMPORT_KEY` removed before `routes`, because a replayed admit is accepted by design;
+    - the dead-letter reader's limit noted: its lease returns a message about 100 times
+      before the pull consumer's `max_retries` drops it.
   - [ ] 8. The starter's onboarding skill reads `/workspace/imported/` and offers to merge; it
     tells an imported owner to connect their connectors, model sources and API keys again.
     That is how they learn it: the window is not announced (the founder, 2026-11-07).

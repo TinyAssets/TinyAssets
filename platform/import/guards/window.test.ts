@@ -191,7 +191,9 @@ function world(bundles: readonly Staged[]) {
     if (path === "/queues/q-dead/messages/pull") {
       const free = dead.filter((each) => !each.leased).slice(0, 100);
       free.forEach((each) => { each.leased = true; });
-      return ok({ messages: free.map((each) => ({ id: each.id, body: each.body,
+      // The API's backlog counts every unacknowledged message, leased ones too.
+      return ok({ message_backlog_count: dead.length,
+                  messages: free.map((each) => ({ id: each.id, body: each.body,
                                                   lease_id: `lease-${each.id}` })) });
     }
     if (path === "/queues/q-dead/messages/ack") {
@@ -280,6 +282,38 @@ describe("the window's verify", () => {
     expect(await windowMain(["verify", out, "--run", RUN, "--record", record],
                             envOf(), quiet, w.window.fetcher, CLOCK)).toBe(3);
   });
+
+  it("finds an owner whose policy, admission or chunks differ from its bundle", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    w.held.get(bundles[0]!.owner)!.state.policy_digest = `sha256:${"0".repeat(64)}`;
+    w.held.get(bundles[1]!.owner)!.state.state = "admitted";
+    w.held.get(bundles[2]!.owner)!.chunks.push({ sha256: "e".repeat(64), size: 1,
+                                                 read: "e".repeat(64) });
+    expect((await verify(out, RUN, w.window, record, quiet)).clean).toBe(0);
+    const kept = readRecord(record, RUN).verified;
+    expect(kept[bundles[0]!.key]!.differences.different).toEqual(["policy: its digest"]);
+    expect(kept[bundles[1]!.key]!.differences.different).toEqual(["admission: not pending"]);
+    expect(kept[bundles[2]!.key]!.differences.extra).toEqual([`chunk ${"e".repeat(64)}`]);
+  });
+
+  it("holds each check's answer to its own bundle", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    // Every answer read back names another bundle: none is taken for the owner's.
+    const fetcher: Fetcher = async (request) => {
+      const answer = await w.window.fetcher(request);
+      if (request.method !== "GET" || !answer.ok
+          || !/\/answers\/[0-9a-f]{16}\.json$/.test(new URL(request.url).pathname)) {
+        return answer;
+      }
+      return Response.json({ ...await answer.json() as object, bundle: "f".repeat(64) });
+    };
+    expect((await verify(out, RUN, { ...w.window, fetcher }, record, quiet)).clean).toBe(0);
+    expect(Object.values(readRecord(record, RUN).verified)
+      .map((each) => each.differences.different))
+      .toEqual(bundles.map(() => ["check: refused by the doors"]));
+  });
 });
 
 /** The credentials as the operator's environment holds them (`STAGE_INPUTS`). */
@@ -310,6 +344,17 @@ describe("the window's admit", () => {
     await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/dead-letter queue/);
     expect(w.admitted.size).toBe(0);
     expect(w.dead.length).toBe(1);
+  });
+
+  it("admits nothing while a read of the dead-letter queue still leases its message", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    await verify(out, RUN, w.window, record, quiet);
+    w.dead.push({ id: "d1", body: "{}", leased: false });
+    expect((await deadLetters(w.window, out, RUN, false, quiet)).messages).toBe(1);
+    // The read's lease hides the message from the next pull, not from the backlog.
+    await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/dead-letter queue/);
+    expect(w.admitted.size).toBe(0);
   });
 
   it("admits each owner in turn once all verified, and converges when killed between them",
@@ -344,14 +389,17 @@ describe("the window's wipe", () => {
     await admit(out, RUN, w.window, record, quiet);
     w.kv.set("o:user_real", JSON.stringify({ s: "admitted", t: 1 }));
     w.kv.set(`o:${rehearsalName("r2", "user_x")}`, JSON.stringify({ s: "admitted", t: 1 }));
-    expect([...w.kv.keys()].filter((key) => key.startsWith(`o:rehearsal-${RUN}-`)).length)
+    // A run whose id extends this one's shares its listing prefix, `o:rehearsal-r1-`.
+    w.kv.set(`o:${rehearsalName("r1-x", "user_y")}`, JSON.stringify({ s: "admitted", t: 1 }));
+    expect([...w.kv.keys()].filter((key) => rehearsalRun(key.slice(2)) === RUN).length)
       .toBe(bundles.length);
     const proof = await wipe(out, RUN, w.window, record, quiet);
     expect(proof).toEqual({ records: 0, staged: 0, namespaces: bundles.length, objects: 0 });
     expect([...w.staging.keys()]).toEqual([]);
     expect([...w.buckets.get(FILES_BUCKET)!.keys()]).toEqual([]);
     // Another run's rehearsal records and every real owner's are left as they were.
-    expect([...w.kv.keys()].sort()).toEqual([`o:${rehearsalName("r2", "user_x")}`, "o:user_real"]);
+    expect([...w.kv.keys()].sort()).toEqual([`o:${rehearsalName("r1-x", "user_y")}`,
+                                             `o:${rehearsalName("r2", "user_x")}`, "o:user_real"]);
     expect(w.sent.filter((message) => message.op === "discard").length).toBe(bundles.length);
   });
 
@@ -380,17 +428,20 @@ describe("the window's dead-letter reader", () => {
     const w = world(bundles);
     const message = { op: "import", owner: bundles[0]!.owner, bundle: bundles[0]!.bundle,
                       prefix: `${RUN}/${bundles[0]!.key}`, mac: "A".repeat(43) };
+    // A `json` message comes back from the pull API base64-encoded (its docs' "Content types").
     w.dead.push({ id: "d1", body: JSON.stringify(message), leased: false },
-                { id: "d2", body: "not json", leased: false });
+                { id: "d2", body: "not json", leased: false },
+                { id: "d3", body: Buffer.from(JSON.stringify(message)).toString("base64"),
+                  leased: false });
     const lines: string[] = [];
     const read = await deadLetters(w.window, out, RUN, false, (line) => lines.push(line));
-    expect(read).toEqual({ messages: 2, by: { "bundle 1, import": 1, "out of shape": 1 },
+    expect(read).toEqual({ messages: 3, by: { "bundle 1, import": 2, "out of shape": 1 },
                            deleted: 0 });
     expect(w.consumers).toEqual([{ type: "http_pull", settings: expect.any(Object) }]);
-    expect(w.dead.length).toBe(2);
+    expect(w.dead.length).toBe(3);
     expect(lines.join("\n")).not.toContain(bundles[0]!.owner);
     w.dead.forEach((each) => { each.leased = false; });
-    expect((await deadLetters(w.window, out, RUN, true, quiet)).deleted).toBe(2);
+    expect((await deadLetters(w.window, out, RUN, true, quiet)).deleted).toBe(3);
     expect(w.dead).toEqual([]);
     expect(w.consumers.length).toBe(1);
   });

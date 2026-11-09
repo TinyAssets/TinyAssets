@@ -486,10 +486,14 @@ describe("the import's discard", () => {
     expect(await left(stub, ns)).toEqual({ tables: [], objects: 0 });
     // No erasure: nothing told the doors (whose outside record writes the erased record and
     // deletes the identity at the issuer), and no sandbox erased.
-    expect(await runInDurableObject(stub, (instance: { erasures: { sent: unknown[] };
-                                                       recorder: { erasures: unknown[] } }) =>
-      [instance.erasures.sent, instance.recorder.erasures])).toEqual([[], []]);
+    expect(await runInDurableObject(stub, (instance: unknown) => {
+      const { erasures, recorder } = instance as { erasures: { sent: unknown[] };
+                                                   recorder: { erasures: unknown[] } };
+      return [erasures.sent, recorder.erasures];
+    })).toEqual([[], []]);
     expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
+    // Discarded, it still takes the import's binding alone.
+    expect((await failure(() => stub.importDiscard(own(owner)))).code).toBe("refused");
     const busy = await failure(() => stub.importFiles(importing(owner), { entries: [{
       kind: "dir", path: I }] }));
     expect([busy.code, busy.message]).toEqual(["busy", DISCARDED]);
@@ -507,6 +511,14 @@ describe("the import's discard", () => {
     const platform = { owner: rehearsal.owner, caller: PLATFORM_CALLER, origin: null };
     await rehearsal.stub.admissionSet(platform, { admit: true });
     await rehearsal.stub.admissionSet(platform, { reason: "billing", suspended: true });
+    // Past pending, the rehearsal's name is the discard's alone: no other import door takes it.
+    for (const door of [
+      () => rehearsal.stub.importFiles(importing(rehearsal.owner), { entries: [{ kind: "dir",
+                                                                                 path: I }] }),
+      () => rehearsal.stub.importCheck(importing(rehearsal.owner), { part: "state", page: 0 }),
+    ]) {
+      expect((await failure(door)).message).toBe(IMPORT_PENDING_ONLY);
+    }
     expect(await rehearsal.stub.importDiscard(importing(rehearsal.owner)))
       .toEqual({ discarded: true, namespace: rehearsal.ns });
     expect(await left(rehearsal.stub, rehearsal.ns)).toEqual({ tables: [], objects: 0 });

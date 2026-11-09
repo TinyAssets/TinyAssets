@@ -261,7 +261,7 @@ export async function stage(out: string, run: string, inputs: Inputs | null, fet
   }
   const bundles = bundlesIn(out);
   // A rehearsal imports under this run's rehearsal names alone, and the window under none.
-  if (bundles.some((staged) => (rehearsalRun(staged.owner) === run) !== rehearsal)) {
+  if (bundles.some((staged) => rehearsalRun(staged.owner) !== (rehearsal ? run : null))) {
     throw new Error(rehearsal ? "a rehearsal's bundle names a real owner, or another run's: " +
                       "nothing is sent" : "a bundle names a rehearsal's owner: nothing is sent");
   }

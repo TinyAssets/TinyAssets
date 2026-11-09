@@ -149,6 +149,9 @@ describe("the staging step", () => {
       .rejects.toThrow(/names a rehearsal's owner/);
     await expect(stageMain(["stage", rehearsal, "--run", "r8", "--rehearsal"], env,
                            () => undefined, fetcher)).rejects.toThrow(/another run's/);
+    // Another run's rehearsal names are no window's either: its wipe would never find them.
+    await expect(stageMain(["stage", rehearsal, "--run", "r8"], env, () => undefined, fetcher))
+      .rejects.toThrow(/names a rehearsal's owner/);
     expect(calls).toEqual([]);
     expect(await stageMain(["stage", rehearsal, "--run", "r9", "--rehearsal"], env,
                            () => undefined, fetcher)).toBe(0);
