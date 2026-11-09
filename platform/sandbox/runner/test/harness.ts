@@ -847,6 +847,45 @@ function ran(argv: readonly string[], code: number, out: string, err: string): R
            why: `ta-runner ${argv.join(" ")} exited ${code}\nstdout: ${out}\nstderr: ${err}` };
 }
 
+/**
+ * A host simulated in a mount namespace of its own: its /etc and /usr each an overlay of the
+ * real one (so the simulation copies nothing, and writes nothing to it), `shape` making them
+ * the host's to simulate (`$SIM/etc`, `$SIM/usr`; `$NODE_BIN` the host's Node, which it may
+ * replace; `$ARG` the caller's), bound over /etc and /usr there alone. The suite's own
+ * command (`root-tests.mjs`, by that Node) runs the test of `file` matching `title` (the
+ * guard's, by default) there, which makes a box; `after` then runs there. The namespace's
+ * run: the suite's, then `after`'s output.
+ */
+export function simulated(shape: string, { arg = "", file = "runner/test/box.test.ts",
+                                    title = "sees no host path", after = "true" } = {}) {
+  const scratch = mkdtempSync(join(tmpdir(), "ta-etc-"));
+  try {
+    const script = [
+      'mount -t tmpfs -o size=1g tmpfs "$SIM"',
+      'mkdir "$SIM/etc-upper" "$SIM/etc-work" "$SIM/etc" "$SIM/usr-upper" "$SIM/usr-work" ' +
+        '"$SIM/usr"',
+      'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$SIM/etc-upper,' +
+        'workdir=$SIM/etc-work" "$SIM/etc"',
+      'mount -t overlay overlay -o "lowerdir=/usr,upperdir=$SIM/usr-upper,' +
+        'workdir=$SIM/usr-work" "$SIM/usr"',
+      shape,
+      'mount --bind "$SIM/etc" /etc',
+      'mount --bind "$SIM/usr" /usr',
+      '{ "$NODE_BIN" root-tests.mjs "$FILE" -t "$TITLE"; ran=$?; }',
+      `{ ${after}; }`,
+      'exit "$ran"',
+    ].join(" && ");
+    mkdirSync(join(scratch, "sim"));
+    return spawnSync("unshare", ["--mount", "--propagation", "private", "--", "/bin/sh", "-c",
+                                 script], {
+      cwd: SANDBOX, encoding: "utf8",
+      env: { ...process.env, SIM: join(scratch, "sim"), NODE_BIN: process.execPath, ARG: arg,
+             FILE: file, TITLE: title } });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 /** A start document for `engine`, its URLs on the fake doors. */
 export function startDoc(doors: Doors, engine: string, over: Partial<StartDoc> = {}): StartDoc {
   const run = over.run ?? `run_${crypto.randomUUID().replace(/-/g, "")}`;

@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { Box, mountsOf } from "./harness";
+import { Box, mountsOf, simulated } from "./harness";
 import { NODE } from "./layout";
 
 let box: Box | null = null;
@@ -178,47 +178,6 @@ describe("a test sandbox's teardown", () => {
 });
 
 describe("a test sandbox's /etc", () => {
-  const SANDBOX = join(import.meta.dirname, "..", "..");
-
-  /**
-   * A host simulated in a mount namespace of its own: its /etc and /usr each an overlay of the
-   * real one (so the simulation copies nothing, and writes nothing to it), `shape` making them
-   * the host's to simulate (`$SIM/etc`, `$SIM/usr`; `$NODE_BIN` the host's Node, which it may
-   * replace; `$ARG` the caller's), bound over /etc and /usr there alone. The suite's own
-   * command (`root-tests.mjs`, by that Node) runs the test of `file` matching `title` (the
-   * guard's, by default) there, which makes a box; `after` then runs there. The namespace's
-   * run: the suite's, then `after`'s output.
-   */
-  function simulated(shape: string, { arg = "", file = "runner/test/box.test.ts",
-                                      title = "sees no host path", after = "true" } = {}) {
-    const scratch = mkdtempSync(join(tmpdir(), "ta-etc-"));
-    try {
-      const script = [
-        'mount -t tmpfs -o size=1g tmpfs "$SIM"',
-        'mkdir "$SIM/etc-upper" "$SIM/etc-work" "$SIM/etc" "$SIM/usr-upper" "$SIM/usr-work" ' +
-          '"$SIM/usr"',
-        'mount -t overlay overlay -o "lowerdir=/etc,upperdir=$SIM/etc-upper,' +
-          'workdir=$SIM/etc-work" "$SIM/etc"',
-        'mount -t overlay overlay -o "lowerdir=/usr,upperdir=$SIM/usr-upper,' +
-          'workdir=$SIM/usr-work" "$SIM/usr"',
-        shape,
-        'mount --bind "$SIM/etc" /etc',
-        'mount --bind "$SIM/usr" /usr',
-        '{ "$NODE_BIN" root-tests.mjs "$FILE" -t "$TITLE"; ran=$?; }',
-        `{ ${after}; }`,
-        'exit "$ran"',
-      ].join(" && ");
-      mkdirSync(join(scratch, "sim"));
-      return spawnSync("unshare", ["--mount", "--propagation", "private", "--", "/bin/sh", "-c",
-                                   script], {
-        cwd: SANDBOX, encoding: "utf8",
-        env: { ...process.env, SIM: join(scratch, "sim"), NODE_BIN: process.execPath, ARG: arg,
-               FILE: file, TITLE: title } });
-    } finally {
-      rmSync(scratch, { recursive: true, force: true });
-    }
-  }
-
   // A host whose /etc/resolv.conf is a link (systemd-resolved's relative one, as GitHub's
   // runner has, or an absolute one): the box must work, and write nothing through the link.
   it.each(["relative", "absolute"])("is the box's own where the host's resolv.conf is a %s link: " +
@@ -248,33 +207,5 @@ describe("a test sandbox's /etc", () => {
                            'done');
     expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
     expect(done.stdout).toMatch(/1 passed/);
-  });
-
-  // A host as GitHub's runner's is: its /etc holding a large file anyone may write (its
-  // toolchains), its /usr a tree and a large file anyone may write (its JDKs, `/usr/lib/jvm`),
-  // its Node another user's and writable by others (`setup-node`, in `/opt/hostedtoolcache`).
-  // In one walk (`prepare`'s test, run there: its cost is the host's tree, so it is large, as
-  // `runner.test.ts`'s own is), `prepare` takes every write away in the box alone, as it does
-  // in a sandbox, copying no bytes (the overlays' `metacopy`, the suite's root-owned Node),
-  // and the host's modes stay as they were.
-  it("is the box's own where the host's /etc, /usr and Node are writable by others: prepare " +
-     "takes every write away in the box alone", { tags: ["large"] }, () => {
-    const done = simulated([
-      'mkdir -p "$SIM/etc/skel/.toolchain" "$SIM/usr/lib/jvm-sim/lib" "$SIM/toolcache/bin"',
-      'head -c 100M /dev/zero > "$SIM/etc/skel/.toolchain/big"',
-      'head -c 100M /dev/zero > "$SIM/usr/lib/jvm-sim/lib/modules"',
-      'chmod 0666 "$SIM/etc/skel/.toolchain/big" "$SIM/usr/lib/jvm-sim/lib/modules"',
-      'chmod 0777 "$SIM/usr/lib/jvm-sim" "$SIM/usr/lib/jvm-sim/lib"',
-      'cp "$NODE_BIN" "$SIM/toolcache/bin/node"',
-      'chown 1001:1001 "$SIM/toolcache/bin/node"',
-      'chmod 0777 "$SIM/toolcache/bin/node"',
-      'NODE_BIN="$SIM/toolcache/bin/node"',
-    ].join(" && "), { file: "runner/runner.test.ts", title: "prepare, at",
-                      after: 'echo host modes $(stat -c %a /etc/skel/.toolchain/big ' +
-                             '/usr/lib/jvm-sim /usr/lib/jvm-sim/lib ' +
-                             '/usr/lib/jvm-sim/lib/modules) $(stat -c "%u %a" "$NODE_BIN")' });
-    expect(done.status, `${done.stdout}${done.stderr}`).toBe(0);
-    expect(done.stdout).toMatch(/1 passed/);
-    expect(done.stdout).toMatch(/^host modes 666 777 777 666 1001 777$/m);
   });
 });
